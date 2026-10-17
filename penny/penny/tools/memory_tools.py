@@ -35,7 +35,6 @@ from penny.constants import (
     PennyConstants,
     WriteGateOutcome,
 )
-from penny.conversation_machine import RoundFraming
 from penny.database import Database
 from penny.database.memory import (
     Collection,
@@ -60,43 +59,27 @@ from penny.database.memory import (
     render_run_calls,
     strip_display_brackets,
 )
-from penny.database.memory.types import slug
-from penny.database.models import MemoryEntry, MemoryRow, Skill
+from penny.database.models import MemoryEntry, MemoryRow
 from penny.database.mutation_store import render_mutation
-from penny.database.skill_store import parameters_from_json, steps_from_json
-from penny.database.skills import (
-    bind_parameters,
-    render_skill,
-    render_skill_not_found,
-    retarget_writes,
-    unbound_required_parameters,
-)
 from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
 from penny.llm.similarity import embed_text
-from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
+from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
     SCHEDULE_EXAMPLES,
     Schedule,
     ScheduleError,
-    SkillResolution,
-    SkillResolutionKind,
     describe_schedule_field,
     expiry_was_normalised,
     has_schedule,
     parse_expires_at,
     parse_schedule,
-    render_ambiguous,
     render_creation_echo,
     render_expiry_update_line,
     render_inert_echo,
-    render_no_skill_found,
     render_reinstantiation_echo,
-    render_skill_parameters,
     render_tombstone_duplicate,
-    render_unbound_parameters,
     sentinel_expiry_note,
-    skill_params,
 )
 from penny.tools.memory_args import (
     CollectionCreateArgs,
@@ -118,10 +101,8 @@ from penny.tools.memory_args import (
     ReadLogArgs,
     ReadRunCallsArgs,
     ReadSampleArgs,
-    SkillGetArgs,
 )
 from penny.tools.models import NoArgs, ToolResult
-from penny.tools.skill_tools import render_skill_full
 
 if TYPE_CHECKING:
     from penny.agents.models import ToolCallRecord
@@ -569,43 +550,6 @@ def _lifecycle_block(db: Database, row: MemoryRow) -> list[str]:
     ]
 
 
-def _skill_provenance_line(row: MemoryRow) -> str | None:
-    """``from skill: <name> (<param>=<value>, …)`` — the skill this collection was
-    instantiated from (#1591's front door) and the params bound into its render, so
-    the render names the recipe's origin.  The skill name is a live anchor: this same
-    ``memory_get`` call carries the routine's parameters block right below it
-    (#2287), and ``find`` reaches the skill row itself (n≤1).  Params are omitted when
-    the skill had no parameters (``from skill: <name>``).  Returns ``None`` for a
-    hand-authored / seeded collection (``skill_name`` NULL), so its render stays
-    byte-identical to the unmarked pre-provenance shape — the unmarked case is the
-    quiet default."""
-    if row.skill_name is None:
-        return None
-    params = skill_params(row)
-    if not params:
-        return f"from skill: {row.skill_name}"
-    bound = ", ".join(f"{key}={value}" for key, value in params.items())
-    return f"from skill: {row.skill_name} ({bound})"
-
-
-def _skill_parameters_block(db: Database, row: MemoryRow) -> str | None:
-    """The job's ``parameters:`` block (#2287) — each parameter the skill declares,
-    whether it is required or optional, its description, and the value THIS job has
-    bound for it (:func:`render_skill_parameters`, the one format this and
-    ``skill_get`` (#2305) both read — ``skill_get`` with no bound values, since the
-    bare skill names no job).  ``None`` for a collection with no skill at all
-    (``skill_name`` NULL — the render stays byte-identical to today), or when the
-    registry no longer holds a skill by that name: the provenance line above still
-    names it, so the block simply has nothing further to add rather than asserting
-    a skill's shape from nothing."""
-    if row.skill_name is None:
-        return None
-    skill = db.skills.get(row.skill_name)
-    if skill is None:
-        return None
-    return render_skill_parameters(parameters_from_json(skill.parameters), skill_params(row))
-
-
 def _recent_changes_block(db: Database, name: str) -> list[str]:
     """The collection's recent config-change history from the mutation ledger
     (#1560) — each line naming its run id, so "when was this archived, and by
@@ -628,89 +572,6 @@ def _recent_changes_block(db: Database, name: str) -> list[str]:
 
 
 # ── Metadata ────────────────────────────────────────────────────────────────
-
-
-# A skill query whose embedding failed transiently — resolution couldn't run, so
-# the create / re-render is refused with a retry (never a silent proceed to
-# NO_SKILL_FOUND).  Tool-agnostic wording: shared by create (#1591) + update (#1620).
-_SKILL_RESOLVE_EMBED_FAILURE = (
-    "Couldn't resolve the skill '{query}' just now — a transient embedding error, so I "
-    "can't tell whether a matching skill exists. Retry in a moment."
-)
-
-
-# ── Shared skill resolve + render (#1591 create / #1620 re-render) ───────────
-#
-# The create front door and the update re-render path resolve a skill the same
-# way and render its steps the same way, so the machinery lives here once and both
-# tools compose it (never duplicate it): a collection created from a skill and one
-# re-rendered from it stamp a byte-identical prompt from identical steps + params.
-
-
-async def resolve_skill(db: Database, llm_client: LlmClient, query: str) -> SkillResolution:
-    """Resolve a ``skill`` arg by name-or-meaning (#1591): an exact name is a clean
-    MATCHED; otherwise rank the registry by meaning — any positive candidate is
-    AMBIGUOUS (never silently pick a fuzzy match), none is NO_SKILL_FOUND, a
-    transient embed miss is EMBED_FAILED."""
-    exact = db.skills.get(query)
-    if exact is not None:
-        return SkillResolution(kind=SkillResolutionKind.MATCHED, skill=exact)
-    vec = await embed_text(llm_client, query)
-    if vec is None:
-        return SkillResolution(kind=SkillResolutionKind.EMBED_FAILED)
-    candidates = db.skills.resolve_by_meaning(vec, PennyConstants.FIND_MATCH_LIMIT)
-    if not candidates:
-        return SkillResolution(kind=SkillResolutionKind.NO_SKILL_FOUND)
-    return SkillResolution(kind=SkillResolutionKind.AMBIGUOUS, candidates=candidates)
-
-
-def unresolved_skill_result(query: str, resolution: SkillResolution) -> ToolResult:
-    """The enumerated result for a resolution that produced no skill: the AMBIGUOUS
-    candidates, the NO_SKILL_FOUND elicitation, or the transient EMBED_FAILED retry
-    — nothing is instantiated in any case."""
-    if resolution.kind == SkillResolutionKind.AMBIGUOUS:
-        return ToolResult(message=render_ambiguous(query, resolution.candidates), success=False)
-    if resolution.kind == SkillResolutionKind.NO_SKILL_FOUND:
-        return ToolResult(message=render_no_skill_found(query), success=False)
-    return ToolResult(message=_SKILL_RESOLVE_EMBED_FAILURE.format(query=query), success=False)
-
-
-def render_skill_prompt(
-    db: Database, llm_client: LlmClient, skill: Skill, params: dict[str, str], target_name: str
-) -> tuple[str, ToolResult | None]:
-    """Validate the bound params against ``skill``'s parameters, then render its steps +
-    params into the numbered TEXT ``extraction_prompt`` for the collection ``target_name``.
-    An unbound required parameter → the actionable naming error; a rendered prompt that is
-    too short or names an unrunnable tool → the same authoring-time rejection.  The
-    re-render preserves the steps-1..A / no-stored-``done()`` invariant by construction — it
-    is the same render fn ``collection_configure`` stamps at birth.
-
-    Every ATTACHMENT-MARKED leaf is bound to ``target_name`` at this seam (#1629/#1783):
-    applying a routine to a collection is what DECIDES a leaf that named a collection
-    and nobody supplied, so the placeholder the stored skill carries there is BOUND to
-    the collection's own name — the rendered program never lies about the collection it
-    acts on, on either the one-call create or the adopt path.  A leaf the labeller
-    judged the USER to have chosen carries no mark and stays a parameter ``params``
-    binds, so a routine the user gave two destinations keeps them distinct.
-
-    The bound ``params`` are joined into the program's own leaves here too (#1907,
-    :func:`bind_parameters`) — this is the seam BECAUSE the values are static for the
-    life of the configuration: baking them into the stored ``extraction_prompt`` means
-    the program the collector runs is the program the creation echo showed the user,
-    with no second substitution layer that could disagree with it, and every re-render
-    path (refresh after a re-teach, rebind, swap, adopt — #1620/#1827) comes back
-    through here and re-joins against the routine's CURRENT leaves."""
-    declared = parameters_from_json(skill.parameters)
-    missing = unbound_required_parameters(declared, params)
-    if missing:
-        return "", ToolResult(message=render_unbound_parameters(skill.name, missing), success=False)
-    attached = retarget_writes(steps_from_json(skill.steps), target_name)
-    steps = bind_parameters(attached, declared, params)
-    prompt = render_skill(steps, params)
-    if (too_short := check_extraction_prompt(prompt)) is not None:
-        return "", ToolResult(message=too_short, success=False)
-    rejection = _reject_unknown_extraction_tools(db, llm_client, prompt)
-    return prompt, rejection
 
 
 # A schedule whose UNTIL= and an ``expires_at`` argument both say when to stop: two
@@ -742,20 +603,20 @@ def resolve_expiry(db: Database, schedule: Schedule, expires_at: str | None) -> 
     return parse_expires_at(expires_at, user_timezone_name(db), db.clock.now())
 
 
-# A schedule / notify / expiry on a skill-less create: an inert collection has no job
-# to describe, so the job-shaped arg is refused with the two-step fix (#1629).
+# A schedule / notify / expiry on a prompt-less create: an inert collection has no job
+# to describe, so the job-shaped arg is refused with the two-step fix.
 _INERT_JOB_ARGS_REFUSAL = (
-    "Can't set a schedule, notify, or expiry on '{name}' without a skill — those describe "
-    "a JOB, and a skill-less collection is inert storage with no job to run. Create it as "
-    "storage now (name + description only), then once you've taught the skill attach it "
-    "with collection_configure(collection='{name}', skill=<title>, schedule=<recurrence rule>, "
-    "notify=<true/false>)."
+    "Can't set a schedule, notify, or expiry on '{name}' without a prompt — those describe "
+    "a JOB, and a prompt-less collection is inert storage with no job to run. Create it as "
+    "storage now (name + description only), then attach a job later with "
+    "collection_configure(collection='{name}', prompt=<what the job's cycles should do>, "
+    "schedule=<recurrence rule>, notify=<true/false>)."
 )
 
-# A skill create with no schedule: the collection wouldn't know when to run, so it's
-# refused showing the grammar (a skill collection must be scheduled, #1857).
+# A job create with no schedule: the collection wouldn't know when to run, so it's
+# refused showing the grammar (a job collection must be scheduled, #1857).
 _MISSING_SCHEDULE = (
-    "A skill collection needs a schedule so it knows when to run. Set schedule to one "
+    "A job needs a schedule so it knows when to run. Set schedule to one "
     "RRULE line:\n"
     f"{SCHEDULE_EXAMPLES}"
 )
@@ -792,16 +653,12 @@ SCHEDULE_PARAM_DESCRIPTION = (
 
 
 class CollectionCreateTool(MemoryTool):
-    """Instantiate a collection from a skill, or set up an INERT storage container —
-    the front door of collector creation (#1591, stage ⑤ of #1562; inert #1629).
+    """Set up a job from a free-text prompt, or an INERT storage container —
+    the front door of collector creation (#2455 naive baseline; was #1591).
 
-    A collection is never authored with an inline procedure any more: it names a
-    ``skill`` (resolved by name or meaning against the skill registry), binds the
-    skill's parameters from ``params``, and the skill's steps RENDER into the
-    collection's ``extraction_prompt`` at creation (a deterministic snapshot).  The
-    resolution is an enumerated union — a clean name match instantiates; a fuzzy
-    match returns ranked candidates to choose from; no match returns the teach-me
-    elicitation.
+    A collection is never authored from a learned skill any more: it names a
+    ``prompt`` — the model's own free-text instructions — and that text becomes the
+    collection's ``extraction_prompt`` VERBATIM, with no rendering seam in between.
 
     Idempotency at birth (#1567/#1775) lives one level up, on ``CollectionSetTool``
     — the registered front door, and the only place that can answer a duplicate by
@@ -813,32 +670,24 @@ class CollectionCreateTool(MemoryTool):
     # The creation / re-render echo points at the metadata read for what was configured.
     advises = ("memory_get",)
     description = (
-        "Set up a background collection. A collection is storage plus an OPTIONAL job.\n"
+        "Create or reconfigure a background job in ONE idempotent call. A collection "
+        "is storage plus an OPTIONAL job.\n"
         "\n"
         "TWO ways to call it:\n"
-        "- WITH a `skill`: instantiate that skill — its steps become what the collection "
-        "runs, on the `schedule` you set. You don't write steps here; the skill "
-        "supplies them.\n"
-        "- WITHOUT a `skill`: an INERT storage collection — it holds entries but nothing "
-        "runs against it yet. Use this to set up the collection first when you're about "
-        "to TEACH a skill: create it (name + description only), demonstrate it "
-        "once here in chat — you learn it automatically as a skill — then attach that "
-        "skill with collection_configure to make it do the job. Don't pass a schedule / "
-        "notify / expiry with a skill-less create — an inert collection has no job to "
-        "run.\n"
+        "- WITH a `prompt`: the collection becomes a JOB — the text you write is what "
+        "the job's cycles follow each time they run, on the `schedule` you set.\n"
+        "- WITHOUT a `prompt`: an INERT storage collection — it holds entries but "
+        "nothing runs against it yet. Don't pass a schedule / notify / expiry with a "
+        "prompt-less create — an inert collection has no job to run.\n"
         "\n"
         "Fields:\n"
         "- `collection` — unique slug for the collection (lowercase, hyphens).\n"
         "- `description` — REQUIRED. What this collection is for, in the user's own words "
         '("keep an eye on the price of that jacket"). It is the collection\'s meaning '
         "anchor (how find resolves it), so get it right and confirm it back.\n"
-        "- `skill` — OPTIONAL. The skill to instantiate, by exact name or a "
-        'paraphrase of what it does ("watch a page for a change"). Omit it for an inert '
-        "storage collection. If your paraphrase matches several skills I'll list them to "
-        "choose from; if it matches none I'll walk you through teaching one.\n"
-        "- `parameters` — a map binding the skill's parameters to values "
-        '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED parameter '
-        "must be bound or the call is refused naming what's missing.\n"
+        "- `prompt` — OPTIONAL. The job's instructions, written as free text — what to "
+        "read, what to do with it, and what to remember, as you would explain the task "
+        "to someone doing it once. Omit it for an inert storage collection.\n"
         "- `schedule` — when it runs, as ONE recurrence rule (RRULE). Say how often "
         'with FREQ and INTERVAL, and the time of day with BYHOUR: "FREQ=HOURLY" is '
         'every hour, "FREQ=MINUTELY;INTERVAL=90" is every 90 minutes, '
@@ -857,9 +706,10 @@ class CollectionCreateTool(MemoryTool):
         "on / alerted to new or changed entries as they're found. Leave `false` (the "
         "default) for a silent collection they'll ask about later.\n"
         "\n"
-        "Returns a structured echo of what landed (description, skill, bound parameters, "
-        "schedule, notify, expiry, and the rendered steps). Confirm it back — don't "
-        "invent fields it didn't return."
+        "Returns a structured echo of what landed (description, prompt, schedule, "
+        "notify, expiry). Confirm it back — don't invent fields it didn't return. "
+        "Plain storage needs no call at all — collection_write creates storage "
+        "automatically; use collection_configure for jobs and config."
     )
     parameters = {
         "type": "object",
@@ -881,20 +731,12 @@ class CollectionCreateTool(MemoryTool):
                     "mechanism. The meaning anchor; confirm it back."
                 ),
             },
-            "skill": {
+            "prompt": {
                 "type": "string",
                 "description": (
-                    "OPTIONAL. The skill to instantiate — its exact name, or a paraphrase "
-                    "of what it does (resolved by meaning). Omit for an inert storage "
-                    "collection. A fuzzy match returns candidates to choose from; no match "
-                    "walks you through teaching one."
-                ),
-            },
-            "parameters": {
-                "type": "object",
-                "description": (
-                    "Bindings for the skill's fill-in-the-blank parameters: "
-                    "{parameter: value}. Every required parameter must be bound."
+                    "OPTIONAL. The job's instructions, as free text: what to read, what "
+                    "to do with it, and what to remember. Omit for an inert storage "
+                    "collection."
                 ),
             },
             "schedule": {
@@ -942,36 +784,26 @@ class CollectionCreateTool(MemoryTool):
         self._created_by_run_id = created_by_run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        """A skill-less create yields an INERT storage collection (#1629); a skill
-        create instantiates that skill.  The two paths read as a table of contents."""
+        """A prompt-less create yields an INERT storage collection; a prompt create
+        stands up the job.  The two paths read as a table of contents."""
         args = CollectionCreateArgs(**kwargs)
-        if args.skill is None:
+        if args.prompt is None:
             return await self._create_inert(args)
-        return await self._create_from_skill(args, args.skill)
+        return await self._create_with_prompt(args, args.prompt)
 
-    async def _create_from_skill(self, args: CollectionCreateArgs, skill_query: str) -> ToolResult:
-        """Instantiate a collection from a skill: parse the schedule, resolve the
-        skill, bind + render its steps (writes retargeted to this collection, #1629),
-        refuse a near-duplicate, then create and echo.  ``skill_query`` is ``args.skill``
-        narrowed to non-``None`` by the caller."""
+    async def _create_with_prompt(self, args: CollectionCreateArgs, prompt: str) -> ToolResult:
+        """Stand up a job from the model's own free-text prompt: parse the schedule,
+        validate the prompt's length, then create and echo."""
         parsed = self._parse_schedule(args)
         if isinstance(parsed, ToolResult):
             return parsed
         schedule, expires_at = parsed
-        resolution = await resolve_skill(self._db, self._llm_client, skill_query)
-        skill = resolution.skill
-        if skill is None:
-            # AMBIGUOUS / NO_SKILL_FOUND / EMBED_FAILED — nothing created.
-            return unresolved_skill_result(skill_query, resolution)
-        prompt, render_error = render_skill_prompt(
-            self._db, self._llm_client, skill, args.params, slug(args.name)
-        )
-        if render_error is not None:
-            return render_error
-        return await self._instantiate(args, skill, prompt, schedule, expires_at)
+        if (too_short := check_extraction_prompt(prompt)) is not None:
+            return ToolResult(message=too_short, success=False)
+        return await self._instantiate(args, prompt, schedule, expires_at)
 
     async def _create_inert(self, args: CollectionCreateArgs) -> ToolResult:
-        """A skill-less create: an INERT collection (#1629) — storage only, no
+        """A prompt-less create: an INERT collection — storage only, no
         ``extraction_prompt`` / cadence / notify, so it never dispatches (the
         dispatcher selects on ``extraction_prompt IS NOT NULL``).  A job-shaped arg
         alongside is refused (an inert container has no job); the echo is honest
@@ -990,10 +822,10 @@ class CollectionCreateTool(MemoryTool):
 
     @staticmethod
     def _reject_job_args(args: CollectionCreateArgs) -> ToolResult | None:
-        """A skill-less (inert) create describes storage, not a job — a schedule /
+        """A prompt-less (inert) create describes storage, not a job — a schedule /
         notify / expiry passed alongside has nothing to attach to, so it's refused
-        naming the fix (attach a skill via collection_configure once one's taught) rather
-        than silently dropped (visible degradation over silent success)."""
+        naming the fix (attach a prompt via collection_configure) rather than silently
+        dropped (visible degradation over silent success)."""
         has_job = any((args.schedule is not None, args.expires_at is not None, args.notify))
         if not has_job:
             return None
@@ -1002,8 +834,8 @@ class CollectionCreateTool(MemoryTool):
     def _parse_schedule(
         self, args: CollectionCreateArgs
     ) -> ToolResult | tuple[Schedule, datetime | None]:
-        """Parse the single ``schedule`` arg + optional end condition before any skill
-        work, so a bad schedule fails fast.  A skill collection needs a schedule (it must
+        """Parse the single ``schedule`` arg + optional end condition before any other
+        work, so a bad schedule fails fast.  A job collection needs a schedule (it must
         know when to run), so a missing one is refused showing the grammar; an
         unreadable one surfaces ``parse_schedule``'s teaching rejection verbatim."""
         if args.schedule is None:
@@ -1018,7 +850,6 @@ class CollectionCreateTool(MemoryTool):
     async def _instantiate(
         self,
         args: CollectionCreateArgs,
-        skill: Skill,
         extraction_prompt: str,
         schedule: Schedule,
         expires_at: datetime | None,
@@ -1039,14 +870,9 @@ class CollectionCreateTool(MemoryTool):
             created_by_run_id=self._created_by_run_id,
             expires_at=expires_at,
             max_runs=schedule.max_runs,
-            # Record which skill rendered this collection and with what bindings, so
-            # the catalog / metadata render can name it (#1603) — the substrate a
-            # future rebind/re-render reads its current bindings from.
-            skill_name=skill.name,
-            skill_params=args.params,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
-        echo = render_creation_echo(memory, skill.name, args.params, user_timezone_name(self._db))
+        echo = render_creation_echo(memory, user_timezone_name(self._db))
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(message=f"{echo}{suffix}{expiry_note}", mutated=True)
 
@@ -1773,30 +1599,10 @@ class CollectionWriteTool(MemoryTool):
         return _DUPLICATE_CLOSE_SOME
 
 
-# ── Re-render actionable refusals (#1620) ────────────────────────────────────
-
-# params-only rebind on a collection that was never instantiated from a skill (a
-# legacy hand-authored one): there are no parameters to bind — name how to adopt one.
-_REBIND_NO_SKILL = (
-    "Can't rebind params on '{name}': it wasn't instantiated from a skill (it's "
-    "hand-authored), so it has no parameters to bind. Pass skill=<name> to adopt a "
-    "skill onto it — demonstrate it once in chat if no skill exists yet; "
-    "it's learned automatically."
-)
-
-# The collection's pinned skill name no longer resolves (deleted / renamed) — a
-# refresh/rebind can't re-render, so name the recovery (re-teach, or point elsewhere).
-_SKILL_GONE = (
-    "The skill '{skill}' this collection was built from no longer exists — it may have "
-    "been renamed or removed. Re-teach it (then it re-renders), or pass skill=<name> to "
-    "re-render this collection from a different skill."
-)
-
-# An adopt that attached a skill but no schedule: the collection has a routine yet
-# nothing to run it on, so it won't dispatch until one is set (#1629 — visible over
-# silent).
+# An adopt that attached a prompt but no schedule: the collection has a job yet
+# nothing to run it on, so it won't dispatch until one is set (visible over silent).
 _NO_SCHEDULE_NOTE = (
-    "\n\nHeads up: this collection now has a skill but no schedule, so it won't run "
+    "\n\nHeads up: this collection now has a prompt but no schedule, so it won't run "
     "yet. Set one with collection_configure(collection='{name}', schedule=<recurrence rule>) — the "
     "rule for the cadence the user asked for, e.g. FREQ=HOURLY or FREQ=DAILY;BYHOUR=8."
 )
@@ -1807,22 +1613,13 @@ class CollectionSetTool(MemoryTool):
     code-owner fusion): identity is dispatched HERE, in python — the model never
     reasons about whether the collection already exists.
 
-    Three cases, in order.  The name EXISTS → the update path (adopt/rebind/swap/
-    refresh re-render, atomic schedule replace).  The name is new but names a job we
+    Three cases, in order.  The name EXISTS → the update path (adopt / edit the
+    prompt, atomic schedule replace).  The name is new but names a job we
     ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → the same update
     path, aimed at the collection we have, because ``collection_configure`` dispatching on
     the name alone is exactly what lets an invented name become a second copy of one
     job.  Otherwise → the create path.  Both inner paths keep their full validation —
-    this class is a dispatcher, not a re-implementation.
-
-    **Configuring a framed round carries only the TERMS (#1869).**  When the turn is
-    handed the round's framing, the collection, the routine and the values it is pointed
-    at are all supplied here, framework-side, before the dispatch above runs — so the
-    model's call says when the job runs, when it stops, and whether to tell the user, and
-    nothing else.  Reuse is then structural rather than a choice: the job lands on the
-    container the round built, every time, and tier-1 identity (same skill + same params)
-    holds by construction instead of depending on the model rebinding the same values it
-    bound last time.  With no framing this class is byte-identical to what it was."""
+    this class is a dispatcher, not a re-implementation."""
 
     name = "collection_configure"
     # The creation echo points at the metadata read for what was configured.
@@ -1832,9 +1629,11 @@ class CollectionSetTool(MemoryTool):
         "doesn't exist it comes into being with this config; if it does, only "
         "the fields you set change — you never need to know which. "
         "`description` = what it's for, in the user's words (required the first "
-        "time). `skill` (+ `parameters`) attaches a learned skill — its steps become "
-        "what the collection runs. `schedule` says when it runs, as one recurrence "
-        'rule: "FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
+        "time). `prompt` = the instructions this job's cycles follow each time they "
+        "run — write it as you would explain the task to someone doing it once: "
+        "what to read, what to do with it, and what to remember. `schedule` says "
+        "when it runs, as one recurrence rule: "
+        '"FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
         '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify` turns THIS '
         "collection's notifications on or off — true tells the user about "
         "new/changed entries, false stops telling them while the job keeps "
@@ -1848,8 +1647,7 @@ class CollectionSetTool(MemoryTool):
         "properties": {
             "collection": {"type": "string"},
             "description": {"type": "string"},
-            "skill": {"type": "string"},
-            "parameters": {"type": "object"},
+            "prompt": {"type": "string"},
             "schedule": {"type": "string", "description": SCHEDULE_PARAM_DESCRIPTION},
             "expires_at": {"type": "string", "description": EXPIRES_AT_PARAM_DESCRIPTION},
             "notify": {"type": "boolean"},
@@ -1870,147 +1668,25 @@ class CollectionSetTool(MemoryTool):
         db: Database,
         llm_client: LlmClient,
         run_id: str | None = None,
-        round_framing: RoundFraming | None = None,
     ) -> None:
         self._db = db
         self._llm_client = llm_client
         self._create = CollectionCreateTool(db, llm_client, created_by_run_id=run_id)
         self._update = CollectionUpdateTool(db, llm_client, run_id=run_id)
-        # The round this turn CONFIGURES (#1869) — threaded down from the turn like
-        # ``run_id`` beside it, never read from anywhere ambient.  ``None`` on every turn
-        # that is not configuring a framed round (a collector cycle, every ordinary chat
-        # turn), which leaves this tool byte-identical to what it was.  An apply turn is
-        # never among them: a round with no framing has nothing to configure, so that turn
-        # fails before any tool is offered (#1875).
-        self._round_framing = round_framing
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        """Refuse a round whose routine is not there to run, apply the round's own routine
-        when the turn is configuring one (#1869), then dispatch.  Reads as a table of
-        contents."""
         args = CollectionSetArgs(**kwargs)
-        if (broken := self._unrunnable_round()) is not None:
-            return broken
-        requested = args.collection
-        args = self._with_the_rounds_routine(args)
-        result = await self._dispatch(args)
-        return self._note_retarget(result, requested=requested, landed=args.collection)
-
-    def _unrunnable_round(self) -> ToolResult | None:
-        """The round's routine is not something this call can stand up — refused HERE,
-        naming the round as the broken half (#1869).
-
-        This exists because supplying the routine framework-side takes it out of the
-        model's hands: the inner paths answer a missing or under-bound skill by asking for
-        a different ``skill`` or a fuller ``params``, and on a framed turn those are the
-        two arguments the call cannot change — so that guidance would be a remedy the
-        model is structurally prevented from enacting, retried until the turn ran out.
-        The reachable case is a learn turn that taught nothing: the machine stays parked
-        with its framing, so the next acceptance names a routine the registry never
-        gained.
-
-        Both checks are READS: the registry either holds a routine under the round's name
-        or it does not, and the values the round carries either cover what that routine
-        declares or they do not."""
-        framing = self._round_framing
-        if framing is None:
-            return None
-        skill = self._db.skills.get(framing.skill)
-        if skill is None:
-            return ToolResult(
-                message=_ROUND_ROUTINE_MISSING.format(skill=framing.skill), success=False
-            )
-        missing = unbound_required_parameters(
-            parameters_from_json(skill.parameters), framing.bound_values()
-        )
-        if not missing:
-            return None
-        return ToolResult(
-            message=_ROUND_ROUTINE_UNBOUND.format(
-                skill=framing.skill,
-                missing=", ".join(parameter.name for parameter in missing),
-            ),
-            success=False,
-        )
-
-    def _with_the_rounds_routine(self, args: CollectionSetArgs) -> CollectionSetArgs:
-        """The round's collection, routine and bound values, supplied FRAMEWORK-SIDE
-        (#1869) — so a turn that configures a framed round carries only the job's terms.
-
-        All three are things the round already settled and the turn cannot see: the
-        container was built when the machine entered learn, the routine is what run-end
-        extraction filed the round under, and the values are literal spans of the user's
-        own words from turns that may be several messages back.  Asking the turn to
-        re-supply them is asking it to re-derive what is already recorded, which is where
-        the measured naming and binding misses came from — so they are READ, and only the
-        cadence, the end condition and the telling-them flag are the model's.
-
-        With no round framing this returns ``args`` unchanged — an ordinary chat turn
-        standing something up, or a collector cycle, calls this tool exactly as it did
-        before any of this existed.  What is NOT in that set is an apply turn: one with no
-        framing has no collection to configure and never reaches a tool (#1875)."""
-        framing = self._round_framing
-        if framing is None:
-            return args
-        if slug(args.collection) != slug(framing.container):
-            logger.info(
-                "Configuring the round's container %r — the call named %r",
-                framing.container,
-                args.collection,
-            )
-        description = (
-            args.description if args.description is not None else self._round_description(framing)
-        )
-        return args.model_copy(
-            update={
-                "collection": framing.container,
-                "skill": framing.skill,
-                "parameters": framing.bound_values(),
-                "description": description,
-            }
-        )
-
-    def _round_description(self, framing: RoundFraming) -> str | None:
-        """The round's own one line of what its collection is FOR — supplied only when
-        the container is not there yet.
-
-        A birth needs one (it is the meaning anchor), and a terms-only call carries none;
-        the round already answered that question when it built the container, so there is
-        nothing to ask the turn for.  When the container DOES exist — the ordinary case —
-        this stays ``None`` so the update leaves the description, and its anchor,
-        untouched."""
-        if self._db.memories.get(framing.container) is not None:
-            return None
-        return framing.signature.description
-
-    @staticmethod
-    def _note_retarget(result: ToolResult, *, requested: str, landed: str) -> ToolResult:
-        """Name the collection the call actually landed on when it is not the one the call
-        asked for — the ``_SAME_JOB_UPDATED`` / ``_SAME_JOB_TARGETED`` pair applied to the
-        round's container: what the model tells the user, and every later call it makes,
-        has to use the real name, so a silent retarget would leave it narrating a
-        collection that does not exist.
-
-        Two forms, selected on the OUTCOME, for that pair's own reason: a note saying the
-        call "landed on" a collection is a claim the configuration succeeded, and prepending
-        it to a refusal would have the tool assert an action its own result denies."""
-        if slug(requested) == slug(landed):
-            return result
-        template = _ROUND_CONTAINER_RETARGETED if result.success else _ROUND_CONTAINER_TARGETED
-        note = template.format(requested=requested, container=landed)
-        return result.model_copy(update={"message": f"{note}{result.message}"})
+        return await self._dispatch(args)
 
     async def _dispatch(self, args: CollectionSetArgs) -> ToolResult:
         """Dispatch on IDENTITY, not on the name alone: the collection this call
         names, else the one it duplicates, else a new one."""
         if self._db.memories.get(args.collection) is not None:
             return await self._apply_to(args, args.collection)
-        duplicate = self._db.memories.find_duplicate_collection(
-            args.collection, skill_name=args.skill, skill_params=args.parameters
-        )
+        duplicate = self._db.memories.find_duplicate_collection(args.collection)
         if duplicate is not None:
             return await self._same_job(args, duplicate)
         if args.description is None:
@@ -2020,8 +1696,7 @@ class CollectionSetTool(MemoryTool):
         return await self._create._run(
             name=args.collection,
             description=args.description,
-            skill=args.skill,
-            params=args.parameters or {},
+            prompt=args.prompt,
             schedule=args.schedule,
             expires_at=args.expires_at,
             notify=bool(args.notify),
@@ -2034,8 +1709,7 @@ class CollectionSetTool(MemoryTool):
             name=name,
             description=args.description,
             notify=args.notify,
-            skill=args.skill,
-            params=args.parameters,
+            prompt=args.prompt,
             schedule=args.schedule,
             expires_at=args.expires_at,
         )
@@ -2054,45 +1728,6 @@ class CollectionSetTool(MemoryTool):
         template = _SAME_JOB_UPDATED if result.success else _SAME_JOB_TARGETED
         note = template.format(requested=args.collection, existing=duplicate.name)
         return result.model_copy(update={"message": f"{note}{result.message}"})
-
-
-# The round-container redirect (#1869): the turn was configuring a framed round, so the
-# call landed on the container that round built rather than on the name it asked for.
-# Named in the result for the same reason ``_SAME_JOB_UPDATED`` names its target —
-# everything downstream, the reply included, has to use the collection that exists.
-_ROUND_CONTAINER_RETARGETED = (
-    "'{requested}' isn't the collection this round set up — '{container}' is, so this "
-    "landed on '{container}'. It's '{container}' from here on: read it with "
-    "collection_list('{container}') or adjust it with "
-    "collection_configure(collection='{container}', ...).\n"
-)
-
-# The same redirect when the call itself FAILED — the target is still named (the error
-# below is about '{container}'), but nothing changed, so the note must not say it landed.
-_ROUND_CONTAINER_TARGETED = (
-    "'{requested}' isn't the collection this round set up — '{container}' is, so this was "
-    "aimed at '{container}' rather than at the name you gave — but it didn't land:\n"
-)
-
-# A framed round whose routine the registry never gained — the reachable case being a
-# learn turn that taught nothing and left the machine parked with its framing.  It names
-# the ROUND as the broken half on purpose: which routine this is was settled by the round,
-# so "name a different skill" would be a remedy this call cannot carry out.
-_ROUND_ROUTINE_MISSING = (
-    "The skill this round taught, '{skill}', isn't in the registry, so there's nothing "
-    "to set running. Which skill this is was settled by the round, so naming a different "
-    "one here won't help. Tell the user the round didn't stick, and ask them to walk you "
-    "through it once more."
-)
-
-# The same shape for a routine that now asks for something the round never supplied — a
-# re-teach can change what a routine declares while an older round's values stay put.
-_ROUND_ROUTINE_UNBOUND = (
-    "The skill '{skill}' needs {missing}, which this round never supplied, so there's "
-    "nothing to set running. What this skill is pointed at was settled by the round, so "
-    "passing values here won't help. Tell the user what it's missing, and ask them to walk "
-    "you through it once more."
-)
 
 
 _SET_BIRTH_NEEDS_DESCRIPTION = (
@@ -2125,16 +1760,16 @@ _SAME_JOB_TARGETED = (
 
 
 class CollectionUpdateTool(MemoryTool):
-    """Update collection metadata, or re-render its prompt from a skill (#1620).
+    """Update collection metadata, including a full replacement of its prompt
+    (#2455 naive baseline; was #1620's skill re-render).
 
     Chat-facing.  Lets the user evolve a collection mid-conversation — refining
-    the description/cadence, flipping notify, or re-rendering the ``extraction_prompt``
-    from a skill: **refresh** (the same skill re-taught → re-render from its current
-    steps), **rebind** (new ``params``, same skill), **swap** (a different ``skill``),
-    or **adopt** (give a legacy skill=NULL collection a skill for the first time).  All
-    fields except ``name`` are optional; only the ones supplied are applied.  Supplying
-    ``skill`` or ``params`` takes the re-render path (which re-stamps skill provenance
-    and records a mutation event); omitting both leaves the prompt untouched.
+    the description/cadence, flipping notify, or replacing the ``extraction_prompt``
+    wholesale with new free text (an edit, a swap to a different job, or adopting a
+    prompt onto an inert collection for the first time).  All fields except ``name``
+    are optional; only the ones supplied are applied.  Supplying ``prompt`` replaces
+    the stored prompt verbatim (and records a mutation event); omitting it leaves
+    the prompt untouched.
     """
 
     name = "collection_configure"
@@ -2149,24 +1784,16 @@ class CollectionUpdateTool(MemoryTool):
         "- `description` — content-reflective one-line summary AND the "
         "meaning anchor (find / resolve-by-meaning). Changing it "
         "re-embeds it, so keep it an accurate summary of the subject "
-        "matter. It does not drive the collector — change the "
-        "extraction_prompt for that.\n"
+        "matter. It does not drive the collector — change `prompt` for that.\n"
         "- `notify` — flip notify-on-new. `true` starts telling the "
         "user about new entries (they asked to be kept posted / alerted); "
         "`false` silences it (the collector keeps gathering). Omit to leave "
         "unchanged.\n"
-        "- `extraction_prompt` — FULL replacement body, not a diff. "
-        "Drives what the collector actually does. Read the current body "
-        "via `memory_get(<collection>)` first if you need to preserve any "
-        "of it. Don't combine with `skill`/`parameters` — a re-render owns the prompt.\n"
-        "- `skill` — re-render what the collection runs from the skill's CURRENT "
-        "steps (by exact name or a paraphrase, resolved the same way as "
-        "`collection_configure`). Use the SAME skill name to refresh after re-teaching "
-        "it, or a DIFFERENT skill to swap. On a legacy hand-authored collection this "
-        "adopts a skill for the first time (its old text is replaced by the render).\n"
-        "- `parameters` — rebind the skill's fill-in-the-blank parameters to new values and "
-        "re-render, keeping the same skill. Omit to keep the current bindings. Every "
-        "required parameter must be bound or the call is refused naming what's missing.\n"
+        "- `prompt` — FULL replacement of the job's instructions, not a diff. "
+        "Drives what the collector actually does each cycle. Read the current "
+        "body via `memory_get(<collection>)` first if you need to preserve any "
+        "of it. On an inert (prompt-less) collection, setting this adopts a job "
+        "for the first time.\n"
         "- `schedule` — when the job runs, as ONE recurrence rule (set it to change the "
         'schedule, else omit to leave it): "FREQ=HOURLY" (every hour), '
         '"FREQ=MINUTELY;INTERVAL=90" (every 90 minutes), "FREQ=DAILY;BYHOUR=8" (8am '
@@ -2175,7 +1802,7 @@ class CollectionUpdateTool(MemoryTool):
         "Add COUNT= to run a set number of times, and a leading DTSTART line to say "
         "when it starts; a DTSTART stamp ending in Z is an exact moment in UTC. "
         "Setting it REPLACES the whole schedule. This is how you give an "
-        "INERT collection its schedule when you adopt a skill onto it.\n"
+        "INERT collection its schedule when you adopt a prompt onto it.\n"
         f"- `expires_at` — OPTIONAL. {EXPIRES_AT_PARAM_DESCRIPTION} The collection "
         "archives itself once it passes.\n"
         "\n"
@@ -2183,7 +1810,7 @@ class CollectionUpdateTool(MemoryTool):
         "authoritative — if a field you tried to set isn't in it, the "
         'update didn\'t land; fix it and try again rather than saying "done".\n'
         "\n"
-        "IMPORTANT: `extraction_prompt` is a FULL replacement — the whole "
+        "IMPORTANT: `prompt` is a FULL replacement — the whole "
         "prompt body, never a diff or a fragment; read the current body via "
         "`memory_get(<collection>)` first if you need to keep any of it."
     )
@@ -2208,19 +1835,11 @@ class CollectionUpdateTool(MemoryTool):
                     "to leave unchanged."
                 ),
             },
-            "skill": {
+            "prompt": {
                 "type": "string",
                 "description": (
-                    "Re-render what the collection runs from the skill's current steps "
-                    "(exact name or paraphrase). Same name = refresh after re-teaching; "
-                    "a different skill = swap; on a hand-authored collection = adopt."
-                ),
-            },
-            "parameters": {
-                "type": "object",
-                "description": (
-                    "Rebind the skill's parameters to new values and re-render, same skill. "
-                    "Omit to keep current bindings. Every required parameter must be bound."
+                    "FULL replacement of the job's instructions, as free text. Omit to "
+                    "leave the current prompt untouched."
                 ),
             },
             "schedule": {
@@ -2259,16 +1878,16 @@ class CollectionUpdateTool(MemoryTool):
         return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        """Parse the apply-time schedule (#1857), then re-render from a skill when
-        ``skill``/``params`` is given (the #1620 refresh / rebind / swap / adopt cases),
-        else a plain metadata edit.  Reads as a table of contents."""
+        """Parse the apply-time schedule (#1857), then either replace the prompt
+        (when ``prompt`` is given) or a plain metadata edit.  Reads as a table of
+        contents."""
         args = CollectionUpdateArgs(**kwargs)
         parsed = self._parse_schedule(args)
         if isinstance(parsed, ToolResult):
             return parsed
         schedule, expires_at = parsed
-        if args.skill is not None or args.params is not None:
-            return await self._reinstantiate(args, schedule, expires_at)
+        if args.prompt is not None:
+            return await self._replace_prompt(args, schedule, expires_at)
         return await self._edit_metadata(args, schedule, expires_at)
 
     def _parse_schedule(
@@ -2300,11 +1919,10 @@ class CollectionUpdateTool(MemoryTool):
     async def _edit_metadata(
         self, args: CollectionUpdateArgs, schedule: Schedule | None, expires_at: datetime | None
     ) -> ToolResult:
-        """The plain metadata edit — description / notify / schedule.  The collection's
-        routine is untouchable here: a prompt is only ever a RENDER of a skill (the
-        re-render path); there is no raw-edit argument on the model surface."""
+        """The plain metadata edit — description / notify / schedule, with no
+        ``prompt`` supplied, so the collection's ``extraction_prompt`` is untouched."""
         embedding = await self._description_embedding(args)
-        memory = self._apply_update(args, None, None, None, embedding, schedule, expires_at)
+        memory = self._apply_update(args, None, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         echo = _format_collection_echo(
@@ -2322,58 +1940,26 @@ class CollectionUpdateTool(MemoryTool):
             name, self._run_id, entity_type=MutationEntityType.COLLECTION
         )
 
-    async def _reinstantiate(
+    async def _replace_prompt(
         self, args: CollectionUpdateArgs, schedule: Schedule | None, expires_at: datetime | None
     ) -> ToolResult:
-        """Re-render the collection's prompt from a skill's CURRENT steps and re-stamp
-        its provenance (#1620): refresh (same skill re-taught), rebind (new params),
-        swap (a different skill), or adopt (a legacy skill=NULL collection — the second
-        half of the #1629 teach bootstrap).  Writes are retargeted to this collection at
-        the render seam (#1629); the re-render preserves steps-1..A / no-stored-``done()``
-        by construction.  A raw ``extraction_prompt`` alongside conflicts — the render
-        owns the prompt."""
-        resolved = await self._resolve_target(args)
-        if isinstance(resolved, ToolResult):
-            return resolved
-        skill, params = resolved
-        prompt, render_error = render_skill_prompt(
-            self._db, self._llm_client, skill, params, slug(args.name)
-        )
-        if render_error is not None:
-            return render_error
+        """Replace the collection's ``extraction_prompt`` wholesale with ``args.prompt``
+        (#2455 naive baseline) — an edit to a running job, a swap to a different job, or
+        adopting a prompt onto a legacy inert (prompt-less) collection for the first
+        time.  The prompt the model wrote IS the prompt the collector runs; there is no
+        rendering seam to validate against, only the same length check authoring takes."""
+        assert args.prompt is not None
+        if (too_short := check_extraction_prompt(args.prompt)) is not None:
+            return ToolResult(message=too_short, success=False)
         embedding = await self._description_embedding(args)
-        memory = self._apply_update(
-            args, prompt, skill.name, params, embedding, schedule, expires_at
-        )
+        memory = self._apply_update(args, args.prompt, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
-        echo = render_reinstantiation_echo(memory, skill.name, params, user_timezone_name(self._db))
+        echo = render_reinstantiation_echo(memory, user_timezone_name(self._db))
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(
             message=f"{echo}{suffix}{self._no_schedule_note(memory)}{expiry_note}",
             mutated=True,
         )
-
-    async def _resolve_target(
-        self, args: CollectionUpdateArgs
-    ) -> ToolResult | tuple[Skill, dict[str, str]]:
-        """The target skill + params for the re-render.  ``params`` default to the
-        collection's CURRENT bindings (a refresh keeps them) unless new ones are passed
-        (a rebind).  A ``skill`` arg resolves by name-or-meaning (swap / adopt /
-        refresh); without one the collection's current skill is reused (rebind),
-        refused actionably if it has none or if the pinned skill is gone."""
-        current = _resolve(self._db, args.name).row
-        params = args.params if args.params is not None else skill_params(current)
-        if args.skill is not None:
-            resolution = await resolve_skill(self._db, self._llm_client, args.skill)
-            if resolution.skill is None:
-                return unresolved_skill_result(args.skill, resolution)
-            return resolution.skill, params
-        if current.skill_name is None:
-            return ToolResult(message=_REBIND_NO_SKILL.format(name=current.name), success=False)
-        skill = self._db.skills.get(current.skill_name)
-        if skill is None:
-            return ToolResult(message=_SKILL_GONE.format(skill=current.skill_name), success=False)
-        return skill, params
 
     async def _description_embedding(self, args: CollectionUpdateArgs) -> list[float] | None:
         """Re-embed the routing anchor only when the description changes; else ``None``
@@ -2386,14 +1972,12 @@ class CollectionUpdateTool(MemoryTool):
         self,
         args: CollectionUpdateArgs,
         extraction_prompt: str | None,
-        skill_name: str | None,
-        skill_params: dict[str, str] | None,
         description_embedding: list[float] | None,
         schedule: Schedule | None,
         expires_at: datetime | None,
     ) -> MemoryRow:
-        """Thread the update through the store — the metadata fields, the computed
-        prompt / skill provenance / anchor, and the apply-time schedule (#1857).  A
+        """Thread the update through the store — the metadata fields, the prompt /
+        anchor, and the apply-time schedule (#1857).  A
         ``schedule`` REPLACES the stored one along with its run quota
         (``replace_schedule``); ``expires_at`` sets the end condition, and a call that
         stated an end condition meaning "forever" REMOVES it (#1944) — an invented expiry
@@ -2406,8 +1990,6 @@ class CollectionUpdateTool(MemoryTool):
             extraction_prompt=extraction_prompt,
             description_embedding=description_embedding,
             notify=args.notify,
-            skill_name=skill_name,
-            skill_params=skill_params,
             schedule=schedule.rule if schedule else None,
             max_runs=schedule.max_runs if schedule else None,
             expires_at=expires_at,
@@ -2475,34 +2057,21 @@ class MemoryMetadataTool(MemoryTool):
         # this exact-name lookup answers the full lifecycle question — who asked for
         # it, what run created it, whether it's live, and when it ends (#1566).
         lifecycle = _lifecycle_block(self._db, memory)
-        # The skill-provenance line (#1603) — which skill rendered this collection's
-        # recipe, and the params bound into it — sits with the description, ahead of the
-        # extraction prompt it produced.  Absent for a hand-authored / seeded
-        # collection (skill_name NULL), so that render is unchanged.
-        skill = _skill_provenance_line(memory)
-        # The routine's own parameters (#2287) — required/optional, description, and
-        # the value this job is bound to — right below the line naming the skill, so
-        # describing a job is one call, not a call plus a second lookup of the recipe's
-        # own parameters.  Absent for the same reasons the provenance line is (no
-        # routine, or one the registry no longer holds).
-        parameters = _skill_parameters_block(self._db, memory)
         # Lead with what the collection is FOR (description) and what it DOES (the
-        # recipe), because that is the substance; the operational settings
+        # prompt), because that is the substance; the operational settings
         # (cadence/timestamps) are secondary and go last.  Ordered this way — and with
         # the nudge below — so a model asked "what does this do?" walks through the
-        # recipe's steps instead of reciting the cadence/notify trivia (the failure the
+        # prompt instead of reciting the cadence/notify trivia (the failure the
         # #1530 legibility baseline surfaced).
         lines = [
             f"name: {memory.name}",
             f"type: {memory.type}",
             f"description: {memory.description}",
-            *([skill] if skill is not None else []),
-            *([parameters] if parameters is not None else []),
             "",
-            "What it does each cycle — the recipe below is the collection's actual "
-            "behaviour.  When explaining the collection, walk through THESE steps, not the "
+            "What it does each cycle — the prompt below is the collection's actual "
+            "behaviour.  When explaining the collection, read THIS, not the "
             "operational settings.",
-            f"steps: {memory.extraction_prompt or 'none'}",
+            f"prompt: {memory.extraction_prompt or 'none'}",
             "",
             "Operational settings (cadence — secondary):",
             f"notify: {memory.notify}",
@@ -2998,58 +2567,6 @@ class GetEventTool(Tool):
         return run_id or None
 
 
-class SkillGetTool(Tool):
-    """Read one skill's parameters and steps by name (#2305).
-
-    The right read when the skill's name is already known — from her state's
-    skills section, or a ``find`` hit — and what's needed is its full parameters
-    and steps, not just what it is for and what it needs.
-    """
-
-    name = "skill_get"
-    advises = ("find", "collection_configure")
-    description = (
-        "Read one skill by name: its parameters and its numbered steps. Pass "
-        "`skill`, the exact name as it renders in your state's skills section. "
-        "Use it when you know the skill's name and want its full parameters and "
-        "steps, not just what it's for and what it needs."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "skill": {
-                "type": "string",
-                "description": "The skill's exact name, as it renders in your state.",
-            }
-        },
-        "required": ["skill"],
-    }
-    args_model = SkillGetArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        skill = _named(arguments, "skill", "a skill")
-        if not result.success:
-            return f"You tried to look up {skill} but it didn't work:"
-        return f"You looked up {skill}:"
-
-    def __init__(self, db: Database, llm_client: LlmClient) -> None:
-        self._db = db
-        self._llm = llm_client
-
-    async def execute(self, **kwargs: Any) -> ToolResult:
-        # Plain ``Tool``, not ``MemoryTool``: a skill isn't a memory, and the
-        # not-found case needs the skill registry's own did-you-mean, not the
-        # memory registry's.
-        args = SkillGetArgs(**kwargs)
-        skill = self._db.skills.get(args.skill)
-        if skill is not None:
-            return ToolResult(message=render_skill_full(skill))
-        embedding = await embed_text(self._llm, args.skill)
-        suggestion = self._db.skills.nearest_skill_name(args.skill, embedding)
-        return ToolResult(message=render_skill_not_found(args.skill, suggestion), success=False)
-
-
 # ── Log writes ──────────────────────────────────────────────────────────────
 
 
@@ -3121,29 +2638,21 @@ _FIND_EMBED_FAILURE = (
 )
 
 # Zero matches is an honest empty, not an error — nothing of yours matched, and the
-# state at the top of every turn already lists every collection, log, and taught
-# routine (archived ones by name) so the model never dead-ends on a miss.  If the
-# query was a how-to/task lookup, the final clause signposts the task→skill→teach
-# dead end (#1650): no skill matched → ask the user to teach it once.
+# state at the top of every turn already lists every collection and log (archived
+# ones by name) so the model never dead-ends on a miss.
 _FIND_EMPTY = (
     'Nothing of yours matched "{query}" — the state at the top of this prompt '
-    "lists every collection, log, and taught skill you have (archived ones by "
-    "name). If you were looking for how to do a task and no skill matched, ask the "
-    "user to walk you through it once here in chat — you'll learn it as a new "
-    "skill automatically."
+    "lists every collection and log you have (archived ones by name)."
 )
 
 # The same empty read, worded for the case where the conversation logs DID match
 # something (#2289) — "nothing of yours matched" would contradict the messages
 # listed right below it, so this leads with "nothing stored matched" instead; the
-# rest of the guidance (the state header's list, the task→skill dead end) still
-# applies, since it's still true that nothing in the STORE matched.
+# rest of the guidance (the state header's list) still applies, since it's still
+# true that nothing in the STORE matched.
 _FIND_EMPTY_STORE = (
     'Nothing stored matched "{query}" — the state at the top of this prompt '
-    "lists every collection, log, and taught skill you have (archived ones by "
-    "name). If you were looking for how to do a task and no skill matched, ask the "
-    "user to walk you through it once here in chat — you'll learn it as a new "
-    "skill automatically."
+    "lists every collection and log you have (archived ones by name)."
 )
 
 # The conversation logs' own share of find's result (#2289), listed AFTER the store
@@ -3167,19 +2676,13 @@ _ENTRY_PREVIEW_CHARS = 120
 
 
 def _find_state(match: ResolvedMatch) -> str:
-    """The live/archived state word: a taught skill is always ``live``; a
-    collection or log is ``active`` or ``archived``."""
-    if match.kind == ResolvedKind.SKILL:
-        return "live"
+    """The live/archived state word: a collection or log is ``active`` or
+    ``archived``."""
     return "archived" if match.archived else "active"
 
 
 def _find_type_label(match: ResolvedMatch) -> str:
-    """The family noun a hit renders — a taught skill names the skill registry
-    (the sole skills store, #1624) so the skill-vs-collection distinction is
-    explicit."""
-    if match.kind == ResolvedKind.SKILL:
-        return "taught skill"
+    """The family noun a hit renders."""
     return match.kind.value  # "collection" / "log"
 
 
@@ -3189,13 +2692,6 @@ def _find_addressing(match: ResolvedMatch) -> str:
     addressing succeeds with no further guessing (the anchor discipline).  The
     model never derives this mapping — it copies the call verbatim."""
     name = match.name
-    if match.kind == ResolvedKind.SKILL:
-        return (
-            f"read it with skill_get(skill='{name}'); set it running with "
-            f"collection_configure(collection=<a name for the job>, skill='{name}', parameters=…); "
-            f"to change it, demonstrate it again in chat — I relearn it "
-            f"automatically, replacing this one"
-        )
     if match.kind == ResolvedKind.LOG:
         return f"read it with log_read('{name}')"
     if match.archived:
@@ -3247,8 +2743,7 @@ def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
 
 def _render_object_hit(index: int, match: ResolvedMatch) -> str:
     """One object hit: ``N. <name> — <state> <type>[: <scope>]`` then the
-    verbatim-usable addressing on the next line — a taught-skill hit's addressing
-    leads with ``skill_get``, the one way to read its steps (#2305)."""
+    verbatim-usable addressing on the next line."""
     head = f"{index}. {match.name} — {_find_state(match)} {_find_type_label(match)}"
     if match.label:
         head += f": {match.label}"
@@ -3307,9 +2802,8 @@ class FindTool(MemoryTool):
     exact name/key isn't ambient (#1558, #1640, #2289).
 
     Embedding search (plain cosine, the #1565 explicit-search path) over every
-    registry row's description anchor (collections + logs, ARCHIVED INCLUDED),
-    every taught skill's description anchor (the ``skill`` table, the sole skills
-    store — #1624), AND every stored entry's content/key anchors across the
+    registry row's description anchor (collections + logs, ARCHIVED INCLUDED), AND
+    every stored entry's content/key anchors across the
     non-archived collections + real logs (#1640), ranked best-first in ONE fused
     list.  An object hit returns its exact identity, family, live/archived state,
     AND how to address it — the specific tool + call shape that operates on it,
@@ -3353,14 +2847,13 @@ class FindTool(MemoryTool):
         "collection_unarchive",
         "log_read",
         "log_get",
-        "skill_get",
     )
     description = (
         "Find anything of your own by meaning, when you don't know its exact name — "
-        "a collection, a log, a taught skill, a single stored entry (a fact you "
+        "a collection, a log, a single stored entry (a fact you "
         "saved), or something the user or you said earlier in the conversation.  Pass "
         "`query`, a paraphrase of what it's about (\"what I said that product "
-        'costs").  Returns the closest matches, best first: a collection/log/skill '
+        'costs").  Returns the closest matches, best first: a collection/log '
         "with its exact name, whether it's active or archived, and the exact tool call "
         "that operates on it (archived included); a stored entry with the value it "
         "holds and how to read it back; a matching message from the conversation, "
@@ -3377,7 +2870,7 @@ class FindTool(MemoryTool):
                 "type": "string",
                 "description": (
                     "A paraphrase of what the thing is about — its meaning, not its exact "
-                    "name. Matches a collection, a log, a taught skill, a stored entry, or "
+                    "name. Matches a collection, a log, a stored entry, or "
                     "a past message from either side of the conversation."
                 ),
             },
@@ -3509,63 +3002,6 @@ class DoneTool(Tool):
 
 # ── Factory ─────────────────────────────────────────────────────────────────
 
-# The agent name passed to ``build_memory_tools`` purely to enumerate the collector's
-# tool NAMES — it only sets a tool's cursor identity, which is irrelevant to the names.
-_VOCAB_PROBE_AGENT = "collector"
-
-
-def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str]:
-    """The names of every tool a collector runs with — the surface an
-    ``extraction_prompt`` may legitimately call, AND the set the run-end skill
-    extractor filters captured steps to (#1668: a skill renders into a collector
-    prompt, so only collector-runnable steps belong in the recipe).
-
-    Discovered from the *real* assembly (``build_memory_tools`` + browse + choose,
-    i.e. ``Agent.get_tools`` for a collector) rather than a hardcoded list, so it can
-    never drift from what a collector actually runs — add a collector tool and it's
-    covered for free.  ``choose`` rides here so a demonstrated
-    ``choose`` step is capture-eligible for a skill (it is not orientation and not a
-    write — a read-shaped step) and an ``extraction_prompt`` naming it is not rejected
-    at authoring time.  ``include_lifecycle=False`` mirrors the collector's masked
-    surface (#1556): the registry-shape tools are absent from a cadence run, so an
-    ``extraction_prompt`` that names ``collection_configure`` /
-    archive / merge is rejected at authoring time rather than persisted into a prompt
-    the collector could never run.
-
-    ``send_message`` stays GONE from it (#1911): telling the user is no longer
-    something a cycle does, so a stored program naming it is refused at authoring time
-    exactly like a hallucinated tool — the structural version of the standing rule that
-    the chat agent maps "keep me posted" onto the ``notify`` flag and never onto a step.
-    ``done`` is back (#1916) and belongs here for the opposite reason: assembly injects
-    the terminal step, so it IS a call every collector program ends on and a prompt
-    naming it must not be refused.  ``BrowseTool`` is imported lazily to keep this
-    module's import surface flat.
-    """
-    from penny.tools.browse import BrowseTool
-    from penny.tools.choose import ChooseTool
-
-    memory_names = {
-        tool.name
-        for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT, include_lifecycle=False)
-    }
-    return frozenset(memory_names | {BrowseTool.name, ChooseTool.name, DoneTool.name})
-
-
-def _reject_unknown_extraction_tools(
-    db: Database, llm_client: LlmClient, extraction_prompt: str | None
-) -> ToolResult | None:
-    """A failed ``ToolResult`` if ``extraction_prompt`` names a tool no collector can
-    run (a hallucinated ``extract_text``), else ``None``.  A ``None`` prompt — an
-    update leaving it unchanged — is nothing to check.  Runs at ``collection_configure`` /
-    ``collection_configure`` time so a fictitious call is never persisted into a prompt the
-    collector would then fail to run every cycle."""
-    if extraction_prompt is None:
-        return None
-    surface = collector_tool_surface(db, llm_client)
-    if error := check_extraction_prompt_tools(extraction_prompt, surface):
-        return ToolResult(message=error, success=False)
-    return None
-
 
 def build_memory_tools(
     db: Database,
@@ -3574,7 +3010,6 @@ def build_memory_tools(
     scope: str | None = None,
     run_id: str | None = None,
     include_lifecycle: bool = True,
-    round_framing: RoundFraming | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -3603,14 +3038,15 @@ def build_memory_tools(
 
     ``memory_get`` is the genuinely shape-agnostic read — it works on either
     shape.  ``find`` (resolve-by-meaning, #1558/#1640/#2289) spans the whole
-    registry — collections, logs, taught skills, and stored entries — plus the two
+    registry — collections, logs, and stored entries — plus the two
     conversation logs, and returns each hit's exact identity fused with how to
     address it, the guess-free fallback that every not-found error points at.
 
     There is no ``done`` and no ``send_message`` on any surface any more (#1911).
-    A chat turn ends by replying, a collector cycle ends when its program's calls are
-    covered, and an autonomous message is the framework's to write and queue after that
-    — so neither loop control nor emission is a capability the model reaches for.
+    A chat turn ends by replying, a collector cycle ends with ``done()`` or a
+    write-gate STOP, and an autonomous message is the framework's to write and queue
+    after that — so neither loop control nor emission is a capability the model
+    reaches for.
 
     ``run_id`` is the id of the run that built the surface — the chat turn's run,
     or the collector cycle's — passed as an explicit parameter, never ambient state
@@ -3623,12 +3059,6 @@ def build_memory_tools(
     NULL.  (The spawning ``source_message_id`` is linked afterward by the channel,
     since the message id isn't known until the run returns.)
 
-    ``round_framing`` is the round this turn CONFIGURES (#1869), threaded down the same
-    way ``run_id`` is: with one, ``collection_configure`` supplies the round's container, its
-    routine and its bound values itself, so the turn's call carries only the job's terms.
-    ``None`` — every collector cycle, every unframed turn — leaves the surface byte-
-    identical to what it was.
-
     ``include_lifecycle`` gates the registry-shape tier — ``collection_configure`` /
     ``collection_configure`` / ``collection_archive`` /
     ``collection_unarchive`` / ``log_create``.  Chat-style agents get it (the user
@@ -3638,6 +3068,17 @@ def build_memory_tools(
     matter what its extraction_prompt says.  The declaration lives on the agent
     (``Agent._include_lifecycle_tools``, overridden by ``Collector``), not as a
     branch here.
+
+    ``find`` stays on every surface, lifecycle or not: the did-you-mean fallback on
+    every other read/write tool here points at it (#1674), so an agent without it
+    would have those tools dead-end into a call it cannot make.  The one coherence
+    gap this opens — a `find` hit on a lifecycle object addresses it with a
+    lifecycle verb (``collection_configure``/``collection_archive``/
+    ``collection_unarchive``) a collector surface does not carry — is a known,
+    narrow exception: unlike every other tool here, `find`'s OWN closure cannot be
+    made to fit inside a collector cycle without either losing the did-you-mean
+    target every other tool depends on, or inventing a surface-aware addressing
+    `find` has never needed before.
     """
     reads: list[Tool] = [
         CollectionListTool(db),
@@ -3650,10 +3091,9 @@ def build_memory_tools(
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
         FindTool(db, llm_client),
-        SkillGetTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
-        CollectionSetTool(db, llm_client, run_id=run_id, round_framing=round_framing),
+        CollectionSetTool(db, llm_client, run_id=run_id),
         CollectionArchiveTool(db, run_id=run_id),
         CollectionUnarchiveTool(db, run_id=run_id),
         LogCreateTool(db, llm_client),

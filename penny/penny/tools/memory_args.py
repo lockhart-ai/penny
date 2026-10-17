@@ -80,7 +80,7 @@ ReadCount = Annotated[int | None, AfterValidator(_reject_nonpositive_count)]
 # no entry here is a programming error, not a case to absorb behind a vague default.
 OPTIONAL_ARG_FORMS: dict[str, str] = {
     "description": "what the collection is for, in the user's own words",
-    "skill": "the name of a learned skill (or a paraphrase of what it does)",
+    "prompt": "the instructions this job's cycles follow, as free text",
     # NOT a second copy of the grammar — ``_SCHEDULE_TEACHING`` (in
     # collection_instantiation) is where that is authored, and a garbled schedule gets
     # it verbatim.  A BLANK one needs the one shape that makes the fix obvious, so this
@@ -122,13 +122,6 @@ def _reject_blank_optional(value: object, info: ValidationInfo) -> object:
 # rejection above, never silently read as "omitted".
 OptionalText = Annotated[str | None, BeforeValidator(_reject_blank_optional)]
 
-# An optional skill name/paraphrase (#1620): dashes normalised first (a skill name may be
-# slug-ish), then the same blank refusal — so ``skill=""`` is corrected rather than
-# quietly taking the skill-less path.
-OptionalSkill = Annotated[
-    str | None, BeforeValidator(_reject_blank_optional), BeforeValidator(_normalize_dashes)
-]
-
 # `find`'s own blank-`memory` refusal (#2289) — kept SEPARATE from
 # `_reject_blank_optional`/`OPTIONAL_ARG_FORMS` (the `collection_configure` surface's
 # shared table, whose own test asserts it is total over that ONE tool's fields):
@@ -153,42 +146,6 @@ def _reject_blank_memory(value: object) -> object:
 OptionalMemoryName = Annotated[
     str | None, BeforeValidator(_reject_blank_memory), BeforeValidator(_normalize_dashes)
 ]
-
-
-def _coerce_single_element_list(value: object) -> object:
-    """Unwrap a single-element list bound to a skill parameter down to its element (#1666).
-
-    A skill parameter always fills exactly ONE string leaf of a step's arguments, and that
-    leaf frequently sits INSIDE a list: a browse step's ``queries[0]`` (distilled from
-    ``browse(queries=[<url>])``) becomes a parameter.  The model, following the browse
-    tool's real argument shape, then routinely binds that parameter with a one-element
-    LIST — ``parameters={"url": ["https://…"]}`` — rather than the bare string the leaf
-    holds.  The ``dict[str, str]`` param type refuses it (``parameters.url: Input should
-    be a valid string``), punishing the model for matching the tool's type.
-
-    Since the bound value is a single leaf, unwrap the one element deterministically: the
-    render substitutes it straight back into the list position, so a list-bound param
-    renders byte-identically to the string-bound form (only the params-value TYPE
-    validation was wrong).  A multi-element list is a genuine over-binding — a parameter
-    takes exactly one value — so it stays a refusal, made actionable: the error ``loc``
-    names the offending parameter (``parameters.<parameter>``) and the message names the
-    count and the expected one-value shape.
-    """
-    if not isinstance(value, list):
-        return value
-    if len(value) == 1:
-        return value[0]
-    raise ValueError(
-        f"a skill parameter binds one value, but got a list of {len(value)} — pass a "
-        "single value per parameter (a one-item list is unwrapped for you; more than one "
-        "isn't). Expected shape: parameters={'<parameter>': '<value>'}"
-    )
-
-
-# One skill-param binding (#1666): a single-element list is unwrapped to its element
-# (the model mirrors the browse tool's list-shaped ``queries`` arg), a multi-element list
-# is an actionable refusal, a scalar passes straight through to the ``str`` core rule.
-SkillParamValue = Annotated[str, BeforeValidator(_coerce_single_element_list)]
 
 
 # ── Annotated validator types ─────────────────────────────────────────────────
@@ -230,31 +187,31 @@ NonBlankLogContent = Annotated[str, AfterValidator(require_non_blank_log_content
 
 
 class CollectionCreateArgs(ToolArgs):
-    """Args for ``collection_configure`` — the skill-instantiation front door (#1591),
-    or a skill-less INERT container (#1629).
+    """Args for ``collection_configure`` — the job front door, or a PROMPT-LESS
+    INERT container (#2455 naive baseline).
 
-    A collection is storage plus an OPTIONAL job.  With a ``skill`` it INSTANTIATES
-    that skill (resolved by name or meaning) — its steps render into the collection's
-    ``extraction_prompt``, ``params`` binds the skill's parameters, and a
-    ``schedule`` schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only
-    — no ``extraction_prompt``, no schedule, no ``notify`` — so nothing runs against it
-    until a skill is attached later via ``collection_configure`` (the two-step teach
-    bootstrap).  A job-shaped arg (a ``schedule`` / ``notify`` / ``expires_at``) alongside
-    a skill-less create is refused, since an inert container has no job to describe.
+    A collection is storage plus an OPTIONAL job.  With a ``prompt`` the collection
+    is a JOB: the free text becomes the collector's ``extraction_prompt`` verbatim —
+    what the job's cycles follow each time they run — and a ``schedule`` schedules
+    it.  WITHOUT a ``prompt`` the collection is INERT: storage only — no
+    ``extraction_prompt``, no schedule, no ``notify`` — so nothing runs against it
+    until a prompt is attached later via ``collection_configure``.  A job-shaped arg
+    (a ``schedule`` / ``notify`` / ``expires_at``) alongside a prompt-less create is
+    refused, since an inert container has no job to describe.
 
     ``description`` (required, non-blank) is what the collection is for, in the user's
     own words — the goal it serves and the collection's routing/dedup meaning anchor.
     ``name`` is the unique slug.
 
     **A blank string on an optional arg is REFUSED, not read as "not set"** (#1776,
-    superseding #1646's coercion).  ``skill`` / ``schedule`` / ``expires_at`` reject
-    ``""`` at the arg gate (``OptionalSkill`` / ``OptionalText``) with a teaching error
+    superseding #1646's coercion).  ``prompt`` / ``schedule`` / ``expires_at`` reject
+    ``""`` at the arg gate (``OptionalText``) with a teaching error
     naming the field and its accepted form, BEFORE any routing or parsing — so a model
     that fills an optional field with ``""`` (a chronic gpt-oss habit) is corrected
     rather than silently given the omitted behaviour, which turned a half-understood
     request into a half-built mechanism nothing marked as such.
 
-    The **schedule** (skill path only) is ONE argument with ONE grammar (#1857,
+    The **schedule** (job path only) is ONE argument with ONE grammar (#1857,
     ``parse_schedule``): an RRULE line such as ``"FREQ=HOURLY"`` or
     ``"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9"``, optionally preceded by a
     ``DTSTART:`` line saying when it starts.  Its ``COUNT=`` / ``UNTIL=`` parts are
@@ -268,14 +225,10 @@ class CollectionCreateArgs(ToolArgs):
 
     name: MemoryName
     description: NonBlankDescription
-    # The skill to instantiate; OMITTED yields an INERT storage-only collection — the
-    # first half of the two-step teach bootstrap (#1629).  A blank ``""`` is refused,
-    # never read as omitted (#1776).  OptionalSkill == update's skill.
-    skill: OptionalSkill = None
-    # Bindings for the skill's parameters ({url}, {field}, …) → values.  A value
-    # passed as a single-element list is unwrapped to its element (#1666,
-    # SkillParamValue) — the model mirrors the browse tool's list-shaped queries arg.
-    params: dict[str, SkillParamValue] = {}
+    # The job's instructions, written as free text by the model; OMITTED yields an
+    # INERT storage-only collection (#2455).  A blank ``""`` is refused, never read as
+    # omitted (#1776).  OptionalText == update's prompt.
+    prompt: OptionalText = None
     # Schedule — one arg, one grammar (parse_schedule, #1857): an RRULE line, with an
     # optional leading DTSTART line.  Its render (render_schedule_clause) IS this input
     # form, verbatim.  OptionalText: a blank ``""`` is refused at the gate (#1776)
@@ -323,18 +276,17 @@ class CollectionSetArgs(ToolArgs):
     create/update cases").
 
     ``collection`` missing → the collection comes into being with this config (the
-    create path, all its validation intact: birth idempotency-dedup unless
-    skill resolution, the inert/job-arg refusal).  ``collection``
-    exists → only the fields explicitly set change (the update path: adopt /
-    rebind / swap / refresh re-render, atomic schedule replace, raw
-    ``extraction_prompt`` edit).  The model never reasons about which case it is.
+    create path, all its validation intact: birth idempotency-dedup, the
+    inert/job-arg refusal).  ``collection``
+    exists → only the fields explicitly set change (the update path: adopt a
+    prompt, edit it, atomic schedule replace).  The model never reasons about
+    which case it is.
 
     ``description`` is required the FIRST time (it's the meaning anchor);
     optional after.  ``notify`` is tri-state: ``None`` = leave unchanged (birth
-    default: silent).  There is NO ``extraction_prompt`` argument anywhere on the
-    model surface: a collection's routine is only ever a RENDER of a demonstrated
-    skill (#1658) — a wrong routine is fixed by re-teaching, never by editing
-    prompt text.
+    default: silent).  ``prompt`` IS the model surface for a job's instructions
+    (#2455 naive baseline) — it is written straight into the collection's
+    ``extraction_prompt``, verbatim; a wrong prompt is fixed by passing a new one.
 
     Every optional string here refuses a blank (#1776): omitting an argument and
     passing ``""`` for it are different calls, and only the first means "leave this
@@ -342,8 +294,7 @@ class CollectionSetArgs(ToolArgs):
 
     collection: MemoryName
     description: OptionalText = None
-    skill: OptionalSkill = None
-    parameters: dict[str, SkillParamValue] | None = None
+    prompt: OptionalText = None
     schedule: OptionalText = None
     expires_at: OptionalText = None
     notify: bool | None = None
@@ -353,39 +304,28 @@ class CollectionUpdateArgs(ToolArgs):
     """Update a collection's metadata.
 
     All fields after ``name`` are optional — only the ones explicitly set
-    are applied.  A blank string is NOT "not set" (#1776): the ``OptionalText`` /
-    ``OptionalSkill`` fields refuse ``""`` at the arg gate, naming the field and its
+    are applied.  A blank string is NOT "not set" (#1776): the ``OptionalText``
+    fields refuse ``""`` at the arg gate, naming the field and its
     accepted form, so a field the model passes empty is corrected rather than read as
     an omission it never expressed.
 
-    ``skill`` / ``params`` are the re-render axis (#1620): supplying either RE-RENDERS
-    the ``extraction_prompt`` from a skill's current steps and re-stamps the
-    collection's skill provenance — ``skill`` names a skill (by name or meaning, the
-    #1591 resolution union) to refresh / swap / adopt; ``params`` rebinds its parameters.
-    Omitting both leaves the prompt untouched (a plain metadata edit).  ``params`` is
-    ``None`` (reuse the collection's current bindings) vs. a dict (rebind to these).
-    There is NO ``extraction_prompt`` argument: the #1529 raw-edit escape hatch went with
-    the authoring channel (#1658/#1631), so re-teaching the skill is the only way a
-    routine changes.  (This paragraph described that argument long after it was removed,
-    and the #1919 audit read the description rather than the fields — a stale docstring on
-    an arg model is a claim about the model surface, so it is corrected here.)
+    ``prompt`` is the job's instructions axis (#2455 naive baseline): supplying it
+    REPLACES the collection's ``extraction_prompt`` verbatim with the new free text.
+    Omitting it leaves the prompt untouched (a plain metadata edit).
 
     The **schedule** is the apply-time job axis — the SAME one-arg RRULE
     ``collection_configure`` accepts (``parse_schedule``, #1857).  Present → the schedule is
     replaced atomically, run quota and all, so a new rule never inherits the old rule's
     ``COUNT=``; absent → the schedule is left untouched.  So a collection's schedule is
-    updatable post-create and an inert collection's job is set when a skill is adopted.
+    updatable post-create and an inert collection's job is set when a prompt is adopted.
     ``expires_at`` is the end condition.
     """
 
     name: MemoryName
     description: OptionalText = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
-    # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
-    skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is
-    # Rebind the skill's parameters; None = reuse current.  A single-element list value is
-    # unwrapped to its element (#1666, SkillParamValue), mirroring create.
-    params: dict[str, SkillParamValue] | None = None
+    # Replace the stored extraction_prompt verbatim; None = leave prompt as-is (#2455).
+    prompt: OptionalText = None
     # Schedule — one arg, one grammar (parse_schedule, #1857), mirroring collection_configure.
     # Present → replaces the whole schedule atomically; OMITTED → schedule untouched (a
     # blank is refused, #1776).
@@ -464,13 +404,6 @@ class GetEventArgs(ToolArgs):
     tool's enumerated-cases dispatch, which names what IS addressable on a miss."""
 
     run: str
-
-
-class SkillGetArgs(ToolArgs):
-    """Read one skill by name (#2305) — ``skill`` is the exact name as it renders
-    in her state's skills section."""
-
-    skill: str
 
 
 # ── Collection writes ───────────────────────────────────────────────────────

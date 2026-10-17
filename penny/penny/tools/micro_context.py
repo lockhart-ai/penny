@@ -54,7 +54,6 @@ import re
 import uuid
 from collections.abc import Callable, Sequence
 from enum import StrEnum
-from functools import partial
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -1068,129 +1067,6 @@ class MicroContext:
             return MicroContextResult(outcome=_EXTRACT_FAILURES[drawn])
         return _extraction_result(drawn)
 
-    async def label_skill(
-        self,
-        content: str,
-        offered: Sequence[str],
-        *,
-        run_target: str | None = None,
-        parent_run_id: str | None = None,
-    ) -> SkillLabels | None:
-        """Name EVERY spot in a demonstrated routine (#1828) — the second customer of
-        this machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
-        with the labelling system prompt, its own ledger attribution, its own declared
-        shape (:data:`SKILL_NAMING_SHAPE`) and the bare-content user turn (the rendered
-        document IS the whole ask, so there is no instruction to wrap it in), plus the
-        runtime constraint a static shape can't carry: the draw must COVER ``offered``,
-        the current names of the spots the content listed.
-
-        Returns the labels — one per offered spot, guaranteed — or ``None`` when the
-        draw failed (poison exhausted, or coverage still incomplete after the reroll).
-        The caller then keeps every spot's arg-derived name, so run-end extraction
-        NEVER blocks on the rewrite."""
-        drawn = await self._valid_draw(
-            content,
-            "",
-            run_target,
-            shape=SKILL_NAMING_SHAPE,
-            accepts=partial(_labels_every_spot, offered=offered),
-            system_prompt=SKILL_NAMING_SYSTEM_PROMPT,
-            agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
-            prompt_type=PennyConstants.SKILL_NAMING_PROMPT_TYPE,
-            user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
-        )
-        if isinstance(drawn, DrawFailure):
-            return None
-        return _leaf_labels(drawn)
-
-    async def frame_skill(
-        self,
-        content: str,
-        *,
-        run_target: str | None = None,
-        parent_run_id: str | None = None,
-    ) -> SkillSignature | None:
-        """Write a routine's public INTERFACE from the user's ask alone (#1830) — the
-        FOURTH customer of this machinery.  Rides the SAME ``_valid_draw`` step as the
-        other three against its own declared shape (:data:`SKILL_FRAME_SHAPE`) and the
-        bare-content user turn (the rendered ask IS the whole document), plus the
-        runtime constraint a static shape cannot carry: the draw must mint at least one
-        well-formed parameter, carry no broken PARAMETER line, never name the same
-        parameter twice, and — since #1868 — give each minted parameter exactly one
-        VALUE that is a literal span of what the user said.
-
-        It takes NO offered set — that is the point.  ``content`` is the user's own
-        turns and nothing else, so the parameters are minted from the ask rather than
-        sorted out of a list somebody else produced (#1824).  That is also why the span
-        check reads ``content`` itself rather than a second argument: for this customer
-        the document IS the user's words, so there is nothing else in it a value could be
-        copied out of (the binder needs its ``spoken`` separately because its document
-        renders a signature too).
-
-        ``None`` on any failure — at learn entry that means no container is built and the
-        round runs unframed, and at run end the caller falls back to the deterministic
-        slug with no parameters.  Honest degradation either way, rather than a
-        half-written interface."""
-        drawn = await self._valid_draw(
-            content,
-            "",
-            run_target,
-            shape=SKILL_FRAME_SHAPE,
-            accepts=partial(_mints_a_usable_signature, spoken=content),
-            system_prompt=SKILL_FRAME_SYSTEM_PROMPT,
-            agent_name=PennyConstants.SKILL_FRAME_AGENT_NAME,
-            prompt_type=PennyConstants.SKILL_FRAME_PROMPT_TYPE,
-            user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
-        )
-        if isinstance(drawn, DrawFailure):
-            return None
-        return _skill_signature(drawn)
-
-    async def bind_skill(
-        self,
-        content: str,
-        declared: Sequence[str],
-        spoken: str,
-        *,
-        run_target: str | None = None,
-        parent_run_id: str | None = None,
-    ) -> SkillBinding | None:
-        """Fill an EXISTING routine's declared parameters from the user's own words
-        (#1867) — the FIFTH customer of this machinery.  Rides the SAME ``_valid_draw``
-        step as the other four against its own declared shape
-        (:data:`SKILL_BIND_SHAPE`) and the bare-content user turn (the rendered document
-        IS the whole ask), plus the runtime constraints a static shape cannot carry.
-
-        ``content`` is the rendered document — the signature AND the user's turns.
-        ``spoken`` is those turns ALONE, and it is a separate argument on purpose: a
-        value is only evidence when the USER said it, so a phrase copied out of a
-        parameter's own description — which the same document renders — is exactly the
-        confabulation the span check exists to catch.  ``declared`` names the parameters
-        the signature declares, in declared order; string-typed like ``classify_state``'s
-        candidates, so this module knows parameter names and never the skill model.
-
-        Returns :class:`BoundValues` when every declared parameter was filled,
-        :class:`MissingParameters` when the words supply nothing for one or more of them
-        (an enumerated outcome, not a failure), or ``None`` when no usable draw came back
-        — the honest escape the other run-end customers keep."""
-        drawn = await self._valid_draw(
-            content,
-            "",
-            run_target,
-            shape=SKILL_BIND_SHAPE,
-            accepts=partial(_fills_the_declared_signature, declared=declared, spoken=spoken),
-            system_prompt=BIND_SKILL_SYSTEM_PROMPT,
-            agent_name=PennyConstants.SKILL_BIND_AGENT_NAME,
-            prompt_type=PennyConstants.SKILL_BIND_PROMPT_TYPE,
-            user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
-        )
-        if isinstance(drawn, DrawFailure):
-            return None
-        return _skill_binding(drawn, declared)
-
     async def compose_notification(
         self,
         content: str,
@@ -1229,51 +1105,6 @@ class MicroContext:
         if isinstance(drawn, DrawFailure):
             return None
         return drawn.field(MESSAGE_TAG, DrawField.MESSAGE)
-
-    async def classify_state(
-        self,
-        content: str,
-        allowed: Sequence[str],
-        *,
-        skill_gated_states: Sequence[str] = (),
-        skills: Sequence[str] = (),
-        run_target: str | None = None,
-        parent_run_id: str | None = None,
-    ) -> StateDraw:
-        """Pick one state from ``allowed`` for a rendered conversation slice
-        (#1706) — the third customer of this machinery.  Rides the SAME
-        poison-screen + reroll draw loop as ``extract``, with the dispatch system
-        prompt, its own ledger attribution and its own declared shape
-        (:data:`STATE_CLASSIFIER_SHAPE`), plus the MEMBERSHIP constraint a static
-        shape can't carry: a drawn state outside ``allowed`` is a contract violation
-        exactly like an untagged draw — re-drawn on the unchanged context for the
-        whole budget, then an honest ``INVALID`` the machine reads as no-transition.
-
-        ``skill_gated_states`` names the states whose draw must ALSO carry a
-        ``SKILL:`` line naming a member of ``skills`` — drawing one with a
-        missing or out-of-set skill is the same contract violation, so a gated
-        decision always binds an actionable skill.  A stray ``SKILL:`` line on an
-        ungated draw is ignored (the decision stands; the line binds nothing)."""
-        drawn = await self._valid_draw(
-            content,
-            "",
-            run_target,
-            shape=STATE_CLASSIFIER_SHAPE,
-            accepts=partial(
-                _state_is_bound,
-                allowed=allowed,
-                skill_gated_states=skill_gated_states,
-                skills=skills,
-            ),
-            system_prompt=STATE_CLASSIFIER_SYSTEM_PROMPT,
-            agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
-            prompt_type=PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE,
-            user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
-        )
-        if isinstance(drawn, DrawFailure):
-            return StateDraw(outcome=_STATE_FAILURES[drawn])
-        return _state_draw(drawn, skill_gated_states)
 
     async def _valid_draw(
         self,

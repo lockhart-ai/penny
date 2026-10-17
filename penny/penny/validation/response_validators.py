@@ -359,39 +359,9 @@ class _RecordNarrationValidator(ABC):
         """What the log line says this run is narrating."""
 
 
-class SkillNarrationValidator(_RecordNarrationValidator):
-    """A chat run that just AUTO-EXTRACTED a skill narrates it in the same turn
-    (#1658, SAID==DID) — from the render (its name, what it's for, what it needs)
-    rather than from memory."""
-
-    def _frame(self, ctx: LoopContext) -> str | None:
-        return ctx.learned_skill_frame
-
-    def _narrating(self) -> str:
-        return "an auto-extracted skill"
-
-
-class AppliedConfigurationValidator(_RecordNarrationValidator):
-    """A chat run that just CONFIGURED the round's routine narrates it in the same turn
-    (#1869) — the applied-configuration sibling of the skill-learned frame above.
-
-    It exists because that turn no longer supplies the routine or the values it is
-    pointed at: the round settled both and the framework supplied them at the call, so
-    what is running is a record to READ.  The frame carries that record — cadence, end
-    condition, notify, what it watches — and a turn narrating from anything else would be
-    stating a configuration it did not make."""
-
-    def _frame(self, ctx: LoopContext) -> str | None:
-        return ctx.applied_configuration_frame
-
-    def _narrating(self) -> str:
-        return "the configuration this turn applied"
-
-
 class WritesLandedValidator(_RecordNarrationValidator):
     """A chat run that wrote entries, or tried to, has its reply written after what
-    actually landed (#1946/#2185) — the third sibling of the two frames above, and the
-    plainest of them.
+    actually landed (#1946/#2185).
 
     A turn's own account of its writes is a count of what it ATTEMPTED: a draw the reroll
     guard discarded never happened, a write the change-gate refused never landed, and

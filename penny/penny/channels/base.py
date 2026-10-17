@@ -17,7 +17,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from penny.agents.models import ControllerResponse, ToolCallRecord, account_of
 from penny.config import Config
 from penny.constants import PennyConstants, PermissionResolution
-from penny.conversation_machine import ConversationMachine, RoundFraming, TurnEntry
 from penny.database.media_store import ImageSelectionPolicy
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
@@ -108,15 +107,10 @@ class MessageChannel(ABC):
         self._scheduler: BackgroundScheduler | None = None
         self._config: Config | None = None
         self._embedding_model_client: LlmClient | None = None
-        self._conversation_machine: ConversationMachine | None = None
 
     def set_scheduler(self, scheduler: BackgroundScheduler) -> None:
         """Set the scheduler for message notifications."""
         self._scheduler = scheduler
-
-    def set_conversation_machine(self, machine: ConversationMachine) -> None:
-        """Set the conversation state machine classified at the top of each turn."""
-        self._conversation_machine = machine
 
     def set_command_context(
         self,
@@ -699,50 +693,6 @@ class MessageChannel(ABC):
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
-    async def _classify_state(self, message: IncomingMessage, run_id: str) -> TurnEntry | None:
-        """Move the conversation state machine for this incoming message (#1706).
-
-        Runs BEFORE the turn — the machine's whole purpose is that the turn is
-        entered with its state already decided.  The message has no id yet (it
-        is logged after the run, so it never doubles into that turn's recall),
-        so the moves are linked to it afterwards by ``link_message``.
-
-        Returns what the turn is entered WITH — the landed state, and the round's partial
-        binding whenever the move landed in request (#1885/#1894), drawn by this turn's
-        binder or read back off the parked round.  ``None`` when nothing decided the turn,
-        which is the idle default the agent already composes for.
-
-        A classifier failure must never cost the user their turn: the machine is
-        fail → stay by construction, so a failed draw already leaves it where it
-        was, and an unexpected error here is logged and swallowed rather than
-        dropping a reply Penny would otherwise have sent."""
-        if self._conversation_machine is None:
-            return None
-        try:
-            entry = await self._conversation_machine.advance(
-                message.content,
-                penny_last_turn=self._db.messages.last_outgoing_content(),
-                run_id=run_id,
-                run_target=self._message_agent.name,
-            )
-        except Exception as exc:
-            logger.error("Conversation state classification failed: %s", exc)
-            return None
-        logger.info("Conversation state: %s (%s)", entry.state.value, entry.decision.outcome.value)
-        return entry
-
-    def _round_framing(self) -> RoundFraming | None:
-        """The round's framing as the turn begins (#1868) — what the machine settled on
-        entering learn: the routine being taught and the container built for it.
-
-        A plain read off the machine, taken after ``_classify_state`` has moved it, so the
-        turn is entered with its framing decided exactly as it is entered with its state
-        decided.  ``None`` whenever the round has none — no machine wired, a state that
-        does not frame, or an entry draw that failed."""
-        if self._conversation_machine is None:
-            return None
-        return self._conversation_machine.framing()
-
     async def _run_message_through_agent(
         self,
         message: IncomingMessage,
@@ -768,7 +718,6 @@ class MessageChannel(ABC):
         parent_id: int | None = None
         if message.quoted_text:
             parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
-        entered = await self._classify_state(message, run_id)
         response = await self._message_agent.handle(
             content=message.content,
             sender=user_sender,
@@ -776,9 +725,6 @@ class MessageChannel(ABC):
             page_context=message.page_context,
             quoted_text=message.quoted_text,
             run_id=run_id,
-            state=entered.state if entered is not None else None,
-            framing=self._round_framing(),
-            shortfall=entered.shortfall if entered is not None else None,
             **self._make_handle_kwargs(message, progress),
         )
         try:
@@ -822,8 +768,6 @@ class MessageChannel(ABC):
         # message has an id (#1566) — matched by the unique per-turn run id.
         if incoming_id is not None:
             self._db.memories.link_source_message(run_id, incoming_id)
-            if self._conversation_machine is not None:
-                self._conversation_machine.link_message(run_id, incoming_id)
         await self._deliver_agent_response(
             message, user_sender, response, incoming_id, progress, self._message_agent.name
         )

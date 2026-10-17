@@ -24,7 +24,6 @@ from penny.channels.signal.channel import SignalChannel
 from penny.commands import create_command_registry
 from penny.config import Config, setup_logging
 from penny.constants import ChannelType, PennyConstants
-from penny.conversation_machine import ConversationMachine, StateClassifier
 from penny.database import Database
 from penny.database.migrate import migrate
 from penny.database.models import MemoryEntry
@@ -39,7 +38,6 @@ from penny.plugins.zoho.mail_client import ZohoClient
 from penny.plugins.zoho.mail_models import ZohoCredentials
 from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
-from penny.round_framing import RoundFramer
 from penny.scheduler import (
     BackgroundScheduler,
     PeriodicSchedule,
@@ -289,20 +287,8 @@ class Penny:
             db=self.db,
             command_registry=self.command_registry,
         )
-        # The conversation state machine (#1706) is classified at the top of every
-        # incoming turn, before the chat agent runs — the turn is entered with its
-        # state already decided.  Wired onto the channel like the scheduler (the
-        # manager forwards it to every concrete channel, which is where a
-        # receive→reply loop actually lives).
-        # A move that lands in learn also FRAMES the round and builds the container it
-        # runs into (#1868), which is why the machine holds a framer: the turn is entered
-        # with its destination decided, not just its state.
-        self.conversation_machine = ConversationMachine(
-            self.db,
-            StateClassifier(self.model_client),
-            RoundFramer(self.db, self.model_client, self.embedding_model_client),
-        )
-        self.channel.set_conversation_machine(self.conversation_machine)
+        # No conversation machine (#2455 naive baseline): every turn runs the same
+        # chat prompt, so there is nothing to classify before the chat agent runs.
         self.chat_agent.set_channel(self.channel)
         self.send_queue_drainer.set_channel(self.channel)
         # Collector needs the channel so a cycle can reach the browser addon; the
