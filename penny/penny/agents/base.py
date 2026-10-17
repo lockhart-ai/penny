@@ -29,6 +29,7 @@ from penny.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
 from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
+from penny.llm.run_context import run_scope, tool_call_scope
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import (
@@ -305,6 +306,12 @@ class Agent:
         (memory + browse), and the framework resolves the primary recipient itself
         when a finished cycle has something to say.  No per-agent user binding is
         plumbed through here.
+
+        This is the base, generic background-cycle entry — a top-level run starter
+        (#2458), so it opens the ambient run scope here.  ``Collector`` (the only
+        live ``BackgroundAgent``) overrides ``execute`` with its own
+        ``_execute_cycle``, which opens its own scope around the notifier too; this
+        one stays scoped defensively for any future subclass that doesn't.
         """
         run_id = uuid.uuid4().hex
         progress: ProgressCallback | None = None
@@ -312,7 +319,8 @@ class Agent:
         if self._progress_factory is not None:
             progress, cleanup = self._progress_factory()
         try:
-            result = await self._run_cycle(run_id, on_progress=progress)
+            with run_scope(run_id):
+                result = await self._run_cycle(run_id, on_progress=progress)
             self.settle_reads(result.reads, self._consumed_input(result.success, result.response))
             return result.success
         finally:
@@ -443,22 +451,31 @@ class Agent:
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
     ) -> ControllerResponse:
-        """Run the agentic loop — prompt in, response out."""
+        """Run the agentic loop — prompt in, response out.
+
+        A top-level run starter (#2458) when called with no ``run_id`` — opens the
+        ambient scope around the whole loop. Every live caller already opens its
+        own scope with this same id first (the channel, for a chat turn; a
+        collector cycle), so this is a no-op there (``run_scope`` collapses when
+        the id is already ambient) and only does real work for a direct caller
+        that supplies none of its own.
+        """
         if run_id is None:
             run_id = uuid.uuid4().hex
         self._tool_result_text = []
         messages = self._build_messages(prompt, history, system_prompt)
         tools = self._tool_registry.get_ollama_tools()
-        return await self._run_agentic_loop(
-            messages,
-            tools,
-            max_steps,
-            on_tool_start,
-            on_progress,
-            run_id,
-            prompt_type,
-            progress_scope,
-        )
+        with run_scope(run_id):
+            return await self._run_agentic_loop(
+                messages,
+                tools,
+                max_steps,
+                on_tool_start,
+                on_progress,
+                run_id,
+                prompt_type,
+                progress_scope,
+            )
 
     # ── Agentic loop internals ───────────────────────────────────────────
 
@@ -1418,7 +1435,7 @@ class Agent:
             include_lifecycle=self._include_lifecycle_tools(),
             round_framing=self._configuring_round(),
         )
-        tools.append(self._build_browse_tool(author=self.name, run_id=run_id))
+        tools.append(self._build_browse_tool(author=self.name))
         # ``choose`` — the fair random picker — is on every agent surface, like
         # browse: chat dispatches it from the user's "pick one at random", and a
         # collector needs it at runtime so a demonstrated ``choose`` step captured
@@ -1446,13 +1463,12 @@ class Agent:
         """
         return True
 
-    def _build_browse_tool(self, author: str, run_id: str | None = None) -> BrowseTool:
+    def _build_browse_tool(self, author: str) -> BrowseTool:
         """Build a fresh BrowseTool from config, updating self._browse_tool.
 
-        ``run_id`` (#2355 part A) is this run's own id — threaded to the tool so
-        any extraction draw it makes links back to the run on whose behalf it was
-        made; constant for the whole run (this tool is rebuilt fresh each turn/
-        cycle, so there is nothing to race unlike the per-CALL tool_call_id)."""
+        Any extraction draw it makes links back to the enclosing run (and, when
+        dispatched as a tool call, that call) purely from ambient state (#2458) —
+        nothing is threaded through the tool's own construction any more."""
         max_calls = int(self.config.runtime.MAX_QUERIES)
         search_url = str(self.config.runtime.SEARCH_URL)
         tool = BrowseTool(
@@ -1463,7 +1479,6 @@ class Agent:
             model_client=self._model_client,
             author=author,
             channel_outage_recovery=self.channel_outage_recovery,
-            run_id=run_id,
         )
         if self._browse_provider:
             tool.set_browse_provider(self._browse_provider)
@@ -1525,8 +1540,8 @@ class Agent:
 
         results = await asyncio.gather(
             *[
-                self._execute_single_tool(name, args, reasoning)
-                for _, name, args, reasoning in pending
+                self._execute_single_tool(tool_call_id, name, args, reasoning)
+                for tool_call_id, name, args, reasoning in pending
             ]
         )
 
@@ -1719,6 +1734,7 @@ class Agent:
 
     async def _execute_single_tool(
         self,
+        tool_call_id: str,
         tool_name: str,
         arguments: dict,
         reasoning: str | None,
@@ -1729,19 +1745,28 @@ class Agent:
         framing site (``_collect_tool_results``) can narrate the outcome and branch
         on ``result.success``.  ``record.failed`` is still computed here on the raw
         result, before any framing, so failure detection is unaffected.
+
+        Opens the ambient TOOL-CALL scope (#2458) around the whole dispatched call —
+        before args are even validated — so anything this one call makes, at any
+        depth (a micro-context draw), links back to THIS call's id with no parameter
+        threaded through ``execute``.  The agent loop dispatches a step's tool calls
+        CONCURRENTLY (``asyncio.gather`` wraps each bare coroutine in its own
+        ``Task``, which copies the ambient context at creation), so two calls in one
+        step never see each other's id — each gets its own independent snapshot.
         """
         logger.info("Executing tool: %s", tool_name)
         if reasoning:
             logger.debug("Tool reasoning: %s", reasoning[:200])
 
         record = ToolCallRecord(tool=tool_name, arguments=arguments, reasoning=reasoning)
-        tool_call = ToolCall(tool=tool_name, arguments=arguments)
+        tool_call = ToolCall(tool=tool_name, arguments=arguments, id=tool_call_id)
 
         # The executor always hands back a structured ToolResult — a tool's own
         # return, or a synthesised failed one for framework errors (not-found,
         # timeout, crash).  One branch, no string-prefix guessing; success and
         # mutated are authoritative.
-        result = await self._tool_executor.execute(tool_call)
+        with tool_call_scope(tool_call_id):
+            result = await self._tool_executor.execute(tool_call)
         record.failed = not result.success
         record.mutated = result.mutated
         record.result = result.message

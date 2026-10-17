@@ -76,6 +76,7 @@ from penny.database.skill_store import parameters_from_json
 from penny.database.skills import SkillDraft, SkillParameter
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.models import LlmMessage, LlmResponse
+from penny.llm.run_context import run_scope
 from penny.round_framing import (
     RoundFramer,
     abandon_round_container,
@@ -255,6 +256,28 @@ async def test_entering_learn_frames_the_round_and_builds_an_inert_container(db)
     assert row.notify is False
     assert row.skill_name is None
     assert row.created_by_run_id == "run-learn"
+
+
+async def test_the_framer_s_draw_links_back_to_the_turn_from_ambient_state(db):
+    """The framer draw at round entry links back to the turn making it purely from
+    AMBIENT state (#2458) — ``RoundFramer._draw`` takes no ``parent_run_id`` parameter
+    at all any more; the linkage comes from whatever ``run_scope`` the turn opened,
+    exactly as the channel opens one for a real turn."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    model = _model(state="STATE: learn", framing=_FRAMED)
+    machine = _machine(db, model)
+
+    with run_scope("run-learn-link"):
+        await machine.advance(_DEMO, message_id=_log(db, _DEMO), run_id="run-learn-link")
+
+    assert _drew_against(model, SKILL_FRAME_SYSTEM_PROMPT)
+    framer_request = next(
+        request
+        for request in model.requests
+        if any(m.get("content") == SKILL_FRAME_SYSTEM_PROMPT for m in request["messages"])
+    )
+    assert framer_request["parent_run_id"] == "run-learn-link"
 
 
 async def test_the_framer_reads_the_round_s_own_turns_and_nothing_else(db):
@@ -764,7 +787,8 @@ async def _park_in_request(
     door, where the binder never used to run at all."""
     model = _model(state=f"STATE: request\nSKILL: {_SKILL}", binding=_SHORT_OF_THE_PAGE)
     machine = _machine(db, model)
-    await machine.advance(ask, message_id=_log(db, ask), run_id="run-request")
+    with run_scope("run-request"):
+        await machine.advance(ask, message_id=_log(db, ask), run_id="run-request")
     return machine, model
 
 
@@ -793,6 +817,14 @@ async def test_a_request_draw_binds_the_routine_it_named(db):
     ]
     assert machine.framing() is None
     assert not [row for row in db.memories.list_all() if row.name.startswith("watch-rental")]
+    # The binder's draw links back to the turn purely from AMBIENT state (#2458) —
+    # it takes no ``parent_run_id`` parameter at all any more.
+    binder_request = next(
+        request
+        for request in model.requests
+        if any(m.get("content") == BIND_SKILL_SYSTEM_PROMPT for m in request["messages"])
+    )
+    assert binder_request["parent_run_id"] == "run-request"
 
 
 async def test_the_round_s_binding_is_recorded_and_read_back_by_a_later_turn(db):

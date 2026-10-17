@@ -73,6 +73,7 @@ from penny.database.skill_store import parameters_from_json
 from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp, stored_as_utc, user_timezone_name
 from penny.llm.client import LlmClient
+from penny.llm.run_context import run_scope
 from penny.notification import (
     NOTIFICATION_NOTES,
     NOTIFIED_CYCLE_ENDS,
@@ -297,6 +298,12 @@ class Collector(BackgroundAgent):
         ``trigger`` says what set this cycle running — the schedule, or the user — and
         is carried, never inferred: the notification reads it to pick its delivery lane
         and the retry budget is keyed on it (#1939).
+
+        A top-level run starter (#2458): opens the ambient run scope around the
+        WHOLE cycle — the loop AND the notifier — because the notifier's draw
+        happens after ``_run_cycle`` returns, outside ``Agent.run``'s own
+        (narrower) scope.  Everything this cycle calls links back to ``run_id``
+        with no parameter threaded through any of it.
         """
         run_id = uuid.uuid4().hex
         success = False
@@ -308,39 +315,42 @@ class Collector(BackgroundAgent):
         # the outcome is read against that program, so computing it again after the
         # release would read an unbound one and report every cycle as unreadable.
         outcome, reason = RunOutcome.FAILED, ""
-        async with self._cycle_lock:
-            try:
-                self._bind(collection)
-                result = await self._run_cycle(run_id)
-                success = result.success
-                response = result.response
-                reads = result.reads
-                notified = await self._notify_if_due(collection, run_id, response, trigger)
-            except asyncio.CancelledError:
-                # Foreground activity preempted the cycle — tag clearly rather
-                # than letting it look like a model crash, then re-raise.
-                cancelled = True
-                raise
-            finally:
-                # How the cycle ended, determined once and read by everything that has
-                # to know whether it was real (#1936).
-                end = self._cycle_end(cancelled, response, notified)
-                landed = self._settle_writes(collection.name, end)
-                self.settle_reads(reads, landed)
-                # Settle the occurrence this cycle was dispatched for: consume it, or
-                # leave it due for a bounded retry (#1935).  Runs while the program is
-                # still bound, since the deterministic arm is read off it.
-                deferred = self._settle_occurrence(collection.name, trigger, end, response)
-                if cancelled:
-                    self._tag_promptlog_run_cancelled(run_id)
-                else:
-                    # One determination of this cycle's outcome, used for the
-                    # audit log and the promptlog tag alike.
-                    outcome, reason = self._cycle_result(response, notified, landed)
-                    self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
-                    if not deferred:
-                        self._retire_if_ended(collection, run_id)
-                self._bind(None)
+        with run_scope(run_id):
+            async with self._cycle_lock:
+                try:
+                    self._bind(collection)
+                    result = await self._run_cycle(run_id)
+                    success = result.success
+                    response = result.response
+                    reads = result.reads
+                    notified = await self._notify_if_due(collection, run_id, response, trigger)
+                except asyncio.CancelledError:
+                    # Foreground activity preempted the cycle — tag clearly rather
+                    # than letting it look like a model crash, then re-raise.
+                    cancelled = True
+                    raise
+                finally:
+                    # How the cycle ended, determined once and read by everything that has
+                    # to know whether it was real (#1936).
+                    end = self._cycle_end(cancelled, response, notified)
+                    landed = self._settle_writes(collection.name, end)
+                    self.settle_reads(reads, landed)
+                    # Settle the occurrence this cycle was dispatched for: consume it, or
+                    # leave it due for a bounded retry (#1935).  Runs while the program is
+                    # still bound, since the deterministic arm is read off it.
+                    deferred = self._settle_occurrence(collection.name, trigger, end, response)
+                    if cancelled:
+                        self._tag_promptlog_run_cancelled(run_id)
+                    else:
+                        # One determination of this cycle's outcome, used for the
+                        # audit log and the promptlog tag alike.
+                        outcome, reason = self._cycle_result(response, notified, landed)
+                        self._tag_promptlog_run(
+                            run_id, outcome, reason, self._tool_failures(response)
+                        )
+                        if not deferred:
+                            self._retire_if_ended(collection, run_id)
+                    self._bind(None)
         # The on-demand test message is STRUCTURAL (#1569): the run's outcome (or its
         # write-gate stop reason) plus the actual tool trace — never a model-authored
         # summary, which no longer exists.  It reports the SAME determination the audit

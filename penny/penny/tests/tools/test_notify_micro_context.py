@@ -18,6 +18,9 @@ from typing import Any, cast
 import pytest
 
 from penny.constants import PennyConstants
+from penny.llm.models import LlmMessage, LlmResponse
+from penny.llm.run_context import run_scope
+from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
     MESSAGE_TAG,
     NOTIFY_SYSTEM_PROMPT,
@@ -111,6 +114,28 @@ async def test_the_document_is_the_whole_user_turn_and_the_draw_is_attributed():
     assert model.calls[0]["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
     assert model.calls[0]["prompt_type"] == PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE
     assert model.calls[0]["run_target"] == "tide-times"
+
+
+@pytest.mark.asyncio
+async def test_the_draw_links_back_to_the_cycle_from_ambient_state():
+    """The notifier's draw links back to the collector cycle it closes purely from
+    AMBIENT state (#2458) — ``compose_notification`` takes no ``parent_run_id``
+    parameter at all; the linkage is whatever ``run_scope`` the cycle opened
+    (``agents/collector.py::_execute_cycle``, which stays open across the notifier
+    precisely so this draw can still see it after the main loop has returned)."""
+    mock = MockLlmClient()
+    mock.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(role="assistant", content=f"{MESSAGE_TAG} Hey! 06:12 now.")
+        )
+    )
+    with run_scope("cycle-run-1"):
+        drawn = await MicroContext(cast(Any, mock)).compose_notification(
+            _DOCUMENT, run_target="tide-times"
+        )
+    assert drawn == "Hey! 06:12 now."
+    assert len(mock.requests) == 1
+    assert mock.requests[0]["parent_run_id"] == "cycle-run-1"
 
 
 @pytest.mark.asyncio

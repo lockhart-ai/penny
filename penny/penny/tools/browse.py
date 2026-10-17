@@ -216,11 +216,6 @@ class BrowseTool(Tool):
     # as a graceful error section — before the outer executor cancels the whole
     # browse call (which would surface as a blunt "Tool execution timeout").
     timeout = 300.0
-    # The extraction micro-context is the one customer invoked from INSIDE a
-    # dispatched tool call (#2355 part A) — the other five run directly in agent
-    # code — so this is the one tool that needs its own call's id to link an
-    # extraction draw back to the turn it was made for.
-    receives_tool_call_id = True
 
     def __init__(
         self,
@@ -232,19 +227,12 @@ class BrowseTool(Tool):
         embedding_client: LlmClient,
         model_client: LlmClient | None = None,
         channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT,
-        run_id: str | None = None,
     ):
         self._max_calls = max_calls
         self._search_url = search_url
         self._db = db
         self._embedding_client = embedding_client
         self._author = author
-        # The turn/cycle this instance was built for (#2355 part A) — threaded to
-        # every extraction draw as ``parent_run_id``, so that run's own record can
-        # list the model calls made on its behalf.  Constant for this instance's
-        # whole lifetime (one per run — ``Agent.get_tools`` rebuilds it fresh each
-        # turn), so unlike the per-CALL ``tool_call_id`` there is nothing to race.
-        self._run_id = run_id
         # The shared model client powers the ``extract`` micro-context (a
         # single-shot extraction call).  Optional: chat's browse never sets
         # ``extract``, and tests that don't exercise it leave this None; an
@@ -375,17 +363,17 @@ class BrowseTool(Tool):
             parts.append(template.format(urls=", ".join(reads)))
         return " ".join(parts) if parts else _NARRATION_LOOKED_UP
 
-    async def execute(self, *, tool_call_id: str | None = None, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Dispatch all lookups in parallel via the browser extension.
 
         With an ``extract`` micro-instruction (and at least one readable page),
         the fetched content goes to a fresh micro-context and only the typed
         result returns; otherwise the assembled sections return directly.
 
-        ``tool_call_id`` is THIS dispatched call's own id (``receives_tool_call_id
-        = True``, #2355 part A) — threaded to every extraction draw as
-        ``parent_tool_call_id``, alongside ``self._run_id``, so a reader of this
-        run can find the model call(s) made on behalf of this one browse call.
+        Any extraction draw this call makes links back to the run AND to this
+        dispatched call with no parameter here at all (#2458): the tool
+        dispatcher opens the ambient tool-call scope around the whole of
+        ``tool.run()``, before ``execute`` is ever reached.
         """
         self._read_log, self._extract_log, self._extracting = [], [], False
         args = BrowseArgs(**kwargs)
@@ -411,9 +399,7 @@ class BrowseTool(Tool):
         all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
         if args.extract is not None and not all_failed:
             self._extracting = True
-            return await self._extract_result(
-                sections, stored, page_readings, args.extract, tool_call_id
-            )
+            return await self._extract_result(sections, stored, page_readings, args.extract)
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
@@ -487,7 +473,6 @@ class BrowseTool(Tool):
         stored: list[MemoryEntry],
         page_readings: list[PageReading],
         instruction: str,
-        tool_call_id: str | None,
     ) -> ToolResult:
         """One micro-context call PER successfully-fetched page (#1682) — each result
         rendered UNDER that page's own ``## browse …:`` section header, so a
@@ -519,9 +504,7 @@ class BrowseTool(Tool):
         batch = self._extract_batch(sections, stored, page_readings)
         drawn = await asyncio.gather(
             *[
-                self._extract_one_page(
-                    micro_context, section, instruction, entry, reading, tool_call_id
-                )
+                self._extract_one_page(micro_context, section, instruction, entry, reading)
                 for _, section, entry, reading in batch
             ],
             return_exceptions=True,
@@ -604,7 +587,6 @@ class BrowseTool(Tool):
         instruction: str,
         entry: MemoryEntry | None,
         reading: PageReading,
-        tool_call_id: str | None,
     ) -> tuple[str, bool]:
         """Extract ONE fetched page's content and render the typed result under that
         page's own section header — the extracted value (or an honest NOT_PRESENT /
@@ -629,8 +611,6 @@ class BrowseTool(Tool):
                 section,
                 instruction,
                 run_target=self._author,
-                parent_run_id=self._run_id,
-                parent_tool_call_id=tool_call_id,
                 reading=reading,
             )
         except Exception as exc:

@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -38,6 +39,7 @@ from penny.llm.models import (
     ProviderPin,
     fault_for_status,
 )
+from penny.llm.run_context import current_parent_run_id, current_run_id, current_tool_call_id
 
 logger = logging.getLogger(__name__)
 
@@ -271,8 +273,6 @@ class LlmClient:
         prompt_type: str | None = None,
         run_id: str | None = None,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
     ) -> LlmResponse:
         """Generate a chat completion with optional tool calling.
 
@@ -285,12 +285,20 @@ class LlmClient:
         retried twice before answering reports its real cost, which is what the eval
         harness's token-cost accounting reads.
 
-        ``parent_run_id`` / ``parent_tool_call_id`` link a draw made INSIDE a tool
-        (a micro-context, which mints its own ``run_id`` for its own ledger
-        attribution) back to the chat/collector run — and, for a draw made from
-        inside a dispatched tool call, that call's own id — it was made on behalf
-        of, so that run's own record can list it.
+        ``run_id`` is an explicit override (every real caller today supplies one);
+        when omitted, the ambient run (pushed by whatever started this run, or by a
+        micro-context's own draw) supplies it, and a call with no ambient run either
+        (a one-shot with nothing above it) mints a fresh one rather than logging an
+        unfetchable ``run_id=None`` row (#2458). ``parent_run_id`` / ``parent_tool_call_id``
+        are no longer parameters at all: they are read from that same ambient state
+        at log time (``penny.llm.run_context``), so a draw made INSIDE a tool (a
+        micro-context, which pushes its own ``run_id`` for its own ledger attribution)
+        links back to the chat/collector run — and, for a draw made from inside a
+        dispatched tool call, that call's own id — with no wiring at this call site.
         """
+        resolved_run_id = run_id if run_id is not None else current_run_id() or uuid.uuid4().hex
+        parent_run_id = current_parent_run_id()
+        parent_tool_call_id = current_tool_call_id()
         start = time.time()
         messages_snapshot = list(messages)
         try:
@@ -304,7 +312,7 @@ class LlmClient:
                 self._elapsed_ms(start),
                 agent_name,
                 prompt_type,
-                run_id,
+                resolved_run_id,
                 run_target,
                 parent_run_id,
                 parent_tool_call_id,
@@ -323,7 +331,7 @@ class LlmClient:
                 self._elapsed_ms(start),
                 agent_name,
                 prompt_type,
-                run_id,
+                resolved_run_id,
                 run_target,
                 parent_run_id,
                 parent_tool_call_id,
@@ -342,7 +350,7 @@ class LlmClient:
             self._elapsed_ms(start),
             agent_name,
             prompt_type,
-            run_id,
+            resolved_run_id,
             run_target,
             parent_run_id,
             parent_tool_call_id,

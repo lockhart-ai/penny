@@ -142,7 +142,8 @@ penny/
     migrate.py        — Migration runner: file discovery, tracking table, validation
     migrations/       — Numbered migration files (0001–0025)
   llm/
-    client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one
+    client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one. `chat` reads a call's `parent_run_id`/`parent_tool_call_id` from ambient state (`run_context.py`) rather than taking them as parameters
+    run_context.py    — Ambient run/tool-call linkage (#2458): `contextvars`-backed `run_scope`/`tool_call_scope` + `current_run_id`/`current_parent_run_id`/`current_tool_call_id` — the mechanism that lets any model call link itself to the run and dispatched tool call it happens inside with no wiring at the call site
     image_client.py   — OllamaImageClient: Ollama-specific HTTP client for image generation and model listing
     models.py         — LlmMessage, LlmResponse, LlmToolCall, LlmError hierarchy (SDK-decoupled Pydantic types)
     embeddings.py     — Re-exports serialize/deserialize/cosine from shared similarity/ package

@@ -61,6 +61,7 @@ from pydantic import BaseModel
 
 from penny.constants import PageReading, PennyConstants
 from penny.llm.refusal import is_refusal
+from penny.llm.run_context import run_scope
 from penny.text_validity import (
     half_formed_send_reason,
     has_leaked_harmony_envelope,
@@ -1028,8 +1029,6 @@ class MicroContext:
         instruction: str,
         *,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
         reading: PageReading = PageReading.ARTICLE,
     ) -> MicroContextResult:
         """Extract ``instruction`` from ``content`` in one scoped model call.
@@ -1043,10 +1042,11 @@ class MicroContext:
         unchanged context for the whole budget, then the extraction fails honestly.  A
         blank draw takes the same path (a blank payload is not a payload).
 
-        ``parent_run_id`` / ``parent_tool_call_id`` (#2355 part A) link this draw back
-        to the chat/collector run — and, since this is the one customer invoked from
-        INSIDE a dispatched tool call, that call's own id — it was made on behalf of,
-        so that run's own record can list it.
+        This draw links back to the chat/collector run — and, since this is the one
+        customer invoked from INSIDE a dispatched tool call, that call's own id — with
+        no parameter here at all (#2458): ``_draw_clean`` reads the ambient run and
+        tool-call id (pushed by whatever started the run, and by the tool dispatcher
+        around this call) at the moment it draws.
 
         ``reading`` (#2388) is the structural mark the extension set when it read the
         page — on :attr:`PageReading.LINK_LIST` the user turn carries one note, BEFORE
@@ -1060,8 +1060,6 @@ class MicroContext:
             instruction,
             run_target,
             shape=EXTRACT_SHAPE,
-            parent_run_id=parent_run_id,
-            parent_tool_call_id=parent_tool_call_id,
             reading_note=reading_note,
         )
         if isinstance(drawn, DrawFailure):
@@ -1074,7 +1072,6 @@ class MicroContext:
         offered: Sequence[str],
         *,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
     ) -> SkillLabels | None:
         """Name EVERY spot in a demonstrated routine (#1828) — the second customer of
         this machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
@@ -1098,7 +1095,6 @@ class MicroContext:
             agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_NAMING_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -1109,7 +1105,6 @@ class MicroContext:
         content: str,
         *,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
     ) -> SkillSignature | None:
         """Write a routine's public INTERFACE from the user's ask alone (#1830) — the
         FOURTH customer of this machinery.  Rides the SAME ``_valid_draw`` step as the
@@ -1142,7 +1137,6 @@ class MicroContext:
             agent_name=PennyConstants.SKILL_FRAME_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_FRAME_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -1155,7 +1149,6 @@ class MicroContext:
         spoken: str,
         *,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
     ) -> SkillBinding | None:
         """Fill an EXISTING routine's declared parameters from the user's own words
         (#1867) — the FIFTH customer of this machinery.  Rides the SAME ``_valid_draw``
@@ -1185,7 +1178,6 @@ class MicroContext:
             agent_name=PennyConstants.SKILL_BIND_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_BIND_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -1196,7 +1188,6 @@ class MicroContext:
         content: str,
         *,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
     ) -> str | None:
         """Write the one message a finished collector cycle sends the user (#1911) — the
         SIXTH customer of this machinery, and the first that closes a background cycle
@@ -1224,7 +1215,6 @@ class MicroContext:
             agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
             prompt_type=PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -1238,7 +1228,6 @@ class MicroContext:
         skill_gated_states: Sequence[str] = (),
         skills: Sequence[str] = (),
         run_target: str | None = None,
-        parent_run_id: str | None = None,
     ) -> StateDraw:
         """Pick one state from ``allowed`` for a rendered conversation slice
         (#1706) — the third customer of this machinery.  Rides the SAME
@@ -1269,7 +1258,6 @@ class MicroContext:
             agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
             prompt_type=PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return StateDraw(outcome=_STATE_FAILURES[drawn])
@@ -1287,8 +1275,6 @@ class MicroContext:
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
         reading_note: str = "",
     ) -> ParsedDraw | DrawFailure:
         """The ONE validate step every customer rides (#1814): a poison-screened
@@ -1308,10 +1294,10 @@ class MicroContext:
         budget, not a thing to reach one draw sooner.
 
         Only the shape (and the prompt + attribution) differs per customer, so no
-        customer owns a reroll loop or partitions a string of its own.  ``parent_run_id``
-        / ``parent_tool_call_id`` (#2355 part A) are passed straight through to every
-        attempt, unchanged across rerolls — they name the run (and, for a tool-nested
-        draw, the call) this WHOLE draw is being made for, not any one attempt.
+        customer owns a reroll loop or partitions a string of its own.  The ambient
+        run/tool-call linkage (#2458, ``_draw_clean``) is unchanged across rerolls —
+        each attempt re-opens the SAME ``run_scope``, so every attempt of one draw
+        still names the run (and, for a tool-nested draw, the call) it was made for.
         ``reading_note`` (#2388) rides the same way — only ``extract`` ever supplies a
         non-empty one; every other customer's ``_BARE_CONTENT_TEMPLATE`` ignores it."""
         for _ in range(self._reroll_attempts):
@@ -1323,8 +1309,6 @@ class MicroContext:
                 agent_name=agent_name,
                 prompt_type=prompt_type,
                 user_template=user_template,
-                parent_run_id=parent_run_id,
-                parent_tool_call_id=parent_tool_call_id,
                 reading_note=reading_note,
             )
             if draw is None:
@@ -1352,8 +1336,6 @@ class MicroContext:
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
         reading_note: str = "",
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
@@ -1362,32 +1344,39 @@ class MicroContext:
 
         The ``system_prompt`` + ledger attribution are parameters (defaulting to the
         browse-extract contract) so a second output contract — run-end skill naming
-        (#1665) — rides the SAME poison/reroll loop without duplicating it."""
+        (#1665) — rides the SAME poison/reroll loop without duplicating it.
+
+        Mints its OWN ``run_id`` and opens ``run_scope`` with it (#2458) — the whole
+        point being that a micro-context's call is its own ledger-visible run, never
+        folded into the run it was made for. Opening the scope captures whatever run
+        id was ambient a moment ago as this draw's PARENT (the chat/collector run, or
+        an enclosing draw at any depth) — with no parameter threaded through from the
+        customer that called us. The ambient tool-call id, if the dispatcher pushed
+        one around this whole call, rides along unchanged; nothing here sets it."""
         messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
         run_id = uuid.uuid4().hex
-        for attempt in range(self._reroll_attempts):
-            response = await self._model_client.chat(
-                messages=messages,
-                agent_name=agent_name,
-                prompt_type=prompt_type,
-                run_id=run_id,
-                run_target=run_target,
-                parent_run_id=parent_run_id,
-                parent_tool_call_id=parent_tool_call_id,
-            )
-            text = response.content or ""
-            if not self._is_poison(text):
-                return text
-            logger.warning(
-                "Micro-context output unusable — discarding and re-rolling %d/%d",
-                attempt + 1,
+        with run_scope(run_id):
+            for attempt in range(self._reroll_attempts):
+                response = await self._model_client.chat(
+                    messages=messages,
+                    agent_name=agent_name,
+                    prompt_type=prompt_type,
+                    run_id=run_id,
+                    run_target=run_target,
+                )
+                text = response.content or ""
+                if not self._is_poison(text):
+                    return text
+                logger.warning(
+                    "Micro-context output unusable — discarding and re-rolling %d/%d",
+                    attempt + 1,
+                    self._reroll_attempts,
+                )
+            logger.error(
+                "Micro-context output still unusable after %d re-rolls — extraction aborted",
                 self._reroll_attempts,
             )
-        logger.error(
-            "Micro-context output still unusable after %d re-rolls — extraction aborted",
-            self._reroll_attempts,
-        )
-        return None
+            return None
 
     @staticmethod
     def _is_poison(text: str) -> bool:

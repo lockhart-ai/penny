@@ -770,7 +770,6 @@ class StateClassifier:
             skill_gated_states=SKILL_GATED_STATES,
             skills=[candidate.name for candidate in snapshot.skill_candidates],
             run_target=run_target,
-            parent_run_id=run_id,
         )
         return self._decision(draw)
 

@@ -24,6 +24,7 @@ from penny.conversation_machine import (
 )
 from penny.datetime_utils import current_datetime_line, user_timezone_name
 from penny.llm.models import LlmError
+from penny.llm.run_context import run_scope
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.round_framing import discard_round_container
@@ -436,8 +437,11 @@ class ChatAgent(Agent):
         both stamps every promptlog row and is recorded on any collection the
         turn creates (``created_by_run_id``, #1566) — the channel later links the
         spawning message to that run.  Passed as an explicit parameter down the
-        call chain, never held as ambient state; when a direct caller omits it,
-        one is minted here.
+        call chain for writes/mutations; when a direct caller omits it, one is
+        minted here.  A top-level run starter in its own right (#2458) — opens the
+        ambient scope with this id, which collapses to a no-op when the channel
+        already opened one with the same id, and does real work for a direct
+        caller (a test, say) that supplies none.
 
         ``state`` is the conversation machine's decision about this turn, made before
         it began (``None`` when nothing decided it — idle).  It picks the turn's one
@@ -462,63 +466,66 @@ class ChatAgent(Agent):
         self._turn_state = state
         self._turn_framing = framing
         run_id = run_id or uuid.uuid4().hex
-        try:
-            content, has_images = await self._process_images(content, images)
-            self._current_message = content
-            history = self.get_history(sender, quoted_text=quoted_text)
+        with run_scope(run_id):
+            try:
+                content, has_images = await self._process_images(content, images)
+                self._current_message = content
+                history = self.get_history(sender, quoted_text=quoted_text)
 
-            if has_images:
-                logger.info("Handling vision message from %s", sender)
-                self._install_tools([])
-                system_prompt = await self._build_system_prompt(
-                    sender, instructions=Prompt.VISION_RESPONSE_PROMPT
+                if has_images:
+                    logger.info("Handling vision message from %s", sender)
+                    self._install_tools([])
+                    system_prompt = await self._build_system_prompt(
+                        sender, instructions=Prompt.VISION_RESPONSE_PROMPT
+                    )
+                    return await self.run(
+                        prompt=content,
+                        history=history,
+                        max_steps=PennyConstants.VISION_MAX_STEPS,
+                        system_prompt=system_prompt,
+                        run_id=run_id,
+                        on_progress=on_progress,
+                        progress_scope="foreground",
+                        prompt_type=ChatPromptType.VISION_MESSAGE,
+                    )
+
+                logger.info("Handling message from %s (conversation mode)", sender)
+                unconfigurable = await self._unconfigurable_round(
+                    state, framing, run_id, content, history
                 )
-                return await self.run(
+                if unconfigurable is not None:
+                    return unconfigurable
+                self._install_tools(self.get_tools(run_id=run_id))
+                # The machine decided this turn's state before the turn began, so the
+                # prompt carries THAT state's single instruction (#1706).  ``None`` —
+                # no machine wired, or a state with no instruction yet — composes the
+                # unchanged default.
+                system_prompt = await self._build_system_prompt(
+                    sender,
+                    instructions=(
+                        conversation_prompt(state, framing, shortfall)
+                        if state is not None
+                        else None
+                    ),
+                )
+                response = await self.run(
                     prompt=content,
+                    max_steps=self.get_max_steps(),
                     history=history,
-                    max_steps=PennyConstants.VISION_MAX_STEPS,
                     system_prompt=system_prompt,
                     run_id=run_id,
+                    on_tool_start=on_tool_start,
                     on_progress=on_progress,
                     progress_scope="foreground",
-                    prompt_type=ChatPromptType.VISION_MESSAGE,
+                    prompt_type=ChatPromptType.USER_MESSAGE,
                 )
-
-            logger.info("Handling message from %s (conversation mode)", sender)
-            unconfigurable = await self._unconfigurable_round(
-                state, framing, run_id, content, history
-            )
-            if unconfigurable is not None:
-                return unconfigurable
-            self._install_tools(self.get_tools(run_id=run_id))
-            # The machine decided this turn's state before the turn began, so the
-            # prompt carries THAT state's single instruction (#1706).  ``None`` —
-            # no machine wired, or a state with no instruction yet — composes the
-            # unchanged default.
-            system_prompt = await self._build_system_prompt(
-                sender,
-                instructions=(
-                    conversation_prompt(state, framing, shortfall) if state is not None else None
-                ),
-            )
-            response = await self.run(
-                prompt=content,
-                max_steps=self.get_max_steps(),
-                history=history,
-                system_prompt=system_prompt,
-                run_id=run_id,
-                on_tool_start=on_tool_start,
-                on_progress=on_progress,
-                progress_scope="foreground",
-                prompt_type=ChatPromptType.USER_MESSAGE,
-            )
-            return await self._enforce_learn_terminal(state, response, run_id)
-        finally:
-            self._current_user = None
-            self._pending_page_context = None
-            self._current_message = None
-            self._turn_state = None
-            self._turn_framing = None
+                return await self._enforce_learn_terminal(state, response, run_id)
+            finally:
+                self._current_user = None
+                self._pending_page_context = None
+                self._current_message = None
+                self._turn_state = None
+                self._turn_framing = None
 
     async def _unconfigurable_round(
         self,

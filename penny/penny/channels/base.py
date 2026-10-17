@@ -22,6 +22,7 @@ from penny.database.media_store import ImageSelectionPolicy
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
+from penny.llm.run_context import run_scope
 from penny.llm.similarity import embed_text
 from penny.responses import PennyResponse
 
@@ -756,6 +757,11 @@ class MessageChannel(ABC):
         message agent's ``name`` (template-method override on the agent
         subclass) — passed explicitly down the call chain rather than
         threaded through ambient state.
+
+        The true top-level run starter for a chat turn (#2458): opens the ambient
+        run scope around the WHOLE turn, before the state classifier even draws —
+        so the classifier, the main loop, and run-end skill extraction all link
+        back to this one ``run_id`` with no parameter threaded between them.
         """
         logger.info("Dispatching to message agent for %s", message.sender)
         # Mint the turn's run id here so the same id stamps every promptlog row of
@@ -765,31 +771,32 @@ class MessageChannel(ABC):
         # linked structurally to the run by ``link_source_message``.
         # ``user-messages`` is a read facade over ``messagelog`` — no separate append.
         run_id = uuid.uuid4().hex
-        parent_id: int | None = None
-        if message.quoted_text:
-            parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
-        entered = await self._classify_state(message, run_id)
-        response = await self._message_agent.handle(
-            content=message.content,
-            sender=user_sender,
-            images=message.images or None,
-            page_context=message.page_context,
-            quoted_text=message.quoted_text,
-            run_id=run_id,
-            state=entered.state if entered is not None else None,
-            framing=self._round_framing(),
-            shortfall=entered.shortfall if entered is not None else None,
-            **self._make_handle_kwargs(message, progress),
-        )
-        try:
-            await self._finish_turn(
-                message, user_sender, device_id, response, run_id, parent_id, progress
+        with run_scope(run_id):
+            parent_id: int | None = None
+            if message.quoted_text:
+                parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
+            entered = await self._classify_state(message, run_id)
+            response = await self._message_agent.handle(
+                content=message.content,
+                sender=user_sender,
+                images=message.images or None,
+                page_context=message.page_context,
+                quoted_text=message.quoted_text,
+                run_id=run_id,
+                state=entered.state if entered is not None else None,
+                framing=self._round_framing(),
+                shortfall=entered.shortfall if entered is not None else None,
+                **self._make_handle_kwargs(message, progress),
             )
-        except Exception:
-            logger.exception("Failed to finish turn for %s", message.sender)
-            await self._report_turn_failure(
-                message.sender, PennyResponse.FACTS_TURN_FAILED_AFTER_REPLY, response.tool_calls
-            )
+            try:
+                await self._finish_turn(
+                    message, user_sender, device_id, response, run_id, parent_id, progress
+                )
+            except Exception:
+                logger.exception("Failed to finish turn for %s", message.sender)
+                await self._report_turn_failure(
+                    message.sender, PennyResponse.FACTS_TURN_FAILED_AFTER_REPLY, response.tool_calls
+                )
 
     async def _finish_turn(
         self,

@@ -51,6 +51,7 @@ from penny.conversation_machine import (
 )
 from penny.database.skills import SkillDraft, SkillStep
 from penny.llm.models import LlmMessage, LlmResponse
+from penny.llm.run_context import run_scope
 from penny.prompts import Prompt
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
@@ -726,7 +727,11 @@ async def test_classify_decides_with_attribution_and_exact_model_input():
     carries the classifier's own ledger attribution plus exactly the dispatch
     system prompt and the rendered slice — the whole model input, pinned."""
     model = _responds("STATE: elicit")
-    decision = await _classifier(model).classify(_IDLE_SNAPSHOT, _ASK, run_target="chat")
+    # The ambient scope a real turn would already be inside (#2458) — the
+    # classifier no longer takes a ``parent_run_id`` parameter at all, so this
+    # pins that the linkage still lands, purely from ambient state.
+    with run_scope("chat-run-1"):
+        decision = await _classifier(model).classify(_IDLE_SNAPSHOT, _ASK, run_target="chat")
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.ELICIT
     assert len(model.requests) == 1
@@ -734,6 +739,7 @@ async def test_classify_decides_with_attribution_and_exact_model_input():
     assert request["agent_name"] == PennyConstants.STATE_CLASSIFIER_AGENT_NAME
     assert request["prompt_type"] == PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE
     assert request["run_target"] == "chat"
+    assert request["parent_run_id"] == "chat-run-1"
     assert request["messages"][0]["content"] == STATE_CLASSIFIER_SYSTEM_PROMPT
     # The classifier's user turn is the bare rendered situation — no
     # Instruction:/Content: wrapper (the system prompt owns the ask).

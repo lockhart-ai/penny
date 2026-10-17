@@ -44,6 +44,7 @@ from penny.database.memory.objects import render_tool_call
 from penny.database.models import PromptLog
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
+from penny.llm.run_context import run_scope, tool_call_scope
 from penny.prompts import Prompt
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
@@ -165,7 +166,6 @@ def _extract_tool(
     db: Database,
     model: MockLlmClient | LlmClient,
     *,
-    run_id: str | None = None,
     reading: PageReading = PageReading.ARTICLE,
 ) -> BrowseTool:
     tool = BrowseTool(
@@ -174,7 +174,6 @@ def _extract_tool(
         embedding_client=cast(Any, MockLlmClient()),
         model_client=cast(Any, model),
         author="widget-watch",
-        run_id=run_id,
     )
     tool.set_browse_provider(_provider(_PAGE_TEXT, reading))
     return tool
@@ -344,9 +343,13 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
             message=LlmMessage(role="assistant", content=_TAGGED_VALUE)
         )
     )
-    tool = _extract_tool(db, client, run_id="chat-run-1")
+    tool = _extract_tool(db, client)
 
-    result = await tool.run(tool_call_id="call-browse-1", queries=[_PAGE_URL], extract=_INSTRUCTION)
+    # The ambient run/tool-call scope (#2458) a real dispatch would already be
+    # inside — opened here directly since this test drives the tool without the
+    # agent loop around it.
+    with run_scope("chat-run-1"), tool_call_scope("call-browse-1"):
+        result = await tool.run(queries=[_PAGE_URL], extract=_INSTRUCTION)
 
     # The tool result carries the typed value alone — never the page body, and
     # no fetch-handle tail (success renders the value only; the "saved" clause

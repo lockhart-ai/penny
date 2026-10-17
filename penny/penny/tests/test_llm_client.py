@@ -39,6 +39,7 @@ from penny.llm.models import (
     ProviderPin,
     fault_for_status,
 )
+from penny.llm.run_context import run_scope, tool_call_scope
 
 _HTML_ERROR_BODY = (
     f"<!DOCTYPE html><html><head><title>404</title></head><body>{'x' * 5000}</body></html>"
@@ -849,11 +850,12 @@ class TestCallLoggedHoweverItEnds:
 
 
 class TestMicroContextDrawLinksToItsParentCall:
-    """A draw ``LlmClient.chat`` makes on behalf of a micro-context carries
-    ``parent_run_id`` / ``parent_tool_call_id`` (#2355 part A) straight through to
-    its ``promptlog`` row, so the enclosing run's own record can list it — the full
-    tool-nested path is covered in ``tests/tools/test_browse_micro_context.py``;
-    this pins the plain pass-through at the client itself."""
+    """A draw ``LlmClient.chat`` makes on behalf of a micro-context links back to
+    its ``promptlog`` row's ``parent_run_id`` / ``parent_tool_call_id`` purely from
+    AMBIENT state (#2458) — ``run_scope`` / ``tool_call_scope``, never a parameter
+    passed to ``chat`` itself — so the enclosing run's own record can list it. The
+    full tool-nested path is covered in ``tests/tools/test_browse_micro_context.py``;
+    this pins the plain ambient read at the client itself."""
 
     @pytest.mark.asyncio
     async def test_the_parent_ids_land_on_the_logged_row(self, monkeypatch, db: Database) -> None:
@@ -865,15 +867,42 @@ class TestMicroContextDrawLinksToItsParentCall:
         )
         monkeypatch.setattr(client.client.chat.completions, "create", answer)
 
-        await client.chat(
-            [{"role": "user", "content": "hi"}],
-            run_id="draw-run",
-            parent_run_id="chat-run-1",
-            parent_tool_call_id="call-browse-1",
-        )
+        # Two levels, exactly as production nests them: the enclosing chat/collector
+        # run ("chat-run-1") is already ambient when the tool dispatcher opens the
+        # tool-call scope, and a micro-context's OWN draw (here simulated directly,
+        # standing in for ``MicroContext._draw_clean``'s own ``run_scope``) then pushes
+        # its own distinct run id — capturing "chat-run-1" as its PARENT in the process.
+        with run_scope("chat-run-1"), tool_call_scope("call-browse-1"), run_scope("draw-run"):
+            await client.chat([{"role": "user", "content": "hi"}])
         await client.close()
 
         with db.get_session() as session:
             row = session.exec(select(PromptLog)).one()
         assert row.parent_run_id == "chat-run-1"
         assert row.parent_tool_call_id == "call-browse-1"
+
+    @pytest.mark.asyncio
+    async def test_a_call_with_no_explicit_or_ambient_run_id_still_gets_one(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """The chokepoint mint-if-absent safety net (#2458): a call with neither an
+        explicit ``run_id`` nor an ambient one (a one-shot with nothing above it)
+        still lands a FETCHABLE row rather than an unlinked ``run_id=None`` one —
+        no existing production caller ever hits this path today (every one supplies
+        an id), but a future one that forgets to is still visible."""
+
+        async def answer(**kwargs):
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer)
+
+        await client.chat([{"role": "user", "content": "hi"}])
+        await client.close()
+
+        with db.get_session() as session:
+            row = session.exec(select(PromptLog)).one()
+        assert row.run_id is not None
+        assert row.parent_run_id is None

@@ -32,6 +32,7 @@ from penny.llm.models import (
     LlmToolCallFunction,
     LlmToolParseError,
 )
+from penny.llm.run_context import current_tool_call_id
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
@@ -372,6 +373,92 @@ def _failed_dedup_frame(tool_name: str, first_line: str) -> str:
     narration = Prompt.DUPLICATE_CALL_NARRATION_FAILED.format(tool_name=tool_name)
     body = Prompt.DUPLICATE_CALL_REJECTION_FAILED.format(tool_name=tool_name, first_line=first_line)
     return f"{narration} ({tool_name} result)\n{body}"
+
+
+class _EchoToolCallIdArgs(ToolArgs):
+    """``tag`` is unused by ``execute`` — it only exists so two parallel calls to
+    this tool carry distinct arguments and so aren't blocked as duplicates by the
+    agent loop's repeat-call guard (keyed on tool name + arguments)."""
+
+    tag: str
+
+
+class EchoToolCallIdTool(Tool):
+    """A tool whose result IS the ambient tool-call id it was dispatched under
+    (#2458) — lets a test observe the dispatcher's ``tool_call_scope`` directly,
+    rather than inferring it from a nested model call's logged row."""
+
+    name = "echo_tool_call_id"
+    description = "Echo the ambient tool-call id"
+    parameters = {"type": "object", "properties": {"tag": {"type": "string"}}}
+    args_model = _EchoToolCallIdArgs
+
+    async def execute(self, **kwargs):
+        return ToolResult(message=current_tool_call_id() or "<none>")
+
+
+class TestParallelToolCallsEachGetTheirOwnAmbientId:
+    """``asyncio.gather`` wraps each dispatched tool call in its own ``Task``, which
+    copies the ambient context at creation (#2458) — so N parallel tool calls in one
+    step each see their OWN ``tool_call_id``, never a sibling's and never ``None``."""
+
+    @pytest.mark.asyncio
+    async def test_two_parallel_calls_each_see_their_own_id(self, test_db, mock_llm):
+        db = Database(test_db)
+        db.create_tables()
+        config = Config(
+            channel_type="signal",
+            signal_number="+15551234567",
+            signal_api_url="http://localhost:8080",
+            discord_bot_token=None,
+            discord_channel_id=None,
+            llm_api_url="http://localhost:11434",
+            llm_model="test-model",
+            llm_embedding_model="test-embedding-model",
+            log_level="DEBUG",
+            db_path=test_db,
+            runtime=RuntimeParams(db=db),
+        )
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="test-model",
+            db=db,
+            max_retries=1,
+            retry_delay=0.1,
+        )
+        agent = Agent(
+            system_prompt="test",
+            model_client=client,
+            embedding_model_client=client,
+            tools=[EchoToolCallIdTool()],
+            db=db,
+            config=config,
+        )
+        agent._keep_tools_on_final_step = False
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_parallel_tool_calls_response(
+                    request,
+                    [
+                        ("echo_tool_call_id", {"tag": "first"}),
+                        ("echo_tool_call_id", {"tag": "second"}),
+                    ],
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=3)
+
+        assert response.answer == "done"
+        assert len(response.tool_calls) == 2
+        results = {record.result for record in response.tool_calls}
+        # Each call's own (provider-assigned) id, and no result is a sibling's or
+        # ``None`` — the two Tasks' independent context snapshots held.
+        assert results == {"call_0", "call_1"}
+
+        await agent.close()
 
 
 class TestRepeatCallGuard:

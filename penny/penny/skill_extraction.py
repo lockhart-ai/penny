@@ -530,7 +530,6 @@ class SkillExtractor:
             content,
             [parameter.name for parameter in parameters],
             run_target=self._agent_name,
-            parent_run_id=run_id,
         )
 
     async def _signature(
@@ -563,9 +562,7 @@ class SkillExtractor:
         one well-formed, distinctly-named parameter.  ``None`` otherwise, and the caller
         falls back to the deterministic slug with nothing to bind."""
         content = build_framing_content(projection.origin_message, conversation)
-        return await self._micro_context.frame_skill(
-            content, run_target=self._agent_name, parent_run_id=run_id
-        )
+        return await self._micro_context.frame_skill(content, run_target=self._agent_name)
 
     @staticmethod
     def _distill_inputs(

@@ -65,6 +65,7 @@ from penny.database.skills import (
     retarget_writes,
 )
 from penny.llm.models import LlmMessage, LlmResponse
+from penny.llm.run_context import run_scope
 from penny.prompts import Prompt
 from penny.skill_extraction import (
     ExtractionGate,
@@ -948,9 +949,14 @@ async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interfa
     model = _run_end_model(labels=_LABELLED_ROUND, framing=_FRAMED_ROUND)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    with run_scope("run-A"):
+        result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
+    # Both run-end draws link back to the run purely from AMBIENT state (#2458) —
+    # neither ``_label_skill`` nor ``_frame_skill`` takes a ``parent_run_id`` any more.
+    assert _last_request(model, SKILL_NAMING_SYSTEM_PROMPT)["parent_run_id"] == "run-A"
+    assert _last_request(model, SKILL_FRAME_SYSTEM_PROMPT)["parent_run_id"] == "run-A"
     params = parameters_from_json(result.skill.parameters)
     assert [(p.name, p.description, p.required) for p in params] == [
         ("listing_url", "the listing whose price to read", True)

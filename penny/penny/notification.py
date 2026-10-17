@@ -338,7 +338,7 @@ class CollectorNotifier:
         success."""
         document = await self._document(target, run_id, records)
         message = await self._micro_context.compose_notification(
-            render_notification(document), run_target=target.name, parent_run_id=run_id
+            render_notification(document), run_target=target.name
         )
         if message is None:
             logger.warning(

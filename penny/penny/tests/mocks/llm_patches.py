@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.llm.run_context import current_parent_run_id, current_run_id, current_tool_call_id
 from penny.tools.micro_context import STATE_CLASSIFIER_SYSTEM_PROMPT
 
 # Dimension of the deterministic default embedding.  The embedding model is a
@@ -114,24 +115,26 @@ class MockLlmClient:
         prompt_type: str | None = None,
         run_id: str | None = None,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
     ) -> LlmResponse:
         """Mock chat() call.
 
-        ``parent_run_id`` / ``parent_tool_call_id`` (#2355 part A) are accepted —
-        and recorded on ``request_data``, like every other real kwarg — purely so
-        a mocked call's signature matches the real client's; nothing here needs
-        to branch on them."""
+        Matches the real client's signature (#2458): ``parent_run_id`` /
+        ``parent_tool_call_id`` are no longer parameters at all — read from the
+        same ambient state (``penny.llm.run_context``) the real client reads, and
+        recorded on ``request_data`` so a test asserting on them sees exactly what
+        production would have stamped, however it was opened (a ``run_scope`` /
+        ``tool_call_scope`` the test entered, or one already opened by the agent
+        loop it's driving)."""
         request_data = {
             "model": self.model,
+            "run_id": run_id if run_id is not None else current_run_id(),
             "messages": messages,
             "tools": tools,
             "agent_name": agent_name,
             "prompt_type": prompt_type,
             "run_target": run_target,
-            "parent_run_id": parent_run_id,
-            "parent_tool_call_id": parent_tool_call_id,
+            "parent_run_id": current_parent_run_id(),
+            "parent_tool_call_id": current_tool_call_id(),
         }
         # A browse micro-context call (#1588/#1570 — extract is required, so EVERY
         # browse routes page content through one): answer deterministically with the

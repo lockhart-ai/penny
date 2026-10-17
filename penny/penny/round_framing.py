@@ -211,9 +211,7 @@ class RoundFramer:
         only the one turn, which is the floor the framer already handles."""
         conversation = [(PennyConstants.MessageDirection.INCOMING, ask)] if ask else []
         content = build_framing_content(message, conversation)
-        return await self._micro_context.frame_skill(
-            content, run_target=self._run_target, parent_run_id=run_id
-        )
+        return await self._micro_context.frame_skill(content, run_target=self._run_target)
 
     async def bind_entry(
         self,
@@ -330,7 +328,6 @@ class RoundFramer:
             [parameter.name for parameter in open_parameters],
             spoken,
             run_target=self._run_target,
-            parent_run_id=run_id,
         )
 
     async def _settle_container(self, framing: RoundFraming, *, run_id: str | None) -> None:
