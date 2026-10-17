@@ -248,14 +248,88 @@ _SPEC_LINK = f"[{_ITEM} specification sheet]({LISTING_URL}/spec)"
 _LISTING_LINK = f"[{_ITEM} listing]({LISTING_URL})"
 _HEAD = f"Title: {_ITEM} — handheld console | faux-market\n{LISTING_URL}\n\n"
 
+# Generic, number-free boilerplate every page below shares — real-listing furniture (a full
+# spec table, a Q&A block, a returns paragraph, box contents, shipping options, a seller blurb,
+# an accessibility note, a footer) that carries no dollar figure, so splicing it into any page
+# below adds length and realism without touching that page's own decoys or its DATUM span.
+# Shared across READINGS and MESSY_READINGS — one copy, not a near-duplicate per page set
+# (#2366: the ruling that the first three cases' pages get real length too).
+_FULL_SPECS = (
+    "7-inch 1200p display with 512 GB of storage\n"
+    "About four hours of battery per charge; the cell is replaceable\n"
+    "Weight 640g · Original box and charger · One controller included\n"
+    "Bluetooth 5.2 and a USB-C port for charging and wired audio\n"
+    "Runs the open handheld OS, version 14\n"
+    "Supports external storage up to 1 TB via its card slot\n"
+    "Available in slate grey or sandstone\n"
+    "Comes with a one-year manufacturer warranty, extendable at checkout\n"
+)
+
+_QA_BLOCK = (
+    "Q: Does it come with a case? A: A soft pouch is included; a hard case is sold "
+    "separately.\n"
+    "Q: Is the storage expandable? A: Yes, via the card slot, up to 1 TB.\n"
+    "Q: Does it work outside this region? A: The charger is dual-voltage; the plug may need "
+    "an adapter.\n"
+    "Q: Can I pick this up locally? A: No, this storefront ships only, no local pickup.\n"
+)
+
+_RETURN_POLICY = (
+    "Returns are accepted within thirty days of delivery; return postage is the buyer's "
+    "unless the item arrived faulty. Exchanges are processed once the returned unit is "
+    "received and inspected. A protection plan purchased with this order is refunded in full "
+    "if the unit is returned within the same window. Orders placed after the daily cutoff "
+    "ship the next business day. This listing is provided by an independent seller on a "
+    "fictional marketplace platform and is not sold or fulfilled by the platform itself.\n"
+)
+
+_BOX_CONTENTS = (
+    "What's in the box\n"
+    "One handheld console · One USB-C charging cable · One controller · A quick-start guide\n"
+    "The protection plan, if purchased, is applied automatically at checkout and needs no "
+    "separate registration.\n"
+)
+
+_SHIPPING_OPTIONS = (
+    "Shipping options\n"
+    "Standard delivery is tracked door-to-door; expedited delivery is available at checkout "
+    "for an additional fee.\n"
+    "Ships from a fictional warehouse in a plain, unbranded box.\n"
+)
+
+_COMPARE_BLOCK = (
+    "Compare similar listings\n"
+    "Buyers who viewed this also looked at two other open-box handhelds from the same "
+    "storefront, each listed separately with its own asking price and condition notes.\n"
+)
+
+_SELLER_INFO_BLOCK = (
+    "Seller information\n"
+    "This storefront has operated on the marketplace for several years and ships from a "
+    "single fictional warehouse. Customer messages are typically answered within one "
+    "business day.\n"
+)
+
+_ACCESSIBILITY_NOTE = (
+    "This listing supports screen readers; alt text is provided for the product image.\n"
+)
+
+_PAGE_FOOTER = (
+    "Help · Track your order · Returns · Gift cards · Seller policies\n"
+    "Prices and availability are accurate as of the date shown and may change.\n"
+)
+
 
 # Five catalogue-grade pages: same url, same product, same price, five voices.  Each carries
 # far more than the job needs — a seller blurb, a specification block, neighbouring items with
-# their OWN prices, housekeeping notes — because a real page does, and because a page thin
-# enough to answer only the asked question cannot tell restraint from luck.  The neighbours are
-# the load-bearing part: a cycle that grabs a price is only demonstrably reading the RIGHT one
-# where wrong ones are on the page to grab.  Every markdown link sits at the CENTRE of its
-# block, since a search-shaped read is trimmed to ±2 lines around each solo link.
+# their OWN prices, housekeeping notes, and (below, #2366) the shared boilerplate above — because
+# a real page does, and because a page thin enough to answer only the asked question cannot tell
+# restraint from luck.  The neighbours are the load-bearing part: a cycle that grabs a price is
+# only demonstrably reading the RIGHT one where wrong ones are on the page to grab.  Every
+# markdown link sits at the CENTRE of its block, since a search-shaped read is trimmed to ±2
+# lines around each solo link.  Each page is several kilobytes, real-listing length rather than
+# the ~1 KB a page here once was — the ruling that these three cases' pages get real length too,
+# not just the same-item-decoy case's.
 READINGS = (
     Reading(
         "current-price",
@@ -278,7 +352,27 @@ READINGS = (
         "Nebula Dock, charging stand — $59\n"
         "Both ship from the same fictional warehouse.\n"
         "\n"
-        "Returns are accepted within thirty days; return postage is the buyer's.\n",
+        "Returns are accepted within thirty days; return postage is the buyer's.\n"
+        "\n"
+        "Full specifications\n"
+        f"{_FULL_SPECS}"
+        "\n"
+        f"{_BOX_CONTENTS}"
+        "\n"
+        f"{_SHIPPING_OPTIONS}"
+        "\n"
+        "Questions & answers\n"
+        f"{_QA_BLOCK}"
+        "\n"
+        f"{_COMPARE_BLOCK}"
+        "\n"
+        f"{_SELLER_INFO_BLOCK}"
+        "\n"
+        f"{_RETURN_POLICY}"
+        "\n"
+        f"{_ACCESSIBILITY_NOTE}"
+        "\n"
+        f"{_PAGE_FOOTER}",
     ),
     Reading(
         "asking-price",
@@ -302,7 +396,27 @@ READINGS = (
         "Spare stylus, twin pack — $19\n"
         "Everything ships from one fictional depot.\n"
         "\n"
-        "Thirty-day returns. The buyer pays return postage.\n",
+        "Thirty-day returns. The buyer pays return postage.\n"
+        "\n"
+        "Full specifications\n"
+        f"{_FULL_SPECS}"
+        "\n"
+        f"{_BOX_CONTENTS}"
+        "\n"
+        f"{_SHIPPING_OPTIONS}"
+        "\n"
+        "Questions & answers\n"
+        f"{_QA_BLOCK}"
+        "\n"
+        f"{_COMPARE_BLOCK}"
+        "\n"
+        f"{_SELLER_INFO_BLOCK}"
+        "\n"
+        f"{_RETURN_POLICY}"
+        "\n"
+        f"{_ACCESSIBILITY_NOTE}"
+        "\n"
+        f"{_PAGE_FOOTER}",
     ),
     Reading(
         "asking-right-now",
@@ -325,7 +439,27 @@ READINGS = (
         "Moulded travel case — $44\n"
         "The counter posts its shelf every morning.\n"
         "\n"
-        "Returns within thirty days, postage paid by the buyer.\n",
+        "Returns within thirty days, postage paid by the buyer.\n"
+        "\n"
+        "Full specifications\n"
+        f"{_FULL_SPECS}"
+        "\n"
+        f"{_BOX_CONTENTS}"
+        "\n"
+        f"{_SHIPPING_OPTIONS}"
+        "\n"
+        "Questions & answers\n"
+        f"{_QA_BLOCK}"
+        "\n"
+        f"{_COMPARE_BLOCK}"
+        "\n"
+        f"{_SELLER_INFO_BLOCK}"
+        "\n"
+        f"{_RETURN_POLICY}"
+        "\n"
+        f"{_ACCESSIBILITY_NOTE}"
+        "\n"
+        f"{_PAGE_FOOTER}",
     ),
     Reading(
         "listed-today",
@@ -348,7 +482,27 @@ READINGS = (
         "Screen guard, twin pack — $12\n"
         "The whole shelf ships from one fictional warehouse.\n"
         "\n"
-        "Returns accepted for thirty days; the buyer covers return postage.\n",
+        "Returns accepted for thirty days; the buyer covers return postage.\n"
+        "\n"
+        "Full specifications\n"
+        f"{_FULL_SPECS}"
+        "\n"
+        f"{_BOX_CONTENTS}"
+        "\n"
+        f"{_SHIPPING_OPTIONS}"
+        "\n"
+        "Questions & answers\n"
+        f"{_QA_BLOCK}"
+        "\n"
+        f"{_COMPARE_BLOCK}"
+        "\n"
+        f"{_SELLER_INFO_BLOCK}"
+        "\n"
+        f"{_RETURN_POLICY}"
+        "\n"
+        f"{_ACCESSIBILITY_NOTE}"
+        "\n"
+        f"{_PAGE_FOOTER}",
     ),
     Reading(
         "listing-shows",
@@ -372,7 +526,27 @@ READINGS = (
         "Dock and cable set — $69\n"
         "All consigned stock ships from one fictional store.\n"
         "\n"
-        "Thirty days to return; return postage is the buyer's.\n",
+        "Thirty days to return; return postage is the buyer's.\n"
+        "\n"
+        "Full specifications\n"
+        f"{_FULL_SPECS}"
+        "\n"
+        f"{_BOX_CONTENTS}"
+        "\n"
+        f"{_SHIPPING_OPTIONS}"
+        "\n"
+        "Questions & answers\n"
+        f"{_QA_BLOCK}"
+        "\n"
+        f"{_COMPARE_BLOCK}"
+        "\n"
+        f"{_SELLER_INFO_BLOCK}"
+        "\n"
+        f"{_RETURN_POLICY}"
+        "\n"
+        f"{_ACCESSIBILITY_NOTE}"
+        "\n"
+        f"{_PAGE_FOOTER}",
     ),
 )
 
@@ -462,71 +636,6 @@ _PRICE_MATCH_LINE = (
     "it cheaper elsewhere within 14 days"
 )
 
-_MESSY_SPECS = (
-    "7-inch 1200p display with 512 GB of storage\n"
-    "About four hours of battery per charge; the cell is replaceable\n"
-    "Weight 640g · Original box and charger · One controller included\n"
-    "Bluetooth 5.2 and a USB-C port for charging and wired audio\n"
-    "Runs the open handheld OS, version 14\n"
-    "Supports external storage up to 1 TB via its card slot\n"
-    "Available in slate grey or sandstone\n"
-    "Comes with a one-year manufacturer warranty, extendable at checkout\n"
-)
-
-_MESSY_QA = (
-    "Q: Does it come with a case? A: A soft pouch is included; a hard case is sold "
-    "separately.\n"
-    "Q: Is the storage expandable? A: Yes, via the card slot, up to 1 TB.\n"
-    "Q: Does it work outside this region? A: The charger is dual-voltage; the plug may need "
-    "an adapter.\n"
-    "Q: Can I pick this up locally? A: No, this storefront ships only, no local pickup.\n"
-)
-
-_MESSY_POLICY = (
-    "Returns are accepted within thirty days of delivery; return postage is the buyer's "
-    "unless the item arrived faulty. Exchanges are processed once the returned unit is "
-    "received and inspected. A protection plan purchased with this order is refunded in full "
-    "if the unit is returned within the same window. Orders placed after the daily cutoff "
-    "ship the next business day. This listing is provided by an independent seller on a "
-    "fictional marketplace platform and is not sold or fulfilled by the platform itself.\n"
-)
-
-_MESSY_BOX_CONTENTS = (
-    "What's in the box\n"
-    "One handheld console · One USB-C charging cable · One controller · A quick-start guide\n"
-    "The protection plan, if purchased, is applied automatically at checkout and needs no "
-    "separate registration.\n"
-)
-
-_MESSY_SHIPPING_OPTIONS = (
-    "Shipping options\n"
-    "Standard delivery is tracked door-to-door; expedited delivery is available at checkout "
-    "for an additional fee.\n"
-    "Ships from a fictional warehouse in a plain, unbranded box.\n"
-)
-
-_MESSY_COMPARE = (
-    "Compare similar listings\n"
-    "Buyers who viewed this also looked at two other open-box handhelds from the same "
-    "storefront, each listed separately with its own asking price and condition notes.\n"
-)
-
-_MESSY_SELLER_INFO = (
-    "Seller information\n"
-    "This storefront has operated on the marketplace for several years and ships from a "
-    "single fictional warehouse. Customer messages are typically answered within one "
-    "business day.\n"
-)
-
-_MESSY_ACCESSIBILITY = (
-    "This listing supports screen readers; alt text is provided for the product image.\n"
-)
-
-_MESSY_FOOTER = (
-    "Help · Track your order · Returns · Gift cards · Seller policies\n"
-    "Prices and availability are accurate as of the date shown and may change.\n"
-)
-
 
 class _MessyVoice(NamedTuple):
     """One arm's wording and the handful of sentences that make its page read differently
@@ -576,7 +685,7 @@ def _messy_body(voice: _MessyVoice) -> str:
         f"{_WARRANTY_LINE}\n"
         "\n"
         f"{voice.spec_header}\n"
-        f"{_MESSY_SPECS}"
+        f"{_FULL_SPECS}"
         f"{_SPEC_LINK}\n"
         "\n"
         "Frequently bought together\n"
@@ -585,9 +694,9 @@ def _messy_body(voice: _MessyVoice) -> str:
         f"{_OTHER_ITEM_2_LINE}\n"
         "Both ship from the same fictional warehouse.\n"
         "\n"
-        f"{_MESSY_BOX_CONTENTS}"
+        f"{_BOX_CONTENTS}"
         "\n"
-        f"{_MESSY_SHIPPING_OPTIONS}"
+        f"{_SHIPPING_OPTIONS}"
         "\n"
         "Customer reviews\n"
         f"{_REVIEW_ONE}"
@@ -595,19 +704,19 @@ def _messy_body(voice: _MessyVoice) -> str:
         f"{voice.review_three}"
         "\n"
         "Questions & answers\n"
-        f"{_MESSY_QA}"
+        f"{_QA_BLOCK}"
         "\n"
-        f"{_MESSY_COMPARE}"
+        f"{_COMPARE_BLOCK}"
         "\n"
-        f"{_MESSY_SELLER_INFO}"
+        f"{_SELLER_INFO_BLOCK}"
         "\n"
-        f"{_MESSY_POLICY}"
+        f"{_RETURN_POLICY}"
         f"{_PRICE_MATCH_LINE}\n"
         "\n"
-        f"{_MESSY_ACCESSIBILITY}"
+        f"{_ACCESSIBILITY_NOTE}"
         "\n"
         f"{voice.closing}\n"
-        f"{_MESSY_FOOTER}"
+        f"{_PAGE_FOOTER}"
     )
 
 
