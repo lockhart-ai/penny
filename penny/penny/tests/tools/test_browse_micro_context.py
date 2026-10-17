@@ -975,7 +975,7 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
         cast(Any, _StallsOnTheSecondPage()),
         _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2}),
     )
-    tool.timeout = 0.2  # type: ignore[assignment]  # BrowseTool.timeout defaults to 300.0
+    tool.timeout = 0.2  # type: ignore[assignment]  # BrowseTool.timeout defaults to 900.0
 
     registry = ToolRegistry()
     registry.register(tool)

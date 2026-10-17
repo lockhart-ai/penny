@@ -211,12 +211,13 @@ class BrowseTool(Tool):
 
     name = "browse"
     args_model = BrowseArgs
-    # Whole-tool executor budget.  Must comfortably exceed the per-URL
-    # BROWSE_REQUEST_TIMEOUT across all retries so a slow/hung URL fires its own
-    # per-attempt timeout — captured by ``asyncio.gather(return_exceptions=True)``
-    # as a graceful error section — before the outer executor cancels the whole
-    # browse call (which would surface as a blunt "Tool execution timeout").
-    timeout = 300.0
+    # A backstop, not the bound on extraction: each extraction draw stops at its token
+    # budget (8,000 for browse-extract) with one thinking-off retry, so the worst
+    # legitimate call on the slowest measured hardware (about 26 tokens/s) is one page
+    # fetch exhausting its retries (~165 s) plus one extraction and its retry (16,000
+    # tokens, ~615 s). 900 s covers that with margin; when it fires, timeout_report
+    # says what finished.
+    timeout = 900.0
 
     def __init__(
         self,
