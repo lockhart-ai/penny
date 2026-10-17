@@ -7,7 +7,7 @@ content carrying SOME of what was asked for is an ``EXTRACTED:`` read that gives
 it has for each thing and leaves out the rest, and ``NOT_PRESENT:`` is for content carrying
 NONE of it.
 
-Six cases over the three states a page can be in relative to its instruction — it carries
+Seven cases over the three states a page can be in relative to its instruction — it carries
 ALL of what was named, SOME of it, or NONE — with the middle state reached on three different
 page shapes, two of them at REAL SIZE.  Each is five wordings of its instruction over one
 fixed page:
@@ -23,12 +23,17 @@ fixed page:
   list over and over while arguing whether a headline without its description is a partial
   unit or a missing one — only shows at that size.
 * ``extract-top-headlines-past-a-run-on-label`` — a sharper version of the same incident
-  (#2453): the same front page, with one more link spliced in just past the top three whose
-  own label runs directly into its description with no separating space.  The real production
-  draws read that run-on link correctly, then used the pattern they had just found there to
-  re-litigate whether the top three — ordinary punctuation, ordinary spaces — were hiding the
-  same split, burning several thousand extra tokens and, on the worst draws, costing the
-  response its own ``EXTRACTED:`` tag.
+  (#2453): a FAITHFUL FICTIONAL TRANSFORM of the real page that produced it — the same order
+  (four headline-only top stories, the third also closing on a bare "?", a nav-style break,
+  then the run-on label itself), not a one-link splice (measured: a splice moved the run-on
+  label's shape but not its position, and under-reproduced the incident at only +8% cost).
+  The real production draws read the run-on link correctly, then used the pattern they had
+  just found there to re-litigate whether the top three — ordinary punctuation, ordinary
+  spaces — were hiding the same split, burning several thousand extra tokens and, on the
+  worst draws, costing the response its own ``EXTRACTED:`` tag.
+* ``extract-top-headlines-bare-ask`` — the SAME-WORLD CONTROL: the real incident's own plain
+  "top 3 headlines" ask (no description, no link) over the identical faithful page, so a run
+  reads its own cost ratio between the two cases rather than a different run's baseline.
 * ``extract-fields-partly-present`` — the same front page read as an index of other pages:
   titles and links, and no summaries, under an instruction that asks for all three.
 * ``extract-fields-partly-present-on-a-prose-page`` — the same shortfall reached by a second
@@ -271,15 +276,11 @@ _FRONT_PAGE = (
     "[Older stories](https://news-alpha.example/archive/2036)"
 )
 
-# The same front page, with ONE more link spliced in right after the third top headline
-# (#2453): a label whose own title runs directly into its description with NO separating
-# space or punctuation gap — the exact shape that cost a real front-page read minutes of
-# deliberation and, on some draws, its own EXTRACTED: tag.  The title is two sentences
-# (mirroring the real trigger), the second ending in a question mark that the description's
-# first word follows with no gap at all.  Inserted early, beside the top three, because
-# that is where the incident showed the model start treating the run-on link's own boundary
-# as a hint that the top three might be hiding an un-signalled split too.  Fictional story,
-# invented site.
+# A run-on label — a title running directly into its description with NO separating space or
+# punctuation gap — the exact shape that cost a real front-page read minutes of deliberation
+# and, on some draws, its own EXTRACTED: tag.  The title is two sentences (mirroring the real
+# trigger), the second ending in a question mark that the description's first word follows
+# with no gap at all.  Fictional story, invented site.
 _RUNON_LINK = (
     "[This clinic has forty staff. Why did the merger finally happen?The two practices had "
     "argued for years over whose name to keep, and the deal only closed once a retiring "
@@ -287,10 +288,33 @@ _RUNON_LINK = (
     "Staff say the paperwork alone took months.]"
     "(https://news-alpha.example/health/2036/clinic-merger-why-so-long)\n"
 )
+
+# A FAITHFUL FICTIONAL TRANSFORM of the real front page (#2453 round 2), not a one-link
+# splice — the splice measured only +8% cost over the sibling case, too weak to reproduce the
+# incident, because it moved the run-on label's SHAPE without moving its POSITION or the page
+# around it.  The real page's own order: four headline-only top stories — the THIRD of which
+# also closes on a bare question mark — then a nav-style break ("More from CBC News"), then
+# the run-on label, then the rest of the story list.  This rebuild reproduces exactly that
+# order and those two structural facts (a nearby "?"-ending headline-only story, and a
+# nav-style break immediately before the run-on label), on top of the same ~90-link count,
+# the same nav and footer sections, and the same headline-only top three the sibling case
+# already uses — everything else renamed into fiction, nothing real committed.
 _FRONT_PAGE_WITH_RUNON_LABEL = _FRONT_PAGE.replace(
-    "lantern-festival-draws-record-crowd)\n", f"lantern-festival-draws-record-crowd)\n{_RUNON_LINK}"
+    "Lantern festival draws a record crowd to the old quarter despite a week of heavy rain "
+    "forecast",
+    "Lantern festival draws a record crowd to the old quarter: has the week of heavy rain "
+    "finally let up?",
 )
-assert _FRONT_PAGE_WITH_RUNON_LABEL != _FRONT_PAGE, "splice anchor not found on the front page"
+assert _FRONT_PAGE_WITH_RUNON_LABEL != _FRONT_PAGE, "third-headline reword anchor not found"
+_FRONT_PAGE_WITH_RUNON_LABEL = _FRONT_PAGE_WITH_RUNON_LABEL.replace(
+    "[Museum returns the borrowed mosaics a decade early after a quiet dispute over storage "
+    "costs](https://news-alpha.example/culture/2036/museum-returns-borrowed-mosaics)\n",
+    "[Museum returns the borrowed mosaics a decade early after a quiet dispute over storage "
+    "costs](https://news-alpha.example/culture/2036/museum-returns-borrowed-mosaics)\n"
+    "[More from News Alpha](https://news-alpha.example/)\n"
+    f"{_RUNON_LINK}",
+)
+assert _FRONT_PAGE_WITH_RUNON_LABEL.count(_RUNON_LINK.strip()) == 1, "run-on splice did not land"
 
 # A section front that prints a byline under each headline and no timestamp — the same
 # partly-answered shortfall reached by a different PAGE SHAPE.  It is a second CASE and not
@@ -514,7 +538,7 @@ _LAST_LINK_ANCHOR = "https://news-alpha.example/health/2036/pharmacy-trials-late
 _SECTION_HEADLINE_ANCHOR = "City orchestra"
 _SECTION_BYLINE_ANCHOR = "Ines Marlowe"
 
-# The spliced-in run-on link's own title (#2453) — its smallest unique span, held against
+# The run-on link's own title (#2453) — its smallest unique span, held against
 # `_FRONT_PAGE_WITH_RUNON_LABEL` by the same coherence probe as every other anchor here.  It
 # is never the subject of a claim on its own case (the ask is still "the top 3", and this
 # link sits below them); it exists so a reader confirming the fixture coheres with what it
@@ -1274,19 +1298,24 @@ async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_o
     extractor_eval: ExtractorEval, model: str
 ) -> None:
     """The sharper trigger behind #2453: the same real-size front page as
-    ``extract-top-headlines-off-a-front-page``, with one more link spliced in just past the
-    top three — a label whose own title runs directly into a further sentence with NO space
-    or punctuation gap before it (mirroring the production incident's own page exactly).
+    ``extract-top-headlines-off-a-front-page``, rebuilt as a FAITHFUL FICTIONAL TRANSFORM of
+    the real page that produced the incident (round 2 — a plain one-link splice measured only
+    +8% cost and under-reproduced it): the real page's own order — four headline-only top
+    stories, the third of which also closes on a bare question mark, then a nav-style break,
+    then the run-on label itself — reproduced exactly, on the same ~90-link page, before and
+    after the splice point.
 
-    The production thinking traces read this run-on link correctly on its own terms, then
-    used the pattern it had just found — no space after the title's own closing punctuation
-    — as a reason to go back and re-litigate whether the top three headlines, whose internal
-    colons and question marks are followed by ordinary spaces, might be hiding an
-    un-signalled split too.  That second-guessing is what burned several thousand extra
-    tokens and, on the worst draws, cost the response its own ``EXTRACTED:`` tag.  The ask
-    and the top three headlines are unchanged from the sibling case; only the page gained
-    this one link, below them, so the only variable is whether its run-on shape still
-    derails a read of headlines that never had that shape.
+    The production thinking traces read the run-on link correctly on its own terms, then used
+    the pattern it had just found — no space after the title's own closing punctuation — as a
+    reason to go back and re-litigate whether the top three headlines, whose internal colons
+    and question marks are followed by ordinary spaces, might be hiding an un-signalled split
+    too.  That second-guessing is what burned several thousand extra tokens and, on the worst
+    draws, cost the response its own ``EXTRACTED:`` tag.  The ask and the top three headlines
+    are unchanged from the sibling case; only the page's shape changed, so the only variable
+    is whether a faithfully-positioned run-on label still derails a read of headlines that
+    never had that shape.  ``extract-top-headlines-bare-ask`` asks the real page's own plain
+    "top 3 headlines" question over this SAME page, as the same-run control this case's cost
+    is read as a ratio against.
 
     **The STORE category is empty for this case, and that is the correct report.**  A
     micro-context is one call that returns a typed result — it moves no machine and writes
@@ -1361,7 +1390,108 @@ async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_o
     # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
     # tool sequence and no reply spread: a single call makes neither.  Token cost is the
     # measure this case exists for (#2453): the run-on link should cost nothing beyond the
-    # sibling case's own cost, not several thousand extra tokens of re-litigation.
+    # sibling case's own cost, not several thousand extra tokens of re-litigation.  Read
+    # against ``extract-top-headlines-bare-ask``'s own cost on the SAME page, same run.
+    cohort.measure(
+        output_field(EXTRACT_OUTCOME),
+        output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
+    )
+
+
+# ── Case 7: the same-world control — the real page's own plain ask (#2453 round 2) ──
+
+_TOP_HEADLINES_BARE_ASK = ExtractFixture(
+    case_id="extract-top-headlines-bare-ask",
+    url=_FRONT_PAGE_URL,
+    page=_FRONT_PAGE_WITH_RUNON_LABEL,
+    instruction="top 3 headlines",
+    behaviour=(
+        "In the browse-extract micro-context, when asked only for the top 3 headlines off a "
+        "real-size front page that also carries a later run-on label, Penny comes back with "
+        "the three headlines quickly, at the plain ask's ordinary cost."
+    ),
+    expectations=(
+        FieldExpectation("headline-1", _TOP1_HEADLINE_ANCHOR),
+        FieldExpectation("headline-2", _TOP2_HEADLINE_ANCHOR),
+        FieldExpectation("headline-3", _TOP3_HEADLINE_ANCHOR),
+    ),
+    reading=PageReading.LINK_LIST,
+)
+
+_TOP_HEADLINES_BARE_ASK_PHRASINGS = (
+    "top three headlines",
+    "give me the top 3 headlines",
+    "what are the top 3 headlines",
+    "top 3 stories",
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_plain_ask_over_the_same_page_costs_the_ordinary_rate(
+    extractor_eval: ExtractorEval, model: str
+) -> None:
+    """The SAME-WORLD CONTROL for ``extract-top-headlines-past-a-run-on-label`` (#2453
+    round 2): the real production incident's OWN bare ask — "top 3 headlines", no
+    description, no link named — over the identical faithful page, so a run reads its own
+    cost RATIO between the two cases rather than comparing against a different run's
+    historical baseline.  Real production measured this exact bare ask at ~1,900 completion
+    tokens against ~6,000 for the three-part ask over the same page; this case is read beside
+    its sibling, never alone.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    nothing to any store — so there is no store claim to make.  The empty section says the
+    shape has nothing to store, not that nobody ran the checklist.
+    """
+    cohort = await extractor_eval(
+        case_id=_TOP_HEADLINES_BARE_ASK.case_id,
+        behaviour=_TOP_HEADLINES_BARE_ASK.behaviour,
+        area=Area.READING_A_PAGE,
+        model=model,
+        url=_TOP_HEADLINES_BARE_ASK.url,
+        page=_TOP_HEADLINES_BARE_ASK.page,
+        reading=_TOP_HEADLINES_BARE_ASK.reading,
+        instruction=_TOP_HEADLINES_BARE_ASK.instruction,
+        also_instructed=_TOP_HEADLINES_BARE_ASK_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — which of the closed outcomes the draw committed to
+    cohort.claim(
+        "state: the draw read the page rather than reporting it empty",
+        _landed_on(_TOP_HEADLINES_BARE_ASK),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — each of the top three headlines arrived, and nothing else did
+    cohort.claim(
+        "state: the answer carries the first headline the page supplies",
+        _carries(_TOP1_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the second headline the page supplies",
+        _carries(_TOP2_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the third headline the page supplies",
+        _carries(_TOP3_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: every specific value in the answer is on the page",
+        _nothing_invented,
+        SpecCategory.PROVENANCE,
+    )
+
+    # What is MEASURED — read beside the three-part ask's own cost, same run, as the ratio
+    # the gate reads.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
@@ -1375,6 +1505,7 @@ FIXTURES = (
     _ALL_PRESENT,
     _TOP_HEADLINES,
     _TOP_HEADLINES_PAST_A_RUNON_LABEL,
+    _TOP_HEADLINES_BARE_ASK,
     _PARTLY_PRESENT,
     _PARTLY_PRESENT_ON_A_PROSE_PAGE,
     _NONE_PRESENT,
