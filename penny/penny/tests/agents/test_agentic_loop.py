@@ -61,11 +61,9 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
-    AppliedConfigurationValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
     RefusalValidator,
-    SkillNarrationValidator,
     WritesLandedValidator,
     XmlTagValidator,
     find_hallucinated_urls,
@@ -3105,14 +3103,11 @@ class TestResponseValidators:
         # text is a legitimate answer there).
         assert Agent.run_shape_validators == []
         assert Agent.invalid_draw_conditions == ()
-        # Chat's run-shape chain is the three narrate-from-the-RECORD nudges — what the run
-        # LEARNED (#1658), what it SET RUNNING (#1869), and what it WROTE (#1946) — and its
-        # invalid draws are the ones that are not a reply, so a plain conversational reply
-        # stays valid.  The writes frame is LAST because it is the corrective one: the two
-        # above ask for an account of the round, and it says which of that the store holds.
+        # Chat's run-shape chain is the one narrate-from-the-RECORD nudge left (#2455
+        # naive baseline: no skill/round-framing narration to chain ahead of it) — what
+        # it WROTE (#1946) — and its invalid draws are the ones that are not a reply, so
+        # a plain conversational reply stays valid.
         assert [v.__class__ for v in ChatAgent.run_shape_validators] == [
-            SkillNarrationValidator,
-            AppliedConfigurationValidator,
             WritesLandedValidator,
         ]
         assert [condition for condition, _ in ChatAgent.invalid_draw_conditions] == [

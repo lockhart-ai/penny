@@ -28,7 +28,14 @@ from penny.tests.eval import conftest as eval_conftest
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import worker_filename
-from penny.tests.eval.utils.catalogue import CATALOGUE_ENV, Area, CatalogueEntry, Layer, load
+from penny.tests.eval.utils.catalogue import (
+    CATALOGUE_ENV,
+    Area,
+    CatalogueEntry,
+    ConversationState,
+    Layer,
+    load,
+)
 from penny.tests.eval.utils.run_health import (
     CohortRecord,
     ProviderTally,
@@ -572,28 +579,15 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
         self,
         chat_eval,
         collector_cycles_eval,
-        classifier_eval,
-        framer_eval,
-        labeller_eval,
-        binder_eval,
         extractor_eval,
         monkeypatch,
     ):
         """Every driver, handed a case with no ask, raises before a sample is stood up."""
         monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
         stated = {"case_id": "no-ask", "behaviour": _SENTENCE, "min_pass_rate": None}
-        idle = eval_conftest.ConversationState.IDLE
         refused = {
             "chat_eval": chat_eval(**stated),
             "collector_cycles_eval": collector_cycles_eval(collection="a-job", **stated),
-            "classifier_eval": classifier_eval(state=idle, **stated),
-            "framer_eval": framer_eval(turns=(), also_phrased=(), **stated),
-            "labeller_eval": labeller_eval(
-                utterance=" ", calls=(), target="a-job", also_demonstrated=(), **stated
-            ),
-            "binder_eval": binder_eval(
-                turns=(), skill="a_routine", intent="x", parameters=(), also_phrased=(), **stated
-            ),
             "extractor_eval": extractor_eval(url="u", page="p", instruction="", **stated),
         }
         for driver, drive in refused.items():
@@ -676,10 +670,6 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
         self,
         chat_eval,
         collector_cycles_eval,
-        classifier_eval,
-        framer_eval,
-        labeller_eval,
-        binder_eval,
         extractor_eval,
     ) -> dict[str, Callable[..., Awaitable[object]]]:
         """Each driver, already handed something it could drive — so what a test leaves out is
@@ -687,16 +677,9 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
         arm = eval_conftest.CycleArm(
             text=_INSTRUCTION, seed=lambda db: None, pages=[], world=eval_conftest._NO_WORLD
         )
-        routine = {"skill": "a_routine", "intent": "x", "parameters": ()}
         return {
             "chat_eval": partial(chat_eval, ask=_ASK),
             "collector_cycles_eval": partial(collector_cycles_eval, collection="a-job", arms=[arm]),
-            "classifier_eval": partial(classifier_eval, state=_IDLE, ask=_ASK),
-            "framer_eval": partial(framer_eval, turns=_TURNS, also_phrased=()),
-            "labeller_eval": partial(
-                labeller_eval, utterance=_ASK, calls=(), target="a-job", also_demonstrated=()
-            ),
-            "binder_eval": partial(binder_eval, turns=_TURNS, also_phrased=(), **routine),
             "extractor_eval": partial(extractor_eval, url="u", page="p", instruction=_INSTRUCTION),
         }
 
@@ -704,18 +687,13 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
 # What each driver is handed above, and what catalogue mode records of it: the driver's own
 # layer, and the first wording — an ask of several turns written on one line.
 _ASK = "what does it cost?"
-_TURNS = ("watch the listing", "tell me when it moves")
 _INSTRUCTION = "the price on the page"
-_IDLE = eval_conftest.ConversationState.IDLE
-_ELICIT = eval_conftest.ConversationState.ELICIT
-_REQUEST = eval_conftest.ConversationState.REQUEST
-_APPLY = eval_conftest.ConversationState.APPLY
+_IDLE = ConversationState.IDLE
+_ELICIT = ConversationState.ELICIT
+_REQUEST = ConversationState.REQUEST
+_APPLY = ConversationState.APPLY
 _CATALOGUED = (
     ("chat_eval", Layer.WHOLE_TURN, _ASK),
     ("collector_cycles_eval", Layer.COLLECTOR_CYCLE, _INSTRUCTION),
-    ("classifier_eval", Layer.CLASSIFIER_DRAW, _ASK),
-    ("framer_eval", Layer.MICRO_CONTEXT, "watch the listing / tell me when it moves"),
-    ("labeller_eval", Layer.MICRO_CONTEXT, _ASK),
-    ("binder_eval", Layer.MICRO_CONTEXT, "watch the listing / tell me when it moves"),
     ("extractor_eval", Layer.MICRO_CONTEXT, _INSTRUCTION),
 )

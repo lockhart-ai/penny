@@ -41,7 +41,47 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from penny.conversation_machine import OUT_EDGES, ConversationState
+
+class ConversationState(StrEnum):
+    """The conversation machine's retired state set (#2455 naive baseline: there is no
+    machine left to draw these — kept here, as plain strings once were enum members,
+    only so the few historical cases/fixtures that still name an edge they walked have
+    somewhere to validate it against)."""
+
+    IDLE = "idle"
+    ELICIT = "elicit"
+    LEARN = "learn"
+    REQUEST = "request"
+    APPLY = "apply"
+
+
+# The edge table the retired conversation machine offered — frozen here exactly as it
+# last stood, never extended, since nothing draws a move along it anymore (#2455).
+OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
+    ConversationState.IDLE: (
+        ConversationState.APPLY,
+        ConversationState.REQUEST,
+        ConversationState.LEARN,
+        ConversationState.ELICIT,
+        ConversationState.IDLE,
+    ),
+    ConversationState.ELICIT: (
+        ConversationState.LEARN,
+        ConversationState.ELICIT,
+        ConversationState.IDLE,
+    ),
+    ConversationState.LEARN: (
+        ConversationState.APPLY,
+        ConversationState.LEARN,
+        ConversationState.IDLE,
+    ),
+    ConversationState.REQUEST: (
+        ConversationState.APPLY,
+        ConversationState.ELICIT,
+        ConversationState.IDLE,
+    ),
+    ConversationState.APPLY: (),
+}
 
 
 class Area(StrEnum):

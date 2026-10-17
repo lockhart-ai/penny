@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from penny.conversation_machine import ConversationState
 from penny.tests.eval.utils.cohort import (
     Arm,
     AssertionRow,
@@ -177,15 +176,19 @@ class Cohort:
         return outcomes
 
     # ── the claims ───────────────────────────────────────────────────────────
-    def assert_machine_landed(self, state: ConversationState) -> None:
+    def assert_machine_landed(self, state: str) -> None:
         """The round ended in the state this story is about.
+
+        ``state`` is a plain string (#2455 naive baseline: there is no conversation
+        machine, so there is no enum of states left to type this against) — every kept
+        case on this branch names ``"idle"``, the only state a turn can land in now.
 
         Scored rather than reported, for the one case whose contract only EXISTS in the state
         it names: a story about the reply that closes a learn round has no subject at all
         outside that state."""
         self.claim(
-            f"state: the machine landed in {state.value}",
-            lambda s, _world: (s.landed == state.value, f"walked {s.walk}"),
+            f"state: the machine landed in {state}",
+            lambda s, _world: (s.landed == state, f"walked {s.walk}"),
             SpecCategory.LANDED,
         )
 

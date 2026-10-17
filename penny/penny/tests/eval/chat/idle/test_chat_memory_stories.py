@@ -100,7 +100,6 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
@@ -672,7 +671,7 @@ async def test_a_lookup_is_saved_where_it_was_asked_for(chat_eval: ChatEval, mod
     when the turn starts — so everything in it afterwards is this turn's work."""
     cohort = await _drive(chat_eval, model, _SAVE)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — the sentence's two halves: the list the ask named gained an entry, and what
     # landed in it is the subject she was sent to read about.
@@ -742,7 +741,7 @@ async def test_a_fact_from_a_previous_session_comes_back(chat_eval: ChatEval, mo
     absolute test of one-call reachability, since there is nothing else it could come from."""
     cohort = await _drive(chat_eval, model, _COLD_RECALL)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — the reply states the value the world carries (the *nothing omitted* direction: a
     # reply that answers nothing at all satisfies every other claim here vacuously), and the
@@ -831,7 +830,7 @@ async def test_one_ask_recalls_across_the_whole_store(chat_eval: ChatEval, model
     ask just as well, and many routes reach one end state."""
     cohort = await _drive(chat_eval, model, _SWEEP)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE
     cohort.assert_the_reply_answers_the_ask()
@@ -892,7 +891,7 @@ async def test_forgetting_then_reporting_names_what_is_left(
     """One note named for removal, two left standing, and a report of what remains."""
     cohort = await _drive(chat_eval, model, _FORGET)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — the named note gone, every other one still there, and the list itself still
     # standing.  The last is one level up, about the container rather than its contents: a turn
@@ -962,7 +961,7 @@ async def test_a_change_lands_on_the_entry_that_exists(chat_eval: ChatEval, mode
     change lands on that recipe rather than beside it."""
     cohort = await _drive(chat_eval, model, _UPDATE)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — the change is on the entry that was already there, that entry still carries the
     # temperature it held, the box holds the recipes it started with, and the recipe nobody
@@ -1036,7 +1035,7 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
     """Two facts in one message, and each belongs somewhere different."""
     cohort = await _drive(chat_eval, model, _FAN_OUT)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE
     cohort.claim(
@@ -1119,7 +1118,7 @@ async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval, model: str) ->
     match is not a request, so the round ends where it began and the list is left as it was."""
     cohort = await _drive(chat_eval, model, _NO_FIRE_WISTFUL)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — what SURVIVES, which is the whole of what a tempting list lets this case assert.
     # Adding to the list is hers; taking something off it is not, and a turn that "tidied" the
@@ -1194,7 +1193,7 @@ def claim_the_list_delete(cohort: Cohort) -> None:
     """Every claim the delete-a-list case makes, declared in one place so the deterministic
     pin in ``test_eval_harness.py`` answers the very set the case declares."""
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — the named list is archived and still holds its entries; each other list is
     # still the live list it was, and still holds its entries.

@@ -16,7 +16,6 @@ import itertools
 import json
 import logging
 import os
-import re
 from collections import Counter
 from collections.abc import (
     AsyncIterator,
@@ -36,48 +35,24 @@ from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic import BaseModel
 from similarity.embeddings import deserialize_embedding
 from sqlmodel import Session, col, select
 
 from penny.agents.collector import Collector
 from penny.config import Config
 from penny.constants import ChannelType, MutationEntityType, PageReading, PennyConstants
-from penny.conversation_machine import (
-    ConversationState,
-    MachineSnapshot,
-    RoundFraming,
-    RoundShortfall,
-    StateClassifier,
-    StateDecision,
-    build_snapshot,
-)
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.memory.store import snapshot_fields
 from penny.database.message_store import MessageStore, PromptPerf
 from penny.database.models import Media, MemoryRow, MutationEvent, PromptLog, SendQueueItem
 from penny.database.mutation_store import mutation_detail
-from penny.database.skill_store import parameters_from_json, steps_from_json
-from penny.database.skills import (
-    DistillInput,
-    SkillDraft,
-    SkillParameter,
-    SkillStep,
-    SkillSubKind,
-    build_binding_content,
-    distill_steps,
-    render_spoken_turns,
-)
 from penny.datetime_utils import user_timezone_name
 from penny.llm.models import strip_harmony_control_tokens
-from penny.llm.similarity import embed_text
 from penny.notification import NotificationInput, render_notification
 from penny.penny import Penny
 from penny.preflight import PreflightError
 from penny.responses import PennyResponse
-from penny.round_framing import round_shortfall
-from penny.skill_extraction import build_framing_content, build_naming_content
 from penny.tests.conftest import (
     TEST_SENDER,
     require_memory,
@@ -110,13 +85,7 @@ from penny.tools.micro_context import (
     MicroContext,
     MicroContextResult,
     MicroExtractOutcome,
-    MissingParameters,
-    SkillBinding,
-    SkillLabels,
-    SkillSignature,
-    StateDrawOutcome,
 )
-from penny.tools.skill_tools import render_skill_shape
 
 # A new eval DRIVER (a ``*_eval`` pytest fixture) lives in its own module under
 # ``drivers/``, never appended here (#2395) — two case PRs that each add a driver no
@@ -2343,19 +2312,14 @@ EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 # a sample's database exists from sample START, so a file is not evidence that anything ran.
 NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its seeded world"
 NO_REPLY = "the measured turn produced no reply"
-# A chat turn is entered with its state already decided: the conversation machine classifies the
-# message BEFORE the chat agent runs.  A classifier call that raised (the endpoint failing it on
-# every attempt) never reaches the client's persist step, so it leaves no promptlog row, and the
-# machine records no move for it — the turn runs on from wherever the machine stood.  Such a
-# sample never exercised the classifier, so it can count neither for nor against any claim about
-# where the machine landed.
-NO_CLASSIFIER_DRAW = "the state classifier's call failed, so the turn ran on an undecided state"
-# The chat agent's own call fails the same way AFTER the classifier answered: the endpoint
-# refuses it on every attempt, it raises before the client's persist step and writes no row,
-# and the user is sent Penny's canned model-error reply.  That reply measures the endpoint, so
-# the sample is a harness loss.  A chat call that DREW but came back unusable is not this: every
-# reroll-exhausted draw was persisted before it was discarded, so its rows are there and the
-# failure is the model's, scored like any other reply.
+# A naive chat turn (#2455) opens directly with the chat agent — there is no state
+# classifier ahead of it anymore, so there is nothing for it to run "undecided" on.  The
+# chat agent's own call can still fail at the endpoint: it raises before the client's
+# persist step and writes no row, and the user is sent Penny's canned model-error reply.
+# That reply measures the endpoint, so the sample is a harness loss.  A chat call that
+# DREW but came back unusable is not this: every reroll-exhausted draw was persisted
+# before it was discarded, so its rows are there and the failure is the model's, scored
+# like any other reply.
 #
 # THE COST, STATED: this reads whether the turn's chat agent logged ANY row, so an endpoint
 # failure after the turn already logged a call (a tool step, then a refused call) leaves the
@@ -2448,76 +2412,13 @@ def reply_embedding(db: Database, reply: str) -> list[float] | None:
     return deserialize_embedding(row.embedding)
 
 
-def routine_names_a_destination(steps: Sequence[SkillStep]) -> bool:
-    """Whether any leaf in a routine names somewhere to ACT — the ATTACHMENT MARK, set by
-    distillation on any leaf whose demonstrated value named one of Penny's own collections.
-
-    So it is true of a write, of a log append, and of a plugin verb nobody here has heard of,
-    and false of a routine that only browses.  Never keyed to a tool NAME: a skill is an
-    arbitrary tool sequence.
-
-    Its own function because two readers ask it of two shapes — the observation, off the
-    registry rows a sample left, and the fixture probe, off the DRAFTS a world seeds — and the
-    probe exists precisely to say the claim reads the minted routine rather than the seeded
-    five, which a second spelling of the reading could not honestly do."""
-    return any(substitution.attachment for step in steps for substitution in step.substitutions)
-
-
-def routine_open_parameters(steps: Sequence[SkillStep]) -> list[str]:
-    """The spots a routine still carries as LEAF parameters, sorted.
-
-    A named spot stops being a parameter and the labeller names every spot unconditionally, so
-    a leftover one means the labelling draw fell back as a whole.  Read by the same two readers
-    ``routine_names_a_destination`` is, for the same reason."""
-    return sorted(
-        {
-            substitution.parameter
-            for step in steps
-            for substitution in step.substitutions
-            if substitution.kind == SkillSubKind.HOLE and substitution.parameter is not None
-        }
-    )
-
-
-def routine_demonstrated_values(steps: Sequence[SkillStep]) -> list[str]:
-    """Every string at the leaves of a routine's demonstrated call arguments.
-
-    What the routine will actually fetch and look for each run — one altitude BELOW
-    ``render_skill_shape``, which carries no argument values at all.  Read by the observation
-    alone, off the registry rows a sample left; unlike ``routine_names_a_destination`` no
-    fixture probe asks it of a world's seeded drafts.
-
-    A FLAT list rather than one keyed by tool or by argument position, for the reason nothing
-    else in this path names a tool: a skill is an arbitrary tool sequence, so which call carries
-    the page and which carries what to look for is not something a reader can know, and a
-    reading keyed to either stops firing the moment a round is demonstrated with a tool nobody
-    enumerated."""
-    return [text for step in steps for text in _leaf_strings(step.arguments)]
-
-
-def _leaf_strings(node: object) -> list[str]:
-    """Every string at the leaves of one call's arguments, however deeply they nest."""
-    if isinstance(node, str):
-        return [node]
-    if isinstance(node, dict):
-        return [text for value in node.values() for text in _leaf_strings(value)]
-    if isinstance(node, list):
-        return [text for value in node for text in _leaf_strings(value)]
-    return []
-
-
 def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
-    """Every routine the round minted, as the registry holds it."""
-    return [
-        eval_cohort.RoutineRecord(
-            name=skill.name,
-            shape=render_skill_shape(skill),
-            open_parameters=routine_open_parameters(steps_from_json(skill.steps)),
-            names_a_destination=routine_names_a_destination(steps_from_json(skill.steps)),
-            demonstrated_values=routine_demonstrated_values(steps_from_json(skill.steps)),
-        )
-        for skill in db.skills.list_all()
-    ]
+    """Every routine the round minted, as the registry holds it — always ``[]`` on this
+    branch (#2455 naive baseline): there is no skill registry, so no round ever mints a
+    routine into one.  Kept as a function (not inlined at the call site) so the field it
+    feeds stays named the same on ``SampleObservation``."""
+    del db
+    return []
 
 
 def _stored_entries(db: Database) -> list[eval_cohort.StoredEntry]:
@@ -2680,30 +2581,18 @@ def _written_by_a_live_run(entry) -> bool:
 
 
 def _framed_container(db: Database) -> str | None:
-    """The container the round was framed on, read off the move that settled it.
-
-    From the MACHINE rather than guessed from the collections that appeared, because the claim
-    is whether the write landed where the turn was told to put it, and only the framing says
-    where that was."""
-    latest = db.machine.latest_transition()
-    if latest is None or latest.skill_frame is None:
-        return None
-    return RoundFraming.model_validate_json(latest.skill_frame).container
+    """The container a round was framed on — always ``None`` on this branch (#2455 naive
+    baseline): there is no conversation machine and no round framing, so nothing ever
+    stamps ``state_transition.skill_frame``.  Kept as a function (not inlined at the call
+    site) so the field it feeds stays named the same on ``SampleObservation``."""
+    return None
 
 
 def _awaited_parameters(db: Database) -> list[str]:
-    """What the round is still WAITING ON, read off the move that settled it.
-
-    From the MACHINE for the reason ``_framed_container`` is: the round's partial binding is
-    recorded on the transition and read back on every later turn of the round, so what a
-    request turn asks for is a row rather than a re-reading of the reply.  Their DECLARED
-    names, in declared order — a parameter name is a binding key, which is strictly
-    identifiable, where the sentence that asks for it is prose."""
-    latest = db.machine.latest_transition()
-    if latest is None or latest.round_shortfall is None:
-        return []
-    shortfall = RoundShortfall.model_validate_json(latest.round_shortfall)
-    return [parameter.name for parameter in shortfall.missing]
+    """What a round is still waiting on — always ``[]`` on this branch (#2455 naive
+    baseline): there is no request state and no partial binding, so nothing ever stamps
+    ``state_transition.round_shortfall``."""
+    return []
 
 
 def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
@@ -2816,15 +2705,12 @@ def _exclusion(db: Database, reply: str) -> str | None:
     it is false of every other shape — a micro-context sample has no reply at all, and a gate
     that voided one for that would void the entire cohort and refuse the run (#2017).
 
-    Every chat turn opens with a state-classifier draw, so a sample whose turn ran but whose own
-    rows carry none is one whose classifier call failed: read off the promptlog, since a call
-    that raised is exactly the call that wrote no row.  The chat agent's own call is read the
-    same way, once the classifier has answered.
+    A naive chat turn (#2455) opens directly with the chat agent, so a sample whose turn ran
+    but whose own rows carry no chat-agent draw is one whose chat call failed at the endpoint:
+    read off the promptlog, since a call that raised is exactly the call that wrote no row.
     """
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
-    if not _classifier_rows(db):
-        return NO_CLASSIFIER_DRAW
     if not _chat_drew(db):
         return NO_CHAT_DRAW
     if not reply.strip():
@@ -2833,18 +2719,10 @@ def _exclusion(db: Database, reply: str) -> str | None:
 
 
 def _chat_drew(db: Database) -> bool:
-    """Whether the measured turn's chat agent logged a draw of its own.
-
-    The turn opens with the state classifier's draw, so the chat rows ledgered AFTER the latest
-    classifier row are the measured turn's, and an earlier turn of a scripted conversation cannot
-    stand in for them.  Read by timestamp rather than run id: a micro-context draw mints its own
-    run id, so the classifier's row does not carry the turn's.  Asked only once the classifier
-    has answered, so there is a latest classifier row to read from."""
-    entered = _classifier_rows(db)[-1].timestamp
-    return any(
-        row.agent_name == PennyConstants.CHAT_AGENT_NAME and row.timestamp > entered
-        for row in _sample_prompt_rows(db)
-    )
+    """Whether the measured turn's chat agent logged a draw of its own — read off every
+    sample row directly, since a naive chat turn (#2455) opens with the chat agent and has
+    no earlier classifier row to read a "since" boundary from."""
+    return any(row.agent_name == PennyConstants.CHAT_AGENT_NAME for row in _sample_prompt_rows(db))
 
 
 def _draw_exclusion(db: Database, answer: str) -> str | None:
@@ -3363,20 +3241,17 @@ async def _seed_sample(
     *,
     world: World | None,
     seed: Seeder | None,
-    seed_skills: Sequence[SkillDraft] | None,
     browse: list[CannedPage] | None,
     prepare: Preparer | None,
 ) -> None:
     """Lay a sample's world down before its first turn: the user, the world's own seeded
-    store, the case's own seed, the embeddings those seeds need, any fixture skills, the
-    canned browse, the world's mailbox, and the case's late hook."""
+    store, the case's own seed, the embeddings those seeds need, the canned browse, the
+    world's mailbox, and the case's late hook."""
     seed_user(penny.db)
     seed_world_stores(penny.db, world)
     if seed is not None:
         seed(penny.db)
     await _embed_seeds(penny)
-    if seed_skills:
-        await _seed_eval_skills(penny, seed_skills)
     if browse is not None:
         install_browse(penny, browse)
     if world is not None and world.mailbox:
@@ -3478,11 +3353,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
     the reply, then read what the turn left behind.  A per-sample server is essential: a
     shared one leaks a prior sample's shut-down channel, which then errors on the next
     sample's broadcast.  A timeout is a sample the pool excludes by name, not a crash.
-
-    ``seed_skills`` lays fixture skills into the registry with real description
-    embeddings (``_seed_eval_skills``, shared with the classifier runner) — what
-    a case needs when its ONE turn stands on a routine an earlier round already
-    taught, rather than driving that round again.
     """
     _cohorts: dict[str, _PendingCase] = {}
 
@@ -3498,7 +3368,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         model: str = "",
         samples_per_phrasing: int = 0,
         seed: Seeder | None = None,
-        seed_skills: Sequence[SkillDraft] | None = None,
         prepare: Preparer | None = None,
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
@@ -3560,7 +3429,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 penny,
                 world=world,
                 seed=seed,
-                seed_skills=seed_skills,
                 browse=list(world.pages) if world is not None else None,
                 prepare=prepare,
             )
@@ -3968,7 +3836,6 @@ def collector_cycles_eval(
         sample_index: int,
         collection: str,
         arm: CycleArm,
-        seed_skills: Sequence[SkillDraft] | None,
         prepare: Preparer | None,
         observe: Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation],
     ) -> SampleResult:
@@ -3978,8 +3845,6 @@ def collector_cycles_eval(
         seed_world_stores(penny.db, arm.world)
         arm.seed(penny.db)
         await _embed_seeds(penny)
-        if seed_skills:
-            await _seed_eval_skills(penny, seed_skills)
         if prepare is not None:
             prepare(penny)
         driven = await _drive_cycles(penny, collection, [arm.pages])
@@ -4004,7 +3869,6 @@ def collector_cycles_eval(
         arms: Sequence[CycleArm] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
-        seed_skills: Sequence[SkillDraft] | None = None,
         prepare: Preparer | None = None,
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
@@ -4061,7 +3925,6 @@ def collector_cycles_eval(
                 sample_index=sample_index,
                 collection=collection,
                 arm=arms[driving.index_of(sample_index)],
-                seed_skills=seed_skills,
                 prepare=prepare,
                 observe=_observer(sample_index),
             )
@@ -4108,15 +3971,14 @@ class EndToEndArm(NamedTuple):
     Penny — a cold ask, any turns a routine still has to be taught or re-pointed through, and
     the message that gives the job its terms.  Each turn is written to read sensibly against
     whatever Penny actually said back to the one before it, since the arm drives her real
-    reply rather than a scripted one.  ``seed``/``seed_skills``/``world`` lay the chat phase's
-    ground down — an empty machine, or a routine already taught and running elsewhere.
-    ``cycles`` is the created job's OWN real cycles that follow the script, each against its
-    own browse register: the page as taught, then however the case asks it to move."""
+    reply rather than a scripted one.  ``seed``/``world`` lay the chat phase's ground down —
+    an empty machine, or a job already configured and running elsewhere.  ``cycles`` is the
+    created job's OWN real cycles that follow the script, each against its own browse
+    register: the page as taught, then however the case asks it to move."""
 
     label: str
     turns: Sequence[str]
     seed: Seeder | None
-    seed_skills: Sequence[SkillDraft] | None
     world: World
     cycles: Sequence[list[CannedPage]]
 
@@ -4250,7 +4112,6 @@ async def _drive_end_to_end_sample(
         penny,
         world=arm.world,
         seed=arm.seed,
-        seed_skills=arm.seed_skills,
         browse=list(arm.world.pages),
         prepare=None,
     )
@@ -4406,230 +4267,25 @@ def end_to_end_eval(
     _cohorts.clear()
 
 
-# ── Classifier eval (#1706 beat 1): one scoped micro-context call per sample ──
-# A classifier-eval runner: a case passes ``ask`` + ``also_asked`` and gets a :class:`Cohort`
-# back to assert against.
-ClassifierEval = Callable[..., Awaitable["Cohort"]]
+# ── Browse EXTRACTION: what a page half-carries (#1942) ───────────────────────
 
-# The fields of a state decision's structured answer, named once.  A case asserts them and
-# measures them by these names, so the deterministic half and the variance half read the
-# same value rather than two spellings of it.
-CLASSIFY_OUTCOME = "outcome"
-CLASSIFY_STATE = "state"
-CLASSIFY_SKILL = "skill"
-
-# The outcomes that mean the draw never produced a usable decision at all.  A sample landing
-# on one of these is EXCLUDED rather than scored, exactly as the extractor excludes its own
-# two: the shape decayed or the membership check refused every re-roll, so nothing came back
-# for a claim to be true or false of.  The machine's own response to them — fail, then stay —
-# is a property of the MACHINE, and this case is about the draw.
-_STATE_FAILURES = frozenset({StateDrawOutcome.INVALID, StateDrawOutcome.POISON_REROLL_FAILED})
+ExtractorEval = Callable[..., Awaitable["Cohort"]]
 
 
-def _classification_output(decision: StateDecision) -> list[eval_cohort.OutputField]:
-    """One classification draw's STRUCTURED ANSWER, field by field.
+class FieldExpectation(NamedTuple):
+    """One thing an extract instruction asks for, and how the page answers it (#1942).
 
-    All three, always, for ``_extraction_output``'s reason: which of them carries anything is
-    decided by the outcome and by whether the drawn state is skill-gated, so carrying only the
-    filled ones would make the cohort compare a different set of axes per sample.
+    ``anchor`` is the span of the page that supplies it, compared through the SHIPPED
+    ``spoken_form`` — so a value passes whether or not the draw kept the punctuation or
+    the article in front of it.  Deliberately not an equality: which words carry a fact
+    has a little play in it, and a claim demanding one exact string would be answering
+    for the draw.
 
-    ``skill`` is emitted even when it is empty, and a case measuring it on an UNGATED state
-    would be reading a blank on every sample — which scores 0.000, the same number perfect
-    agreement scores.  Emitted so a reader sees the draw bound nothing; measured only where
-    the state under test is one that binds."""
-    return [
-        eval_cohort.OutputField(name=CLASSIFY_OUTCOME, value=decision.outcome.value),
-        eval_cohort.OutputField(
-            name=CLASSIFY_STATE, value=decision.state.value if decision.state else ""
-        ),
-        eval_cohort.OutputField(name=CLASSIFY_SKILL, value=decision.skill or ""),
-    ]
+    An EMPTY anchor is the ABSENT direction: the page supplies nothing for this, so it is
+    named here to say what the instruction asked for and the page did not have."""
 
-
-def _observe_classification(
-    db: Database,
-    decision: StateDecision | None,
-    *,
-    name: str,
-    phrasing: str,
-    arm: int,
-) -> eval_cohort.SampleObservation:
-    """Read what ONE classification sample decided — its own observer, not the chat one.
-
-    A single-call context leaves no machine walk, no registry row and no outgoing message:
-    the classifier DECIDES a transition, it does not take one, so ``landed`` would be empty
-    on every sample and a chat-shaped read would return a structurally fine, substantively
-    hollow row (#2017).  What there is to read is the typed decision.
-
-    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
-    rendered classifier content, which already CARRIES the message in its own section, under
-    the contract naming the states the draw may write."""
-    failed = decision is None or decision.outcome in _STATE_FAILURES
-    exclusion = _draw_exclusion(db, "" if failed else decision.outcome.value)
-    if decision is None or exclusion is not None:
-        return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
-        )
-    return eval_cohort.SampleObservation(
-        name=name,
-        phrasing=phrasing,
-        arm=arm,
-        given=given_to_the_model(db),
-        output=_classification_output(decision),
-    )
-
-
-class ParkedRound(BaseModel):
-    """The round a REQUEST case's machine is parked on (#2084) — the routine it named and
-    the values the earlier turns already settled.
-
-    What a case DECLARES, which is the smaller half: production's binder reads the round's
-    words against the routine the registry holds, so the description, the declared order
-    and which parameters got nothing are all facts about the ROUTINE and are read off it
-    (:func:`_registry_shortfall`).  A case that stated them itself would be a second copy
-    of a scheme that can only drift, and the drift's whole symptom is a snapshot reading
-    leaner than production's while reporting a number as if it did not."""
-
-    skill: str
-    settled: dict[str, str] = {}
-
-
-# What a declared parked round is refused for, each naming the coherence it broke.  A
-# REQUEST case is measured on what the round is waiting for, so every one of these would
-# otherwise render a waiting-on section describing a round production cannot produce.
-_PARKED_ROUND_OFF_REQUEST = (
-    "{case_id}: only a round parked in request waits on a binding — this case parks in "
-    "{state}, which carries none"
-)
-_PARKED_ROUND_MISSING = (
-    "{case_id}: every round parked in request waits on a binding — this case declares no "
-    "parked_round, so its draw would be shown none"
-)
-_PARKED_ROUND_UNSEEDED = (
-    "{case_id}: the parked round names the routine {skill!r}, which this case's "
-    "seed_skills do not register"
-)
-_PARKED_ROUND_UNDECLARED = (
-    "{case_id}: the parked round settles {undeclared}, which {skill!r} does not declare"
-)
-_PARKED_ROUND_COMPLETE = (
-    "{case_id}: the parked round settles every parameter {skill!r} declares, so it is "
-    "waiting on nothing and the binder would have framed it"
-)
-
-
-def _refuse_binding_state_mismatch(
-    case_id: str, state: ConversationState, parked: ParkedRound | None
-) -> None:
-    """Refuse a case whose parked round and whose state disagree, in either direction
-    (#2084/#2099).
-
-    ``MachineSnapshot.round_binding`` is present exactly while a round is parked in
-    request, so the rule is a biconditional and both halves of it are wrong the same way —
-    the case is measured against a document the wiring cannot produce.  A case declaring a
-    round anywhere else gets a section production renders on no other state; a REQUEST case
-    declaring none is missing the one section production always renders there, and reports
-    its number as if it were not."""
-    if parked is not None and state is not ConversationState.REQUEST:
-        raise ValueError(_PARKED_ROUND_OFF_REQUEST.format(case_id=case_id, state=state.value))
-    if parked is None and state is ConversationState.REQUEST:
-        raise ValueError(_PARKED_ROUND_MISSING.format(case_id=case_id))
-
-
-def _registry_shortfall(db: Database, case_id: str, parked: ParkedRound) -> RoundShortfall:
-    """The declared parked round as the binding production would have recorded for it.
-
-    Built through the production constructor off the SEEDED REGISTRY ROW — the same row the
-    binder is handed — so the routine's name, its description and the declared order of
-    both lists come from where production gets them, and what is left for the case to say
-    is only what its earlier turns settled.  Everything the round is still waiting on
-    follows from that: a declared parameter the case did not settle is a parameter the
-    words gave nothing for, which is exactly what ``MissingParameters`` names."""
-    routine = db.skills.get(parked.skill)
-    if routine is None:
-        raise ValueError(_PARKED_ROUND_UNSEEDED.format(case_id=case_id, skill=parked.skill))
-    declared = parameters_from_json(routine.parameters)
-    missing = tuple(one.name for one in declared if one.name not in parked.settled)
-    _refuse_incoherent_parked_round(case_id, parked, declared, missing)
-    return round_shortfall(
-        routine, declared, parked.settled, MissingParameters(names=missing, values={})
-    )
-
-
-def _refuse_incoherent_parked_round(
-    case_id: str,
-    parked: ParkedRound,
-    declared: list[SkillParameter],
-    missing: tuple[str, ...],
-) -> None:
-    """Refuse a declared round the routine cannot be waiting on, before the draw.
-
-    Before the DRAW rather than before the sample, unlike its siblings: what these read is
-    the routine's declared parameters, and the registry does not hold the routine until the
-    sample has seeded it.  The refusal still precedes every model call the case makes.
-
-    Both ways of getting it wrong are silent on a run and each turns the case into a
-    measurement of something else: a value under a name the routine does not declare is
-    narrowed away, so the section claims the round gave nothing it in fact gave; and a
-    round with nothing missing is one the binder would have FRAMED, so the section renders
-    an empty ``still needed:`` and the turn is answered against a state production never
-    parks in."""
-    undeclared = sorted(set(parked.settled) - {one.name for one in declared})
-    if undeclared:
-        raise ValueError(
-            _PARKED_ROUND_UNDECLARED.format(
-                case_id=case_id, undeclared=undeclared, skill=parked.skill
-            )
-        )
-    if not missing:
-        raise ValueError(_PARKED_ROUND_COMPLETE.format(case_id=case_id, skill=parked.skill))
-
-
-def _classifier_snapshot(
-    db: Database,
-    *,
-    case_id: str,
-    state: ConversationState,
-    message: str,
-    penny_last_turn: str | None = None,
-    task_anchor: str | None = None,
-    parked_round: ParkedRound | None = None,
-) -> MachineSnapshot:
-    """What ONE classification sample's draw is given — the PRODUCTION builder, handed
-    everything production hands it.
-
-    A module-level step rather than four lines inside the driver so the wiring itself is
-    pinnable: the #2084 defect was an argument this call did not pass, which no assertion
-    over a snapshot built beside it could ever have seen.  ``round_binding`` is what a
-    round parked in request is waiting on, absent on every other state because production
-    carries one nowhere else."""
-    return build_snapshot(
-        db,
-        state=state,
-        message=message,
-        penny_last_turn=penny_last_turn,
-        task_anchor=task_anchor,
-        round_binding=(
-            None if parked_round is None else _registry_shortfall(db, case_id, parked_round)
-        ),
-    )
-
-
-def _classifier_world(state: ConversationState, known: int) -> World:
-    """The one situation a classification case is answered against, as a :class:`World`.
-
-    Named for the two things that decide which doors are on offer — where the machine is
-    parked, and how many routines the registry holds — because ``presented_edges`` narrows the
-    union structurally when there are none, and a hold measured with no door to decline is a
-    hold that proves nothing.
-
-    ``pages``/``keeps``/``excludes``/``answers`` are all EMPTY, and necessarily so: every one
-    of them is a token set read off a page, and a classification reads a conversation and no
-    page at all.  Declaring any of them would print a "must be kept" row in a report where
-    nothing verified it, which reads as a check that passed."""
-    return World(
-        name=f"parked in {state.value}, {known} routine(s) known", pages=(), keeps=(), excludes=()
-    )
+    field: str
+    anchor: str = ""
 
 
 def _micro_context_rows(db: Database, *agent_names: str) -> list[PromptLog]:
@@ -4637,17 +4293,11 @@ def _micro_context_rows(db: Database, *agent_names: str) -> list[PromptLog]:
     order — one per draw, so a reroll shows as a second row (the fragile signal and
     the transcript's second 🧩 pair both read off this).
 
-    Takes SEVERAL customers because a run end is not one draw (#1803): the labeller
-    rules on provenance and the shape draw decides what the routine is, and a report
-    naming only one of them renders a transcript that cannot show the decision the
-    case is scoring — which is how a shipped second draw read as never built."""
+    Takes SEVERAL customers because a run end is not always one draw: a report naming
+    only one of several cooperating micro-contexts would render a transcript that
+    cannot show the decision the case is scoring."""
     wanted = frozenset(agent_names)
     return [row for row in _sample_prompt_rows(db) if row.agent_name in wanted]
-
-
-def _classifier_rows(db: Database) -> list[PromptLog]:
-    """The sample's state-classifier rows (#1706)."""
-    return _micro_context_rows(db, PennyConstants.STATE_CLASSIFIER_AGENT_NAME)
 
 
 def _classifier_events(phrasing: str, rows: list[PromptLog]) -> list[report.Event]:
@@ -4712,16 +4362,15 @@ def _write_classifier_report(
     *,
     result: SampleResult,
     phrasing: str,
-    agent_names: Sequence[str] = (PennyConstants.STATE_CLASSIFIER_AGENT_NAME,),
+    agent_names: Sequence[str],
 ) -> None:
     """One micro-context sample's transcript block — hand-built (the
     generic extractor is chat-run-shaped; this sample is one step whose actor is the
     🧩 micro-context, the spec's official sub-model actor), rendered by the SAME pure
     report grammar and appended to the same ``<case_id>.md``. No-op off-report.
     ``agent_names`` selects the customers' rows, rendered in one ledger-ordered
-    stream (the classifier by default; the run-end labeller AND shape draw for the
-    skill cases, #1770/#1803) — each 🧩 pair carries its own context label, so two
-    customers read as the two actors they are.
+    stream — each 🧩 pair carries its own context label, so two customers read as the
+    two actors they are.
 
     The sample's system prompts are deposited for the case document the same way the
     chat path deposits them (#2062), off the SAME rows the transcript renders — so every
@@ -4752,1178 +4401,6 @@ def _write_classifier_report(
             run_close_score=f"{passed_checks}/{total}",
         )
     _record_sample_block(case_id, sample_index, transcript, result, live_prompt_perf(db))
-
-
-# Who a fixture skill is registered under — the runner's own author, named once so the
-# deterministic probe that lays the same draft down lays it down the same way.
-EVAL_SEED_AUTHOR = "eval-seed"
-
-# One structurally-valid placeholder step for an eval-seeded skill: the
-# classifier reads only name + description, but the draft stays real-typed.
-_SEED_SKILL_STEP = SkillStep(
-    ordinal=1,
-    source_ordinal=1,
-    tool="browse",
-    arguments={"queries": ["https://example.test"], "extract": "the value"},
-)
-
-
-def eval_skill(name: str, description: str, params: dict[str, str]) -> SkillDraft:
-    """A fixture skill draft: name + description + declared parameters (semantic
-    name → what-to-supply), over one structurally-valid placeholder step.  The
-    classifier reads the FULL metadata — name, description, AND parameters — so
-    a case's seeds must carry the same shape real auto-extracted skills do."""
-    return SkillDraft(
-        name=name,
-        intent=description,
-        description=description,
-        steps=[_SEED_SKILL_STEP],
-        parameters=[SkillParameter(name=key, description=value) for key, value in params.items()],
-        source_run_id="eval-seed",
-    )
-
-
-async def _seed_eval_skills(penny: Penny, seed_skills: Sequence[SkillDraft]) -> None:
-    """Seed fixture skills WITH real description embeddings, so
-    ``resolve_by_meaning`` ranks them (a vectorless skill is resolution-invisible
-    — seeding one would silently hollow the case).  A failed embed fails the
-    sample loudly rather than degrade."""
-    for draft in seed_skills:
-        vector = await embed_text(penny.embedding_model_client, draft.description)
-        assert vector is not None, f"seed skill embed failed: {draft.name}"
-        penny.db.skills.upsert(draft, author=EVAL_SEED_AUTHOR, description_embedding=vector)
-
-
-@pytest.fixture
-def classifier_eval(
-    make_config: Callable[..., Config], tmp_path, request
-) -> Iterator[ClassifierEval]:
-    """Drive the conversation-state classifier (#1706) — ONE scoped micro-context call per
-    sample, no agent loop — and return the case's COHORT.
-
-    A case passes ``ask`` and ``also_asked`` — the other wordings of the SAME ask — and gets a
-    :class:`Cohort` back to assert against; the arms are those wordings, over one world,
-    because a classification's whole natural language is the message.  Five wordings of one
-    ask pool into one variance number; a different ask is a different case.
-
-    Each sample is hermetic (own DB + real-model Penny); the snapshot is built PER SAMPLE by
-    the production ``build_snapshot`` from the case's ``state`` + the sample's message — the
-    same path the chat wiring calls.
-
-    A case parking in REQUEST declares its ``parked_round`` (#2084/#2099): production
-    reaches that state only through the binder, so every round parked there carries what it
-    is waiting on, and a draw shown no waiting-on section is being asked to leave request
-    without the one block naming the gap — an input the wiring cannot produce.  The guard
-    holds in both directions, so a REQUEST case cannot be written lean and no other state
-    can be handed a binding it never carries.
-
-    ``fragile`` is the classifier's native recovery signal: DECIDED after more than one
-    draw (a reroll) — a VARIANCE reading, never an assertion.  A poisoned draw group is
-    tagged pathology by the standard response scan; a hung call is a harness timeout.
-    """
-
-    _cohorts: dict[str, _PendingCase] = {}
-
-    async def _run(
-        *,
-        case_id: str,
-        state: ConversationState,
-        ask: str = "",
-        also_asked: Sequence[str] = (),
-        behaviour: str = "",
-        area: Area | None = None,
-        edge: Edge | None = None,
-        samples_per_phrasing: int = 0,
-        model: str = "",
-        penny_last_turn: str | None = None,
-        task_anchor: str | None = None,
-        parked_round: ParkedRound | None = None,
-        seed: Seeder | None = None,
-        seed_skills: Sequence[SkillDraft] | None = None,
-        samples: int = SAMPLES,
-        min_pass_rate: PassRate = UNSTATED,
-        timeout: float = SINGLE_CALL_WAIT_SECONDS,
-        family: str | None = None,
-    ) -> Cohort:
-        """Drive one state + message through the classification draw and return its COHORT.
-        A case with no ``ask`` is refused by name."""
-        _require_ask(case_id, "classifier_eval", "ask=<the message>", ask)
-        _require_report_only(case_id, min_pass_rate)
-        _refuse_binding_state_mismatch(case_id, state, parked_round)
-        catalogued = _declare_case(
-            request,
-            case_id=case_id,
-            layer=Layer.CLASSIFIER_DRAW,
-            behaviour=behaviour,
-            area=area,
-            edge=edge,
-            wording=ask,
-        )
-        eval_artifacts.begin_case(case_id)
-        # One situation, K wordings of the message — the same shape chat has, and the world
-        # is a property of the CASE rather than of the arm.
-        arms = _arms(
-            [ask, *also_asked],
-            [_classifier_world(state, len(seed_skills or ()))],
-            samples_per_phrasing,
-            samples,
-        )
-        spoken = arms.spoken
-        pending = _cohorts.setdefault(
-            case_id,
-            _PendingCase(
-                case_id=case_id,
-                family=family,
-                module=request.module.__name__,
-                behaviour=catalogued.sentence,
-            ),
-        )
-
-        async def _drive(
-            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
-        ) -> SampleResult:
-            phrasing = spoken[sample_index]
-            seed_user(penny.db)
-            if seed is not None:
-                seed(penny.db)
-            await _embed_seeds(penny)
-            if seed_skills:
-                await _seed_eval_skills(penny, seed_skills)
-            classifier = StateClassifier(penny.model_client)
-            decision: StateDecision | None = None
-            try:
-                # The PRODUCTION snapshot builder per sample, so the eval
-                # exercises the same path the wiring does — EVERY seeded
-                # skill offered, no ranking or cap (the #1706 ruling), and a
-                # request-parked round carrying the binding it waits on (#2084).
-                snapshot = _classifier_snapshot(
-                    penny.db,
-                    case_id=case_id,
-                    state=state,
-                    message=phrasing,
-                    penny_last_turn=penny_last_turn,
-                    task_anchor=task_anchor,
-                    parked_round=parked_round,
-                )
-                decision = await asyncio.wait_for(
-                    classifier.classify(snapshot, phrasing, run_target=penny.chat_agent.name),
-                    timeout=timeout,
-                )
-                # The case is graded from its cohort's CLAIMS, made after every sample has
-                # run, so the sample itself scores nothing at drive time.
-                result = SampleResult.graded([])
-                result.observe_rerolled(rerolled=len(_classifier_rows(penny.db)) > 1)
-                _stamp_cause(penny.db, result)
-            except TimeoutError:
-                result = SampleResult.binary(["no decision within timeout"])
-                _stamp_cause(penny.db, result, timed_out=True)
-            label = arms.label(sample_index)
-            result.observation = _observe_classification(
-                penny.db,
-                decision,
-                name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                phrasing=label,
-                arm=arms.index_of(sample_index),
-            )
-            _write_classifier_report(
-                penny.db, case_id, sample_index, result=result, phrasing=phrasing
-            )
-            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-            return result
-
-        results, perf, voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=arms.driven, drive=_drive, model=model
-        )
-        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        pending.add(cohort, results, perf, intended=arms.driven)
-        return cohort
-
-    yield _run
-    # The case's claims are made in the TEST BODY, after the drive returns — so the report is
-    # assembled here, once the body has had its say.
-    for pending in _cohorts.values():
-        pending.finish()
-    _cohorts.clear()
-
-
-# ── Run-end LEAF LABELLING (#1828) ────────────────────────────────────────────
-
-# One demonstrated tool call as a case fixture: tool name, verbatim arguments, its
-# framed result, and whether it succeeded — the shape a real chat run leaves behind in
-# the ledger, which is what ``_labelling_input`` renders the labeller's content from.
-DemoCall = tuple[str, dict, str, bool]
-
-# One conversation turn as a case fixture: its DIRECTION and its text.  The direction
-# is carried because the elicit round is half the evidence — the assistant's "walk me
-# through it once" is what makes the next user turn a demonstration — and a block that
-# renders both speakers as ``user:`` describes a conversation that never happened.
-DemoTurn = tuple[str, str]
-
-# A labeller-eval runner: a case passes ``also_demonstrated`` and gets a :class:`Cohort` back
-# to assert against.
-LabellerEval = Callable[..., Awaitable["Cohort"]]
-
-# What a draw that returned no labels at all hands the completeness gate — the framer's
-# reason: there is no enumerated outcome to read a marker off, so the marker is a word,
-# non-empty exactly when a result came back.
-DREW_ITS_LABELS = "labels"
-
-
-def label_name_field(spot: str) -> str:
-    """The field carrying what the draw NAMED one offered spot, keyed by the spot's CURRENT
-    (argument-derived) name — the anchor the input document renders verbatim, so the map home
-    needs no guess and the axis is the same one on every sample."""
-    return f"{spot} → name"
-
-
-def label_says_field(spot: str) -> str:
-    """The field carrying that spot's one line of what belongs there each run."""
-    return f"{spot} → says"
-
-
-def _labelling_output(labels: SkillLabels, offered: Sequence[str]) -> list[eval_cohort.OutputField]:
-    """One labelling draw's STRUCTURED ANSWER, spot by spot.
-
-    Keyed by the OFFERED name rather than by the drawn one, and iterated over ``offered``
-    rather than over what came back: the drawn name is the model's output, so a field keyed by
-    it would change its key from sample to sample and every axis would read ``unset`` on all
-    but the sample that happened to name it.
-
-    Every offered spot gets both of its fields whether or not a line came back for it — a spot
-    the draw skipped reads as the empty string rather than as an absent field, which is the
-    honest reading of "a line came back and said nothing"."""
-    return [
-        field
-        for spot in offered
-        for label in [labels.labels.get(spot)]
-        for field in (
-            eval_cohort.OutputField(name=label_name_field(spot), value=label.name if label else ""),
-            eval_cohort.OutputField(
-                name=label_says_field(spot), value=label.description if label else ""
-            ),
-        )
-    ]
-
-
-def _observe_labelling(
-    db: Database,
-    labels: SkillLabels | None,
-    offered: Sequence[str],
-    *,
-    name: str,
-    phrasing: str,
-    arm: int,
-) -> eval_cohort.SampleObservation:
-    """Read what ONE labelling sample named — its own observer, not the chat one.
-
-    A run-end draw leaves no machine walk, no registry row and no collection entry, so every
-    read ``_observe_sample`` makes would come back empty here (#2017).  What there is to read
-    is the returned ``SkillLabels``, and it is read directly rather than fished back out of a
-    persisted skill: everything downstream — applying a label, rendering it — is deterministic
-    Python pinned in ``make check``.
-
-    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
-    rendered document under the contract naming the line the draw must write per spot."""
-    exclusion = _draw_exclusion(db, "" if labels is None else DREW_ITS_LABELS)
-    if labels is None or exclusion is not None:
-        return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
-        )
-    return eval_cohort.SampleObservation(
-        name=name,
-        phrasing=phrasing,
-        arm=arm,
-        given=given_to_the_model(db),
-        output=_labelling_output(labels, offered),
-    )
-
-
-# The customers that draw at run end: the LABELLER (every spot in the implementation)
-# and the FRAMER (the interface, from the ask alone).  One list, so the report and the
-# reroll signal can never disagree about who spoke at the end of a run.
-RUN_END_CUSTOMERS = (
-    PennyConstants.SKILL_NAMING_AGENT_NAME,
-    PennyConstants.SKILL_FRAME_AGENT_NAME,
-)
-
-
-def _run_end_rerolled(db: Database) -> bool:
-    """Did EITHER run-end customer draw more than once (#1828/#1830) — the fragile
-    signal, a sample that only got there by recovering.
-
-    Counted PER customer, never in total: a run end is two draws by design, so a
-    total would mark every sample fragile and the signal would mean nothing."""
-    return any(len(_micro_context_rows(db, agent)) > 1 for agent in RUN_END_CUSTOMERS)
-
-
-def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
-    """The string leaf a substitution's JSON path addresses in a step's verbatim
-    arguments — the demonstrated value — or ``None`` when the path doesn't resolve to
-    one."""
-    node: object = arguments
-    for part in path:
-        if isinstance(node, dict) and isinstance(part, str):
-            node = node.get(part)
-        elif isinstance(node, list) and isinstance(part, int) and 0 <= part < len(node):
-            node = node[part]
-        else:
-            return None
-    return node if isinstance(node, str) else None
-
-
-def _labelling_input(
-    calls: Sequence[DemoCall], target: str, utterance: str, conversation: Sequence[DemoTurn]
-) -> tuple[str, dict[str, str]]:
-    """The labeller's content, and the ``{demonstrated value: current name}`` map its
-    labels are keyed by.
-
-    Distillation is DETERMINISTIC Python, so a fixture ledger fixes the labeller's
-    input exactly — no live draw sits upstream of this case.  The content is rendered
-    by ``build_naming_content``, the shipped function, so the case exercises the
-    shipped prompt rather than a copy that can drift.
-
-    The map is keyed by VALUE because the case's expectations are stated in values:
-    the semantic name is the model's to choose, and the contract is about which SPOTS
-    it named, never what it ended up calling them."""
-    inputs = [
-        DistillInput(source_ordinal=index, tool=name, arguments=arguments, result=result)
-        for index, (name, arguments, result, _ok) in enumerate(calls, start=1)
-    ]
-    steps, parameters = distill_steps(inputs, frozenset({target}))
-    content = build_naming_content(steps, parameters, utterance, list(conversation))
-    by_value = {
-        value: sub.parameter
-        for step in steps
-        for sub in step.substitutions
-        if sub.parameter is not None
-        and (value := _leaf_string(step.arguments, sub.path)) is not None
-    }
-    return content, by_value
-
-
-# A framer-eval runner: a case passes ``also_phrased`` and gets a :class:`Cohort` back to
-# assert against.
-FramerEval = Callable[..., Awaitable["Cohort"]]
-
-# The fields of a framing draw's structured answer, named once.  The interface is a NAME, a
-# DESCRIPTION and an ordered list of minted parameters, so the parameters are carried
-# POSITIONALLY: their names are the draw's own output, and a field keyed by one would change
-# its key from sample to sample — which is a variance axis that reads ``unset`` on every
-# sample but the one that happened to name the axis.
-FRAME_NAME = "routine name"
-FRAME_DESCRIPTION = "what it is for"
-FRAME_PARAMETERS = "parameters minted"
-
-# What a draw that returned no signature at all hands the completeness gate.  The framer has
-# no enumerated outcome to read a marker off — a signature came back or nothing did — so the
-# marker is a word, non-empty exactly when there is a result, which is the whole of what
-# ``_draw_exclusion`` asks.
-DREW_A_SIGNATURE = "signature"
-
-
-def frame_parameter_name(position: int) -> str:
-    """The field carrying what the draw called its ``position``-th parameter (1-based)."""
-    return f"parameter {position}"
-
-
-def frame_parameter_says(position: int) -> str:
-    """The field carrying that parameter's one line of what to supply."""
-    return f"parameter {position} says"
-
-
-def frame_parameter_value(position: int) -> str:
-    """The field carrying the value this round demonstrated that parameter with (#1868)."""
-    return f"parameter {position} value"
-
-
-def _framing_output(signature: SkillSignature) -> list[eval_cohort.OutputField]:
-    """One framing draw's STRUCTURED ANSWER, field by field.
-
-    The routine's two text fields, the COUNT of parameters it minted, and three fields per
-    parameter in declared order.  The count is carried rather than derived at read time so a
-    case can measure "how many pieces did it ask for" as an axis of its own — which is the
-    reading that separates a routine asking for one thing from one asking for three."""
-    fields = [
-        eval_cohort.OutputField(name=FRAME_NAME, value=signature.name),
-        eval_cohort.OutputField(name=FRAME_DESCRIPTION, value=signature.description),
-        eval_cohort.OutputField(name=FRAME_PARAMETERS, value=str(len(signature.parameters))),
-    ]
-    for position, parameter in enumerate(signature.parameters, start=1):
-        fields.append(
-            eval_cohort.OutputField(name=frame_parameter_name(position), value=parameter.name)
-        )
-        fields.append(
-            eval_cohort.OutputField(
-                name=frame_parameter_says(position), value=parameter.description or ""
-            )
-        )
-        fields.append(
-            eval_cohort.OutputField(name=frame_parameter_value(position), value=parameter.value)
-        )
-    return fields
-
-
-def framed_parameters(sample: eval_cohort.SampleObservation) -> list[tuple[str, str]]:
-    """The ``(name, what it says)`` pairs one framing sample's draw minted, in declared order.
-
-    Read back through the same position keys :func:`_framing_output` wrote, so the observer
-    and every claim agree about where a parameter lives — a second spelling of the key would
-    make a claim read ``unset`` and report a correct draw as one that minted nothing.
-
-    Walks until a position is absent rather than trusting the count field: the count is what a
-    case ASSERTS, so reading the pairs through it would make the count claim answer itself."""
-    pairs: list[tuple[str, str]] = []
-    position = 1
-    while (name := sample.field(frame_parameter_name(position))) != eval_cohort.FIELD_UNSET:
-        pairs.append((name, sample.field(frame_parameter_says(position))))
-        position += 1
-    return pairs
-
-
-def _observe_framing(
-    db: Database,
-    signature: SkillSignature | None,
-    *,
-    name: str,
-    phrasing: str,
-    arm: int,
-) -> eval_cohort.SampleObservation:
-    """Read what ONE framing sample decided — its own observer, not the chat one.
-
-    A run-end draw leaves no machine walk, no registry row and no collection entry: the framer
-    writes an interface and hands it back, and the caller decides what to do with it.  So every
-    read ``_observe_sample`` makes would come back empty and the row would be structurally
-    fine and substantively hollow (#2017).
-
-    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
-    user's own turns under the contract naming the lines the draw must write."""
-    exclusion = _draw_exclusion(db, "" if signature is None else DREW_A_SIGNATURE)
-    if signature is None or exclusion is not None:
-        return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
-        )
-    return eval_cohort.SampleObservation(
-        name=name,
-        phrasing=phrasing,
-        arm=arm,
-        given=given_to_the_model(db),
-        output=_framing_output(signature),
-    )
-
-
-def _turns_world(case_id: str) -> World:
-    """The one ask a run-end draw is answered against, as a :class:`World`.
-
-    ``pages``/``keeps``/``excludes``/``answers`` are EMPTY, and necessarily so: each of them is
-    a token set read off a PAGE, and this draw reads the round's turns and no page at all.
-    Declaring one anyway would print a contract in the report that nothing verified, which
-    reads as a check that passed.
-
-    The name says what the ground IS rather than restating it: the turns themselves are the
-    arms, listed once by the report, and a world naming them again would be the same text in
-    two places with nothing keeping the two copies in agreement."""
-    return World(name=f"the round's own turns ({case_id})", pages=(), keeps=(), excludes=())
-
-
-# A word token of a drawn name or description — what family classification and the
-# generic checks both read.  Word-boundary, never substring: a description saying
-# "festival" must not read as the instance token "fest", while the instance itself
-# tokenises to it.
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-# A trailing digit is its own token: ``site1`` is ``site`` + ``1``.  Enumerating with
-# digits is one of the natural ways to write an ordinal pair, so a scorer that reads
-# ``site1`` as a single opaque word marks a CORRECT draw as a family miss — which is
-# exactly what the second run did to two of them.
-_DIGIT_SUFFIX_RE = re.compile(r"([a-z]+)(\d+)")
-
-# Lettering is the OTHER natural way to write that same enumeration — ``url_a`` /
-# ``url_b`` — and it cost two correct draws the same way digits once did: two distinct,
-# generic, scalar names satisfying the tell-them-apart rule, read by the scorer as
-# answering neither ordinal family.  A trailing single letter is therefore the position
-# it holds in the alphabet, which lands the pair on the families that already carry
-# ``1`` / ``2`` — no family gains a token, so nothing else can start matching.
-_ORDINAL_LETTERS = "abcdefghijklmnopqrstuvwxyz"
-
-
-class ParameterFamily(NamedTuple):
-    """One parameter the ask genuinely requires, as the SET of things it could
-    reasonably be called (#1830).
-
-    ``label`` is the reference name from the agreed pair — the diff-join key a check is
-    named for, never a string the model has to produce.  ``tokens`` is the semantic
-    breadth the code owner agreed to: a drawn parameter belongs to this family when its
-    name (or, only when no family matched the name, its description) uses any of them.
-    So ``page_to_watch`` lands on the family the reference calls ``url``, while an extra
-    parameter nobody asked for lands nowhere and shows up in the count.
-
-    ``name_only`` drops the description fallback for this family — the code owner's
-    ruling on the first run, where two IDENTICAL `city` draws scored opposite ways
-    because one of their descriptions happened to mention the site the location sits on.
-    A PAGE is named as one; reading "the page" out of a description that merely refers
-    to a page is the scorer inventing an answer the draw did not give."""
-
-    label: str
-    tokens: tuple[str, ...]
-    name_only: bool = False
-
-
-def _tokens(text: str) -> set[str]:
-    """A drawn string's word tokens, lowercased — ``first_site`` → ``{first, site}``,
-    and ``site1`` → ``{site1, site, 1}`` so a digit-suffixed ordinal reads as one.
-
-    The whole token is kept alongside its split, so nothing that matched before stops
-    matching."""
-    found: set[str] = set()
-    for token in _TOKEN_RE.findall(text.lower()):
-        found.add(token)
-        split = _DIGIT_SUFFIX_RE.fullmatch(token)
-        if split is not None:
-            found.update(split.groups())
-    return found
-
-
-def _letter_suffix_ordinal(tokens: list[str]) -> str | None:
-    """The digit a NAME's trailing single-letter suffix stands for — ``url_a`` → ``1`` —
-    or ``None`` when the name carries no such suffix.
-
-    A suffix needs something to be suffixed TO, so a name that is ONLY a letter is left
-    alone: ``a`` is a name nobody enumerated, not the first of anything.  The
-    single-CHARACTER test is load-bearing, not decoration: membership in a string is a
-    SUBSTRING test, so without it a name ending in ``no`` would read as a letter suffix
-    and score as the fourteenth of something."""
-    last = tokens[-1] if tokens else ""
-    if len(tokens) < 2 or len(last) != 1 or last not in _ORDINAL_LETTERS:
-        return None
-    return str(_ORDINAL_LETTERS.index(last) + 1)
-
-
-def _name_tokens(name: str) -> set[str]:
-    """A drawn NAME's tokens: :func:`_tokens` plus the ordinal any trailing single-letter
-    suffix stands for, so ``url_a``/``url_b`` classify as the two ordinal families
-    exactly as ``site1``/``site2`` and ``url_1``/``url_2`` already do.
-
-    NAME-only, and that is the whole reason it is a separate function rather than a
-    widening of :func:`_tokens`: carving a suffix off an identifier is an identifier
-    operation, while a description is PROSE, where ``a`` is an article.  Reading a
-    letter as an ordinal there would file most descriptions ever written under the
-    first-ordinal family — which is precisely why the letters are not family tokens."""
-    tokens = _TOKEN_RE.findall(name.lower())
-    found = _tokens(name)
-    ordinal = _letter_suffix_ordinal(tokens)
-    return found | {ordinal} if ordinal is not None else found
-
-
-def _matching_family(
-    tokens: set[str], families: Sequence[ParameterFamily]
-) -> ParameterFamily | None:
-    """The first family whose agreed tokens ``tokens`` uses, or ``None``.
-
-    Takes the TOKENS rather than the text, because how a string tokenizes is the pass's
-    business, not this function's: a name is an identifier (``_name_tokens``, which reads
-    a trailing letter as an ordinal) and a description is prose (``_tokens``)."""
-    return next((f for f in families if tokens & set(f.tokens)), None)
-
-
-def classify_by_family(
-    named: Sequence[tuple[str, str | None]], families: Sequence[ParameterFamily]
-) -> list[ParameterFamily | None]:
-    """The family each ``(name, description)`` pair answers, positionally — NAME FIRST
-    (#1830).  ONE classification discipline, read by every suite that asks what a drawn
-    parameter answers (the framer's own set check, and the transitions suite's
-    interface check).
-
-    A parameter's name is its identity, so the name pass runs over ALL of them before
-    any description is read, and a family a name already claimed is closed to the
-    description fallback.  Otherwise a description that merely mentions the page in
-    passing ("the search that finds the listings on a page") would make a second
-    parameter read as the page as well, and the set would look complete when it is not.
-
-    A ``name_only`` family sits out the description pass entirely — the page/url
-    tightening from the first run's review: a parameter is the page when it is NAMED as
-    the page, and no description-level mention promotes one that isn't.
-
-    A description of ``None`` is an UNLABELLED parameter (#1870), which the description
-    pass has nothing to read — so its name is the whole of its evidence, and it stays
-    unclassified rather than being classified off a blank."""
-    by_name = [_matching_family(_name_tokens(name), families) for name, _ in named]
-    claimed = {family.label for family in by_name if family is not None}
-    open_families = [
-        family for family in families if family.label not in claimed and not family.name_only
-    ]
-    return [
-        matched or _matching_family(_tokens(description or ""), open_families)
-        for matched, (_, description) in zip(by_name, named, strict=True)
-    ]
-
-
-@pytest.fixture
-def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[FramerEval]:
-    """Drive the run-end skill FRAMER (#1830) N times, and NOTHING else.
-
-    The framer's whole input is the round's USER turns, so the case IS those turns —
-    there is no upstream draw to isolate it from and nothing else to fixture.  The
-    labeller is not run: it decides the implementation from the demonstration, this
-    decides the interface from the ask, and neither sees the other's evidence (#1824).
-
-    Everything the draw consumes is built by PRODUCTION code — ``build_framing_content``
-    renders the document and ``MicroContext.frame_skill`` makes the call — so the case
-    exercises the shipped prompt and the shipped parse.  Synthetic here means the TURNS
-    are authored, never the prompt (an eval that swaps in an artificial prompt measures
-    nothing about what ships).
-
-    A case passes ``turns`` and ``also_phrased`` — the other wordings of the SAME ask — and
-    gets a :class:`Cohort` back to assert against.  The arm is the ask itself, which for this
-    customer is the whole document: five ways a user might say one thing, over one set of
-    facts.  A case is graded by the claims its body makes against the cohort.
-    """
-
-    _cohorts: dict[str, _PendingCase] = {}
-
-    async def _run(
-        *,
-        case_id: str,
-        turns: Sequence[str],
-        also_phrased: Sequence[Sequence[str]],
-        behaviour: str = "",
-        area: Area | None = None,
-        edge: Edge | None = None,
-        samples_per_phrasing: int = 0,
-        model: str = "",
-        samples: int = SAMPLES,
-        min_pass_rate: PassRate = UNSTATED,
-        timeout: float = SINGLE_CALL_WAIT_SECONDS,
-        family: str | None = None,
-    ) -> Cohort:
-        """Drive one round's turns through the framing draw and return its COHORT.
-
-        ``also_phrased`` is a sequence of TURN SEQUENCES, not of strings: an ask is however
-        many turns the user took to make it, so a wording of it is that many turns said
-        differently.  Flattened to one line per arm for the arm's own anchor text."""
-        _require_ask(case_id, "framer_eval", "turns=<the round's user turns>", turns)
-        _require_report_only(case_id, min_pass_rate)
-        catalogued = _declare_case(
-            request,
-            case_id=case_id,
-            layer=Layer.MICRO_CONTEXT,
-            behaviour=behaviour,
-            area=area,
-            edge=edge,
-            wording=_TURN_SEPARATOR.join(turns),
-        )
-        eval_artifacts.begin_case(case_id)
-        wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
-        # One ask, K wordings of it — the same shape chat has, and the world is a property of
-        # the CASE rather than of the arm: every wording says the same thing.
-        arms = _arms(
-            [_TURN_SEPARATOR.join(one) for one in wordings],
-            [_turns_world(case_id)],
-            samples_per_phrasing,
-            samples,
-        )
-        spoken = arms.spoken
-        driven = arms.driven
-        documents = [
-            build_framing_content(
-                "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in one]
-            )
-            for one in wordings
-        ]
-
-        pending = _cohorts.setdefault(
-            case_id,
-            _PendingCase(
-                case_id=case_id,
-                family=family,
-                module=request.module.__name__,
-                behaviour=catalogued.sentence,
-            ),
-        )
-
-        async def _drive(
-            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
-        ) -> SampleResult:
-            content = documents[arms.index_of(sample_index)]
-            micro = MicroContext(penny.model_client)
-            signature: SkillSignature | None = None
-            try:
-                signature = await asyncio.wait_for(
-                    micro.frame_skill(content, run_target=penny.chat_agent.name),
-                    timeout=timeout,
-                )
-                # The case is graded from its cohort's CLAIMS, made after every sample has
-                # run, so the sample itself scores nothing at drive time.
-                result = SampleResult.graded([])
-                result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
-                _stamp_cause(penny.db, result)
-            except TimeoutError:
-                result = SampleResult.binary(["no framing draw within timeout"])
-                _stamp_cause(penny.db, result, timed_out=True)
-            label = arms.label(sample_index)
-            result.observation = _observe_framing(
-                penny.db,
-                signature,
-                name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                phrasing=label,
-                arm=arms.index_of(sample_index),
-            )
-            _write_classifier_report(
-                penny.db,
-                case_id,
-                sample_index,
-                result=result,
-                phrasing=spoken[sample_index],
-                agent_names=(PennyConstants.SKILL_FRAME_AGENT_NAME,),
-            )
-            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-            return result
-
-        results, perf, voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
-        )
-        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        pending.add(cohort, results, perf, intended=driven)
-        return cohort
-
-    yield _run
-    # The case's claims are made in the TEST BODY, after the drive returns — so the report is
-    # assembled here, once the body has had its say.
-    for pending in _cohorts.values():
-        pending.finish()
-    _cohorts.clear()
-
-
-@pytest.fixture
-def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[LabellerEval]:
-    """Drive the run-end LEAF LABELLER (#1828) N times, and NOTHING else.
-
-    The labeller has one job — name every spot in the demonstrated routine and say what
-    belongs there each run — and this case measures that answer directly: the returned
-    ``SkillLabels``.  Its input is a FIXTURE ledger through DETERMINISTIC distillation,
-    so nothing live sits upstream of the draw either, and everything downstream of it
-    is deterministic Python pinned in ``make check``.
-
-    The demonstration is a fixture precisely so the case measures the NAMING and never
-    polices what a round chose to write — if a round writes two entries, two entries
-    are the skill (the code owner's ruling on #1770, unchanged).
-
-    A case passes ``utterance`` and ``also_demonstrated`` — the other wordings of the SAME
-    demonstration — and gets a :class:`Cohort` back to assert against.  The arm is the
-    demonstrating UTTERANCE, because that is the natural language this draw is answered from:
-    the CALLS are held byte-identical across the arms, so every arm offers the same spots
-    under the same current names and only the words describing them move.  A case is graded
-    by the claims its body makes against the cohort.
-    """
-
-    _cohorts: dict[str, _PendingCase] = {}
-
-    async def _run(
-        *,
-        case_id: str,
-        utterance: str,
-        calls: Sequence[DemoCall],
-        target: str,
-        also_demonstrated: Sequence[str],
-        conversation: Sequence[DemoTurn] = (),
-        behaviour: str = "",
-        area: Area | None = None,
-        edge: Edge | None = None,
-        samples_per_phrasing: int = 0,
-        model: str = "",
-        samples: int = SAMPLES,
-        min_pass_rate: PassRate = UNSTATED,
-        timeout: float = SINGLE_CALL_WAIT_SECONDS,
-        family: str | None = None,
-    ) -> Cohort:
-        """Drive one demonstration through the labelling draw and return its COHORT."""
-        _require_ask(case_id, "labeller_eval", "utterance=<the demonstrating turn>", utterance)
-        _require_report_only(case_id, min_pass_rate)
-        catalogued = _declare_case(
-            request,
-            case_id=case_id,
-            layer=Layer.MICRO_CONTEXT,
-            behaviour=behaviour,
-            area=area,
-            edge=edge,
-            wording=utterance,
-        )
-        eval_artifacts.begin_case(case_id)
-        wordings = [utterance, *also_demonstrated]
-        arms = _arms(
-            wordings,
-            [_turns_world(case_id)],
-            samples_per_phrasing,
-            samples,
-        )
-        spoken = arms.spoken
-        driven = arms.driven
-        # One rendered document per arm, and ONE ``by_value`` map for all of them: the calls
-        # are constant, so distillation is constant, so every arm offers the same spots under
-        # the same current names.  A map that moved with the arm would mean the arms were
-        # five different routines rather than five wordings of one.
-        rendered = [_labelling_input(calls, target, one, conversation) for one in wordings]
-        documents = [content for content, _map in rendered]
-        by_value = rendered[0][1]
-        # The spots the rendered document offered, in leaf order — the COVERAGE set the
-        # draw is accepted against (#1828).  Read off the distilled leaves rather than
-        # authored, so the case can never offer the draw a set the content didn't list.
-        offered = list(dict.fromkeys(by_value.values()))
-
-        pending = _cohorts.setdefault(
-            case_id,
-            _PendingCase(
-                case_id=case_id,
-                family=family,
-                module=request.module.__name__,
-                behaviour=catalogued.sentence,
-            ),
-        )
-
-        async def _drive(
-            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
-        ) -> SampleResult:
-            content = documents[arms.index_of(sample_index)]
-            micro = MicroContext(penny.model_client)
-            labels: SkillLabels | None = None
-            try:
-                labels = await asyncio.wait_for(
-                    micro.label_skill(content, offered, run_target=penny.chat_agent.name),
-                    timeout=timeout,
-                )
-                # The case is graded from its cohort's CLAIMS, made after every sample has
-                # run, so the sample itself scores nothing at drive time.
-                result = SampleResult.graded([])
-                result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
-                _stamp_cause(penny.db, result)
-            except TimeoutError:
-                result = SampleResult.binary(["no label within timeout"])
-                _stamp_cause(penny.db, result, timed_out=True)
-            label = arms.label(sample_index)
-            result.observation = _observe_labelling(
-                penny.db,
-                labels,
-                offered,
-                name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                phrasing=label,
-                arm=arms.index_of(sample_index),
-            )
-            _write_classifier_report(
-                penny.db,
-                case_id,
-                sample_index,
-                result=result,
-                phrasing=spoken[sample_index],
-                agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
-            )
-            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-            return result
-
-        results, perf, voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
-        )
-        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        pending.add(cohort, results, perf, intended=driven)
-        return cohort
-
-    yield _run
-    # The case's claims are made in the TEST BODY, after the drive returns — so the report is
-    # assembled here, once the body has had its say.
-    for pending in _cohorts.values():
-        pending.finish()
-    _cohorts.clear()
-
-
-# ── Skill BINDING: filling an existing signature from the ask (#1867) ─────────
-
-# A binder-eval runner: a case passes ``also_phrased`` and gets a :class:`Cohort` back to
-# assert against.
-BinderEval = Callable[..., Awaitable["Cohort"]]
-
-
-class BindOutcome(StrEnum):
-    """Which of the binder's two enumerated answers a draw came back with.
-
-    The distinction is production's — ``BoundValues`` and ``MissingParameters`` are two types
-    rather than one type carrying an emptiable field — and these are the words the report
-    reads them by.  Named here because production expresses the outcome as a TYPE and a
-    cohort's fields are strings; the mapping is one line, in one place, so a case asserting
-    the outcome and a table measuring it can never disagree about what to call it."""
-
-    COMPLETE = "bound"
-    SHORTFALL = "missing"
-
-
-# The fields of a binding draw's structured answer, named once.  The per-parameter value
-# fields are keyed by the DECLARED name, which is an input — so unlike the framer's minted
-# parameters they are the same axis on every sample.
-BIND_OUTCOME = "outcome"
-BIND_MISSING = "reported missing"
-
-
-def bound_value_field(parameter: str) -> str:
-    """The field carrying what the draw bound one DECLARED parameter to."""
-    return f"bound {parameter}"
-
-
-def _binding_output(binding: SkillBinding) -> list[eval_cohort.OutputField]:
-    """One binding draw's STRUCTURED ANSWER, field by field.
-
-    A parameter the draw reported MISSING gets no field at all, deliberately.  An empty string
-    would be a value every sample agreed on, which scores 0.000 — the same number a cohort in
-    perfect agreement scores and the opposite finding; an absent field reads as
-    :data:`~penny.tests.eval.utils.cohort.FIELD_UNSET`.  This omission is the ONLY thing that
-    makes that reading occur, so it is what the binder case's bound-value axis declares
-    ``absent=FIELD_UNSET`` on — and the two are held together by a test (#2061)."""
-    missing = binding.names if isinstance(binding, MissingParameters) else ()
-    return [
-        eval_cohort.OutputField(name=BIND_OUTCOME, value=_binding_outcome(binding).value),
-        eval_cohort.OutputField(name=BIND_MISSING, value=", ".join(missing)),
-        *(
-            eval_cohort.OutputField(name=bound_value_field(name), value=value)
-            for name, value in binding.values.items()
-        ),
-    ]
-
-
-def _binding_document(
-    turns: Sequence[str], skill: str, intent: str, parameters: Sequence[SkillParameter]
-) -> tuple[str, str]:
-    """One arm's ``(what the user said, the document the draw reads)`` pair.
-
-    Both, because the draw takes both: ``content`` renders the SIGNATURE beside the turns,
-    and ``spoken`` is the turns alone — the haystack the span check reads, so a phrase copied
-    out of a parameter's own description cannot pass as something the user said."""
-    said = render_spoken_turns(turns)
-    return said, build_binding_content(said, skill, intent, parameters)
-
-
-def _observe_binding(
-    db: Database,
-    binding: SkillBinding | None,
-    *,
-    name: str,
-    phrasing: str,
-    arm: int,
-) -> eval_cohort.SampleObservation:
-    """Read what ONE binding sample answered — its own observer, not the chat one.
-
-    A run-end draw leaves no machine walk, no registry row and no collection entry, so every
-    read ``_observe_sample`` makes would come back empty here (#2017).  What there is to read
-    is the typed answer.
-
-    ``None`` is the honest escape — no usable draw came back — and it is an EXCLUSION rather
-    than a failed claim, exactly as it is for every other single-call context.  A SHORTFALL is
-    not: it is an enumerated outcome the machine acts on, so it stays in the cohort and the
-    case asserts which of the two it was.
-
-    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
-    signature and the user's turns under the contract naming the lines the draw must write."""
-    exclusion = _draw_exclusion(db, "" if binding is None else _binding_outcome(binding).value)
-    if binding is None or exclusion is not None:
-        return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
-        )
-    return eval_cohort.SampleObservation(
-        name=name,
-        phrasing=phrasing,
-        arm=arm,
-        given=given_to_the_model(db),
-        output=_binding_output(binding),
-    )
-
-
-def _binding_outcome(binding: SkillBinding) -> BindOutcome:
-    """Which of the binder's two enumerated answers this one is — the ONE place the type is
-    read, so the field a case asserts and the marker the completeness gate reads can never
-    disagree about the same draw.
-
-    Read off the TYPE and never off whether ``names`` is empty: ``MissingParameters`` puts no
-    non-empty constraint on that tuple, so a draw that reported a shortfall naming nothing
-    would answer "bound" to one reader and "missing" to the other."""
-    return BindOutcome.SHORTFALL if isinstance(binding, MissingParameters) else BindOutcome.COMPLETE
-
-
-class BoundExpectation(NamedTuple):
-    """One declared parameter and what a correct bind for it looks like (#1867).
-
-    ``anchor`` is the part of the user's own words the value has to carry, compared
-    through the SHIPPED ``spoken_form`` — so a bound url passes whether or not the draw
-    kept the scheme, and a phrase passes whether or not it kept the article in front of
-    it.  Deliberately not an equality: which span of the ask supplies a value has a
-    little play in it, and a claim demanding one exact string would be answering for the
-    draw.
-
-    An EMPTY anchor is the SHORTFALL direction: the ask supplies nothing for this
-    parameter, so the only correct answer is the missing outcome naming it, and any value
-    at all is a guess."""
-
-    parameter: str
-    anchor: str = ""
-
-
-def _binder_rerolled(db: Database) -> bool:
-    """Did the binder draw more than once — the fragile signal, a sample that only got
-    there by recovering.  One customer here, so one row is the clean case."""
-    return len(_micro_context_rows(db, PennyConstants.SKILL_BIND_AGENT_NAME)) > 1
-
-
-@pytest.fixture
-def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[BinderEval]:
-    """Drive the skill BINDER (#1867) N times, and NOTHING else.
-
-    The binder's whole input is an EXISTING signature and the round's user turns, so the
-    case is those two things — there is no upstream draw to isolate it from and nothing
-    else to fixture.  The routing draw that picks WHICH skill is not run: that decision
-    is the classifier's and the transitions suite measures it; this one measures the
-    filling, which is a separate draw by ruling (#1803).
-
-    Everything the draw consumes is built by PRODUCTION code — ``render_spoken_turns``
-    and ``build_binding_content`` render the document and ``MicroContext.bind_skill``
-    makes the call — so the case exercises the shipped prompt, the shipped parse and the
-    shipped validation.  Synthetic here means the TURNS and the SIGNATURE are authored,
-    never the prompt.
-
-    A case passes ``turns`` and ``also_phrased`` — the other wordings of the SAME ask — and
-    gets a :class:`Cohort` back to assert against.  The SIGNATURE is held constant across the
-    arms and only the user's turns move: a case whose signature moved would be binding a
-    different routine, which is a different behaviour rather than a different wording.  A
-    case is graded by the claims its body makes against the cohort.
-    """
-
-    _cohorts: dict[str, _PendingCase] = {}
-
-    async def _run(
-        *,
-        case_id: str,
-        turns: Sequence[str],
-        skill: str,
-        intent: str,
-        parameters: Sequence[SkillParameter],
-        also_phrased: Sequence[Sequence[str]],
-        behaviour: str = "",
-        area: Area | None = None,
-        edge: Edge | None = None,
-        samples_per_phrasing: int = 0,
-        model: str = "",
-        samples: int = SAMPLES,
-        min_pass_rate: PassRate = UNSTATED,
-        timeout: float = SINGLE_CALL_WAIT_SECONDS,
-        family: str | None = None,
-    ) -> Cohort:
-        """Drive one signature + turns through the binding draw and return its COHORT.
-
-        ``also_phrased`` is a sequence of TURN SEQUENCES, for ``framer_eval``'s reason: an ask
-        is however many turns the user took to make it."""
-        _require_ask(case_id, "binder_eval", "turns=<the round's user turns>", turns)
-        _require_report_only(case_id, min_pass_rate)
-        catalogued = _declare_case(
-            request,
-            case_id=case_id,
-            layer=Layer.MICRO_CONTEXT,
-            behaviour=behaviour,
-            area=area,
-            edge=edge,
-            wording=_TURN_SEPARATOR.join(turns),
-        )
-        eval_artifacts.begin_case(case_id)
-        wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
-        arms = _arms(
-            [_TURN_SEPARATOR.join(one) for one in wordings],
-            [_turns_world(case_id)],
-            samples_per_phrasing,
-            samples,
-        )
-        spoken = arms.spoken
-        driven = arms.driven
-        declared = [parameter.name for parameter in parameters]
-        # One rendered pair per arm: what the user said, and the document that renders it
-        # BESIDE the signature.  ``spoken`` is carried separately because the span check reads
-        # the user's turns alone — a phrase copied out of a parameter's own description, which
-        # the same document renders, is exactly the confabulation it exists to catch.
-        rendered = [_binding_document(one, skill, intent, parameters) for one in wordings]
-
-        pending = _cohorts.setdefault(
-            case_id,
-            _PendingCase(
-                case_id=case_id,
-                family=family,
-                module=request.module.__name__,
-                behaviour=catalogued.sentence,
-            ),
-        )
-
-        async def _drive(
-            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
-        ) -> SampleResult:
-            said, content = rendered[arms.index_of(sample_index)]
-            micro = MicroContext(penny.model_client)
-            binding: SkillBinding | None = None
-            try:
-                binding = await asyncio.wait_for(
-                    micro.bind_skill(content, declared, said, run_target=penny.chat_agent.name),
-                    timeout=timeout,
-                )
-                # The case is graded from its cohort's CLAIMS, made after every sample has
-                # run, so the sample itself scores nothing at drive time.
-                result = SampleResult.graded([])
-                result.observe_rerolled(rerolled=_binder_rerolled(penny.db))
-                _stamp_cause(penny.db, result)
-            except TimeoutError:
-                result = SampleResult.binary(["no binding draw within timeout"])
-                _stamp_cause(penny.db, result, timed_out=True)
-            label = arms.label(sample_index)
-            result.observation = _observe_binding(
-                penny.db,
-                binding,
-                name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                phrasing=label,
-                arm=arms.index_of(sample_index),
-            )
-            _write_classifier_report(
-                penny.db,
-                case_id,
-                sample_index,
-                result=result,
-                phrasing=spoken[sample_index],
-                agent_names=(PennyConstants.SKILL_BIND_AGENT_NAME,),
-            )
-            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-            return result
-
-        results, perf, voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
-        )
-        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        pending.add(cohort, results, perf, intended=driven)
-        return cohort
-
-    yield _run
-    # The case's claims are made in the TEST BODY, after the drive returns — so the report is
-    # assembled here, once the body has had its say.
-    for pending in _cohorts.values():
-        pending.finish()
-    _cohorts.clear()
-
-
-# ── Browse EXTRACTION: what a page half-carries (#1942) ───────────────────────
-
-ExtractorEval = Callable[..., Awaitable["Cohort"]]
-
-
-class FieldExpectation(NamedTuple):
-    """One thing an extract instruction asks for, and how the page answers it (#1942).
-
-    ``anchor`` is the span of the page that supplies it, compared through the SHIPPED
-    ``spoken_form`` — so a value passes whether or not the draw kept the punctuation or
-    the article in front of it.  Deliberately not an equality: which words carry a fact
-    has a little play in it, and a claim demanding one exact string would be answering
-    for the draw.
-
-    An EMPTY anchor is the ABSENT direction: the page supplies nothing for this, so it is
-    named here to say what the instruction asked for and the page did not have."""
-
-    field: str
-    anchor: str = ""
 
 
 def _extract_rerolled(db: Database) -> bool:

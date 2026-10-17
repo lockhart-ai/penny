@@ -14,8 +14,6 @@ from penny.database.migrate import (
     migrate,
     validate_migrations,
 )
-from penny.database.skill_store import steps_from_json
-from penny.database.skills import render_skill, retarget_writes
 
 
 class TestDiscovery:
@@ -1093,14 +1091,6 @@ class TestMigrate:
         placeholder substitution to every scoped-write step, leaves the demonstrated
         name in ``arguments`` (the verbatim ledger copy), and touches neither a
         non-write step nor a leaf that already carries a substitution."""
-        # The migration writes a FROZEN copy of the description (a migration is a
-        # historical artifact), so the literal is pinned here and nowhere else.  It is
-        # deliberately NOT compared against the live constant: since #1783 a
-        # freshly-distilled skill gets its wording from the labeller, and the live
-        # constant is only the failed-draw fallback — so back-filled rows read
-        # differently from new ones, and that is the intended state (a skill taught
-        # before the labeller saw that leaf has no draw left to recover).
-        frozen_description = "the collection this is set up on"
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -1186,11 +1176,6 @@ class TestMigrate:
                 }
             ]
             assert step["arguments"]["memory"] == "aurora-prices"  # the ledger copy stays
-        # The upgraded row hydrates and renders like a freshly-distilled skill: the
-        # demonstrated collection is gone from the recipe, the placeholder in its place.
-        rendered = render_skill(steps_from_json(json.dumps(stored)))
-        assert "aurora-prices" not in rendered
-        assert f"collection_write(memory={{{frozen_description}}}" in rendered
         # An already-migrated skill is left exactly as it was.
         unchanged = json.loads(
             conn.execute("SELECT steps FROM skill WHERE name = 'current'").fetchone()[0]
@@ -1285,12 +1270,6 @@ class TestMigrate:
                 }
             ]
             assert step["arguments"]["memory"] == "aurora-prices"  # the ledger copy stays
-        # The upgraded row instantiates like a freshly-distilled skill: applying it to a
-        # collection binds every marked leaf to that collection's own name.
-        rendered = render_skill(retarget_writes(steps_from_json(json.dumps(stored)), "harbor-log"))
-        assert "aurora-prices" not in rendered
-        assert "collection_write(memory='harbor-log'" in rendered
-        assert "update_entry(memory='harbor-log'" in rendered
         conn.close()
 
     def test_0110_rewrites_update_entry_steps_onto_the_one_write_call(self, tmp_path):

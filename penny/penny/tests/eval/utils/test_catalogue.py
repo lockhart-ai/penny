@@ -12,13 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from penny.conversation_machine import ConversationState
 from penny.tests.eval.utils import catalogue
 from penny.tests.eval.utils.catalogue import (
     CATALOGUE_ENV,
     Area,
     CatalogueEntry,
     CatalogueError,
+    ConversationState,
     Layer,
     collect,
     load,
