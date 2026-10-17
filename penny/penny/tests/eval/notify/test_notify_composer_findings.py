@@ -39,41 +39,44 @@ pytestmark = pytest.mark.eval
 _FAMILY = "notify-composer"
 
 # ── notify-composer-many-findings ────────────────────────────────────────────────────────
-# 18 findings from one cycle, each carrying its own invented, whitespace-free anchor.  The
-# document's own render caps written entries at NOTIFY_WRITTEN_ENTRIES (8, constants.py), so
-# only the first 8 ever reach the model; the rest exist to produce the real overflow line a
-# heavy cycle's document actually carries ("10 more entries not shown").  Two of the eight
-# RENDERED findings (#3, #6) are deliberately borderline-relevant — true facts the cycle
-# wrote down that are not quite "a synth" — to test that the composer reports them honestly
-# rather than editorialising about relevance it was not asked to judge.
+# 18 findings from one cycle.  The document's own render caps written entries at
+# NOTIFY_WRITTEN_ENTRIES (8, constants.py), so only the first 8 ever reach the model; the
+# rest exist to produce the real overflow line a heavy cycle's document actually carries
+# ("10 more entries not shown").  Two of the eight RENDERED findings (#3, #6) are
+# deliberately borderline-relevant — true facts the cycle wrote down that are not quite "a
+# synth" — to test that the composer reports them honestly rather than editorialising about
+# relevance it was not asked to judge.
+#
+# Each finding's ANCHOR is its own item name — real content a friendly summary would
+# naturally restate, never a separate id tag appended to the line: an appended tag reads to
+# the model as an internal reference rather than a fact worth repeating (measured — the
+# before-run's own transcripts show several samples correctly declining to echo a bare
+# "zx01q-listing"-shaped tag while still naming the item in plain prose, which scored as a
+# miss under the first anchor scheme even though nothing was dropped).
 _MANY_FINDINGS_COLLECTION = "vintage-synth-watch"
 _MANY_FINDINGS_MARKETS = ("Faraday Exchange", "Orbital Swap", "Nightjar Market")
 _MANY_FINDINGS_CONTENT = (
-    "a Korrigan-7 analog synth on Faraday Exchange, asking 410 credits, described as "
-    "lightly used — zx01q-listing",
-    "a Halcyon Drift desktop module on Orbital Swap, listed new in box at 275 credits — "
-    "zx02q-listing",
-    "a padded carry case sized for the Korrigan series on Faraday Exchange, 40 credits, "
-    "not an instrument itself — zx03q-listing",
-    "a Tamsin Eight polysynth on Nightjar Market, price dropped from 700 to 610 credits — "
-    "zx04q-listing",
-    "a Vesper Loop semi-modular rig on Orbital Swap, 325 credits, two units available — "
-    "zx05q-listing",
-    "a drum machine bundled free with a Vesper Loop purchase on Orbital Swap, a different "
-    "instrument category — zx06q-listing",
-    "a Marrow FM synth on Faraday Exchange, 540 credits, auction ending soon — zx07q-listing",
+    "a Korrigan-7 analog synth on Faraday Exchange, asking 410 credits, described as lightly used",
+    "a Halcyon Drift desktop module on Orbital Swap, listed new in box at 275 credits",
+    "a Korrigan Satchel carry case sized for the Korrigan series on Faraday Exchange, "
+    "40 credits, not an instrument itself",
+    "a Tamsin Eight polysynth on Nightjar Market, price dropped from 700 to 610 credits",
+    "a Vesper Loop semi-modular rig on Orbital Swap, 325 credits, two units available",
+    "a Fenlow Thumper drum machine bundled free with a Vesper Loop purchase on Orbital "
+    "Swap, a different instrument category",
+    "a Marrow FM synth on Faraday Exchange, 540 credits, auction ending soon",
     "a Quillfeather duo-oscillator synth on Nightjar Market, 190 credits, seller offering "
-    "a bundle discount — zx08q-listing",
-    "a Driftwood Six eurorack case on Orbital Swap, 95 credits — zx09q-listing",
-    "a Pellucid Arp sequencer on Faraday Exchange, 220 credits — zx10q-listing",
-    "a Rill & Moth ribbon controller on Nightjar Market, 60 credits — zx11q-listing",
-    "a Second Harvest FM synth on Orbital Swap, 480 credits — zx12q-listing",
-    "a Low Tide chorus pedal on Faraday Exchange, 35 credits — zx13q-listing",
-    "a Candlewright string synth on Nightjar Market, 390 credits — zx14q-listing",
-    "a Foxglove patchbay on Orbital Swap, 70 credits — zx15q-listing",
-    "a Winter Reed wavetable synth on Faraday Exchange, 455 credits — zx16q-listing",
-    "a Scrimshaw mixer on Nightjar Market, 110 credits — zx17q-listing",
-    "a Juniper Line percussion synth on Orbital Swap, 265 credits — zx18q-listing",
+    "a bundle discount",
+    "a Driftwood Six eurorack case on Orbital Swap, 95 credits",
+    "a Pellucid Arp sequencer on Faraday Exchange, 220 credits",
+    "a Rill & Moth ribbon controller on Nightjar Market, 60 credits",
+    "a Second Harvest FM synth on Orbital Swap, 480 credits",
+    "a Low Tide chorus pedal on Faraday Exchange, 35 credits",
+    "a Candlewright string synth on Nightjar Market, 390 credits",
+    "a Foxglove patchbay on Orbital Swap, 70 credits",
+    "a Winter Reed wavetable synth on Faraday Exchange, 455 credits",
+    "a Scrimshaw mixer on Nightjar Market, 110 credits",
+    "a Juniper Line percussion synth on Orbital Swap, 265 credits",
 )
 _MANY_FINDINGS_WRITTEN = tuple(
     WrittenEntry(memory=_MANY_FINDINGS_COLLECTION, key=f"listing-{index:02d}", content=content)
@@ -87,11 +90,20 @@ _MANY_FINDINGS_BASE = NotificationInput(
     written=_MANY_FINDINGS_WRITTEN,
     related=(),
 )
-# Only the anchors of the first 8 findings — the ones NOTIFY_WRITTEN_ENTRIES actually
+# The item NAME of each of the first 8 findings — the ones NOTIFY_WRITTEN_ENTRIES actually
 # renders into the document the draw reads.  The other 10 are never given to the model, so
 # claiming them would be unfair (#2373 ruling): "every finding named" means every finding
 # the model was shown, never the whole batch the cycle wrote.
-_MANY_FINDINGS_ANCHORS = tuple(anchor.split(" — ")[-1] for anchor in _MANY_FINDINGS_CONTENT[:8])
+_MANY_FINDINGS_ANCHORS = (
+    "Korrigan-7",
+    "Halcyon Drift",
+    "Korrigan Satchel",
+    "Tamsin Eight",
+    "Vesper Loop",
+    "Fenlow Thumper",
+    "Marrow FM",
+    "Quillfeather",
+)
 _MANY_FINDINGS_WORLD = World(
     name="vintage-synth-watch-cycle",
     pages=(),
@@ -115,16 +127,15 @@ _MANY_FINDINGS_ALSO_DESCRIBED = (
 )
 
 # ── notify-composer-single-finding ───────────────────────────────────────────────────────
+# The anchor is the item's own name — real content, not an appended id tag (see the
+# many-findings comment above for why).
 _SINGLE_FINDING_COLLECTION = "garden-tool-watch"
-_SINGLE_FINDING_ANCHOR = "qf1-listing"
+_SINGLE_FINDING_ANCHOR = "Fenwick & Vance telescoping pruner"
 _SINGLE_FINDING_WRITTEN = (
     WrittenEntry(
         memory=_SINGLE_FINDING_COLLECTION,
         key="listing-01",
-        content=(
-            "a Fenwick & Vance telescoping pruner on Orbital Swap, listed new in box at "
-            f"38 credits — {_SINGLE_FINDING_ANCHOR}"
-        ),
+        content=f"a {_SINGLE_FINDING_ANCHOR} on Orbital Swap, listed new in box at 38 credits",
     ),
 )
 _SINGLE_FINDING_BASE = NotificationInput(
