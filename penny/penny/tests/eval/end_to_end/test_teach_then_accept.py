@@ -11,10 +11,12 @@ turns land the job on are all left to the model and read nowhere a claim depends
 driver finds the created job STRUCTURALLY (``end_to_end_eval``'s own read of whichever
 collection the script scheduled) and runs ITS cycles; the claims below never name it.
 
-**Claims read only:** what the store's entries hold after each cycle, what reached the user,
-the created job's own terms (cadence, end, notify), and provenance — never which collection
-the job sits on, the routine's shape or bound values, or which conversation-machine states the
-script passed through on the way (#2375's ruling).
+**Claims read only:** what reached the user (the chat phase's replies and the job's own
+sends), the created job's own terms (cadence, end, notify), and provenance of everything
+sent or replied — never what a cycle left in the store, which is hers to keep as she wishes
+and is measured, not claimed (``ENTRIES_STORED``, #2490), nor which collection the job sits
+on, the routine's shape or bound values, or which conversation-machine states the script
+passed through on the way (#2375's ruling).
 
 **The page is real-size** — several kilobytes, a labelled current-price line among a handful
 of other prices the page carries for unrelated items, specs, seller notes and a returns
@@ -33,7 +35,7 @@ import pytest
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
-from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at, ran_at, sent_at
+from penny.tests.eval.end_to_end.world import END_TO_END_WALK, ran_at, sent_at
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -56,8 +58,7 @@ _FAMILY = "end-to-end"
 _BEHAVIOUR = (
     "In a job taught in chat, when the user asks for a watch, walks Penny through it once "
     "and accepts her offer with terms, Penny stands up a job on those terms whose cycles "
-    "keep the reading she was taught, stay quiet while the page holds, and replace the "
-    "reading and tell the user when it moves."
+    "stay quiet while the page holds, and tell the user the new price when it moves."
 )
 
 # ── The page the demonstration reads, and the two readings its cycles see ────
@@ -217,11 +218,6 @@ _ARMS = tuple(
 # ── The claims ───────────────────────────────────────────────────────────────
 
 
-def _store_holds_the_first_reading(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 0)
-    return _BASELINE_AMOUNT in held, f"expected {_BASELINE_AMOUNT}; held {held!r}"
-
-
 def _told_the_price_by_the_first_cycle(sample: SampleObservation, _world: World) -> Answer:
     """The user has been told the page's price by the end of the first cycle — by the
     demonstration itself (the learn turn's reply states the price it just stored) or by the
@@ -247,11 +243,6 @@ def _told_the_price_by_the_first_cycle(sample: SampleObservation, _world: World)
     )
 
 
-def _store_still_holds_the_first_reading(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 1)
-    return _BASELINE_AMOUNT in held, f"expected {_BASELINE_AMOUNT}; held {held!r}"
-
-
 def _nothing_sent_on_the_second_cycle(sample: SampleObservation, _world: World) -> Answer:
     """Nothing was sent on the SECOND cycle, while the page held — with the demonstration's
     own write already in the store, both the first and second cycles are looks at a value
@@ -266,15 +257,18 @@ def _nothing_sent_on_the_second_cycle(sample: SampleObservation, _world: World) 
     return ran and not sent, f"cycle ran: {ran}; sent on it: {sent}"
 
 
-def _store_holds_the_moved_reading_only(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 2)
-    ok = _MOVED_AMOUNT in held and _BASELINE_AMOUNT not in held
-    return ok, f"expected {_MOVED_AMOUNT} and not {_BASELINE_AMOUNT}; held {held!r}"
-
-
 def _told_once_more_when_it_moved(sample: SampleObservation, _world: World) -> Answer:
     sent = sent_at(sample.cycles, 2)
     return len(sent) == 1, f"{len(sent)} messages sent on the moved cycle: {sent}"
+
+
+def _told_the_new_price_when_it_moved(sample: SampleObservation, _world: World) -> Answer:
+    """When the price moved, the user was told the NEW price — the message sent on the third
+    cycle carries the moved amount the page now posts.  Read off the cycle's own sends, so a
+    cycle that ran and sent nothing, or sent the old reading, fails here."""
+    sent = sent_at(sample.cycles, 2)
+    told = [message for message in sent if _MOVED_AMOUNT in message]
+    return bool(told), f"sent on the moved cycle: {sent}; carrying {_MOVED_AMOUNT}: {told}"
 
 
 _MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
@@ -305,21 +299,12 @@ async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
     cohort.assert_a_new_job_notifies()
     cohort.assert_a_new_job_ends_when_asked(_ASKED_END)
 
-    # STORE — the three cycles, each read as what the created job(s) held and sent at that
-    # position, union over however many jobs the script created.
-    cohort.claim(
-        "state: after the first cycle the store holds the page's price",
-        _store_holds_the_first_reading,
-        SpecCategory.STORE,
-    )
+    # SENT — the three cycles, each read as what reached the user at that position, union
+    # over however many jobs the script created.  What a cycle left in the store is hers,
+    # measured as variance (``ENTRIES_STORED``), never claimed (#2490).
     cohort.claim(
         "state: by the end of the first cycle the user has been told the page's price",
         _told_the_price_by_the_first_cycle,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: after the second cycle the store still holds that price",
-        _store_still_holds_the_first_reading,
         SpecCategory.STORE,
     )
     cohort.claim(
@@ -328,18 +313,17 @@ async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: after the third cycle the store holds the new price, not the old",
-        _store_holds_the_moved_reading_only,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
         "state: the user was told once more when the price moved",
         _told_once_more_when_it_moved,
         SpecCategory.STORE,
     )
+    cohort.claim(
+        "state: when the price moved, the user was told the new price",
+        _told_the_new_price_when_it_moved,
+        SpecCategory.STORE,
+    )
 
     # PROVENANCE
-    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
