@@ -1,6 +1,7 @@
 """Pytest fixtures for Penny tests."""
 
 import asyncio
+import pkgutil
 import shutil
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -12,6 +13,7 @@ import pytest
 from penny.config import Config
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.penny import Penny
+from penny.tests.eval import drivers as eval_drivers
 
 # Re-export LLM mock fixture so it can be used directly in tests
 from penny.tests.mocks.llm_patches import mock_llm  # noqa: F401
@@ -28,8 +30,20 @@ if TYPE_CHECKING:
     from penny.database import Database
     from penny.database.memory import Memory
 
-# Configure pytest-asyncio
-pytest_plugins = ("pytest_asyncio",)
+# Configure pytest-asyncio, plus every eval DRIVER module under
+# ``tests/eval/drivers/`` (#2395): each is loaded as a plugin, exactly like
+# ``pytest_asyncio``, so a driver added there needs no edit here or anywhere else.
+# This has to be the SUITE'S ACTUAL ROOT conftest — pytest only honours
+# ``pytest_plugins`` in an "initial" conftest (one on the path pytest was invoked
+# with), and ``penny/tests/eval/conftest.py`` is that only when a run is scoped
+# under ``penny/tests/eval/``; CI runs ``penny/tests/`` as a whole, where it isn't.
+pytest_plugins = (
+    "pytest_asyncio",
+    *(
+        f"{eval_drivers.__name__}.{module_info.name}"
+        for module_info in pkgutil.iter_modules(eval_drivers.__path__)
+    ),
+)
 
 # Standard test sender phone number
 TEST_SENDER = "+15559876543"

@@ -378,11 +378,15 @@ under test, and which state that agent is in. The tree is that grouping.
 tests/eval/
   conftest.py       — shared machinery every driver and case calls into. Stays at the ROOT:
                       pytest resolves conftest hierarchically, so one here serves every
-                      subdirectory. Loads every module under drivers/ as a plugin (#2395),
-                      so adding a driver there needs no edit here
+                      subdirectory. Does NOT load drivers/ itself — see tests/conftest.py
   drivers/          — one module per DRIVER (chat_eval, collector_cycles_eval, the per-agent
                       ones) — never appended to conftest.py, so two case PRs that each add
-                      a driver land in different files (#2395)
+                      a driver land in different files (#2395). Loaded as a plugin by
+                      `penny/tests/conftest.py` (the suite's actual root), not by this
+                      directory's own conftest.py: pytest only honours `pytest_plugins` in
+                      an INITIAL conftest — one on the path pytest was invoked with — and
+                      `tests/eval/conftest.py` is that only for a run scoped under
+                      `tests/eval/`, never for the whole-suite run CI does
   utils/            — shared machinery, and nothing else: artifacts · checkpoint ·
                       cohort · report · assemble · comment_split · roster ·
                       endpoint_smoke · baseline · replay · run_health · assertions ·
