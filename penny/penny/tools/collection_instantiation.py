@@ -321,6 +321,34 @@ def _rule_parts(rule_line: str) -> dict[str, str]:
     return parts
 
 
+def schedules_equivalent(a: str | None, b: str | None) -> bool:
+    """Whether two ``schedule`` values (``None`` = no schedule) state the IDENTICAL
+    thing — the same ``DTSTART`` line(s), if any, and the same rule ``NAME=VALUE``
+    parts, in any order.  Compared structurally with this module's own parser
+    (``_canonical_lines``/``_rule_line``/``_rule_parts``), not as raw text: a caller
+    that regenerates a rule from fixed presets (the browser addon's schedule picker,
+    #2442) produces its own part order, which need not match how the identical rule
+    was written elsewhere (chat, by hand) — a resend of the SAME schedule in a
+    different part order must still read as unchanged, not as an edit (#2457 review).
+    Both non-``None`` inputs are assumed already-valid schedules (stored, or
+    validated by ``parse_schedule``), so each has exactly one rule line to parse."""
+    if a is None or b is None:
+        return a == b
+
+    def shape(schedule: str) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+        canonical = _canonical_lines(schedule)
+        dtstart_lines = frozenset(
+            line.strip()
+            for line in canonical.splitlines()
+            if line.strip().upper().startswith(_DTSTART_TAG)
+        )
+        rule_line = _rule_line(canonical)
+        parts = frozenset(_rule_parts(rule_line).items()) if rule_line else frozenset()
+        return dtstart_lines, parts
+
+    return shape(a) == shape(b)
+
+
 def _reads_as_schedule(text: str) -> bool:
     """Does ``rrulestr`` accept this text as a recurrence rule?  The single authority on
     the grammar — anything it refuses is a reject-and-teach, whatever the reason."""
