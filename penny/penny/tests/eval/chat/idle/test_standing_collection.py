@@ -1,5 +1,5 @@
-"""Operating a job that is already running, and reading jobs back: seven cases (#2008, tranche 3;
-#2215).
+"""Operating a job that is already running, and reading jobs back: eight cases (#2008, tranche 3;
+#2215; #2365).
 
 The contract is `docs/eval-case-design.md`.
 
@@ -16,6 +16,7 @@ right for one is wrong for another, and each action is a case with its own sente
 | give it an end | ``standing-end-changed`` | it stops when the ask said, firing when it was due |
 | read one back | ``standing-describe-routine`` | the row as it was; the reply names its page |
 | list them | ``standing-list-running`` | every row as it was; the reply names each job |
+| two of the same kind match | ``standing-ambiguous-job-match`` | neither moved; reply names both |
 
 **The two directions of the switch are two cases, because they start in two worlds.**
 ``standing-notify-off`` is answered on a job seeded telling the user and
@@ -76,6 +77,16 @@ pages, each looking for its own kind of thing.  The reply carries one token per 
 thing that job looks for, which its page, its bound value and its description all spell and
 no other job's record does — and every job, everything each gathered and the global switch
 are as the turn found them.
+
+``standing-ambiguous-job-match`` (#2365) is the one case here where the ask does NOT single a
+job out.  Two jobs of the SAME routine, each watching its own page for a price drop, stand
+side by side; the ask names the kind of job ("the price watch") and nothing that tells the two
+apart.  Nothing in the registry resolves this — both rows match the description equally — so
+the ruled contract is that neither changes without the user saying which: the claims read that
+both rows hold exactly what they were seeded with, and that the reply names both jobs, never
+one of them silently.  Whether she actually asks which one, as opposed to naming both and
+stopping, or picking one on her own, is a route rather than a fact the world settles — measured
+in the tool sequence and the reply's own spread, never asserted.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
 accept once the numbers have been read.  Every page, shop and job is synthetic, on an
@@ -1496,6 +1507,140 @@ async def test_she_lists_every_job_she_is_running(chat_eval: ChatEval, model: st
     cohort.measure(*_MEASURED)
 
 
+# ═══ an ask that matches two of the same kind ════════════════════════════════
+#
+# Two jobs of the SAME routine, each watching its own page for a price drop — the #2365
+# shape: "turn off notifications for the price watch" when two price watches are running,
+# and the ask names only the KIND, never which one.  Nothing else in the conversation picks
+# between them either, so the entry condition is genuinely ambiguous rather than ambiguous
+# in appearance with a tiebreaker sitting in the message.
+#
+# The ruled contract (code owner, filed on #2365): neither job changes without the user
+# saying which.  That is a STORE claim about both rows, and a COMPLETENESS claim that the
+# reply names both jobs — the same ``World.answers`` containment ``standing-list-running``
+# reads, pointed at two rows instead of three.  Whether she also ASKS which one, in as many
+# words, is NOT claimed: that is the route a correct turn could take, not the only one a
+# correct turn must take, so it stays measured in the tool sequence and the reply's own
+# spread (#2373's "facts asserted, behaviour measured" rule).
+
+_PRICE_WATCH_A = StandingJob(
+    routine=WATCH_ROUTINE,
+    values={
+        "page": "https://foxden.example.com/camera-kit",
+        "watched_for": "price drops on the camera kit",
+    },
+    description="Price drops on the camera kit at Foxden.",
+    schedule="FREQ=DAILY;BYHOUR=8",
+    notify=True,
+    holdings=(("Foxden camera kit", "Foxden camera kit — now $340, down from $380."),),
+)
+_PRICE_WATCH_B = StandingJob(
+    routine=WATCH_ROUTINE,
+    values={
+        "page": "https://cedarlane.example.com/turntable",
+        "watched_for": "price drops on the turntable",
+    },
+    description="Price drops on the turntable at Cedarlane.",
+    schedule="FREQ=DAILY;BYHOUR=18",
+    notify=True,
+    holdings=(("Cedarlane turntable", "Cedarlane turntable — now $210, down from $250."),),
+)
+for _job in (_PRICE_WATCH_A, _PRICE_WATCH_B):
+    _assert_the_job_can_run(_job)
+
+# The two tokens the reply has to carry to have named BOTH jobs — each on its own job's
+# values and description, on neither other job's, and in NEITHER wording: the ask names only
+# the kind ("the price watch"), never which shop or item, or the model would be reading the
+# answer off the question instead of off the state.
+_AMBIGUOUS_MATCH_TOKENS = (
+    (_PRICE_WATCH_A, "camera kit"),
+    (_PRICE_WATCH_B, "turntable"),
+)
+
+for _job, _token in _AMBIGUOUS_MATCH_TOKENS:
+    assert _token in f"{' '.join(_job.values.values())} {_job.description}".casefold(), (
+        f"{_token!r} must be on {_job.container}'s own record"
+    )
+for _other, _other_token in _AMBIGUOUS_MATCH_TOKENS:
+    for _job, _token in _AMBIGUOUS_MATCH_TOKENS:
+        if _other is not _job:
+            assert (
+                _other_token
+                not in f"{' '.join(_job.values.values())} {_job.description}".casefold()
+            ), f"{_other_token!r} must not be on {_job.container}'s record"
+
+_AMBIGUOUS_MATCH = _OperationCase(
+    case_id="standing-ambiguous-job-match",
+    behaviour=(
+        "In the chat agent, when an ask names a running job by a description two running "
+        "jobs of the same kind both match, and nothing else in the conversation picks "
+        "between them, Penny changes neither job and names both in her reply."
+    ),
+    job=_PRICE_WATCH_A,
+    others=(_PRICE_WATCH_B,),
+    renders=SelfStateHeader.MECHANISM_NOTIFIES,
+    ask=(
+        "hey, can you turn off notifications for the price watch? it's been pinging me "
+        "nonstop today and I just want it to go quiet for now, I'll check back on it myself"
+    ),
+    also_phrased=(
+        "can you mute the price watch for me? it keeps buzzing my phone and I'd rather "
+        "look at it on my own time instead of getting pinged every time something moves",
+        "do me a favor and switch off notifications on the price tracker — it's been "
+        "going off a lot today and I don't need the alerts right now",
+        "could you turn the price alert notifications off? i'm getting pinged way too "
+        "much and want to just check it myself when i feel like it",
+        "quick one — can you stop the price watch from notifying me? it's fine running "
+        "in the background, i just don't want the pings",
+    ),
+    answers=tuple(token for _, token in _AMBIGUOUS_MATCH_TOKENS),
+)
+
+# No wording leaks either job's answer token — ENFORCED, the way every other leak guard in
+# this file is, because the leak is invisible once it exists: a wording naming "camera kit"
+# or "turntable" would hand the model half the disambiguation the case exists to deny it.
+for _wording in (_AMBIGUOUS_MATCH.ask, *_AMBIGUOUS_MATCH.also_phrased):
+    for _, _token in _AMBIGUOUS_MATCH_TOKENS:
+        assert _token not in _wording.casefold(), (
+            f"an ambiguous-match wording must not carry an answer token: {_wording!r}"
+        )
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_ask_matching_two_jobs_of_the_same_kind_changes_neither(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """Two price watches running, and an ask that names only the kind — neither job's row may
+    move, and the reply has to name both, whether she does that by asking which one or by
+    describing the two and leaving the choice open.
+
+    The failure this exists to catch is a SILENT pick: a turn that reads "the price watch" as
+    close enough to one of the two rows and flips its switch alone, which looks like success
+    from inside the turn and leaves the user's actual job untouched and unmentioned."""
+    cohort = await _drive(chat_eval, model, _AMBIGUOUS_MATCH)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — neither row moved, at all; the reply names both.
+    cohort.claim(
+        "state: the camera-kit price watch is unchanged",
+        _nothing_else_moved(_PRICE_WATCH_A.container, asked=_NONE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the turntable price watch is unchanged",
+        _nothing_else_moved(_PRICE_WATCH_B.container, asked=_NONE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+    cohort.assert_the_reply_answers_the_ask()
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
 # Every case, in one place — so the deterministic probe in ``test_eval_harness.py`` can drive
 # each one's seeder and premise without a GPU.
 OPERATION_CASES = (
@@ -1506,4 +1651,5 @@ OPERATION_CASES = (
     _END_CHANGED,
     _DESCRIBE,
     _LIST_RUNNING,
+    _AMBIGUOUS_MATCH,
 )
