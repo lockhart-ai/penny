@@ -2590,6 +2590,19 @@ class TestBrowserSkillHandlers:
             duration_ms=100,
         )
 
+    def _log_child_draw(self, db: Database, agent_name: str, parent_run_id: str) -> None:
+        """A micro-context call made ON BEHALF of ``parent_run_id`` (#2434) —
+        mints its own ``run_id``, distinct from the run it was made for."""
+        db.messages.log_prompt(
+            model="test-model",
+            messages=[{"role": "user", "content": "child draw"}],
+            response={"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2}},
+            agent_name=agent_name,
+            run_id="child-draw-run",
+            parent_run_id=parent_run_id,
+            duration_ms=10,
+        )
+
     @pytest.mark.asyncio
     async def test_skills_request_returns_every_skill(self, tmp_path):
         """The list view receives every skill's metadata."""
@@ -2674,11 +2687,13 @@ class TestBrowserSkillHandlers:
     @pytest.mark.asyncio
     async def test_run_detail_request_returns_the_serialized_run(self, tmp_path):
         """The same full run → prompts shape the prompts tab's list carries,
-        fetched directly by id (e.g. a skill's source_run_id)."""
+        fetched directly by id (e.g. a skill's source_run_id) — including any
+        child draws (#2434) made on the run's behalf."""
         channel, db = self._channel(tmp_path)
         self._log_prompt(db, "chat", "run-teach")
         self._log_prompt(db, "chat", "run-teach")
         self._log_prompt(db, "chat", "some-other-run")
+        self._log_child_draw(db, "browse_extract", "run-teach")
 
         ws = _MockWs()
         data = {"type": "run_detail_request", "run_id": "run-teach"}
@@ -2690,6 +2705,9 @@ class TestBrowserSkillHandlers:
         assert resp["run"] is not None
         assert resp["run"]["run_id"] == "run-teach"
         assert resp["run"]["prompt_count"] == 2
+        [child_draw] = resp["run"]["child_draws"]
+        assert child_draw["agent_name"] == "browse_extract"
+        assert child_draw["parent_run_id"] == "run-teach"
 
     @pytest.mark.asyncio
     async def test_run_detail_request_unknown_run_id_answers_with_null_run(self, tmp_path):
