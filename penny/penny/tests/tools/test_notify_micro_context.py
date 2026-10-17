@@ -33,6 +33,10 @@ _DOCUMENT = "The `tide-times` job just ran on its own.\n\n## What it wrote\n- 06
 class _Model:
     """A model client that replies with each canned draw in turn, recording the calls."""
 
+    # Mirrors ``LlmClient.runtime`` (#2476): the draw reads its kind's token budget
+    # off it; ``None`` sends none, the same default-only fallback a test client gets.
+    runtime = None
+
     def __init__(self, *draws: str) -> None:
         self._draws = list(draws)
         self.calls: list[dict] = []
@@ -40,7 +44,7 @@ class _Model:
     async def chat(self, messages: list[dict], **kwargs: Any):
         self.calls.append({"messages": messages, **kwargs})
         text = self._draws[min(len(self.calls) - 1, len(self._draws) - 1)]
-        return type("Response", (), {"content": text})()
+        return type("Response", (), {"content": text, "finish_reason": None})()
 
 
 async def _compose(*draws: str) -> tuple[str | None, _Model]:
