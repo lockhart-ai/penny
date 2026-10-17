@@ -28,6 +28,7 @@ import {
   STORAGE_KEY_DOMAIN_ALLOWLIST,
   STORAGE_KEY_TOOL_USE,
 } from "../protocol.js";
+import { callOutcomeLabel } from "./call_outcome.js";
 import { createSchedulePicker } from "./schedule_picker.js";
 import {
   agentLabel,
@@ -1005,10 +1006,15 @@ function createPromptRow(prompt: PromptLogEntry, step: number | string): HTMLEle
 
   const iconEl = document.createElement("span");
   iconEl.className = "prompt-tools";
-  iconEl.innerHTML = prompt.has_tools
+  iconEl.innerHTML = prompt.made_tool_call
     ? '<i class="fa-solid fa-wrench"></i>'
     : '<i class="fa-solid fa-comment"></i>';
   header.appendChild(iconEl);
+
+  const outcomeLabel = callOutcomeLabel(prompt.call_outcome);
+  if (outcomeLabel) {
+    header.appendChild(createCallOutcomeBadge(outcomeLabel, prompt));
+  }
 
   const snippet = extractLastTurnSnippet(prompt);
   if (snippet) {
@@ -1050,9 +1056,41 @@ function createPromptRow(prompt: PromptLogEntry, step: number | string): HTMLEle
   return row;
 }
 
+// A call that did not simply complete, shown visibly on its row (#2436) —
+// the label itself is generic (`callOutcomeLabel`), and the error class +
+// message (when the runtime recorded them) ride along as a tooltip, so
+// hovering the badge says HOW it ended without expanding the row.
+function createCallOutcomeBadge(label: string, prompt: PromptLogEntry): HTMLElement {
+  const el = document.createElement("span");
+  el.className = "prompt-outcome";
+  el.textContent = label;
+  const tooltip = [prompt.call_error_class, prompt.call_error_message]
+    .filter((part): part is string => Boolean(part))
+    .join(": ");
+  if (tooltip) el.title = tooltip;
+  return el;
+}
+
 function createPromptDetail(prompt: PromptLogEntry): HTMLElement {
   const detail = document.createElement("div");
   detail.className = "prompt-detail";
+
+  const outcomeLabel = callOutcomeLabel(prompt.call_outcome);
+  if (outcomeLabel) {
+    const errorText =
+      [prompt.call_error_class, prompt.call_error_message].filter((part): part is string => Boolean(part))
+        .join(": ") || outcomeLabel;
+    detail.appendChild(
+      createPromptSection("outcome", errorText, () =>
+        jsonOf({
+          promptlog_id: prompt.id,
+          call_outcome: prompt.call_outcome,
+          call_error_class: prompt.call_error_class,
+          call_error_message: prompt.call_error_message,
+        }),
+      ),
+    );
+  }
 
   // Each turn (one message in this prompt's input) gets a copy button that
   // copies just that turn's JSON, tagged with the promptlog id for lookup.

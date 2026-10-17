@@ -846,6 +846,20 @@ h1 {
   color: var(--accent);
 }
 
+/* A call that did not simply complete (#2436) — one generic style for any
+   non-"completed" outcome, since the label itself is derived from whatever
+   value Penny's runtime stamped rather than a fixed set this file enumerates. */
+.prompt-outcome {
+  font-size: 10px;
+  font-weight: 600;
+  color: #dc3545;
+  background: rgba(220, 53, 69, 0.1);
+  border-radius: 10px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* --- Prompt detail sections --- */
 
 .prompt-detail {
