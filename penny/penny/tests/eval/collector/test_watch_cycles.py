@@ -401,6 +401,12 @@ _WARRANTY_AMOUNT = "69"
 _OTHER_ITEM_1_AMOUNT = "329"
 _OTHER_ITEM_2_AMOUNT = "59"
 _REVIEW_AMOUNT = "520"
+# The two hardest decoys: round 1 found the moved-reading case healthy at ordinary variance
+# but at a cost already above the plain moved case, so round 2 (#2366) adds these right
+# BESIDE the true label — no header, no other sentence between them and ``_DATUM`` — rather
+# than growing the page anywhere further from it.
+_FLASH_SALE_AMOUNT = "489"
+_PRICE_MATCH_AMOUNT = "619"
 
 # Every decoy this case's exclusion claim checks for — the whole hazard, named once.
 _SAME_ITEM_DECOY_AMOUNTS = (
@@ -414,6 +420,8 @@ _SAME_ITEM_DECOY_AMOUNTS = (
     _OTHER_ITEM_1_AMOUNT,
     _OTHER_ITEM_2_AMOUNT,
     _REVIEW_AMOUNT,
+    _FLASH_SALE_AMOUNT,
+    _PRICE_MATCH_AMOUNT,
 )
 
 # Lines reused byte-identical across every arm — the decoys themselves, a spec list, a Q&A
@@ -432,6 +440,11 @@ _OTHER_ITEM_2_LINE = f"Nebula Dock, charging stand — ${_OTHER_ITEM_2_AMOUNT}"
 _REVIEW_ONE = (
     f'"Paid ${_REVIEW_AMOUNT} for mine last spring and have zero regrets — still going '
     'strong." — a verified buyer\n'
+)
+_FLASH_SALE_LINE = f"Today only: ${_FLASH_SALE_AMOUNT} for members who clip the coupon at checkout"
+_PRICE_MATCH_LINE = (
+    f"Price-match guarantee: up to ${_PRICE_MATCH_AMOUNT} back as store credit if you find "
+    "it cheaper elsewhere within 14 days"
 )
 
 _MESSY_SPECS = (
@@ -522,18 +535,22 @@ def _messy_body(voice: _MessyVoice) -> str:
 
     ``_DATUM`` appears exactly once, as on every page above, labelled as THE current price —
     everything else naming a price uses a different label, which is what lets a cycle that
-    reads the label still be measured against decoys that could otherwise pass for it."""
+    reads the label still be measured against decoys that could otherwise pass for it.
+
+    The flash-sale, list and member lines sit on the three lines immediately AFTER ``_DATUM``
+    — no header, no seller or condition sentence between them — because round 1 of this case
+    (#2366) measured no wrong-price grab with its decoys further down the page, so round 2
+    moves the hardest ones right beside the label instead of adding more distance."""
     return (
         _HEAD
         + f"{voice.intro}\n"
         + f"{_DATUM}\n"
+        + f"{_FLASH_SALE_LINE}\n"
+        + f"{_LIST_LINE}\n"
+        + f"{_MEMBER_LINE}\n"
         + f"{_LISTING_LINK}\n"
         + f"{voice.seller}\n"
         + f"{voice.condition}\n"
-        "\n"
-        "Price details\n"
-        f"{_LIST_LINE}\n"
-        f"{_MEMBER_LINE}\n"
         "\n"
         "Buy more and save\n"
         f"{_BUNDLE_LINE}\n"
@@ -573,6 +590,7 @@ def _messy_body(voice: _MessyVoice) -> str:
         f"{_MESSY_SELLER_INFO}"
         "\n"
         f"{_MESSY_POLICY}"
+        f"{_PRICE_MATCH_LINE}\n"
         "\n"
         f"{_MESSY_ACCESSIBILITY}"
         "\n"
