@@ -367,10 +367,8 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     f"{render_line(_LABEL_LINE)}\n"
     "Write ONE LABEL line for EVERY placeholder you were given, and none for anything else, "
     "repeating its CURRENT name exactly so it maps back. Two spots are never the same "
-    "spot: give each its own name. When two spots hold nearly the same thing, their "
-    "names may differ only by what sets them apart — the step each comes from, or "
-    "first and second — so there is no need to find a new meaning for each. Use a "
-    "single lowercase word or snake_case for <semantic_name>.\n"
+    "spot: give each its own name. Use a single lowercase word or snake_case for "
+    "<semantic_name>.\n"
     "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
     "skill."
 )
