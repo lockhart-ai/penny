@@ -1620,11 +1620,14 @@ def _run_reason(db: Database) -> str:
 
 
 def _notify_draws(db: Database) -> list[dict]:
-    """The notify micro-context's own runs, attributed under its own ledger identity."""
+    """The notify micro-context's own draws — each under its own ledger identity, and
+    listed inside the cycle's run as one of its ``child_draws`` (#2435), not as a
+    top-level run of its own."""
     return [
-        run
+        draw
         for run in db.messages.get_prompt_log_runs()
-        if run["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
+        for draw in run.get("child_draws", [])
+        if draw["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
     ]
 
 
@@ -1655,7 +1658,7 @@ async def test_a_done_closed_cycle_queues_exactly_one_notification(mock_llm, tes
     assert success is True
     # The two program calls and the close, then the ONE notify draw — nothing else.
     assert len(mock_llm.requests) == 4
-    assert len(_notify_draws(db)) == 1  # its own ledger identity, beside the cycle's run
+    assert len(_notify_draws(db)) == 1  # its own ledger identity, nested inside the cycle's run
     pending = db.send_queue.pending_items()
     assert [item.content for item in pending] == [_DRAWN_MESSAGE]
     assert pending[0].collection == "indie-metroidvanias"
