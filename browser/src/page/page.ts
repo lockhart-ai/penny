@@ -37,6 +37,7 @@ import {
   agentLabel,
   attachmentIndex,
   dedupeDraws,
+  type DrawTreeEntry,
   type DrawTreeNode,
   directChildNodes,
   dropRunningCalls,
@@ -44,12 +45,11 @@ import {
   expandedIdsAfterRebuild,
   fetchedRunIdsFrom,
   isAnchored,
+  isRunningCall,
+  isRunningTool,
   moveToFront,
   type RunningCall,
-  runningCallNodesFor,
-  type RunningNode,
   type RunningTool,
-  runningToolNodesFor,
   runningRunIdClosure,
   rowStartedAt,
   runTimingWindow,
@@ -114,14 +114,16 @@ const pendingDrawsByStep = new Map<string, Map<string, PromptLogEntry[]>>();
 
 // Live step markers (#2439) — running calls and tool calls, pushed ahead of
 // any promptlog row.  Flat arrays, not attached into any run's own state the
-// way a draw is: `runningCallNodesFor`/`runningToolNodesFor` recompute the
-// match against `allRuns` fresh at every render, so there is nothing to
-// hold-and-drain here — a running call whose host isn't on screen yet simply
-// isn't rendered until the host's own render (for any reason) picks it up.
-// Resolved three ways, never left spinning: the real record arrives (its own
-// run_id is dropped), the run's OWN outcome arrives (the whole closure under
-// it is dropped — an abandoned nested draw included), or a fetch brings the
-// run in (dropped by `fetchedRunIdsFrom`, same as a reconnect).
+// way a draw is: `directChildNodes` (draw_nesting.ts) is fed these two arrays
+// alongside the logged draws, and recomputes the WHOLE tree fresh at every
+// render — any depth, a running call nested under another running call
+// included — so there is nothing to hold-and-drain here — a running call
+// whose host isn't on screen yet simply isn't rendered until the host's own
+// render (for any reason) picks it up.  Resolved three ways, never left
+// spinning: the real record arrives (its own run_id is dropped), the run's
+// OWN outcome arrives (the whole closure under it is dropped — an abandoned
+// nested draw included), or a fetch brings the run in (dropped by
+// `fetchedRunIdsFrom`, same as a reconnect).
 let runningCalls: RunningCall[] = [];
 let runningTools: RunningTool[] = [];
 let tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -480,6 +482,26 @@ function findContainer(runId: string): { host: PromptLogRun; ownRows: PromptLogE
   return null;
 }
 
+/** The top-level host whose body-render would (eventually) reach `runId` —
+ * real right away via `findContainer`, or by climbing a chain of running
+ * calls' own `parentRunId` (#2439), any depth: a running call's parent can
+ * itself be another running call, logged or not, exactly as a logged draw's
+ * parent can be another draw.  `null` only while the WHOLE chain up to a
+ * real run is still pending — nothing is lost even then: `runningCalls` is a
+ * flat, recomputed-fresh array, never consumed, so the next render the real
+ * ancestor triggers for ANY reason (its own resolution, a sibling arriving)
+ * picks up every running descendant still waiting on it, same as this call
+ * would have. */
+function findHostFor(runId: string): PromptLogRun | null {
+  const direct = findContainer(runId);
+  if (direct) return direct.host;
+  const asRunningCall = runningCalls.find((call) => call.runId === runId);
+  if (asRunningCall && asRunningCall.parentRunId !== null) {
+    return findHostFor(asRunningCall.parentRunId);
+  }
+  return null;
+}
+
 function holdByParent(parentRunId: string, draw: PromptLogEntry): void {
   const held = pendingDrawsByParentRun.get(parentRunId) ?? [];
   held.push(draw);
@@ -590,11 +612,17 @@ function drainWaitingOn(arrived: PromptLogEntry): void {
 // --- Live step markers (#2439) ---
 //
 // Unlike a draw, a running call/tool is never "attached" into any host's own
-// state (`runningCallNodesFor`/`runningToolNodesFor` in draw_nesting.ts
-// recompute the match fresh at render time) — so there is nothing to hold and
-// drain here. A host that isn't on screen yet simply picks a running entry up
-// the next time it renders for any other reason; see
-// `runningCalls`/`runningTools`'s own comment for the three resolution paths.
+// state (`directChildNodes` in draw_nesting.ts recomputes the match fresh,
+// at any depth, every render) — so there is no per-entry hold-and-drain map
+// the way `pendingDrawsByParentRun` is for a draw. The one thing a render
+// still needs on arrival is WHICH top-level host to rerender, which is what
+// `findHostFor` resolves — climbing through running ancestors, any depth,
+// when the immediate parent isn't a real row yet. A host that still isn't
+// reachable at all (the whole chain pending) simply isn't rendered THIS
+// moment; nothing is lost (`runningCalls` is never consumed), and the next
+// render the real ancestor triggers for any reason catches every running
+// descendant still waiting on it. See `runningCalls`/`runningTools`'s own
+// comment for the three resolution paths.
 
 /** A model call is about to be made (#2439).  `parent_run_id === null` is
  * this run's OWN next step — if the run itself isn't on screen yet (the
@@ -625,8 +653,8 @@ function handleCallStarted(msg: RuntimeCallStarted): void {
     return;
   }
 
-  const container = findContainer(call.parentRunId);
-  if (container) rerenderHostBody(container.host);
+  const host = findHostFor(call.parentRunId);
+  if (host) rerenderHostBody(host);
 }
 
 /** A dispatched tool call is about to run (#2439) — its host run already
@@ -954,7 +982,11 @@ function appendPromptsAndDraws(
   ownRunId: string,
   allDraws: PromptLogEntry[],
 ): void {
-  const nodes = directChildNodes(ownRunId, ownRows, allDraws);
+  // Live step markers (#2439) feed into the SAME tree build a logged draw
+  // always went through — never a parallel one-level path — so a running
+  // call or tool nests at any depth exactly like a logged draw would,
+  // including one whose own parent is itself still running.
+  const nodes = directChildNodes(ownRunId, ownRows, allDraws, runningCalls, runningTools);
   const byStep = new Map<number, DrawTreeNode[]>();
   const unanchored: DrawTreeNode[] = [];
   for (const node of nodes) {
@@ -966,56 +998,39 @@ function appendPromptsAndDraws(
     byStep.get(node.stepIndex)!.push(node);
   }
 
-  // Live step markers (#2439): running calls/tools made ON BEHALF of this run
-  // (nested one level — a tool's own draw while the tool is still running,
-  // the issue's own motivating case) grouped into the SAME step buckets as the
-  // real draws above; this run's OWN next call in flight renders separately,
-  // after its known steps, since it has no step of its own yet.
-  const runningNodes: RunningNode[] = [
-    ...runningToolNodesFor(ownRunId, ownRows, runningTools),
-    ...runningCallNodesFor(ownRunId, ownRows, runningCalls),
-  ];
-  const runningByStep = new Map<number, RunningNode[]>();
-  const runningUnanchored: RunningNode[] = [];
-  for (const node of runningNodes) {
-    if (node.stepIndex === null) {
-      runningUnanchored.push(node);
-      continue;
-    }
-    if (!runningByStep.has(node.stepIndex)) runningByStep.set(node.stepIndex, []);
-    runningByStep.get(node.stepIndex)!.push(node);
-  }
+  // This run's OWN next call in flight is not a "child" in the tree sense
+  // (nothing is parented ON it yet) — it's the run's own next row, rendered
+  // separately, after its known steps, since it has no step of its own yet.
   const ownRunningCall = runningCalls.find((call) => call.runId === ownRunId);
 
   for (let i = 0; i < ownRows.length; i++) {
     target.appendChild(createPromptRow(ownRows[i], i + 1));
     for (const node of byStep.get(i) ?? []) appendDrawNode(target, node);
-    for (const node of runningByStep.get(i) ?? []) appendRunningNode(target, node);
   }
   for (const node of unanchored) appendDrawNode(target, node);
-  for (const node of runningUnanchored) appendRunningNode(target, node);
   if (ownRunningCall) target.appendChild(createRunningCallRow(ownRunningCall));
-  if (runningNodes.length > 0 || ownRunningCall) startTicking();
+  if (nodes.length > 0 || ownRunningCall) startTicking();
 }
 
-// A running call or running tool call's own row (#2439) — a leaf, never
-// recursed into: a running MODEL call cannot yet have dispatched any tool
-// (that only happens once its response returns), and a running TOOL's own
-// draws render alongside it in the SAME step bucket (one level, matching the
-// issue's motivating case), not nested under its specific row.
-function appendRunningNode(target: HTMLElement, node: RunningNode): void {
-  target.appendChild(node.kind === "call" ? createRunningCallRow(node.call) : createRunningToolRow(node.tool));
-}
-
-// One draw row plus its own already-built children (#2435), indented one
-// level deeper per nesting level via `.prompt-draw-children`'s own CSS.
+// One tree node's own row plus its own already-built children (#2435,
+// extended to running entries by #2439), indented one level deeper per
+// nesting level via `.prompt-draw-children`'s own CSS — recursion doesn't
+// care whether a level is logged or still running.
 function appendDrawNode(target: HTMLElement, node: DrawTreeNode): void {
-  target.appendChild(createDrawRow(node.draw));
+  target.appendChild(createAnyDrawRow(node.draw));
   if (node.children.length === 0) return;
   const nested = document.createElement("div");
   nested.className = "prompt-draw-children";
   target.appendChild(nested);
   for (const child of node.children) appendDrawNode(nested, child);
+}
+
+// Dispatches a tree entry to its own row renderer by kind (#2439) — a logged
+// draw, a running call, or a running tool call.
+function createAnyDrawRow(entry: DrawTreeEntry): HTMLElement {
+  if (isRunningTool(entry)) return createRunningToolRow(entry);
+  if (isRunningCall(entry)) return createRunningCallRow(entry);
+  return createDrawRow(entry);
 }
 
 // A draw's own row — the same prompt-row component every top-level step
