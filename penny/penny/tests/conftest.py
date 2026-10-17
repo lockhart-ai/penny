@@ -12,6 +12,7 @@ import pytest
 
 from penny.config import Config
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
+from penny.constants import PageReading
 from penny.penny import Penny
 from penny.tests.eval import drivers as eval_drivers
 
@@ -341,7 +342,13 @@ def _mock_browse(penny: Penny) -> None:
 
     def mock_browse():
         return (
-            AsyncMock(return_value=("Mock search results", "data:image/png;base64,mock")),
+            AsyncMock(
+                return_value=(
+                    "Mock search results",
+                    "data:image/png;base64,mock",
+                    PageReading.ARTICLE,
+                )
+            ),
             MagicMock(check_domain=AsyncMock()),
         )
 
