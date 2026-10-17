@@ -64,6 +64,8 @@ Branch protection is enabled on `main`. All changes must go through pull request
 
   **The body states the change and closes its ticket; it carries no generated-with footer and no session URLs** — the repo is public, and a session URL is a private link.
 
+  **The body's first sentence summarizes the whole PR on its own.** The code owner reads PR notifications on his phone, which show only the opening line, so the body opens with one plain sentence saying what the PR changes and why, readable with no other context: no heading, ticket number or "this addresses…" before it.
+
   **Test PRs are named after the test group they implement, consistently** — not as free sentences: `test(eval): port <group>[ tranche N][ (<subset>)]`, where `<group>` is the group's name on the epic's map (`transitions`, `chat idle`, `collector recovery`, `state classifier`, `skill framer`, `skill binder`, `skill namer`, `browse extractor`). A correction to existing cases is `fix(eval): <group> <what changed>`.
 
   ```
