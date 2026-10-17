@@ -105,13 +105,6 @@ let triggeringCollection: string | null = null;
 
 let pendingConfigSave = false;
 
-// --- Connection state ---
-
-// The socket's first connection is already covered by init()'s own fetch;
-// only a *re*connect (a drop followed by a later Connected) needs the page
-// to catch up, so this stays false until the first Connected arrives.
-let everConnected = false;
-
 // ============================================================
 // Init
 // ============================================================
@@ -203,17 +196,18 @@ function handleMessage(message: RuntimeMessage): void {
 }
 
 function handleConnectionState(state: ConnectionState): void {
+  // background.ts only pushes the current state on a *change* — the page
+  // gets no initial push on load (that's a sidebar-port-only courtesy) — so
+  // every Connected the page ever hears here is a state change, never the
+  // page's own starting state. That covers both cases: a reconnect after a
+  // drop (init()'s own fetch is stale) and a load that raced the socket
+  // coming up (init()'s own fetch went nowhere). Either way, catch up now.
   if (state !== CS.Connected) return;
-  if (everConnected) {
-    // A reconnect, not the first connect — catch up on whatever was pushed
-    // while the socket was down.
-    resetAndFetchPrompts();
-    const memoriesPanel = document.getElementById("panel-memories");
-    if (memoriesPanel && !memoriesPanel.classList.contains("hidden")) {
-      requestMemories();
-    }
+  resetAndFetchPrompts();
+  const memoriesPanel = document.getElementById("panel-memories");
+  if (memoriesPanel && !memoriesPanel.classList.contains("hidden")) {
+    requestMemories();
   }
-  everConnected = true;
 }
 
 
