@@ -186,6 +186,7 @@ from penny.tests.eval.conftest import (
     _report_result,
     _require_ask,
     _require_report_only,
+    _response_tool_calls,
     _sample_db_path,
     _sample_turns,
     _seed_sample,
@@ -3198,6 +3199,24 @@ def test_a_seeded_known_routines_entry_is_not_counted_as_written_this_run(tmp_pa
     rows = db.messages.recent_prompts(limit=20)
     assert rows, "the seeded conversation should have logged its own turns"
     assert all(is_seeded_run(row.run_id) for row in rows)
+
+    # The ask says "let me know if it changes", so the seeded row's own ``notify`` must
+    # agree (#2508) — a seed that left it at the ``create_collection`` default (False) hands
+    # the model a history that contradicts its store, and she rationally "fixes" it by
+    # reconfiguring a job the ask never mentioned.
+    assert require_memory(db, "aurora-deck-2-price").row.notify, (
+        "the seeded ask asks to be told, so the seeded row must be notify=True"
+    )
+    configure_call = next(
+        call
+        for row in rows
+        for call in _response_tool_calls(row)
+        if tool_call_name(call) == "collection_configure"
+    )
+    assert json.loads(configure_call["function"]["arguments"])["notify"] is True, (
+        "the logged collection_configure call must show the same notify the row carries, "
+        "so the logged call and the row it produced agree"
+    )
 
 
 @pytest.mark.parametrize("case", WATCH_CASES, ids=lambda one: one.case_id)

@@ -138,6 +138,24 @@ def _log_chat_step(db: Database, *, run_id: str, messages: list[dict], response:
     )
 
 
+# Phrases that mark a seeded ask as wanting to be told when the routine's cycles find
+# something — the same family the live scripts' own ``_TELLING_CLAUSES`` test for.  The
+# seeded job's own ``notify`` must agree with this, or a later turn reads a history that
+# asked to be told sitting beside a job that quietly wouldn't, and rationally "fixes" it
+# (#2508: the finding behind samples 4 and 13 of ``end-to-end-new-page``, where the model
+# flipped the seeded Aurora job's ``notify`` unprompted because its own earlier ask —
+# "let me know if it changes" — contradicted the row).
+_TELLING_PHRASES = ("let me know", "tell me", "notify")
+
+
+def _asks_to_be_told(ask: str) -> bool:
+    """Whether this seeded ask asked to be told when something changes — the one fact the
+    seeded job's ``notify`` flag must agree with, so the seed never hands the model a
+    history that contradicts its own store."""
+    lowered = ask.lower()
+    return any(phrase in lowered for phrase in _TELLING_PHRASES)
+
+
 def seed_known_routine(
     db: Database,
     *,
@@ -175,6 +193,9 @@ def seed_known_routine(
     # job's entry from reading as something the live turn just stored.
     run_id = seeded_run_id(collection)
     prompt = f"Check {url} for {extract} and save it."
+    # The job's own notify must agree with what its seeded ask asked for (#2508) — never a
+    # bare default — so the seeded history and the seeded store never contradict each other.
+    notify = _asks_to_be_told(ask)
 
     # The durable state first, through the SAME store methods a live turn calls, so the row
     # and the entry carry the real provenance (`created_by_run_id`, the mutation event, the
@@ -186,6 +207,7 @@ def seed_known_routine(
         description,
         extraction_prompt=prompt,
         schedule=schedule,
+        notify=notify,
         created_by_run_id=run_id,
     )
     require_memory(db, collection).write(
@@ -246,6 +268,7 @@ def seed_known_routine(
         "description": description,
         "prompt": prompt,
         "schedule": schedule,
+        "notify": notify,
     }
     _log_chat_step(
         db,
