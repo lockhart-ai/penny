@@ -59,6 +59,14 @@ Quotes are the code owner's own words.
      still be right if the model had reached this call some other way?*
    - A failed check replies honestly: what is wrong, why, and what would
      succeed (§3 item 5). It neither removes the tool nor absorbs the call.
+   - The same holds at the edge between the model and the infrastructure.
+     *"the system should clearly delineate between valid and invalid
+     interactions between the deterministic infrastructure and the model and
+     enforce and communicate those boundaries clearly, it's the model's job to
+     adapt."* A malformed emission (an unknown tool name, arguments folded into
+     a name, a mangled call) is rejected with a reply that says what is valid.
+     It is never turned into a valid call by a special case: special cases for
+     one model's mistakes grow into a web of rules specific to that model.
    - What only judgement can settle, such as whether something is worth
      telling the user, the model decides from the facts it is shown, not
      through a gate.
