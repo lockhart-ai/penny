@@ -1713,7 +1713,7 @@ _HEADING_MARKS = r"#{1,6}[ \t]+"
 #
 # The two ways it is written:
 #
-#   DELIMITED   the count, then `.` or `)`:  `1.`  `2)`
+#   DELIMITED   the count, then `.`, `)`, or a gap and a dash:  `1.`  `2)`  `3 -`
 #   A KEYCAP    one digit drawn as a key: the digit, an optional U+FE0F, then U+20E3
 #
 # The three places it stands, and what makes it a list number there:
@@ -1736,9 +1736,9 @@ _HEADING_MARKS = r"#{1,6}[ \t]+"
 #
 # THE BLIND SPOT, STATED: a figure that ends a sentence inside a `.`-numbered line and happens
 # to be the next count (`1. open page 2. Then read it`) is that line's second marker by this
-# definition, so it is not read.  The same figure under a `)`-numbered list, or out of step
-# with the count, still is.
-_LIST_DELIMITER = r"[.)]"
+# definition, so it is not read.  The same figure under a `)`-numbered or dash-numbered list,
+# or out of step with the count, still is.
+_LIST_DELIMITER = rf"(?:[.)]|{_GAP}-)"
 _EMOJI_PRESENTATION = "\ufe0f"
 _KEYCAP = "\u20e3"
 _DELIMITED_NUMBER = rf"\d+{_LIST_DELIMITER}"

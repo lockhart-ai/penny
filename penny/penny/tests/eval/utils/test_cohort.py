@@ -771,6 +771,16 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
     spaced = "1.\u202fWhich page do I pull?\n2)\u00a0Which field do I read?\n  3.\u2009How often?"
     assert unsourced_specifics(spaced, asked) == []
     assert unsourced_specifics(f"{spaced}\nIt costs 3 dollars, on page 2.", asked) == ["3", "2"]
+    # A list ordinal spelled as a gap and a dash \u2014 "1 -", "2 -" \u2014 is layout too (#2389): a
+    # real top-headlines reply numbered its headlines this way, and they failed as invented
+    # values on a round that never stated any such number.
+    dashed = "1 - Which page do I pull?\n2 - Which field do I read?\n  3 - How often?"
+    assert unsourced_specifics(dashed, asked) == []
+    # A real invented number elsewhere in the same reply is still caught.
+    assert unsourced_specifics(f"{dashed}\nIt costs 3 dollars, on page 2.", asked) == ["3", "2"]
+    # The guard: a real quantity that opens a line with no ordinal before it is still a value
+    # \u2014 the dash is read as part of a list number only when a gap sits right before it.
+    assert unsourced_specifics("3 kg of flour, nobody asked for", asked) == ["3"]
     for prose, figures in (
         ("see step 2) for the page", ["2"]),
         ("tell me 1) what page 3) how often", ["1", "3"]),
