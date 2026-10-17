@@ -1692,6 +1692,41 @@ async def test_a_done_closed_cycle_without_notify_stays_quiet(mock_llm, test_con
     assert _run_reason(db) == ""
 
 
+def _skipped_write_handler(mock_llm):
+    """Runs the program's READ step, then closes with ``done()`` without ever calling
+    ``collection_write`` — #2417's reproduction: the model decided nothing needed
+    updating and skipped straight to the close instead of landing on the write-gate
+    STOP the way a watch is supposed to."""
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if _results_so_far(request) == 0:
+            return mock_llm._make_tool_call_response(
+                request, "collection_list", {"collection": "indie-metroidvanias"}
+            )
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_that_wrote_nothing_sends_no_notification(mock_llm, test_config, tmp_path):
+    """#2417: a WRITE-CAPABLE program (its step 2 is ``collection_write``) that closes
+    with ``done()`` having never called it is read the same as a write-gate STOP —
+    nothing mutated this run, so nothing is drawn or queued, whatever tool ended the
+    cycle.  Contrast with ``test_a_done_closed_cycle_queues_exactly_one_notification``
+    above: the same program, the same collection, but a cycle that DID write still
+    notifies — this gap check only ever narrows the quiet case, never the loud one."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(_skipped_write_handler(mock_llm))
+
+    await collector.run_for("indie-metroidvanias")
+
+    assert len(mock_llm.requests) == 2  # the read, then the close — no notify draw
+    assert db.send_queue.next_pending() is None
+    assert _run_reason(db) == ""
+
+
 # A routine with no write in it at all — the shape the produced-work fold exists for:
 # nothing it does carries ``mutated=True``, so the ONLY thing its cycle produced is the
 # notification the framework queued afterwards.

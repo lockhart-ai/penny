@@ -395,9 +395,19 @@ class Collector(BackgroundAgent):
 
         The trigger is exactly three structural facts: the collection carries
         ``notify``, no step raised a STOP, and the cycle CLOSED with ``done()`` (#1916,
-        where it used to read program coverage).  A routine with no write at all passes
-        it the same way a watch does — "some skills won't have writes at all" — because
-        what is read is the close, not what the cycle called to get there.
+        where it used to read program coverage).  A routine with no write step AT ALL
+        passes it the same way a watch does — "some skills won't have writes at all" —
+        because what is read is the close, not what the cycle called to get there.
+
+        A FOURTH fact guards the gap between those two shapes (#2417): a program that
+        DOES declare a write step (``_program_writes``, read off the bound program's own
+        calls against the tool's own ``stores_entries`` mark — never a tool name) but
+        whose cycle mutated nothing this run is read the same as a STOP, because that is
+        exactly what one SHOULD have been — the model skipped the write decision instead
+        of the gate catching it at the chokepoint.  "Mutated nothing" is each call's own
+        ``ToolCallRecord.mutated`` flag (#1911's produced-work fold), not a count of
+        entries landed: a log append or a plugin's write counts the same way a
+        ``collection_write`` does, and a dedup-rejected one correctly does not.
 
         The STOP clause is what keeps no-news silent: a watch's unchanged
         re-observation carries its STOP at the write chokepoint and the loop ends
@@ -406,7 +416,7 @@ class Collector(BackgroundAgent):
         whatever else it had got through.
 
         ``trigger`` travels through to the queued row: WHETHER to tell the user is the
-        three facts above, WHEN it reaches them is which lane the message is in (#1939).
+        four facts above, WHEN it reaches them is which lane the message is in (#1939).
 
         ``None`` when the cycle is not one that notifies, which is the ordinary case.
         """
@@ -414,7 +424,19 @@ class Collector(BackgroundAgent):
             return None
         if not self._has_done_call(response):
             return None
+        if self._program_writes() and not any(record.mutated for record in response.tool_calls):
+            return None
         return await self._notifier.notify(collection, run_id, response.tool_calls, trigger)
+
+    def _program_writes(self) -> bool:
+        """Whether this cycle's bound program declares a step that asks the store to
+        keep an entry — the registered tool's own ``stores_entries`` mark (#2185), read
+        off ``self._program``'s declared calls, never a tool name (#2417).
+
+        A program with no such step at all (#1914's read-only shape) answers ``False``
+        here, so the gap check in ``_notify_if_due`` never applies to it — it has no
+        write to have skipped, and notifies on its close exactly as it always has."""
+        return any(Tool.asks_to_store(call.tool) for call in self._program)
 
     def _retire_if_ended(self, collection: MemoryRow, run_id: str) -> None:
         """Post-cycle retirement — at most one archive.
