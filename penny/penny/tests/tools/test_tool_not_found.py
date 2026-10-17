@@ -244,12 +244,40 @@ class StubSkillGetTool(Tool):
         return "skill"
 
 
+class StubDoneSentinelTool(Tool):
+    """Stub for ``done`` — used by the containment-leg tests (#2510), where the
+    model's malformed emission (``functions.done``) wraps this real name inside
+    namespacing neither the rename table nor string distance can see through."""
+
+    name = "done"
+    description = "Call this with no arguments when the cycle is finished."
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, call_link: CallLink, **kwargs):
+        return "done"
+
+
+class StubBrowseTool(Tool):
+    """Stub for ``browse`` — used by the containment-leg tests (#2510), where the
+    model's malformed emission (``browse(extract: the price``) trails a stray
+    argument fragment after the real name."""
+
+    name = "browse"
+    description = "Look things up."
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, call_link: CallLink, **kwargs):
+        return "results"
+
+
 class TestToolNotFoundSuggestion:
     """Error message includes a 'did you mean' suggestion for close tool names."""
 
     @pytest.mark.asyncio
     async def test_did_you_mean_for_read_last(self):
-        """'read_last' produces a 'Did you mean read_latest?' suggestion.
+        """'read_last' produces a 'Did you mean read_latest?' suggestion, carrying
+        that tool's own one-line description (#2510) so the model reads how the
+        tool it meant actually works, not just its name.
 
         Also the fall-through guard on the rename leg (#1944): ``read_last`` IS a
         renamed name, but it resolves to ``collection_list``, which this registry
@@ -268,6 +296,7 @@ class TestToolNotFoundSuggestion:
         # stays the body.
         assert result.narration == "You tried to use `read_last` but there's no such tool."
         assert "Did you mean 'read_latest'?" in result.message
+        assert "Read the latest entries from a memory collection" in result.message
 
     @pytest.mark.asyncio
     async def test_retired_name_suggests_the_tool_it_became(self):
@@ -292,10 +321,12 @@ class TestToolNotFoundSuggestion:
         assert result.narration == (
             "You tried to use `collection_metadata` but there's no such tool."
         )
-        # Whole render: the suggestion leads the body, and the available list still names
-        # both tools — the wrong answer is present as a choice and was not taken.
+        # Whole render: the suggestion leads the body, carrying memory_get's own
+        # description (#2510), and the available list still names both tools — the
+        # wrong answer is present as a choice and was not taken.
         assert result.message == (
             "Did you mean 'memory_get'? "
+            "memory_get: Return the metadata fields for a single memory. "
             "Available tools: memory_get, collection_configure. "
             "You must ONLY use the tools listed above."
         )
@@ -314,7 +345,8 @@ class TestToolNotFoundSuggestion:
 
         assert result.success is False
         assert result.message == (
-            "Did you mean 'skill_get'? Available tools: skill_get. "
+            "Did you mean 'skill_get'? skill_get: Read one skill by name. "
+            "Available tools: skill_get. "
             "You must ONLY use the tools listed above."
         )
 
@@ -333,6 +365,7 @@ class TestToolNotFoundSuggestion:
         assert result.success is False
         assert result.message == (
             "Did you mean 'memory_get'? "
+            "memory_get: Return the metadata fields for a single memory. "
             "Available tools: memory_get. "
             "You must ONLY use the tools listed above."
         )
@@ -346,6 +379,62 @@ class TestToolNotFoundSuggestion:
 
         tool_call = ToolCall(tool="completely_unknown_xyz", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
+
+        assert result.success is False
+        assert "Did you mean" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_real_name_inside_a_namespaced_malformed_one_is_suggested(self):
+        """A malformed emission that wraps a real tool name in namespacing
+        (``functions.done``) still gets a suggestion — the containment leg
+        (#2510) — carrying that tool's own description. The call itself is still
+        REJECTED (principles.md §2 item 7): nothing here runs ``done``."""
+        registry = ToolRegistry()
+        registry.register(StubDoneSentinelTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        result = await executor.execute(
+            ToolCall(tool="functions.done", arguments={}), CallLink.new_top()
+        )
+
+        assert result.success is False
+        assert result.message == (
+            "Did you mean 'done'? "
+            "done: Call this with no arguments when the cycle is finished. "
+            "Available tools: done. "
+            "You must ONLY use the tools listed above."
+        )
+
+    @pytest.mark.asyncio
+    async def test_real_name_inside_a_stray_argument_fragment_is_suggested(self):
+        """A malformed emission trailing a stray argument fragment
+        (``browse(extract: the price``) still gets a suggestion from the
+        containment leg (#2510)."""
+        registry = ToolRegistry()
+        registry.register(StubBrowseTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        result = await executor.execute(
+            ToolCall(tool="browse(extract: the price", arguments={}), CallLink.new_top()
+        )
+
+        assert result.success is False
+        assert "Did you mean 'browse'?" in result.message
+        assert "browse: Look things up." in result.message
+
+    @pytest.mark.asyncio
+    async def test_two_available_names_inside_a_malformed_one_suggest_nothing(self):
+        """Two available tool names both sit inside the requested one — picking
+        between them would be a guess, so the containment leg stays silent and the
+        call is rejected with no suggestion (#2510, principles.md §2 item 7)."""
+        registry = ToolRegistry()
+        registry.register(StubDoneSentinelTool())
+        registry.register(StubBrowseTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        result = await executor.execute(
+            ToolCall(tool="functions.browse.done", arguments={}), CallLink.new_top()
+        )
 
         assert result.success is False
         assert "Did you mean" not in result.message

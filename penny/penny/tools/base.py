@@ -48,6 +48,15 @@ FRAMEWORK_NARRATION_EXCEPTION = "You tried to use `{tool_name}` but it errored: 
 FRAMEWORK_NARRATION_INVALID_ARGS = "You tried to use `{tool_name}` but the arguments were wrong:"
 
 
+def _tool_lead_sentence(description: str) -> str:
+    """The lead clause of a tool's ``description`` — up to its first sentence break
+    (``". "``) or, lacking one, its first line — so a did-you-mean hint (#2510) can
+    carry how the suggested tool works without quoting its whole description."""
+    line = description.strip().splitlines()[0].strip()
+    end = line.find(". ")
+    return line[: end + 1] if end != -1 else line
+
+
 class Tool(ABC):
     """Abstract base class for tools."""
 
@@ -488,17 +497,20 @@ class ToolExecutor:
         Framed by ``FRAMEWORK_NARRATION_NOT_FOUND`` (the frame — set on ``narration``
         so ``format_result`` leads with it and doesn't double-frame this
         no-registered-class result via its generic fallback); the did-you-mean +
-        available-tools remedy stays the actionable body.
+        available-tools remedy stays the actionable body.  The call itself stays
+        REJECTED either way (#2510, principles.md §2 item 7) — a suggestion is a
+        hint in the reply the model reads next, never a tool the executor ran.
 
-        The suggestion goes through ``suggest_tool_name`` (#1944), which reads a
-        retired name through the rename table before falling back to string distance —
-        a guessed ``collection_metadata`` names ``memory_get`` rather than the
-        character-nearest ``collection_configure``."""
+        The suggestion goes through ``suggest_tool_name`` (#1944, #2510), which reads
+        a retired name through the rename table, then string distance, then whether a
+        real tool name sits inside the malformed one — a guessed ``collection_metadata``
+        names ``memory_get`` rather than the character-nearest ``collection_configure``,
+        and a guessed ``functions.done`` names ``done``."""
         logger.error("Tool not found: %s", tool_call.tool)
         available_tools = [t.name for t in self.registry.get_all()]
         available_list = ", ".join(available_tools) if available_tools else "none"
         close = suggest_tool_name(tool_call.tool, available_tools)
-        did_you_mean = f"Did you mean '{close}'? " if close else ""
+        did_you_mean = self._did_you_mean_hint(close)
         return ToolResult(
             narration=FRAMEWORK_NARRATION_NOT_FOUND.format(tool_name=tool_call.tool),
             message=(
@@ -508,6 +520,18 @@ class ToolExecutor:
             ),
             success=False,
         )
+
+    def _did_you_mean_hint(self, close: str | None) -> str:
+        """The did-you-mean clause, naming ``close``'s own lead sentence (#2510) so
+        the model reads how the tool it meant actually works, not just its name."""
+        if close is None:
+            return ""
+        tool = self.registry.get(close)
+        description = _tool_lead_sentence(tool.description) if tool else ""
+        if description and not description.endswith("."):
+            description += "."
+        detail = f" {close}: {description}" if description else ""
+        return f"Did you mean '{close}'?{detail} "
 
     async def _execute_with_timeout(
         self, tool: Tool, tool_call: ToolCall, call_link: CallLink

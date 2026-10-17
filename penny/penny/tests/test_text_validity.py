@@ -230,3 +230,33 @@ def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():
     # skill_read (#2305) resolves to skill_get the same way.
     assert suggest_tool_name("skill_read", frozenset({"skill_get"})) == "skill_get"
     assert suggest_tool_name("skill_read", frozenset({"browse"})) is None
+
+
+def test_suggest_tool_name_finds_a_real_name_wrapped_inside_a_malformed_one():
+    """A malformed emission often wraps a real tool name inside namespacing
+    (``functions.done``) or a stray argument fragment (``browse(extract: the
+    price``) — neither a rename nor a spelling match, but exactly one available
+    name sits inside it as a whole token once split on non-word characters (#2510).
+
+    The call itself still goes REJECTED (principles.md §2 item 7): this only
+    changes what the did-you-mean names, never what the executor runs."""
+    assert suggest_tool_name("functions.done", frozenset({"done", "browse"})) == "done"
+    assert suggest_tool_name("browse(extract: the price", frozenset({"done", "browse"})) == "browse"
+    # Two available names both sit inside the requested one — picking between them
+    # would be a guess, so the containment leg stays silent.
+    assert suggest_tool_name("functions.browse.done", frozenset({"done", "browse"})) is None
+    # A name with no real tool token inside it, and nothing close by spelling,
+    # still gets nothing.
+    assert suggest_tool_name("functions.nonexistent", frozenset({"done", "browse"})) is None
+
+
+def test_suggest_tool_name_containment_leg_never_shadows_the_earlier_legs():
+    """The containment leg is last: a retired name still resolves through the
+    rename table, and an ordinary typo still resolves through string distance,
+    even when the requested name would also satisfy the containment leg."""
+    # "skill_read" IS a retired name (resolves to skill_get) AND contains no
+    # available name as a token — the rename leg answers first either way.
+    assert suggest_tool_name("skill_read", frozenset({"skill_get"})) == "skill_get"
+    # "memory_gt" is a plain typo of "memory_get" — the string leg answers it
+    # before the containment leg is ever consulted.
+    assert suggest_tool_name("memory_gt", frozenset({"memory_get"})) == "memory_get"
