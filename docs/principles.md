@@ -33,7 +33,8 @@ Quotes are the code owner's own words.
   given a deterministically derived internal state."* The model is the policy; the harness is
   the state-transition function. Every good fix is one of two things:
   - a state repair, making the right choice legible where the decision is made;
-  - an action-space repair, making a wrong call fail honestly at the tool that receives it, never taking the call away or deciding the model's next move for it.
+  - an action-space repair, making a wrong call fail honestly at the tool that
+    receives it, never taking the call away or deciding the model's next move for it.
 
   None of them is "make the model smarter".
 
@@ -44,13 +45,26 @@ Quotes are the code owner's own words.
    is done in Python. The line falls between mechanics, which go to Python, and anything the
    user reads, which the model writes.
 
-2. **The model is free; the tools hold the line.** *"the pattern of how we guide the models behaviour is by moving more deterministic checks inside tool surfaces with honest replies back to the model … but it is free to call any tool in any order it likes."*
-   - The model may call any tool, in any order. Nothing outside a tool decides which state a turn is in or what the model may do next.
-   - Two things guide it: what its state shows it (§3), and the checks each tool makes before it acts.
-   - A check guards an invariant of the world or the store: a job needs its instructions, a value already held is not written again, a schedule must parse. It never guards an order of calls. Ask: *would this check still be right if the model had reached this call some other way?*
-   - A failed check replies honestly: what is wrong, why, and what would succeed (§3 item 5). It neither removes the tool nor absorbs the call.
-   - What only judgement can settle, such as whether something is worth telling the user, the model decides from the facts it is shown, not through a gate.
-   - Not used: a classifier that picks the turn's state, per-state tool surfaces, or a micro-context that decides what the model does next. Each fails as soon as a user leaves the path it encodes.
+2. **The model is free; the tools hold the line.** *"the pattern of how we
+   guide the models behaviour is by moving more deterministic checks inside
+   tool surfaces with honest replies back to the model … but it is free to
+   call any tool in any order it likes."*
+   - The model may call any tool, in any order. Nothing outside a tool decides
+     which state a turn is in or what the model may do next.
+   - Two things guide it: what its state shows it (§3), and the checks each
+     tool makes before it acts.
+   - A check guards an invariant of the world or the store: a job needs its
+     instructions, a value already held is not written again, a schedule
+     must parse. It never guards an order of calls. Ask: *would this check
+     still be right if the model had reached this call some other way?*
+   - A failed check replies honestly: what is wrong, why, and what would
+     succeed (§3 item 5). It neither removes the tool nor absorbs the call.
+   - What only judgement can settle, such as whether something is worth
+     telling the user, the model decides from the facts it is shown, not
+     through a gate.
+   - Not used: a classifier that picks the turn's state, per-state tool
+     surfaces, or a micro-context that decides what the model does next.
+     Each fails as soon as a user leaves the path it encodes.
 
 3. **The model never writes historical records.** *"don't make the model do it at all."*
    - Ledgers, run records, mutation events, what a turn wrote and what a skill is are all
@@ -85,7 +99,7 @@ Quotes are the code owner's own words.
      tool boundary. The tool validates its output and returns it as part of its honest
      reply. The micro-context serves the tool and never steers the model. Browse-extract is
      the pattern; it also keeps untrusted page content out of the main context.
-   - Every decision the model makes is a pick from a declared set, with an honest escape
+   - Every decision a micro-context makes is a pick from a declared set, with an honest escape
      outcome.
    - The output is validated against its declared shape.
    - An invalid draw is discarded and re-drawn from the same state, never argued with inside
