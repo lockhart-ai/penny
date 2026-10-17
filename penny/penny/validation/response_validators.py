@@ -47,7 +47,6 @@ from penny.text_validity import strip_think_tags
 from penny.validation.conditions import ConditionKey
 from penny.validation.outcomes import (
     LoopContext,
-    NudgeContinue,
     Proceed,
     Repair,
     Retry,

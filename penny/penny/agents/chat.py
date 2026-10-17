@@ -26,11 +26,9 @@ from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import render_nothing_landed, render_writes_landed
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.validation import ConditionKey
-from penny.validation.outcomes import LoopContext
 
 if TYPE_CHECKING:
     from penny.llm.image_client import OllamaImageClient
-    from penny.llm.models import LlmResponse
 
 logger = logging.getLogger(__name__)
 
