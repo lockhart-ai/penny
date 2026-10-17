@@ -3155,6 +3155,7 @@ def test_an_end_to_end_sample_with_no_transitions_still_reads_a_turn_at(tmp_path
         per_job=[],
         cycles=[],
         seeded_replies=0,
+        turns_driven=1,
     )
 
     assert observation.turn_at == asked_row.timestamp
