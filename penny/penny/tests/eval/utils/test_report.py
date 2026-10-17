@@ -677,6 +677,41 @@ def test_the_variance_section_reports_the_spread_and_names_the_wording_that_move
     assert "`browse → browse`" in rendered, "the wording that produced a value no other did"
 
 
+def test_a_cohort_measuring_only_reply_spread_still_renders_its_spread():
+    """``REPLY_SPREAD`` pools into ``variance.text``, never into ``variance.features`` — a
+    cohort that measures it alone used to render "nothing pooled" and drop the reading
+    entirely, because the Variance body read ``features`` and returned before it ever looked
+    at ``text`` (#2394). A cohort measuring both still renders both, unchanged."""
+    samples = [
+        _shaped("case-1 (phrasing 1)", "phrasing 1", "browse → write"),
+        _shaped("case-2 (phrasing 1)", "phrasing 1", "browse → write"),
+        _shaped("case-3 (phrasing 2)", "phrasing 2", "browse → browse → write"),
+    ]
+    text_only = report.CaseSections(
+        case_id="c", model="m", variance=cohort.pool(samples, [cohort.REPLY_SPREAD])
+    ).render()
+
+    assert (
+        report.titled_fold(
+            f"{report.PASS_GLYPH} {report.SECTION_B}",
+            "nothing pooled",
+            "Reply text over 3 pairs — cosine NOT MEASURABLE (no reply carried an "
+            "embedding) · containment mean 1.000",
+        )
+        in text_only
+    ), "a cohort measuring only REPLY_SPREAD still renders its spread, not 'nothing pooled'"
+
+    # Unchanged: a cohort measuring both a structural feature and REPLY_SPREAD still renders
+    # both, side by side, exactly as before this fix.
+    both = report.CaseSections(
+        case_id="c",
+        model="m",
+        variance=cohort.pool(samples, [cohort.ROUTINE_SHAPE, cohort.REPLY_SPREAD]),
+    ).render()
+    assert "| ⚪ | `routine shape` |" in both, "the structural feature still renders"
+    assert "Reply text over 3 pairs" in both, "and the text spread still renders beside it"
+
+
 def test_a_feature_that_read_nothing_renders_red_and_says_so_rather_than_as_agreement():
     """A blind feature and a cohort in perfect agreement both compute to 0.000, and one is the
     best result a feature can report while the other is the absence of a measurement.

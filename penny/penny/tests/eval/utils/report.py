@@ -1047,14 +1047,17 @@ class CaseSections:
         return "\n\n".join(parts) if parts else _NOTHING_POOLED
 
     def _feature_spread(self) -> list[str]:
-        if not self.variance.features:
-            return []
-        rows = "\n".join(_variance_row(f, self.model) for f in self.variance.features)
-        parts = [
-            f"{_VARIANCE_HEAD}\n{rows}",
-            _CEILING_NOTE.format(n=self.variance.pooled),
-            self._phrasing_rows(),
-        ]
+        """The structural rows, then the reply-text reading — rendered independently, since a
+        cohort may measure either on its own (REPLY_SPREAD with no structural feature, or vice
+        versa) as well as both together."""
+        parts: list[str] = []
+        if self.variance.features:
+            rows = "\n".join(_variance_row(f, self.model) for f in self.variance.features)
+            parts += [
+                f"{_VARIANCE_HEAD}\n{rows}",
+                _CEILING_NOTE.format(n=self.variance.pooled),
+                self._phrasing_rows(),
+            ]
         if self.variance.text is not None:
             parts.append(_text_spread_line(self.variance.text))
         return parts
