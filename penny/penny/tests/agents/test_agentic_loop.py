@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from penny.agents.base import Agent, BackgroundAgent, _any_text
 from penny.agents.chat import ChatAgent
 from penny.agents.models import (
+    BUDGET_EXCEEDED,
     REROLL_EXHAUSTED,
     MessageRole,
     ModelCallError,
@@ -17,7 +18,7 @@ from penny.agents.models import (
     ToolCallRecord,
 )
 from penny.config import Config
-from penny.config_params import RuntimeParams
+from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
 from penny.database import Database
 from penny.database.models import PromptLog
@@ -1358,6 +1359,242 @@ class TestEmptyContentFallback:
         assert len(mock_llm.requests) == 2
 
         await agent.close()
+
+
+def _make_bare_background_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
+    """Same shape as ``_make_agent``, but a ``BackgroundAgent`` — the collector's own
+    draw-narration behaviour (skip every ordinary last draw, #2370) lives on that
+    class, not on a flag ``_make_agent``'s plain ``Agent`` could be made to carry.
+    Distinct from the other ``_make_background_agent`` below (a terminating shape for
+    text-nudge testing) — this one carries only a work tool, no ``done``, since the
+    budget-exceeded tests never reach a tool call at all."""
+    db = Database(test_db)
+    db.create_tables()
+    config = Config(
+        channel_type="signal",
+        signal_number="+15551234567",
+        signal_api_url="http://localhost:8080",
+        discord_bot_token=None,
+        discord_channel_id=None,
+        llm_api_url="http://localhost:11434",
+        llm_model="test-model",
+        llm_embedding_model="test-embedding-model",
+        log_level="DEBUG",
+        db_path=test_db,
+        runtime=RuntimeParams(db=db, env_overrides=runtime_overrides or {}),
+    )
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.1,
+    )
+    agent = BackgroundAgent(
+        system_prompt="test",
+        model_client=client,
+        embedding_model_client=client,
+        tools=[StubSearchTool()],
+        db=db,
+        config=config,
+    )
+    agent.name = PennyConstants.COLLECTOR_AGENT_NAME
+    return agent, db, max_steps
+
+
+class _RecordingLlmClient:
+    """A bare ``.chat()`` stand-in that only RECORDS what it was called with.
+
+    ``mock_llm``/``MockLlmClient`` patches the OpenAI SDK a layer BELOW the real
+    ``LlmClient`` (so that client's own request-building and retry logic genuinely
+    runs) — which is the right harness for most of this file, but it means the
+    ``max_tokens``/``extra_body`` kwargs the real client builds never reach back up
+    to anything a test can read.  This stub sits exactly where ``Agent._invoke_model``
+    calls ``self._model_client.chat(...)`` — the boundary #2475 adds the budget
+    at — so a test built on it proves what THAT call site sent, not what the wire
+    format happens to look like three layers down (``test_llm_client.py`` already
+    covers that separately)."""
+
+    def __init__(self, responses: list[LlmResponse]) -> None:
+        self.model = "test-model"
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        format: dict | str | None = None,
+        *,
+        call_link: CallLink,
+        agent_name: str | None = None,
+        prompt_type: str | None = None,
+        run_target: str | None = None,
+        token_budget: int | None = None,
+        thinking_enabled: bool = True,
+    ) -> LlmResponse:
+        self.calls.append(
+            {
+                "tools": tools,
+                "token_budget": token_budget,
+                "thinking_enabled": thinking_enabled,
+            }
+        )
+        return self._responses.pop(0)
+
+
+def _cut_draw() -> LlmResponse:
+    """A draw cut by its own token budget — no tool call, no content, the shape
+    both probed backends (#2474) came back with."""
+    return LlmResponse(
+        message=LlmMessage(role="assistant", content=""),
+        model="test-model",
+        finish_reason=PennyConstants.FINISH_REASON_LENGTH,
+    )
+
+
+def _text_response(content: str) -> LlmResponse:
+    return LlmResponse(message=LlmMessage(role="assistant", content=content), model="test-model")
+
+
+class TestBudgetExceeded:
+    """A draw cut by its own token budget (#2475, ``finish_reason ==
+    FINISH_REASON_LENGTH``) is never handed to the discard-and-reroll machinery that
+    every other unusable shape goes through — re-rolling on the SAME budget and
+    thinking settings would almost certainly cut the next draw too.  It raises
+    straight to the #2370 last-draw chokepoint instead, over one more draw with
+    tools and thinking both off."""
+
+    @pytest.mark.asyncio
+    async def test_chat_shaped_agent_answers_with_the_last_draws_own_text(self, test_db, mock_llm):
+        """The reply IS the thinking-off last draw's own text — not the canned
+        ``AGENT_MODEL_ERROR`` (the model was reachable) and not a re-roll of the cut
+        draw first (exactly two calls total)."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+        agent.name = PennyConstants.CHAT_AGENT_NAME
+
+        def handler(request, count):
+            if count == 1:
+                return _cut_draw()
+            return mock_llm._make_text_response(
+                request, "Here's what I had before I ran out of room to think."
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run(
+            "tell me everything", max_steps=max_steps, call_link=CallLink.new_top()
+        )
+
+        assert response.answer == "Here's what I had before I ran out of room to think."
+        # The cut draw, plus the ONE last draw — no reroll spent re-trying the same cap.
+        assert len(mock_llm.requests) == 2
+        assert response.abort == RunAbort(
+            step=1,
+            after_tool=None,
+            error=ModelCallError(
+                error_class=BUDGET_EXCEEDED,
+                message="the draw ran past its token budget before reaching an answer",
+            ),
+        )
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_background_shaped_agent_draws_once_despite_ordinarily_skipping(
+        self, test_db, mock_llm
+    ):
+        """A ``BackgroundAgent`` (the collector's shape) skips every ORDINARY last
+        draw (#2370) — but a budget cut is the one shape it still draws for, per the
+        code owner's ruling that every call kind ends in a live summary when the
+        model can be reached."""
+        agent, _db, max_steps = _make_bare_background_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                return _cut_draw()
+            return mock_llm._make_text_response(
+                request, "ran long — here's where the cycle had got to"
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("go", max_steps=max_steps, call_link=CallLink.new_top())
+
+        assert response.answer == "ran long — here's where the cycle had got to"
+        assert len(mock_llm.requests) == 2
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_chat_and_collector_calls_each_send_their_own_budget(self, test_db):
+        """Every draw a chat-shaped agent makes — the cut one AND the thinking-off
+        last draw — carries ``token_budget_for(self.config.runtime, self.name)``'s
+        own value; only the last draw turns thinking off and strips tools (#2474/#2475)."""
+        db = Database(test_db)
+        db.create_tables()
+        config = Config(
+            channel_type="signal",
+            signal_number="+15551234567",
+            signal_api_url="http://localhost:8080",
+            discord_bot_token=None,
+            discord_channel_id=None,
+            llm_api_url="http://localhost:11434",
+            llm_model="test-model",
+            llm_embedding_model="test-embedding-model",
+            log_level="DEBUG",
+            db_path=test_db,
+            runtime=RuntimeParams(db=db),
+        )
+        client = _RecordingLlmClient([_cut_draw(), _text_response("all set")])
+        agent = Agent(
+            system_prompt="test",
+            model_client=cast(Any, client),
+            embedding_model_client=cast(Any, client),
+            tools=[StubSearchTool()],
+            db=db,
+            config=config,
+        )
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+        agent.name = PennyConstants.CHAT_AGENT_NAME
+        agent._keep_tools_on_final_step = False
+
+        response = await agent.run("hi", max_steps=3, call_link=CallLink.new_top())
+
+        assert response.answer == "all set"
+        chat_budget = token_budget_for(RuntimeParams(db=db), PennyConstants.CHAT_AGENT_NAME)
+        assert client.calls[0]["token_budget"] == chat_budget
+        assert client.calls[0]["thinking_enabled"] is True
+        assert client.calls[0]["tools"]  # the ordinary step offers its tools
+        assert client.calls[1]["token_budget"] == chat_budget
+        assert client.calls[1]["thinking_enabled"] is False
+        assert client.calls[1]["tools"] is None  # the last draw is tools-off (#2370)
+
+        await agent.close()
+
+        collector_client = _RecordingLlmClient([_cut_draw(), _text_response("summary")])
+        background_agent = BackgroundAgent(
+            system_prompt="test",
+            model_client=cast(Any, collector_client),
+            embedding_model_client=cast(Any, collector_client),
+            db=db,
+            config=config,
+        )
+        background_agent.name = PennyConstants.COLLECTOR_AGENT_NAME
+
+        response = await background_agent.run("go", max_steps=3, call_link=CallLink.new_top())
+
+        assert response.answer == "summary"
+        collector_budget = token_budget_for(
+            RuntimeParams(db=db), PennyConstants.COLLECTOR_AGENT_NAME
+        )
+        assert collector_client.calls[0]["token_budget"] == collector_budget
+        assert collector_client.calls[0]["thinking_enabled"] is True
+        assert collector_client.calls[1]["token_budget"] == collector_budget
+        assert collector_client.calls[1]["thinking_enabled"] is False
+
+        await background_agent.close()
 
 
 class TestThinkTagStripping:

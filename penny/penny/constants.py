@@ -567,6 +567,14 @@ class PennyConstants:
     # context is too large — see the ~4K-token cliff) and better abandoned than fed
     # poison downstream.
     DEGENERATE_REROLL_ATTEMPTS = 3
+    # The ``LlmResponse.finish_reason`` a token-capped draw comes back with (#2475) —
+    # a provider's own way of saying the cap cut the draw off mid-thought, confirmed
+    # identical on both probed backends (#2474): no tool call is ever emitted, content
+    # comes back empty, and only a partial ``reasoning`` string survives.  Re-rolling
+    # on the SAME budget and the same thinking-enabled settings would just cut the next
+    # draw too, so this is caught before the ordinary discard-and-reroll machinery ever
+    # sees it, and routed straight to a thinking-off last draw instead.
+    FINISH_REASON_LENGTH = "length"
     # Minimum count of alphabetic characters for a model response to be
     # considered substantive. Catches garbage shapes — bare separators
     # (`---`), lone punctuation, emoji-only, runs of stars/dashes — without

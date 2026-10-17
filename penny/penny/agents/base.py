@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, assert_never
 
 from penny.agents.models import (
+    BUDGET_EXCEEDED,
     REROLL_EXHAUSTED,
     ChatMessage,
     ControllerResponse,
@@ -23,6 +24,7 @@ from penny.agents.models import (
     account_of,
 )
 from penny.config import Config
+from penny.config_params import token_budget_for
 from penny.constants import PennyConstants
 from penny.conversation_machine import RoundFraming
 from penny.database import Database
@@ -169,6 +171,22 @@ def _rerolls_exhausted(conditions: list[ConditionKey]) -> ModelCallAbortedError:
     error = ModelCallError(
         error_class=REROLL_EXHAUSTED,
         message=f"{len(conditions)} unusable draws: {', '.join(conditions)}",
+    )
+    return ModelCallAbortedError(error)
+
+
+def _budget_exceeded() -> ModelCallAbortedError:
+    """A draw came back cut by its own token budget (#2475):
+    ``LlmResponse.finish_reason == FINISH_REASON_LENGTH``, with no tool call and no
+    usable content — the whole budget went to thinking before the model reached an
+    answer (confirmed identically on both probed backends, #2474).  Raised immediately
+    rather than handed to the discard-and-reroll machinery: re-rolling on the SAME
+    budget and the same thinking-enabled setting would almost certainly cut the next
+    draw too, so this skips straight to ``_aborted_response``'s thinking-off last draw
+    instead of spending the reroll budget proving that."""
+    error = ModelCallError(
+        error_class=BUDGET_EXCEEDED,
+        message="the draw ran past its token budget before reaching an answer",
     )
     return ModelCallAbortedError(error)
 
@@ -568,27 +586,38 @@ class Agent:
         The abort's structural facts (#1909) travel with the response either way, so
         every downstream outcome classification reads them, never ``answer``'s text.
 
-        Two causes share this path (#2370), and only one still draws again:
+        Three causes share this path (#2370/#2475), and two of them still draw again:
           * ``error_class`` is an ``LlmError`` subclass name — the runner itself could
             not be reached.  Answering ``AGENT_MODEL_ERROR`` immediately, with no
             further draw, is deliberate: a connection already timing out would just be
             asked to time out a second time.
           * ``error_class`` is ``REROLL_EXHAUSTED`` — the model answered repeatedly,
             but every draw was discarded as unusable.  It is still reachable, so this
-            is handed to the shared last-draw-or-account building block instead of the
-            canned line.
+            is handed to the shared last-draw-or-account building block, thinking left
+            ON (the draws that led here said nothing about thinking being the problem).
+          * ``error_class`` is ``BUDGET_EXCEEDED`` — a single draw ran past its own
+            token cap (#2475).  Re-drawing with thinking still on would spend the same
+            budget on reasoning and cut again, so this last draw turns thinking OFF —
+            the same per-kind budget is sent again (``_invoke_model`` resolves it from
+            ``self.name`` on every call), which is fine now that none of it goes to
+            reasoning.
         """
         abort = RunAbort(step=step, after_tool=self._last_successful_tool(records), error=error)
-        if error.error_class != REROLL_EXHAUSTED:
+        if error.error_class not in (REROLL_EXHAUSTED, BUDGET_EXCEEDED):
             # No draw follows — nothing will reach ``_narrate_or_account``'s own
             # stamp, so this is the one place that chokepoint can't cover and the
             # hook is called directly.
             if run_id is not None:
                 self._record_turn_failure(run_id, abort.render())
             return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR, abort=abort)
-        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
-            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
-        )
+        if error.error_class == BUDGET_EXCEEDED:
+            facts = PennyResponse.FACTS_BUDGET_EXCEEDED
+            thinking_enabled = False
+        else:
+            facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+                attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+            )
+            thinking_enabled = True
         result = await self._narrate_or_account(
             self._with_facts_turn(messages, facts),
             facts,
@@ -598,6 +627,7 @@ class Agent:
             prompt_type,
             logged,
             reason=abort.render(),
+            thinking_enabled=thinking_enabled,
         )
         return result.model_copy(update={"abort": abort})
 
@@ -1021,6 +1051,8 @@ class Agent:
         effective_tools: list[dict] | None,
         call_link: CallLink,
         prompt_type: str | None,
+        *,
+        thinking_enabled: bool = True,
     ) -> LlmResponse:
         """Call the LLM, raising ``ModelCallAbortedError`` on connection/response errors.
 
@@ -1037,6 +1069,14 @@ class Agent:
         or temporarily busy) and are already retried by the LLM client before
         this method is called.  Other LlmErrors (connection refused, server error,
         model not found) are logged at ERROR.
+
+        This is the ONE call this agent makes to the model, whatever draw it's for — a
+        loop step or the last tools-off narration — so it is also the one place the
+        per-call-kind token budget (#2474/#2475) is resolved and sent: every draw this
+        agent makes carries ``token_budget_for(self.config.runtime, self.name)``, never
+        just the ones the loop steps through.  ``thinking_enabled`` defaults True (the
+        ordinary draw); the one caller that turns it off is the last draw answering a
+        budget-cut step (``_aborted_response`` / ``_narrate_or_account``).
         """
         try:
             return await self._model_client.chat(
@@ -1049,6 +1089,8 @@ class Agent:
                 # known from the first prompt — stamp it on every row so the run
                 # is identifiable at write time, not retroactively at cycle end.
                 run_target=self._memory_scope(),
+                token_budget=token_budget_for(self.config.runtime, self.name),
+                thinking_enabled=thinking_enabled,
             )
         except LlmToolParseError:
             raise
@@ -1093,6 +1135,14 @@ class Agent:
         does the raised error: the conditions are collected in draw order, since a run
         killed by three parse failures and one killed by three collapses are different
         problems (#1909).
+
+        A draw cut by its own token budget (#2475) is caught FIRST, before any of the
+        above — ``finish_reason == FINISH_REASON_LENGTH`` is a transport fact, true
+        whatever the draw's shape, and re-rolling it on the unchanged budget and
+        thinking settings would almost certainly cut the next one too.  So it never
+        enters this discard-and-reroll loop at all: it raises straight away, routing to
+        ``_aborted_response``'s thinking-off last draw instead of spending this budget
+        proving the same cap cuts again.
         """
         attempts = PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         discarded: list[ConditionKey] = []
@@ -1109,6 +1159,15 @@ class Agent:
                 self._log_reroll(ConditionKey.TOOL_PARSE_ERROR, attempt, attempts)
                 discarded.append(ConditionKey.TOOL_PARSE_ERROR)
                 continue
+            if (
+                response.finish_reason == PennyConstants.FINISH_REASON_LENGTH
+                and not response.has_tool_calls
+            ):
+                logger.warning(
+                    "Model draw cut by its own token budget (finish_reason=length) — "
+                    "ending the run for the thinking-off last draw rather than re-rolling"
+                )
+                raise _budget_exceeded()
             condition = self._unusable_output_condition(response)
             if condition is None:
                 return response
@@ -1172,6 +1231,32 @@ class Agent:
         for condition, is_invalid in self.invalid_draw_conditions:
             if is_invalid(content):
                 return condition
+        return None
+
+    def _narration_unusable(self, response: LlmResponse) -> ConditionKey | None:
+        """Whether a tools-off NARRATION draw's own content is unusable (#2475) — the
+        transport artifacts every draw is checked for (a leaked tool-call envelope, a
+        punctuation collapse), plus this agent's shape check for an ordinary call-less
+        draw.  Distinct from ``_unusable_output_condition``: this draw never offers
+        tools to call, so there is no tool-call branch to walk.
+
+        ``BackgroundAgent`` overrides the shape half alone: its
+        ``invalid_draw_conditions`` (``DONE_JSON_BAIL``, ``TEXT_INSTEAD_OF_TOOL``)
+        describe the ORDINARY tool-calling loop, where a call-less draw is invalid by
+        definition — never true of this draw, which was never offered a tool to call
+        in the first place.  The base behaviour (chat's own shape check still applies)
+        is what every pre-#2475 narration draw already got."""
+        content = response.message.content or ""
+        return self._narration_transport_artifact(content) or self._invalid_draw_condition(content)
+
+    @staticmethod
+    def _narration_transport_artifact(content: str) -> ConditionKey | None:
+        """The transport-artifact condition a narration draw's text matches, or
+        ``None`` — shared by ``_narration_unusable``'s base behaviour and
+        ``BackgroundAgent``'s override, which skips the shape check but never this
+        one."""
+        if has_leaked_harmony_envelope(content) or is_degenerate_run(content):
+            return ConditionKey.DEGENERATE_OUTPUT
         return None
 
     def _is_degenerate_tool_call_name(self, name: str) -> bool:
@@ -1319,6 +1404,7 @@ class Agent:
         logged: _LoggedBoundary | None = None,
         *,
         reason: str,
+        thinking_enabled: bool = True,
     ) -> ControllerResponse:
         """One last draw, tools off, over ``messages`` — which already ends in a user
         turn stating ``facts``, a plain statement of this run's own state, never an
@@ -1333,11 +1419,15 @@ class Agent:
             instead (``account_of``), never an apology.
 
         ``_draw_narration`` is the one step a subclass overrides (template method):
-        Collector overrides it to return ``None`` without drawing at all (#2370) — a
-        collector cycle has no user reply to write, and its own
-        ``invalid_draw_conditions`` would reject free text anyway — so this always
-        resolves to the deterministic account for it, with no extra live call spent on
-        a background cycle.
+        ``BackgroundAgent`` overrides it to return ``None`` without drawing at all
+        (#2370) for every ORDINARY background terminal shape — a collector cycle has
+        no user reply to write, and its own ``invalid_draw_conditions`` would reject
+        free text anyway — so this always resolves to the deterministic account for
+        those.  The one exception (#2475) is the budget-cut cause: ``thinking_enabled``
+        comes in False only from ``_aborted_response``'s ``BUDGET_EXCEEDED`` branch, and
+        ``BackgroundAgent`` reads exactly that to draw live anyway, per the code owner's
+        ruling that every call kind still ends in a model summary when the model can be
+        reached — never by reading ``reason``'s wording, which stays free text.
 
         ``logged`` is the caller's own run-in-progress boundary box (#1778), passed
         through untouched to ``_draw_narration`` — only a call site still inside
@@ -1361,7 +1451,9 @@ class Agent:
         BEFORE it, one step removed from the reply it is actually about.
         """
         try:
-            content = await self._draw_narration(messages, call_link, prompt_type, logged)
+            content = await self._draw_narration(
+                messages, call_link, prompt_type, logged, thinking_enabled=thinking_enabled
+            )
         except ModelCallAbortedError:
             if run_id is not None:
                 self._record_turn_failure(run_id, reason)
@@ -1382,6 +1474,8 @@ class Agent:
         call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,
+        *,
+        thinking_enabled: bool = True,
     ) -> str | None:
         """One tools-off draw over ``messages``, or ``None`` when it comes back
         unusable — empty, degenerate per ``_unusable_output_condition``, or a backend
@@ -1389,8 +1483,16 @@ class Agent:
         and fail to read its own output as one; the same "nothing usable" bucket as a
         degenerate draw, not a format nudge to retry).  Lets ``ModelCallAbortedError``
         propagate uncaught — a draw that cannot reach the model is the caller's to
-        answer, not this method's to swallow.  The user-facing default; Collector
-        overrides this to skip the draw (#2370).
+        answer, not this method's to swallow.  The user-facing default; ``BackgroundAgent``
+        overrides this to skip the draw for every ordinary terminal shape (#2370), but
+        reads straight through to this base behaviour when ``thinking_enabled`` is
+        False (#2475's budget-cut narration).
+
+        ``thinking_enabled`` (#2475) rides straight to ``_invoke_model`` — False only
+        for the one draw answering a budget-cut step, so this draw doesn't just cut
+        again on the same cap.  ``_invoke_model`` resolves this agent's own per-kind
+        token budget on every call regardless, which is still the right size here:
+        with thinking off, none of it goes to reasoning.
 
         A draw that logs a row already carries, in ITS OWN ``messages``, everything
         the caller's ``logged`` boundary (#1778) was tracking — so on success this
@@ -1399,13 +1501,15 @@ class Agent:
         what this row already has.  Left untouched on any path that logs no row
         (a caught parse failure, or the skip above) — the prior tail stays correct."""
         try:
-            response = await self._invoke_model(messages, None, call_link, prompt_type)
+            response = await self._invoke_model(
+                messages, None, call_link, prompt_type, thinking_enabled=thinking_enabled
+            )
         except LlmToolParseError:
             return None
         if logged is not None:
             logged.turns = len(messages)
         content = (response.content or "").strip()
-        if content and self._unusable_output_condition(response) is None:
+        if content and self._narration_unusable(response) is None:
             return content
         return None
 
@@ -2070,15 +2174,41 @@ class BackgroundAgent(Agent):
         call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,
+        *,
+        thinking_enabled: bool = True,
     ) -> str | None:
-        """A background cycle has no user reply to write (#2370) — skip the draw
-        outright rather than spend a live call whose ``TEXT_INSTEAD_OF_TOOL`` would
-        reject it anyway.  ``_narrate_or_account`` reads this ``None`` as "unusable"
-        and falls straight to the deterministic account, so a cycle that runs out of
-        steps, say, still records ``ran_out_of_steps`` structurally with no extra call
-        spent on a background run.  ``logged`` is left untouched — no row is logged
-        here, so the run's existing tail boundary (#1778) stays correct."""
-        return None
+        """A background cycle has no user reply to write for its ORDINARY terminal
+        shapes (#2370) — skip the draw outright rather than spend a live call whose
+        ``TEXT_INSTEAD_OF_TOOL`` would reject it anyway.  ``_narrate_or_account`` reads
+        this ``None`` as "unusable" and falls straight to the deterministic account, so
+        a cycle that runs out of steps, say, still records ``ran_out_of_steps``
+        structurally with no extra call spent on a background run.  ``logged`` is left
+        untouched — no row is logged here, so the run's existing tail boundary (#1778)
+        stays correct.
+
+        A budget cut is the one shape this does NOT skip (#2475): the code owner's
+        ruling is that every call kind still ends in a live model summary when the
+        model can be reached, even a background one.  ``thinking_enabled=False`` is
+        that signal — no other call into ``_narrate_or_account`` passes it, so reading
+        it here is reading a structural fact about WHY this draw is happening, never
+        the free-text ``reason`` a caller stamps.  Falls through to the base draw,
+        itself over its own per-kind budget with thinking off."""
+        if thinking_enabled:
+            return None
+        return await super()._draw_narration(
+            messages, call_link, prompt_type, logged, thinking_enabled=thinking_enabled
+        )
+
+    def _narration_unusable(self, response: LlmResponse) -> ConditionKey | None:
+        """A budget-cut narration draw (the only one a background agent ever makes,
+        #2475) is deliberately prose, even though this agent's ordinary
+        ``invalid_draw_conditions`` (``DONE_JSON_BAIL``, ``TEXT_INSTEAD_OF_TOOL``)
+        reject EVERY call-less draw — they describe the loop's ordinary steps, where
+        tools were offered and the model answered with text instead.  No tools were
+        offered for this draw, so that question doesn't apply; only the shared
+        transport-artifact check (a leaked tool-call envelope, a punctuation
+        collapse) still does."""
+        return self._narration_transport_artifact(response.message.content or "")
 
     channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
 

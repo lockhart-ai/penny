@@ -51,7 +51,7 @@ from penny.database.models import MemoryRow
 from penny.database.skills import SkillParameter
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmConnectionError, LlmResponse
+from penny.llm.models import LlmConnectionError, LlmMessage, LlmResponse
 from penny.notification import NOTIFICATION_NOTES, NOTIFIED_CYCLE_ENDS, NotificationOutcome
 from penny.program import ProgramCall
 from penny.prompts import Prompt
@@ -2781,6 +2781,59 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     assert runs[0]["run_reason"] == (
         "model call failed at step 2 after collection_list: LlmConnectionError: Connection refused"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cut_draw_ends_in_one_live_thinking_off_summary(
+    mock_llm, test_config, tmp_path
+):
+    """A draw cut by its own token budget (#2475, ``finish_reason="length"``) is never
+    re-rolled on the same budget and thinking settings — it ends the cycle in ONE more
+    draw, tools and thinking both off, which still writes a live summary.  A collector
+    cycle ordinarily skips its last-draw narration entirely (#2370), but the code
+    owner's ruling is that every call kind still ends in a model summary when the
+    model can be reached — even a background one.  That summary lands on the run's own
+    ledger (the SAME ``promptlog`` row every draw already gets), never a new channel:
+    the structural stamp on the run stays the abort's own facts, exactly as an
+    unreachable-model abort stamps them (#1909); only the LIVE DRAW's own logged
+    content is new."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+
+    summary = "I ran past my thinking budget before I got to the first collection_list call."
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if count == 1:
+            return LlmResponse(
+                message=LlmMessage(role="assistant", content=""),
+                model=request.get("model", "test-model"),
+                finish_reason="length",
+            )
+        # The last draw: tools off (no tool_calls here even if offered) and —
+        # proven below — thinking off, over the SAME messages the cut draw saw.
+        return mock_llm._make_text_response(request, summary)
+
+    mock_llm.set_response_handler(handler)
+
+    await collector.run_for("indie-metroidvanias")
+
+    # Exactly one re-draw: the cut draw never entered the discard-and-reroll loop
+    # that every OTHER unusable shape goes through — it skipped straight to the
+    # last-draw chokepoint instead of spending that budget re-rolling on the same cap.
+    assert len(mock_llm.requests) == 2
+
+    runs = db.messages.get_prompt_log_runs()
+    assert len(runs) == 1
+    assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
+    assert runs[0]["run_reason"] == (
+        "model call failed at step 1: budget-exceeded: the draw ran past its "
+        "token budget before reaching an answer"
+    )
+
+    # The live draw's own text is what the run's ledger carries — read off the SAME
+    # promptlog row the structural stamp above sits on, not a second channel.
+    last_response = runs[0]["prompts"][-1]["response"]
+    assert last_response["choices"][0]["message"]["content"] == summary
 
 
 # ── The occurrence is spent by a CYCLE, not by a dispatch (#1935) ────────────
