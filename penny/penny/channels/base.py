@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
-from penny.agents.models import ToolCallRecord, account_of
+from penny.agents.models import ControllerResponse, ToolCallRecord, account_of
 from penny.config import Config
 from penny.constants import PennyConstants, PermissionResolution
 from penny.conversation_machine import ConversationMachine, RoundFraming, TurnEntry
@@ -549,21 +549,29 @@ class MessageChannel(ABC):
             logger.exception("Error handling message: %s", e)
             if message is not None:
                 await self._report_turn_failure(
-                    message.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, []
+                    message.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, None
                 )
 
     async def _report_turn_failure(
-        self, recipient: str, facts: str, tool_calls: list[ToolCallRecord]
+        self, recipient: str, facts: str, tool_calls: list[ToolCallRecord] | None
     ) -> None:
         """Tell the user a turn died on an escaped exception — never silence, and
         never ``AGENT_MODEL_ERROR`` (that fact is only for the model itself being
         unreachable, decided inside the agent, not here).  Built deterministically
         from what this layer knows (``account_of``, reused from #2370): no second
         model call, since by the time we're here the model's own state is unknown.
+
+        ``tool_calls=None`` means UNKNOWN, not empty — a turn can die before this
+        layer ever sees whether the agent called a tool, and ``account_of`` reading
+        an empty list as "no tool calls" would claim something the record doesn't
+        show.  Send ``facts`` alone in that case; a real list (even ``[]``, when the
+        run really made none) goes through ``account_of`` as usual.
+
         Guarded so a second failure (e.g. the DB that just broke) is logged rather
         than raised — ``handle_message`` must never crash its channel's receive loop."""
+        content = facts if tool_calls is None else account_of(facts, tool_calls)
         try:
-            await self.send_message(recipient, account_of(facts, tool_calls))
+            await self.send_message(recipient, content)
         except Exception:
             logger.exception("Also failed to tell %s this turn failed", recipient)
 
@@ -788,7 +796,7 @@ class MessageChannel(ABC):
         message: IncomingMessage,
         user_sender: str,
         device_id: int | None,
-        response: Any,
+        response: ControllerResponse,
         run_id: str,
         parent_id: int | None,
         progress: ProgressTracker | None,

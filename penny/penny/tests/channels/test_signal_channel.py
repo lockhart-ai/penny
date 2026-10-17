@@ -899,9 +899,9 @@ async def test_handle_message_reports_failure_before_a_reply_exists(
 ):
     """A turn never ends in silence (#2371): when the agent itself raises — a
     bug, not a model that couldn't be reached — ``handle_message``'s outer
-    backstop still answers, with a deterministic account built from what it
-    knows (no tool calls happened yet)."""
-    from penny.agents.models import account_of
+    backstop still answers. At this point tool calls are UNKNOWN, not empty —
+    the agent may well have called tools before raising — so the message is
+    the bare fact, with no "I made no tool calls" claim the record can't back."""
     from penny.responses import PennyResponse
 
     db = Database(test_config.db_path)
@@ -911,7 +911,7 @@ async def test_handle_message_reports_failure_before_a_reply_exists(
     await channel.handle_message(_text_envelope(test_config, TEST_SENDER, "hi"))
 
     sent = signal_server.outgoing_messages[-1]
-    assert sent["message"] == account_of(PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, [])
+    assert sent["message"] == PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY
 
     await channel.close()
 
