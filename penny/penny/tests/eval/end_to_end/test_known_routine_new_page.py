@@ -5,19 +5,19 @@ here a single cold ask, naming a page the routine was never taught on and giving
 terms — followed by the job that turn stood up, run through its OWN real cycles against that
 page.
 
-The entry condition is SEEDED, the composed world of five finished journeys
-(``seed_composed_world``): the price-watcher routine already exists, taught on the Aurora
-listing.  That taught page stays LIVE and readable in this world — in the chat phase's browse
-register and in every cycle's — so a read of the WRONG page gets a real answer back rather
-than failing on a thin fixture, and the answer carries the one value the claims forbid: the
-taught page's price.  Whether the round recognises the routine, which collection it lands the
-job on and what the routine is called are all left to the model and read nowhere a claim
-depends on them; the driver finds the created job STRUCTURALLY and runs ITS cycles.
+The entry condition is SEEDED: the price-watcher job already running, taught on the Aurora
+listing (#2455 naive baseline, code-owner ruling — there is no skill registry left to teach a
+routine into, so "a routine she already knows" is represented by the job already running PLUS
+the earlier conversation that set it up, in her own logs).  That taught page stays LIVE and
+readable in this world — in the chat phase's browse register and in every cycle's — so a read
+of the WRONG page gets a real answer back rather than failing on a thin fixture, and the answer
+carries the one value the claims forbid: the taught page's price.  Which collection the new job
+lands on and what it is called are left to the model and read nowhere a claim depends on them;
+the driver finds the created job STRUCTURALLY and runs ITS cycles.
 
 **Claims read only:** what the store's entries hold after each cycle, what reached the user,
 the created job's own terms (cadence, end, notify), and provenance — never which collection
-the job sits on, the routine's shape or bound values, or which conversation-machine states the
-script passed through on the way (#2375's ruling).
+the job sits on.
 
 **The taught price in nothing stored and nothing sent is its own claim, not provenance's** —
 the old page is legitimately part of what the round was given (the seeded history taught the
@@ -42,7 +42,7 @@ import pytest
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
-from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at
+from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at, seed_known_routine
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -53,13 +53,8 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
 )
-from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, CannedPage, datum
+from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, LISTING_URL, CannedPage, datum
 from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT
-from penny.tests.eval.utils.transition_world import (
-    _JOURNEYS,
-    assert_composed_world,
-    seed_composed_world,
-)
 from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
@@ -198,18 +193,42 @@ def _assert_every_wording_carries_the_facts() -> None:
 _assert_every_wording_carries_the_facts()
 
 
-def _seed(db: Database) -> None:
-    """The entry condition: the composed world of five finished journeys, asserted rather than
-    assumed, so a world that drifted fails here rather than after a live run.
+_TAUGHT_COLLECTION = "aurora-deck-2-price"
+_TAUGHT_ENTRY_KEY = "price"
+_TAUGHT_ENTRY_VALUE = f"Price: ${_TAUGHT_AMOUNT}"
+# The earlier conversation that set the Aurora price-watcher up (#2455 naive baseline,
+# code-owner ruling): her own past logs are the other half of "a routine she already
+# knows", beside the job itself.
+_TAUGHT_ASK = "can you keep an eye on the Aurora Deck 2 price for me and let me know if it changes?"
+_TAUGHT_REPLY = "done — I'll check the Aurora Deck 2 price and let you know if it moves. 🌟"
 
-    The registry probe (``assert_the_registry_holds``) is deliberately absent: the runner lays
-    the fixture skills down AFTER this seed runs, so the check would read an empty registry
-    and false-fail — the composed world's own probe covers what the seeder laid down.  What
-    this seed adds on top is the one fact the negative claim's answerability rests on: the
-    taught price IS in this world's store, held by the journey the routine was taught in, so
-    the claim below reads a world where the taught value genuinely sits one binding away."""
-    seed_composed_world()(db)
-    assert_composed_world(db)
+
+def _seed(db: Database) -> None:
+    """The entry condition: the Aurora price-watcher as "a routine she already knows"
+    (#2455 naive baseline, code-owner ruling) — both halves of it, through the chokepoints
+    the runtime itself writes through: the job ALREADY RUNNING, and the EARLIER
+    CONVERSATION that set it up, in her own logs (the ask, her read → write →
+    ``collection_configure`` calls, her reply) — so her self-state's recent activity,
+    ``log_read``, and ``run_get`` all read it back exactly as if that turn had really
+    happened.  Asserted rather than assumed, so a world that drifted fails here rather
+    than after a live run.
+
+    What this seed checks on top is the one fact the negative claim's answerability rests
+    on: the taught price IS in this world's store, held by the job the routine was taught
+    in, so the claim below reads a world where the taught value genuinely sits one write
+    away."""
+    seed_known_routine(
+        db,
+        collection=_TAUGHT_COLLECTION,
+        description="the Aurora Deck 2 handheld console price",
+        url=LISTING_URL,
+        extract="the current price",
+        entry_key=_TAUGHT_ENTRY_KEY,
+        entry_value=_TAUGHT_ENTRY_VALUE,
+        schedule="FREQ=HOURLY",
+        ask=_TAUGHT_ASK,
+        reply=_TAUGHT_REPLY,
+    )
     taught: list[str] = []
     for row in db.memories.list_all():
         if row.type != MemoryType.COLLECTION:
@@ -223,15 +242,7 @@ def _seed(db: Database) -> None:
 
 
 _ARMS = tuple(
-    EndToEndArm(
-        label=ask,
-        turns=(ask,),
-        seed=_seed,
-        seed_skills=[journey.round.skill for journey in _JOURNEYS],
-        world=_WORLD,
-        cycles=_CYCLES,
-    )
-    for ask in _ASKS
+    EndToEndArm(label=ask, turns=(ask,), seed=_seed, world=_WORLD, cycles=_CYCLES) for ask in _ASKS
 )
 
 

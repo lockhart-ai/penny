@@ -34,7 +34,7 @@ from penny.database.memory import (
     WrongShapeError,
 )
 from penny.database.memory.store import _FIELD_PRIORS, _MetadataUpdate
-from penny.database.models import MemoryRow, MutationEvent, Skill
+from penny.database.models import MemoryRow, MutationEvent
 from penny.database.mutation_store import FieldPrior, MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
@@ -286,9 +286,9 @@ name: hedgehog-sightings
 type: collection
 description: neighbourhood hedgehog sightings
 
-What it does each cycle — the recipe below is the collection's actual behaviour.  \
-When explaining the collection, walk through THESE steps, not the operational settings.
-steps: 1. browse for hedgehog news. 2. done().
+What it does each cycle — the prompt below is the collection's actual behaviour.  \
+When explaining the collection, read THIS, not the operational settings.
+prompt: 1. browse for hedgehog news. 2. done().
 
 Operational settings (cadence — secondary):
 notify: False
@@ -406,7 +406,7 @@ Recent changes (newest first):
         db.memories.create_collection("plain", "no collector")
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="plain"))
-        assert "steps: none" in result.message
+        assert "prompt: none" in result.message
         # notify is opt-in: a collection created without it defaults to silent.
         assert "notify: False" in result.message
 
@@ -1637,25 +1637,9 @@ class TestResolveObjects:
     (the ``skill`` table, the sole skills store — #1624).  Deterministic
     unit-vector embeddings pin exact scores."""
 
-    @staticmethod
-    def _add_skill(db, name: str, embedding: list[float]) -> None:
-        with Session(db.engine) as session:
-            session.add(
-                Skill(
-                    name=name,
-                    steps="[]",
-                    parameters="[]",
-                    intent="skill body",
-                    description="skill body",
-                    description_embedding=serialize_embedding(embedding),
-                    author="chat",
-                )
-            )
-            session.commit()
-
     def _seed_mixed(self, db) -> None:
         """One of every family sharing axis 0: an active and an archived
-        collection, a log, and a taught skill."""
+        collection, and a log."""
         db.memories.create_collection("watch", "d", description_embedding=_unit_vec(0))
         db.memories.create_collection(
             "old-watch",
@@ -1664,7 +1648,6 @@ class TestResolveObjects:
             description_embedding=_unit_vec(0),
         )
         db.memories.create_log("feed", "d", description_embedding=_unit_vec(0))
-        self._add_skill(db, "escalate", _unit_vec(0))
 
     def test_spans_families_and_includes_archived(self, db):
         self._seed_mixed(db)
@@ -1675,7 +1658,6 @@ class TestResolveObjects:
         assert ("watch", ResolvedKind.COLLECTION, False) in found
         assert ("old-watch", ResolvedKind.COLLECTION, True) in found  # archived included
         assert ("feed", ResolvedKind.LOG, False) in found
-        assert ("escalate", ResolvedKind.SKILL, False) in found
 
     def test_orthogonal_query_returns_honest_empty(self, db):
         self._seed_mixed(db)

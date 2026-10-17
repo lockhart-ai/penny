@@ -15,12 +15,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationState
 from penny.database.models import MemoryEntry
 from penny.datetime_utils import format_log_timestamp
 from penny.responses import PennyResponse
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
+from penny.tests.eval.utils.catalogue import ConversationState
 from penny.tests.eval.utils.cohort import (
     CYCLE_SCRIPT,
     ENTRIES_STORED,

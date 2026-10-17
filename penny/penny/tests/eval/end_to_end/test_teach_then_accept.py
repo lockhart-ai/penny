@@ -194,22 +194,19 @@ _assert_every_script_carries_the_facts()
 
 
 def _seed(db: Database) -> None:
-    """The entry condition: no routine taught, no job running.  Asserted rather than assumed,
-    so a world that drifted fails here rather than after a live run.
+    """The entry condition: no job running.  Asserted rather than assumed, so a world
+    that drifted fails here rather than after a live run.
 
     Checked against COLLECTIONS only, never the whole store — a fresh eval database is built
     exactly like production (``create_tables()`` then ``migrate()``), and migrations seed
     system log memories (``penny-messages``, the browse-results log, …) into every database,
     cold teach or not."""
-    assert not db.skills.list_all(), "the registry must start empty for a cold teach"
     collections = [row for row in db.memories.list_all() if row.type == MemoryType.COLLECTION]
     assert not collections, f"no collection may exist yet for a cold teach, found {collections}"
 
 
 _ARMS = tuple(
-    EndToEndArm(
-        label=script[0], turns=script, seed=_seed, seed_skills=None, world=_WORLD, cycles=_CYCLES
-    )
+    EndToEndArm(label=script[0], turns=script, seed=_seed, world=_WORLD, cycles=_CYCLES)
     for script in _SCRIPTS
 )
 

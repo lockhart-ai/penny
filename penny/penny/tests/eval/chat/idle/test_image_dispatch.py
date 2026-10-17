@@ -65,7 +65,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from penny.conversation_machine import ConversationState
 from penny.penny import Penny
 from penny.tests.conftest import ONE_PX_PNG_B64
 from penny.tests.eval.conftest import (
@@ -247,7 +246,7 @@ async def test_a_request_for_a_picture_draws_it(chat_eval: ChatEval, model: str)
     cohort = await _drive(chat_eval, model, _REQUEST)
     # LANDED — a picture asked for is handled right now, which is idle by the machine's own
     # task-lifetime boundary (#1919).
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — the picture the ask asked for, read off the media store.
     cohort.claim(
@@ -280,7 +279,7 @@ async def test_a_remark_about_a_painting_stays_in_idle(chat_eval: ChatEval, mode
     is drawn — a case is one setup, one run and one set of assertions (#2100)."""
     cohort = await _drive(chat_eval, model, _NO_FIRE)
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — EMPTY, and a report: the world holds nothing a chat turn could alter (the image
     # store is append-only and the registry starts empty), so there is no prior state for a

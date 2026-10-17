@@ -30,10 +30,8 @@ import penny as penny_package
 from penny.agents.collector import Collector
 from penny.clock import Clock
 from penny.constants import ChannelType, PennyConstants, TransitionCause
-from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.skills import SkillDraft
 from penny.datetime_utils import current_datetime_line
 from penny.llm.client import LlmClient
 from penny.tests.conftest import TEST_SENDER, require_memory
@@ -153,12 +151,6 @@ def _write_through_every_store(db: Database) -> None:
     rule = db.email_rules.create(PennyConstants.PROVIDER_ZOHO, "a rule", "{}", "{}")
     db.email_rules.mark_applied(rule.id or 0)
     db.media.put(b"bytes", "image/png")
-    db.skills.upsert(
-        SkillDraft(
-            name="a routine", intent="i", description="d", steps=[], parameters=[], source_run_id=""
-        ),
-        author="chat",
-    )
     for name in ("Someone", "Someone Else"):
         db.users.save_info("+15550009999", name, "Seattle, WA", SAMPLE_TIMEZONE, "1990-01-01")
     db.users.set_muted("+15550009999")
@@ -336,8 +328,8 @@ def _a_turn_that_stood_a_job_up(
     seed_user(db)
     _log_draw(db, PennyConstants.STATE_CLASSIFIER_AGENT_NAME, "STATE: apply")
     db.machine.record_transition(
-        from_state=ConversationState.LEARN.value,
-        to_state=ConversationState.APPLY.value,
+        from_state="learn",
+        to_state="apply",
         cause=TransitionCause.CLASSIFIER,
     )
     schedule = parse_schedule(rule)

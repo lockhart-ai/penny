@@ -19,34 +19,19 @@ from sqlmodel import Session, select
 
 from penny.agents.models import ToolCallRecord
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
 from penny.database.memory import (
-    ResolvedKind,
-    ResolvedMatch,
     WriteGateOutcome,
     WriteResult,
     render_run_calls,
 )
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog
 from penny.database.mutation_store import mutation_change_summary
-from penny.database.skill_store import steps_from_json
-from penny.database.skills import (
-    WRITE_TARGET_DESCRIPTION,
-    SkillDraft,
-    SkillParameter,
-    SkillStep,
-    SkillSubKind,
-    SkillSubstitution,
-    render_skill,
-    retarget_writes,
-)
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
 from penny.llm.similarity import embed_text
-from penny.skill_extraction import SkillExtracted, SkillExtractor, _interface_parameters
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
@@ -56,11 +41,7 @@ from penny.tools.collection_instantiation import (
     describe_schedule_field,
     parse_expires_at,
     parse_schedule,
-    render_applied_configuration,
-    render_reinstantiation_echo,
     render_schedule_clause,
-    render_unbound_parameters,
-    skill_params,
 )
 from penny.tools.memory_args import (
     OPTIONAL_ARG_FORMS,
@@ -72,9 +53,7 @@ from penny.tools.memory_args import (
 from penny.tools.memory_tools import (
     _INERT_JOB_ARGS_REFUSAL,
     _NO_SCHEDULE_NOTE,
-    _REBIND_NO_SKILL,
     _SAME_JOB_UPDATED,
-    _SKILL_GONE,
     EXPIRES_AT_PARAM_DESCRIPTION,
     SCHEDULE_PARAM_DESCRIPTION,
     CollectionArchiveTool,
@@ -96,16 +75,12 @@ from penny.tools.memory_tools import (
     LogReadTool,
     MemoryMetadataTool,
     ReadRunCallsTool,
-    SkillGetTool,
     _format_duplicate,
-    _render_object_hit,
     build_memory_tools,
-    collector_tool_surface,
     format_entries,
     render_nothing_landed,
     render_writes_landed,
 )
-from penny.tools.micro_context import FramedParameter, SkillSignature
 
 pytestmark = pytest.mark.bare_db
 
@@ -190,16 +165,11 @@ class _KeyOnlyFailingEmbedClient:
 
 # ── Seeding helpers ───────────────────────────────────────────────────────────
 #
-# ``collection_configure`` is now the skill-instantiation front door (#1591): it no
-# longer takes an ``extraction_prompt`` and refuses a near-duplicate.  Tests that
-# only need a collection to EXIST (to exercise writes/reads/mutations/etc.) seed it
-# directly through the store (``_seed_collection``) — the honest, idempotency-free
-# way to stand one up — with a deterministic description anchor so dedup/similarity
-# behave.  ``_seed_watch_skill`` upserts the fictional "watch a peak's elevation"
-# skill the create-flow tests instantiate.
-
-_SKILL_NAME = "Watch elevation"
-_SKILL_HOLE = "peak"
+# ``collection_configure`` takes a free-text ``prompt`` and refuses a near-duplicate
+# (#2455 naive baseline). Tests that only need a collection to EXIST (to exercise
+# writes/reads/mutations/etc.) seed it directly through the store
+# (``_seed_collection``) — the honest, idempotency-free way to stand one up — with a
+# deterministic description anchor so dedup/similarity behave.
 
 
 def _seed_collection(
@@ -225,944 +195,29 @@ def _seed_collection(
     )
 
 
-def _watch_skill_steps() -> list[SkillStep]:
-    """The fictional demonstration's steps: a {peak} hole reused in the browse query
-    and the write key, step 1's reading flowing into step 2 as a binding, and the leaf
-    that named a collection an ATTACHMENT-marked placeholder (the shape a freshly
-    distilled skill has — ``_river_skill_steps`` keeps the shape migrations 0101/0103
-    leave on a skill taught before the mark, so both reach the front door and both must
-    render the write to the collection they're applied to)."""
-    return [
-        SkillStep(
-            ordinal=1,
-            source_ordinal=1,
-            tool="browse",
-            arguments={"queries": [_SKILL_HOLE], "extract": "the elevation above sea level"},
-            substitutions=[
-                SkillSubstitution(
-                    path=["queries", 0], kind=SkillSubKind.HOLE, parameter=_SKILL_HOLE
-                )
-            ],
-        ),
-        SkillStep(
-            ordinal=2,
-            source_ordinal=2,
-            tool="collection_write",
-            arguments={
-                "collection": "elevations",
-                "entries": [{"key": _SKILL_HOLE, "content": "x"}],
-            },
-            substitutions=[
-                SkillSubstitution(
-                    path=["collection"],
-                    kind=SkillSubKind.PLACEHOLDER,
-                    description=WRITE_TARGET_DESCRIPTION,
-                    attachment=True,
-                ),
-                SkillSubstitution(
-                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter=_SKILL_HOLE
-                ),
-                SkillSubstitution(
-                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
-                ),
-            ],
-        ),
-    ]
-
-
-def _seed_watch_skill(
-    db,
-    *,
-    name: str = _SKILL_NAME,
-    intent: str = "watch a peak's elevation and save it",
-    description: str = "watch a peak's elevation and save it",
-    parameters: list[SkillParameter] | None = None,
-    steps: list[SkillStep] | None = None,
-    embed: bool = True,
-) -> str:
-    """Upsert the fictional watch-a-peak skill the create-flow tests instantiate;
-    returns its name.  ``embed=False`` seeds it without a description anchor —
-    for tests that resolve it by exact name and must keep it OUT of the
-    resolve-by-meaning candidate pool (an unembedded skill is silently absent)."""
-    draft = SkillDraft(
-        name=name,
-        intent=intent,
-        description=description,
-        steps=steps if steps is not None else _watch_skill_steps(),
-        parameters=parameters
-        if parameters is not None
-        else [SkillParameter(name=_SKILL_HOLE, required=True)],
-        source_run_id="run-teach",
-    )
-    embedding = _single_hash_vec(description) if embed else None
-    db.skills.upsert(draft, author="chat", description_embedding=embedding)
-    return name
-
-
-# THE money literal — a skill + params flowing through the real front door into the
-# collection's stored ``extraction_prompt``: the {peak} hole bound verbatim in both
-# the browse query and the write key, the binding kept legible, and the write
-# RETARGETED to the collection's own name (#1629 — the demo wrote to 'elevations').
-_MONEY_LITERAL = (
-    "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "2. collection_write(collection='cinder-elevation', "
-    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-)
-
-# The one-shot creation echo — the schedule line reads the stored rule back VERBATIM
-# (#1857, display form == invocation form), its newline written as \n so the line
-# stays a line; everything else is the recurring echo shape.
-_ONE_SHOT_ECHO_LITERAL = (
-    "On the schedule once, at Friday, December 25, 2026 at 09:00 AM UTC, then it "
-    "retires (rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`) I'll run "
-    "'Watch elevation' against 'one-shot' and quietly store what it finds.\n"
-    "Created collection 'one-shot' from skill 'Watch elevation':\n"
-    "  description: check the peak once, on christmas morning\n"
-    "  skill: Watch elevation\n"
-    "  params: peak=Cinder Peak\n"
-    "  schedule: once, at Friday, December 25, 2026 at 09:00 AM UTC, then it retires "
-    "(rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`)\n"
-    "  notify: False\n"
-    "  expires: never\n"
-    "  steps: |\n"
-    "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(collection='one-shot', "
-    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-)
-
-# The whole creation echo — skill · bound params · schedule · notify · expiry · the
-# rendered routine (the money literal, indented) — confirmed back to the user.
-_CREATE_ECHO_LITERAL = (
-    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
-    "'cinder-elevation' and message you when something changes.\n"
-    "Created collection 'cinder-elevation' from skill 'Watch elevation':\n"
-    "  description: watch Cinder Peak's elevation\n"
-    "  skill: Watch elevation\n"
-    "  params: peak=Cinder Peak\n"
-    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-    "  notify: True\n"
-    "  expires: never\n"
-    "  steps: |\n"
-    "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(collection='cinder-elevation', "
-    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-)
-
-
-class TestCollectionCreateFrontDoor:
-    """The skill-instantiation front door (#1591): resolve a skill by name/meaning,
-    bind its holes, render its steps into the stored prompt, and dispatch a job we
-    already have onto the collection that already serves it (#1567/#1775).  Results
-    are model-facing text, asserted as whole renders."""
-
-    @pytest.mark.asyncio
-    async def test_instantiates_skill_and_stores_the_rendered_prompt(self, db):
-        """A clean name match binds the params, renders the skill's steps into the
-        collection's extraction_prompt (the money literal), and echoes skill /
-        params / schedule / notify / expiry."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation",
-            description="watch Cinder Peak's elevation",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-            notify=True,
-        )
-        assert result.success and result.mutated
-        # The whole echo confirms exactly what landed, without confabulation.
-        assert result.message == _CREATE_ECHO_LITERAL
-        # The money literal is the stored prompt — a skill rendered through the door.
-        stored = db.memories.get("cinder-elevation")
-        assert stored.extraction_prompt == _MONEY_LITERAL
-        assert stored.description == "watch Cinder Peak's elevation"
-        # notify persists — the sole emission flag now (#1557 retired ``published``).
-        assert stored.notify is True
-
-    @pytest.mark.asyncio
-    async def test_single_element_list_param_renders_identically_to_string(self, db):
-        """The #1 live instantiation blocker (#1666): the model binds a hole with a
-        one-element LIST — ``params={"peak": ["Cinder Peak"]}`` — mirroring the browse
-        tool's list-shaped ``queries`` arg (the {peak} hole fills ``queries[0]``).  The
-        value is unwrapped to its element deterministically, so the whole echo, the
-        stored ``extraction_prompt``, AND the stored skill_params are byte-identical to
-        binding the bare string."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation",
-            description="watch Cinder Peak's elevation",
-            skill=_SKILL_NAME,
-            params={"peak": ["Cinder Peak"]},  # a one-element list, not the bare string
-            schedule="FREQ=HOURLY",
-            notify=True,
-        )
-        assert result.success and result.mutated
-        # Byte-identical to the string-bound form — same echo, prompt, and provenance.
-        assert result.message == _CREATE_ECHO_LITERAL
-        stored = db.memories.get("cinder-elevation")
-        assert stored.extraction_prompt == _MONEY_LITERAL
-        # The stored binding records the UNWRAPPED scalar, not the list wrapper.
-        assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
-
-    @pytest.mark.asyncio
-    async def test_multi_element_list_param_is_refused_actionably(self, db):
-        """A hole binds exactly ONE value, so a multi-element list stays a refusal
-        (#1666) — but an ACTIONABLE one: the ``loc`` names the offending hole
-        (``params.peak``), and the message names the count and the expected one-value
-        shape.  Nothing is created (the arg-validation gate fails before ``execute``)."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
-            name="multi-peak",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": ["Ashfall Ridge", "Cinder Peak"]},
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success is False
-        assert result.message == (
-            "params.peak: a skill parameter binds one value, but got a list of 2 — pass a "
-            "single value per parameter (a one-item list is unwrapped for you; more than "
-            "one isn't). Expected shape: parameters={'<parameter>': '<value>'}. "
-            "Call collection_configure(<valid arguments>) again."
-        )
-        assert db.memories.get("multi-peak") is None
-
-    @pytest.mark.asyncio
-    async def test_unbound_required_hole_is_refused_naming_it(self, db):
-        """A skill instantiated without binding a required hole is refused, naming
-        the missing parameter and the params shape to supply — nothing created."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="no-peak",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={},
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success is False
-        assert result.message == (
-            "Can't instantiate 'Watch elevation': these required parameters aren't bound:\n"
-            "  - peak\n"
-            "Pass them in parameters (e.g. parameters={'peak': <value>}), then call "
-            "collection_configure again."
-        )
-        assert db.memories.get("no-peak") is None
-
-    @pytest.mark.asyncio
-    async def test_no_skill_found_elicits_teaching(self, db):
-        """A skill query matching nothing returns the reshaped #1471/#1629/#1631
-        elicitation — it NARRATES the two-step teach bootstrap (set up the container →
-        walk me through once, extracting ONE value → learned automatically → attach
-        via collection_configure), asserted whole."""
-        _seed_watch_skill(db)  # exists, but shares no words with the query
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="mystery",
-            description="do the mystery thing",
-            skill="xyzzy flibbertigibbet quux",
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success is False
-        assert result.message == (
-            "I don't know how to \"xyzzy flibbertigibbet quux\" yet — there's no skill for "
-            "it, so there's nothing to instantiate. No schedule can be set up before the "
-            "skill is learned. Two cases:\n"
-            "a. The user already told you what one round needs — where to look, what to "
-            "pull out, what to keep — then DO IT NOW, in this turn: browse, extract just "
-            "the ONE value they want watched (only the price, not a whole name+hook+price blob — "
-            "a multi-field blob changes whenever any part does and would false-alarm every "
-            "cycle), and collection_write what you actually found — storage is created "
-            "for you if it doesn't exist.\n"
-            "b. They haven't — reply to the user now, no more tool calls this turn: tell "
-            "them you'll learn it from one complete pass, and ask for the whole thing "
-            "in ONE message (where to look, what to pull out, what to keep), modelling "
-            "the example from what they already said. When it arrives, run case a.\n"
-            "Either way what you demonstrate is learned automatically as a skill from "
-            "that round "
-            "— a learned notice will tell you the moment it exists; then attach it and "
-            "set any schedule or notify they asked for in ONE call: "
-            "collection_configure(collection=<the collection>, skill=<its name>, schedule=..., "
-            "notify=...)."
-        )
-        assert db.memories.get("mystery") is None
-
-    @pytest.mark.asyncio
-    async def test_ambiguous_meaning_returns_candidates_never_picks(self, db):
-        """A paraphrase (not an exact name) that matches a skill by meaning returns
-        the ranked candidate(s) + how to narrow — never a silent pick."""
-        _seed_watch_skill(db)  # description "watch a peak's elevation and save it"
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="some-watch",
-            description="watch a thing",
-            skill="watch elevation save",  # shares words → fuzzy match, not exact name
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success is False
-        assert result.message == (
-            'I know a few skills close to "watch elevation save" — I won\'t guess which '
-            "you mean:\n"
-            "1. Watch elevation — watch a peak's elevation and save it\n"
-            "To use one, call collection_configure again with skill='<its exact name>'. If "
-            "none of these is the process you mean, walk me through it once and I'll learn "
-            "it as a new skill."
-        )
-        assert db.memories.get("some-watch") is None
-
-    @pytest.mark.asyncio
-    async def test_active_same_job_updates_the_existing_collection(self, db):
-        """A create whose name is a second name for a job we already have UPDATES that
-        collection instead of refusing (#1775).  The refusal it replaces cost an entire
-        observed turn (retry → identical refusal → all-failed abort → no reply), so the
-        call succeeds against the real collection, the whole message names it (redirect
-        note + the standard re-render echo), and no second row is created."""
-        _seed_watch_skill(db)
-        _seed_collection(db, name="jacket-price", description="watch the blue jacket price")
-        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            # A role-affix twin: 'monitor' is a job word, so both names normalise to
-            # {jacket} ⊆ {jacket, price} — the same job under an invented name.
-            collection="jacket-monitor",
-            description="watch the blue jacket price",
-            skill=_SKILL_NAME,
-            parameters={"peak": "jacket"},
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success and result.mutated
-        assert db.memories.get("jacket-monitor") is None  # no second copy of the job
-        updated = db.memories.get("jacket-price")
-        assert result.message == (
-            _SAME_JOB_UPDATED.format(requested="jacket-monitor", existing="jacket-price")
-            + render_reinstantiation_echo(updated, _SKILL_NAME, {"peak": "jacket"})
-        )
-        # The config the call carried landed on the collection we already had.
-        assert updated.skill_name == _SKILL_NAME
-        assert updated.schedule == "FREQ=HOURLY"
-
-    @pytest.mark.asyncio
-    async def test_distinct_specifics_are_not_merged(self, db):
-        """The adversarial negative: same subject, different specifics (`deck-2` vs
-        `deck-3`) is a SUBSTITUTION, not an extension — neither name contains the other,
-        so the second collection is created rather than folded into the first (#1775)."""
-        _seed_watch_skill(db)
-        _seed_collection(db, name="aurora-deck-2-price", description="watch a listing price")
-        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="aurora-deck-3-price",
-            description="watch a listing price",
-            skill=_SKILL_NAME,
-            parameters={"peak": "aurora deck 3"},
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success and result.mutated
-        # Two distinct jobs, both live — and the identical descriptions did not merge
-        # them (embeddings are not a merge signal, #1775 finding 1).
-        assert db.memories.get("aurora-deck-3-price") is not None
-        assert db.memories.get("aurora-deck-2-price") is not None
-
-    @pytest.mark.asyncio
-    async def test_a_framed_round_supplies_its_own_routine_and_values(self, db):
-        """Configuring a framed round carries only the TERMS (#1869): the container, the
-        routine and the values it is pointed at are supplied here rather than by the call,
-        so a call that says nothing but the cadence stands the whole job up.
-
-        That is what makes reuse structural — the job lands on the round's own container
-        every time — and what makes tier-1 identity hold by construction, since the values
-        cannot drift from the ones the round settled."""
-        _seed_watch_skill(db)
-        framing = RoundFraming(
-            signature=SkillSignature(
-                name=_SKILL_NAME,
-                description="watch a peak's elevation and save it",
-                parameters=(
-                    FramedParameter(
-                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
-                    ),
-                ),
-            ),
-            container="watch-elevation-cinder-peak",
-        )
-        db.memories.create_collection(framing.container, framing.signature.description)
-
-        result = await CollectionSetTool(
-            db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(collection=framing.container, schedule="FREQ=HOURLY", notify=True)
-
-        assert result.success and result.mutated
-        row = db.memories.get(framing.container)
-        assert row is not None
-        assert row.skill_name == _SKILL_NAME
-        assert skill_params(row) == {_SKILL_HOLE: "Cinder Peak"}
-        assert row.schedule == "FREQ=HOURLY" and row.notify
-        assert row.extraction_prompt and "Cinder Peak" in row.extraction_prompt
-
-    @pytest.mark.asyncio
-    async def test_a_framed_call_naming_another_collection_is_retargeted_out_loud(self, db):
-        """Where a framed round's job lands is structural, so a call naming anything else
-        is aimed at the round's container anyway — and the result LEADS with that, since
-        everything downstream has to use the collection that exists."""
-        _seed_watch_skill(db)
-        framing = RoundFraming(
-            signature=SkillSignature(
-                name=_SKILL_NAME,
-                description="watch a peak's elevation and save it",
-                parameters=(
-                    FramedParameter(
-                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
-                    ),
-                ),
-            ),
-            container="watch-elevation-cinder-peak",
-        )
-        db.memories.create_collection(framing.container, framing.signature.description)
-
-        result = await CollectionSetTool(
-            db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(collection="cinder-peak-watch", schedule="FREQ=HOURLY", notify=True)
-
-        assert result.success
-        assert db.memories.get("cinder-peak-watch") is None
-        assert result.message.startswith(
-            "'cinder-peak-watch' isn't the collection this round set up — "
-            "'watch-elevation-cinder-peak' is, so this landed on "
-            "'watch-elevation-cinder-peak'. It's 'watch-elevation-cinder-peak' from here "
-            "on: read it with collection_list('watch-elevation-cinder-peak') or "
-            "adjust it with collection_configure(collection='watch-elevation-cinder-peak', ...).\n"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_round_whose_routine_is_gone_is_refused_at_the_round(self, db):
-        """Supplying the routine framework-side takes it out of the model's hands, so a
-        round the registry never gained has to be refused NAMING THE ROUND (#1869).
-
-        Every inner failure answers a missing or under-bound skill by asking for a
-        different ``skill`` or a fuller ``params`` — the two arguments a framed call
-        cannot change — so that guidance would be a remedy the model is structurally
-        prevented from enacting, retried until the turn ran out.  The reachable case is a
-        learn turn that taught nothing: the machine stays parked with its framing, so the
-        next acceptance names a routine that was never filed."""
-        framing = RoundFraming(
-            signature=SkillSignature(
-                name="Watch nothing",
-                description="a routine the round never managed to teach",
-                parameters=(
-                    FramedParameter(
-                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
-                    ),
-                ),
-            ),
-            container="watch-nothing-cinder-peak",
-        )
-        db.memories.create_collection(framing.container, framing.signature.description)
-
-        result = await CollectionSetTool(
-            db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(collection=framing.container, schedule="FREQ=HOURLY", notify=True)
-
-        assert result.success is False and not result.mutated
-        assert result.message == (
-            "The skill this round taught, 'Watch nothing', isn't in the registry, so "
-            "there's nothing to set running. Which skill this is was settled by the "
-            "round, so naming a different one here won't help. Tell the user the round "
-            "didn't stick, and ask them to walk you through it once more."
-        )
-        assert db.memories.get(framing.container).skill_name is None
-
-    @pytest.mark.asyncio
-    async def test_a_round_that_never_supplied_what_the_routine_needs_is_refused(self, db):
-        """The same refusal for the other half: a re-teach can change what a routine
-        DECLARES while an older round's values stay put, so the round can carry values
-        that no longer cover it.  Named as the round's shortfall, since passing values
-        here is the one thing that cannot fix it."""
-        _seed_watch_skill(db)
-        framing = RoundFraming(
-            signature=SkillSignature(
-                name=_SKILL_NAME,
-                description="watch a peak's elevation and save it",
-                parameters=(
-                    FramedParameter(
-                        name="mountain", description="the peak to watch", value="Cinder Peak"
-                    ),
-                ),
-            ),
-            container="watch-elevation-cinder-peak",
-        )
-        db.memories.create_collection(framing.container, framing.signature.description)
-
-        result = await CollectionSetTool(
-            db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(collection=framing.container, schedule="FREQ=HOURLY", notify=True)
-
-        assert result.success is False and not result.mutated
-        assert result.message == (
-            "The skill 'Watch elevation' needs peak, which this round never supplied, "
-            "so there's nothing to set running. What this skill is pointed at was "
-            "settled by the round, so passing values here won't help. Tell the user "
-            "what it's missing, and ask them to walk you through it once more."
-        )
-        assert db.memories.get(framing.container).skill_name is None
-
-    @pytest.mark.asyncio
-    async def test_a_failed_framed_call_never_claims_it_landed(self, db):
-        """The retarget note is prepended to a REFUSAL too, so it says the call was AIMED
-        at the round's container rather than that it landed there — the
-        ``_SAME_JOB_TARGETED`` split, for the same reason: a tool must never assert an
-        action its own result denies."""
-        _seed_watch_skill(db)
-        framing = RoundFraming(
-            signature=SkillSignature(
-                name=_SKILL_NAME,
-                description="watch a peak's elevation and save it",
-                parameters=(
-                    FramedParameter(
-                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
-                    ),
-                ),
-            ),
-            container="watch-elevation-cinder-peak",
-        )
-        db.memories.create_collection(framing.container, framing.signature.description)
-
-        result = await CollectionSetTool(
-            db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(collection="cinder-peak-watch", schedule="every 2 hours please")
-
-        assert result.success is False
-        assert result.message.startswith(
-            "'cinder-peak-watch' isn't the collection this round set up — "
-            "'watch-elevation-cinder-peak' is, so this was aimed at "
-            "'watch-elevation-cinder-peak' rather than at the name you gave — but it "
-            "didn't land:\n"
-        )
-        assert db.memories.get(framing.container).schedule is None
-
-    @pytest.mark.asyncio
-    async def test_an_unframed_turn_configures_exactly_as_it_always_did(self, db):
-        """The degrade path (#1869): with no round framing nothing is supplied, so a
-        terms-only call is the plain metadata edit it has always been — the collection
-        stays inert, which is the honest outcome of a call that named no routine."""
-        _seed_watch_skill(db)
-        db.memories.create_collection("cinder-peak", "watch a peak's elevation and save it")
-
-        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="cinder-peak", schedule="FREQ=HOURLY", notify=True
-        )
-
-        assert result.success
-        row = db.memories.get("cinder-peak")
-        assert row is not None
-        assert row.skill_name is None and row.extraction_prompt is None
-        assert row.schedule == "FREQ=HOURLY" and row.notify
-
-    @pytest.mark.asyncio
-    async def test_the_applied_configuration_renders_whole(self, db):
-        """The record a configured collection states back, WHOLE (#1869) — what the
-        run-end narration frame carries, so a turn that supplied only the terms has the
-        routine and what it watches in front of it rather than in memory.
-
-        The echo's fields WITHOUT the rendered program, deliberately (#1799): what this is
-        read for is a description a person can act on, and a block of tool calls in front
-        of that request is a block that gets read aloud."""
-        _seed_watch_skill(db)
-        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-peak",
-            description="watch Cinder Peak's elevation",
-            skill=_SKILL_NAME,
-            params={_SKILL_HOLE: "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-            notify=True,
-        )
-        row = db.memories.get("cinder-peak")
-        assert row is not None
-
-        assert render_applied_configuration(row) == (
-            "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' "
-            "against 'cinder-peak' and message you when something changes.\n"
-            "  collection: cinder-peak\n"
-            "  skill: Watch elevation\n"
-            "  params: peak=Cinder Peak\n"
-            "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-            "  notify: True\n"
-            "  expires: never"
-        )
-        # An inert container has no configuration to state, and saying it was set up
-        # would be the honest-failure rule broken from the other side.
-        inert = db.memories.create_collection("just-storage", "somewhere to put things")
-        assert render_applied_configuration(inert) is None
-
-    @pytest.mark.asyncio
-    async def test_a_fixed_configuration_states_what_each_value_used_to_be(self, db):
-        """A turn that MOVED a value renders both states (#1946): the row holds only the
-        value that won, so a was-state claim would otherwise be the one thing left to
-        remember — and the observed regression was a correct fix reported beside an
-        invented prior.  The priors come off this run's own mutation events, so what the
-        reply states is a copy."""
-        _seed_watch_skill(db)
-        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-peak",
-            description="watch Cinder Peak's elevation",
-            skill=_SKILL_NAME,
-            params={_SKILL_HOLE: "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-            notify=True,
-        )
-        db.memories.update_collection_metadata(
-            "cinder-peak",
-            schedule="FREQ=DAILY;BYHOUR=18",
-            notify=False,
-            run_id="run-fix",
-        )
-        row = db.memories.get("cinder-peak")
-        assert row is not None
-        priors = db.mutations.priors_for_run("cinder-peak", "run-fix")
-
-        assert render_applied_configuration(row, priors) == (
-            "On the schedule every day at 06:00 PM (rule: `FREQ=DAILY;BYHOUR=18`) I'll run "
-            "'Watch elevation' against 'cinder-peak' and quietly store what it finds.\n"
-            "  collection: cinder-peak\n"
-            "  skill: Watch elevation\n"
-            "  params: peak=Cinder Peak\n"
-            "  schedule: was every hour (rule: `FREQ=HOURLY`) → now every day at 06:00 PM "
-            "(rule: `FREQ=DAILY;BYHOUR=18`)\n"
-            "  notify: was True → now False\n"
-            "  expires: never"
-        )
-        # No priors to read → byte-identical to the render that always shipped, which is
-        # every path that has no ledger for this run.
-        assert render_applied_configuration(row) == render_applied_configuration(row, {})
-
-    def test_a_value_that_was_not_set_says_so_and_one_that_stood_still_says_nothing(self, db):
-        """The two boundary shapes of the before→after clause.
-
-        A field that held NOTHING renders ``was not set → now …`` rather than an empty
-        gap — the prior is a positive statement.  A field an update REPORTED changed whose
-        rendered value did not move (a rebind re-stamps the routine under the same name)
-        renders plainly: "was X → now X" is noise a reader has to rule out."""
-        db.memories.create_collection(
-            "kelp-prices", "kelp prices", skill_name="watch-a-price", skill_params={"page": "kelp"}
-        )
-        row = db.memories.get("kelp-prices")
-        assert row is not None
-        rendered = render_applied_configuration(row, {"schedule": None, "skill": "watch-a-price"})
-        assert rendered is not None
-        assert "  schedule: was not set → now none" in rendered
-        assert "  skill: watch-a-price" in rendered
-
-    @pytest.mark.asyncio
-    async def test_tombstone_near_duplicate_surfaces_the_archived_row(self, db):
-        """The same job under a new name when the match is ARCHIVED stays a REFUSAL —
-        reviving a retired mechanism is the user's call, so the tombstone confirm-shape
-        surfaces it + its archive time and offers unarchive (#1567), rather than silently
-        resurrecting it the way an active match is updated (#1775)."""
-        _seed_watch_skill(db)
-        _seed_collection(
-            db,
-            name="jacket-price",
-            description="watch the blue jacket price",
-            archived=True,
-        )
-        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="jacket-monitor",
-            description="watch the blue jacket price",
-            skill=_SKILL_NAME,
-            parameters={"peak": "jacket"},
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success is False
-        assert (
-            "There's an archived collection for this: 'jacket-price' (archived " in result.message
-        )
-        assert "collection_unarchive('jacket-price')" in result.message
-        assert "clearly different name and description" in result.message
-        assert db.memories.get("jacket-monitor") is None
-
-    @pytest.mark.asyncio
-    async def test_one_shot_schedule_lifts_count_into_max_runs(self, db):
-        """``COUNT=`` is LIFTED at parse into ``max_runs`` while staying in the stored
-        rule (#1857), so a one-shot is a schedule rather than a second mechanism — and
-        the echo reads the rule back verbatim, its newline written as ``\\n``."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="one-shot",
-            description="check the peak once, on christmas morning",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1",
-        )
-        assert result.success and result.mutated
-        assert result.message == _ONE_SHOT_ECHO_LITERAL
-        row = db.memories.get("one-shot")
-        assert row.max_runs == 1
-        # The lift never edits the rule — re-passing what a surface renders lifts the same.
-        assert row.schedule == "DTSTART:20261225T090000Z\nFREQ=DAILY;COUNT=1"
-
-    @pytest.mark.asyncio
-    async def test_repeating_count_lifts_the_whole_quota(self, db):
-        """``COUNT=3`` is three runs, not a one-shot — the quota is whatever the rule
-        says."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="thrice",
-            description="check the peak three times",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=DAILY;COUNT=3",
-        )
-        assert result.success
-        assert "  schedule: every day, 3 times (rule: `FREQ=DAILY;COUNT=3`)\n" in result.message
-        assert db.memories.get("thrice").max_runs == 3
-
-    @pytest.mark.asyncio
-    async def test_until_lifts_into_expires_at(self, db):
-        """``UNTIL=`` is LIFTED into ``expires_at`` (#1857) — a rule that stops and a
-        collection that retires are one thing, so the archive lifecycle needs no second
-        statement."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="bounded",
-            description="check the peak until september",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=DAILY;UNTIL=20260901T000000Z",
-        )
-        assert result.success
-        row = db.memories.get("bounded")
-        # SQLite hands datetimes back naive; they are stored UTC (`stored_as_utc`).
-        assert row.expires_at.replace(tzinfo=UTC) == datetime(2026, 9, 1, tzinfo=UTC)
-
-    @pytest.mark.asyncio
-    async def test_far_future_expiry_lands_unset_and_the_result_says_so(self, db):
-        """A sentinel end date is normalised to NO end condition at the tool boundary and
-        the result NAMES the normalisation (#1944).
-
-        The live failure: the apply turn invented ``expires_at = 2099-12-31`` for a job
-        meant to run indefinitely; the sentinel then rendered as the mechanism's end
-        condition in the self-state header and was copied back on every later
-        ``collection_configure``, so invented config became sticky.  Whole render, so both
-        halves are pinned at once — the echo states the resulting end condition
-        (``expires: never``) and the tail note says what became of the value passed and
-        what to pass instead."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="forever-watch",
-            description="watch the peak indefinitely",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-            expires_at="2099-12-31",
-        )
-        assert result.success
-        assert db.memories.get("forever-watch").expires_at is None
-        assert result.message == (
-            "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' "
-            "against 'forever-watch' and quietly store what it finds.\n"
-            "Created collection 'forever-watch' from skill 'Watch elevation':\n"
-            "  description: watch the peak indefinitely\n"
-            "  skill: Watch elevation\n"
-            "  params: peak=Cinder Peak\n"
-            "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-            "  notify: False\n"
-            "  expires: never\n"
-            "  steps: |\n"
-            "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "    2. collection_write(collection='forever-watch', "
-            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-            "\n(Note: expires_at='2099-12-31' is further ahead than an end date anyone "
-            "means, so I read it as no end date — the expiry is unset and this runs until "
-            "it is stopped. Leave expires_at off when there is no end date.)"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_genuine_expiry_is_stored_and_carries_no_note(self, db):
-        """The other direction of the sentinel rule (#1944): a real, near-term end date
-        lands on the row as itself and the result says nothing about normalising it."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="season-watch",
-            description="watch the peak until the season ends",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-            expires_at="2026-09-01T09:00:00Z",
-        )
-        assert result.success
-        stored = db.memories.get("season-watch").expires_at
-        assert stored.replace(tzinfo=UTC) == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
-        assert result.message == (
-            "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' "
-            "against 'season-watch' and quietly store what it finds.\n"
-            "Created collection 'season-watch' from skill 'Watch elevation':\n"
-            "  description: watch the peak until the season ends\n"
-            "  skill: Watch elevation\n"
-            "  params: peak=Cinder Peak\n"
-            "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-            "  notify: False\n"
-            "  expires: Tuesday, September 01, 2026 at 09:00 AM UTC\n"
-            "  steps: |\n"
-            "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "    2. collection_write(collection='season-watch', "
-            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-        )
-
-    @pytest.mark.asyncio
-    async def test_stating_the_end_twice_is_refused(self, db):
-        """A rule's ``UNTIL=`` and an ``expires_at`` argument are two answers to one
-        question — neither is silently taken; the refusal asks for one (#1857)."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="two-ends",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=DAILY;UNTIL=20260901T000000Z",
-            expires_at="2026-10-01T00:00:00Z",
-        )
-        assert result.success is False
-        assert result.message == (
-            "This says when to stop twice — the schedule ends at UNTIL and expires_at says "
-            "'2026-10-01T00:00:00Z'. Say it once: keep UNTIL in the schedule and drop "
-            "expires_at, or drop UNTIL and pass expires_at on its own."
-        )
-        assert db.memories.get("two-ends") is None
-
-    @pytest.mark.asyncio
-    async def test_missing_schedule_is_refused(self, db):
-        """A skill collection with no schedule would never run (silent degradation) —
-        it's refused up front showing the grammar, nothing created."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="no-schedule",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-        )
-        assert result.success is False
-        assert "needs a schedule" in result.message
-        assert db.memories.get("no-schedule") is None
-
-    @pytest.mark.asyncio
-    async def test_unreadable_schedule_teaches_the_grammar(self, db):
-        """A schedule ``rrulestr`` won't read is reject-and-teach: the failure shows the
-        grammar so the model rewrites into RRULE instead of inventing a second schedule
-        language (#1857), plus the omission line (leave the schedule out for a
-        storage-only collection) — nothing created."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="garbled",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="whenever I feel like it",
-        )
-        assert result.success is False
-        assert result.message == (
-            "I couldn't read the schedule 'whenever I feel like it'. A schedule is one "
-            "RRULE line — the calendar recurrence format — optionally preceded by a "
-            "DTSTART line saying when it starts. Copy one of these shapes:\n"
-            f"{SCHEDULE_EXAMPLES}\n"
-            "Use COUNT= to stop after that many runs, and UNTIL=20260901T000000Z to "
-            "stop at a time. Or leave the schedule out entirely for a storage-only "
-            "collection."
-        )
-        assert db.memories.get("garbled") is None
-
-    @pytest.mark.asyncio
-    async def test_mechanically_repairable_schedule_echoes_the_corrected_string(self, db):
-        """When a purely syntactic repair of the text DOES parse, the rejection LEADS
-        with the corrected string verbatim (#1857) — so the retry is a COPY rather than
-        a re-derivation, the class that turned a rejected 7200 into 14400."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="quoted",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="'FREQ=HOURLY'",
-        )
-        assert result.success is False
-        assert result.message == (
-            "I couldn't read the schedule ''FREQ=HOURLY'' — did you mean 'FREQ=HOURLY'? "
-            "Pass that exact string. A schedule is one RRULE line, optionally preceded by "
-            "a DTSTART line:\n"
-            f"{SCHEDULE_EXAMPLES}"
-        )
-        assert db.memories.get("quoted") is None
-
-    @pytest.mark.asyncio
-    async def test_two_rule_lines_are_refused(self, db):
-        """The grammar is ONE rule (plus an optional DTSTART): two rules would give two
-        answers to the COUNT/UNTIL lift, so the second is refused rather than picked."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="two-rules",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=DAILY\\nFREQ=WEEKLY",
-        )
-        assert result.success is False
-        assert "has more than one rule line" in result.message
-        assert db.memories.get("two-rules") is None
-
-    @pytest.mark.asyncio
-    async def test_bad_expires_at_is_actionable(self, db):
-        """An end condition neither reading answers is refused naming both accepted
-        shapes with a worked example of each, not a raw parse error — nothing created."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="bad-expiry",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-            expires_at="not-a-real-date",
-        )
-        assert result.success is False
-        assert "I couldn't read expires_at='not-a-real-date' as a time" in result.message
-        assert "2026-09-01T09:00:00Z" in result.message
-        assert "'tomorrow at 9am'" in result.message
-        assert db.memories.get("bad-expiry") is None
-
-    @pytest.mark.asyncio
-    async def test_transient_skill_resolve_embed_failure_is_actionable(self, db):
-        """A fuzzy skill query whose embed fails transiently is refused with a retry —
-        never a silent slide into NO_SKILL_FOUND (which would elicit teaching for a
-        skill that might already exist)."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
-            name="fuzzy",
-            description="watch a peak",
-            skill="something not an exact skill name",
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success is False
-        assert "Couldn't resolve the skill" in result.message
-        assert "Retry" in result.message
-        assert db.memories.get("fuzzy") is None
-
-
 class TestMinimalSurfaceCensus:
-    """The minimal collection surface (#1631, tightened by #1570): the model reasons
-    about six concepts — name · description · skill(+params) · schedule · notify ·
-    expires_at.  ``create_anyway`` and the raw-edit ``extraction_prompt`` are GONE
-    (dedup always runs; a routine is only ever a skill render).  Pinned so a future
+    """The minimal collection surface (#1631, tightened by #1570, collapsed to a
+    free-text ``prompt`` by #2455): the model reasons about six concepts — name ·
+    description · prompt · schedule · notify · expires_at.  ``create_anyway`` and a
+    diffed ``extraction_prompt`` edit are GONE (dedup always runs; a job's
+    instructions are replaced wholesale, never patched).  Pinned so a future
     field can't silently creep back onto the surface."""
 
     def test_create_accepts_exactly_the_minimal_fields(self):
         assert set(CollectionCreateArgs.model_fields) == {
             "name",
             "description",
-            "skill",
-            "params",
+            "prompt",
             "schedule",
             "notify",
             "expires_at",
         }
 
     def test_update_accepts_exactly_the_minimal_fields(self):
-        # No ``extraction_prompt`` — a routine is only ever a skill render (#1570);
-        # the #1529 raw-edit escape hatch is gone with the authoring channel.
         assert set(CollectionUpdateArgs.model_fields) == {
             "name",
             "description",
-            "skill",
-            "params",
+            "prompt",
             "schedule",
             "notify",
             "expires_at",
@@ -1186,18 +241,13 @@ class TestMinimalSurfaceCensus:
 
     @pytest.mark.asyncio
     async def test_an_extraction_prompt_argument_is_refused_actionably(self, db):
-        """The registered front door REFUSES an ``extraction_prompt`` argument, and says
-        what to pass instead (#1919, replacing the retired live contract).
-
-        This is the one live claim `tests/eval/test_extraction_tool_recovery.py` still
-        made, and it turned out to be about a surface that no longer exists: that case
-        forced a `collection_configure` carrying a hallucinated tool inside an
-        `extraction_prompt`, expecting the write-time tool gate to teach the model a
-        rewrite.  Since #1658/#1631 the argument is not on the model surface at all, so
-        `ToolArgs`' ``extra="forbid"`` refuses the call at ARG VALIDATION and the gate
-        never sees it — a routine is only ever a render of a demonstrated skill, and the
-        surviving gate call runs inside `render_skill_prompt` over that render, which the
-        model cannot author and so cannot hallucinate into.
+        """The registered front door REFUSES a ``extraction_prompt`` argument by its
+        OLD name, and says what to pass instead (#1919, replacing the retired live
+        contract) — the model surface's own instructions field is ``prompt``
+        (#2455 naive baseline), written straight into ``extraction_prompt`` with no
+        rendering seam, so the stored column's own name is never itself a valid
+        argument.  ``ToolArgs``' ``extra="forbid"`` refuses the call at ARG
+        VALIDATION before any routing.
 
         Driven through ``run`` rather than ``execute`` because the actionable envelope is
         what the model reads: the refusal has to NAME the unknown parameter and list the
@@ -1209,7 +259,7 @@ class TestMinimalSurfaceCensus:
         assert result.success is False
         assert "unknown parameter 'extraction_prompt'" in result.message
         # The valid parameters are listed, so the retry is a correction and not a guess.
-        assert "skill" in result.message and "schedule" in result.message
+        assert "prompt" in result.message and "schedule" in result.message
         # And nothing was created off a refused call.
         assert db.memories.get("board-games") is None
 
@@ -1360,6 +410,11 @@ class TestExpiresAtGrammar:
             # America/Toronto is EDT (UTC-4) on this date.
             ("2026-09-01 09:00", datetime(2026, 9, 1, 13, 0, tzinfo=UTC)),
             ("2026-09-01", datetime(2026, 9, 1, 4, 0, tzinfo=UTC)),
+            # The exact naive shape a live model wrote for ``expires_at`` on an
+            # end-to-end eval run (#2455 naive baseline) — pinned literally so a
+            # regression back to a UTC default shows here, not only three hours off
+            # in a live-model report. America/Toronto is still EDT (UTC-4) in October.
+            ("2026-10-18T22:00:00", datetime(2026, 10, 19, 2, 0, tzinfo=UTC)),
             # Words, read in the user's zone: 10pm where they are is 02:00 UTC next day.
             ("10pm today", datetime(2026, 8, 10, 2, 0, tzinfo=UTC)),
             ("tomorrow at 9am", datetime(2026, 8, 10, 13, 0, tzinfo=UTC)),
@@ -1464,12 +519,10 @@ class TestScheduleRoundTrip:
     )
     @pytest.mark.asyncio
     async def test_schedule_clause_round_trips(self, db, schedule, clause):
-        _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="round-trip",
             description="round trip",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
             schedule=schedule,
         )
         assert result.success
@@ -1508,12 +561,10 @@ class TestScheduleRoundTrip:
             timezone="America/Toronto",
             date_of_birth="1990-01-01",
         )
-        _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="morning-briefing",
             description="a morning briefing",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
             schedule="FREQ=DAILY;BYHOUR=9;BYMINUTE=30",
         )
         assert result.success
@@ -1692,15 +743,11 @@ class TestCreateAndList:
     async def test_create_surfaces_description_embed_degradation(self, db):
         """A transient description-embed failure still creates the collection, but the
         result NAMES the degraded routing anchor and leaves it NULL for the startup
-        backfill to re-heal (#1468) — a visible degradation, not a silent success.
-        (An exact-name skill match needs no resolution embed, so only the anchor
-        embed fails.)"""
-        _seed_watch_skill(db)
+        backfill to re-heal (#1468) — a visible degradation, not a silent success."""
         result = await CollectionCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
             name="notes",
             description="a running list of notes",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
             schedule="FREQ=HOURLY",
         )
         assert "Created" in result.message
@@ -1746,430 +793,29 @@ class TestCreateAndList:
         assert row.description_embedding is None  # stale anchor cleared, not kept
 
 
-# ── Re-render fixtures (#1620) ────────────────────────────────────────────────
-#
-# The watch skill re-taught (its extract instruction changed) — a refresh renders a
-# DIFFERENT prompt than the original, which is what the byte-identity acceptance
-# check keys on.  ``_RIVER_SKILL`` is a distinct skill with a different hole, for the
-# swap case.
-_RIVER_SKILL = "Track river flow"
-_RIVER_HOLE = "river"
+# ── Inert collections (#1629, #2455 naive baseline) ──────────────────────────
 
-
-def _watch_skill_steps_reteught() -> list[SkillStep]:
-    """The watch skill re-taught: the same {peak} hole + step-1→2 binding, but the
-    extract instruction is reworded, so a refresh re-renders to different text."""
-    steps = _watch_skill_steps()
-    steps[0].arguments["extract"] = "the summit elevation in metres"
-    return steps
-
-
-def _river_skill_steps() -> list[SkillStep]:
-    """A distinct skill: a {river} hole in the browse query and write key, step 1's
-    reading flowing into step 2 — the swap target.  Its write target is kept in the
-    LEGACY shape a skill taught before #1777/#1783 has after migrations 0101 and 0103
-    (a placeholder carrying the fixed fallback wording, marked for the attachment), so
-    the swap path is exercised on an upgraded old skill rather than a fresh one."""
-    return [
-        SkillStep(
-            ordinal=1,
-            source_ordinal=1,
-            tool="browse",
-            arguments={"queries": [_RIVER_HOLE], "extract": "the current flow rate"},
-            substitutions=[
-                SkillSubstitution(
-                    path=["queries", 0], kind=SkillSubKind.HOLE, parameter=_RIVER_HOLE
-                )
-            ],
-        ),
-        SkillStep(
-            ordinal=2,
-            source_ordinal=2,
-            tool="collection_write",
-            arguments={"collection": "flows", "entries": [{"key": _RIVER_HOLE, "content": "x"}]},
-            substitutions=[
-                SkillSubstitution(
-                    path=["collection"],
-                    kind=SkillSubKind.PLACEHOLDER,
-                    description=WRITE_TARGET_DESCRIPTION,
-                    attachment=True,
-                ),
-                SkillSubstitution(
-                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter=_RIVER_HOLE
-                ),
-                SkillSubstitution(
-                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
-                ),
-            ],
-        ),
-    ]
-
-
-async def _create_watch_collection(db, *, name: str = "cinder-elevation") -> None:
-    """Instantiate a collection from the watch skill through the real front door —
-    the honest starting point for the refresh/rebind/swap cases (skill provenance
-    stamped)."""
-    _seed_watch_skill(db)
-    result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-        name=name,
-        description="watch Cinder Peak's elevation",
-        skill=_SKILL_NAME,
-        params={"peak": "Cinder Peak"},
-        schedule="FREQ=HOURLY",
-    )
-    assert result.success
-
-
-# The refresh echo — the SAME skill re-taught, re-rendered from its CURRENT steps with
-# the CURRENT bindings; render-at-update mirrors the creation echo.
-_REFRESH_ECHO_LITERAL = (
-    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
-    "'cinder-elevation' and quietly store what it finds.\n"
-    "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
-    "  description: watch Cinder Peak's elevation\n"
-    "  skill: Watch elevation\n"
-    "  params: peak=Cinder Peak\n"
-    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-    "  notify: False\n"
-    "  expires: never\n"
-    "  steps: |\n"
-    "    1. browse(queries=['Cinder Peak'], extract='the summit elevation in metres')\n"
-    "    2. collection_write(collection='cinder-elevation', "
-    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-)
-
-# The rebind echo — SAME skill (original steps), NEW params bound and re-rendered.
-_REBIND_ECHO_LITERAL = (
-    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
-    "'cinder-elevation' and quietly store what it finds.\n"
-    "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
-    "  description: watch Cinder Peak's elevation\n"
-    "  skill: Watch elevation\n"
-    "  params: peak=Ashfall Ridge\n"
-    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-    "  notify: False\n"
-    "  expires: never\n"
-    "  steps: |\n"
-    "    1. browse(queries=['Ashfall Ridge'], extract='the elevation above sea level')\n"
-    "    2. collection_write(collection='cinder-elevation', "
-    "entries=[{'key': 'Ashfall Ridge', 'content': the value from step 1}])"
-)
-
-# The swap echo — a DIFFERENT skill rendered into the same collection, its write
-# retargeted to that collection (#1629 — the river skill demoed against 'flows').
-_SWAP_ECHO_LITERAL = (
-    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Track river flow' against "
-    "'cinder-elevation' and quietly store what it finds.\n"
-    "Re-rendered collection 'cinder-elevation' from skill 'Track river flow':\n"
-    "  description: watch Cinder Peak's elevation\n"
-    "  skill: Track river flow\n"
-    "  params: river=Silt River\n"
-    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-    "  notify: False\n"
-    "  expires: never\n"
-    "  steps: |\n"
-    "    1. browse(queries=['Silt River'], extract='the current flow rate')\n"
-    "    2. collection_write(collection='cinder-elevation', "
-    "entries=[{'key': 'Silt River', 'content': the value from step 1}])"
-)
-
-# The adopt echo — a legacy skill=NULL collection given a skill for the first time; its
-# hand-authored text is replaced by the render, writes retargeted to it (#1629).
-_ADOPT_ECHO_LITERAL = (
-    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
-    "'legacy-notes' and quietly store what it finds.\n"
-    "Re-rendered collection 'legacy-notes' from skill 'Watch elevation':\n"
-    "  description: a running list the user asked me to keep\n"
-    "  skill: Watch elevation\n"
-    "  params: peak=Cinder Peak\n"
-    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
-    "  notify: False\n"
-    "  expires: never\n"
-    "  steps: |\n"
-    "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(collection='legacy-notes', "
-    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-)
-
-
-class TestCollectionUpdateReinstantiation:
-    """Re-render a collection from a new/updated skill (#1620): refresh · rebind ·
-    swap · adopt, plus the untouched-prompt invariant.  Every re-render re-stamps the
-    skill provenance, records a mutation event with the run id, and echoes the newly
-    rendered program (render-at-update mirrors render-at-creation)."""
-
-    @pytest.mark.asyncio
-    async def test_refresh_rerenders_from_the_reteught_skill_byte_identical(self, db):
-        """Acceptance (#1620): create → re-teach (upsert REPLACES) → refresh → the
-        stored prompt equals render(current skill, current params) byte-for-byte, the
-        provenance is re-stamped, and the mutation event names the run + fields."""
-        await _create_watch_collection(db)
-        # Re-teach the SAME skill with reworded steps (upsert replaces the row).
-        _seed_watch_skill(db, steps=_watch_skill_steps_reteught())
-        result = await CollectionUpdateTool(
-            db, cast(Any, MockLlmClient()), run_id="run-refresh"
-        ).execute(name="cinder-elevation", skill=_SKILL_NAME)
-        assert result.success and result.mutated
-        assert result.message == _REFRESH_ECHO_LITERAL
-        # Byte-identity: the stored prompt IS the fresh render of the current skill,
-        # with its writes retargeted to this collection's own name (#1629).
-        current = db.skills.get(_SKILL_NAME)
-        expected = render_skill(
-            retarget_writes(steps_from_json(current.steps), "cinder-elevation"),
-            {"peak": "Cinder Peak"},
-        )
-        stored = db.memories.get("cinder-elevation")
-        assert stored.extraction_prompt == expected
-        # Provenance re-stamped (same skill, same bindings).
-        assert stored.skill_name == _SKILL_NAME
-        assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
-        # The re-render is recorded as a mutation with the run id + the changed fields.
-        rerender = next(
-            e for e in db.mutations.history("cinder-elevation", 5) if e.run_id == "run-refresh"
-        )
-        summary = mutation_change_summary(rerender)
-        assert "skill" in summary and "extraction_prompt" in summary
-
-    @pytest.mark.asyncio
-    async def test_rebind_rerenders_with_new_params_same_skill(self, db):
-        """New params, same skill: the prompt re-renders with the new bindings and the
-        stored params advance, while the skill name stays put."""
-        await _create_watch_collection(db)
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation", params={"peak": "Ashfall Ridge"}
-        )
-        assert result.success and result.mutated
-        assert result.message == _REBIND_ECHO_LITERAL
-        stored = db.memories.get("cinder-elevation")
-        assert stored.skill_name == _SKILL_NAME  # same skill
-        assert stored.skill_params == json.dumps({"peak": "Ashfall Ridge"})  # rebound
-
-    @pytest.mark.asyncio
-    async def test_swap_rerenders_from_a_different_skill(self, db):
-        """A different skill name renders that skill's steps into the collection and
-        re-homes its provenance onto the new skill."""
-        await _create_watch_collection(db)
-        _seed_watch_skill(
-            db,
-            name=_RIVER_SKILL,
-            intent="track a river's flow",
-            description="track a river's flow rate over time",
-            steps=_river_skill_steps(),
-            parameters=[SkillParameter(name=_RIVER_HOLE, required=True)],
-        )
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation", skill=_RIVER_SKILL, params={"river": "Silt River"}
-        )
-        assert result.success and result.mutated
-        assert result.message == _SWAP_ECHO_LITERAL
-        stored = db.memories.get("cinder-elevation")
-        assert stored.skill_name == _RIVER_SKILL
-        assert stored.skill_params == json.dumps({"river": "Silt River"})
-
-    @pytest.mark.asyncio
-    async def test_swap_without_binding_the_new_hole_is_refused_unchanged(self, db):
-        """Swapping to a skill whose required hole the (reused) params don't bind is
-        refused naming the hole — and nothing is mutated (prompt + provenance intact)."""
-        await _create_watch_collection(db)
-        _seed_watch_skill(
-            db,
-            name=_RIVER_SKILL,
-            intent="track a river's flow",
-            description="track a river's flow rate over time",
-            steps=_river_skill_steps(),
-            parameters=[SkillParameter(name=_RIVER_HOLE, required=True)],
-        )
-        before = db.memories.get("cinder-elevation").extraction_prompt
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation",
-            skill=_RIVER_SKILL,  # no params → 'river' unbound
-        )
-        assert result.success is False
-        # The whole refusal names the missing parameter + the params shape to supply.
-        assert result.message == render_unbound_parameters(
-            _RIVER_SKILL, [SkillParameter(name=_RIVER_HOLE, required=True)]
-        )
-        stored = db.memories.get("cinder-elevation")
-        assert stored.extraction_prompt == before  # nothing rendered
-        assert stored.skill_name == _SKILL_NAME  # provenance unchanged
-
-    @pytest.mark.asyncio
-    async def test_rebind_when_pinned_skill_is_gone_is_refused_unchanged(self, db):
-        """A params-only rebind whose pinned skill has since been deleted can't
-        re-render — refused actionably (re-teach it, or point at another skill via
-        skill=), nothing mutated.  (A skill= arg on a missing skill routes to the
-        NO_SKILL_FOUND elicitation instead; this is the current-skill branch.)"""
-        await _create_watch_collection(db)
-        with Session(db.engine) as session:  # the pinned skill vanishes under it
-            session.delete(session.get(Skill, _SKILL_NAME))
-            session.commit()
-        before = db.memories.get("cinder-elevation").extraction_prompt
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation",
-            params={"peak": "Ashfall Ridge"},  # no skill= → reuse current
-        )
-        assert result.success is False
-        assert result.message == _SKILL_GONE.format(skill=_SKILL_NAME)  # whole refusal
-        stored = db.memories.get("cinder-elevation")
-        assert stored.extraction_prompt == before  # unchanged
-        assert stored.skill_name == _SKILL_NAME  # provenance intact
-
-    @pytest.mark.asyncio
-    async def test_adopt_replaces_hand_authored_text_and_stamps_provenance(self, db):
-        """A legacy skill=NULL collection given a skill for the first time: its
-        hand-authored prompt is replaced by the render and its provenance is stamped."""
-        _seed_watch_skill(db)
-        hand_authored = "1. hand-written prose the user typed themselves, long enough to pass"
-        _seed_collection(
-            db,
-            name="legacy-notes",
-            description="a running list the user asked me to keep",
-            extraction_prompt=hand_authored,
-            schedule="FREQ=HOURLY",
-        )
-        assert db.memories.get("legacy-notes").skill_name is None  # legacy: no skill
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="legacy-notes", skill=_SKILL_NAME, params={"peak": "Cinder Peak"}
-        )
-        assert result.success and result.mutated
-        assert result.message == _ADOPT_ECHO_LITERAL
-        stored = db.memories.get("legacy-notes")
-        assert stored.extraction_prompt != hand_authored  # text replaced by the render
-        assert stored.skill_name == _SKILL_NAME  # provenance stamped
-        assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
-
-    @pytest.mark.asyncio
-    async def test_plain_update_never_touches_the_prompt_or_provenance(self, db):
-        """The pinned invariant: a plain collection_configure (no skill/params/prompt)
-        changes only the metadata it names — the routine and skill provenance are
-        untouched."""
-        original = "test fixture extraction prompt that is long enough"
-        _seed_collection(db, name="notes", extraction_prompt=original, notify=False)
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="notes", notify=True
-        )
-        assert result.success
-        stored = db.memories.get("notes")
-        assert stored.extraction_prompt == original  # untouched
-        assert stored.skill_name is None  # untouched
-        assert stored.skill_params is None  # untouched
-        assert stored.notify is True  # the named change landed
-
-    @pytest.mark.asyncio
-    async def test_extraction_prompt_is_not_a_model_argument(self, db):
-        """There is NO extraction_prompt argument on the model surface (#1570 —
-        prompts are only ever renders of demonstrated skills): passing one is an
-        unknown-parameter rejection through the arg envelope, and the stored
-        routine is untouched."""
-        await _create_watch_collection(db)
-        before = db.memories.get("cinder-elevation").extraction_prompt
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
-            name="cinder-elevation",
-            extraction_prompt="a full replacement body long enough to pass the length gate",
-        )
-        assert result.success is False
-        assert "extraction_prompt" in result.message
-        assert db.memories.get("cinder-elevation").extraction_prompt == before
-
-    @pytest.mark.asyncio
-    async def test_rebind_on_a_skill_less_collection_is_refused(self, db):
-        """params-only on a hand-authored (skill=NULL) collection has no holes to bind —
-        refused, pointing at skill= to adopt one; the prompt is untouched."""
-        original = "test fixture extraction prompt that is long enough"
-        _seed_collection(db, name="legacy", extraction_prompt=original)
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="legacy", params={"peak": "Cinder Peak"}
-        )
-        assert result.success is False
-        assert result.message == _REBIND_NO_SKILL.format(name="legacy")  # whole refusal
-        assert db.memories.get("legacy").extraction_prompt == original
-
-
-# ── Inert collections + the two-step teach bootstrap (#1629) ──────────────────
-
-# The skill-less creation echo — storage only, no job, and the honest next steps.
+# The prompt-less creation echo — storage only, no job, and the honest next step.
 _INERT_ECHO_LITERAL = (
     "Set up collection 'deals-watch' — storage only, no job yet:\n"
     "  description: track the trail-runner shoe deals\n"
-    "  status: inert (no skill attached)\n"
+    "  status: inert (no prompt attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until it has a "
-    "skill. Next: run one round into it — read the source, then collection_write what "
-    "you actually find into 'deals-watch'; what you demonstrate is learned automatically "
-    "as a skill from that round. If you haven't demonstrated it yet, reply and ask the "
-    "user for it in one message — don't guess."
+    "prompt. Attach one with collection_configure(collection='deals-watch', "
+    "prompt=<what the job's cycles should do>, schedule=<recurrence rule>)."
 )
-
-# The demo run's utterance — the {peak} value ('Meridian Trail 3') appears verbatim, so it
-# distills into a hole; the write target ('deals-watch') does not, so it stays a constant
-# the render then RETARGETS to whatever collection the skill is applied to.
-_BOOTSTRAP_UTTERANCE = "watch the Meridian Trail 3 shoe and save its price"
-_BOOTSTRAP_PRICE = "$149"
-
-
-def _log_demo_run(db, run_id: str, *, write_target: str) -> None:
-    """Log one clean chat run (browse → collection_write into ``write_target``) as a
-    single promptlog row the run-end skill extractor can distill: the triggering user
-    turn, the two batched tool calls in order (→ ordinals), each call's framed result,
-    and its STRUCTURAL success stamp (certified-by-execution)."""
-    browse_result = (
-        f"You used `browse` and here's the result: (browse result)\nEXTRACTED: {_BOOTSTRAP_PRICE}"
-    )
-    calls = [
-        (
-            "browse",
-            {"queries": ["Meridian Trail 3"], "extract": "the current price"},
-            browse_result,
-            True,
-        ),
-        (
-            "collection_write",
-            {
-                "collection": write_target,
-                "entries": [{"key": "Meridian Trail 3", "content": _BOOTSTRAP_PRICE}],
-            },
-            f"You saved an entry to {write_target}: (collection_write result)\n"
-            f"Wrote 1 entry to '{write_target}': Meridian Trail 3.",
-            True,
-        ),
-    ]
-    tool_calls = []
-    tool_turns = []
-    for index, (name, args, result, success) in enumerate(calls, start=1):
-        call_id = f"c{index}"
-        tool_calls.append(
-            {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
-        )
-        tool_turns.append(
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": result,
-                PennyConstants.TOOL_RESULT_SUCCESS_KEY: success,
-            }
-        )
-    user_turn = {
-        "role": "user",
-        "content": f"live context{PennyConstants.SECTION_SEPARATOR}{_BOOTSTRAP_UTTERANCE}",
-    }
-    db.messages.log_prompt(
-        model="m",
-        messages=[user_turn, *tool_turns],
-        response={"choices": [{"message": {"tool_calls": tool_calls}}]},
-        run_id=run_id,
-        agent_name=PennyConstants.CHAT_AGENT_NAME,
-    )
 
 
 class TestInertCollections:
-    """Skill-less create yields an INERT storage collection (#1629): no
+    """Prompt-less create yields an INERT storage collection (#1629/#2455): no
     extraction_prompt / cadence / notify, never dispatches, metadata-visible,
     idempotency still applies — and a job-shaped arg alongside is refused."""
 
     @pytest.mark.asyncio
-    async def test_skill_less_create_is_inert_storage_only(self, db):
-        """A create with no skill lands exactly one storage-only row — no
-        extraction_prompt, cadence, notify, or skill provenance — and the echo is
-        honest about being inert (whole render)."""
+    async def test_prompt_less_create_is_inert_storage_only(self, db):
+        """A create with no prompt lands exactly one storage-only row — no
+        extraction_prompt, cadence, or notify — and the echo is honest about being
+        inert (whole render)."""
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
@@ -2180,7 +826,6 @@ class TestInertCollections:
         assert row.extraction_prompt is None  # no job
         assert row.schedule is None  # no cadence
         assert row.notify is False  # silent
-        assert row.skill_name is None  # no skill attached
         assert row.archived is False  # a live, usable container
 
     @pytest.mark.asyncio
@@ -2191,7 +836,7 @@ class TestInertCollections:
             name="deals-watch", description="track the trail-runner shoe deals"
         )
         result = await MemoryMetadataTool(db).execute(memory="deals-watch")
-        assert "steps: none" in result.message
+        assert "prompt: none" in result.message
         assert "description: track the trail-runner shoe deals" in result.message
 
     @pytest.mark.asyncio
@@ -2251,12 +896,10 @@ class TestBlankOptionalArgsAreRefused:
     async def test_blank_expires_at_is_refused_naming_the_field_and_the_form(self, db):
         """The observed case, whole render: the drop is named, the remedy is both halves
         (omit it, or pass the accepted form), and no collection is created."""
-        _seed_watch_skill(db)
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
             collection="deals-watch",
             description="track the trail-runner shoe deals",
-            skill=_SKILL_NAME,
-            parameters={"peak": "trail-runner shoes"},
+            prompt="Read the trail-runner shoe deals page and note what's on sale.",
             schedule="FREQ=HOURLY",
             expires_at="",
         )
@@ -2374,327 +1017,6 @@ class TestBlankOptionalArgsAreRefused:
         assert row.expires_at is None
 
 
-class TestWriteRetargetAtApply:
-    """RETARGET-AT-APPLY (#1629/#1783): applying a routine to a collection binds every
-    ATTACHMENT-MARKED leaf to that collection's own name — the demo target the skill
-    baked in is overwritten at the render seam, so the rendered program never lies
-    about the collection it acts on."""
-
-    @pytest.mark.asyncio
-    async def test_skill_demoed_against_a_renders_writes_to_b_on_create(self, db):
-        """A skill whose demo wrote into collection A ('elevations'), instantiated into
-        collection B, renders its write to B — byte-pinned."""
-        _seed_watch_skill(db)  # its write step targets 'elevations' (the demo constant)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="target-b",
-            description="watch a different peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-        )
-        assert result.success
-        stored = db.memories.get("target-b")
-        assert stored.extraction_prompt == (
-            "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "2. collection_write(collection='target-b', "
-            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-        )
-
-    @pytest.mark.asyncio
-    async def test_skill_demoed_against_a_renders_writes_to_b_on_adopt(self, db):
-        """Adopting a skill (demoed against A) onto a legacy collection B retargets its
-        write to B — byte-pinned, proving both apply paths retarget."""
-        _seed_watch_skill(db)  # write step targets 'elevations'
-        _seed_collection(
-            db,
-            name="target-b",
-            extraction_prompt="hand-authored prose long enough to pass the gate",
-        )
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="target-b", skill=_SKILL_NAME, params={"peak": "Cinder Peak"}
-        )
-        assert result.success
-        stored = db.memories.get("target-b")
-        assert stored.extraction_prompt == (
-            "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "2. collection_write(collection='target-b', "
-            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-        )
-
-
-# ── The runtime join at the instantiation seam (#1907) ────────────────────────
-#
-# The post-#1828 shape a taught routine really has: the recipe is all placeholders
-# saying what belongs in each spot, and the INTERFACE is the framer's — each parameter
-# carrying the value the round demonstrated it with.  That value is the only thing the
-# two draws share, and it is what says which leaf a parameter fills.
-
-_TIMETABLE_SKILL = "check_timetable"
-_TAUGHT_URL = "https://harbour-ferry.example/timetable"
-_TAUGHT_LINE = "the first sailing"
-_CONFIGURED_URL = "https://northpier.example/departures"
-_CONFIGURED_LINE = "the dawn sailing"
-_TIMETABLE_PARAMS = {"url": _CONFIGURED_URL, "line": _CONFIGURED_LINE}
-
-
-def _timetable_steps(url: str, line: str, key_description: str) -> list[SkillStep]:
-    """One demonstrated round as extraction stores it: browse the page, write what it
-    said into the round's own container.  Every spot is a placeholder; the destination
-    additionally carries the attachment mark."""
-    return [
-        SkillStep(
-            ordinal=1,
-            source_ordinal=1,
-            tool="browse",
-            arguments={"queries": [url], "extract": line},
-            substitutions=[
-                SkillSubstitution(
-                    path=["queries", 0],
-                    kind=SkillSubKind.PLACEHOLDER,
-                    description="the url of the timetable page to browse each run",
-                ),
-                SkillSubstitution(
-                    path=["extract"],
-                    kind=SkillSubKind.PLACEHOLDER,
-                    description="the text or line to look for on that page",
-                ),
-            ],
-        ),
-        SkillStep(
-            ordinal=2,
-            source_ordinal=2,
-            tool="collection_write",
-            arguments={
-                "collection": "sailings",
-                "entries": [{"key": "first sailing", "content": "07:10"}],
-            },
-            substitutions=[
-                SkillSubstitution(
-                    path=["collection"],
-                    kind=SkillSubKind.PLACEHOLDER,
-                    description=WRITE_TARGET_DESCRIPTION,
-                    attachment=True,
-                ),
-                SkillSubstitution(
-                    path=["entries", 0, "key"],
-                    kind=SkillSubKind.PLACEHOLDER,
-                    description=key_description,
-                ),
-                SkillSubstitution(
-                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
-                ),
-            ],
-        ),
-    ]
-
-
-def seed_timetable_skill(
-    db,
-    *,
-    url: str = _TAUGHT_URL,
-    line: str = _TAUGHT_LINE,
-    key_description: str = "the key the extracted value is stored under",
-    parameters: list[SkillParameter] | None = None,
-) -> str:
-    """Upsert the fictional timetable routine, built through the SAME
-    ``_interface_parameters`` production path that carries a framed parameter's
-    demonstrated value onto the stored interface."""
-    signature = SkillSignature(
-        name=_TIMETABLE_SKILL,
-        description="read a timetable page and record a sailing time",
-        parameters=(
-            FramedParameter(name="url", description="the timetable page to read", value=url),
-            FramedParameter(name="line", description="which sailing to look for", value=line),
-        ),
-    )
-    draft = SkillDraft(
-        name=_TIMETABLE_SKILL,
-        intent=signature.description,
-        description=signature.description,
-        steps=_timetable_steps(url, line, key_description),
-        parameters=parameters if parameters is not None else _interface_parameters(signature, []),
-        source_run_id="run-teach",
-    )
-    db.skills.upsert(
-        draft, author="chat", description_embedding=_single_hash_vec(draft.description)
-    )
-    return _TIMETABLE_SKILL
-
-
-# The joined program — the page the collection actually fetches and the thing it
-# actually looks for, read as themselves.  The entry key stays a placeholder (a per-run
-# value, not a term of the job) and the write target is the attachment's.
-_JOINED_PROGRAM = (
-    "1. browse(queries=['https://northpier.example/departures'], extract='the dawn sailing')\n"
-    "2. collection_write(collection='ferry-departures', "
-    "entries=[{'key': {the key the extracted value is stored under}, "
-    "'content': the value from step 1}])"
-)
-
-
-class TestRuntimeParameterJoin:
-    """The runtime join (#1907): a collection's bound values land in the program's own
-    leaves at the instantiation seam, so the stored ``extraction_prompt`` the collector
-    runs names the page it fetches instead of describing one."""
-
-    @pytest.mark.asyncio
-    async def test_configuring_a_collection_bakes_its_values_into_the_program(self, db):
-        """The whole stored program, byte-pinned.  Before the join every leaf read as the
-        labeller's description — a collector was told to browse "the url of the timetable
-        page to browse each run" and nothing it could read named the page at all."""
-        seed_timetable_skill(db)
-        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="ferry-departures",
-            description="the dawn sailing on the north pier timetable",
-            skill=_TIMETABLE_SKILL,
-            parameters=_TIMETABLE_PARAMS,
-            schedule="FREQ=HOURLY",
-        )
-
-        assert result.success and result.mutated
-        stored = db.memories.get("ferry-departures")
-        assert stored.extraction_prompt == _JOINED_PROGRAM
-        # The demonstration's own page and line are gone from the program: a collector
-        # re-running this routine can no longer fetch the page the round happened to use.
-        assert _TAUGHT_URL not in stored.extraction_prompt
-
-    @pytest.mark.asyncio
-    async def test_re_teaching_the_routine_re_joins_against_its_new_leaves(self, db):
-        """A replaced skill re-renders (#1620/#1827), and the join is part of that render
-        — so the re-taught routine's OWN leaves are what the collection's values land in.
-        The second demonstration used a different page and a different line, and the
-        stored bindings still find their sites because the join reads each version's own
-        demonstrated values rather than a link frozen at first instantiation."""
-        seed_timetable_skill(db)
-        await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="ferry-departures",
-            description="the dawn sailing on the north pier timetable",
-            skill=_TIMETABLE_SKILL,
-            parameters=_TIMETABLE_PARAMS,
-            schedule="FREQ=HOURLY",
-        )
-
-        seed_timetable_skill(
-            db,
-            url="https://ridge-trails.example/summit-loop",
-            line="the trail status",
-            key_description="the key this reading is filed under",
-        )
-        refreshed = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="ferry-departures", skill=_TIMETABLE_SKILL
-        )
-
-        assert refreshed.success
-        assert db.memories.get("ferry-departures").extraction_prompt == (
-            "1. browse(queries=['https://northpier.example/departures'], "
-            "extract='the dawn sailing')\n"
-            "2. collection_write(collection='ferry-departures', "
-            "entries=[{'key': {the key this reading is filed under}, "
-            "'content': the value from step 1}])"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_routine_that_recorded_no_values_renders_as_it_always_did(self, db):
-        """A routine taught before the join, or one whose framing failed, declares
-        parameters with no demonstrated value — nothing can say which leaf each fills, so
-        the program keeps saying what belongs in each spot rather than guessing a site."""
-        seed_timetable_skill(
-            db,
-            parameters=[
-                SkillParameter(name="url", description="the timetable page to read"),
-                SkillParameter(name="line", description="which sailing to look for"),
-            ],
-        )
-        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="ferry-departures",
-            description="the dawn sailing on the north pier timetable",
-            skill=_TIMETABLE_SKILL,
-            parameters=_TIMETABLE_PARAMS,
-            schedule="FREQ=HOURLY",
-        )
-
-        assert result.success
-        assert db.memories.get("ferry-departures").extraction_prompt == (
-            "1. browse(queries=[{the url of the timetable page to browse each run}], "
-            "extract={the text or line to look for on that page})\n"
-            "2. collection_write(collection='ferry-departures', "
-            "entries=[{'key': {the key the extracted value is stored under}, "
-            "'content': the value from step 1}])"
-        )
-
-
-class TestTwoStepTeachBootstrap:
-    """The whole #1629 bootstrap end-to-end through real tool calls (mocked LLM):
-    create inert → demonstrate a write into it → skill_create over that run → adopt
-    the skill with a schedule + notify → the collection runs the rendered routine."""
-
-    @pytest.mark.asyncio
-    async def test_create_inert_teach_adopt_makes_it_run(self, db):
-        # 1. Set up the inert container (real tool call).
-        created = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", description="track the trail-runner shoe deals"
-        )
-        assert created.success
-        assert db.memories.get("deals-watch").extraction_prompt is None
-
-        # 2. Demonstrate the routine once, writing INTO the inert collection (a logged run).
-        _log_demo_run(db, "run-demo", write_target="deals-watch")
-
-        # 3. The routine is learned AUTOMATICALLY at run end — the extractor distils
-        #    run-demo into a skill (there is no skill_create tool anymore, #1658).  The
-        #    demonstration is a LEARN turn, which is the only turn extraction runs on
-        #    (#1850).  With a bare model client the generic-naming micro-context (#1665)
-        #    produces no NAME:/DESCRIPTION: tags, so the name falls back to a
-        #    deterministic slug of the demo's triggering message.
-        client = cast(Any, MockLlmClient())
-        extraction = await SkillExtractor(
-            db,
-            client,
-            client,
-            agent_name="chat",
-            collector_tool_surface=collector_tool_surface(db, client),
-        ).extract("run-demo", state=ConversationState.LEARN)
-        assert isinstance(extraction, SkillExtracted)
-        taught_name = extraction.skill.name
-        assert taught_name == "watch-the-meridian-trail-3-shoe"
-        assert db.skills.get(taught_name) is not None
-        # The learned skill hardcodes NOTHING from the round that taught it (#1777):
-        # the collection it was demonstrated against is absent from its recipe, which
-        # names what belongs in the write target instead.  This is the render the model
-        # fires from ambiently, where no instantiation retargets anything.
-        recipe = render_skill(steps_from_json(db.skills.get(taught_name).steps))
-        assert "deals-watch" not in recipe
-        assert f"collection_write(collection={{{WRITE_TARGET_DESCRIPTION}}}" in recipe
-
-        # 4. Adopt the skill onto the inert collection with a schedule + notify.
-        adopted = await CollectionUpdateTool(
-            db, cast(Any, MockLlmClient()), run_id="run-adopt"
-        ).execute(
-            name="deals-watch",
-            skill=taught_name,
-            # Every distilled hole is required (#1659): the browse query AND the
-            # extract instruction must both be bound — no silent default.
-            params={"queries": "Meridian Trail 3", "extract": "the current price"},
-            schedule="FREQ=HOURLY",
-            notify=True,
-        )
-        assert adopted.success and adopted.mutated
-
-        # The stored prompt IS the retargeted render of the taught skill; the collection
-        # now has a routine + cadence + notify, so it will dispatch (was inert before).
-        skill = db.skills.get(taught_name)
-        expected = render_skill(
-            retarget_writes(steps_from_json(skill.steps), "deals-watch"),
-            {"queries": "Meridian Trail 3", "extract": "the current price"},
-        )
-        stored = db.memories.get("deals-watch")
-        # Byte-identity: the stored prompt IS the retargeted render (write → deals-watch).
-        assert stored.extraction_prompt == expected
-        assert stored.skill_name == taught_name
-        assert stored.schedule == "FREQ=HOURLY"
-        assert stored.notify is True
-
-
 class TestCollectionUpdateScheduleAtApply:
     """Schedule + notify are apply-time properties on collection_configure (#1629/#1857: one
     RRULE ``schedule``, plus ``expires_at`` and ``notify``) — recorded in the mutation
@@ -2702,9 +1024,8 @@ class TestCollectionUpdateScheduleAtApply:
 
     @pytest.mark.asyncio
     async def test_adopt_applies_interval_notify_recorded_in_mutation(self, db):
-        """Adopting a skill with a schedule + notify sets both and records them in the
+        """Adopting a prompt with a schedule + notify sets both and records them in the
         mutation event's changed fields alongside the re-render."""
-        _seed_watch_skill(db)
         _seed_collection(
             db,
             name="legacy",
@@ -2715,8 +1036,7 @@ class TestCollectionUpdateScheduleAtApply:
             db, cast(Any, MockLlmClient()), run_id="run-adopt"
         ).execute(
             name="legacy",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
             schedule="FREQ=HOURLY;INTERVAL=2",
             notify=True,
         )
@@ -2726,7 +1046,7 @@ class TestCollectionUpdateScheduleAtApply:
         assert stored.notify is True
         event = next(e for e in db.mutations.history("legacy", 5) if e.run_id == "run-adopt")
         summary = mutation_change_summary(event)
-        assert "schedule" in summary and "notify" in summary and "skill" in summary
+        assert "schedule" in summary and "notify" in summary and "extraction_prompt" in summary
 
     @pytest.mark.asyncio
     async def test_schedule_replaces_the_whole_schedule(self, db):
@@ -2805,33 +1125,28 @@ class TestCollectionUpdateScheduleAtApply:
 
     @pytest.mark.asyncio
     async def test_adopt_without_schedule_warns_it_wont_run(self, db):
-        """Adopting a skill onto an inert collection with NO schedule leaves it with
+        """Adopting a prompt onto an inert collection with NO schedule leaves it with
         nothing to run on — the echo renders ``schedule: none`` (never a half-formed
         clause, #1666) and carries a visible no-schedule note (#1629), not a silent
         won't-run.  Whole render, so the honest schedule line and the tail note are both
         pinned."""
-        _seed_watch_skill(db)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", skill=_SKILL_NAME, params={"peak": "Cinder Peak"}
+            name="deals-watch",
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
         )
         assert result.success
         expected_echo = (
-            "I'll run 'Watch elevation' against 'deals-watch' and quietly store what it "
-            "finds.\n"
-            "Re-rendered collection 'deals-watch' from skill 'Watch elevation':\n"
+            "I'll run against 'deals-watch' and quietly store what it finds.\n"
+            "Re-configured collection 'deals-watch':\n"
             "  description: track the trail-runner shoe deals\n"
-            "  skill: Watch elevation\n"
-            "  params: peak=Cinder Peak\n"
             "  schedule: none\n"
             "  notify: False\n"
             "  expires: never\n"
-            "  steps: |\n"
-            "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "    2. collection_write(collection='deals-watch', "
-            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+            "  prompt: |\n"
+            "    Check Cinder Peak's elevation above sea level and save it."
         )
         assert result.message == expected_echo + _NO_SCHEDULE_NOTE.format(name="deals-watch")
         assert db.memories.get("deals-watch").schedule is None
@@ -4431,7 +2746,6 @@ class TestFactory:
         "run_list",
         "run_get",
         "find",
-        "skill_get",
         # Lifecycle (shape)
         "collection_configure",
         "collection_archive",
@@ -4541,30 +2855,14 @@ class TestRegistryProvenanceAndLifecycle:
     """
 
     async def _create(self, db, name, *, created_by_run_id=None, notify=False):
-        # Instantiate through the real front door: a hole-less "gather" skill renders
-        # into the collection's prompt, and the provenance (creating run) is stamped.
-        _seed_watch_skill(
-            db,
-            name="gather-items",
-            intent="gather fresh items on a topic",
-            description="gather fresh items on a topic",
-            parameters=[],
-            steps=[
-                SkillStep(
-                    ordinal=1,
-                    source_ordinal=1,
-                    tool="browse",
-                    arguments={"queries": ["fresh items"], "extract": "the newest items"},
-                    substitutions=[],
-                )
-            ],
-        )
+        # Instantiate through the real front door: a plain prompt lands straight
+        # into the collection, and the provenance (creating run) is stamped.
         return await CollectionCreateTool(
             db, cast(Any, MockLlmClient()), created_by_run_id=created_by_run_id
         ).execute(
             name=name,
             description=f"the user's goal for {name}",
-            skill="gather-items",
+            prompt="Browse for fresh items on the topic and save the newest ones.",
             schedule="FREQ=HOURLY",
             notify=notify,
         )
@@ -4686,181 +2984,6 @@ class TestRegistryProvenanceAndLifecycle:
         assert "schedule: every hour (rule: `FREQ=HOURLY`)" in plain.message
 
 
-class TestCollectionSkillProvenanceRender:
-    """Collection→skill provenance (#1603): a skill-instantiated collection records
-    the skill it was rendered from + the params bound into its render, and
-    ``memory_get`` names them — ``from skill: <name> (<param>=<value>)``.
-    The skill name is a live anchor (``memory_get`` renders the routine's own
-    parameters block right below it, #2287), and the bound params are the reachable
-    input a rebind/re-render consumes.  A hand-authored / seeded collection
-    (``skill_name`` NULL) renders EXACTLY as before — the unmarked case is the quiet
-    default, pinned byte-for-byte."""
-
-    @pytest.mark.asyncio
-    async def test_metadata_names_instantiating_skill_and_params(self, db):
-        """``memory_get`` names the skill + bound params, positioned ahead of the
-        extraction prompt it produced — so "which skill made this, and with what?" is
-        the same call that reads the collection.  It also renders the routine's own
-        ``parameters:`` block (#2287) right below that line, before the recipe: each
-        declared parameter's required/optional marking, its description, and the value
-        THIS job is bound to — or an honest gap for one nothing was supplied for — so
-        describing a job is this one call rather than a second skill-read hop."""
-        _seed_watch_skill(
-            db,
-            parameters=[
-                SkillParameter(name="peak", required=True, description="the peak to track"),
-                SkillParameter(
-                    name="note", required=False, description="an optional note to attach"
-                ),
-            ],
-        )
-        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation",
-            description="watch Cinder Peak's elevation",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-        )
-        result = await MemoryMetadataTool(db).execute(memory="cinder-elevation")
-        assert "from skill: Watch elevation (peak=Cinder Peak)" in result.message
-        assert (
-            "parameters:\n"
-            "  - peak (required): the peak to track — bound to: Cinder Peak\n"
-            "  - note (optional): an optional note to attach — nothing was supplied "
-            "for this job"
-        ) in result.message
-        # Provenance, then the routine's own parameters, then the recipe it produced —
-        # in that order.
-        assert (
-            result.message.index("from skill:")
-            < result.message.index("parameters:")
-            < result.message.index("steps:")
-        )
-
-    @pytest.mark.asyncio
-    async def test_parameters_block_omitted_when_the_skill_is_gone(self, db):
-        """A ``skill_name`` the registry no longer holds (#2287): the provenance line
-        still names it, so the parameters block simply has nothing further to add
-        rather than asserting a routine's shape from nothing."""
-        _seed_watch_skill(db)
-        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-elevation",
-            description="watch Cinder Peak's elevation",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-        )
-        db.skills.delete(_SKILL_NAME)
-        result = await MemoryMetadataTool(db).execute(memory="cinder-elevation")
-        assert "from skill: Watch elevation (peak=Cinder Peak)" in result.message
-        assert "parameters:" not in result.message
-
-    @pytest.mark.asyncio
-    async def test_hand_authored_collection_renders_byte_identical(self, db):
-        """A collection with no skill origin (``skill_name`` NULL — the seeded /
-        hand-authored case) renders with NO ``from skill:`` line, byte-for-byte the
-        unmarked pre-provenance shape."""
-        _seed_collection(
-            db,
-            name="plain-watch",
-            description="plain subject",
-            extraction_prompt=(
-                "1. browse(queries=['peaks']).\n2. collection_write(collection='peaks')."
-            ),
-        )
-        row = db.memories.get("plain-watch")
-        assert row.skill_name is None and row.skill_params is None
-        metadata = await MemoryMetadataTool(db).execute(memory="plain-watch")
-        assert "from skill:" not in metadata.message
-        # No routine at all (#2287) — the new parameters block is absent too, so a
-        # hand-authored collection's metadata render is unchanged.
-        assert "parameters:" not in metadata.message
-
-    @pytest.mark.asyncio
-    async def test_holeless_skill_renders_skill_name_only(self, db):
-        """A skill with no holes binds no params, so the render names just the skill —
-        ``from skill: <name>`` with no parenthesised params."""
-        _seed_watch_skill(
-            db,
-            name="daily-digest",
-            intent="gather the day's fresh items",
-            description="gather the day's fresh items",
-            parameters=[],
-            steps=[
-                SkillStep(
-                    ordinal=1,
-                    source_ordinal=1,
-                    tool="browse",
-                    arguments={"queries": ["fresh items"], "extract": "the newest items"},
-                    substitutions=[],
-                )
-            ],
-        )
-        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="morning-digest",
-            description="the day's fresh items",
-            skill="daily-digest",
-            schedule="FREQ=HOURLY",
-        )
-        result = await MemoryMetadataTool(db).execute(memory="morning-digest")
-        assert "from skill: daily-digest\n" in result.message
-        # No holes bound → no parenthesised params.
-        assert "from skill: daily-digest (" not in result.message
-
-
-# ── skill_get: read one skill by name (#2305) ─────────────────────────────────
-
-
-class TestSkillGet:
-    """``skill_get`` reads one skill's parameters and steps by its exact name —
-    the read for when the name is already known and a job isn't running it."""
-
-    @pytest.mark.asyncio
-    async def test_reads_one_skill_by_name(self, db, mock_llm):
-        """A known name returns the skill's name, what it's for, its bare
-        ``parameters:`` block (no bound values), and its numbered ``steps:``."""
-        _seed_watch_skill(db)
-        result = await SkillGetTool(db, _make_llm_client(mock_llm)).execute(skill=_SKILL_NAME)
-        assert result.success
-        assert result.message == (
-            f"skill '{_SKILL_NAME}'\n"
-            "what it's for: watch a peak's elevation and save it\n"
-            "parameters:\n"
-            f"  - {_SKILL_HOLE} (required)\n"
-            "steps:\n"
-            "1. browse(queries=[{peak}], extract='the elevation above sea level')\n"
-            "2. collection_write(collection={the collection this is set up on}, "
-            "entries=[{'key': {peak}, 'content': the value from step 1}])"
-        )
-
-    @pytest.mark.asyncio
-    async def test_unknown_name_leads_with_the_nearest_typo_match(self, db, mock_llm):
-        """A near-miss name gets the string-leg did-you-mean, leading the refusal,
-        then points at where every skill is already listed (#2305) — no mention
-        of creating a skill, since nothing here does that directly."""
-        _seed_watch_skill(db)
-        result = await SkillGetTool(db, _make_llm_client(mock_llm)).execute(skill="Watch elevatoin")
-        assert not result.success
-        assert result.message == (
-            f"Skill 'Watch elevatoin' not found — did you mean '{_SKILL_NAME}'? "
-            "Check the name — your state already lists every skill you have."
-        )
-
-    @pytest.mark.asyncio
-    async def test_unrelated_name_gets_no_suggestion(self, db, mock_llm):
-        """Nothing close by spelling or meaning → the plain refusal, no empty
-        "did you mean" artifact."""
-        _seed_watch_skill(db)
-        result = await SkillGetTool(db, _make_llm_client(mock_llm)).execute(
-            skill="completely-unrelated-xyz"
-        )
-        assert not result.success
-        assert result.message == (
-            "Skill 'completely-unrelated-xyz' not found. Check the name — your "
-            "state already lists every skill you have."
-        )
-
-
 # ── find: resolve-by-meaning, identity fused with affordances (#1558, #1640) ──
 
 _FIND_VOCAB = {
@@ -4908,59 +3031,35 @@ def _axis_client(mock_llm) -> LlmClient:
 
 
 async def _create_collection(db, client: LlmClient, name: str, description: str) -> None:
-    """Instantiate a collection whose intent/description anchor is ``description``
-    (what ``find`` resolves over).  A hole-less skill supplies the rendered
-    prompt; going through ``CollectionCreateTool`` rather than the ``collection_configure``
-    front door skips the same-job check (#1775), so these tests can stand up several
-    deliberately-similar collections.  The helper skill is seeded
-    UNEMBEDDED (``embed=False``) — it's resolved by exact name, and an anchor in
-    the hash geometry would collide with the axis geometry these tests pin."""
-    _seed_watch_skill(
-        db,
-        name="find-skill",
-        intent="find skill",
-        description="find skill",
-        parameters=[],
-        steps=[
-            SkillStep(
-                ordinal=1,
-                source_ordinal=1,
-                tool="browse",
-                arguments={"queries": ["items"], "extract": "the items"},
-                substitutions=[],
-            )
-        ],
-        embed=False,
-    )
+    """Instantiate a collection whose description anchor is ``description`` (what
+    ``find`` resolves over), via a plain prompt (#2455 naive baseline) — going
+    through ``CollectionCreateTool`` rather than the ``collection_configure`` front
+    door skips the same-job check (#1775), so these tests can stand up several
+    deliberately-similar collections."""
     await CollectionCreateTool(db, client).execute(
         name=name,
         description=description,
-        skill="find-skill",
+        prompt="Browse for items and note what's found.",
         schedule="FREQ=HOURLY",
     )
 
 
 class TestFind:
-    """Resolve-by-meaning over the whole registry + taught skills (the ``skill``
-    table, the sole skills store — #1624), fusing exact identity with how to
-    address it (#1558).  The result is model-facing text, so each mode is
+    """Resolve-by-meaning over the whole registry (collections and logs),
+    fusing exact identity with how to address it (#1558).  The result is
+    model-facing text, so each mode is
     asserted as a whole render."""
 
     _KITCHEN_SINK = (
-        'Found 4 things matching "aurora beacon cascade", best first:\n'
+        'Found 3 things matching "aurora beacon cascade", best first:\n'
         "1. aurora-watch — active collection: aurora beacon cascade\n"
         "   how to use it: read it with collection_list('aurora-watch'), "
         "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
         "with collection_archive('aurora-watch')\n"
-        "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
-        "   how to use it: read it with skill_get(skill='escalate-aurora'); set it "
-        "running with collection_configure(collection=<a name for the job>, "
-        "skill='escalate-aurora', parameters=…); to change it, demonstrate it again in "
-        "chat — I relearn it automatically, replacing this one\n"
-        "3. aurora-archive — archived collection: aurora beacon delta\n"
+        "2. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
         "entries stay readable with collection_list('aurora-archive')\n"
-        "4. aurora-log — active log: aurora echo foxtrot\n"
+        "3. aurora-log — active log: aurora echo foxtrot\n"
         "   how to use it: read it with log_read('aurora-log')\n"
         "Ranked by closeness — if one is what you meant, use its addressing above; "
         "otherwise narrow by its exact name."
@@ -4969,26 +3068,13 @@ class TestFind:
     @staticmethod
     async def _seed_world(db, client: LlmClient) -> None:
         """One object of every renderable family, all sharing the query's meaning:
-        an active collection, an archived collection, a log, and a taught skill
-        (seeded straight into the ``skill`` table with an axis-geometry anchor)."""
+        an active collection, an archived collection, and a log."""
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
         await CollectionArchiveTool(db).execute(collection="aurora-archive")
         await LogCreateTool(db, client).execute(
             log="aurora-log",
             description="aurora echo foxtrot",
-        )
-        db.skills.upsert(
-            SkillDraft(
-                name="escalate-aurora",
-                intent="aurora beacon cascade gamma",
-                description="aurora beacon cascade gamma",
-                steps=[],
-                parameters=[],
-                source_run_id="run-teach",
-            ),
-            author="chat",
-            description_embedding=_axis_vec("aurora beacon cascade gamma"),
         )
 
     @pytest.mark.asyncio
@@ -5000,51 +3086,6 @@ class TestFind:
         result = await FindTool(db, client).execute(query="aurora beacon cascade")
         assert result.success
         assert result.message == self._KITCHEN_SINK
-
-    @pytest.mark.asyncio
-    async def test_skill_hit_addresses_a_read_with_skill_get(self, db, mock_llm):
-        """A taught-skill hit's addressing leads with ``skill_get`` (#2305) — the
-        one way to read its parameters and steps — before how to set it running
-        and how to change it; the hit itself carries no inline block."""
-        client = _axis_client(mock_llm)
-        db.skills.upsert(
-            SkillDraft(
-                name=_SKILL_NAME,
-                intent="watch a peak's elevation and save it",
-                description="aurora beacon cascade gamma",
-                steps=_watch_skill_steps(),
-                parameters=[
-                    SkillParameter(name=_SKILL_HOLE, required=True, description="the peak to check")
-                ],
-                source_run_id="run-teach",
-            ),
-            author="chat",
-            description_embedding=_axis_vec("aurora beacon cascade gamma"),
-        )
-        result = await FindTool(db, client).execute(query="aurora beacon cascade gamma")
-        assert result.message == (
-            'Found 1 thing matching "aurora beacon cascade gamma":\n'
-            f"1. {_SKILL_NAME} — live taught skill: aurora beacon cascade gamma\n"
-            f"   how to use it: read it with skill_get(skill='{_SKILL_NAME}'); set it "
-            f"running with collection_configure(collection=<a name for the job>, "
-            f"skill='{_SKILL_NAME}', parameters=…); to change it, demonstrate it again in "
-            "chat — I relearn it automatically, replacing this one"
-        )
-
-    def test_skill_hit_names_the_same_tool_whether_or_not_the_skill_still_exists(self, db):
-        """A ``find`` hit's addressing is derived from the match's KIND alone, never
-        a database lookup — a vanished skill renders the identical addressing
-        (#2305), since the model copies the call verbatim either way."""
-        match = ResolvedMatch(
-            name="vanished-skill", kind=ResolvedKind.SKILL, archived=False, label=""
-        )
-        assert _render_object_hit(1, match) == (
-            "1. vanished-skill — live taught skill\n"
-            "   how to use it: read it with skill_get(skill='vanished-skill'); set it "
-            "running with collection_configure(collection=<a name for the job>, "
-            "skill='vanished-skill', parameters=…); to change it, demonstrate it again "
-            "in chat — I relearn it automatically, replacing this one"
-        )
 
     @pytest.mark.asyncio
     async def test_type_argument_is_rejected(self, db, mock_llm):
@@ -5104,10 +3145,7 @@ class TestFind:
         assert result.success
         assert result.message == (
             'Nothing of yours matched "orbit nebula" — the state at the top of this '
-            "prompt lists every collection, log, and taught skill you have (archived "
-            "ones by name). If you were looking for how to do a task and no skill "
-            "matched, ask the user to walk you through it once here in chat — you'll "
-            "learn it as a new skill automatically."
+            "prompt lists every collection and log you have (archived ones by name)."
         )
 
     @pytest.mark.asyncio
@@ -5289,10 +3327,8 @@ class TestFind:
         assert result.success
         assert result.message == (
             'Nothing stored matched "aurora beacon cascade" — the state at the top of '
-            "this prompt lists every collection, log, and taught skill you have "
-            "(archived ones by name). If you were looking for how to do a task and no "
-            "skill matched, ask the user to walk you through it once here in chat — "
-            "you'll learn it as a new skill automatically.\n\n"
+            "this prompt lists every collection and log you have (archived ones by "
+            "name).\n\n"
             "From the conversation:\n"
             f"1. user-messages [{stamp}]: aurora beacon cascade"
         )

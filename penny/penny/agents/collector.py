@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -55,7 +54,6 @@ from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
 from penny.constants import (
-    COLLECTOR_UNREADABLE_PROGRAM_REASON,
     CYCLE_END_RETRY_REASONS,
     HEALTHY_CYCLE_ENDS,
     WRITE_GATE_STOP_REASONS,
@@ -68,9 +66,7 @@ from penny.constants import (
 )
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
-from penny.database.models import MemoryEntry, MemoryRow, Skill
-from penny.database.skill_store import parameters_from_json
-from penny.database.skills import SkillParameter
+from penny.database.models import MemoryEntry, MemoryRow
 from penny.datetime_utils import format_log_timestamp, stored_as_utc, user_timezone_name
 from penny.llm.client import LlmClient
 from penny.notification import (
@@ -79,28 +75,15 @@ from penny.notification import (
     CollectorNotifier,
     NotificationOutcome,
 )
-from penny.program import ProgramCall, program_calls
 from penny.prompts import Prompt
 from penny.text_validity import check_extraction_prompt
-from penny.tools.base import Tool, close_over_advice
-from penny.tools.collection_instantiation import next_occurrence, skill_params
-from penny.tools.memory_tools import CursorReadTool, DoneTool, format_entries
+from penny.tools.collection_instantiation import next_occurrence
+from penny.tools.memory_tools import CursorReadTool, format_entries
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
-
-# The composed prompt's routine block (#1907) — the two of the code owner's three things
-# that are not the program itself: WHICH routine is running, and WHAT it is pointed at.
-# Both are read off the collection's own row and the routine's, so nothing here is a
-# claim the framework has to remember; a term with no value says so rather than
-# rendering an empty slot, and a routine the registry no longer holds says that too.
-_ROUTINE_HEAD = "The skill you run:"
-_ROUTINE_GONE = f"{_ROUTINE_HEAD} {{name}} — it is no longer in the skill registry."
-_VALUES_HEAD = "The values it is pointed at:"
-_VALUES_NONE = f"{_VALUES_HEAD} none — this skill takes none."
-_NO_VALUE = "nothing was supplied for this"
 
 # The composed prompt's holdings block (#1914) — WHAT THE COLLECTION HOLDS at the moment
 # the cycle starts, rendered beside its recent runs.  A cycle can only act on what it is
@@ -145,11 +128,11 @@ class Collector(BackgroundAgent):
     # (which existed to stop the model forcing a write when the tail demanded one).
     # Nothing here mentions telling the user: that is not part of a cycle any more.
     #
-    # Each line DECLARES the tools it names, and only lines whose tools are on this
-    # cycle's surface render.  A cycle's surface is scoped to its program now, so a
-    # rule naming a tool the surface lacks would be an instruction
-    # that cannot be followed — the same n≤1 reachability bug a result message naming
-    # an absent sibling would be, and answered the same way.
+    # Every rule here names a tool on the fixed naive-baseline surface (#2455 — the
+    # chat tools minus the lifecycle tier), so the head always renders; a rule naming
+    # a tool outside that surface would be an instruction that cannot be followed —
+    # the same n≤1 reachability bug a result message naming an absent sibling would
+    # be, and answered the same way.
     _RUNTIME_RULES_HEAD = "## Runtime rules (always apply)"
     _RUNTIME_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
@@ -197,12 +180,6 @@ class Collector(BackgroundAgent):
         # scheduler's cadence.  ``_cycle_lock`` serializes every cycle so
         # ``_current_target`` is never clobbered by an overlapping run.
         self._current_target: MemoryRow | None = None
-        # This cycle's PROGRAM — the calls the bound target's stored prompt makes,
-        # read once when the target is bound (#1911).  It sits beside
-        # ``_current_target`` for the same reason that one does: the hooks that need
-        # it (``should_stop_loop``) are template methods the loop calls with no target
-        # to hand, and the same lock makes both safe.
-        self._program: tuple[ProgramCall, ...] = ()
         self._cycle_lock = asyncio.Lock()
         self._notifier = CollectorNotifier(db, embedding_model_client, model_client)
         # How many times each collection's CURRENT occurrence has been re-attempted
@@ -353,36 +330,13 @@ class Collector(BackgroundAgent):
         return success, message
 
     def _bind(self, collection: MemoryRow | None) -> None:
-        """Bind (or release) the cycle's target and the program it runs.
+        """Bind (or release) the cycle's target.
 
-        Reading the program HERE — once, when the target is bound — is what makes the
-        exit deterministic: the calls the cycle has to make are settled before the
-        first model call.
-
-        It is read against the UNSCOPED surface (``super().get_tools()``) — every tool a
-        collector could possibly run — because that is the vocabulary a stored program
-        was authored against.  Reading it against ``self.get_tools()`` would be
-        circular: this cycle's surface is derived FROM the program, so an unbound
-        program would offer nothing to recognise a program with.
-
-        Binding also opens the cycle's UNDO JOURNAL on the target (#1936) — from here
-        until the cycle settles, every entry mutation of that collection first records
-        what the key it touches held — and releasing the target closes it."""
+        Opens the cycle's UNDO JOURNAL on the target (#1936) — from here until the
+        cycle settles, every entry mutation of that collection first records what the
+        key it touches held — and releasing the target closes it."""
         self._current_target = collection
         self.db.memories.begin_cycle(collection.name if collection is not None else None)
-        if collection is None or collection.extraction_prompt is None:
-            self._program = ()
-            return
-        surface = frozenset(tool.name for tool in super().get_tools())
-        self._program = program_calls(collection.extraction_prompt, surface)
-        if not self._program:
-            logger.warning(
-                "Collection '%s' has no readable program — its stored prompt is not a "
-                "rendered routine, so its cycles have no calls to make and no completion "
-                "to read.  Re-attach a routine with collection_configure(collection='%s', skill=…)",
-                collection.name,
-                collection.name,
-            )
 
     async def _notify_if_due(
         self,
@@ -399,24 +353,24 @@ class Collector(BackgroundAgent):
         passes it the same way a watch does — "some skills won't have writes at all" —
         because what is read is the close, not what the cycle called to get there.
 
-        A FOURTH fact guards the gap between those two shapes (#2417): a program that
-        DOES declare a write step (``_program_writes``, read off the bound program's own
-        calls against the tool's own ``stores_entries`` mark — never a tool name) but
-        whose cycle mutated nothing this run is read the same as a STOP, because that is
-        exactly what one SHOULD have been — the model skipped the write decision instead
-        of the gate catching it at the chokepoint.  "Mutated nothing" is each call's own
-        ``ToolCallRecord.mutated`` flag (#1911's produced-work fold), not a count of
-        entries landed: a log append or a plugin's write counts the same way a
-        ``collection_write`` does, and a dedup-rejected one correctly does not.
-
         The STOP clause is what keeps no-news silent: a watch's unchanged
         re-observation carries its STOP at the write chokepoint and the loop ends
         there, so the close alone would read that cycle as a finished job and tell the
         user nothing happened.  A STOP means the cycle deliberately ended early,
         whatever else it had got through.
 
+        **The #2417 fourth fact — a declared write step that mutated nothing this run
+        reads as a STOP — is REMOVED on this branch (#2455 naive baseline)**: it read
+        the bound PROGRAM's own calls (``_program_writes``), which no longer exists —
+        a job's cycle follows a free-text prompt, not a parsed program, so there is no
+        declared-write-step fact left to read.  A cycle now notifies on its ``done()``
+        close unless the write gate STOPs, exactly as before #2417.  This is a known
+        gap on this branch: a cycle that skips its own write decision without a STOP
+        can over-notify, and it is left unmeasured here rather than reintroduced as a
+        name-keyed guess at the model's intent.
+
         ``trigger`` travels through to the queued row: WHETHER to tell the user is the
-        four facts above, WHEN it reaches them is which lane the message is in (#1939).
+        facts above, WHEN it reaches them is which lane the message is in (#1939).
 
         ``None`` when the cycle is not one that notifies, which is the ordinary case.
         """
@@ -424,19 +378,7 @@ class Collector(BackgroundAgent):
             return None
         if not self._has_done_call(response):
             return None
-        if self._program_writes() and not any(record.mutated for record in response.tool_calls):
-            return None
         return await self._notifier.notify(collection, run_id, response.tool_calls, trigger)
-
-    def _program_writes(self) -> bool:
-        """Whether this cycle's bound program declares a step that asks the store to
-        keep an entry — the registered tool's own ``stores_entries`` mark (#2185), read
-        off ``self._program``'s declared calls, never a tool name (#2417).
-
-        A program with no such step at all (#1914's read-only shape) answers ``False``
-        here, so the gap check in ``_notify_if_due`` never applies to it — it has no
-        write to have skipped, and notifies on its close exactly as it always has."""
-        return any(Tool.asks_to_store(call.tool) for call in self._program)
 
     def _retire_if_ended(self, collection: MemoryRow, run_id: str) -> None:
         """Post-cycle retirement — at most one archive.
@@ -601,37 +543,14 @@ class Collector(BackgroundAgent):
           writes stand.  Everything else stopped short, and since a short cycle's writes
           are reverted there is nothing left of it to protect — which is exactly why the
           two mechanisms need no special case between them.
-        - **A configuration defect** — the DETERMINISTIC arm, read off the collection's
-          own stored program, so a retry re-fails identically.  It outranks every
-          unhealthy end below: a cancelled cycle of an unrunnable collection is still an
-          unrunnable collection.
-
         What is left is the unhealthy end's own line, off the declared table — except an
         abort, which names its own terminal cause when the run carries one (#1909).
         """
         if end in HEALTHY_CYCLE_ENDS:
             return None
-        if self._configuration_defect() is not None:
-            return None
         if end is CycleEnd.ABORTED and response is not None and response.abort is not None:
             return response.abort.render()
         return CYCLE_END_RETRY_REASONS[end]
-
-    def _configuration_defect(self) -> str | None:
-        """The bound collection's own deterministic reason its cycles cannot succeed,
-        or ``None`` when nothing about how it is set up is wrong.
-
-        Read off the CONFIGURATION — the stored prompt, settled when the target was
-        bound — never off what this particular run did, which is exactly what makes it
-        deterministic: dispatched again it reaches the same answer, so a retry buys
-        nothing and the occurrence is spent immediately.  Today that is a prompt the
-        framework cannot read a program out of; readiness already refuses the other
-        config defects (an unusable prompt, an unreadable rule) before a cycle is
-        dispatched at all.
-        """
-        if not self._program:
-            return COLLECTOR_UNREADABLE_PROGRAM_REASON
-        return None
 
     @staticmethod
     def _format_tool_trace(response: ControllerResponse | None) -> str:
@@ -897,16 +816,11 @@ class Collector(BackgroundAgent):
         field is the same one a narrating agent sets too; anything else is an early
         give-up without reporting an outcome.
 
-        A collection whose stored prompt is not a readable program gets its own line
-        (#1911): there is nothing to read completion from, so its cycles can never
-        close, and naming that is the difference between a diagnosable CONFIG DEFECT
-        and a collector that quietly fails forever."""
+        """
         if response is None:
             return "no response from cycle"
         if response.abort is not None:
             return response.abort.render()
-        if (defect := self._configuration_defect()) is not None:
-            return defect
         if response.ran_out_of_steps:
             return "max steps exceeded — the program was left unfinished"
         return "cycle ended with the program unfinished"
@@ -920,33 +834,18 @@ class Collector(BackgroundAgent):
         ``collection_configure`` call that changes ``extraction_prompt`` is
         picked up on the very next collector cycle, no restart needed.
 
-        The routine's own row is read alongside it, for the same reason: what the
-        collection is running and what it declares it needs are the collector's to
-        state (#1907), and reading them each cycle means a re-taught routine's current
-        description and parameter set are what the cycle sees.
-
         The two trailing blocks are the cycle's own STATE, read the same way: what the
         collection holds now (#1914) and what this collector's recent runs did (#1569).
-        Holdings first — the entries are what the program acts ON, so they sit next to
+        Holdings first — the entries are what the prompt acts ON, so they sit next to
         it, and the run outcomes close the prompt as they always have.
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
-        surface = frozenset(tool.name for tool in self._tool_registry.get_all())
         return (
-            self._compose_prompt(fresh, self._routine(fresh), surface)
+            self._compose_prompt(fresh)
             + self._holdings_section(fresh.name)
             + self._run_history_section(fresh.name)
         )
-
-    def _routine(self, target: MemoryRow) -> Skill | None:
-        """The skill this collection runs, off its own ``skill_name`` — ``None`` for a
-        hand-authored or seeded collection (no routine to state), and ``None`` too when
-        the name no longer resolves, which is the honest reading of a routine that has
-        been renamed or removed out from under a running collection."""
-        if target.skill_name is None:
-            return None
-        return self.db.skills.get(target.skill_name)
 
     def _holdings_section(self, target_name: str) -> str:
         """A trailing block of what the bound collection HOLDS right now — its entries,
@@ -1016,161 +915,50 @@ class Collector(BackgroundAgent):
         )
 
     @classmethod
-    def _compose_prompt(
-        cls, target: MemoryRow, skill: Skill | None, surface: frozenset[str]
-    ) -> str:
-        """Frame the extraction_prompt with target identity + what the collection is
-        set up to run + the assembly-owned step tail + runtime rules (#1557/#1907).
+    def _compose_prompt(cls, target: MemoryRow) -> str:
+        """Frame the stored ``extraction_prompt`` with target identity + the
+        close-with-``done()`` instruction + runtime rules (#2455 naive baseline; was
+        #1557/#1907).
 
-        Three things (#1907): the INSTRUCTIONS (the program, with the collection's bound
-        values already joined into its leaves at the render seam), the SKILL — what
-        routine this is and what it is for — and the VALUES it is pointed at, named and
-        listed.  The values are in the program already; listing them beside it is what
-        makes each one readable as a term of the job rather than only as a string inside
-        a call, and it is the one place a term the program has no leaf for can still be
-        read.  All three are absent for a hand-authored or seeded collection, which has
-        no routine to state, so its prompt is byte-identical to what it always was.
+        The job's own instructions are the free text the model wrote when it set the
+        job up — stored verbatim, run verbatim, with no rendering seam in between.
+        There is no routine/values block any more: there is no skill, so there is
+        nothing to name beyond the prompt itself.
 
         The runtime-rules tail is appended structurally — not relayed through
-        Penny when she authors the extraction_prompt.  This guarantees the
-        rules apply on every cycle regardless of how the prompt was written
-        (or whether Penny remembered to include them).  The chat-facing
-        ``collection_configure`` description only carries authoring-shape
-        guidance; the runtime invariants live here.
-
-        **The program is now ONLY the skill (#1911).**  Assembly appends no steps at
-        all: the notify tail is gone (telling the user is a framework-entered
-        micro-context after the cycle, not four more steps inside it) and so is the
-        injected terminal ``done()`` (the cycle ends when the program's own calls are
-        covered — a read, not a step).  So the composed prompt's numbered steps are
-        exactly the stored ``extraction_prompt``'s, which is exactly the routine, which
-        is exactly what coverage is read against: one program, one reading of it.
-
-        ``surface`` is the tool names this cycle actually runs with — scoped to the
-        program's own calls when the framework could read it — and the runtime rules are
-        filtered against it, so the prompt never instructs a call the model cannot make.
+        Penny when she authors the prompt.  This guarantees the rules apply on
+        every cycle regardless of how the prompt was written.  The chat-facing
+        ``collection_configure`` description only carries authoring-shape guidance;
+        the runtime invariants live here.
         """
         return (
             f"You are the collector for the `{target.name}` collection.\n"
             f"Description: {target.description}\n"
-            f"{cls._routine_section(target, skill)}"
             "\n"
             f"{target.extraction_prompt}\n"
-            f"{cls._injected_steps(target)}\n\n"
-            f"{cls._runtime_rules(surface)}"
+            f"\n{Prompt.COLLECTOR_DONE_INSTRUCTION}\n\n"
+            f"{cls._runtime_rules()}"
         ).rstrip("\n")
 
     @classmethod
-    def _injected_steps(cls, target: MemoryRow) -> str:
-        """The assembly-owned step tail: the terminal ``done()``, numbered continuing
-        from the stored prompt's highest step, so the whole prompt reads as one
-        continuous program (#1557, restored #1916).
+    def _runtime_rules(cls) -> str:
+        """The runtime rules every cycle's surface can carry out.
 
-        ONE step, not the old tail: telling the user left the cycle for good (#1911) and
-        stays out, so what is injected is only the close.  A write-gate STOP on a
-        no-change cycle ends the run at the chokepoint before this step is reached, so
-        no-news never needs it."""
-        base = cls._max_step_number(target.extraction_prompt or "")
-        return f"{base + 1}. {Prompt.COLLECTOR_DONE_STEP}"
-
-    @staticmethod
-    def _max_step_number(prompt: str) -> int:
-        """``A`` — the highest leading step number in the stored prompt (a ``^\\d+.``
-        scan), 0 for an unnumbered prompt so the injected step starts at 1."""
-        numbers = re.findall(r"^(\d+)\.", prompt, re.MULTILINE)
-        return max((int(number) for number in numbers), default=0)
-
-    @classmethod
-    def _runtime_rules(cls, surface: frozenset[str]) -> str:
-        """The runtime rules this cycle's surface can actually carry out.
-
-        A rule renders only when every tool it names is present, so a program-scoped
-        cycle reads instructions about the tools it HAS and nothing else.  With no rule
-        applicable the head goes too — a heading over nothing is a worse artifact than
-        the absence."""
-        lines = [
-            line for line, named in cls._RUNTIME_RULES if all(tool in surface for tool in named)
-        ]
+        A rule renders only when every tool it names is present on the fixed
+        naive-baseline surface (the chat tools minus the lifecycle tier, #2455) —
+        which is every rule declared here, so the head always renders."""
+        lines = [line for line, _named in cls._RUNTIME_RULES]
         if not lines:
             return ""
         return "\n".join([cls._RUNTIME_RULES_HEAD, "", *lines])
 
-    @classmethod
-    def _routine_section(cls, target: MemoryRow, skill: Skill | None) -> str:
-        """The routine this collection runs and the values it is pointed at — empty for
-        a collection with no routine at all, so a hand-authored one renders unchanged."""
-        if target.skill_name is None:
-            return ""
-        return f"\n{cls._routine_line(target, skill)}\n{cls._values_block(target, skill)}\n"
-
-    @staticmethod
-    def _routine_line(target: MemoryRow, skill: Skill | None) -> str:
-        """What routine is running here and what it is for.  A ``skill_name`` that no
-        longer resolves says exactly that rather than nothing — a collection running a
-        routine the registry has lost is a state worth reading, not one to hide."""
-        if skill is None:
-            return _ROUTINE_GONE.format(name=target.skill_name)
-        return f"{_ROUTINE_HEAD} {skill.name} — {skill.description}"
-
-    @classmethod
-    def _values_block(cls, target: MemoryRow, skill: Skill | None) -> str:
-        """The job's terms, one per line — every value the routine declares it needs,
-        against what this collection was configured with."""
-        declared = cls._declared_parameters(target, skill)
-        if not declared:
-            return _VALUES_NONE
-        bound = skill_params(target)
-        lines = "\n".join(cls._value_line(parameter, bound) for parameter in declared)
-        return f"{_VALUES_HEAD}\n{lines}"
-
-    @staticmethod
-    def _declared_parameters(target: MemoryRow, skill: Skill | None) -> list[SkillParameter]:
-        """What the routine says it needs — read off the skill row, or, when that row is
-        gone, the names the collection was configured with (all a vanished routine leaves
-        behind, and still better than dropping the terms silently)."""
-        if skill is not None:
-            return parameters_from_json(skill.parameters)
-        return [SkillParameter(name=name) for name in skill_params(target)]
-
-    @staticmethod
-    def _value_line(parameter: SkillParameter, bound: dict[str, str]) -> str:
-        """One term of the job: its name and the value it was given, or an honest gap
-        naming what is missing (a re-taught routine can declare something the running
-        collection was never configured with) — never a blank standing in for a value."""
-        if parameter.name in bound:
-            return f"- {parameter.name}: {bound[parameter.name]}"
-        if parameter.description:
-            return f"- {parameter.name}: {_NO_VALUE} — it needs {parameter.description}"
-        return f"- {parameter.name}: {_NO_VALUE}"
-
-    def get_tools(self, run_id: str | None = None) -> list[Tool]:
-        """The cycle's tool surface, SCOPED to the program when one can be read (#1911).
-
-        The code owner's ruling: "we know the tools beforehand so we can dynamically
-        restrict the tool calling surface to only the tools in the actual skill".  A
-        cycle carrying out a known routine has no use for the rest of the surface, and
-        every tool it does not need is a door the run can wander through — the last one
-        being an interjected ``read_similar``, which re-admits chat-flavoured content
-        mid-program and is where the measured tail decayed.  Absent beats discouraged.
-
-        The scope is the program's own calls CLOSED over :attr:`Tool.advises`, so a
-        sibling a result message points at (``collection_write``'s duplicate rejection
-        naming the write) is present to be called: a rendered instruction always
-        resolves in one call.  ``done`` joins every scoped surface unconditionally
-        (#1916): assembly injects the terminal step into every composed prompt, so the
-        close has to be callable whatever the program contains — and a cycle that
-        departs from its program for a good reason still needs a way to say it has
-        finished, which is the whole reason the terminator came back.
-
-        A collection whose prompt is NOT a readable program gets a surface of the
-        terminator ALONE: it has no job this framework can run, so there is nothing to
-        hand it but the ability to close honestly.  That is a config defect the run
-        record names (#1911's soft reboot removed the seeded prose rows that used to
-        make it a second mode), not a fallback that quietly runs the collection some
-        other way."""
-        available = super().get_tools(run_id)
-        scoped = close_over_advice({call.tool for call in self._program}, available)
-        return [tool for tool in available if tool.name in scoped or tool.name == DoneTool.name]
+    # The cycle's tool surface is the inherited ``BackgroundAgent.get_tools()``
+    # default (#2455 naive baseline; was #1911's program-scoped surface, now gone
+    # with the parsed program): the chat tool set minus the lifecycle tier
+    # (``_include_lifecycle_tools`` below, False for a collector) plus ``done``.
+    # A job's cycle gets exactly this — never widened to email, plugin, or
+    # notification-mute tools, and never narrowed to a parsed program's own calls,
+    # since a free-text prompt has no calls to parse.
 
     def _memory_scope(self) -> str:
         """Pin entry mutations to the bound target collection."""

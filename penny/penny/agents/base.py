@@ -24,7 +24,6 @@ from penny.agents.models import (
 )
 from penny.config import Config
 from penny.constants import PennyConstants
-from penny.conversation_machine import RoundFraming
 from penny.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
@@ -744,18 +743,16 @@ class Agent:
         self, response: LlmResponse, ctx: LoopContext, run_id: str
     ) -> LoopContext:
         """Template hook: enrich the loop context before the text-branch run-shape
-        validators run.  The base is a no-op (collectors never extract); the
-        ``ChatAgent`` overrides it to run automatic skill extraction here (#1658)
-        and stamp the learned skill's rendered frame onto the ctx, so its
-        ``SkillNarrationValidator`` — a validator in the list, not a loop branch —
-        can narrate it."""
+        validators run.  The base is a no-op; the ``ChatAgent`` overrides it to stamp
+        this run's writes-landed record onto the ctx, so its
+        ``WritesLandedValidator`` — a validator in the list, not a loop branch — can
+        have the reply written after it."""
         return ctx
 
     async def _nudge_text_step(
         self, response: LlmResponse, messages: list[dict], ctx: LoopContext, run_id: str
     ) -> bool:
         """Run the run-shape chain over a text-only response; apply a
-        ``NudgeContinue`` (a chat run that just learned a skill and must narrate it) or a
         ``RedrawWithRecord`` (a chat run whose reply is written after what it saved).
 
         Every text draw reaching here is a VALID one for this agent's shape — an
@@ -1374,21 +1371,8 @@ class Agent:
         """
         return None
 
-    def _configuring_round(self) -> RoundFraming | None:
-        """The round whose routine this turn is CONFIGURING (#1869), or ``None``.
-
-        Default: none — a collector cycle configures nothing, and neither does an
-        ordinary chat turn.  ``ChatAgent`` overrides it to return the round's framing on
-        the turn the machine landed in apply, which is what lets ``collection_configure``
-        supply the container, the routine and its bound values itself.  A template method
-        on the agent (the run type decides), never a branch inside the tool builder.
-        """
-        return None
-
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         """Tool surface — memory + browse, dispatched by ``_memory_scope``.
-
-        A ``Collector`` narrows what this returns to its program's own calls.
 
         Builds fresh each cycle so runtime config changes take effect
         immediately and the underlying ``BrowseTool``'s author + cursor
@@ -1416,7 +1400,6 @@ class Agent:
             scope=scope,
             run_id=run_id,
             include_lifecycle=self._include_lifecycle_tools(),
-            round_framing=self._configuring_round(),
         )
         tools.append(self._build_browse_tool(author=self.name, run_id=run_id))
         # ``choose`` — the fair random picker — is on every agent surface, like
@@ -2005,7 +1988,7 @@ class BackgroundAgent(Agent):
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
 
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
-        """The chat-style surface plus the terminator every background cycle closes
-        with (#1916).  ``Collector`` narrows this to its program's own calls and keeps
-        ``done`` through that narrowing, since assembly injects a step for it."""
+        """The chat-style surface minus the lifecycle tier (a background cycle
+        cannot create, reconfigure, or archive a mechanism, #1556) plus the
+        terminator every background cycle closes with (#1916)."""
         return [*super().get_tools(run_id), DoneTool()]

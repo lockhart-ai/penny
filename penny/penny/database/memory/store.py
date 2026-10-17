@@ -48,7 +48,7 @@ from penny.database.memory.types import (
     slug,
     wrong_shape_message,
 )
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog, Skill
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.database.mutation_store import (
     FieldPrior,
     MutationDetail,
@@ -56,7 +56,6 @@ from penny.database.mutation_store import (
     cancelled_sends_note,
 )
 from penny.database.send_queue_store import SendQueueStore
-from penny.database.skills import slug_skill_name
 from penny.datetime_utils import format_log_timestamp
 
 logger = logging.getLogger(__name__)
@@ -915,10 +914,9 @@ class MemoryStore:
 
         Plain-cosine nearest-neighbour search (the explicit-search path, #1565 —
         no ambient centrality/cluster gating) of ``anchor`` against every registry
-        row's description anchor (collections + logs, **archived included**), every
-        taught skill's description anchor (the ``skill`` table, the sole skills
-        store — #1624), AND every stored entry's content/key anchors across the
-        non-archived collections + real logs (#1640).  The search spans every
+        row's description anchor (collections + logs, **archived included**) AND
+        every stored entry's content/key anchors across the non-archived
+        collections + real logs (#1640).  The search spans every
         family — one fused best-first list, no up-front narrowing (#1643): a family
         filter it reasons about first can only encode a guess, and at single-user
         scale the ranked, capped list is readable whole.
@@ -1090,11 +1088,10 @@ class MemoryStore:
 
     def _resolution_candidates(self) -> list[tuple[ResolvedHit, bytes]]:
         """Every (hit, embedding-blob) pair eligible for ``resolve_objects`` —
-        registry rows carrying a description anchor, taught skills carrying a
-        description anchor, and stored entries carrying a content/key anchor.  A
-        row/skill/entry without its vector is silently absent (the backfill fills
-        it) — never surfaced unscored.  Every family contributes; the search never
-        narrows up front (#1643)."""
+        registry rows carrying a description anchor, and stored entries carrying a
+        content/key anchor.  A row/entry without its vector is silently absent (the
+        backfill fills it) — never surfaced unscored.  Every family contributes; the
+        search never narrows up front (#1643)."""
         candidates: list[tuple[ResolvedHit, bytes]] = []
         for row in self.list_all():
             if row.description_embedding is None:
@@ -1106,7 +1103,6 @@ class MemoryStore:
                 name=row.name, kind=row_kind, archived=row.archived, label=row.description
             )
             candidates.append((match, row.description_embedding))
-        candidates.extend(self._skill_candidates())
         candidates.extend(self._entry_candidates())
         return candidates
 
@@ -1162,30 +1158,6 @@ class MemoryStore:
             (entry, kinds[entry.memory_name]) for entry in entries if entry.memory_name in kinds
         ]
 
-    def _skill_candidates(self) -> list[tuple[ResolvedMatch, bytes]]:
-        """Taught skills as resolvable objects — the ``skill`` table (the sole
-        skills store, #1624), each anchored by its description vector (populated
-        at teach time).  Only skills carrying the vector are eligible."""
-        with self._session() as session:
-            rows = session.exec(
-                select(Skill).where(
-                    col(Skill.description_embedding).is_not(None),
-                )
-            ).all()
-        return [
-            (
-                ResolvedMatch(
-                    name=row.name,
-                    kind=ResolvedKind.SKILL,
-                    archived=False,
-                    label=row.description,
-                ),
-                row.description_embedding,
-            )
-            for row in rows
-            if row.description_embedding is not None
-        ]
-
     # ── Idempotency at birth (#1567) ──────────────────────────────────────────
 
     def find_duplicate_collection(
@@ -1213,7 +1185,12 @@ class MemoryStore:
         """
         candidate = JobSide(
             name=slug(name),
-            skill=slug_skill_name(skill_name) if skill_name else None,
+            # No skill registry on this branch (#2455 naive baseline): a caller
+            # always passes ``skill_name=None``, so tier-1 identity never fires and
+            # duplicates are decided by tier-2 name containment alone.  Trimmed
+            # rather than slugged if a caller ever does pass one, matching the
+            # (now-deleted) ``slug_skill_name``'s own normalisation.
+            skill=skill_name.strip() if skill_name else None,
             params=skill_params,
         )
         active, archived = self._duplicate_candidates()

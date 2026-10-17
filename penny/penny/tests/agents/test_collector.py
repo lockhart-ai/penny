@@ -33,7 +33,6 @@ from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ModelCallError, RunAbort, ToolCallRecord
 from penny.constants import (
-    COLLECTOR_UNREADABLE_PROGRAM_REASON,
     CYCLE_END_RETRY_REASONS,
     HEALTHY_CYCLE_ENDS,
     WRITE_GATE_STOP_REASONS,
@@ -48,28 +47,18 @@ from penny.constants import (
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MemoryRow
-from penny.database.skills import SkillParameter
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmResponse
 from penny.notification import NOTIFICATION_NOTES, NOTIFIED_CYCLE_ENDS, NotificationOutcome
-from penny.program import ProgramCall
-from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient, deterministic_embed
 from penny.tests.schema_template import schema_only_db
-from penny.tests.tools.test_memory_tools import (
-    _TAUGHT_LINE,
-    _TAUGHT_URL,
-    seed_timetable_skill,
-)
-from penny.tools.base import Tool
 from penny.tools.memory_tools import (
     CollectionSetTool,
     DoneTool,
     LogReadTool,
     build_memory_tools,
-    collector_tool_surface,
 )
 from penny.tools.micro_context import NOTIFY_SYSTEM_PROMPT
 
@@ -96,14 +85,6 @@ def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
         embedding_model_client=_llm_client(),
     )
     return collector, db
-
-
-# The UNSCOPED collector surface — every tool the runtime rules name, so a
-# ``_compose_prompt`` render under it carries all four rules.  A program-scoped cycle
-# passes a narrower set and drops the rules it cannot carry out (#1911).  ``done`` rides
-# every surface, scoped or not (#1916): assembly injects the terminal step into every
-# composed prompt, so the close has to be callable whatever the program contains.
-_FULL_SURFACE = frozenset({"collection_write", "collection_remove", "browse", "done"})
 
 
 def _get(db: Database, name: str) -> MemoryRow:
@@ -361,34 +342,21 @@ def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
     are ABSENT, not merely discouraged, so a background poll cannot create,
     reconfigure, merge, or archive a mechanism.
 
-    Asserted against the collector's UNSCOPED surface — everything a cycle could
-    possibly be given — because that is the set the scoping then narrows, and the mask
-    has to hold before the narrowing as well as after."""
+    Asserted against the collector's real cycle surface — the inherited
+    ``BackgroundAgent.get_tools()`` default (#2455 naive baseline) — since that is
+    every tool a cycle could possibly be given."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection("watch", "d")
     collector._bind(db.memories.get("watch"))
     try:
-        names = set(collector_tool_surface(db, collector._model_client))
+        names = {tool.name for tool in collector.get_tools()}
     finally:
         collector._bind(None)
     assert names.isdisjoint(_LIFECYCLE_TOOL_NAMES), (
         f"collector surface leaked lifecycle tools: {names & _LIFECYCLE_TOOL_NAMES}"
     )
-    # It keeps its actual job: reads, scoped entry writes, browse, choose.  ``choose``
-    # rides the collector surface so a demonstrated random-pick step renders into a
-    # runnable collector program (skill capture).
+    # It keeps its actual job: reads, scoped entry writes, browse, choose.
     assert {"collection_write", "collection_list", "browse", "choose"} <= names
-
-
-def test_choose_is_capture_eligible_on_the_collector_surface(test_config, tmp_path):
-    """``collector_tool_surface`` — the set the skill extractor filters captured steps
-    to (#1668) — includes ``choose``, so a demonstrated ``choose`` step survives into a
-    skill instead of being dropped as an un-runnable call.  It is neither a lifecycle
-    tool (which the collector can't run) nor a write, just a read-shaped picker."""
-    _, db = _make_collector(test_config, tmp_path)
-    surface = collector_tool_surface(db, _llm_client())
-    assert "choose" in surface
-    assert surface.isdisjoint(_LIFECYCLE_TOOL_NAMES)
 
 
 def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
@@ -882,16 +850,14 @@ async def test_unexpired_collection_is_not_retired(test_config, tmp_path):
 
 def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     """Snapshot the full composed system prompt — exact-string assertion catches
-    structural drift in the framing OR the runtime-rules tail.  The runtime
-    rules are load-bearing (batched writes, in-place corrections, browse provenance,
-    no manual dedup) — chat doesn't relay them, the collector base attaches
-    them on every cycle.  The injected tail is the terminal ``done()`` alone,
-    numbered continuing from the stored prompt (#1557, restored #1916): the stored
-    program's highest step is 3, so the close is step 4.
+    structural drift in the framing OR the runtime-rules tail.  The runtime rules
+    are load-bearing (batched writes, in-place corrections, browse provenance, no
+    manual dedup) — chat doesn't relay them, the collector base attaches them on
+    every cycle.
 
-    This is the no-routine collection — hand-authored or seeded, ``skill_name``
-    NULL — so the routine block #1907 adds is absent entirely and the prompt is
-    byte-identical to what it was before the join existed."""
+    The job's own prompt is the free text the model wrote verbatim (#2455 naive
+    baseline) — no rendering seam, no injected numbered terminal — followed by the
+    close-with-``done()`` instruction and the runtime-rules tail."""
     target = MemoryRow(
         name="board-games",
         type="collection",
@@ -899,23 +865,24 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         archived=False,
         extraction_prompt=(
             "Collect board games from chat and browse logs.\n"
-            '1. log_read("user-messages")\n'
-            "2. browse for new games\n"
-            '3. collection_write("board-games", entries=[...])'
+            "1. Read the user-messages log.\n"
+            "2. Browse for new games.\n"
+            "3. Write each one into board-games."
         ),
     )
 
-    composed = Collector._compose_prompt(target, None, _FULL_SURFACE)
+    composed = Collector._compose_prompt(target)
 
     expected = (
         "You are the collector for the `board-games` collection.\n"
         "Description: Strategy board games worth buying\n"
         "\n"
         "Collect board games from chat and browse logs.\n"
-        '1. log_read("user-messages")\n'
-        "2. browse for new games\n"
-        '3. collection_write("board-games", entries=[...])\n'
-        "4. done()\n"
+        "1. Read the user-messages log.\n"
+        "2. Browse for new games.\n"
+        "3. Write each one into board-games.\n"
+        "\n"
+        "When you've done what this collection asks, call done().\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
@@ -933,326 +900,35 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     )
 
 
-# ── The composed prompt carries the skill and the terminal (#1911/#1916) ─────
-
-# A skill-rendered extraction_prompt (every step one canonical tool call, NO
-# done() — the chat ledger has no done tool, so a render cannot produce one) —
-# the kitchen-sink case the composed prompt is asserted against.
-_NOTIFY_RENDERED_PROMPT = (
-    "Collect indie metroidvania releases and keep me posted on the good ones.\n"
-    '1. browse(queries=["new indie metroidvania releases"], extract="pull out the '
-    'release name, a one-line hook, and the URL")\n'
-    '2. collection_write("indie-metroidvanias", entries=[{key: <release name>, '
-    "content: <name + hook + URL>}])"
-)
-
-
-def test_compose_prompt_carries_the_skill_and_the_terminal_when_notify_true():
-    """THE WATCHED DELETION (#1911): a notify=true collection's composed prompt is the
-    stored program plus the terminal close, and nothing else — asserted char-for-char,
-    so the retired notify tail cannot come back by accident.
-
-    What is gone is the four notify steps: telling the user is a framework-entered
-    micro-context after the cycle, not four more steps inside it — 42 of 49 measured
-    cycle deaths landed in that tail.  A notify=true prompt is byte-identical to the
-    same collection's notify=false prompt, because nothing about telling the user is
-    part of a cycle any more.
-
-    What is BACK is the injected terminal ``done()`` (#1916), numbered after the
-    program's own two steps.  Deriving the close from coverage instead fixed the route
-    in advance, so a cycle that departed from it for a good reason had nothing left to
-    close on: it could neither reach coverage nor say it had finished."""
-    quiet = MemoryRow(
-        name="indie-metroidvanias",
-        type="collection",
-        description="Indie metroidvania releases the user tracks",
-        archived=False,
-        extraction_prompt=_NOTIFY_RENDERED_PROMPT,
-    )
-    target = quiet.model_copy(update={"notify": True})
-
-    composed = Collector._compose_prompt(target, None, _FULL_SURFACE)
-
-    expected = (
-        "You are the collector for the `indie-metroidvanias` collection.\n"
-        "Description: Indie metroidvania releases the user tracks\n"
-        "\n"
-        f"{_NOTIFY_RENDERED_PROMPT}\n"
-        "3. done()\n"
-        "\n"
-        f"{Collector._runtime_rules(_FULL_SURFACE)}"
-    )
-    assert composed == expected, (
-        f"Composed notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
-    )
-    # The flag no longer changes a single character of what the model reads.
-    assert Collector._compose_prompt(quiet, None, _FULL_SURFACE) == composed
-    # Named gate cases: the retired notify steps are absent, the terminal is present.
-    for retired in ("read_similar", "send_message"):
-        assert retired not in composed
-    assert f"3. {Prompt.COLLECTOR_DONE_STEP}" in composed
-
-
-def test_compose_prompt_numbers_the_terminal_from_one_on_a_prose_prompt():
-    """The boundary case of the step numbering (#1557, restored #1916): an unnumbered
-    prose prompt has no highest step, so ``A`` is 0 and the injected terminal is step 1
-    — the whole prompt still reads as one continuous program rather than a paragraph
-    with a step number out of nowhere under it.
-
-    Uniform for legacy hand-authored collections: the tail is the close alone, so a
-    prose prompt gains exactly one line and nothing about telling the user."""
-    legacy_prompt = (
-        "Watch the summit webcam page, read the status banner, and record the "
-        "current trail status in the collection under the key `trail`."
-    )
-    target = MemoryRow(
-        name="summit-status",
-        type="collection",
-        description="Summit trail status",
-        archived=False,
-        notify=True,
-        extraction_prompt=legacy_prompt,
-    )
-
-    composed = Collector._compose_prompt(target, None, _FULL_SURFACE)
-
-    expected = (
-        "You are the collector for the `summit-status` collection.\n"
-        "Description: Summit trail status\n"
-        "\n"
-        f"{legacy_prompt}\n"
-        "1. done()\n"
-        "\n"
-        f"{Collector._runtime_rules(_FULL_SURFACE)}"
-    )
-    assert composed == expected, (
-        f"Legacy notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
-    )
-
-
-def test_the_retired_notify_prompt_constant_is_gone():
-    """THE WATCHED DELETION, named (#1911): the prompt constant that carried the
-    in-cycle notify tail no longer exists.
-
-    Pinned as a gate rather than left to the absence of a reference, because a
-    re-introduction would be silent otherwise — and the whole design turns on the cycle
-    having no notify steps at all: telling the user is a framework-entered
-    micro-context that runs after the cycle closes."""
-    assert not hasattr(Prompt, "COLLECTOR_NOTIFY_STEPS")
-
-
-def test_the_terminal_step_constant_is_back():
-    """THE REVERSION, named (#1916): assembly supplies a terminal step again, and it is
-    the bare argless call — no ``success``, no ``summary``, nothing for the model to
-    confabulate, since the run record is generated from the ledger.
-
-    Pinned beside its retired sibling so the pair reads as one decision: the notify
-    steps stay gone, the close comes back."""
-    assert Prompt.COLLECTOR_DONE_STEP == "done()"
-
-
 def test_send_message_is_not_on_the_collector_surface(test_config, tmp_path):
-    """THE WATCHED DELETION, at the surface (#1911): a collector cycle has no
-    ``send_message`` tool, so a cycle cannot message the user at all — telling them is
-    the framework's, after the cycle closes.
-
-    ``done`` is the one loop-control call left, and it is the ORDINARY end (#1916), not
-    an early out.  The authoring-time guard reads the same surface, so a stored program
-    naming ``send_message`` is refused rather than persisted, while one naming ``done``
-    is accepted — assembly writes that step itself."""
+    """A collector cycle has no ``send_message`` tool, so a cycle cannot message the
+    user directly — telling them is the framework's, after the cycle closes via the
+    notify micro-context.  ``done`` is the one loop-control call on the surface."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
-    collector._current_target = db.memories.get("board-games")
-
-    names = {tool.name for tool in collector.get_tools()}
+    collector._bind(db.memories.get("board-games"))
+    try:
+        names = {tool.name for tool in collector.get_tools()}
+    finally:
+        collector._bind(None)
 
     assert "send_message" not in names
-    assert "send_message" not in collector_tool_surface(db, collector._model_client)
+    assert DoneTool.name in names
 
 
-# ── The cycle's surface is scoped to its program (#1911) ──────────────────────
-
-# A two-call program. Its scoped surface is those two calls plus the correction
-# siblings ``collection_write``'s own rejection text points at — and nothing else.
-_SCOPED_PROGRAM = (
-    "1. browse(queries=['https://northpier.example/departures'], extract='the dawn sailing')\n"
-    "2. collection_write(collection='ferry-departures', entries=[{'key': 'x', 'content': 'y'}])"
-)
-
-# NOT a program: prose whose steps do not open with a call, which since #1911's strict
-# parser is unreadable rather than leniently scanned.
-_PROSE_PROGRAM = (
-    "Watch the summit webcam page, read the status banner, and record the current "
-    "trail status in the collection under the key `trail`."
-)
-
-
-def _surface_for(collector: Collector, db: Database, name: str) -> set[str]:
-    """The tool names the cycle for ``name`` actually runs with."""
-    collector._bind(_get(db, name))
-    return {tool.name for tool in collector.get_tools()}
-
-
-def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp_path):
-    """THE SCOPED SURFACE (#1911, the code owner's ruling): "we know the tools
-    beforehand so we can dynamically restrict the tool calling surface to only the tools
-    in the actual skill".
-
-    The surface is EXACTLY the program's two calls CLOSED over the advice relation —
-    asserted as an equality, because the point is what is ABSENT: ``read_similar`` is
-    gone, so the interjected chat-flavoured read the measured tail decayed on is
-    structurally unavailable rather than discouraged.
-
-    The closure is TRANSITIVE, and ``collection_keys`` is the proof: the write's
-    rejection names ``collection_write``'s delete sibling, whose own miss message names
-    ``collection_keys`` — reachable from the program through the advice chain, because a
-    rendered instruction has to resolve however deep the chain of advice runs.
-
-    ``done`` is the one member the closure did NOT put there (#1916).  It joins
-    unconditionally, because assembly injects the terminal step into every composed
-    prompt and a step the prompt names must be a call the surface carries."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "ferry-departures", "the dawn sailing", extraction_prompt=_SCOPED_PROGRAM
-    )
-
-    surface = _surface_for(collector, db, "ferry-departures")
-
-    assert surface == {
-        "browse",
-        "collection_write",
-        "collection_remove",
-        "collection_keys",
-        "done",
-    }
-    assert "read_similar" not in surface
-
-
-def test_every_scoped_surface_carries_the_terminator(test_config, tmp_path):
-    """THE REVERSION (#1916): ``done`` is back, and it rides EVERY collector surface —
-    a scoped cycle can always say it has finished.
-
-    The coverage exit it replaced fixed the route in advance: a cycle that departed
-    from its program for a good reason could never cover it, and with no terminator
-    to reach for it died rerolling on an attempt to state in prose that it was done
-    — 11 aborts in one measured run.  A model that has finished can always make one
-    more call; it cannot always walk a path decided before it started.
-
-    Asserted at four places because a terminator that exists but is not HANDED to the
-    model is the same defect as no terminator: the bound cycle's surface, the SCHEMA the
-    model actually reads, the authoring guard (so a stored program naming ``done`` is
-    accepted rather than refused as a hallucination), and the tool registry itself."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "ferry-departures", "the dawn sailing", extraction_prompt=_SCOPED_PROGRAM
-    )
-
-    surface = _surface_for(collector, db, "ferry-departures")
-    collector._install_tools(collector.get_tools())
-    schema = {tool["function"]["name"] for tool in collector._tool_registry.get_ollama_tools()}
-
-    assert DoneTool.name in surface
-    assert DoneTool.name in schema
-    assert DoneTool.name in collector_tool_surface(db, collector._model_client)
-    assert Tool._registry.get(DoneTool.name) is DoneTool
-
-
-def test_an_unreadable_program_has_only_the_terminator(test_config, tmp_path):
-    """A collection whose stored prompt is NOT a rendered program is a CONFIG DEFECT
-    (#1911), not a second way of running.
-
-    The seeded prose rows that made it a mode were dropped in the soft reboot, so a
-    prompt whose steps do not open with a call has no job this framework can run.  Its
-    surface is the terminator ALONE (#1916) — there is nothing to hand it but the
-    ability to close honestly — and its run record names the state rather than letting
-    the collection fail quietly forever."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection("summit-status", "trail status", extraction_prompt=_PROSE_PROGRAM)
-
-    surface = _surface_for(collector, db, "summit-status")
-
-    assert surface == {DoneTool.name}
-    assert collector._program == ()
-    assert (
-        collector._unfinished_reason(ControllerResponse(answer="", tool_calls=[]))
-        == COLLECTOR_UNREADABLE_PROGRAM_REASON
-    )
-
-
-def test_a_scoped_cycle_reads_only_the_runtime_rules_it_can_carry_out(test_config, tmp_path):
-    """The rules are filtered against the surface, so the prompt never instructs a call
-    the model cannot make — a read-only routine reads a prompt about reading.
-
-    Whole-render, both directions: a write program keeps every rule its tools support,
-    and a read-only one has no rules block at all rather than a heading over nothing."""
-    write_surface = frozenset({"browse", "collection_write", "collection_remove"})
-    assert Collector._runtime_rules(write_surface) == (
-        "## Runtime rules (always apply)\n"
-        "\n"
-        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
-        "keeps one value per key and replaces the stored content in place. If the entry should "
-        "be removed instead: `collection_remove(key=<key>)`.\n"
-        "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
-        '"Source:" field — if no real source was fetched, omit the field.\n'
-        "- Don't dedup manually — the store rejects duplicates on write automatically."
-    )
-    # A write program that never browses drops the browse rule and keeps the rest.
-    assert "browsed this cycle" not in Collector._runtime_rules(
-        frozenset({"collection_write", "collection_remove"})
-    )
-    # A read-only program supports none of them, so the head goes too.
-    assert Collector._runtime_rules(frozenset({"log_read"})) == ""
-
-
-@pytest.mark.asyncio
-async def test_a_stuck_scoped_cycle_records_its_own_cause(mock_llm, test_config, tmp_path):
-    """The honest end (#1909/#1911/#1916): a cycle that never finishes its program and
-    never reaches for its terminator runs out its step budget, and its run record names
-    what ended it rather than reporting a close it never made.
-
-    The terminator being available again does not soften this: ``_cycle_result`` reads
-    the ledger for a ``done`` record, so a cycle that made none is unfinished whatever
-    the model intended, and the reason line says which of the unfinished shapes it
-    was."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "ferry-departures",
-        "the dawn sailing",
-        extraction_prompt=_SCOPED_PROGRAM,
-        schedule="FREQ=HOURLY",
-    )
-
-    def handler(request: dict, count: int) -> LlmResponse:
-        # Never the write and never the close, so nothing ends the cycle but the cap.
-        return mock_llm._make_tool_call_response(
-            request, "browse", {"queries": ["https://northpier.example/departures"]}
-        )
-
-    mock_llm.set_response_handler(handler)
-
-    success, _ = await collector.run_for("ferry-departures")
-
-    assert success is False
-    runs = [run for run in db.messages.get_prompt_log_runs() if run["agent_name"] == "collector"]
-    assert len(runs) == 1
-    assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
-    assert "max steps exceeded" in runs[0]["run_reason"]
-    assert db.send_queue.next_pending() is None
-
-
-# ── What a CONFIGURED collection's cycle reads (#1907) ────────────────────────
+# ── What the collection holds (#1914) ────────────────────────────────────────
 
 
 async def _configure_timetable_collection(db: Database) -> None:
-    """A collection stood up the way chat stands one up: a taught routine, instantiated
-    through the real front door with the values the job is pointed at."""
-    seed_timetable_skill(db)
+    """A collection stood up the way chat stands one up — through the real front
+    door with a plain prompt (#2455 naive baseline)."""
     result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
         collection="ferry-departures",
         description="the dawn sailing on the north pier timetable",
-        skill="check_timetable",
-        parameters={"url": "https://northpier.example/departures", "line": "the dawn sailing"},
+        prompt=(
+            "Check https://northpier.example/departures for the dawn sailing and "
+            "record the time it leaves."
+        ),
         schedule="FREQ=HOURLY",
     )
     assert result.success, result.message
@@ -1260,116 +936,10 @@ async def _configure_timetable_collection(db: Database) -> None:
 
 async def _composed_for(collector: Collector, db: Database, name: str) -> str:
     """The per-cycle system prompt the collector really builds for ``name`` — bound and
-    with its tools installed, exactly as ``_run_cycle`` does, so the prompt is composed
-    against the surface this cycle actually runs with (#1911)."""
+    with its tools installed, exactly as ``_run_cycle`` does."""
     collector._bind(_get(db, name))
     collector._install_tools(collector.get_tools())
     return await collector._build_system_prompt(None)
-
-
-@pytest.mark.asyncio
-async def test_configured_collection_cycle_reads_routine_values_and_joined_program(
-    test_config, tmp_path
-):
-    """The whole composed prompt for a collection chat configured, byte-for-byte — the
-    three things a cycle needs, in one prompt (#1907).
-
-    The INSTRUCTIONS carry the page this job fetches and the thing it looks for, because
-    the values were joined into the program's leaves when the collection was configured.
-    Beside them the ROUTINE says what is running and what it is for, and the VALUES are
-    listed by name.  Before this, a cycle read a program of descriptions — told to browse
-    "the url of the timetable page to browse each run" — and nothing it could read named
-    the page at all.
-
-    The EMPTY holdings shape rides along (#1914): a collection that has never been
-    written to says so in the plainest words there are, rather than carrying a heading
-    over nothing or leaving the cycle to wonder whether the block failed to render."""
-    collector, db = _make_collector(test_config, tmp_path)
-    await _configure_timetable_collection(db)
-
-    composed = await _composed_for(collector, db, "ferry-departures")
-
-    expected = (
-        "You are the collector for the `ferry-departures` collection.\n"
-        "Description: the dawn sailing on the north pier timetable\n"
-        "\n"
-        "The skill you run: check_timetable — read a timetable page and record a "
-        "sailing time\n"
-        "The values it is pointed at:\n"
-        "- url: https://northpier.example/departures\n"
-        "- line: the dawn sailing\n"
-        "\n"
-        "1. browse(queries=['https://northpier.example/departures'], "
-        "extract='the dawn sailing')\n"
-        "2. collection_write(collection='ferry-departures', "
-        "entries=[{'key': {the key the extracted value is stored under}, "
-        "'content': the value from step 1}])\n"
-        "3. done()\n"
-        "\n"
-        f"{Collector._runtime_rules(_FULL_SURFACE)}"
-        "\n"
-        "\n"
-        "## What this collection holds (newest first)\n"
-        "It holds nothing yet."
-    )
-    assert composed == expected, (
-        f"Configured collection prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_term_the_collection_was_never_given_reads_as_a_named_gap(test_config, tmp_path):
-    """Visible degradation over silent success: re-teaching a routine so it needs
-    something more leaves the running collection short of a term, and the cycle SAYS so,
-    naming the term and what it wants.
-
-    This is the reachable shape of an unbound parameter — the collection was configured
-    against a routine that declared two things and now runs one that declares three — and
-    the honest reading is that its stored program is still the one it was configured
-    with, which the values block is what makes visible."""
-    collector, db = _make_collector(test_config, tmp_path)
-    await _configure_timetable_collection(db)
-    seed_timetable_skill(
-        db,
-        parameters=[
-            SkillParameter(name="url", description="the timetable page to read", value=_TAUGHT_URL),
-            SkillParameter(
-                name="line", description="which sailing to look for", value=_TAUGHT_LINE
-            ),
-            SkillParameter(name="cutoff", description="how late a sailing still counts"),
-        ],
-    )
-
-    composed = await _composed_for(collector, db, "ferry-departures")
-
-    assert composed == (
-        "You are the collector for the `ferry-departures` collection.\n"
-        "Description: the dawn sailing on the north pier timetable\n"
-        "\n"
-        "The skill you run: check_timetable — read a timetable page and record a "
-        "sailing time\n"
-        "The values it is pointed at:\n"
-        "- url: https://northpier.example/departures\n"
-        "- line: the dawn sailing\n"
-        "- cutoff: nothing was supplied for this — it needs how late a sailing still "
-        "counts\n"
-        "\n"
-        "1. browse(queries=['https://northpier.example/departures'], "
-        "extract='the dawn sailing')\n"
-        "2. collection_write(collection='ferry-departures', "
-        "entries=[{'key': {the key the extracted value is stored under}, "
-        "'content': the value from step 1}])\n"
-        "3. done()\n"
-        "\n"
-        f"{Collector._runtime_rules(_FULL_SURFACE)}"
-        "\n"
-        "\n"
-        "## What this collection holds (newest first)\n"
-        "It holds nothing yet."
-    )
-
-
-# ── What the collection holds (#1914) ────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -1405,20 +975,12 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         "You are the collector for the `ferry-departures` collection.\n"
         "Description: the dawn sailing on the north pier timetable\n"
         "\n"
-        "The skill you run: check_timetable — read a timetable page and record a "
-        "sailing time\n"
-        "The values it is pointed at:\n"
-        "- url: https://northpier.example/departures\n"
-        "- line: the dawn sailing\n"
+        "Check https://northpier.example/departures for the dawn sailing and "
+        "record the time it leaves.\n"
         "\n"
-        "1. browse(queries=['https://northpier.example/departures'], "
-        "extract='the dawn sailing')\n"
-        "2. collection_write(collection='ferry-departures', "
-        "entries=[{'key': {the key the extracted value is stored under}, "
-        "'content': the value from step 1}])\n"
-        "3. done()\n"
+        "When you've done what this collection asks, call done().\n"
         "\n"
-        f"{Collector._runtime_rules(_FULL_SURFACE)}"
+        f"{Collector._runtime_rules()}"
         "\n"
         "\n"
         "## What this collection holds (newest first)\n"
@@ -1692,39 +1254,13 @@ async def test_a_done_closed_cycle_without_notify_stays_quiet(mock_llm, test_con
     assert _run_reason(db) == ""
 
 
-def _skipped_write_handler(mock_llm):
-    """Runs the program's READ step, then closes with ``done()`` without ever calling
-    ``collection_write`` — #2417's reproduction: the model decided nothing needed
-    updating and skipped straight to the close instead of landing on the write-gate
-    STOP the way a watch is supposed to."""
-
-    def handler(request: dict, count: int) -> LlmResponse:
-        if _results_so_far(request) == 0:
-            return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
-            )
-        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
-
-    return handler
-
-
-@pytest.mark.asyncio
-async def test_a_cycle_that_wrote_nothing_sends_no_notification(mock_llm, test_config, tmp_path):
-    """#2417: a WRITE-CAPABLE program (its step 2 is ``collection_write``) that closes
-    with ``done()`` having never called it is read the same as a write-gate STOP —
-    nothing mutated this run, so nothing is drawn or queued, whatever tool ended the
-    cycle.  Contrast with ``test_a_done_closed_cycle_queues_exactly_one_notification``
-    above: the same program, the same collection, but a cycle that DID write still
-    notifies — this gap check only ever narrows the quiet case, never the loud one."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _seed_notify_collection(db)
-    mock_llm.set_response_handler(_skipped_write_handler(mock_llm))
-
-    await collector.run_for("indie-metroidvanias")
-
-    assert len(mock_llm.requests) == 2  # the read, then the close — no notify draw
-    assert db.send_queue.next_pending() is None
-    assert _run_reason(db) == ""
+# #2419's gap check — "a done-closed cycle that wrote nothing sends no notification"
+# — retired with the program-coverage substrate it read (#2455 naive baseline): Q4
+# removes `_program_writes()`/the write-gate-shaped condition from `_notify_if_due`,
+# reverting to pre-#2419 behaviour, so a done-closed cycle notifies on its close
+# unless the write gate itself STOPped it.  A cycle that skipped the write and closed
+# clean therefore DOES now notify — a known, measured over-notify gap on this branch,
+# not a regression test to keep green.
 
 
 # A routine with no write in it at all — the shape the produced-work fold exists for:
@@ -2359,17 +1895,12 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
 async def test_collector_message_array_verbatim(test_config, tmp_path):
     """Full verbatim dump of the collector's on-wire message array.
 
-    Shows exactly what the collector model sees: the system message (date +
-    per-collection body + whatever runtime rules this SURFACE can carry out + this
-    collector's recent run history) and the bare user turn (empty for a background
-    agent).  Date and run timestamps are normalised to placeholders; everything else is
-    asserted char-for-char so the structure is visible and drift is caught.
-
-    THE SCOPED SHAPE (#1911/#1916): this collection's program is one ``log_read``, so
-    the cycle's surface is that ``log_read`` and the terminator — and every runtime rule
-    names a tool it does not have, so the whole rules block is ABSENT rather than
-    instructing calls the model cannot make.  A read-only routine reads a prompt about
-    reading, ending on the close it does have.
+    Shows exactly what the collector model sees: the system message (date + the
+    stored prompt verbatim + the close-with-``done()`` instruction + the fixed
+    runtime rules (#2455 naive baseline) + this collector's recent run history) and
+    the bare user turn (empty for a background agent).  Date and run timestamps are
+    normalised to placeholders; everything else is asserted char-for-char so the
+    structure is visible and drift is caught.
 
     The two trailing state blocks sit in their fixed order (#1914): what the collection
     holds — nothing, here, said plainly — then what its recent runs did."""
@@ -2377,7 +1908,6 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     db.memories.create_collection(
         "board-games",
         "Strategy board games worth buying",
-        # Post-0087 stored shape: steps 1..A, no done() — assembly injects the terminal.
         extraction_prompt='Collect board games.\n1. log_read("user-messages")',
     )
     for run_id, outcome, reason in [
@@ -2413,7 +1943,18 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "Collect board games.\n"
         '1. log_read("user-messages")\n'
-        "2. done()\n"
+        "\n"
+        "When you've done what this collection asks, call done().\n"
+        "\n"
+        "## Runtime rules (always apply)\n"
+        "\n"
+        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
+        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
+        "keeps one value per key and replaces the stored content in place. If the entry should "
+        "be removed instead: `collection_remove(key=<key>)`.\n"
+        "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
+        '"Source:" field — if no real source was fetched, omit the field.\n'
+        "- Don't dedup manually — the store rejects duplicates on write automatically.\n"
         "\n"
         "## What this collection holds (newest first)\n"
         "It holds nothing yet.\n"
@@ -2512,10 +2053,8 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
     changed nothing durable — which is why every unclosed shape below is scored with
     ``landed=False``, the only combination they occur in.
 
-    The collector here is bound to a one-call program, so the unreadable-program arm
-    stays out of the way until the case that wants it."""
+    """
     collector, _ = _make_collector(test_config, tmp_path)
-    collector._program = (ProgramCall(ordinal=1, tool="log_read"),)
     done = ToolCallRecord(tool=DoneTool.name, arguments={})
 
     # Closed after writing → worked, and the clean close carries no reason of its own.
@@ -2602,15 +2141,6 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
         "model call failed at step 5 after read_similar: LlmTimeoutError: Request timed out.",
     )
 
-    # A program the framework cannot READ gets its own line (#1911): its surface is the
-    # terminator alone, so there was never a job it could carry out, and saying so is
-    # the difference between a diagnosable state and one found by exclusion.
-    collector._program = ()
-    assert collector._cycle_result(unclosed_write, None, False) == (
-        RunOutcome.FAILED,
-        COLLECTOR_UNREADABLE_PROGRAM_REASON,
-    )
-
 
 def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
     """A write-gate STOP (#1587) closes the cycle at the chokepoint with NO done():
@@ -2685,7 +2215,6 @@ def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_con
     going so the model sees the error and can retry, rather than exiting on a
     recorded-but-empty close."""
     collector, _ = _make_collector(test_config, tmp_path)
-    collector._program = (ProgramCall(ordinal=1, tool="collection_write"),)
     stop = ToolCallRecord(
         tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
     )
@@ -2907,42 +2436,6 @@ async def test_retry_bound_consumes_the_occurrence_so_a_cancelled_collection_can
         await collector.execute()
 
     assert _get(db, "morning-briefing").last_collected_at is not None
-    assert collector._next_ready_collection() is None
-    assert collector._retry_attempts == {}
-
-
-@pytest.mark.asyncio
-async def test_a_deterministic_defect_consumes_the_occurrence_without_retrying(
-    mock_llm, test_config, tmp_path
-):
-    """A retry is only worth an occurrence when the next attempt could go differently.
-
-    A collection whose stored prompt names no runnable call fails identically every time
-    it is dispatched — a CONFIG DEFECT, not a bad draw — so its occurrence is consumed
-    on the first attempt.  Read off the stored program rather than off what the run did,
-    the defect holds whichever way the cycle ended: on a failed model call (phase A) or
-    preempted by a foreground message (phase B), which is what makes it outrank both
-    stochastic causes.
-    """
-    collector, db = _make_collector(test_config, tmp_path)
-    _seed_daily_briefing(db, extraction_prompt=_ONE_SHOT_PROMPT)  # prose, no numbered call
-
-    def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
-        raise LlmConnectionError("Connection refused")
-
-    mock_llm.set_response_handler(die_on_the_model_call)
-    await collector.run_for("morning-briefing")
-
-    assert _get(db, "morning-briefing").last_collected_at is not None
-    assert collector._next_ready_collection() is None  # waits for tomorrow's fire
-
-    _backdate_collected(db, "morning-briefing", minutes=_A_DAY_AND_AN_HOUR)
-    assert collector._next_ready_collection() is not None  # the fire has come round
-    mock_llm.set_response_handler(_cancel_the_cycle)
-    with pytest.raises(asyncio.CancelledError):
-        await collector.execute()
-
-    # Consumed again — a cancellation buys an unrunnable collection nothing.
     assert collector._next_ready_collection() is None
     assert collector._retry_attempts == {}
 

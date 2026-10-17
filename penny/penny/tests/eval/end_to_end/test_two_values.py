@@ -5,23 +5,23 @@ here a single cold ask that changes BOTH of the routine's varying values, the pa
 thing to look for on it — followed by the job that turn stood up, run through its OWN real
 cycles against that page.
 
-The taught routine is the ferry timetable watcher of ``transition_world`` — seeded, never
-edited: a two-parameter routine whose round bound a page and a line to look for on it ("the
-late sailing line", on the harbour timetable).  The cold ask points BOTH parameters somewhere
-new: a seasonal-sailings page the routine was never taught on, and a different line on it —
-"the night sailing" — which that page carries BESIDE the taught line, at the taught line's own
-value.  So a collector that read the wrong line on the right page, or the right line on the
-wrong page, gets a real, catchable artifact either way: the taught line's value is on the new
-page, and the taught page itself stays live in every register.
+The known routine is the ferry timetable watcher — represented structurally (#2455 naive
+baseline: there is no skill registry left to teach it into) by a collection ALREADY RUNNING
+before the ask, holding the value it was set up on ("the late sailing line", on the harbour
+timetable).  The cold ask points at something new: a seasonal-sailings page the existing job
+was never pointed at, and a different line on it — "the night sailing" — which that page
+carries BESIDE the old item's own line, at the old item's own value.  So a collector that read
+the wrong line on the right page, or the right line on the wrong page, gets a real, catchable
+artifact either way: the old item's value is on the new page, and the old job's own page stays
+live in every register.
 
-This is deliberately the two-parameter cold bind — the suite's least stable stand-up, recorded
-as the ``-two-params`` quarantine in ``test_known_routine_new_space.py`` — asked end to end,
+This is deliberately the two-value cold stand-up — the suite's least stable shape, recorded as
+the ``-two-params`` quarantine in ``test_known_routine_new_space.py`` — asked end to end,
 through the job's own cycles.  Findings are the point; the numbers go to the code owner.
 
 **Claims read only:** what the store's entries hold after each cycle, what reached the user,
 the created job's own terms (cadence, end, notify), and provenance — never which collection
-the job sits on, the routine's shape or bound values, or which conversation-machine states the
-script passed through on the way (#2375's ruling).
+the job sits on.
 
 **The pages are real-size** — several kilobytes, the watched line among the notices a real
 harbour page carries.  The night sailing's two times are mutually exclusive as numerals, and
@@ -39,7 +39,7 @@ import pytest
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
-from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at
+from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at, seed_known_routine
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -52,13 +52,82 @@ from penny.tests.eval.utils.cohort import (
 )
 from penny.tests.eval.utils.fixtures import CannedPage, datum
 from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT
-from penny.tests.eval.utils.transition_world import (
-    _FERRY_DEMONSTRATED,
-    _FERRY_SKILL,
-    _FERRY_TIMETABLE,
-    _FERRY_TIMETABLE_URL,
-)
 from penny.tests.eval.utils.worlds import World
+
+# The known routine's own page and already-held value (#2455 naive baseline — inlined
+# here rather than imported from the deleted ``transition_world``, since nothing about
+# this fixture ever depended on the skill-distillation pipeline that module built: a
+# ferry timetable, and the one line on it the already-running job was set up to watch).
+_FERRY_TIMETABLE_URL = "https://harborferries.example/timetable"
+_FERRY_TIMETABLE = CannedPage(
+    match="timetable",
+    text=(
+        "Title: Harbor ferry timetable — daily sailings | harborferries\n"
+        f"{_FERRY_TIMETABLE_URL}\n"
+        "\n"
+        "Sailings published each morning by a fictional harbour authority.\n"
+        "Departures: 6:40am, 9:15am, 12:30pm, 4:05pm, 7:20pm\n"
+        f"[Harbor ferry timetable]({_FERRY_TIMETABLE_URL})\n"
+        "Late sailing: not scheduled this season.\n"
+        "\n"
+        "Fares\n"
+        "Single and return fares, with a concession rate for residents of the harbour town\n"
+        f"[Ferry fares]({_FERRY_TIMETABLE_URL}/fares)\n"
+        "Tickets are sold at the kiosk on the quay or bought aboard from the crew.\n"
+        "A return bought on the day costs less than two singles.\n"
+        "\n"
+        "Luggage and bikes\n"
+        "What travels free and what needs a ticket of its own\n"
+        f"[Luggage and bikes]({_FERRY_TIMETABLE_URL}/luggage)\n"
+        "A folded bicycle travels free; a full-size bike needs a space booked ahead.\n"
+        "Pushchairs and wheelchairs board first and travel free of charge.\n"
+        "\n"
+        "Disruptions\n"
+        "Weather and maintenance notices are posted here before a sailing is cancelled\n"
+        f"[Disruption notices]({_FERRY_TIMETABLE_URL}/disruptions)\n"
+        "A cancelled sailing is announced on the quay noticeboard as well as here.\n"
+        "The harbourmaster decides whether a crossing runs in rough weather.\n"
+        "\n"
+        "Accessibility\n"
+        "A ramp at the quay lets a wheelchair board without the crew's help\n"
+        f"[Accessibility]({_FERRY_TIMETABLE_URL}/accessibility)\n"
+        "The lower deck is step-free; the upper deck is reached by a narrow stair.\n"
+        "An assistance dog travels free in the saloon with its owner.\n"
+        "\n"
+        "Weather and sea state\n"
+        "A rough forecast can shorten the day's run before any sailing is cancelled\n"
+        f"[Weather and sea state]({_FERRY_TIMETABLE_URL}/weather)\n"
+        "The afternoon sailings are the first to be shortened in a building swell.\n"
+        "A calm forecast is no guarantee once the crossing is under way.\n"
+        "\n"
+        "Group bookings\n"
+        "A school or club trip is booked ahead through the harbour authority's office\n"
+        f"[Group bookings]({_FERRY_TIMETABLE_URL}/groups)\n"
+        "A group is asked to arrive at the kiosk well before the booked sailing.\n"
+        "The crew can hold a sailing a few minutes for a booked group running late.\n"
+        "\n"
+        "About the harbour authority\n"
+        "The fictional body running these crossings, a small working harbour, not a port.\n"
+        "The authority also maintains the quay, the kiosk and the waiting shelter, and "
+        "posts separate notices for freight sailings, which are not shown on this "
+        "passenger timetable. Comments on the timetable go to the harbourmaster's "
+        "office, which also keeps the published record of sailings actually run "
+        "against the published timetable, for anyone checking a missed crossing.\n"
+    ),
+)
+# The already-held value — the old item's own line, at the value the job already holds it at.
+_FERRY_OLD_ITEM_ENTRY_KEY = "late-sailing"
+_FERRY_OLD_ITEM_VALUE = "Late sailing: not scheduled this season."
+_FERRY_COLLECTION = "ferry-timetable-watch"
+# The earlier conversation that set the ferry job up (#2455 naive baseline, code-owner
+# ruling): her own past logs are the other half of "a routine she already knows", beside
+# the job itself.
+_FERRY_TAUGHT_ASK = (
+    "can you keep an eye on the ferry timetable for the late sailing and let me know if it changes?"
+)
+_FERRY_TAUGHT_REPLY = (
+    "done — I'll check the ferry timetable daily and let you know if the late sailing changes. ⛴️"
+)
 
 pytestmark = pytest.mark.eval
 
@@ -74,9 +143,10 @@ _BEHAVIOUR = (
 
 _NEW_URL = "https://harborferries.example/seasonal-sailings"
 
-# The OLD item, carried at the value the routine was taught on — read off the ferry family's
-# own demonstrated round so the page and the taught value cannot drift apart.
-_OLD_ITEM_LINE = _FERRY_DEMONSTRATED.entry_value
+# The OLD item, carried at the value the already-running job holds it at — the same
+# literal the seed below writes into the old job's own entry, so the page and the
+# held value cannot drift apart.
+_OLD_ITEM_LINE = _FERRY_OLD_ITEM_VALUE
 # The marker the "not the old item's" claim reads — a stable substring of the old item's line.
 _OLD_ITEM_MARKER = "not scheduled"
 
@@ -194,30 +264,40 @@ _assert_every_wording_carries_the_facts()
 
 
 def _seed(db: Database) -> None:
-    """The entry condition: no routine taught by THIS seed and no job running — the ferry
-    routine is laid into the registry by the runner's own ``seed_skills`` step, after this
-    seed returns.  Asserted rather than assumed, so a world that drifted fails here rather
-    than after a live run.
+    """The entry condition: the ferry timetable watcher as "a routine she already knows"
+    (#2455 naive baseline, code-owner ruling) — both halves of it, through the chokepoints
+    the runtime itself writes through: the job ALREADY RUNNING (scheduled, already holding
+    the old item's line), and the EARLIER CONVERSATION that set it up, in her own logs (the
+    ask, her read → write → ``collection_configure`` calls, her reply) — so her self-state's
+    recent activity, ``log_read``, and ``run_get`` all read it back exactly as if that turn
+    had really happened.  Asserted rather than assumed, so a world that drifted fails here
+    rather than after a live run.
 
-    Checked against COLLECTIONS only, never the whole store — a fresh eval database is built
-    exactly like production (``create_tables()`` then ``migrate()``), and migrations seed
-    system log memories (``penny-messages``, the browse-results log, …) into every database,
-    cold teach or not."""
-    assert not db.skills.list_all(), "the registry must start empty before seed_skills runs"
-    collections = [row for row in db.memories.list_all() if row.type == MemoryType.COLLECTION]
-    assert not collections, f"no collection may exist yet for a cold entry, found {collections}"
+    Checked against COLLECTIONS only, never the whole store — a fresh eval database is
+    built exactly like production (``create_tables()`` then ``migrate()``), and
+    migrations seed system log memories (``penny-messages``, the browse-results log, …)
+    into every database, cold or not."""
+    seed_known_routine(
+        db,
+        collection=_FERRY_COLLECTION,
+        description="check the ferry timetable for the late sailing line",
+        url=_FERRY_TIMETABLE_URL,
+        extract="the late sailing line",
+        entry_key=_FERRY_OLD_ITEM_ENTRY_KEY,
+        entry_value=_FERRY_OLD_ITEM_VALUE,
+        schedule="FREQ=DAILY;BYHOUR=14",
+        ask=_FERRY_TAUGHT_ASK,
+        reply=_FERRY_TAUGHT_REPLY,
+    )
+    collections = [row.name for row in db.memories.list_all() if row.type == MemoryType.COLLECTION]
+    assert collections == [_FERRY_COLLECTION], (
+        f"{_CASE_ID}: only the already-running ferry job may exist before the ask, "
+        f"found {collections}"
+    )
 
 
 _ARMS = tuple(
-    EndToEndArm(
-        label=ask,
-        turns=(ask,),
-        seed=_seed,
-        seed_skills=[_FERRY_SKILL],
-        world=_WORLD,
-        cycles=_CYCLES,
-    )
-    for ask in _ASKS
+    EndToEndArm(label=ask, turns=(ask,), seed=_seed, world=_WORLD, cycles=_CYCLES) for ask in _ASKS
 )
 
 

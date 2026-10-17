@@ -1,15 +1,12 @@
-"""The front door of collector creation (#1591, stage ⑤ of #1562 / epic #1554).
+"""The front door of collector creation (#2455 naive baseline; was #1591).
 
-A collection is never authored with an inline procedure any more — it is an
-*instantiation of a skill*: ``collection_configure`` takes a ``skill`` (resolved by
-name or meaning), binds its parameters from ``parameters``, renders the skill's
-steps into the numbered TEXT ``extraction_prompt`` the collector runs, and stamps
-it at creation.  This module holds the pure, DB-free pieces of that flow so they
-are whole-render tested in isolation:
+A collection is storage plus an optional job: ``collection_configure`` takes a
+``prompt`` — free text the model writes — and stores it verbatim as the
+collection's ``extraction_prompt``, the instructions the job's cycles follow.
+There is no skill to resolve, no parameters to bind, and no rendering seam: the
+prompt the model wrote IS the prompt the collector runs. This module holds the
+pure, DB-free pieces of that flow so they are whole-render tested in isolation:
 
-* the **skill-resolution union** (``SkillResolutionKind`` — MATCHED / AMBIGUOUS /
-  NO_SKILL_FOUND / EMBED_FAILED) and its enumerated tool-result renders, including
-  the #1471 "walk me through it once" elicitation;
 * the **idempotency-at-birth** tombstone result (#1567) — the archived-duplicate
   confirm-shape, naming the retired row and the unarchive that revives it.  (Its
   active-duplicate sibling is gone: an active duplicate is no longer refused, it
@@ -23,127 +20,30 @@ are whole-render tested in isolation:
   model-facing surface reads instead: plain words leading, with that same exact
   rule kept alongside in a code span, so a reply narrating a job's cadence has
   words to copy rather than the raw RRULE;
-* the **creation echo** (skill · params · schedule · notify · expiry · the rendered
-  prompt), so the chat agent confirms back exactly what landed.
+* the **creation echo** (the prompt · schedule · notify · expiry), so the chat
+  agent confirms back exactly what landed.
 
-The orchestration (embed, resolve, validate parameters, dedup, create) lives on
+The orchestration (embed, parse, dedup, create) lives on
 ``CollectionCreateTool`` in :mod:`penny.tools.memory_tools`.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, tzinfo
-from enum import StrEnum
 
 import dateparser
 from dateutil.rrule import rrulestr
 from pydantic import BaseModel
 
 from penny.constants import PennyConstants
-from penny.database.models import MemoryRow, Skill
-from penny.database.skills import SkillParameter
+from penny.database.models import MemoryRow
 from penny.datetime_utils import (
     format_log_timestamp,
     format_user_timestamp,
     stored_as_utc,
     zone_or_utc,
 )
-
-# ── Skill resolution union ────────────────────────────────────────────────────
-
-
-class SkillResolutionKind(StrEnum):
-    """The closed set of outcomes when resolving the ``skill`` arg to a stored
-    skill (classify-then-act, the enumerated-cases doctrine).  MATCHED proceeds to
-    instantiation; AMBIGUOUS and NO_SKILL_FOUND are returned as tool results, never
-    silently resolved; EMBED_FAILED is the transient-embedding escape."""
-
-    MATCHED = "matched"
-    AMBIGUOUS = "ambiguous"
-    NO_SKILL_FOUND = "no_skill_found"
-    EMBED_FAILED = "embed_failed"
-
-
-class SkillResolution(BaseModel):
-    """One resolution outcome: the kind plus whichever payload it carries — the
-    matched ``skill`` (MATCHED) or the ranked ``candidates`` (AMBIGUOUS)."""
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    kind: SkillResolutionKind
-    skill: Skill | None = None
-    candidates: list[Skill] = []
-
-
-_AMBIGUOUS_HEADER = 'I know a few skills close to "{query}" — I won\'t guess which you mean:'
-_AMBIGUOUS_TAIL = (
-    "To use one, call collection_configure again with skill='<its exact name>'. If none of "
-    "these is the process you mean, walk me through it once and I'll learn it as a new skill."
-)
-
-_NO_SKILL_FOUND = (
-    "I don't know how to \"{query}\" yet — there's no skill for it, so there's nothing to "
-    "instantiate. No schedule can be set up before the skill is learned. Two cases:\n"
-    "a. The user already told you what one round needs — where to look, what to pull "
-    "out, what to keep — then DO IT NOW, in this turn: browse, extract just the "
-    "ONE value they want "
-    "watched (only the price, not a whole name+hook+price blob — a multi-field blob "
-    "changes whenever any part does and would false-alarm every cycle), and "
-    "collection_write what you actually found — storage is created for you if it "
-    "doesn't exist.\n"
-    "b. They haven't — reply to the user now, no more tool calls this turn: tell them "
-    "you'll learn it from one complete pass, and ask for the whole thing in ONE "
-    "message (where to look, what to pull out, what to keep), modelling the example "
-    "from what they already said. When it arrives, run case a.\n"
-    "Either way what you demonstrate is learned automatically as a skill from that round — a "
-    "learned notice will tell you the moment it exists; then attach it and set any "
-    "schedule or notify they asked for in ONE call: collection_configure(collection=<the "
-    "collection>, skill=<its name>, schedule=..., notify=...)."
-)
-
-
-def render_ambiguous(query: str, candidates: list[Skill]) -> str:
-    """SKILL_AMBIGUOUS: the ranked candidates plus how to narrow (pass the exact
-    name) or teach a new one — never a silent pick."""
-    lines = [_AMBIGUOUS_HEADER.format(query=query)]
-    lines.extend(f"{i}. {skill.name} — {skill.intent}" for i, skill in enumerate(candidates, 1))
-    lines.append(_AMBIGUOUS_TAIL)
-    return "\n".join(lines)
-
-
-def render_no_skill_found(query: str) -> str:
-    """NO_SKILL_FOUND: the #1471 elicitation — ignorance becomes the trigger to
-    demonstrate-and-promote, with the exact next call named."""
-    return _NO_SKILL_FOUND.format(query=query)
-
-
-# ── Parameter validation ──────────────────────────────────────────────────────
-
-_UNBOUND_PARAMETERS = (
-    "Can't instantiate '{skill}': these required parameters aren't bound:\n{listed}\n"
-    "Pass them in parameters (e.g. parameters={{{example}}}), then call collection_configure again."
-)
-
-
-def _parameter_line(parameter: SkillParameter) -> str:
-    """One unbound-parameter line — its semantic name and, when set, its description
-    (so a stale/unknown name is answered with the CURRENT names + what they mean)."""
-    if parameter.description:
-        return f"  - {parameter.name}: {parameter.description}"
-    return f"  - {parameter.name}"
-
-
-def render_unbound_parameters(skill_name: str, missing: list[SkillParameter]) -> str:
-    """The parameter-validation error (#1668): name every unbound required parameter
-    with its description (the current, semantic names — so a rebind with a stale name
-    is answered actionably) and show the exact ``params`` shape to supply
-    (actionable-error contract)."""
-    listed = "\n".join(_parameter_line(parameter) for parameter in missing)
-    example = ", ".join(f"'{parameter.name}': <value>" for parameter in missing)
-    return _UNBOUND_PARAMETERS.format(skill=skill_name, listed=listed, example=example)
-
 
 # ── Idempotency at birth (#1567) ──────────────────────────────────────────────
 
@@ -794,13 +694,6 @@ def _schedule_line(row: MemoryRow, timezone_name: str | None) -> str:
     return f"  schedule: {describe_schedule_field(row, timezone_name)}"
 
 
-def _params_line(params: dict[str, str]) -> str:
-    if not params:
-        return "  params: none"
-    rendered = ", ".join(f"{key}={value}" for key, value in params.items())
-    return f"  params: {rendered}"
-
-
 _NO_EXPIRY_CLAUSE = "never"
 
 
@@ -819,10 +712,10 @@ def _expires_line(row: MemoryRow, timezone_name: str | None) -> str:
     return f"  expires: {_expires_value(row, timezone_name)}"
 
 
-# ── The plain-language lead line (what the collector WILL do, #1658) ───────────
+# ── The plain-language lead line (what the collector WILL do) ───────────────
 #
 # The instantiation echoes LEAD with one deterministic English sentence composed
-# from the STRUCTURED fields — skill · cadence · target · notify — so the model (and
+# from the STRUCTURED fields — cadence · target · notify — so the model (and
 # the user it mirrors it to) reads what the collector will actually do without
 # confabulating it.  Template-method over the schedule × the notify flag; the
 # detailed field-by-field echo stays below it.
@@ -831,9 +724,8 @@ def _expires_line(row: MemoryRow, timezone_name: str | None) -> str:
 def _lead_cadence_phrase(row: MemoryRow, timezone_name: str | None) -> str:
     """The 'when it runs' clause, in plain words with the exact rule in a code span
     (#2425, ``describe_schedule``) — a bare 'I'll run' when the collection carries no
-    schedule at all (defensive — a skill-backed collection always has one).  Any run
-    quota is already stated in those words (``_describe_rule``'s own COUNT handling),
-    so it is not stated a second time here."""
+    schedule at all.  Any run quota is already stated in those words
+    (``_describe_rule``'s own COUNT handling), so it is not stated a second time here."""
     if not has_schedule(row):
         return "I'll run"
     return f"On the schedule {describe_schedule(row, timezone_name)} I'll run"
@@ -846,62 +738,41 @@ def _lead_notify_tail(row: MemoryRow) -> str:
     return "quietly store what it finds."
 
 
-def _lead_line(row: MemoryRow, skill_name: str, timezone_name: str | None) -> str:
-    """One deterministic English sentence: cadence + skill + target + notify —
+def _lead_line(row: MemoryRow, timezone_name: str | None) -> str:
+    """One deterministic English sentence: cadence + target + notify —
     e.g. "On the schedule every 15 minutes (rule: `FREQ=MINUTELY;INTERVAL=15`) I'll run
-    'watch-a-page' against 'aurora-prices' and message you when something changes." /
+    against 'aurora-prices' and message you when something changes." /
     "…and quietly store what it finds."."""
-    return (
-        f"{_lead_cadence_phrase(row, timezone_name)} '{skill_name}' against '{row.name}' and "
-        f"{_lead_notify_tail(row)}"
-    )
+    cadence = _lead_cadence_phrase(row, timezone_name)
+    return f"{cadence} against '{row.name}' and {_lead_notify_tail(row)}"
 
 
-def _instantiation_echo(
-    row: MemoryRow,
-    skill_name: str,
-    params: dict[str, str],
-    headline: str,
-    timezone_name: str | None,
-) -> str:
+def _instantiation_echo(row: MemoryRow, headline: str, timezone_name: str | None) -> str:
     """The shared instantiation confirm-shape — a plain-language LEAD line (what the
-    collector will do) over a ``headline`` and skill · bound params · schedule ·
-    notify · expiry · the full rendered ``extraction_prompt``.  Both the creation
-    echo (#1591) and the re-render echo (#1620) compose it, so a freshly created
-    collection and a re-rendered one confirm back the same fields."""
+    collector will do) over a ``headline`` and description · schedule · notify ·
+    expiry · the job's instructions verbatim.  Both the creation echo and the
+    re-render echo compose it, so a freshly created collection and a re-configured
+    one confirm back the same fields."""
     prompt = (row.extraction_prompt or "").replace("\n", "\n    ")
     lines = [
-        _lead_line(row, skill_name, timezone_name),
+        _lead_line(row, timezone_name),
         headline,
         f"  description: {row.description}",
-        f"  skill: {skill_name}",
-        _params_line(params),
         _schedule_line(row, timezone_name),
         f"  notify: {row.notify}",
         _expires_line(row, timezone_name),
-        "  steps: |",
+        "  prompt: |",
         f"    {prompt}",
     ]
     return "\n".join(lines)
 
 
-def render_creation_echo(
-    row: MemoryRow,
-    skill_name: str,
-    params: dict[str, str],
-    timezone_name: str | None = None,
-) -> str:
-    """The structured creation echo — skill, bound params, schedule, notify, expiry,
-    and the full rendered ``extraction_prompt`` — so the chat agent confirms back
-    exactly what landed without confabulating a field.  ``timezone_name`` defaults to
-    ``None`` (UTC) so a caller that predates #2206/#2251 renders byte-identically."""
-    return _instantiation_echo(
-        row,
-        skill_name,
-        params,
-        f"Created collection '{row.name}' from skill '{skill_name}':",
-        timezone_name,
-    )
+def render_creation_echo(row: MemoryRow, timezone_name: str | None = None) -> str:
+    """The structured creation echo — description, schedule, notify, expiry, and
+    the job's prompt verbatim — so the chat agent confirms back exactly what
+    landed without confabulating a field.  ``timezone_name`` defaults to ``None``
+    (UTC) so a caller that predates #2206/#2251 renders byte-identically."""
+    return _instantiation_echo(row, f"Created collection '{row.name}':", timezone_name)
 
 
 # The before→after form a configured field takes when THIS turn moved it (#1946), and
@@ -915,7 +786,6 @@ _NO_PRIOR_VALUE = "not set"
 # and ``extraction_prompt`` are deliberately absent: this record carries neither (the
 # program is left out by #1799), so their priors have nowhere honest to go and are simply
 # not stated.
-_SKILL_FIELD = "skill"
 _SCHEDULE_FIELD = "schedule"
 _NOTIFY_FIELD = "notify"
 _EXPIRES_FIELD = "expires_at"
@@ -925,9 +795,8 @@ def _configured_value(value: str, field: str, priors: Mapping[str, str | None]) 
     """One configured value, rendered as ``was <old> → now <new>`` when this turn moved
     it and plainly when it did not.
 
-    A prior that reads the SAME as the value renders plainly too: a rebind reports the
-    ``skill`` field changed while the routine's name stands still, and "was X → now X"
-    is noise a reader has to rule out.  A field with no recorded prior renders exactly as
+    A prior that reads the SAME as the value renders plainly too: "was X → now X" is
+    noise a reader has to rule out.  A field with no recorded prior renders exactly as
     it always did, which is what keeps every pre-#1946 event's render byte-identical."""
     if field not in priors:
         return value
@@ -971,138 +840,31 @@ def _schedule_configured_value(
     return after if before == after else _CHANGED_VALUE.format(before=before, after=after)
 
 
-def render_applied_configuration(
-    row: MemoryRow,
-    priors: Mapping[str, str | None] | None = None,
-    timezone_name: str | None = None,
-) -> str | None:
-    """What a collection is now CONFIGURED to do, read off the row itself (#1869) — the
-    record the run-end narration frame carries.
-
-    The row IS the record: it holds the routine it runs, the values that routine is
-    pointed at, its cadence, its end condition and whether it tells the user, all written
-    by the call that configured it.  So a turn that no longer supplies the routine or its
-    values has somewhere to READ what it just set up, instead of narrating from a memory
-    of arguments the framework filled in for it.
-
-    ``priors`` is what those fields held BEFORE this turn changed them (#1946), read back
-    off the mutation ledger this run wrote — the one fact the row cannot answer, because
-    the edit overwrote it.  A turn asked to FIX a running job is asked about both states,
-    and the observed regression was a reply whose fix was correct while the prior value it
-    quoted was invented; each changed line therefore carries its own before→after, so a
-    was-state claim is a copy.  Omitted (the default) the render is byte-identical to what
-    it always was, which is every path but the one that has a ledger to read.
-
-    ``timezone_name`` is the user's own IANA zone (#2206/#2251), read on the expiry line
-    and on the schedule's own words (#2425, an explicit DTSTART's moment) — facts on the
-    user's own clock, never the UTC a historical timestamp renders in; ``None`` falls
-    back to UTC like every other clock read here.
-
-    ``None`` when the collection carries no routine — an inert container has no
-    configuration to state, and saying it was set up would be the claim the honest-failure
-    rule exists to stop.
-
-    Deliberately the echo's fields WITHOUT the rendered program (#1799): what this is read
-    for is a description a person can act on, and a block of tool calls in front of that
-    request is a block that gets read aloud."""
-    if row.skill_name is None:
-        return None
-    moved = priors if priors is not None else {}
-    params = skill_params(row)
-    return "\n".join(
-        [
-            _lead_line(row, row.skill_name, timezone_name),
-            f"  collection: {row.name}",
-            f"  skill: {_configured_value(row.skill_name, _SKILL_FIELD, moved)}",
-            _params_line(params),
-            f"  schedule: {_schedule_configured_value(row, timezone_name, moved)}",
-            f"  notify: {_configured_value(str(row.notify), _NOTIFY_FIELD, moved)}",
-            f"  expires: {render_expiry_update_line(row, timezone_name, moved)}",
-        ]
-    )
+def render_reinstantiation_echo(row: MemoryRow, timezone_name: str | None = None) -> str:
+    """The re-render confirm-shape — render-at-update mirrors render-at-creation, so
+    a collection whose prompt/schedule/notify just changed confirms back its NEW
+    configuration, in the same shape the creation echo uses.  ``timezone_name``
+    defaults to ``None`` (UTC) so a caller that predates #2206/#2251 renders
+    byte-identically."""
+    return _instantiation_echo(row, f"Re-configured collection '{row.name}':", timezone_name)
 
 
-def skill_params(row: MemoryRow) -> dict[str, str]:
-    """The values a collection's routine is bound to, off its own provenance column —
-    ``{}`` when it has none.  One reading of that column, shared by the tool that rebinds
-    it and the render that states it back."""
-    return json.loads(row.skill_params) if row.skill_params else {}
-
-
-def render_skill_parameters(
-    parameters: list[SkillParameter], bound: dict[str, str] | None = None
-) -> str:
-    """The ``parameters:`` block (#1668/#2287): one ``- <name> (required|optional)[:
-    <description>]`` line per SKILL-level parameter, collapsing to ``parameters: none``
-    for a parameter-less skill.  The ONE format every reader of a routine's declared
-    parameters needs, called two ways: a configured job's ``memory_get`` render
-    passes ``bound`` (the job's own values, read off its row via :func:`skill_params`)
-    so each line additionally states the value THIS job supplied for it, or that
-    nothing was; ``find``'s taught-skill hit reads the bare declaration (``bound=None``)
-    — no job to speak of, so the line carries no value clause at all."""
-    if not parameters:
-        return "parameters: none"
-    lines = ["parameters:"]
-    for parameter in parameters:
-        required = "required" if parameter.required else "optional"
-        line = f"  - {parameter.name} ({required})"
-        if parameter.description:
-            line += f": {parameter.description}"
-        if bound is not None:
-            line += _bound_value_clause(parameter.name, bound)
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def _bound_value_clause(name: str, bound: dict[str, str]) -> str:
-    """The value THIS job has bound for a parameter — or an honest gap (a re-taught
-    routine can declare something the running job was never configured with), never a
-    blank standing in for a value."""
-    if name in bound:
-        return f" — bound to: {bound[name]}"
-    return " — nothing was supplied for this job"
-
-
-def render_reinstantiation_echo(
-    row: MemoryRow,
-    skill_name: str,
-    params: dict[str, str],
-    timezone_name: str | None = None,
-) -> str:
-    """The re-render confirm-shape (#1620) — render-at-update mirrors
-    render-at-creation, so a refreshed / rebound / swapped / adopted collection
-    confirms back its NEW program: the skill it now runs, the bound params, and the
-    freshly rendered routine, in the same shape the creation echo uses.
-    ``timezone_name`` defaults to ``None`` (UTC) so a caller that predates
-    #2206/#2251 renders byte-identically."""
-    return _instantiation_echo(
-        row,
-        skill_name,
-        params,
-        f"Re-rendered collection '{row.name}' from skill '{skill_name}':",
-        timezone_name,
-    )
-
-
-# ── Inert creation echo (#1629) ───────────────────────────────────────────────
+# ── Inert creation echo ───────────────────────────────────────────────────────
 
 _INERT_ECHO = (
     "Set up collection '{name}' — storage only, no job yet:\n"
     "  description: {description}\n"
-    "  status: inert (no skill attached)\n"
+    "  status: inert (no prompt attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until it has a "
-    "skill. Next: run one round into it — read the source, then collection_write what "
-    "you actually find into '{name}'; what you demonstrate is learned automatically as a "
-    "skill from that round. If you haven't demonstrated it yet, reply and ask the user "
-    "for it in one message — don't guess."
+    "prompt. Attach one with collection_configure(collection='{name}', prompt=<what the "
+    "job's cycles should do>, schedule=<recurrence rule>)."
 )
 
 
 def render_inert_echo(row: MemoryRow) -> str:
-    """The skill-less creation echo (#1629): a collection with no ``extraction_prompt``
-    is INERT — a container that holds entries but has no job, so it never dispatches.
-    The echo is honest about that (storage only, no skill) and names the two-step
-    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_configure``)
-    — never claiming a routine that doesn't exist (visible degradation over silent
+    """The prompt-less creation echo: a collection with no ``extraction_prompt`` is
+    INERT — a container that holds entries but has no job, so it never dispatches.
+    The echo is honest about that (storage only, no prompt) and names how to give it
+    a job — never claiming a job that doesn't exist (visible degradation over silent
     success)."""
     return _INERT_ECHO.format(name=row.name, description=row.description)

@@ -29,48 +29,8 @@ from penny.notification import (
     WrittenEntry,
     render_notification,
 )
-from penny.program import ProgramCall, program_calls
 
 pytestmark = pytest.mark.bare_db
-
-
-_SURFACE = frozenset({"browse", "collection_write", "collection_list", "log_read", "done"})
-
-
-# ── The program's calls (#1911) ───────────────────────────────────────────────
-
-
-def test_program_calls_read_the_rendered_dialect_only():
-    """A program's calls are read off its numbered steps in the ONE dialect that exists
-    (#1911): the rendered ``N. tool(args)`` a taught routine produces.
-
-    The call must OPEN the step.  Prose that merely NAMES a call — the seeded rows'
-    ``4. Call collection_write("x", …) once with all of them`` — reads as no call at
-    all, which is the point: those rows were dropped in the soft reboot, and a lenient
-    parse over prose can only manufacture a program nobody wrote.  A step naming a tool
-    this cycle does not run with is not a call it could cover either."""
-    rendered = (
-        "Watch the timetable.\n"
-        "1. browse(queries=['https://ex.example/t'], extract='the dawn sailing')\n"
-        "2. collection_write(collection='ferry', entries=[{'key': 'x', 'content': 'y'}])"
-    )
-    assert program_calls(rendered, _SURFACE) == (
-        ProgramCall(ordinal=1, tool="browse"),
-        ProgramCall(ordinal=2, tool="collection_write"),
-    )
-
-    # THE WATCHED BOUNDARY: prose naming its calls mid-sentence is not a program.
-    hand_authored = (
-        "You extract the user's negative preferences from their recent messages.\n"
-        '1. Call log_read("user-messages") to fetch new messages you have not seen.\n'
-        "2. Identify every genuine DISLIKE — a thing the user avoids.\n"
-        '3. Call collection_write("dislikes", entries=[...]) once with all of them.'
-    )
-    assert program_calls(hand_authored, _SURFACE) == ()
-
-    # Prose alone names no call; a verb off this cycle's surface is not one either.
-    assert program_calls("Watch the page and write down what changed.", _SURFACE) == ()
-    assert program_calls("1. send_message(content=<the message>)", _SURFACE) == ()
 
 
 # ── The notify document (#1911) ───────────────────────────────────────────────

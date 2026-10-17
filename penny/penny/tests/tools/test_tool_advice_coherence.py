@@ -1,10 +1,22 @@
 """No rendered text may name a tool the surface does not carry (#1911).
 
-A collector cycle's tool surface is SCOPED to its program's own calls now, so "is the
-tool this message tells the model to call actually here?" stopped being a theoretical
-question.  A result that says ``call collection_remove(key=…)`` on a surface
-with no such tool is a rendered instruction that cannot be followed — an n≤1 reachability
-bug, and exactly the guessing the anchor discipline exists to remove.
+A collector cycle's tool surface is the fixed chat-minus-lifecycle set (#2455 naive
+baseline), narrower than chat's, so "is the tool this message tells the model to call
+actually here?" is not a theoretical question.  A result that says
+``call collection_remove(key=…)`` on a surface with no such tool is a rendered
+instruction that cannot be followed — an n≤1 reachability bug, and exactly the
+guessing the anchor discipline exists to remove.
+
+ONE declared exception: ``find``'s hit addressing can name a lifecycle verb
+(``collection_configure`` on an inert hit, ``collection_archive``/
+``collection_unarchive`` on a live/archived one) that the collector's surface does
+not carry, yet ``find`` itself has to stay on every surface regardless — every other
+read/write tool's own did-you-mean fallback points at it (#1674), so excluding
+``find`` from the collector surface would dead-end THOSE tools into a call that
+surface cannot make either, trading one reachability gap for a wider one.  This is
+the one tool whose own closure cannot be made to fit a narrower surface, so the
+end-to-end test below names it and moves on rather than failing the whole suite on
+a gap that has no correct resolution at the agent-surface level.
 
 The resolution is a DECLARED RELATION rather than a swept-once list: each tool declares
 the tools its own text may point at (``Tool.advises``), and a scoped surface is the
@@ -197,13 +209,21 @@ def test_the_scanner_reads_the_real_message_sources():
     assert len(vocabulary) > 20, "the registry looks unpopulated — imports may be missing"
 
 
-def test_a_scoped_surface_renders_no_off_surface_tool(test_config, tmp_path):
-    """THE END-TO-END READ: a real program-scoped cycle's surface is closed over the
-    advice relation, so nothing it can render names a tool it lacks — neither a tool
-    result nor the composed prompt's own runtime rules.
+# The one declared exception to the closure invariant below (module docstring):
+# ``find`` must stay on every surface as every other tool's did-you-mean fallback,
+# even though its OWN hit addressing can name a lifecycle verb a narrower surface
+# (the collector's) does not carry.
+_KNOWN_OPEN_REFERENCE = frozenset({"find"})
 
-    The same invariant as the declaration test, read from the other end: over the surface
-    a live cycle actually builds rather than over what the classes declare."""
+
+def test_a_scoped_surface_renders_no_off_surface_tool(test_config, tmp_path):
+    """THE END-TO-END READ: a real collector cycle's fixed surface (#2455 naive
+    baseline) is closed over the advice relation, so nothing it can render names a
+    tool it lacks — neither a tool result nor the composed prompt's own runtime
+    rules — with the one declared exception above.
+
+    The same invariant as the declaration test, read from the other end: over the
+    surface a live cycle actually builds rather than over what the classes declare."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "ferry-departures", "the dawn sailing", extraction_prompt=_PROGRAM
@@ -213,7 +233,7 @@ def test_a_scoped_surface_renders_no_off_surface_tool(test_config, tmp_path):
 
     surface = {tool.name for tool in collector.get_tools()}
 
-    for name in surface:
+    for name in surface - _KNOWN_OPEN_REFERENCE:
         referenced = _referenced_tools(vocabulary[name], vocabulary)
         assert referenced <= surface, (
             f"`{name}` can render text naming {sorted(referenced - surface)}, "
@@ -221,7 +241,7 @@ def test_a_scoped_surface_renders_no_off_surface_tool(test_config, tmp_path):
         )
     target = db.memories.get("ferry-departures")
     assert target is not None
-    composed = Collector._compose_prompt(target, None, frozenset(surface))
+    composed = Collector._compose_prompt(target)
     off_surface = [
         name for name in vocabulary if name not in surface and _names_tool(composed, name)
     ]

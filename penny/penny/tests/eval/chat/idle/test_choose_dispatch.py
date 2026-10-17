@@ -42,7 +42,6 @@ import re
 
 import pytest
 
-from penny.conversation_machine import ConversationState
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
@@ -194,7 +193,7 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
         timeout=240.0,
     )
     # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_machine_landed("idle")
 
     # STORE — EMPTY, and that is a report rather than an omission: the world holds nothing
     # before the turn, so there is no prior state for a preservation claim to read, and the ask

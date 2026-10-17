@@ -50,21 +50,12 @@ class Prompt:
         "(news, products, prices, fresh facts).\n\n"
     )
 
-    # ── Per-state instructions ────────────────────────────────────────────────
+    # ── The one chat instruction (#2455 naive baseline) ────────────────────────
     #
-    # One per state, each GENERICALLY and MINIMALLY sufficient to enact that
-    # state — no task shapes, no example phrasings, no guards written against a
-    # particular failed sample.  The states are the whole vocabulary:
-    #
-    #   idle     ordinary conversation and ad-hoc requests
-    #   elicit   a task was asked for that no skill covers — get the instructions
-    #   learn    instructions were given — follow them
-    #   apply    a skill covers the task and everything it needs is here
-    #   request  a skill covers the task but something it needs is missing
-    #
-    # None of them names a state, mentions another, or hints that a classifier
-    # ran: by the time chat reads one, where the conversation stands has been
-    # decided, so what the turn needs is what to do.
+    # There is no conversation machine any more, so there is exactly one
+    # instruction — idle's — and every turn reads it.  The elicit / learn / apply /
+    # request instructions this replaced, and the round-framing/shortfall lines
+    # that rendered inside them, are deleted with the states they belonged to.
 
     IDLE_INSTRUCTION = (
         "You are having a conversation, and doing whatever the user asks of you "
@@ -83,132 +74,6 @@ class Prompt:
         "collection if it doesn't exist. That is a plain write, not a job: no "
         "schedule, no notify.\n\n"
     )
-
-    ELICIT_INSTRUCTION = (
-        "The user has asked for a task you have no skill for. Your job this turn "
-        "is to get the instructions from them.\n\n"
-        "In ONE message, ask them to walk you through doing it once: what to "
-        "read, what to do with it, and what to remember afterwards. Ask in the "
-        "terms they used — describing the task is theirs, working out how to "
-        "carry it out is yours. Never ask them to define keywords, terms, "
-        "matching rules, css or selectors, or anything about how a page is "
-        "built.\n\n"
-        "Don't attempt the task, don't do part of it, and don't record anything. "
-        "Nothing exists yet, so don't say or imply that it does.\n\n"
-    )
-
-    LEARN_INSTRUCTION = (
-        "The user has given you the steps for a task. Follow them now, once, "
-        "exactly as given — this turn is that one run.\n\n"
-        "Do what each step says, with your real tools — a step is done when its "
-        "tool call has run. Where a step says to remember something, write it "
-        "with a real call, and record what you ACTUALLY found — never a "
-        "placeholder, an example, or a description of what you would have found. "
-        "Finding a value is not remembering it; the write is.\n\n"
-        "Follow the steps as they gave them. If a step can't be done — the page "
-        "doesn't have what you're looking for, or a value you need never showed "
-        "up — it's okay to stop there. Tell them what you did find and which step "
-        "stopped you, and they'll adjust the instructions. Don't take a different "
-        "route to the goal, and never report a step as done that didn't happen.\n\n"
-        "If the task also mentions a schedule or being told about changes, leave "
-        "that part alone for now — it is set up in a later turn, after they ask "
-        "for it. Your job this turn is the steps, nothing else.\n\n"
-        "Then tell them what you did: each step and what it produced, including "
-        "anything that failed or came back empty. Say what you now know how to "
-        "do, and offer to set it up to run on its own.\n\n"
-        "Don't set it up yourself. Offering is where this turn ends — they will "
-        "tell you if they want it running.\n\n"
-    )
-
-    # The round's own framing (#1868), rendered after the state's instruction when the
-    # machine settled one on entering learn.  Both anchors are rendered VERBATIM, which is
-    # the whole point of it: a destination the model would otherwise invent a name for is
-    # now a name it copies, and "one job, one container" stops being a judgment.
-    #
-    # It says what the round IS — the routine being taught, and the collection its results
-    # are kept in — and leaves what to do about that to the instruction it follows, which
-    # already says a step that remembers something is a real write.  Naming a tool here
-    # would key the sentence to one way of keeping a result, and a routine is an arbitrary
-    # sequence of tool calls.
-    ROUND_FRAMING_LINE = (
-        "The skill you are being taught this round is called `{skill}`, and "
-        "`{container}` is the collection set up to hold what it produces. Where a step "
-        "says to remember something, that collection is where it goes — it is already "
-        "there, so there is nothing to set up.\n\n"
-    )
-
-    # APPLY's instruction NAMES the round it is standing up (#1869/#1875): the container the
-    # round built and the routine it taught are rendered VERBATIM inside the instruction
-    # itself, so the collection the turn configures is a name it copies rather than one it
-    # works out, and the routine and the values it is pointed at are stated as settled
-    # rather than asked for.  There is no unframed form of this instruction and no unframed
-    # apply turn: a round that reaches apply with no framing has nothing to configure, and
-    # the turn fails honestly in python before a prompt is composed at all.
-    #
-    # It opens with the STATE — a collection exists, this is what it is called, this is what
-    # it runs — and asks for the one thing left, the job's own terms (when it runs, when it
-    # stops, whether to tell them).  Those terms are named as the job's, never as argument
-    # names: a routine is an arbitrary sequence of tool calls, and the terms are the part of
-    # a job that is never one of its steps.  What it does NOT carry is an end-date rule; that
-    # lives with the field it governs, on `expires_at`'s own description.
-    APPLY_INSTRUCTION = (
-        "A collection has been set up for this task from what the user asked. It is "
-        "named `{container}`, it runs the skill `{skill}`, and it is already pointed "
-        "at what they gave. Configure its schedule now, in one `collection_configure` call on "
-        "`{container}`: when it runs, when it stops if they gave an end, and whether to "
-        "tell them — all from the user's own words.\n\n"
-        "Configuring it is the whole turn — you are not carrying the skill out "
-        "yourself. Once it is set up it runs itself on the schedule they just "
-        "gave you, and its first run is the first thing they'll hear about.\n\n"
-        "Then tell them what you set up and what will happen. Say it is running "
-        "only if the call came back confirming it.\n\n"
-    )
-
-    REQUEST_INSTRUCTION = (
-        "The user wants something done that you already know how to do, but they "
-        "have not said everything it needs. Your job this turn is to ask them for "
-        "the part that is missing.\n\n"
-        "In ONE message, say in plain words what you would do, then ask for what "
-        "is missing. Ask for that and nothing else.\n\n"
-        "Ask in their own words, the way they would say it. Don't guess the "
-        "missing part, don't use a value you happen to know, and don't do any of "
-        "the task yet.\n\n"
-    )
-
-    # What a REQUEST turn is told about the round it is in (#1885) — the closing paragraph
-    # of the same shape ``ROUND_FRAMING_LINE`` is for learn, read from the other half of the
-    # round's entry: the BINDER said this routine covers the ask and named what the words
-    # fell short of, so the turn asks for exactly that.
-    #
-    # Everything the ask has to work from renders here VERBATIM — the routine, what it is
-    # for, each value the words already settled, and each missing detail with the registry's
-    # own one line of what to supply — so the reply needs no tool call at all and nothing on
-    # it is a guess.  The already-settled list is what stops the turn asking twice for
-    # something the user has already said, and it renders even when it is empty, because
-    # "they have given you none of it yet" is a fact the turn needs stated rather than
-    # inferred from a section that is not there.
-    #
-    # The missing detail is described, never named at the user: a parameter's NAME is a
-    # binding key and the description is the plain-words form of the same thing, so the
-    # sentence says to ask with the description.
-    ROUND_SHORTFALL_LINE = (
-        "The skill for this is `{skill}` — {description}\n\n"
-        "What they have already given you, which you must not ask for again:\n"
-        "{bound}\n\n"
-        "What is still missing, which is what to ask them for:\n"
-        "{missing}\n\n"
-        "Ask for the missing part by what it IS, using the plain description above — "
-        "never by the short name it is listed under.\n\n"
-    )
-    # One line per value the user's words already settled, and the line that stands in
-    # for all of them when the words settled none.
-    REQUEST_BOUND_ITEM = "- {name}: {value}"
-    REQUEST_NOTHING_BOUND = "- nothing yet — they have given you none of it"
-    # One line per missing detail: the registry's description when the routine carries one,
-    # and the bare name when it does not (a description is optional on a parameter, so an
-    # absent one is a real shape rather than empty text to render).
-    REQUEST_MISSING_ITEM = "- {name} — {description}"
-    REQUEST_MISSING_NAME_ONLY = "- {name}"
 
     CONVERSATION_TAIL_OPEN = (
         "When a 'Current Browser Page' section appears above, the user is browsing "
@@ -233,11 +98,7 @@ class Prompt:
         "never ask the user for page structure, snippets, or selectors — "
         "reading pages is your job.\n\n"
     )
-    # Reading is where an ANSWERING turn ends: the page has been read, so the reply is
-    # next.  A taught round is the one turn whose steps run on past the read — its write
-    # is a step the user gave — so its prompt is composed without this paragraph
-    # (``conversation_machine.compose_prompt``); beside "a step is done when its tool call
-    # has run" it told the same turn to stop after the page.
+    # Reading is where a chat turn ends: the page has been read, so the reply is next.
     REPLY_AFTER_READING = (
         "After reading pages, you MUST respond with what you found. Do not make "
         "additional tool calls to re-fetch or supplement pages you already read. "
@@ -274,10 +135,8 @@ class Prompt:
         "source URL so the user can follow up."
     )
 
-    # The un-stated prompt: what the chat agent uses when no machine decided the
-    # turn (nothing wired, or a classifier failure).  IDLE by definition — it is
-    # where the machine starts and where it returns — so this is one composition
-    # of the same parts, never a second definition to drift.
+    # The whole chat prompt (#2455 naive baseline): there is no conversation machine
+    # and no second state, so this one composition is every chat turn's prompt.
     CONVERSATION_TAIL = CONVERSATION_TAIL_OPEN + REPLY_AFTER_READING + CONVERSATION_TAIL_CLOSE
     CONVERSATION_PROMPT = CONVERSATION_HEAD + IDLE_INSTRUCTION + CONVERSATION_TAIL
 
@@ -340,74 +199,6 @@ class Prompt:
     # COLLECTOR_TOOL_CALL_NUDGE / COLLECTOR_DONE_JSON_NUDGE / CHAT_CALL_AS_TEXT_NUDGE
     # (#1839), then CONTINUE_NUDGE / FINAL_STEP_NUDGE (#1937) — the last two being the
     # empty draw's mid-loop and final-step appends.
-
-    # Injected as a user turn after a chat run that just AUTO-LEARNED a skill from
-    # what it did this turn (#1658).  It carries the BRIEF render (#1804) — name,
-    # what it's for, what it needs — so the model narrates from the render, not from
-    # memory (SAID==DID).  Deliberately NOT the numbered recipe (#1799): what this
-    # frame asks for is a description a person can act on, and a block of tool calls
-    # sitting in front of that request is a block that gets read aloud.
-    #
-    # ``{shape}`` is the same steps at SHAPE altitude (#1943, ``render_skill_shape``) —
-    # what the routine RUNS, in order — because the brief render alone left a spurious step
-    # invisible until a collector enacted it, and the demonstrator, who is the only one who
-    # knows what the routine was for, is guaranteed to be reading exactly this reply.
-    # Correcting it is walking the routine through again: re-teaching REPLACES it, and
-    # there is no edit surface for the model to offer.
-    #
-    # It carries TOOL NAMES, which is the one thing #1799's "there is simply none to show"
-    # gives up, and the cost is bounded on both sides: no call SHAPE (no parens, no
-    # arguments, no brace placeholders — the recipe is still what it was, one
-    # ``skill_get(skill=<name>)`` away (#2305), and ``memory_get`` reaches the
-    # same recipe once a job is running), and the instruction below asks for the
-    # steps in PLAIN WORDS, which the eval contract scores as a negative — a reply
-    # reading a tool name back is the leak, and it is measured rather than assumed.
-    SKILL_LEARNED_NARRATION = (
-        "You just learned a reusable skill from what you did in this conversation — "
-        "it's saved automatically, and here is exactly what it captured:\n\n"
-        "{skill}\n\n"
-        "The steps it will run each time, in order: {shape}\n\n"
-        "You demonstrated it on: {demonstrated_on}\n\n"
-        "Reply to the user now. FIRST answer what they actually asked: report the "
-        "outcome of this round — the value you found and where you stored it — since "
-        "this reply is the only one they receive. THEN tell them, in your own words, "
-        "that you've learned this skill: name it by what it does generally (not "
-        "just this one instance), say plainly what it does, and name what you'd need "
-        "from them to run it again. Give them the steps too — one short line, in "
-        "everyday words rather than the tool names above, in that same order, every "
-        "step it captured and no step it didn't — because they are the only one who "
-        "knows what this skill was for, so a step that doesn't belong is a step only "
-        "they can spot. If one is wrong, they can walk you through the skill again "
-        "and you'll learn it fresh. Then offer to set it running on a schedule if "
-        "they'd like."
-    )
-
-    # Injected as a user turn after a chat run that just CONFIGURED the round's routine
-    # (#1869) — the applied-configuration sibling of SKILL_LEARNED_NARRATION above, and it
-    # exists for the same reason that one does, one step further along: the turn no longer
-    # supplies the routine or the values it is pointed at (the round settled both, and the
-    # framework supplied them at the call), so what is now running is something the model
-    # has to READ rather than remember.  ``{configuration}`` is the record the store holds
-    # — cadence, end condition, notify, and what it is pointed at — so SAID==DID holds by
-    # construction.  Deliberately not the rendered program, for SKILL_LEARNED_NARRATION's
-    # own reason (#1799): a block of tool calls in front of this request is a block that
-    # gets read aloud.
-    # ``{configuration}`` also carries, on any line this turn CHANGED, what that line
-    # used to say (#1946): a turn asked to FIX a running job is asked about two states,
-    # and the row it reads holds only the one that won — so the was-state was the one
-    # thing left to remember, and the observed regression was a correct fix reported
-    # beside an invented prior value.  The instruction names the shape rather than the
-    # fields, since which line carries one is decided by what the turn moved.
-    CONFIGURATION_APPLIED_NARRATION = (
-        "The job is now set up, and here is exactly what was configured:\n\n"
-        "{configuration}\n\n"
-        "Reply to the user now. Tell them in your own words what is running: what it "
-        "watches, how often it runs, when it stops if it stops, and whether they will "
-        'hear from it. A line reading "was … → now …" is one this turn changed: the '
-        "first part is what it used to be and the second is what it is now, so if you "
-        "tell them what changed, copy both from there. Say only what is above — "
-        "anything not there was not set."
-    )
 
     # What a chat run that tried to keep something is shown before its reply is written
     # (#1946/#2185) — the answer to what a turn actually left behind.  A run's own memory
@@ -541,14 +332,18 @@ class Prompt:
     # live here.  What that removed is the long chat-flavoured tail 42 of 49 measured
     # cycle deaths landed in, immediately after a ``read_similar``.
     #
-    # The terminal step is BACK (#1916, reverting #1911's half of this).  A cycle says
-    # when it is finished, because the alternative measured worse: deriving the close
-    # from program coverage made a cycle that followed the store's own advice — an
+    # The close is BACK (#1916, reverting #1911's half of this).  A cycle says when it
+    # is finished, because the alternative measured worse: deriving the close from
+    # program coverage made a cycle that followed the store's own advice — an
     # ``update_entry`` where the program said ``collection_write`` — unable to ever
     # cover, with nothing to close on, so it died trying to SAY it had finished (11
     # aborts in one measured run).  A model that has done its work can always call one
     # more tool; it cannot always walk a path the framework fixed in advance.
-    COLLECTOR_DONE_STEP = "done()"
+    #
+    # Appended as a plain sentence, not a numbered step (#2455 naive baseline): there
+    # is no numbered program any more for it to continue numbering from, so the close
+    # is stated in the same prose the rest of the prompt is written in.
+    COLLECTOR_DONE_INSTRUCTION = "When you've done what this collection asks, call done()."
 
     # The one tools-off draw a run falls back to when it has nothing more to do but
     # hasn't failed outright (#2370, docs/principles.md §2 item 9): the step limit, a

@@ -45,8 +45,6 @@ class PennyResponse:
     )
     FACTS_EMPTY_WITH_TOOLS = "Your last answer came back empty, after {count} tool calls."
     FACTS_EMPTY_NO_TOOLS = "Your last answer came back empty."
-    FACTS_NOTHING_LEARNED = "No routine was captured from this turn."
-    FACTS_NOTHING_TO_CONFIGURE = "There is no routine set up for this turn to configure."
     FACTS_NO_REPLY_AT_SEND = "This turn didn't produce a reply to send."
 
     # The channel's own backstop facts (#2371): built when ``handle_message`` catches an

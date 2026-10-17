@@ -37,20 +37,6 @@ one guess-free tool call from the detail). Sections:
   name (``archived: `<name>`, …``), omitted entirely when nothing is archived — an
   archived row with no job has nowhere else in this header to appear, so this line
   is the complete list, not a remainder.
-- **Skills and rules** — the taught-skill registry (#1471), one ROW per skill:
-  name, what it's for, and what it needs (``render_skill_brief``, #1804).
-  Rendered deterministically (all of them, wholesale, never a relevance guess),
-  so instantiation costs **0 calls** — the parameters are the binding keys and
-  they are in the prompt. NOT the numbered recipe (#1804): nothing on the chat
-  path carries out a skill's steps any more, so on a section read every turn the
-  recipe was context cost for a decision it does not inform. The full recipe is
-  one call away either way (#2287): ``find`` carries a taught-skill hit's own
-  ``parameters:`` block and numbered steps, and once a routine is set running,
-  ``memory_get`` on the job carries the same block with the value THAT job
-  bound for each. One feed: the taught-skill registry
-  (``db.skills``, #1590) — the sole skills store. (The legacy ``skills``
-  collection's standing-rules feed retired with the collection, #1624/migration
-  0092.)
 - **About the user** — the durable user-fact core (name, timezone, location):
   deterministic facts, not a relevance guess, so personality survives without a
   lookup.
@@ -74,7 +60,6 @@ from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
 from penny.tools.collection_instantiation import describe_schedule
-from penny.tools.skill_tools import render_skill_brief
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -102,7 +87,6 @@ class SelfStateHeader:
     MECHANISMS_HEADER = "### Jobs"
     ACTIVITY_HEADER = "### Recent activity"
     MAP_HEADER = "### Your memory"
-    SKILLS_HEADER = "### Known skills"
     DURABLE_HEADER = "### About the user"
 
     # Whether proactive notifications are going out, rendered in BOTH directions and
@@ -143,23 +127,7 @@ class SelfStateHeader:
     EMPTY_MECHANISMS = "(no jobs yet)"
     EMPTY_ACTIVITY = "(no recent activity)"
     EMPTY_MAP = "(no stores yet)"
-    EMPTY_SKILLS = (
-        "(no skills yet — when a task needs one, ask the user to walk you through it "
-        "once and you'll learn it automatically)"
-    )
     NO_PROFILE = "(no profile set yet)"
-
-    # The taught-skill feed renders what each skill IS and what it NEEDS (#1804), so
-    # the label says exactly that — and names the one call that reaches what it does
-    # NOT carry, its full parameters and steps, in the canonical call notation so the
-    # rendered token IS the argument (n≤1, and no bare tool name to hallucinate a call
-    # from, #2305).  It stays a DESCRIPTION of the rows, never an instruction: what to
-    # do with a skill this turn is the state's own instruction, and a second copy here
-    # could only contradict it.
-    TAUGHT_SKILLS_LABEL = (
-        "Skills you've been taught — what each one does and what it needs from the user "
-        "to run. For one's full parameters and steps: skill_get('<name>')."
-    )
 
     # The overflow tail activity still shows past its cap — the fetch tool named so
     # the remainder is one guess-free call away (nothing is silently dropped; n≤1
@@ -175,7 +143,7 @@ class SelfStateHeader:
         "To look deeper: memory_get(<name>) for a collection's full config and "
         "change history, run_get(run <id>) for one run's tool calls, "
         "collection_list(<name>) reads a store's entries, and find(query=<text>) "
-        "searches them all by meaning — a collection, a skill, a stored entry, or "
+        "searches them all by meaning — a collection, a stored entry, or "
         "something said in the conversation."
     )
 
@@ -193,7 +161,6 @@ class SelfStateHeader:
             self._mechanisms_section(),
             self._activity_section(),
             self._memory_map_section(),
-            self._skills_section(),
             self._durable_core_section(),
             self.POINTERS,
         ]
@@ -268,8 +235,7 @@ class SelfStateHeader:
         code span (#2425) — #1857's display == invocation contract stays true (the
         model still reads the copyable form it would write back), it just no longer
         stands alone as the text a reply would echo.  Empty when the collection has no
-        schedule yet (an adopted skill awaiting one), so the mechanism line drops the
-        clause."""
+        schedule yet, so the mechanism line drops the clause."""
         return describe_schedule(row, user_timezone_name(self.db))
 
     def _end_condition(self, row: MemoryRow) -> str:
@@ -478,31 +444,6 @@ class SelfStateHeader:
             return ""
         rendered = ", ".join(f"`{name}`" for name in names)
         return f"{self.ARCHIVED_LABEL} {rendered}"
-
-    # ── Skills and rules ─────────────────────────────────────────────────────
-
-    def _skills_section(self) -> str:
-        """The taught-skill registry (#1471) — ONE ROW per skill, the same ``- <name>
-        — <clauses>`` shape the mechanisms and store-map sections use, so several
-        skills are a list to skim rather than one undifferentiated block (#1804).
-
-        Renders ALL of it (no relevance gating, no budget cap — wholesale; gates are
-        what HID skills), each row via ``render_skill_brief``: what the skill is for
-        and what it needs. Instantiation still costs 0 calls — the parameter names
-        are the binding keys and they are right here. What a row does NOT carry is
-        the numbered steps: no chat state carries out a skill's steps (the collector
-        does, from the prompt rendered at instantiation), so on a section read every
-        turn it was cost against a decision it does not inform — the label names the
-        one call that reaches them, ``skill_get`` (#2305). Once a skill is set
-        running, ``memory_get`` on the job carries the same parameters and steps
-        with the job's own bound values. The section collapses to one honest
-        placeholder when nothing has been taught. (The legacy standing-rules feed
-        retired with the ``skills`` collection, #1624.)"""
-        skills = self.db.skills.list_all()
-        if not skills:
-            return "\n".join([self.SKILLS_HEADER, self.EMPTY_SKILLS])
-        rows = "\n".join(f"- {render_skill_brief(skill)}" for skill in skills)
-        return "\n".join([self.SKILLS_HEADER, self.TAUGHT_SKILLS_LABEL, rows])
 
     # ── Durable user-fact core ───────────────────────────────────────────────
 

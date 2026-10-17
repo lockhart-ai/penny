@@ -19,7 +19,6 @@ from penny.database.memory import Memory, MemoryStore
 from penny.database.message_store import MessageStore
 from penny.database.mutation_store import MutationStore
 from penny.database.send_queue_store import SendQueueStore
-from penny.database.skill_store import SkillStore
 from penny.database.user_store import UserStore
 
 logger = logging.getLogger(__name__)
@@ -79,7 +78,6 @@ class Database:
             clock=self.clock,
         )
         self.messages = MessageStore(self.engine, self.clock)
-        self.skills = SkillStore(self.engine, self.clock)
         self.users = UserStore(self.engine, self.clock)
 
         logger.info("Database initialized: %s", db_path)
