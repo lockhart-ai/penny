@@ -518,6 +518,67 @@ def test_self_state_archived_heavy_render(db):
     assert actual == _ARCHIVED_HEAVY
 
 
+# ── 4a. The instructions line — what a live job reads and follows (#2495) ──
+
+
+def test_self_state_job_instructions_line_shapes(db):
+    """Every shape of the hung instructions line (#2495) in one render: a job whose
+    prompt names a page renders ``reads <first-url> — "<instructions>"``; a job whose
+    prompt fits the character budget renders it whole with no cut note; a job whose
+    prompt runs past the budget renders its first sentence plus the cut note, which
+    counts the sentences dropped and names the ``memory_get`` hop to the whole prompt —
+    while the ``reads`` clause still shows the page that dropped sentence named, since
+    the URL is read off the FULL prompt; a prompt with no URL renders the quoted
+    instructions alone; and an inert collection (no prompt) renders no second line at
+    all, here and nowhere."""
+    with Session(db.engine) as session:
+        _add_collection(
+            session,
+            "feed-check",
+            description="check the feed",
+            extraction_prompt=(
+                "1. read https://harborferries.example/feed each morning and write the headlines."
+            ),
+            schedule="FREQ=HOURLY",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_collection(
+            session,
+            "harbour-watch",
+            description="watch the harbour notices",
+            extraction_prompt=(
+                "1. read the harbour notice board each morning before the first "
+                "sailing. 2. find the night sailing's departure time on "
+                "https://harborferries.example/seasonal-sailings and write it with the "
+                "date you read it on. 3. if the page carries no night sailing at all, "
+                "write that instead — an empty result is a result."
+            ),
+            schedule="FREQ=HOURLY",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_collection(
+            session,
+            "plain-note",
+            description="count the boats",
+            extraction_prompt="1. count the boats in the harbour.",
+            schedule="FREQ=HOURLY",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_collection(
+            session,
+            "keepsakes",
+            description="things worth keeping",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert actual == _INSTRUCTION_SHAPES
+
+
 # ── 4b. No cap — the whole registry renders, archived names index (#2288) ─
 
 
@@ -991,21 +1052,25 @@ _KITCHEN_SINK = (
     "notifications: on — proactive task notifications are delivered\n"
     "- news-digest — active · every hour (rule: `FREQ=HOURLY`) · notify: off · last run "
     "FAILED 2026-07-11 08:00 UTC\n"
+    '  "1. read the feed"\n'
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
-    "- price-watch — active · every 6 hours (rule: `FREQ=HOURLY;INTERVAL=6`) · notify: on · "
-    "expires Sunday, July 19, 2026 at 08:00 PM EDT · last run WORKED 2026-07-11 09:14 UTC\n"
+    "- price-watch — active · every 6 hours (rule: `FREQ=HOURLY;INTERVAL=6`) · notify: on "
+    "· expires Sunday, July 19, 2026 at 08:00 PM EDT · last run WORKED 2026-07-11 09:14 "
+    "UTC\n"
+    '  "1. browse the page"\n'
     "- reminder — active · once, at Saturday, July 11, 2026 at 08:00 AM EDT, then it "
     "retires (rule: `DTSTART:20260711T120000Z FREQ=DAILY;COUNT=1`) · notify: off · "
     "one-shot · no runs yet\n"
+    '  "1. remind"\n'
     "\n"
     "### Recent activity\n"
     "change · 2026-07-11 09:20 UTC · price-watch updated by user-run (run 66aa0099) — "
     "changed schedule\n"
-    "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · "
-    "wrote 'aurora deck 2 price' → `price-watch`\n"
+    "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · wrote 'aurora "
+    "deck 2 price' → `price-watch`\n"
     'sent · 2026-07-11 09:05 UTC · price-watch — "Heads up: the price dropped to $42!"\n'
-    "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 "
-    "of 1)\n"
+    "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 of "
+    "1)\n"
     "run 88d14e5f · 2026-07-11 08:00 UTC · news-digest → FAILED (2 calls)\n"
     "\n"
     "### Your memory\n"
@@ -1021,11 +1086,10 @@ _KITCHEN_SINK = (
     "- timezone: America/Toronto\n"
     "- location: Toronto, Canada\n"
     "\n"
-    "To look deeper: memory_get(<name>) for a collection's full config and "
-    "change history, run_get(run <id>) for one run's tool calls, "
-    "collection_list(<name>) reads a store's entries, and find(query=<text>) "
-    "searches them all by meaning — a collection, a stored entry, or "
-    "something said in the conversation."
+    "To look deeper: memory_get(<name>) for a collection's full config and change history, "
+    "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "
+    "entries, and find(query=<text>) searches them all by meaning — a collection, a stored "
+    "entry, or something said in the conversation."
 )
 
 _SCHEDULE_MECH = (
@@ -1036,8 +1100,10 @@ _SCHEDULE_MECH = (
     "- one-off — active · once, at Saturday, July 11, 2026 at 05:00 AM EDT, then it "
     "retires (rule: `DTSTART:20260711T090000Z FREQ=DAILY;COUNT=1`) · notify: off · "
     "one-shot · no runs yet\n"
-    "- twice-daily — active · every day at 08:00 AM and 08:00 PM "
-    "(rule: `FREQ=DAILY;BYHOUR=8,20`) · notify: off · no runs yet\n"
+    '  "1. check it."\n'
+    "- twice-daily — active · every day at 08:00 AM and 08:00 PM (rule: "
+    "`FREQ=DAILY;BYHOUR=8,20`) · notify: off · no runs yet\n"
+    '  "1. check the peak."\n'
     "\n"
     "### Recent activity\n"
     "(no recent activity)\n"
@@ -1051,11 +1117,10 @@ _SCHEDULE_MECH = (
     "- timezone: America/Toronto\n"
     "- location: Toronto, Canada\n"
     "\n"
-    "To look deeper: memory_get(<name>) for a collection's full config and "
-    "change history, run_get(run <id>) for one run's tool calls, "
-    "collection_list(<name>) reads a store's entries, and find(query=<text>) "
-    "searches them all by meaning — a collection, a stored entry, or "
-    "something said in the conversation."
+    "To look deeper: memory_get(<name>) for a collection's full config and change history, "
+    "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "
+    "entries, and find(query=<text>) searches them all by meaning — a collection, a stored "
+    "entry, or something said in the conversation."
 )
 
 _EMPTY = (
@@ -1088,6 +1153,7 @@ _OVERFLOW = (
     "notifications: on — proactive task notifications are delivered\n"
     "- watcher — active · every hour (rule: `FREQ=HOURLY`) · notify: off · last run WORKED "
     "2026-07-11 09:08 UTC\n"
+    '  "1. go"\n'
     "\n"
     "### Recent activity\n"
     "run run08 · 2026-07-11 09:08 UTC · watcher → WORKED (1 call)\n"
@@ -1106,11 +1172,10 @@ _OVERFLOW = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get(<name>) for a collection's full config and "
-    "change history, run_get(run <id>) for one run's tool calls, "
-    "collection_list(<name>) reads a store's entries, and find(query=<text>) "
-    "searches them all by meaning — a collection, a stored entry, or "
-    "something said in the conversation."
+    "To look deeper: memory_get(<name>) for a collection's full config and change history, "
+    "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "
+    "entries, and find(query=<text>) searches them all by meaning — a collection, a stored "
+    "entry, or something said in the conversation."
 )
 
 _ARCHIVED_HEAVY = (
@@ -1119,6 +1184,7 @@ _ARCHIVED_HEAVY = (
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
     "- live-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs yet\n"
+    '  "1. go"\n'
     "- retired-0 — archived 2026-07-11 08:00 UTC · no runs yet\n"
     "- retired-1 — archived 2026-07-11 08:01 UTC · no runs yet\n"
     "- retired-2 — archived 2026-07-11 08:02 UTC · no runs yet\n"
@@ -1133,11 +1199,45 @@ _ARCHIVED_HEAVY = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get(<name>) for a collection's full config and "
-    "change history, run_get(run <id>) for one run's tool calls, "
-    "collection_list(<name>) reads a store's entries, and find(query=<text>) "
-    "searches them all by meaning — a collection, a stored entry, or "
-    "something said in the conversation."
+    "To look deeper: memory_get(<name>) for a collection's full config and change history, "
+    "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "
+    "entries, and find(query=<text>) searches them all by meaning — a collection, a stored "
+    "entry, or something said in the conversation."
+)
+
+
+_INSTRUCTION_SHAPES = (
+    "## Penny's current state\n"
+    "\n"
+    "### Jobs\n"
+    "notifications: on — proactive task notifications are delivered\n"
+    "- feed-check — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs yet\n"
+    '  reads https://harborferries.example/feed — "1. read '
+    'https://harborferries.example/feed each morning and write the headlines."\n'
+    "- harbour-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs "
+    "yet\n"
+    '  reads https://harborferries.example/seasonal-sailings — "1. read the harbour notice '
+    "board each morning before the first sailing. (2 more sentences cut — "
+    "memory_get('harbour-watch') shows the whole prompt)\"\n"
+    "- plain-note — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs yet\n"
+    '  "1. count the boats in the harbour."\n'
+    "\n"
+    "### Recent activity\n"
+    "(no recent activity)\n"
+    "\n"
+    "### Your memory\n"
+    "- feed-check (collection, 0 entries) — check the feed\n"
+    "- harbour-watch (collection, 0 entries) — watch the harbour notices\n"
+    "- keepsakes (collection, 0 entries) — things worth keeping\n"
+    "- plain-note (collection, 0 entries) — count the boats\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_get(<name>) for a collection's full config and change history, "
+    "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "
+    "entries, and find(query=<text>) searches them all by meaning — a collection, a stored "
+    "entry, or something said in the conversation."
 )
 
 

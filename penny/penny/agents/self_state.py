@@ -15,7 +15,12 @@ index into everything else (every id it names — a collection, a run's target �
 one guess-free tool call from the detail). Sections:
 
 - **Active mechanisms** — EVERY collector, archived-inclusive, no cap (#2288): name,
-  status, cadence, end condition, last-run outcome. "what's running right now?"
+  status, cadence, end condition, last-run outcome. "what's running right now?" A live
+  job hangs a second, two-space-indented line under its row (#2495): the page it reads
+  (the first ``https?://`` URL in its prompt) and the instructions its cycles follow —
+  capped at a word-visible budget, with a note naming the ``memory_get`` hop to the
+  whole prompt, so what a job actually does is ambient and an ask that resembles a
+  running job can be answered by pointing at it.
 - **Recent activity** — background runs, configuration mutations, and autonomous
   sends, interleaved in one time-ordered block at rollup altitude (one line each;
   one run's per-call detail is one ``run_get(run <id>)`` hop away). A run line
@@ -52,6 +57,7 @@ the creating request (#1566).
 
 from __future__ import annotations
 
+import re
 from itertools import groupby
 from typing import TYPE_CHECKING
 
@@ -73,6 +79,15 @@ if TYPE_CHECKING:
         RunOutcomeStamp,
     )
     from penny.database.models import MemoryRow, MutationEvent
+
+# The first ``https?://`` URL in a job's prompt (#2495) — the page the job reads,
+# rendered whole on its instructions line no matter how the prompt is capped.
+_FIRST_URL_RE = re.compile(r"https?://\S+")
+# A sentence boundary in a job's prompt: a period followed by whitespace (or the end)
+# that neither follows a digit (a list's ``1.`` numbering belongs to its sentence, not
+# to a boundary) nor sits inside one (a decimal).  The match spans only the period, so
+# slicing keeps it with the sentence it ends.
+_SENTENCE_END_RE = re.compile(r"(?<![0-9])\.(?=\s|$)")
 
 
 class SelfStateHeader:
@@ -204,7 +219,9 @@ class SelfStateHeader:
 
     def _mechanism_line(self, row: MemoryRow, stamp: RunOutcomeStamp | None) -> str:
         """``- <name> — <status> · <cadence> · <notify> · <end> · <last run>`` — a retired
-        mechanism drops the running clauses (it isn't running)."""
+        mechanism drops the running clauses (it isn't running). A live job's line hangs a
+        second, indented line under it (#2495) naming what it reads and follows; an
+        archived row or a prompt-less one renders exactly as before."""
         if row.archived:
             parts = [f"archived {format_log_timestamp(row.updated_at)}", self._last_run(stamp)]
         else:
@@ -216,7 +233,69 @@ class SelfStateHeader:
                 self._last_run(stamp),
             ]
         clauses = " · ".join(part for part in parts if part)
-        return f"- {row.name} — {clauses}"
+        line = f"- {row.name} — {clauses}"
+        if not row.archived and row.extraction_prompt is not None:
+            line = f"{line}\n{self._instructions_line(row)}"
+        return line
+
+    def _instructions_line(self, row: MemoryRow) -> str:
+        """The hung second line under a live job's row: ``reads <url> — "<instructions>"``
+        (#2495). The page is the FIRST ``https?://`` URL anywhere in the job's full
+        prompt — an anchor, so it renders whole no matter how the instructions are
+        capped — and the instructions are the prompt's own words. The ``reads`` clause
+        is omitted when the prompt names no page; the quoted instructions always
+        render, so the line never disappears entirely."""
+        page = self._page(row)
+        instructions = self._instructions(row)
+        if page is None:
+            return f'  "{instructions}"'
+        return f'  reads {page} — "{instructions}"'
+
+    @staticmethod
+    def _page(row: MemoryRow) -> str | None:
+        """The first ``https?://`` URL in the job's FULL prompt — read whole, never
+        through the character cap, since a dropped sentence must not hide the page."""
+        match = _FIRST_URL_RE.search(row.extraction_prompt or "")
+        return match.group(0) if match else None
+
+    def _instructions(self, row: MemoryRow) -> str:
+        """The job's prompt as the instructions line shows it: whole when it fits the
+        character budget (#2495), otherwise its first sentence — hard-cut at a word
+        boundary inside the budget when even that sentence is longer — followed by a
+        note counting the sentences cut and naming the ``memory_get('<name>')`` hop to
+        the whole prompt. Nothing is cut silently."""
+        prompt = row.extraction_prompt or ""
+        cap = PennyConstants.SELF_STATE_JOB_PROMPT_CHARS
+        if len(prompt) <= cap:
+            return prompt
+        sentences = self._sentences(prompt)
+        first = sentences[0]
+        if len(first) > cap:
+            first = self._cut_at_word(first, cap)
+        cut = len(sentences) - 1
+        noun = "sentence" if cut == 1 else "sentences"
+        return f"{first} ({cut} more {noun} cut — memory_get('{row.name}') shows the whole prompt)"
+
+    @staticmethod
+    def _sentences(prompt: str) -> list[str]:
+        """The prompt's sentences — each period-terminated span a ``_SENTENCE_END_RE``
+        boundary splits off, its period kept. A prompt with no boundary is one
+        sentence; a prompt of nothing but boundaries is still one."""
+        ends = [match.start() for match in _SENTENCE_END_RE.finditer(prompt)]
+        bounds = [0, *(end + 1 for end in ends), len(prompt)]
+        parts = [prompt[start:end].strip() for start, end in zip(bounds, bounds[1:], strict=False)]
+        sentences = [part for part in parts if part]
+        return sentences or [prompt]
+
+    @staticmethod
+    def _cut_at_word(text: str, cap: int) -> str:
+        """``text`` hard-cut inside ``cap`` characters at its last word boundary — a
+        cut that never lands mid-word (a single word longer than the cap renders
+        whole-and-overflowing rather than chopped, since there is no boundary to land
+        on)."""
+        cut = text[:cap]
+        space = cut.rfind(" ")
+        return cut[:space] if space > 0 else cut
 
     def _telling(self, row: MemoryRow) -> str:
         """Whether THIS mechanism tells the user what it finds — both directions, always,

@@ -857,6 +857,16 @@ class PennyConstants:
     # (#1641): a run that wrote several entries shows the count plus this many
     # sample keys, so the clause stays one line.  Wholesale bound, tunable later.
     SELF_STATE_WRITES_KEY_SAMPLE = 2
+    # How many characters of a job's prompt the self-state header's instructions line
+    # renders (#2495).  The line hangs under the job's mechanism row and shows what it
+    # reads and follows — a READING budget like the activity cap above, not a hard
+    # guarantee: a longer prompt renders its first sentence (hard-cut at a word
+    # boundary inside the cap if even that is longer) followed by a note counting the
+    # sentences cut and naming the ``memory_get('<name>')`` hop to the whole prompt, so
+    # nothing is cut silently and the job's page renders whole regardless.  160 is
+    # roughly the first sentence of a real job's prompt with room to spare; the full
+    # prompt is always one anchored read away.
+    SELF_STATE_JOB_PROMPT_CHARS = 160
     MEMORY_PENNY_MESSAGES_LOG = "penny-messages"
     MEMORY_BROWSE_RESULTS_LOG = "browse-results"
     # Typed-id separator for an entry handle (``<memory>#<id>``).  A browse
