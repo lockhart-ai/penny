@@ -322,6 +322,22 @@ class ProgressEmoji(StrEnum):
     WORKING = "\u2699\ufe0f"  # ⚙️ — generic fallback for other tools
 
 
+class PageReading(StrEnum):
+    """How a browsed page was READ (#2388) — structural, set once by the extension's
+    own rule (``isLinkIndex``/``richer`` in ``page_text.ts``) and carried unchanged
+    through the wire, the browse tool, and into the extractor's own input.  Never
+    guessed downstream from the text's shape: the extension is the one place that
+    reads the live DOM, so it is the one place that gets to decide.
+
+    A two-member enum rather than a bool — a third reading (e.g. a tabular page) could
+    join this set later without renaming anything that already reads it.  ``ARTICLE``
+    is also the honest default for an older extension that never sends the field at
+    all (logged, not silent — see ``BrowserChannel._handle_tool_response``)."""
+
+    ARTICLE = "article"
+    LINK_LIST = "link_list"
+
+
 class PermissionResolution(StrEnum):
     """How a domain-permission prompt ended.
 

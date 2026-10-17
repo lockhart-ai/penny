@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from penny.constants import PageReading
+
 
 @dataclass(frozen=True)
 class Message:
@@ -74,12 +76,20 @@ class CannedPage:
     ``match=""`` page matches every URL (``"" in url`` is always true), so a single
     ``CannedPage(match="", fails=True)`` makes *every* source unreachable — the
     "browsed a lot, read nothing usable" cycle.  ``text`` is ignored when ``fails`` is set.
+
+    ``reading`` (#2388) declares how the extension would have read this page —
+    ARTICLE (the default) or LINK_LIST — so a world presents the extractor's
+    structural note the same way production does.  Declared, never computed: this
+    is a canned page, not live HTML a real ``isLinkIndex`` could run over, so a case
+    states the reading its page represents rather than the harness guessing from
+    ``text``'s shape.
     """
 
     match: str
     text: str
     image: str | None = None
     fails: bool = False
+    reading: PageReading = PageReading.ARTICLE
 
 
 def datum(page: CannedPage, old: str, new: str) -> CannedPage:

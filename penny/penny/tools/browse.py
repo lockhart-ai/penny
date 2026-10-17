@@ -16,7 +16,7 @@ import urllib.parse
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from penny.constants import PennyConstants, ProgressEmoji
+from penny.constants import PageReading, PennyConstants, ProgressEmoji
 from penny.database.memory import LogEntryInput
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
@@ -154,7 +154,7 @@ _TIMEOUT_EXTRACT_FINISHED = "Extraction finished for these pages:\n{rendered}"
 _TIMEOUT_EXTRACT_WAITING = "Still waiting on: {labels}."
 
 # Type alias for the browser request function
-RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None]]]
+RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None, PageReading]]]
 
 
 def _trim_search_result(text: str, context_lines: int = 2) -> str:
@@ -394,7 +394,7 @@ class BrowseTool(Tool):
 
         tasks = self._build_tasks(to_run)
         results = await asyncio.gather(*[coro for _, _, coro in tasks], return_exceptions=True)
-        sections, page_sections, captures = self._assemble_sections(tasks, results)
+        sections, page_sections, page_readings, captures = self._assemble_sections(tasks, results)
 
         stored = await self._append_pages_to_browse_results(page_sections)
         await self._store_media(captures)
@@ -411,7 +411,9 @@ class BrowseTool(Tool):
         all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
         if args.extract is not None and not all_failed:
             self._extracting = True
-            return await self._extract_result(sections, stored, args.extract, tool_call_id)
+            return await self._extract_result(
+                sections, stored, page_readings, args.extract, tool_call_id
+            )
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
@@ -483,6 +485,7 @@ class BrowseTool(Tool):
         self,
         sections: list[str],
         stored: list[MemoryEntry],
+        page_readings: list[PageReading],
         instruction: str,
         tool_call_id: str | None,
     ) -> ToolResult:
@@ -512,12 +515,14 @@ class BrowseTool(Tool):
         renders, same per-draw reroll machinery."""
         micro_context = self._micro_context
         if micro_context is None:
-            return self._extract_unavailable_result(sections, stored, instruction)
-        batch = self._extract_batch(sections, stored)
+            return self._extract_unavailable_result(sections, stored, page_readings, instruction)
+        batch = self._extract_batch(sections, stored, page_readings)
         drawn = await asyncio.gather(
             *[
-                self._extract_one_page(micro_context, section, instruction, entry, tool_call_id)
-                for _, section, entry in batch
+                self._extract_one_page(
+                    micro_context, section, instruction, entry, reading, tool_call_id
+                )
+                for _, section, entry, reading in batch
             ],
             return_exceptions=True,
         )
@@ -531,26 +536,28 @@ class BrowseTool(Tool):
 
     @staticmethod
     def _extract_batch(
-        sections: list[str], stored: list[MemoryEntry]
-    ) -> list[tuple[int, str, MemoryEntry | None]]:
-        """Plan the concurrent batch — one ``(slot, section, handle)`` per PAGE-READ
-        section, in page order.
+        sections: list[str], stored: list[MemoryEntry], page_readings: list[PageReading]
+    ) -> list[tuple[int, str, MemoryEntry | None, PageReading]]:
+        """Plan the concurrent batch — one ``(slot, section, handle, reading)`` per
+        PAGE-READ section, in page order.
 
         Only a page read is extracted from (#2141): a search section is titles and
         links, so it is left where it stands and the merge renders it verbatim, beside
         the error / dropped / outage signals.
 
-        The fetch handles are consumed HERE, sequentially, aligned 1:1 with the
-        page-read sections in order, so which page owns which handle is settled before
-        a single draw is issued: a search section (readable, never stored) and a read
-        failure (no content section at all) cannot slide a page's handle onto its
-        neighbour, whatever order the concurrent draws complete in."""
+        The fetch handles AND the reading marks (#2388) are consumed HERE,
+        sequentially, aligned 1:1 with the page-read sections in order, so which page
+        owns which handle (or mark) is settled before a single draw is issued: a search
+        section (readable, never stored) and a read failure (no content section at
+        all) cannot slide a page's handle or reading onto its neighbour, whatever order
+        the concurrent draws complete in."""
         handles = iter(stored)
-        batch: list[tuple[int, str, MemoryEntry | None]] = []
+        readings = iter(page_readings)
+        batch: list[tuple[int, str, MemoryEntry | None, PageReading]] = []
         for slot, section in enumerate(sections):
             if not section.startswith(PennyConstants.BROWSE_PAGE_HEADER):
                 continue  # search / error / dropped / outage — kept verbatim by the merge
-            batch.append((slot, section, next(handles, None)))
+            batch.append((slot, section, next(handles, None), next(readings, PageReading.ARTICLE)))
         return batch
 
     @staticmethod
@@ -579,14 +586,14 @@ class BrowseTool(Tool):
     @staticmethod
     def _merge_extracted(
         sections: list[str],
-        batch: list[tuple[int, str, MemoryEntry | None]],
+        batch: list[tuple[int, str, MemoryEntry | None, PageReading]],
         extracted: list[tuple[str, bool]],
     ) -> list[str]:
         """Write each drawn page back into ITS OWN slot, leaving every signal section
         exactly where it stood — the rendered order is the page order the batch was
         planned in, never the order the concurrent draws happened to finish in."""
         rendered = list(sections)
-        for (slot, _, _), (page_section, _succeeded) in zip(batch, extracted, strict=True):
+        for (slot, _, _, _), (page_section, _succeeded) in zip(batch, extracted, strict=True):
             rendered[slot] = page_section
         return rendered
 
@@ -596,6 +603,7 @@ class BrowseTool(Tool):
         section: str,
         instruction: str,
         entry: MemoryEntry | None,
+        reading: PageReading,
         tool_call_id: str | None,
     ) -> tuple[str, bool]:
         """Extract ONE fetched page's content and render the typed result under that
@@ -623,6 +631,7 @@ class BrowseTool(Tool):
                 run_target=self._author,
                 parent_run_id=self._run_id,
                 parent_tool_call_id=tool_call_id,
+                reading=reading,
             )
         except Exception as exc:
             body = self._render_draw_error(exc, instruction, stored, links)
@@ -692,7 +701,11 @@ class BrowseTool(Tool):
         return f"{failure}{links}"
 
     def _extract_unavailable_result(
-        self, sections: list[str], stored: list[MemoryEntry], instruction: str
+        self,
+        sections: list[str],
+        stored: list[MemoryEntry],
+        page_readings: list[PageReading],
+        instruction: str,
     ) -> ToolResult:
         """Honest degradation when ``extract`` is requested but no model client is
         wired for the micro-context — each page read renders the named failure under
@@ -700,15 +713,17 @@ class BrowseTool(Tool):
         page's own links, so the request fails visibly and still leaves an anchor
         rather than dumping the body.  Search and signal sections stay verbatim, as
         they do on every other extract path — so a browse that only searched is served
-        whole by a tool with no extraction model, and says nothing about one."""
-        batch = self._extract_batch(sections, stored)
+        whole by a tool with no extraction model, and says nothing about one.  No draw
+        happens on this path, so the reading mark is carried only for ``_extract_batch``'s
+        shared signature — never read here."""
+        batch = self._extract_batch(sections, stored, page_readings)
         if batch:
             logger.error(
                 "browse(extract=...) requested but no model client is wired for extraction"
             )
         unavailable = [
             (self._unavailable_section(section, instruction, entry), False)
-            for _, section, entry in batch
+            for _, section, entry, _reading in batch
         ]
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(
@@ -764,11 +779,14 @@ class BrowseTool(Tool):
 
     def _assemble_sections(
         self, tasks: list[tuple[str, str, Any]], results: list[Any]
-    ) -> tuple[list[str], list[str], list[BrowsePage]]:
+    ) -> tuple[list[str], list[str], list[PageReading], list[BrowsePage]]:
         """Fold gathered results into rendered sections, the page-only subset (for
-        the browse-results log), and the captured page images."""
+        the browse-results log), each page-only section's own reading mark (#2388,
+        aligned 1:1 with ``page_sections`` the same way ``stored`` is), and the
+        captured page images."""
         sections: list[str] = []
         page_sections: list[str] = []
+        page_readings: list[PageReading] = []
         captures: list[BrowsePage] = []
         channel_outage = False
         for (header, value, _), result in zip(tasks, results, strict=True):
@@ -783,11 +801,12 @@ class BrowseTool(Tool):
             sections.append(section)
             if header == PennyConstants.BROWSE_PAGE_HEADER:
                 page_sections.append(section)
+                page_readings.append(result.reading)
                 if result.image:
                     captures.append(result)
         if channel_outage:
             sections.append(self._channel_outage_section())
-        return sections, page_sections, captures
+        return sections, page_sections, page_readings, captures
 
     @staticmethod
     def _error_section(header: str, value: str, error: BaseException) -> str:
@@ -890,7 +909,7 @@ class BrowseTool(Tool):
             await permission_manager.check_domain(url)
 
             try:
-                text, image_url = await asyncio.wait_for(
+                text, image_url, reading = await asyncio.wait_for(
                     request_fn("browse_url", {"url": url}),
                     timeout=PennyConstants.BROWSE_REQUEST_TIMEOUT,
                 )
@@ -923,7 +942,7 @@ class BrowseTool(Tool):
 
             title = self._parse_title(text)
             text = clean_browser_content(text)
-            return BrowsePage(text=text, image=image_url, title=title, url=url)
+            return BrowsePage(text=text, image=image_url, title=title, url=url, reading=reading)
 
         raise BrowseChannelUnavailableError("no browser connected")
 

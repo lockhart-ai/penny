@@ -18,7 +18,7 @@ from penny.agents.models import (
 )
 from penny.config import Config
 from penny.config_params import RuntimeParams
-from penny.constants import PennyConstants
+from penny.constants import PageReading, PennyConstants
 from penny.database import Database
 from penny.database.models import PromptLog
 from penny.llm import LlmClient
@@ -1524,7 +1524,7 @@ class TestParallelToolCalls:
         async def fake_request(command, params):
             url = params["url"]
             browsed_urls[url] = f"Results for {url}"
-            return (browsed_urls[url], None)
+            return (browsed_urls[url], None, PageReading.ARTICLE)
 
         request_fn = AsyncMock(side_effect=fake_request)
         mock_perm = MagicMock(check_domain=AsyncMock())
@@ -1651,7 +1651,7 @@ class TestParallelToolCalls:
 
         async def fake_request(command, params):
             browsed_urls.append(params["url"])
-            return (f"Page content from {params['url']}", None)
+            return (f"Page content from {params['url']}", None, PageReading.ARTICLE)
 
         request_fn = AsyncMock(side_effect=fake_request)
         mock_perm = MagicMock(check_domain=AsyncMock())

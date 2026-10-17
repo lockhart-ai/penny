@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from penny.constants import WriteGateOutcome
+from penny.constants import PageReading, WriteGateOutcome
 from penny.text_validity import half_formed_send_reason, is_blank
 
 
@@ -163,12 +163,19 @@ class BrowsePage(BaseModel):
 
     Carries the page image (a base64 ``data:`` URI), source URL, and title out
     to the tool's media-capture step; none of these reach the model.
+
+    ``reading`` (#2388) is the extension's own structural mark — article or link
+    list — carried through so the extractor's note can be conditioned on it without
+    guessing from the text's shape.  Defaults to :attr:`PageReading.ARTICLE`, which is
+    also what an older extension that never sends the mark resolves to (logged, not
+    silent — see ``BrowserChannel._handle_tool_response``).
     """
 
     text: str
     image: str | None = None
     title: str | None = None
     url: str | None = None
+    reading: PageReading = PageReading.ARTICLE
 
 
 class BrowseArgs(ToolArgs):

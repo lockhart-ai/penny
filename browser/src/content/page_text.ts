@@ -76,38 +76,54 @@ const WEB_URL = /^https?:\/\//;
 const WHITESPACE_RUN = /\s+/g;
 const WHITESPACE = /\s+/;
 
-/** One way of reading a page: the text it yields, and how much of the page's own
- *  text that text carries.  The second is what the two readings are compared on
- *  — markdown length would count a bare `[](url)` link's URL as content, which
- *  is the exact lie this module exists to correct. */
-interface PageReading {
+/** How a reading won — ARTICLE (Defuddle's own extraction) or LINK_LIST (the page's
+ *  own index of other pages).  Wire-level name is `PageReading` (`protocol.ts`,
+ *  mirrored by `constants.PageReading` on the Python side); this file's internal
+ *  type is named `Reading` instead, to tell a page's OWN tagged result apart from
+ *  that wire literal without colliding on the name. */
+type ReadingKind = "article" | "link_list";
+
+/** One way of reading a page: the text it yields, how much of the page's own
+ *  text that text carries, and which reading produced it.  The word count is
+ *  what the two readings are compared on — markdown length would count a bare
+ *  `[](url)` link's URL as content, which is the exact lie this module exists to
+ *  correct; `kind` is what #2388 carries onward past that comparison. */
+interface Reading {
   text: string;
   words: number;
+  kind: ReadingKind;
 }
 
-/** The page's text: whichever reading carries more of the page's own words. */
-export function readPage(doc: Document, url: string): string | null {
+/** The page's text and which reading won: whichever carries more of the page's
+ *  own words.  `reading` is #2388's structural mark — set here, once, where the
+ *  live DOM can actually be read — carried unchanged through `extract_text.ts`,
+ *  the wire, and the browse tool into the extractor's own input. */
+export function readPage(doc: Document, url: string): { text: string; reading: ReadingKind } | null {
   const body = readableBody(doc);
   const index = isLinkIndex(body) ? readLinkIndex(body) : null;
   const reading = richer(readArticle(doc, url), index);
   if (reading === null || reading.text.length < MIN_CONTENT_LENGTH) return null;
-  return reading.text;
+  return { text: reading.text, reading: reading.kind };
 }
 
 /** The page read as an ARTICLE — Defuddle's own extraction, rendered to
  *  markdown.  Defuddle is handed a clone so its cleanup never touches the live
  *  page under the user. */
-function readArticle(doc: Document, url: string): PageReading | null {
+function readArticle(doc: Document, url: string): Reading | null {
   const clone = doc.cloneNode(true) as Document;
   const result = new Defuddle(clone, { url }).parse();
   if (!result.content) return null;
-  return { text: turndown.turndown(result.content), words: htmlWords(doc, result.content) };
+  return {
+    text: turndown.turndown(result.content),
+    words: htmlWords(doc, result.content),
+    kind: "article",
+  };
 }
 
 /** The page read as an INDEX — one markdown link per distinct page it points at,
  *  in document order.  The line shape is the one a standalone link takes in
  *  Defuddle's own markdown, so nothing downstream has to learn a second form. */
-function readLinkIndex(body: HTMLElement): PageReading | null {
+function readLinkIndex(body: HTMLElement): Reading | null {
   const seen = new Set<string>();
   const lines: string[] = [];
   let words = 0;
@@ -121,7 +137,7 @@ function readLinkIndex(body: HTMLElement): PageReading | null {
     lines.push(line);
     words += countWords(label);
   }
-  return lines.length > 0 ? { text: lines.join("\n"), words } : null;
+  return lines.length > 0 ? { text: lines.join("\n"), words, kind: "link_list" } : null;
 }
 
 /** Is most of this page's text the text of links to other pages?  That is what
@@ -137,7 +153,7 @@ function isLinkIndex(body: HTMLElement): boolean {
 }
 
 /** The reading that carries more of the page's own words; either may be absent. */
-function richer(article: PageReading | null, index: PageReading | null): PageReading | null {
+function richer(article: Reading | null, index: Reading | null): Reading | null {
   if (article === null) return index;
   if (index === null) return article;
   return index.words > article.words ? index : article;

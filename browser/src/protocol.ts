@@ -25,6 +25,16 @@ export const ConnectionState = {
   Reconnecting: "reconnecting",
 } as const satisfies Record<string, ConnectionState>;
 
+// How a browsed page was read (#2388) — mirrors `PageReading` in the Python side's
+// `constants.py`.  Set once by the extension (`isLinkIndex`/`richer` in
+// `page_text.ts`, the one place that reads the live DOM) and carried unchanged
+// through the wire so the server never has to guess it from the text's shape.
+export type PageReading = "article" | "link_list";
+export const PageReading = {
+  Article: "article",
+  LinkList: "link_list",
+} as const satisfies Record<string, PageReading>;
+
 // --- WebSocket: outgoing (browser → server) ---
 
 export type WsOutgoingType =
@@ -89,6 +99,12 @@ export interface WsOutgoingToolResponse {
   request_id: string;
   result?: string;
   error?: string;
+  // The page's own article/link-list mark (#2388) — set once by the extension
+  // (`isLinkIndex`/`richer` in `page_text.ts`) and carried unchanged to the
+  // extractor's input on the Python side (`PageReading` in `constants.py`).
+  // Absent on a tool response that read no page (an error, or a tool other than
+  // `browse_url`); the server treats a missing mark as ARTICLE, logged not silent.
+  reading?: PageReading;
 }
 
 export interface WsOutgoingHeartbeat {

@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from penny.channels.base import PageContext
+from penny.constants import PageReading
 
 # Incoming message types (browser → server)
 BROWSER_MSG_TYPE_MESSAGE = "message"
@@ -67,13 +68,19 @@ class BrowserIncoming(BaseModel):
 
 
 class BrowserToolResponse(BaseModel):
-    """A tool execution result from the browser extension."""
+    """A tool execution result from the browser extension.
+
+    ``reading`` (#2388) is the extension's own article/link-list mark for a
+    ``browse_url`` read.  ``None`` when the extension never sent it — an older
+    extension — which the channel treats as the ARTICLE default, logged rather than
+    silent (see ``BrowserChannel._handle_tool_response``)."""
 
     type: str
     request_id: str
     result: str | None = None
     error: str | None = None
     image: str | None = None
+    reading: PageReading | None = None
 
 
 class BrowserOutgoing(BaseModel):

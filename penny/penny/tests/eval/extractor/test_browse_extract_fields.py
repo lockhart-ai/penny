@@ -59,6 +59,7 @@ from typing import NamedTuple
 
 import pytest
 
+from penny.constants import PageReading
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
     EXTRACT_MISSING,
@@ -99,7 +100,11 @@ class ExtractFixture(NamedTuple):
 
     ``expectations`` is what the ``make check`` coherence probe holds against the page.  Each
     anchor it names is the SAME constant the case's own provenance claim reads, so a page edit
-    cannot leave a claim asserting a span the page no longer carries."""
+    cannot leave a claim asserting a span the page no longer carries.
+
+    ``reading`` (#2388) declares how the extension would have read ``page`` — ARTICLE (the
+    default) or LINK_LIST — matching the shape the page's own comment says it is: a markdown
+    link-index page declares LINK_LIST, a listing or prose page stays at the default."""
 
     case_id: str
     url: str
@@ -107,6 +112,7 @@ class ExtractFixture(NamedTuple):
     instruction: str
     behaviour: str
     expectations: tuple[FieldExpectation, ...]
+    reading: PageReading = PageReading.ARTICLE
 
 
 # ── The pages ────────────────────────────────────────────────────────────────
@@ -661,6 +667,7 @@ async def test_a_page_that_answers_everything_still_answers_everything(
         model=model,
         url=_ALL_PRESENT.url,
         page=_ALL_PRESENT.page,
+        reading=_ALL_PRESENT.reading,
         instruction=_ALL_PRESENT.instruction,
         also_instructed=_ALL_PRESENT_PHRASINGS,
         samples_per_phrasing=3,
@@ -739,6 +746,7 @@ _PARTLY_PRESENT = ExtractFixture(
         FieldExpectation("link-last", _LAST_LINK_ANCHOR),
         FieldExpectation("summary"),
     ),
+    reading=PageReading.LINK_LIST,
 )
 
 # What the five wordings (the instruction and `_PARTLY_PRESENT_PHRASINGS` below) call the
@@ -782,6 +790,7 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
         model=model,
         url=_PARTLY_PRESENT.url,
         page=_PARTLY_PRESENT.page,
+        reading=_PARTLY_PRESENT.reading,
         instruction=_PARTLY_PRESENT.instruction,
         also_instructed=_PARTLY_PRESENT_PHRASINGS,
         samples_per_phrasing=3,
@@ -920,6 +929,7 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
         model=model,
         url=_PARTLY_PRESENT_ON_A_PROSE_PAGE.url,
         page=_PARTLY_PRESENT_ON_A_PROSE_PAGE.page,
+        reading=_PARTLY_PRESENT_ON_A_PROSE_PAGE.reading,
         instruction=_PARTLY_PRESENT_ON_A_PROSE_PAGE.instruction,
         also_instructed=_PROSE_PAGE_PHRASINGS,
         samples_per_phrasing=3,
@@ -987,6 +997,7 @@ _NONE_PRESENT = ExtractFixture(
         FieldExpectation("closing price"),
         FieldExpectation("ticker symbol"),
     ),
+    reading=PageReading.LINK_LIST,
 )
 
 _NONE_PRESENT_PHRASINGS = (
@@ -1027,6 +1038,7 @@ async def test_a_page_carrying_none_of_it_still_says_so(
         model=model,
         url=_NONE_PRESENT.url,
         page=_NONE_PRESENT.page,
+        reading=_NONE_PRESENT.reading,
         instruction=_NONE_PRESENT.instruction,
         also_instructed=_NONE_PRESENT_PHRASINGS,
         samples_per_phrasing=3,
@@ -1091,6 +1103,7 @@ _TOP_HEADLINES = ExtractFixture(
         FieldExpectation("link-3", _TOP3_LINK_ANCHOR),
         FieldExpectation("description"),
     ),
+    reading=PageReading.LINK_LIST,
 )
 
 # What the five wordings (the instruction and `_TOP_HEADLINES_PHRASINGS` below) call the
@@ -1134,6 +1147,7 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
         model=model,
         url=_TOP_HEADLINES.url,
         page=_TOP_HEADLINES.page,
+        reading=_TOP_HEADLINES.reading,
         instruction=_TOP_HEADLINES.instruction,
         also_instructed=_TOP_HEADLINES_PHRASINGS,
         samples_per_phrasing=3,

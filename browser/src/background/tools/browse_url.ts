@@ -5,7 +5,7 @@
  * times to handle JS-rendered content (e.g. Kagi search results, SPAs).
  */
 
-import { TAB_LOAD_TIMEOUT_MS } from "../../protocol.js";
+import { PageReading, TAB_LOAD_TIMEOUT_MS } from "../../protocol.js";
 import { logStep } from "../ws_log.js";
 
 const EXTRACT_MAX_RETRIES = 10;
@@ -16,6 +16,7 @@ interface PageData {
   title: string;
   url: string;
   text: string;
+  reading: PageReading;
   image: string;
   ready: boolean;
   extracted: boolean;
@@ -191,6 +192,7 @@ async function closeTab(tabId: number): Promise<void> {
 interface BrowseResult {
   text: string;
   image: string;
+  reading: PageReading;
 }
 
 async function formatResult(data: PageData): Promise<BrowseResult> {
@@ -201,6 +203,7 @@ async function formatResult(data: PageData): Promise<BrowseResult> {
   return {
     text: `Title: ${data.title}\nURL: ${data.url}\n\n${data.text}`,
     image,
+    reading: data.reading,
   };
 }
 

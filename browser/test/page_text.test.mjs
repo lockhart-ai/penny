@@ -109,9 +109,13 @@ test("the homepage fixture is the JS-rendered index shape the yield claims are a
 test("a JS-rendered homepage yields its headlines and where they point", () => {
   const doc = documentFrom(fixture("news-homepage.html"), HOMEPAGE_URL);
 
-  const text = readPage(doc, HOMEPAGE_URL);
+  const page = readPage(doc, HOMEPAGE_URL);
 
-  assert.notEqual(text, null);
+  assert.notEqual(page, null);
+  const { text, reading } = page;
+  // The structural mark (#2388) a link-list read carries onward — the extractor's
+  // own note is conditioned on this, never on the text's shape.
+  assert.equal(reading, "link_list");
   assert.ok(
     text.length >= MIN_HOMEPAGE_YIELD,
     `homepage yielded ${text.length} chars, below the ${MIN_HOMEPAGE_YIELD} floor`,
@@ -150,7 +154,7 @@ test("a short grid, where Defuddle returns the lead card alone, reads whole", ()
   for (const card of cards.slice(3)) card.remove();
 
   const before = articleOnlyReading(doc, HOMEPAGE_URL);
-  const text = readPage(doc, HOMEPAGE_URL);
+  const { text } = readPage(doc, HOMEPAGE_URL);
 
   assert.ok(before.markdown.length < MIN_CONTENT_LENGTH * 2);
   for (const [headline, path] of HOMEPAGE_HEADLINES.slice(0, 4)) {
@@ -161,9 +165,13 @@ test("a short grid, where Defuddle returns the lead card alone, reads whole", ()
 test("an article page still reads as its article, not as its navigation", () => {
   const doc = documentFrom(fixture("news-article.html"), ARTICLE_URL);
 
-  const text = readPage(doc, ARTICLE_URL);
+  const page = readPage(doc, ARTICLE_URL);
 
-  assert.notEqual(text, null);
+  assert.notEqual(page, null);
+  const { text, reading } = page;
+  // The structural mark (#2388) stays "article" here — the extractor's link-list
+  // note would be FALSE on this page, so it must never be sent for it.
+  assert.equal(reading, "article");
   assert.ok(text.includes(ARTICLE_SENTENCE));
   // The page's chrome links are present in force and still lose — the index
   // reading is never built for a page whose text is mostly its body.
@@ -184,7 +192,7 @@ test("a hidden mega-menu decides nothing and is never emitted", () => {
   ).join("");
   doc.body.append(menu);
 
-  const text = readPage(doc, ARTICLE_URL);
+  const { text } = readPage(doc, ARTICLE_URL);
 
   assert.ok(text.includes(ARTICLE_SENTENCE));
   assert.ok(!text.includes("Hidden mega-menu entry"));

@@ -14,6 +14,13 @@ interface PageData {
   title: string;
   url: string;
   text: string;
+  // How the text was read (#2388) — "article" (Defuddle's own extraction, or the
+  // XML/RSS case below, or a page never read at all) vs. "link_list" (the page's
+  // own index of other pages won `richer` in `page_text.ts`).  Carried unchanged
+  // through the background script and the wire (`browser_url.ts`'s own `PageData`
+  // mirrors this shape — content scripts and the background bundle separately, so
+  // the shape is duplicated rather than imported, same as every other field here).
+  reading: "article" | "link_list";
   image: string;
   ready: boolean;
   extracted: boolean;
@@ -70,21 +77,26 @@ function extract(): PageData {
       title: document.title,
       url: location.href,
       text: "",
+      reading: "article",
       image: "",
       ready: false,
       extracted: false,
     };
   }
 
-  const text = extractXml() ?? readPage(document, location.href);
+  // XML/RSS is read whole, not as an article vs. a link list — "article" is the
+  // honest default for it, same as for a page that was never read at all.
+  const xml = extractXml();
+  const page = xml !== null ? { text: xml, reading: "article" as const } : readPage(document, location.href);
 
   return {
     title: document.title,
     url: location.href,
-    text: (text ?? "").slice(0, MAX_CHARS),
+    text: (page?.text ?? "").slice(0, MAX_CHARS),
+    reading: page?.reading ?? "article",
     image: extractMetaImage(),
     ready: true,
-    extracted: text !== null,
+    extracted: page !== null,
   };
 }
 

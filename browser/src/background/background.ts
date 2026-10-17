@@ -12,6 +12,7 @@ import {
   HEARTBEAT_INTERVAL_MS,
   type MemorySection,
   type PageContext,
+  type PageReading,
   RECONNECT_DELAY_MS,
   type RuntimeMessage,
   RuntimeMessageType,
@@ -558,7 +559,7 @@ async function setToolUse(enabled: boolean): Promise<void> {
 }
 
 function sendToolResponse(
-  requestId: string, result?: string, error?: string, image?: string,
+  requestId: string, result?: string, error?: string, image?: string, reading?: PageReading,
 ): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     logStep("tool", `sendToolResponse DROPPED (socket not open) id=${requestId}`);
@@ -574,6 +575,7 @@ function sendToolResponse(
     result,
     error,
     image,
+    reading,
   }));
 }
 
@@ -587,7 +589,7 @@ async function handleToolRequest(request: WsIncomingToolRequestPayload): Promise
     if (tool === "browse_url") {
       const result = await executeBrowseUrl(request_id, args);
       logStep("tool", `browse_url returned id=${request_id}, sending response`);
-      sendToolResponse(request_id, result.text, undefined, result.image);
+      sendToolResponse(request_id, result.text, undefined, result.image, result.reading);
     } else {
       sendToolResponse(request_id, undefined, `Unknown tool: ${tool}`);
     }
@@ -601,7 +603,7 @@ async function handleToolRequest(request: WsIncomingToolRequestPayload): Promise
 async function executeBrowseUrl(
   _requestId: string,
   args: Record<string, unknown>,
-): Promise<{ text: string; image: string }> {
+): Promise<{ text: string; image: string; reading: PageReading }> {
   const url = args.url as string;
   if (!url) throw new Error("Missing required argument: url");
   return await browseUrl(url);

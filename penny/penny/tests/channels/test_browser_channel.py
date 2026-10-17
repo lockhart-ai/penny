@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 from penny.channels.base import IncomingMessage
 from penny.channels.browser.channel import BrowserChannel, ConnectionInfo, PendingToolRequest
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
-from penny.constants import ChannelType, PennyConstants, PermissionResolution
+from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
@@ -207,7 +207,11 @@ class TestBrowseTool:
     async def test_returns_channel_content_as_search_result(self):
         """Tool returns a ToolResult with the channel content."""
         request_fn = AsyncMock(
-            return_value=("Title: Example\nURL: https://example.com\n\nPage content.", None)
+            return_value=(
+                "Title: Example\nURL: https://example.com\n\nPage content.",
+                None,
+                PageReading.ARTICLE,
+            )
         )
         tool = self._make_tool(request_fn)
         result = await tool.execute(queries=["https://example.com"], extract="the page content")
@@ -225,7 +229,11 @@ class TestBrowseTool:
         """
         raw = b"\xff\xd8\xff jpeg payload"
         request_fn = AsyncMock(
-            return_value=("Title: Tasty Recipe\nURL: https://ex.com/r\n\nContent.", _data_uri(raw))
+            return_value=(
+                "Title: Tasty Recipe\nURL: https://ex.com/r\n\nContent.",
+                _data_uri(raw),
+                PageReading.ARTICLE,
+            )
         )
         tool = BrowseTool(
             max_calls=3,
@@ -277,7 +285,7 @@ class TestBrowseTool:
             "\n"
             "A useful snippet about the second result."
         )
-        request_fn = AsyncMock(return_value=(kagi_content, None))
+        request_fn = AsyncMock(return_value=(kagi_content, None, PageReading.ARTICLE))
         tool = self._make_tool(request_fn)
         result = await tool.execute(
             queries=["https://kagi.com/search?q=test"], extract="the page content"
@@ -301,7 +309,9 @@ class TestBrowseTool:
     @pytest.mark.asyncio
     async def test_no_image_stores_no_media(self, db):
         """A page with no image stores nothing in the media table."""
-        request_fn = AsyncMock(return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None))
+        request_fn = AsyncMock(
+            return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
+        )
         tool = BrowseTool(
             max_calls=3,
             db=db,
@@ -346,7 +356,11 @@ class TestBrowseTool:
         async def request_fn(method: str, params: dict):
             if params["url"] == "https://bad.com":
                 raise RuntimeError("extraction failed")
-            return ("Title: Good\nURL: https://good.com\n\nUseful content.", None)
+            return (
+                "Title: Good\nURL: https://good.com\n\nUseful content.",
+                None,
+                PageReading.ARTICLE,
+            )
 
         tool = self._make_tool(request_fn)
         result = await tool.execute(
@@ -362,7 +376,9 @@ class TestBrowseTool:
         """Queries beyond max_calls are run for the first N and the rest are named in
         a dropped-queries section (not silently truncated), so the model can rerun
         them — the run queries still succeed, so success stays True."""
-        request_fn = AsyncMock(return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None))
+        request_fn = AsyncMock(
+            return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
+        )
         tool = self._make_tool(request_fn)  # max_calls=3
 
         result = await tool.execute(
@@ -383,7 +399,9 @@ class TestBrowseTool:
         """Tool calls permission_manager.check_domain before requesting the page."""
         mock_perm = MagicMock()
         mock_perm.check_domain = AsyncMock()
-        request_fn = AsyncMock(return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None))
+        request_fn = AsyncMock(
+            return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
+        )
         tool = self._make_tool(request_fn, permission_manager=mock_perm)
         await tool.execute(queries=["https://example.com"], extract="the page content")
 
@@ -416,7 +434,7 @@ class TestBrowseTool:
 
         async def hanging_request_fn(method: str, params: dict):
             await asyncio.sleep(1000)
-            return ("", None)
+            return ("", None, PageReading.ARTICLE)
 
         tool = self._make_tool(hanging_request_fn)
         result = await tool.execute(queries=["https://example.com"], extract="the page content")
@@ -432,8 +450,16 @@ class TestBrowseToolMediaCapture:
     async def test_each_page_image_stored(self, db):
         """Reading two pages in one call stores two distinct media rows."""
         pages = {
-            "https://a.com": ("Title: A\nURL: https://a.com\n\nAlpha.", _data_uri(b"aaa")),
-            "https://b.com": ("Title: B\nURL: https://b.com\n\nBeta.", _data_uri(b"bbb")),
+            "https://a.com": (
+                "Title: A\nURL: https://a.com\n\nAlpha.",
+                _data_uri(b"aaa"),
+                PageReading.ARTICLE,
+            ),
+            "https://b.com": (
+                "Title: B\nURL: https://b.com\n\nBeta.",
+                _data_uri(b"bbb"),
+                PageReading.ARTICLE,
+            ),
         }
 
         async def request_fn(method: str, params: dict):
@@ -789,12 +815,97 @@ class TestBrowserRegister:
             )
             for pending in channel._pending_requests.values():
                 if not pending.future.done():
-                    pending.future.set_result(("page content here", None))
+                    pending.future.set_result(("page content here", None, PageReading.ARTICLE))
                     return
 
         asyncio.create_task(fake_tool_response())
         result = await channel.send_tool_request("browse_url", {"url": "https://example.com"})
-        assert result == ("page content here", None)
+        assert result == ("page content here", None, PageReading.ARTICLE)
+
+    @pytest.mark.asyncio
+    async def test_tool_response_reading_mark_reaches_send_tool_request(self, db):
+        """The extension's own reading mark (#2388) rides the real ``tool_response``
+        message through ``_handle_tool_response`` into ``send_tool_request``'s
+        result — never guessed by the server from the text's shape."""
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        ws = _MockWs()
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-macbook"}),
+            None,
+        )
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "capabilities_update", "tool_use_enabled": True}),
+            "firefox-macbook",
+        )
+        db.domain_permissions.set_permission("example.com", "allowed")
+
+        async def fake_tool_response() -> None:
+            await wait_until(
+                lambda: any(not p.future.done() for p in channel._pending_requests.values()),
+                timeout=2.0,
+            )
+            request_id = next(iter(channel._pending_requests))
+            await channel._process_raw_message(
+                ws,  # ty: ignore[invalid-argument-type]
+                json.dumps(
+                    {
+                        "type": "tool_response",
+                        "request_id": request_id,
+                        "result": "page content here",
+                        "reading": "link_list",
+                    }
+                ),
+                "firefox-macbook",
+            )
+
+        asyncio.create_task(fake_tool_response())
+        result = await channel.send_tool_request("browse_url", {"url": "https://example.com"})
+        assert result == ("page content here", None, PageReading.LINK_LIST)
+
+    @pytest.mark.asyncio
+    async def test_tool_response_missing_reading_defaults_to_article_and_logs(self, db, caplog):
+        """An older extension's ``tool_response`` carries no ``reading`` key at all —
+        the channel resolves it to ARTICLE (never guessing link-list from the text)
+        and LOGS the degradation, rather than failing silently (#2388)."""
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        ws = _MockWs()
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-macbook"}),
+            None,
+        )
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "capabilities_update", "tool_use_enabled": True}),
+            "firefox-macbook",
+        )
+        db.domain_permissions.set_permission("example.com", "allowed")
+
+        async def fake_tool_response() -> None:
+            await wait_until(
+                lambda: any(not p.future.done() for p in channel._pending_requests.values()),
+                timeout=2.0,
+            )
+            request_id = next(iter(channel._pending_requests))
+            with caplog.at_level(logging.INFO):
+                await channel._process_raw_message(
+                    ws,  # ty: ignore[invalid-argument-type]
+                    json.dumps(
+                        {
+                            "type": "tool_response",
+                            "request_id": request_id,
+                            "result": "page content here",
+                        }
+                    ),
+                    "firefox-macbook",
+                )
+
+        asyncio.create_task(fake_tool_response())
+        result = await channel.send_tool_request("browse_url", {"url": "https://example.com"})
+        assert result == ("page content here", None, PageReading.ARTICLE)
+        assert "no page reading" in caplog.text
 
 
 class TestCapabilitiesAndToolRouting:
@@ -1062,7 +1173,9 @@ class TestBrowserSocketLiveness:
         # A second window is up, with a request of its own in flight.
         live = _MockWs()
         self._connect(channel, "firefox-live", live, fresh=True)
-        survivor: asyncio.Future[tuple[str, str | None]] = asyncio.get_event_loop().create_future()
+        survivor: asyncio.Future[tuple[str, str | None, PageReading]] = (
+            asyncio.get_event_loop().create_future()
+        )
         channel._pending_requests["survivor"] = PendingToolRequest(
             future=survivor, ws=cast(Any, live)
         )

@@ -42,7 +42,7 @@ from sqlmodel import Session, col, select
 
 from penny.agents.collector import Collector
 from penny.config import Config
-from penny.constants import ChannelType, MutationEntityType, PennyConstants
+from penny.constants import ChannelType, MutationEntityType, PageReading, PennyConstants
 from penny.conversation_machine import (
     ConversationState,
     MachineSnapshot,
@@ -1008,7 +1008,7 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
     generic mock sits on both.
     """
 
-    async def request_fn(method: str, params: dict) -> tuple[str, str | None]:
+    async def request_fn(method: str, params: dict) -> tuple[str, str | None, PageReading]:
         url = params.get("url", "").lower()
         for page in pages:
             if page.match.lower() in url:
@@ -1016,8 +1016,8 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
                     raise _BrowseReadError(
                         f"failed to read {url} after 3 attempts: the source could not be read"
                     )
-                return page.text, page.image
-        return _NO_RESULTS_PAGE, None
+                return page.text, page.image, page.reading
+        return _NO_RESULTS_PAGE, None, PageReading.ARTICLE
 
     def provider() -> tuple[Callable, MagicMock]:
         return request_fn, MagicMock(check_domain=AsyncMock())
@@ -6002,14 +6002,16 @@ def _observe_extraction(
     )
 
 
-def _extraction_world(url: str, page: str) -> World:
+def _extraction_world(url: str, page: str, reading: PageReading) -> World:
     """The one page an extraction case is answered against, as a :class:`World`.
 
-    Built from the case's own ``url``/``page`` rather than declared separately, so there is one
-    source of truth for what the draw read and the report's world fold renders exactly the
-    document the draw was handed.  ``keeps``/``excludes`` are empty: those token sets exist for
-    claims about what a ROUND chose to store, and this shape stores nothing."""
-    return World(name=url, pages=(CannedPage(match=url, text=page),), keeps=(), excludes=())
+    Built from the case's own ``url``/``page``/``reading`` rather than declared separately, so
+    there is one source of truth for what the draw read and the report's world fold renders
+    exactly the document the draw was handed.  ``keeps``/``excludes`` are empty: those token
+    sets exist for claims about what a ROUND chose to store, and this shape stores nothing."""
+    return World(
+        name=url, pages=(CannedPage(match=url, text=page, reading=reading),), keeps=(), excludes=()
+    )
 
 
 @pytest.fixture
@@ -6047,6 +6049,7 @@ def extractor_eval(
         min_pass_rate: PassRate = UNSTATED,
         timeout: float = SINGLE_CALL_WAIT_SECONDS,
         family: str | None = None,
+        reading: PageReading = PageReading.ARTICLE,
     ) -> Cohort:
         """Drive one page + instruction through the extraction draw and return its COHORT.
 
@@ -6056,6 +6059,11 @@ def extractor_eval(
         call site, so what the cohort measures is whether the answer survives how the calling
         draw happened to word the request.  The page is FIXED across the arms; it is the world.
         A case with no ``instruction`` is refused by name.
+
+        ``reading`` (#2388) declares how the extension would have read ``page`` — ARTICLE (the
+        default) or LINK_LIST — so a case presents the extractor's structural note the same
+        way production does: the note rides ``MicroContext.extract``'s own ``reading`` argument,
+        never guessed here from the page's shape.
         """
         _require_ask(case_id, "extractor_eval", "instruction=<the extract request>", instruction)
         _require_report_only(case_id, min_pass_rate)
@@ -6073,7 +6081,7 @@ def extractor_eval(
         # a property of the CASE rather than of the arm.
         arms = _arms(
             [instruction, *also_instructed],
-            [_extraction_world(url, page)],
+            [_extraction_world(url, page, reading)],
             samples_per_phrasing,
             samples,
         )
@@ -6097,7 +6105,9 @@ def extractor_eval(
             extracted: MicroContextResult | None = None
             try:
                 extracted = await asyncio.wait_for(
-                    micro.extract(content, asked, run_target=penny.chat_agent.name),
+                    micro.extract(
+                        content, asked, run_target=penny.chat_agent.name, reading=reading
+                    ),
                     timeout=timeout,
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has

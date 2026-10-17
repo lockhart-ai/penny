@@ -26,6 +26,7 @@ Fictional pages + deterministic mock model responses throughout.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import urllib.parse
 from collections import Counter
@@ -37,7 +38,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlmodel import Session, select
 
-from penny.constants import PennyConstants
+from penny.constants import PageReading, PennyConstants
 from penny.database import Database
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import PromptLog
@@ -139,11 +140,11 @@ def _make_db(tmp_path, name: str = "test") -> Database:
     return db
 
 
-def _provider(page_text: str):
+def _provider(page_text: str, reading: PageReading = PageReading.ARTICLE):
     """A browse provider returning ``page_text`` for any URL, no image."""
 
-    async def request_fn(method: str, params: dict) -> tuple[str, str | None]:
-        return (page_text, None)
+    async def request_fn(method: str, params: dict) -> tuple[str, str | None, PageReading]:
+        return (page_text, None, reading)
 
     def provider():
         return (request_fn, MagicMock(check_domain=AsyncMock()))
@@ -161,7 +162,11 @@ def _responds(content: str) -> MockLlmClient:
 
 
 def _extract_tool(
-    db: Database, model: MockLlmClient | LlmClient, *, run_id: str | None = None
+    db: Database,
+    model: MockLlmClient | LlmClient,
+    *,
+    run_id: str | None = None,
+    reading: PageReading = PageReading.ARTICLE,
 ) -> BrowseTool:
     tool = BrowseTool(
         max_calls=3,
@@ -171,7 +176,7 @@ def _extract_tool(
         author="widget-watch",
         run_id=run_id,
     )
-    tool.set_browse_provider(_provider(_PAGE_TEXT))
+    tool.set_browse_provider(_provider(_PAGE_TEXT, reading))
     return tool
 
 
@@ -179,11 +184,11 @@ def _provider_by_url(pages: dict[str, str], failing: frozenset[str] = frozenset(
     """A browse provider returning each URL's mapped text; a URL in ``failing``
     raises (a per-page read failure → a ``## browse error:`` section)."""
 
-    async def request_fn(method: str, params: dict) -> tuple[str, str | None]:
+    async def request_fn(method: str, params: dict) -> tuple[str, str | None, PageReading]:
         url = params["url"]
         if url in failing:
             raise RuntimeError("page unavailable")
-        return (pages[url], None)
+        return (pages[url], None, PageReading.ARTICLE)
 
     def provider():
         return (request_fn, MagicMock(check_domain=AsyncMock()))
@@ -385,6 +390,43 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     assert rows[0].parent_run_id == "chat-run-1"
     assert rows[0].parent_tool_call_id == "call-browse-1"
     assert rows[0].call_outcome == "completed"
+    # The default reading is ARTICLE (#2388) end to end — BrowseTool never
+    # fabricates a link-list note for a provider that never marked one.
+    sent_messages = json.loads(rows[0].messages)
+    assert "read as its list of links" not in sent_messages[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_extract_link_list_reading_reaches_the_model_end_to_end(tmp_path, mock_llm):
+    """#2388: the browser's own reading mark travels through ``BrowsePage`` →
+    ``_assemble_sections`` → ``_extract_batch`` → ``_extract_one_page`` into the
+    REAL micro-context draw — not just the ``MicroContext.extract`` unit above —
+    so the note reaches the model on a provider that marked its page a link list."""
+    db = _make_db(tmp_path)
+    client = LlmClient(
+        api_url="http://localhost:11434", model="test-model", db=db, max_retries=1, retry_delay=0.0
+    )
+    mock_llm.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(role="assistant", content=_TAGGED_VALUE)
+        )
+    )
+    tool = _extract_tool(db, client, reading=PageReading.LINK_LIST)
+
+    result = await tool.run(queries=[_PAGE_URL], extract=_INSTRUCTION)
+
+    assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
+    with Session(db.engine) as session:
+        rows = session.exec(
+            select(PromptLog).where(
+                PromptLog.agent_name == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
+            )
+        ).all()
+    assert len(rows) == 1
+    sent_messages = json.loads(rows[0].messages)
+    turn = sent_messages[1]["content"]
+    assert "read as its list of links" in turn
+    assert turn.index("read as its list of links") < turn.index("Content:")
 
 
 @pytest.mark.asyncio
@@ -963,6 +1005,29 @@ async def test_micro_context_returns_byte_identical_value_with_attribution():
     assert model.requests[0]["agent_name"] == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
     assert model.requests[0]["prompt_type"] == PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE
     assert model.requests[0]["run_target"] == "widget-watch"
+    # The default reading is ARTICLE (#2388) — the rendered user turn is
+    # byte-identical to what it was before ``reading`` existed: no note, nothing
+    # before ``Content:`` beyond the instruction.
+    assert (
+        model.requests[0]["messages"][1]["content"]
+        == f"Instruction: {_INSTRUCTION}\n\nContent:\n{_PAGE_BODY}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_micro_context_link_list_reading_adds_one_note_before_content():
+    """#2388: a link-list read (the extension's own structural mark, never guessed
+    from the text's shape) gets one note, placed BEFORE ``Content:``, saying the
+    page was read as its list of links — the byte-identical test above pins its
+    absence on every other reading."""
+    model = _responds(_TAGGED_VALUE)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, reading=PageReading.LINK_LIST
+    )
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    turn = model.requests[0]["messages"][1]["content"]
+    assert "read as its list of links" in turn
+    assert turn.index("read as its list of links") < turn.index("Content:")
 
 
 @pytest.mark.asyncio

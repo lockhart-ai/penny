@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from penny.constants import PennyConstants
+from penny.constants import PageReading, PennyConstants
 from penny.llm.refusal import is_refusal
 from penny.text_validity import (
     half_formed_send_reason,
@@ -260,7 +260,31 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     "itself — no preamble, no explanation, no restating the instruction."
 )
 
-_USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
+# The structural reading-mode note (#2388).  The extension already knows whether it
+# read the page as its article body or as its own link list (``isLinkIndex``/``richer``
+# in ``browser/src/content/page_text.ts``) — a fact only it can see, since it is the
+# one place that reads the live DOM.  On a link-list read the extractor is otherwise
+# left to work out, from the text's shape alone, which lines are navigation, where a
+# link's title ends and its description begins, and what "the top N" means — and a
+# real-size front page is exactly where that reasoning ran long (#2360).  Told plainly
+# instead: two replays of the slowest draws on the top-three ask, 18 per variant, cut
+# median reasoning tokens a further 18-23% on top of #2360's own prompt, with
+# correctness unchanged (18/18 either way).
+#
+# On an ARTICLE read the note would be FALSE, so it is simply absent — never
+# rendered, never hedged.  That absence is what keeps every existing customer (every
+# browse read before this ticket) byte-identical: ``reading_note`` defaults to "",
+# and the template below with an empty note is character-for-character the one line
+# above it replaces.
+_LINK_LIST_READING_NOTE = (
+    "About the content: this page was read as its list of links — one line per link, "
+    "in the order the links appear on the page; that order is the page's own ranking, "
+    "so the first links of a kind are its top ones. Each line is a link's own label "
+    "and address. A label can run past its title into a further sentence that "
+    "describes what it links to.\n\n"
+)
+
+_USER_TEMPLATE = "Instruction: {instruction}\n\n{reading_note}Content:\n{content}"
 
 # ── Second customer: run-end LEAF LABELLING (#1824/#1827/#1828) ────────────────
 # The labelling contract is a DIFFERENT declared shape riding the SAME poison-screen
@@ -1003,6 +1027,7 @@ class MicroContext:
         run_target: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
+        reading: PageReading = PageReading.ARTICLE,
     ) -> MicroContextResult:
         """Extract ``instruction`` from ``content`` in one scoped model call.
 
@@ -1019,7 +1044,14 @@ class MicroContext:
         to the chat/collector run — and, since this is the one customer invoked from
         INSIDE a dispatched tool call, that call's own id — it was made on behalf of,
         so that run's own record can list it.
+
+        ``reading`` (#2388) is the structural mark the extension set when it read the
+        page — on :attr:`PageReading.LINK_LIST` the user turn carries one note, BEFORE
+        ``Content:``, saying so; on the default :attr:`PageReading.ARTICLE` the note is
+        absent and the rendered turn is byte-identical to before this parameter
+        existed.
         """
+        reading_note = _LINK_LIST_READING_NOTE if reading == PageReading.LINK_LIST else ""
         drawn = await self._valid_draw(
             content,
             instruction,
@@ -1027,6 +1059,7 @@ class MicroContext:
             shape=EXTRACT_SHAPE,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
+            reading_note=reading_note,
         )
         if isinstance(drawn, DrawFailure):
             return MicroContextResult(outcome=_EXTRACT_FAILURES[drawn])
@@ -1253,6 +1286,7 @@ class MicroContext:
         user_template: str = _USER_TEMPLATE,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
+        reading_note: str = "",
     ) -> ParsedDraw | DrawFailure:
         """The ONE validate step every customer rides (#1814): a poison-screened
         draw, read against its DECLARED ``shape`` and checked against ``accepts``
@@ -1274,7 +1308,9 @@ class MicroContext:
         customer owns a reroll loop or partitions a string of its own.  ``parent_run_id``
         / ``parent_tool_call_id`` (#2355 part A) are passed straight through to every
         attempt, unchanged across rerolls — they name the run (and, for a tool-nested
-        draw, the call) this WHOLE draw is being made for, not any one attempt."""
+        draw, the call) this WHOLE draw is being made for, not any one attempt.
+        ``reading_note`` (#2388) rides the same way — only ``extract`` ever supplies a
+        non-empty one; every other customer's ``_BARE_CONTENT_TEMPLATE`` ignores it."""
         for _ in range(self._reroll_attempts):
             draw = await self._draw_clean(
                 content,
@@ -1286,6 +1322,7 @@ class MicroContext:
                 user_template=user_template,
                 parent_run_id=parent_run_id,
                 parent_tool_call_id=parent_tool_call_id,
+                reading_note=reading_note,
             )
             if draw is None:
                 return DrawFailure.POISON
@@ -1314,6 +1351,7 @@ class MicroContext:
         user_template: str = _USER_TEMPLATE,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
+        reading_note: str = "",
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
         is unusable.  Mirrors the agent-loop reroll guard — discard poison, never
@@ -1322,7 +1360,7 @@ class MicroContext:
         The ``system_prompt`` + ledger attribution are parameters (defaulting to the
         browse-extract contract) so a second output contract — run-end skill naming
         (#1665) — rides the SAME poison/reroll loop without duplicating it."""
-        messages = self._messages(content, instruction, system_prompt, user_template)
+        messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
         run_id = uuid.uuid4().hex
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
@@ -1360,16 +1398,23 @@ class MicroContext:
         instruction: str,
         system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
         user_template: str = _USER_TEMPLATE,
+        reading_note: str = "",
     ) -> list[dict]:
         """The scoped two-message context: the contract framing (``system_prompt``,
         default the browse-extract contract), then the user turn shaped by the
         customer's ``user_template`` (default: the instruction paired with bulk
-        content; the classifier passes the bare-situation template)."""
+        content; the classifier passes the bare-situation template).
+
+        ``reading_note`` (#2388) only ever renders on ``_USER_TEMPLATE`` — the five
+        customers on ``_BARE_CONTENT_TEMPLATE`` ("{content}") have no ``{reading_note}``
+        slot to fill, so ``str.format`` simply ignores the supplied kwarg for them."""
         return [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": user_template.format(instruction=instruction, content=content),
+                "content": user_template.format(
+                    instruction=instruction, content=content, reading_note=reading_note
+                ),
             },
         ]
 

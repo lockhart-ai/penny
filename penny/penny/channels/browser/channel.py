@@ -90,7 +90,7 @@ from penny.channels.browser.models import (
 )
 from penny.channels.permission_manager import PermissionManager
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
-from penny.constants import ChannelType, PennyConstants, PermissionResolution
+from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
 from penny.database.memory import (
     EntryInput,
     MemoryAlreadyExistsError,
@@ -148,7 +148,7 @@ class PendingToolRequest:
     in-flight requests belonging to connections that were still perfectly alive.
     """
 
-    future: asyncio.Future[tuple[str, str | None]]
+    future: asyncio.Future[tuple[str, str | None, PageReading]]
     ws: ServerConnection
 
 
@@ -676,7 +676,23 @@ class BrowserChannel(MessageChannel):
         if response.error:
             pending.future.set_exception(RuntimeError(response.error))
         else:
-            pending.future.set_result((response.result or "", response.image))
+            pending.future.set_result(
+                (response.result or "", response.image, self._reading(response))
+            )
+
+    @staticmethod
+    def _reading(response: BrowserToolResponse) -> PageReading:
+        """The page's reading mark (#2388), or the honest ARTICLE default when the
+        extension never sent one — an older extension — logged rather than silent
+        (visible degradation, never a silent assumption)."""
+        if response.reading is not None:
+            return response.reading
+        logger.info(
+            "Tool response %s carries no page reading (older extension?) — treating as %s",
+            response.request_id,
+            PageReading.ARTICLE,
+        )
+        return PageReading.ARTICLE
 
     _PROMPT_LOG_PAGE_SIZE = 50
 
@@ -1189,7 +1205,7 @@ class BrowserChannel(MessageChannel):
         self,
         tool: str,
         arguments: dict,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, PageReading]:
         """Send a tool request to a connected browser and await the response.
 
         The per-request timeout is owned by the caller: the browse tool wraps
@@ -1203,7 +1219,9 @@ class BrowserChannel(MessageChannel):
         A send that FAILS is the one thing not left to the caller's clock: the
         socket is gone, so no answer is coming, and waiting the timeout out only
         delays the retry.  The request is failed immediately and the socket is
-        evicted.  Returns (result_text, image_url).
+        evicted.  Returns ``(result_text, image_url, reading)`` — ``reading`` (#2388)
+        is the extension's own article/link-list mark, resolved to the ARTICLE default
+        (logged) when an older extension never sent one.
         """
         ws = self._get_tool_connection()
         if ws is None:
@@ -1215,7 +1233,9 @@ class BrowserChannel(MessageChannel):
             raise RuntimeError("No browser with tool-use enabled is connected")
 
         request_id = str(uuid.uuid4())
-        future: asyncio.Future[tuple[str, str | None]] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[tuple[str, str | None, PageReading]] = (
+            asyncio.get_event_loop().create_future()
+        )
         self._pending_requests[request_id] = PendingToolRequest(future=future, ws=ws)
 
         request = BrowserToolRequest(
