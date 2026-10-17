@@ -188,9 +188,9 @@ class IosChannel(MessageChannel):
         self._pending_conversation_state: ConversationState | None = None
         self._permission_manager: PermissionManager | None = None
         self._collector: Collector | None = None
-        db.messages._on_prompt_logged = self._on_prompt_logged
-        db.messages._on_run_outcome_set = self._on_run_outcome_set
-        db.memories._on_memory_changed = self._on_memory_changed
+        db.messages.subscribe_prompt_logged(self._on_prompt_logged)
+        db.messages.subscribe_run_outcome_set(self._on_run_outcome_set)
+        db.memories.subscribe_memory_changed(self._on_memory_changed)
 
     @property
     def sender_id(self) -> str:

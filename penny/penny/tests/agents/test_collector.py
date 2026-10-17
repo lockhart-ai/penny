@@ -3096,7 +3096,7 @@ async def test_a_kept_occurrence_still_raises_the_addon_refresh(mock_llm, test_c
     collector, db = _make_collector(test_config, tmp_path)
     _seed_daily_briefing(db)
     refreshed: list[str | None] = []
-    db.memories._on_memory_changed = lambda name: refreshed.append(name)
+    db.memories.subscribe_memory_changed(lambda name: refreshed.append(name))
 
     def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
         raise LlmConnectionError("Connection refused")

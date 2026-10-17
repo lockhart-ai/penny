@@ -1848,8 +1848,8 @@ class TestBrowserPromptLogHandlers:
         """_on_run_outcome_set callback fires with the structured outcome when set."""
         _, db = self._channel(tmp_path)
         received: list[tuple[str, str, str]] = []
-        db.messages._on_run_outcome_set = lambda run_id, outcome, reason: received.append(
-            (run_id, outcome, reason)
+        db.messages.subscribe_run_outcome_set(
+            lambda run_id, outcome, reason: received.append((run_id, outcome, reason))
         )
 
         self._log_prompt(db, "collector", "run1")
@@ -1859,10 +1859,16 @@ class TestBrowserPromptLogHandlers:
         assert received[0] == ("run1", "worked", "wrote 2 new games")
 
     def test_on_prompt_logged_callback(self, tmp_path):
-        """_on_prompt_logged callback fires with prompt data for prompts with run_id."""
+        """_on_prompt_logged callback fires with prompt data for prompts with run_id.
+
+        Two subscribers (#2441 — e.g. the browser extension AND an iOS channel, both
+        connected at once) both receive the same push rather than one overwriting
+        the other's slot."""
         _, db = self._channel(tmp_path)
         received: list[dict] = []
-        db.messages._on_prompt_logged = lambda data: received.append(data)
+        received_second: list[dict] = []
+        db.messages.subscribe_prompt_logged(lambda data: received.append(data))
+        db.messages.subscribe_prompt_logged(lambda data: received_second.append(data))
 
         # Prompt without run_id — no callback
         db.messages.log_prompt(
@@ -1872,8 +1878,9 @@ class TestBrowserPromptLogHandlers:
             agent_name="chat",
         )
         assert len(received) == 0
+        assert len(received_second) == 0
 
-        # Prompt with run_id — callback fires
+        # Prompt with run_id — callback fires for every subscriber
         db.messages.log_prompt(
             model="test",
             messages=[{"role": "user", "content": "hi"}],
@@ -1886,6 +1893,8 @@ class TestBrowserPromptLogHandlers:
         assert received[0]["run_id"] == "run1"
         assert received[0]["input_tokens"] == 50
         assert received[0]["output_tokens"] == 20
+        assert len(received_second) == 1
+        assert received_second[0]["run_id"] == "run1"
         # No tool call in that response, and no parent linkage — an ordinary
         # top-level call (#2434).
         assert received[0]["made_tool_call"] is False
@@ -2206,7 +2215,7 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection("board-games", "games")
 
         received: list[str | None] = []
-        db.memories._on_memory_changed = lambda name: received.append(name)
+        db.memories.subscribe_memory_changed(lambda name: received.append(name))
 
         require_memory(db, "board-games").write(
             [EntryInput(key="catan", content="A classic")],
@@ -2221,7 +2230,7 @@ class TestBrowserMemoryHandlers:
         _, db = self._channel(tmp_path)
         db.memories.create_log("notes", "scratch log")
         received: list[str | None] = []
-        db.memories._on_memory_changed = lambda name: received.append(name)
+        db.memories.subscribe_memory_changed(lambda name: received.append(name))
 
         require_memory(db, "notes").append([LogEntryInput(content="cycle x")], author="user")
 

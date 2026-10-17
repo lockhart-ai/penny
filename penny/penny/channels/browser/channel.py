@@ -172,9 +172,9 @@ class BrowserChannel(MessageChannel):
         self._liveness_task: asyncio.Task | None = None
         self._permission_manager: PermissionManager | None = None
         self._collector: Collector | None = None
-        db.messages._on_prompt_logged = self._on_prompt_logged
-        db.messages._on_run_outcome_set = self._on_run_outcome_set
-        db.memories._on_memory_changed = self._on_memory_changed
+        db.messages.subscribe_prompt_logged(self._on_prompt_logged)
+        db.messages.subscribe_run_outcome_set(self._on_run_outcome_set)
+        db.memories.subscribe_memory_changed(self._on_memory_changed)
 
     def _on_prompt_logged(self, prompt_data: dict) -> None:
         """Callback fired after each prompt is logged — broadcast to browsers."""

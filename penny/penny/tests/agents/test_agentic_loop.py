@@ -2391,7 +2391,7 @@ class TestPromptLogAnnotations:
 
         # Track callback invocations
         callback_prompts: list[dict] = []
-        db.messages._on_prompt_logged = lambda data: callback_prompts.append(data)
+        db.messages.subscribe_prompt_logged(lambda data: callback_prompts.append(data))
 
         def handler(request, count):
             if count == 1:

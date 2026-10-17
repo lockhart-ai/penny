@@ -188,8 +188,36 @@ class MessageStore:
     def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
         self._clock = clock if clock is not None else Clock()
-        self._on_prompt_logged: Callable[[dict], None] | None = None
-        self._on_run_outcome_set: Callable[[str, str, str], None] | None = None
+        # Lists, not slots (#2441): every connected channel — browser extension AND
+        # iOS — subscribes its own listener here, so each gets every push instead of
+        # only the one built last silently taking over the other's.
+        self._prompt_logged_listeners: list[Callable[[dict], None]] = []
+        self._run_outcome_set_listeners: list[Callable[[str, str, str], None]] = []
+
+    def subscribe_prompt_logged(self, listener: Callable[[dict], None]) -> None:
+        """Add a listener notified after every logged prompt that carries a run id."""
+        self._prompt_logged_listeners.append(listener)
+
+    def subscribe_run_outcome_set(self, listener: Callable[[str, str, str], None]) -> None:
+        """Add a listener notified whenever a run's outcome is set."""
+        self._run_outcome_set_listeners.append(listener)
+
+    def _publish_prompt_logged(self, payload: dict) -> None:
+        """Notify every subscriber; one raising must not stop the rest, or the
+        write that already landed before this fires."""
+        for listener in tuple(self._prompt_logged_listeners):
+            try:
+                listener(payload)
+            except Exception:
+                logger.exception("A prompt-logged listener failed")
+
+    def _publish_run_outcome_set(self, run_id: str, outcome: str, reason: str) -> None:
+        """Notify every subscriber; one raising must not stop the rest."""
+        for listener in tuple(self._run_outcome_set_listeners):
+            try:
+                listener(run_id, outcome, reason)
+            except Exception:
+                logger.exception("A run-outcome-set listener failed")
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -312,9 +340,9 @@ class MessageStore:
                 session.commit()
                 session.refresh(log)
                 logger.debug("Logged prompt exchange (model=%s)", model)
-                if self._on_prompt_logged and run_id:
+                if self._prompt_logged_listeners and run_id:
                     input_tokens, output_tokens = self._extract_token_usage(response_payload)
-                    self._on_prompt_logged(
+                    self._publish_prompt_logged(
                         {
                             "id": log.id,
                             "timestamp": log.timestamp.isoformat(),
@@ -854,8 +882,8 @@ class MessageStore:
                     last_prompt.tool_failures = tool_failures
                     session.add(last_prompt)
                     session.commit()
-                    if self._on_run_outcome_set:
-                        self._on_run_outcome_set(run_id, outcome, reason)
+                    if self._run_outcome_set_listeners:
+                        self._publish_run_outcome_set(run_id, outcome, reason)
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
 
