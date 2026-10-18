@@ -8,15 +8,15 @@ bulk page body never enters the parent run's context: only the extracted value
 content come back (the anchor discipline).  A micro-context is structurally
 incapable of confabulating a stored value it has never seen.
 
-The output contract is ENUMERATED on both sides of the interface, and since
-#1814 it is **DECLARED AS DATA**: each customer names a
+A customer that declares a tagged shape does so as DATA, not a bespoke parser:
+since #1814 each one names a
 :class:`~penny.tools.micro_context_shape.MicroContextShape` — its tags, which
 lines are required, which repeat per item, how each line's payload carves into
 named fields, and which of those fields may be absent.  The prompt's contract
 block is RENDERED from that declaration (``render_line``), so the tags and
 separators the model is told to write are literally the ones the parser splits
 on; :func:`~penny.tools.micro_context_shape.parse_draw` is the ONE validate step
-every customer rides, so no customer partitions a string itself.  What that
+a shaped customer rides, so it never partitions a string itself.  What that
 bought is the failure it replaced: a ``PARAM`` line whose separator came back as
 an en-dash where the parser wanted an em-dash used to partition to nothing and
 hand the entire remainder over as a parameter's semantic name — a 60-character
@@ -24,21 +24,24 @@ hand the entire remainder over as a parameter's semantic name — a 60-character
 reroll because the parse had "succeeded".  Tolerance is now declared once and
 "parsed to something implausible" is a contract violation, not a value.
 
-A violation of a REQUIRED part of the shape is rerolled on the unchanged context
-and then fails honestly, per customer (``EXTRACTION_FAILED`` / ``INVALID``).  A
-violation of an OPTIONAL or PER_ITEM line is simply an ABSENT line at the
-GRAMMAR level — but whether absence is acceptable is the CUSTOMER's to declare,
-as a runtime constraint (``accepts``): extraction's stated-shortfall line is
-OPTIONAL and best-effort (no offered set to check it against), while the
-notifier refuses a draw whose text is not worth delivering (:func:`_is_sendable`).
-An accepted draw never contains an invalid line.
+**Browse-extract is the one customer that no longer declares a shape (#2615):**
+reading a page is not a reasoning task, so its draw runs with thinking off and
+its plain text IS the value, verbatim — see :meth:`MicroContext.extract` and
+:data:`MICRO_CONTEXT_SYSTEM_PROMPT` below.  The notifier still declares one
+(:data:`NOTIFY_SHAPE`), so the shape machinery above serves it: a violation of a
+REQUIRED part of ITS shape is rerolled on the unchanged context and then fails
+honestly; a violation of an OPTIONAL or PER_ITEM line is simply an ABSENT line
+at the GRAMMAR level — but whether absence is acceptable is the CUSTOMER's to
+declare, as a runtime constraint (``accepts``): the notifier refuses a draw
+whose text is not worth delivering (:func:`_is_sendable`).  An accepted draw
+never contains an invalid line.
 
-The single call is screened by the same degeneracy / leaked-Harmony-envelope
-detectors the agent-loop reroll guard uses (:mod:`penny.text_validity`): poison
-is discarded and re-drawn on the *unchanged* context up to
-``DEGENERATE_REROLL_ATTEMPTS``, never appended (appending a collapse feeds it
-back in).  An unextractable result is an honest enumerated outcome, never a
-silent empty.
+Every customer's single call — shaped or not — is screened by the same
+degeneracy / leaked-Harmony-envelope / empty-draw detectors the agent-loop
+reroll guard uses (:mod:`penny.text_validity`): poison is discarded and
+re-drawn on the *unchanged* context up to ``DEGENERATE_REROLL_ATTEMPTS``, never
+appended (appending a collapse feeds it back in).  An unusable result is an
+honest enumerated outcome, never a silent empty.
 
 It is itself a ledger-visible model call — its own ``agent_name`` /
 ``prompt_type`` so run traces attribute it — but it does NOT inflate the parent
@@ -64,11 +67,10 @@ from penny.text_validity import (
     half_formed_send_reason,
     has_leaked_harmony_envelope,
     is_degenerate_run,
+    is_empty_draw,
 )
 from penny.tools.micro_context_shape import (
     FieldSpec,
-    LineAnchor,
-    LineRole,
     LineSpec,
     MicroContextShape,
     ParsedDraw,
@@ -84,168 +86,55 @@ logger = logging.getLogger(__name__)
 
 
 class DrawField(StrEnum):
-    """The named fields the declared shapes carve out of a tagged line.
+    """The named field a declared shape's line carves out.
 
-    A customer reads a draw by these names — ``drawn.field(EXTRACTED_TAG,
-    DrawField.VALUE)`` — never by position and never by partitioning a string, so
-    a grammar change lands in the declaration rather than in a bespoke parser."""
+    A customer reads a draw by this name — ``drawn.field(MESSAGE_TAG,
+    DrawField.MESSAGE)`` — never by position and never by partitioning a string, so
+    a grammar change lands in the declaration rather than in a bespoke parser.
+    Browse-extract retired its own three fields with its shape (#2615): it reads
+    a draw's plain text directly, so this enum now serves the notifier alone."""
 
-    VALUE = "value"
-    REASON = "reason"
     MESSAGE = "message"
-    MISSING = "missing"
 
 
-# The output tags — the enumerated contract, present on BOTH sides of the
-# interface: the prompt names them and the parse reads them.  The label is
-# the interface between model-space and Python-space (the enumerated-cases
-# doctrine, #1554).  Without it the not-present case comes back as arbitrary
-# prose, which a blank-check classifier reads as an extracted value — a
-# confabulation-shaped leak through the exact surface whose design guarantee is
-# "cannot confabulate stored values".
-EXTRACTED_TAG = "EXTRACTED:"
-NOT_PRESENT_TAG = "NOT_PRESENT:"
-# The stated shortfall (#2360): what the instruction named that the page does
-# not carry at all, read off the thinking the real-size front-page incident
-# produced.  The model kept wanting to "note the missing summaries" with
-# nowhere in the contract to put that note, re-litigating on every draw whether
-# a headline without its description was a partial unit or a missing one.  This
-# gives it the place: one line, before the value, naming what is not there —
-# EXTRACTED still answers with what IS there, and nothing about the decision
-# changes, so the loop has an exit that costs nothing else.
+# Browse-extract retired its tagged contract (#2615): reading a page is not a
+# reasoning task.  Production measured the tagged shape costing a correct read
+# its whole thinking budget (~5 minutes) arguing over an undecidable
+# partial/missing distinction, and — with thinking off (#2609) — a correct
+# plain-text answer discarded and re-rolled for carrying no parseable tag.  The
+# code owner's ruling: drop the shape.  The draw always runs with thinking off
+# and returns plain text; nothing parses it.  ``EXTRACTED_TAG`` / ``NOT_PRESENT_TAG``
+# / ``EXTRACT_MISSING_TAG`` and the declared ``EXTRACT_SHAPE`` are gone with it —
+# see :meth:`MicroContext.extract`, which no longer rides the shape/reroll loop
+# below at all.
 #
-# Named ``EXTRACT_MISSING_TAG`` rather than bare ``MISSING_TAG`` so this
-# customer's own name reads as its own — a WIRE tag is read against its own
-# declared shape, and a model only ever sees one system prompt per call, but the
-# PYTHON name is module-level and must not collide with another customer's.
-EXTRACT_MISSING_TAG = "MISSING:"
-
-# The extraction shape (#1814/#2360): ``EXTRACTED:`` and ``NOT_PRESENT:`` are
-# still the two ALTERNATIVE tags, exactly one of which answers the draw — but
-# since #2360 an OPTIONAL ``MISSING:`` line may come first, naming what the
-# instruction asked for and the page does not carry at all.  ``EXTRACTED:``
-# spans the REMAINDER (the value is everything that follows — a digest or an
-# item-per-line list is served whole, #1682), so nothing may follow its own
-# line without being swallowed into the value: that is why ``MISSING:`` is
-# declared to come BEFORE it, never after.  ``_EXTRACTED_LINE``'s anchor is
-# ANYWHERE rather than OPENS_DRAW for exactly this reason — it must still be
-# found at line 0 when there is no ``MISSING:`` line, and at line 1 when there
-# is.  The accepted trade-off: a draw that puts unrelated junk before
-# ``EXTRACTED:`` is no longer rejected by position alone the way it used to
-# be — the system prompt's "write nothing outside the value itself" and the
-# "nothing invented" claim still catch that, just not via the tag's position.
-# ``NOT_PRESENT:`` keeps OPENS_DRAW: a ``MISSING:`` line pairs with an
-# ``EXTRACTED:`` read (something is there to answer with) and never with
-# "the page carries none of it", so its exclusivity-by-position is unchanged.
-# The ``NOT_PRESENT:`` reason itself stays a single LINE, so a not-present
-# apology can never be multi-line-promoted into a value.
-_EXTRACT_MISSING_LINE = LineSpec(
-    tag=EXTRACT_MISSING_TAG,
-    role=LineRole.OPTIONAL,
-    anchor=LineAnchor.OPENS_DRAW,
-    fields=(
-        FieldSpec(
-            name=DrawField.MISSING,
-            placeholder="<one short line naming what was asked for and is not on the page>",
-        ),
-    ),
-)
-_EXTRACTED_LINE = LineSpec(
-    tag=EXTRACTED_TAG,
-    role=LineRole.ALTERNATIVE,
-    anchor=LineAnchor.ANYWHERE,
-    span=PayloadSpan.REMAINDER,
-    fields=(
-        FieldSpec(name=DrawField.VALUE, placeholder="<the value — it may begin on this same line>"),
-    ),
-)
-_NOT_PRESENT_LINE = LineSpec(
-    tag=NOT_PRESENT_TAG,
-    role=LineRole.ALTERNATIVE,
-    anchor=LineAnchor.OPENS_DRAW,
-    fields=(
-        FieldSpec(name=DrawField.REASON, placeholder="<one short line naming what is missing>"),
-    ),
-)
-EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACT_MISSING_LINE, _EXTRACTED_LINE, _NOT_PRESENT_LINE))
-
-# The extraction framing — one legible, single-purpose instruction.  It asks a
-# world-question ("what's on the page?"), never a machine-question, forbids
-# inventing a value not in the content, and enumerates the closed set of output
-# forms so classification downstream is a deterministic tag parse, never a
-# judgment over free prose.  The value may be as long as the instruction requires
-# (a digest, a list) — the TAG must open the output; only its shape is fixed, not
-# its length.  The tagged lines are RENDERED FROM THE SHAPE, so the prompt
-# cannot state a contract the parse doesn't read.
-#
-# WHERE THE BOUNDARY BETWEEN THE TAGS FALLS IS STATED (#1942).  An instruction
-# routinely names several things at once — what each item is called, where it
-# points, what it says — and a real page carries some of them and not others.
-# The contract never said which tag that page takes, so it was decided per draw:
-# one draw over a page holding titles and links but no summaries answered
-# NOT_PRESENT (losing the titles and links with it), and a later draw over the
-# SAME content extracted.  The rule is stated as the STATE the content is in —
-# carries some of it / carries none of it — rather than as a rule about
-# instructions that hedge, because what a page holds is not a property of how the
-# ask was worded, and a rule keyed to the wording would simply not fire for the
-# ask nobody had in front of them.
-#
-# PLAIN WORDS, WITH PERMISSION AS WELL AS PROHIBITION (#2360).  The two sentences
-# that used to carry this alone — "give whatever the content has ... and leave
-# out the ones it has nothing for" and "never invent a value that is not in the
-# content" — told the model what NOT to do with a missing part and gave it
-# nowhere to put the observation it kept trying to make anyway.  Below, a part
-# that is only partly on the page is told PLAINLY what to do with it (give the
-# part that is there) and WHERE the rest of the thought goes (one MISSING: line,
-# named together, before the value) — permission for the thing it was already
-# reaching for, not just another way of forbidding invention.
-#
-# ROUND 2 (#2360): the first round's own "before" run showed the MISSING: line
-# working — the undecidable partial/missing debate shrank — but left a page
-# asking for an unbounded list (every headline on a ~90-link front page, not a
-# fixed "top 3") still mostly timing out.  The new thinking traces showed a
-# DIFFERENT loop past that point: having drafted its full answer, the model
-# re-scanned the content to double-check it had not missed an item ("Wait,
-# I'll check if there's any other story. No.") — completeness anxiety, not the
-# partial/missing question #2360 opened on.  Round 2's one-pass sentence ("Read
-# the content once...") did not help in round 2's own run, so it is gone.
-#
-# ROUND 3 (#2360): round 2's run showed the timeout loop move past the re-scan
-# into arguing about the OUTPUT FORMAT of one item — whether headline, link and
-# summary go on one line or two — because the prompt said "a list (put one item
-# per line)" while an item has several parts.  The prompt now says what one
-# item's line IS (its parts, in the order the instruction names them, " — "
-# separated; a part the page does not give is left off the line) instead of
-# leaving the shape of an item for the model to argue about.
-# ROUND 4 (#2360): replaced the "AT ALL" sentence after a replay of the slowest
-# draws took "the missing line names the descriptions" from 7/18 to 17/18 on the
-# top-three ask.
+# The three things the shape used to carry STRUCTURALLY are said in PLAIN WORDS
+# instead, carried over from the shape's own history (#1942/#2360): the
+# boundary between "some of it" and "none of it" is a property of what the
+# PAGE carries, never of how the ask was worded; a part that is only partly on
+# the page gets the part that is there, named alongside what is missing,
+# rather than a forbidding sentence with nowhere to put the missing thought;
+# and a list ask gets one item per line, each holding only the parts the page
+# gives, in the order the instruction names them.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
-    f"An optional {EXTRACT_MISSING_TAG} line may open your output (see below); whether or "
-    "not it is there, the next line — or the first, if it is not — opens with "
-    "one of these two tags:\n"
-    f"{render_line(_EXTRACTED_LINE)}\n"
-    f"{render_line(_NOT_PRESENT_LINE)}\n"
-    f"After {EXTRACTED_TAG}, the extracted value is EVERYTHING that follows — as "
-    "long as the instruction requires: a single value, one or more paragraphs, or "
-    "a list. In a list, each item is one line holding that item's parts in the "
-    'order the instruction names them, separated by " — "; a part the page does '
-    "not give for that item is simply left off that item's line.\n"
-    "An instruction often names several things at once, and a page rarely carries "
-    f"all of them. When the page carries at least one, write {EXTRACTED_TAG} and "
-    "give exactly what it has for each thing named — a thing that is only partly "
-    "on the page still gets a line for the part that is there. Whatever the "
-    "instruction named that is not in your answer because the page does not give "
-    "it — for a list, a part that none of your items has — name it, all of it "
-    f"together, in one short line, before {EXTRACTED_TAG}\n"
-    f"{render_line(_EXTRACT_MISSING_LINE)}\n"
-    f"Use {NOT_PRESENT_TAG}, on a single line, when the page carries NONE of what "
-    "was asked for. Never invent a value that is not in the content — when "
-    f"something named is not there, say so on {EXTRACT_MISSING_TAG} (or {NOT_PRESENT_TAG} "
-    "when nothing is) instead of guessing it. Write nothing outside the value "
-    "itself — no preamble, no explanation, no restating the instruction."
+    "Answer in plain text from the page alone, as a list with one item per "
+    "line when the instruction asks for several, and never a value the page "
+    "doesn't state.\n"
+    "\n"
+    "An instruction often names several things at once, and a page rarely "
+    "carries all of them. Give what the page has for each thing named, in the "
+    "order the instruction names them. For a thing the page does not carry at "
+    "all, say so plainly in one short sentence — which thing, and that the "
+    "page does not have it — instead of leaving it out silently or guessing "
+    "at it.\n"
+    "\n"
+    "If the page carries none of what was asked for, say so plainly in one "
+    "sentence and stop there.\n"
+    "\n"
+    "Write only the answer — no preamble, no restating the instruction, and "
+    "nothing about how you are answering."
 )
 
 # The structural reading-mode note (#2388).  The extension already knows whether it
@@ -375,52 +264,45 @@ class MicroExtractOutcome(StrEnum):
     """The enumerated outcome of a micro-context extraction — a closed set the
     caller renders one way each (never a silent empty).
 
-    ``NOT_PRESENT`` is distinct from ``EXTRACTION_FAILED`` by design: not-present
-    is a *successful read of an absent fact* (the page was read; the fact isn't
-    there — rendered honestly, no infrastructure failure implied), while
-    extraction-failed is the escape for a model that never produced a usable
-    tagged line.
+    Two members (#2615): with the tagged shape gone, there is no more
+    structural difference between "found some of it" and "found none of it"
+    — the plain-text draw says which, and that reads as variance, not as a
+    closed field.  ``EXTRACTION_FAILED`` is the one escape left: no usable
+    draw came back after the whole reroll budget (degenerate, a leaked
+    envelope, or blank) — this merges what used to be a separate
+    ``POISON_REROLL_FAILED``, since there is no second failure KIND (a shape
+    violation) left to tell it apart from any more.
     """
 
     EXTRACTED = "extracted"
-    NOT_PRESENT = "not_present"
     EXTRACTION_FAILED = "extraction_failed"
-    POISON_REROLL_FAILED = "poison_reroll_failed"
 
 
 class MicroContextResult(BaseModel):
     """The small typed result the main loop receives from a micro-context.
 
-    ``value`` carries the extracted text on :attr:`MicroExtractOutcome.EXTRACTED`;
-    ``reason`` carries the model's one-line what-is-missing on
-    :attr:`MicroExtractOutcome.NOT_PRESENT`.  Both are empty on the failure
-    outcomes — the caller renders those from the outcome alone.  The populated
-    field is what flows to the main loop verbatim; the parent model never
-    re-transcribes it.
-
-    ``missing`` (#2360) carries the draw's OPTIONAL stated shortfall — what the
-    instruction named that the page does not carry at all — and is only ever
-    populated alongside ``EXTRACTED``: an outcome that already answers nothing
-    (``NOT_PRESENT``) has no shortfall to add beside its ``reason``.  Empty when
-    the draw named nothing missing, which is the honest "it had everything
-    named" read rather than an absent field.
+    ``value`` is the draw's whole plain-text answer on
+    :attr:`MicroExtractOutcome.EXTRACTED` (#2615) — what the page has for each
+    thing the instruction named, any shortfall, and any "none of it" said
+    inside that same text; nothing parses it into separate fields any more.
+    Empty on :attr:`MicroExtractOutcome.EXTRACTION_FAILED` — the caller
+    renders that from the outcome alone.  The populated field is what flows to
+    the main loop verbatim; the parent model never re-transcribes it.
     """
 
     outcome: MicroExtractOutcome
     value: str = ""
-    reason: str = ""
-    missing: str = ""
 
 
 class DrawFailure(StrEnum):
-    """Why no usable draw came back once the budget was spent — the two ways a
-    micro-context comes up empty, which each customer maps onto its own enumerated
-    outcome rather than sharing one.
+    """Why no usable draw came back once the budget was spent, for a customer
+    still riding :meth:`MicroContext._valid_draw`'s shape/accepts loop
+    (#2615: browse-extract no longer does — see :meth:`MicroContext.extract`).
 
-    ``POISON`` is a transport artifact every time (a degeneration collapse or a
-    leaked Harmony envelope).  ``INVALID`` is a clean draw that never matched its
-    DECLARED shape — an untagged output, a blank payload, or a runtime constraint
-    the shape can't carry (e.g. the notifier's sendability check, :func:`_is_sendable`)."""
+    ``POISON`` is a transport artifact every time (a degeneration collapse, a
+    leaked Harmony envelope, or a blank draw).  ``INVALID`` is a clean draw
+    that never matched its DECLARED shape or its runtime constraint (e.g. the
+    notifier's sendability check, :func:`_is_sendable`)."""
 
     POISON = "poison"
     INVALID = "invalid"
@@ -430,12 +312,6 @@ def _accept_any(_drawn: ParsedDraw) -> bool:
     """The default runtime constraint: none.  For a customer with no membership
     sets to check, the declared shape IS the whole contract."""
     return True
-
-
-_EXTRACT_FAILURES: dict[DrawFailure, MicroExtractOutcome] = {
-    DrawFailure.POISON: MicroExtractOutcome.POISON_REROLL_FAILED,
-    DrawFailure.INVALID: MicroExtractOutcome.EXTRACTION_FAILED,
-}
 
 
 class MicroContext:
@@ -461,14 +337,14 @@ class MicroContext:
     ) -> MicroContextResult:
         """Extract ``instruction`` from ``content`` in one scoped model call.
 
-        The draw is poison-screened (collapse / leaked envelope → discard and
-        re-roll on the unchanged context) and read against :data:`EXTRACT_SHAPE` —
-        ``EXTRACTED:`` → the value (everything after the tag, so a multi-line digest
-        or an item-per-line list survives whole), ``NOT_PRESENT:`` → the enumerated
-        not-present outcome carrying the reason's first line only.  A clean draw
-        matching neither is a contract violation, never a value: re-drawn on the
-        unchanged context for the whole budget, then the extraction fails honestly.  A
-        blank draw takes the same path (a blank payload is not a payload).
+        Reading a page is not a reasoning task (#2615): the draw runs with
+        thinking OFF and its plain text IS the value, verbatim — nothing
+        parses it any more.  The poison screen (collapse / leaked envelope /
+        blank draw → discard and re-roll on the unchanged context,
+        :meth:`_draw_clean`) is the whole validity check left; there is no
+        shape to violate.  No usable draw after the whole reroll budget is
+        :attr:`MicroExtractOutcome.EXTRACTION_FAILED` — the honest escape,
+        never a silent empty.
 
         ``call_link`` (#2458) is this draw's own linkage — REQUIRED, no default.
         Since this is the one customer invoked from INSIDE a dispatched tool call,
@@ -484,17 +360,17 @@ class MicroContext:
         existed.
         """
         reading_note = _LINK_LIST_READING_NOTE if reading == PageReading.LINK_LIST else ""
-        drawn = await self._valid_draw(
+        text = await self._draw_clean(
             content,
             instruction,
             run_target,
             call_link=call_link,
-            shape=EXTRACT_SHAPE,
             reading_note=reading_note,
+            thinking_enabled=False,
         )
-        if isinstance(drawn, DrawFailure):
-            return MicroContextResult(outcome=_EXTRACT_FAILURES[drawn])
-        return _extraction_result(drawn)
+        if text is None:
+            return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTION_FAILED)
+        return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=text.strip())
 
     async def compose_notification(
         self,
@@ -509,11 +385,11 @@ class MicroContext:
 
         ``content`` is the framework-assembled document (``penny.notification``): what
         the cycle did, what it wrote, and the past messages Python already looked up.
-        Rides the SAME ``_valid_draw`` step as extraction, against its own declared
-        shape (:data:`NOTIFY_SHAPE`) and the bare-content user turn (the assembled
-        document IS the whole ask), plus the runtime constraint a static shape cannot
-        carry: the drawn text must be a message worth delivering
-        (:func:`_is_sendable`).
+        Rides ``_valid_draw``'s shape/accepts loop (#2615: browse-extract no longer
+        does), against its own declared shape (:data:`NOTIFY_SHAPE`) and the
+        bare-content user turn (the assembled document IS the whole ask), plus the
+        runtime constraint a static shape cannot carry: the drawn text must be a
+        message worth delivering (:func:`_is_sendable`).
 
         ``None`` when no usable draw came back — the honest escape every run-end
         customer keeps.  The caller records that on the run and sends nothing, which is
@@ -639,13 +515,21 @@ class MicroContext:
         Every call carries its kind's own token budget (#2476), resolved off the
         shared client's ``runtime`` by ``agent_name`` — a client built with no
         runtime at all (a test, a one-off script) falls back to a default-only
-        lookup, the same chain every other runtime param reads.  A draw the cap cut
-        (``finish_reason="length"``) gets ONE more call on the same messages with
-        thinking disabled — the budget spent its reasoning tokens, so the last
-        draw is asked to answer with what it has — and that response takes the cut
-        one's place; the poison screen and the parse then read it like any other
-        draw.  At most once per draw: a retry that is itself cut is used as-is, an
-        honest escape rather than an unbounded loop."""
+        lookup, the same chain every other runtime param reads.
+
+        ``thinking_enabled`` (#2615) is the per-customer reasoning switch —
+        browse-extract always draws with it ``False`` (reading a page is not a
+        reasoning task), every other customer keeps the default ``True``.  A
+        draw the cap cut (``finish_reason="length"``) gets ONE more call on the
+        same messages with thinking forced off — the budget spent its
+        reasoning tokens, so the last draw is asked to answer with what it has
+        — and that response takes the cut one's place; the poison screen then
+        reads it like any other draw.  That retry only fires when the cut draw
+        itself drew WITH thinking on: a customer already drawing thinking-off
+        would get an identical second call for nothing, so the guard is
+        ``not retried_cut and thinking_enabled``.  At most once per draw either
+        way: a retry that is itself cut is used as-is, an honest escape rather
+        than an unbounded loop."""
         messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
         draw_link = call_link.child()
         runtime = self._model_client.runtime
@@ -663,7 +547,11 @@ class MicroContext:
                 token_budget=token_budget,
                 thinking_enabled=thinking_enabled,
             )
-            if response.finish_reason == PennyConstants.FINISH_REASON_LENGTH and not retried_cut:
+            if (
+                response.finish_reason == PennyConstants.FINISH_REASON_LENGTH
+                and not retried_cut
+                and thinking_enabled
+            ):
                 retried_cut = True
                 logger.warning(
                     "%s draw was cut at its token budget — one more draw with thinking off",
@@ -694,9 +582,12 @@ class MicroContext:
 
     @staticmethod
     def _is_poison(text: str) -> bool:
-        """A degeneration collapse or a leaked Harmony envelope — the same
-        transport artifacts the agent-loop reroll guard discards."""
-        return has_leaked_harmony_envelope(text) or is_degenerate_run(text)
+        """A degeneration collapse, a leaked Harmony envelope, or a blank draw
+        (#2615: browse-extract has no shape left to catch an empty payload, so
+        it is screened here instead) — the same transport artifacts the
+        agent-loop reroll guard discards, plus the empty-draw check it also
+        uses."""
+        return has_leaked_harmony_envelope(text) or is_degenerate_run(text) or is_empty_draw(text)
 
     @staticmethod
     def _messages(
@@ -723,29 +614,6 @@ class MicroContext:
                 ),
             ),
         ]
-
-
-def _extraction_result(drawn: ParsedDraw) -> MicroContextResult:
-    """The typed result for a valid extraction draw, read off the parsed draw by
-    field name — the ``EXTRACTED:`` value (everything after the tag) or the
-    ``NOT_PRESENT:`` reason (its first line only, so a not-present apology can never
-    be multi-line-promoted into a value).
-
-    ``MISSING:`` (#2360) is read only on the ``EXTRACTED`` branch — it is an
-    OPTIONAL line, so an absent or malformed one is simply no shortfall, never a
-    violation."""
-    value = drawn.field(EXTRACTED_TAG, DrawField.VALUE)
-    if value is not None:
-        missing = drawn.field(EXTRACT_MISSING_TAG, DrawField.MISSING) or ""
-        return MicroContextResult(
-            outcome=MicroExtractOutcome.EXTRACTED, value=value, missing=missing
-        )
-    reason = drawn.field(NOT_PRESENT_TAG, DrawField.REASON)
-    if reason is None:
-        # Unreachable while the two tags are declared ALTERNATIVE (a parsed draw
-        # carries one of them) — honest rather than silent if that ever changes.
-        return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTION_FAILED)
-    return MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason=reason)
 
 
 # Whitespace tolerance for the literal-span check, declared ONCE beside the check that

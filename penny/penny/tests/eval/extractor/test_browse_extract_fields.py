@@ -3,9 +3,11 @@
 An ``extract`` instruction routinely names several things at once — what each item is
 called, where it points, what it says — and how much of that a real page carries decides
 what comes back.  The contract (#1942) is keyed to the PAGE and never to the wording:
-content carrying SOME of what was asked for is an ``EXTRACTED:`` read that gives whatever
-it has for each thing and leaves out the rest, and ``NOT_PRESENT:`` is for content carrying
-NONE of it.
+content carrying SOME of what was asked for gives whatever it has for each thing and names
+the rest as missing, and content carrying NONE of it says so plainly.  Since #2615 the draw
+answers in plain text with no tagged shape — nothing parses the answer — so which of those
+two the page is in, and how the shortfall is worded, are no longer closed fields a case can
+assert on; they are read as variance, below.
 
 Seven cases over the three states a page can be in relative to its instruction — it carries
 ALL of what was named, SOME of it, or NONE — with the middle state reached on three different
@@ -43,10 +45,10 @@ fixed page:
 
 **The last two are a PAIR, and they are two cases rather than one.**  A behaviour states its
 negative direction inside its own case where that direction shares the expected outcome;
-here it does not — ``extract-fields-partly-present`` expects ``EXTRACTED`` and
-``extract-fields-none-present`` expects ``NOT_PRESENT`` — so the negative direction is a case
-of its own and the pair is named together.  A behaviour that always answered ``EXTRACTED:``
-passes the first and fails the second.
+here it does not — ``extract-fields-partly-present``'s page carries SOME of what was asked,
+``extract-fields-none-present``'s carries NONE of it — so the negative direction is a case of
+its own and the pair is named together.  A behaviour that always answered as though
+something were there would pass the first and fail the second.
 
 **The arm is the ``extract`` instruction, and it is PENNY's own text** — production writes
 it as the ``extract`` argument of a browse call, at the call site, by whatever agent made
@@ -76,9 +78,7 @@ from penny.tests.eval.conftest import (
     EVAL_MODELS,
 )
 from penny.tests.eval.drivers.extractor import (
-    EXTRACT_MISSING,
     EXTRACT_OUTCOME,
-    EXTRACT_REASON,
     EXTRACT_VALUE,
     ExtractorEval,
     FieldExpectation,
@@ -553,34 +553,29 @@ assert _FRONT_PAGE_WITH_RUNON_LABEL.count(_RUNON_TITLE_ANCHOR) == 1
 # ── The claims ───────────────────────────────────────────────────────────────
 #
 # A micro-context returns a typed result, and that result splits in two.  Its CLOSED field —
-# the outcome enum — is strictly identifiable and asserted by EQUALITY.  Its OPEN fields —
-# `value`, `reason` — are what the model wrote, so they are reachable only through fact
-# alignment, in both directions: nothing omitted, and nothing invented.
+# the outcome enum — is strictly identifiable and asserted by EQUALITY.  Its OPEN field —
+# `value` — is what the model wrote, so it is reachable only through fact alignment, in both
+# directions: nothing omitted, and nothing invented.
+#
+# Since #2615 the tagged shape is gone, so there is only ONE non-failure outcome left —
+# `EXTRACTED` means "a usable draw came back", whatever it says — and the two readings the
+# shape used to carry structurally (some of it / none of it / the stated shortfall) are now
+# said inside that same plain text.  They move to variance below (`_shortfall_named`): the
+# model is free to WORD a shortfall or a "none of it" answer however it likes, so a claim
+# demanding specific wording would be answering for the draw, which §1 of
+# `docs/eval-case-design.md` rules out.
 
 
-def _landed_on(fixture: ExtractFixture) -> WorldClaim:
-    """A claim that the draw committed to the outcome THIS FIXTURE'S FACTS make right.
+def _answered(sample: SampleObservation, _world: World) -> Answer:
+    """A claim that the draw produced a usable answer rather than exhausting its reroll
+    budget (#2615).
 
-    ``EXTRACTED`` is right on a page carrying some of what was asked for and wrong on a page
-    carrying none of it — the same value, correct against one world and false against another.
-    So the expectation is READ off the fixture rather than written beside it: an expectation
-    carrying an anchor is a thing the page supplies, and a fixture that names at least one is
-    a page with something to extract.
-
-    That is the same declaration the ``make check`` coherence probe holds against the page, so
-    a case cannot state a world to the probe and a different one to its own claim.  A case that
-    cannot say which of its facts makes its expectation right is asserting a habit; this one
-    has no way to."""
-    supplies_something = any(one.anchor for one in fixture.expectations)
-    wanted = (
-        MicroExtractOutcome.EXTRACTED if supplies_something else MicroExtractOutcome.NOT_PRESENT
-    )
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        drawn = sample.field(EXTRACT_OUTCOME)
-        return drawn == wanted.value, f"came back {drawn}"
-
-    return answer
+    The one closed field left once the tagged shape retired: with no shape to violate,
+    `EXTRACTED` is the only non-failure outcome, so this reads the same way on every case in
+    this module — a check that CAN still fail (a page the extractor cannot read at all, or a
+    run of unusable draws), just no longer one whose EXPECTED value varies by fixture."""
+    drawn = sample.field(EXTRACT_OUTCOME)
+    return drawn == MicroExtractOutcome.EXTRACTED.value, f"came back {drawn}"
 
 
 def _carries(anchor: str) -> WorldClaim:
@@ -618,40 +613,53 @@ def _nothing_invented(sample: SampleObservation, _world: World) -> Answer:
     return not invented, f"not on the page: {invented}"
 
 
-def _names_the_shortfall(fixture: ExtractFixture, words: tuple[str, ...]) -> WorldClaim:
-    """A claim that the draw's stated shortfall (#2360) names what the page lacks — every
+def _shortfall_named(fixture: ExtractFixture, words: tuple[str, ...]) -> Share:
+    """How often the draw's plain text names what the page lacks — every
     ``FieldExpectation`` this fixture declares with NO anchor, which is what was asked for
     and is genuinely absent from the page.
 
-    Read off the fixture rather than written beside it, the same way :func:`_landed_on`
-    reads its wanted outcome: a fixture's absent-anchor expectations ARE the shortfall a
+    A MEASURED SHARE, not a claim (#2615): the tagged shape's own ``MISSING:`` line used to
+    give this a closed-enough signal to assert against; with the shape gone, a plain-text
+    answer is free to say "the page does not give a byline" or fold the same fact into a
+    longer sentence, and demanding one of those shapes would be a case answering for the
+    draw.  So this reads as a rate, never a gate — the issue's own ruling: "the shortfall
+    statement become[s] variance, never asserted."
+
+    Read off the fixture rather than written beside it, the same way :func:`_answered` used
+    to read its wanted outcome: a fixture's absent-anchor expectations ARE the shortfall a
     correct draw states, so a case that enlarges or narrows what the page lacks moves this
-    claim with it rather than leaving it to drift out of sync.
+    share with it rather than leaving it to drift out of sync.
 
     Compared through the same ``spoken_form`` fold ``_carries`` uses, PLUS ``fold_plural``
-    on both sides (#2539) — so a word list spelled singular ("summary") still matches a
-    MISSING line that pluralised it ("summaries"), and the reverse — against the WORDS the
-    case's OWN five wordings (the instruction and its phrasings) use for that absent part,
-    not one field name: the sample's wording is the ask the model read, and the MISSING line
-    it writes echoes whichever of those wordings it was given ("summary" in one arm, "the
-    time it was posted" in another), so the claim passes when the line carries ANY of the
-    case's words — plural or singular — and fails otherwise — strictly true/false, no fuzzy
-    match.  Every fixture this claim serves declares exactly one absent expectation, so
-    ``words`` describes that one part; a fixture that ever declares two needs its own
-    per-field words."""
+    on both sides (#2539) — so a word list spelled singular ("summary") still matches an
+    answer that pluralised it ("summaries"), and the reverse — against the WORDS the case's
+    OWN five wordings (the instruction and its phrasings) use for that absent part, not one
+    field name: the sample's wording is the ask the model read, and its plain-text answer
+    echoes whichever of those wordings it was given ("summary" in one arm, "the time it was
+    posted" in another).  Every fixture this share serves declares exactly one absent
+    expectation, so ``words`` describes that one part; a fixture that ever declares two
+    needs its own per-field words."""
     absent = [one.field for one in fixture.expectations if not one.anchor]
 
     def _folded(text: str) -> str:
         return fold_plural(spoken_form(text))
 
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        missing = sample.field(EXTRACT_MISSING)
-        named = bool(missing) and all(
-            any(_folded(word) in _folded(missing) for word in words) for _field in absent
-        )
-        return named, f"stated shortfall does not name any of {list(words)}: {missing!r}"
+    def reading(sample: SampleObservation) -> ShareReading | None:
+        value = sample.field(EXTRACT_VALUE)
+        if not value:
+            return None
+        named = all(any(_folded(word) in _folded(value) for word in words) for _field in absent)
+        return ShareReading(value=1.0 if named else 0.0, evidence=[value] if named else [])
 
-    return answer
+    return Share(
+        "shortfall named",
+        reading,
+        open_above=0.0,
+        says=(
+            "of the samples that answered, the share whose plain text names the part "
+            "the page does not carry, in any of the case's own words for it"
+        ),
+    )
 
 
 def _stock_count_volunteered(sample: SampleObservation) -> ShareReading | None:
@@ -742,10 +750,10 @@ async def test_a_page_that_answers_everything_still_answers_everything(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # STORE — which of the closed outcomes the draw committed to
+    # STORE — the one closed field left (#2615): did a usable draw come back
     cohort.claim(
         "state: the draw read the page",
-        _landed_on(_ALL_PRESENT),
+        _answered,
         SpecCategory.STORE,
     )
 
@@ -773,15 +781,10 @@ async def test_a_page_that_answers_everything_still_answers_everything(
 
     # What is MEASURED — the draw's own structured fields, compared across the cohort, plus the
     # stock-count share above.  No tool sequence and no reply spread: a single call makes
-    # neither.  `reason` is measured though a correct draw leaves it empty, for the reason
-    # spelled out on `extract-fields-partly-present`: an all-empty reading is flagged BLIND
-    # rather than counted as agreement, and a sample that came back NOT_PRESENT carries a
-    # reason the others do not — an outlier at finer grain than `outcome` gives.
+    # neither.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
         _STOCK_COUNT_VOLUNTEERED,
     )
 
@@ -863,12 +866,14 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # STORE — which of the closed outcomes the draw committed to.  ``NOT_PRESENT`` here is the
-    # regression itself: the answer that cost a whole round its headlines and links because the
-    # page was short of the third thing.
+    # STORE — the one closed field left (#2615): did a usable draw come back at all.  The
+    # regression itself — losing the headlines and links because the page was short of the
+    # third thing — is no longer visible on this closed field (a plain-text "none of it"
+    # answer is still a usable draw); the PROVENANCE claims below are what would catch it
+    # recurring.
     cohort.claim(
-        "state: the draw read the page rather than reporting it empty",
-        _landed_on(_PARTLY_PRESENT),
+        "state: the draw read the page rather than exhausting its reroll budget",
+        _answered,
         SpecCategory.STORE,
     )
 
@@ -910,22 +915,11 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
         SpecCategory.PROVENANCE,
     )
 
-    # What is MEASURED — the draw's own structured fields, compared across the cohort.
-    #
-    # Variance is ORTHOGONAL to correctness: it does not ask whether a value is right, only
-    # which samples diverge from the pack.  So `reason` belongs here even though this case
-    # asserts the draw lands on `EXTRACTED` and `MicroContextResult` populates `reason` only
-    # on `NOT_PRESENT` — a sample that came back NOT_PRESENT carries a reason the others do
-    # not, and that is exactly an outlier worth surfacing, at finer grain than `outcome` gives.
-    # On a run where every draw succeeds it reads nothing on all fifteen and is flagged blind,
-    # which is the honest "nothing diverged this run" rather than a broken axis.
-    #
-    # No tool sequence and no reply spread: a single call makes neither.
+    # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
+    # tool sequence and no reply spread: a single call makes neither.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
     )
 
 
@@ -1000,10 +994,10 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # STORE — which of the closed outcomes the draw committed to
+    # STORE — the one closed field left (#2615): did a usable draw come back at all
     cohort.claim(
-        "state: the draw read the page rather than reporting it empty",
-        _landed_on(_PARTLY_PRESENT_ON_A_PROSE_PAGE),
+        "state: the draw read the page rather than exhausting its reroll budget",
+        _answered,
         SpecCategory.STORE,
     )
 
@@ -1023,23 +1017,16 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
         _nothing_invented,
         SpecCategory.PROVENANCE,
     )
-    cohort.claim(
-        "state: the stated shortfall names the published time the page does not give",
-        _names_the_shortfall(_PARTLY_PRESENT_ON_A_PROSE_PAGE, _PROSE_PAGE_SHORTFALL_WORDS),
-        SpecCategory.PROVENANCE,
-    )
 
-    # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
-    # tool sequence and no reply spread: a single call makes neither.  `reason` is measured
-    # though a correct draw leaves it empty, for the reason spelled out on
-    # `extract-fields-partly-present`: an all-empty reading is flagged BLIND rather
-    # than counted as agreement, and a sample that came back NOT_PRESENT carries a reason
-    # the others do not — an outlier at finer grain than `outcome` gives.
+    # What is MEASURED — the draw's own structured fields, compared across the cohort, plus
+    # whether the plain text names the published time the page does not give (#2615: moved
+    # off a PROVENANCE claim — the exact wording of a shortfall is the model's free choice,
+    # so it is read as a share, never asserted).  No tool sequence and no reply spread: a
+    # single call makes neither.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
+        _shortfall_named(_PARTLY_PRESENT_ON_A_PROSE_PAGE, _PROSE_PAGE_SHORTFALL_WORDS),
     )
 
 
@@ -1074,22 +1061,21 @@ _NONE_PRESENT_PHRASINGS = (
 async def test_a_page_carrying_none_of_it_still_says_so(
     extractor_eval: ExtractorEval, model: str
 ) -> None:
-    """The over-correction guard, and the ``NOT_PRESENT`` half of the pair the module
+    """The over-correction guard, and the "none of it" half of the pair the module
     docstring names.
 
     A read that degrades per field must not degrade into answering anyway: this page carries
     neither of the two things named, so the honest answer is that it carries neither, and
     anything else is a value the page never held.  It is a case rather than a direction stated
-    inside ``extract-fields-partly-present`` because its EXPECTED OUTCOME is the other one —
-    a behaviour that always answered ``EXTRACTED:`` would pass that case and fail this.
+    inside ``extract-fields-partly-present`` because the two have different wrong failure
+    modes to guard — one is about losing what IS there, the other about inventing what isn't.
 
-    **Two categories report empty here, for two different reasons.**  STORE is empty for the
-    shape's reason: one call returns a typed result and writes to no store.  The *nothing
-    omitted* half of PROVENANCE is empty for this CASE's reason: nothing on this page answers
-    the instruction, so there is no supplied thing for an answer to carry and no ``_carries``
-    claim to make.  The *nothing invented* half is the whole point and is made below.
+    The *nothing omitted* half of PROVENANCE is empty for this CASE's reason: nothing on this
+    page answers the instruction, so there is no supplied thing for an answer to carry and no
+    ``_carries`` claim to make.  The *nothing invented* half is the whole point and is made
+    below.
 
-    **What is not asserted at all is the REASON's quality.**  It is free prose, so any check on
+    **What is not asserted at all is the answer's WORDING.**  It is free prose, so any check on
     it is the phrasing match ``docs/eval-case-design.md`` forbids; it rides the variance table
     instead.
     """
@@ -1107,11 +1093,10 @@ async def test_a_page_carrying_none_of_it_still_says_so(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # STORE — which of the closed outcomes the draw committed to.  ``NOT_PRESENT`` is derived
-    # from this fixture's own facts: the page carries neither named thing.
+    # STORE — the one closed field left (#2615): did a usable draw come back at all.
     cohort.claim(
         "state: the draw reports the page carries none of it",
-        _landed_on(_NONE_PRESENT),
+        _answered,
         SpecCategory.STORE,
     )
 
@@ -1125,17 +1110,12 @@ async def test_a_page_carrying_none_of_it_still_says_so(
         SpecCategory.PROVENANCE,
     )
 
-    # `value` and `reason` swap roles here relative to the sibling cases: a correct draw
-    # populates `reason` and leaves `value` empty, so `value` reads nothing on every sample and
-    # is flagged blind — the honest "nothing diverged this run" — while `reason` carries the
-    # spread.  Both stay COSMETIC: they are prose, and a divergence in them is a different word
-    # for the same outcome.  `missing` reads nothing on every sample too — a MISSING: line only
-    # ever pairs with EXTRACTED, which this case never lands on.
+    # What is MEASURED — the draw's own plain text, compared across the cohort: whether and
+    # how it says the page carries none of what was asked.  No tool sequence and no reply
+    # spread: a single call makes neither.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
     )
 
 
@@ -1214,10 +1194,10 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # STORE — which of the closed outcomes the draw committed to
+    # STORE — the one closed field left (#2615): did a usable draw come back at all
     cohort.claim(
-        "state: the draw read the page rather than reporting it empty",
-        _landed_on(_TOP_HEADLINES),
+        "state: the draw read the page rather than exhausting its reroll budget",
+        _answered,
         SpecCategory.STORE,
     )
 
@@ -1257,19 +1237,16 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
         _nothing_invented,
         SpecCategory.PROVENANCE,
     )
-    cohort.claim(
-        "state: the stated shortfall names the descriptions the page does not give",
-        _names_the_shortfall(_TOP_HEADLINES, _TOP_HEADLINES_SHORTFALL_WORDS),
-        SpecCategory.PROVENANCE,
-    )
 
-    # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
-    # tool sequence and no reply spread: a single call makes neither.
+    # What is MEASURED — the draw's own structured fields, compared across the cohort, plus
+    # whether the plain text names the descriptions the page does not give (#2615: moved off
+    # a PROVENANCE claim — the exact wording of a shortfall is the model's free choice, so it
+    # is read as a share, never asserted).  No tool sequence and no reply spread: a single
+    # call makes neither.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
+        _shortfall_named(_TOP_HEADLINES, _TOP_HEADLINES_SHORTFALL_WORDS),
     )
 
 
@@ -1334,10 +1311,10 @@ async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_o
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # STORE — which of the closed outcomes the draw committed to
+    # STORE — the one closed field left (#2615): did a usable draw come back at all
     cohort.claim(
-        "state: the draw read the page rather than reporting it empty",
-        _landed_on(_TOP_HEADLINES_PAST_A_RUNON_LABEL),
+        "state: the draw read the page rather than exhausting its reroll budget",
+        _answered,
         SpecCategory.STORE,
     )
 
@@ -1377,22 +1354,17 @@ async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_o
         _nothing_invented,
         SpecCategory.PROVENANCE,
     )
-    cohort.claim(
-        "state: the stated shortfall names the descriptions the page does not give",
-        _names_the_shortfall(_TOP_HEADLINES_PAST_A_RUNON_LABEL, _TOP_HEADLINES_SHORTFALL_WORDS),
-        SpecCategory.PROVENANCE,
-    )
 
-    # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
-    # tool sequence and no reply spread: a single call makes neither.  Token cost is the
-    # measure this case exists for (#2453): the run-on link should cost nothing beyond the
-    # sibling case's own cost, not several thousand extra tokens of re-litigation.  Read
-    # against ``extract-top-headlines-bare-ask``'s own cost on the SAME page, same run.
+    # What is MEASURED — the draw's own structured fields, compared across the cohort, plus
+    # whether the plain text names the descriptions the page does not give (#2615: a share,
+    # never a claim — see Case 5).  Token cost is the measure this case exists for (#2453):
+    # the run-on link should cost nothing beyond the sibling case's own cost, not several
+    # thousand extra tokens of re-litigation.  Read against ``extract-top-headlines-bare-ask``'s
+    # own cost on the SAME page, same run.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
+        _shortfall_named(_TOP_HEADLINES_PAST_A_RUNON_LABEL, _TOP_HEADLINES_SHORTFALL_WORDS),
     )
 
 
@@ -1455,10 +1427,10 @@ async def test_the_plain_ask_over_the_same_page_costs_the_ordinary_rate(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # STORE — which of the closed outcomes the draw committed to
+    # STORE — the one closed field left (#2615): did a usable draw come back at all
     cohort.claim(
-        "state: the draw read the page rather than reporting it empty",
-        _landed_on(_TOP_HEADLINES_BARE_ASK),
+        "state: the draw read the page rather than exhausting its reroll budget",
+        _answered,
         SpecCategory.STORE,
     )
 
@@ -1489,8 +1461,6 @@ async def test_the_plain_ask_over_the_same_page_costs_the_ordinary_rate(
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
-        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
     )
 
 

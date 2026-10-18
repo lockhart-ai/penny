@@ -78,23 +78,23 @@ NARRATION_FAILURE_SUFFIX = (
 
 # ── Micro-context (extract) render forms ──────────────────────────────────────
 # When a browse call carries an ``extract`` instruction, the page body never
-# enters the main loop: only the typed result (or an honest enumerated failure)
-# plus the fetch handle to the full content stored in browse-results.  One
-# render per ``MicroExtractOutcome``, plus the no-model-wired degradation.
-# ``NOT_PRESENT`` is a successful read of an absent fact — rendered honestly,
-# with no infrastructure-failure framing — distinct from ``EXTRACTION_FAILED``
-# (the extractor never produced a usable tagged line).
+# enters the main loop: only the typed result (or an honest failure) plus the
+# fetch handle to the full content stored in browse-results.  Since #2615 the
+# draw returns plain text with no tagged shape — there is one success render
+# and one failure render, not one per enumerated outcome.
 _EXTRACT_HANDLE_CLAUSE = "Full page content saved as {handles}."
 _EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
 # A SUCCESSFUL extraction renders the value WITH THE QUESTION IT ANSWERS, and no
 # handle clause.
 #
 # The pairing is the code owner's ruling (#1918): "extract 'the price of blah' →
-# response 'the price of blah is $123'".  Composed HERE, mechanically, from the tool's
-# own ``extract`` argument and the value the micro-context returned — python-space, not
-# model-space.  The extractor's contract is untouched: it still just finds the value,
-# and nothing anywhere composes new wording.  The label is the instruction VERBATIM,
-# because a rephrasing would be this render inventing a question the caller did not ask.
+# response 'the price of blah is $123'" — unaffected by #2615, which retired the
+# tagged shape underneath the value, not this pairing: a turn that makes several
+# browse calls still needs to know which ask each answer is for.  Composed HERE,
+# mechanically, from the tool's own ``extract`` argument and the value the
+# micro-context returned — python-space, not model-space.  The label is the
+# instruction VERBATIM, because a rephrasing would be this render inventing a
+# question the caller did not ask.
 #
 # What it fixes: the extract is handed the instruction and returns the value WITHOUT it,
 # so a bare answer arrived with nothing saying what it answered.  Measured — a watch
@@ -107,24 +107,15 @@ _EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
 # at the moment a chat teach round holds the extracted value, answered the wrong
 # question: it claimed a save had happened (true of the raw page) in words the model read
 # as the remembering being done (false — the value is ephemeral), and the planned
-# collection_write never fired (2026-07-19 beat-1b transcripts).  The failure renders
-# below KEEP the clause: there the handle is the remedy.
+# collection_write never fired (2026-07-19 beat-1b transcripts).  The failure render
+# below KEEPS the clause: there the handle is the remedy.
 _EXTRACT_SUCCESS = "{instruction}: {value}"
-# The stated shortfall (#2360), rendered after the value and only when the draw
-# named one: a reply can then say "I found X and Y but not Z" instead of being
-# silent about the part of the ask the page never carried.  Composed here,
-# mechanically, from the typed result alone — the extractor's contract is
-# untouched, it still just names what is missing, and nothing here invents
-# wording for it beyond this one fixed clause.
-_EXTRACT_SHORTFALL_CLAUSE = " Not on the page: {missing}."
-_EXTRACT_NOT_PRESENT = "The page doesn't contain {instruction!r} — {reason} {handle_clause}"
+# One failure render (#2615): with no tagged shape, there is no longer a second
+# failure KIND (a clean-but-untagged draw) distinct from poison — every draw
+# that never came back usable, garbled or blank alike, reads the same way.
 _EXTRACT_FAILED = (
-    "Couldn't extract {instruction!r} from the page — the extractor returned nothing "
-    "usable. {handle_clause}"
-)
-_EXTRACT_POISON = (
-    "Couldn't extract {instruction!r} from the page — the extractor output was unusable "
-    "after {attempts} attempts. {handle_clause}"
+    "Couldn't extract {instruction!r} from the page — the extractor never produced a "
+    "usable answer after {attempts} attempts. {handle_clause}"
 )
 _EXTRACT_UNAVAILABLE = (
     "Couldn't extract {instruction!r} — no extraction model is configured for this browse. "
@@ -480,9 +471,10 @@ class BrowseTool(Tool):
     ) -> ToolResult:
         """One micro-context call PER successfully-fetched page (#1682) — each result
         rendered UNDER that page's own ``## browse …:`` section header, so a
-        multi-source digest keeps items attributed to their source and a NOT_PRESENT
-        page renders honestly in its own section without masking another page's
-        extracted value.  Signal sections (read errors, dropped-query notes, channel
+        multi-source digest keeps items attributed to their source and a page that
+        came back empty renders its own honest text in its own section without
+        masking another page's extracted value.  Signal sections (read errors,
+        dropped-query notes, channel
         outage) stay verbatim in place; a failed fetch keeps its ``## browse error:``
         section with no micro-context.  **A SEARCH section stays verbatim too (#2141)**
         — titles and links only, by its own header's words, so there is nothing on it
@@ -596,12 +588,12 @@ class BrowseTool(Tool):
         call_link: CallLink,
     ) -> tuple[str, bool]:
         """Extract ONE fetched page's content and render the typed result under that
-        page's own section header — the extracted value (or an honest NOT_PRESENT /
-        failure) plus this page's fetch handle.  Returns the rendered section and
-        whether it was a successful read: NOT_PRESENT is a *successful read of an
-        absent fact* (the page was fetched and read; the fact isn't there), so only
-        the failure outcomes (no usable tagged output / poison / draw error) report
-        False.
+        page's own section header — the plain-text answer (#2615) or an honest
+        failure — plus this page's fetch handle.  Returns the rendered section and
+        whether it was a successful read: only a failed draw (no usable text after
+        the whole reroll budget, or a draw error) reports False — a plain-text answer
+        that says the page carries none of what was asked is still a successful read
+        of that absence, same as every other answer.
 
         A draw that RAISES (a transport failure, say) is caught HERE, per page
         (#2367), rather than left to propagate out of the whole batch — deliberately
@@ -626,10 +618,7 @@ class BrowseTool(Tool):
             succeeded = False
         else:
             body = self._render_micro_result(micro, instruction, stored, links)
-            succeeded = micro.outcome in (
-                MicroExtractOutcome.EXTRACTED,
-                MicroExtractOutcome.NOT_PRESENT,
-            )
+            succeeded = micro.outcome == MicroExtractOutcome.EXTRACTED
         rendered = self._under_page_header(section, body)
         self._extract_log.append((self._page_label(section), rendered))
         return rendered, succeeded
@@ -656,36 +645,22 @@ class BrowseTool(Tool):
         links: str,
     ) -> str:
         """The main-loop body for one micro-context outcome — on success the extracted
-        value LABELLED with the instruction it answers (#1918; no handle clause — see
-        _EXTRACT_SUCCESS), or the not-present reason / an honest enumerated failure, each
-        carrying the fetch handle to the stored full content as its remedy.
+        text LABELLED with the instruction it answers (#1918; no handle clause — see
+        _EXTRACT_SUCCESS), or an honest failure carrying the fetch handle to the stored
+        full content as its remedy, plus the page's own links (#2141) — the body never
+        entered the conversation, so they are the only anchor the next call has.
 
-        A FAILURE additionally carries the page's own links (#2141) — the body never
-        entered the conversation, so they are the only anchor the next call has.  A
-        NOT_PRESENT does not: the page was read and the answer is that the fact is not
-        there, which is a finding rather than something to recover from.
-
-        A success's stated shortfall (#2360) is appended after the value, only when
-        the draw named one — so the reply can say what was found AND what was not,
-        rather than being silent about the part of the ask the page never carried."""
+        Since #2615 the value itself is whatever plain text the draw wrote — what the
+        page has for each thing asked, any shortfall, any "none of it" — so there is
+        nothing left for this method to compose beyond the instruction label."""
         if micro.outcome == MicroExtractOutcome.EXTRACTED:
-            success = _EXTRACT_SUCCESS.format(instruction=instruction, value=micro.value)
-            if micro.missing:
-                return f"{success}{_EXTRACT_SHORTFALL_CLAUSE.format(missing=micro.missing)}"
-            return success
+            return _EXTRACT_SUCCESS.format(instruction=instruction, value=micro.value)
         handle_clause = self._handle_clause(stored)
-        if micro.outcome == MicroExtractOutcome.NOT_PRESENT:
-            return _EXTRACT_NOT_PRESENT.format(
-                instruction=instruction, reason=micro.reason, handle_clause=handle_clause
-            )
-        if micro.outcome == MicroExtractOutcome.EXTRACTION_FAILED:
-            failure = _EXTRACT_FAILED.format(instruction=instruction, handle_clause=handle_clause)
-        else:
-            failure = _EXTRACT_POISON.format(
-                instruction=instruction,
-                attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS,
-                handle_clause=handle_clause,
-            )
+        failure = _EXTRACT_FAILED.format(
+            instruction=instruction,
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS,
+            handle_clause=handle_clause,
+        )
         return f"{failure}{links}"
 
     def _extract_unavailable_result(

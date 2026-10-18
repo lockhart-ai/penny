@@ -189,37 +189,29 @@ def _extract_rerolled(db: Database) -> bool:
 # The fields of a browse extraction's structured answer, named once.  A case asserts them
 # and measures them by these names, so the two halves of #2017's framing — deterministic and
 # variance — read the same value rather than two spellings of it.
+#
+# Two fields (#2615): the tagged shape retired its own ``reason``/``missing`` split —
+# what the page has for each thing asked, any shortfall, any "none of it" are all said
+# inside the one plain-text ``value`` now, so there is nothing left to carry separately.
 EXTRACT_OUTCOME = "outcome"
 EXTRACT_VALUE = "value"
-EXTRACT_REASON = "reason"
-# The stated shortfall (#2360) — what the instruction named that the page does not carry
-# at all, read alongside an EXTRACTED value.  Empty on every outcome that isn't EXTRACTED,
-# and often empty on EXTRACTED too (a page that carries everything named has nothing to
-# report missing) — both are the honest read, not an absent field.
-EXTRACT_MISSING = "missing"
 
-# The outcomes that mean the draw never produced a usable answer at all.  A sample landing on
-# one of these is EXCLUDED rather than scored: it is the micro-context twin of a chat turn
-# that produced no reply, and grading it would report a failed contract for a contract nobody
-# exercised.
-_EXTRACT_FAILURES = frozenset(
-    {MicroExtractOutcome.EXTRACTION_FAILED, MicroExtractOutcome.POISON_REROLL_FAILED}
-)
+# The one outcome that means the draw never produced a usable answer at all (#2615: the
+# tagged shape's separate "clean but untagged" failure is gone with it, so there is only
+# one way left to land here).  A sample landing on it is EXCLUDED rather than scored: it
+# is the micro-context twin of a chat turn that produced no reply, and grading it would
+# report a failed contract for a contract nobody exercised.
+_EXTRACT_FAILURES = frozenset({MicroExtractOutcome.EXTRACTION_FAILED})
 
 
 def _extraction_output(result: MicroContextResult) -> list[eval_cohort.OutputField]:
     """One extraction draw's STRUCTURED ANSWER, field by field.
 
-    All four fields, always — including the empty one.  Which of ``value``, ``reason`` and
-    ``missing`` is populated is decided by the outcome, so carrying only the filled ones
-    would make the cohort's field comparison read a different set of axes per sample and
-    quietly turn "the draw answered differently" into "the draw answered a different
-    question"."""
+    Both fields, always — including the empty one on a failure — so the cohort's field
+    comparison reads the same set of axes per sample whatever the outcome."""
     return [
         eval_cohort.OutputField(name=EXTRACT_OUTCOME, value=result.outcome.value),
         eval_cohort.OutputField(name=EXTRACT_VALUE, value=result.value),
-        eval_cohort.OutputField(name=EXTRACT_REASON, value=result.reason),
-        eval_cohort.OutputField(name=EXTRACT_MISSING, value=result.missing),
     ]
 
 
@@ -240,7 +232,8 @@ def _observe_extraction(
 
     ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the page
     and the instruction under the extraction contract, so a provenance claim compares the
-    answer against the whole of what the draw was handed, ``NOT_PRESENT:`` included."""
+    answer against the whole of what the draw was handed, a plain "none of it" answer
+    included."""
     answer = "" if result is None or result.outcome in _EXTRACT_FAILURES else result.outcome.value
     exclusion = _draw_exclusion(db, answer)
     if result is None or exclusion is not None:

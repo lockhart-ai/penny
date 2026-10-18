@@ -507,29 +507,25 @@ KNOWLEDGE_PAGE_CONTENT = (
 )
 
 
-# ── A micro-context answer carrying the contract's own vocabulary (#2078) ────
+# ── A micro-context answer, for the "given" observer gate (#2078) ────────────
 #
-# The measured shape, reconstructed on synthetic names: a page with headlines and bylines
-# and no times, answered a line per story ending in the tag for the field the page lacks.
-# The tag's TAIL then glues across the line break to the next story's first capitalised
-# word — `PRESENT Harbour` here — which is a name phrase the page does not carry, and the
-# provenance probe read it as an invention on correct draws until the haystack became the
-# whole prompt.  Shared by the probe's own tests and by the observer gate, so the two
-# layers weigh one answer rather than two copies of it free to drift.
-EXTRACT_TAGGED_PAGE = (
+# A page with headlines and bylines and no times, answered a line per story naming what it
+# has.  Used by ``test_every_micro_context_observer_is_given_the_contract_it_drew_under``
+# (#2078) to prove a sample's ``given`` carries the draw's own contract as well as its
+# document — not by the specific wording of that contract (#2615 retired the tagged shape
+# this fixture used to also exercise an invention-detection edge case against; see
+# ``test_cohort.py``'s retirement note for that history).
+EXTRACT_PLAIN_PAGE = (
     "## browse: https://sports-beta.example/hockey\n"
     "Ridgeline Foxes sign veteran goalie Aurelio Brandt\n"
     "by Marisol Vance\n\n"
     "Harbour bridge reopens after a two-year refit\n"
     "by Marisol Vance\n"
 )
-EXTRACT_TAGGED_ASK = "the headline, the byline and the published time for each story"
-EXTRACT_TAGGED_ANSWER = (
-    "Ridgeline Foxes sign veteran goalie Aurelio Brandt, Marisol Vance, NOT_PRESENT\n"
-    "Harbour bridge reopens after a two-year refit, Marisol Vance, NOT_PRESENT\n"
-    "EXTRACTED Ridgeline Foxes coverage only"
+EXTRACT_PLAIN_ASK = "the headline, the byline and the published time for each story"
+EXTRACT_PLAIN_ANSWER = (
+    "Ridgeline Foxes sign veteran goalie Aurelio Brandt, by Marisol Vance. The page "
+    "does not give a published time for this story.\n"
+    "Harbour bridge reopens after a two-year refit, by Marisol Vance. The page does "
+    "not give a published time for this story."
 )
-# The byline the page supplies, and a name nowhere in the prompt — swapping one for the
-# other is how the over-correction guard asks for a real invention back.
-EXTRACT_TAGGED_BYLINE = "Marisol Vance"
-EXTRACT_UNSOURCED_NAME = "Casimir Oyelaran"

@@ -8,11 +8,12 @@ never enters the run context.  The full content is stored whole in browse-result
 and is retrievable by its handle (the anchor discipline).  Chat's browse (no
 ``extract``) is unchanged.
 
-The micro-context output contract is ENUMERATED on both sides of the interface
-(the review fix on PR #1594): the prompt names the two tagged forms
-(``EXTRACTED: <value>`` / ``NOT_PRESENT: <reason>``) and classification is a
-deterministic tag parse — untagged output is a contract violation that gets one
-reroll and then fails honestly, never a value.
+Browse-extract draws with thinking OFF and its plain text IS the value, verbatim
+(#2615) — reading a page is not a reasoning task.  There is no declared output
+shape any more (PR #1594's enumerated tagged contract retired with it): the poison
+screen (a degeneration collapse, a leaked Harmony envelope, or a blank draw) is the
+whole validity check, re-rolled on the unchanged context for the whole budget, then
+an honest ``EXTRACTION_FAILED``, never a silent empty.
 
 A multi-page batch draws its pages CONCURRENTLY (#1941) while keeping every #1682
 guarantee: per-page attribution, stable page order, one ledger row per context,
@@ -53,10 +54,7 @@ from penny.tools import ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.micro_context import (
-    EXTRACT_MISSING_TAG,
-    EXTRACTED_TAG,
     MICRO_CONTEXT_SYSTEM_PROMPT,
-    NOT_PRESENT_TAG,
     MicroContext,
     MicroContextResult,
     MicroExtractOutcome,
@@ -69,19 +67,15 @@ _PAGE_BODY = "Lot 42 — Antique Zephyr Compass. Current bid: 275 zorkmids. Clos
 _PAGE_TEXT = f"Title: Lot 42\n{_PAGE_BODY}"
 _BODY_PHRASE = "Antique Zephyr Compass"  # a distinctive body phrase that must NOT leak
 _INSTRUCTION = "the current bid amount"
+# Since #2615 the draw's plain text IS the value, verbatim — no tag to parse off it.
 _EXTRACTED_VALUE = "The current bid is 275 zorkmids."
-_TAGGED_VALUE = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE}"
-_NOT_PRESENT_REASON = "the page lists no bid amount."
-_TAGGED_NOT_PRESENT = f"{NOT_PRESENT_TAG} {_NOT_PRESENT_REASON}"
-# The stated shortfall (#2360): a MISSING: line opening the draw, naming what the
-# instruction asked for that the page does not carry at all, BEFORE the EXTRACTED:
-# line it pairs with — never after, since EXTRACTED: spans the remainder and would
-# swallow anything that followed its own line.
-_SHORTFALL = "the seller's name"
-_TAGGED_VALUE_WITH_SHORTFALL = f"{EXTRACT_MISSING_TAG} {_SHORTFALL}\n{_TAGGED_VALUE}"
-# The confabulation-shaped leak the tag parse exists to stop: non-blank apology
-# prose that a blank-check classifier would have promoted to an extracted value.
-_UNTAGGED_APOLOGY = "The page doesn't list a price"
+_NOT_PRESENT_ANSWER = "The page doesn't list a bid amount."
+# The stated shortfall (#2360), now said inside the plain text itself rather than on a
+# separate ``MISSING:`` line (#2615).
+_VALUE_WITH_SHORTFALL = f"{_EXTRACTED_VALUE} The page does not give the seller's name."
+# A blank draw — the empty-draw half of the poison screen (#2615: there is no tagged
+# shape left to catch this, so ``_is_poison`` screens it directly).
+_BLANK_DRAW = "   "
 _LOG_GET_RE = re.compile(r"log='browse-results' id=(\d+)")
 
 # A second fictional page for multi-page (per-page) extract batches (#1682).  Its
@@ -90,7 +84,6 @@ _PAGE_URL_2 = "https://auctions.example/lot/99"
 _PAGE_BODY_2 = "Lot 99 — Brass Orrery. Current bid: 512 zorkmids. Closes Monday at noon."
 _PAGE_TEXT_2 = f"Title: Lot 99\n{_PAGE_BODY_2}"
 _EXTRACTED_VALUE_2 = "The current bid is 512 zorkmids."
-_TAGGED_VALUE_2 = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE_2}"
 _MARKER_1 = _BODY_PHRASE  # "Antique Zephyr Compass" — page 1's body phrase, survives cleaning
 _MARKER_2 = "Brass Orrery"  # page 2's body phrase
 
@@ -100,7 +93,6 @@ _PAGE_URL_3 = "https://auctions.example/lot/7"
 _PAGE_BODY_3 = "Lot 7 — Copper Sundial. Current bid: 3 zorkmids. Closes Wednesday at noon."
 _PAGE_TEXT_3 = f"Title: Lot 7\n{_PAGE_BODY_3}"
 _EXTRACTED_VALUE_3 = "The current bid is 3 zorkmids."
-_TAGGED_VALUE_3 = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE_3}"
 _MARKER_3 = "Copper Sundial"  # page 3's body phrase
 
 # A SEARCH query (#2141).  Plain text is routed through the configured search URL, and
@@ -342,7 +334,7 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     )
     mock_llm.set_response_handler(
         lambda request, count: LlmResponse(
-            message=LlmMessage(role="assistant", content=_TAGGED_VALUE)
+            message=LlmMessage(role="assistant", content=_EXTRACTED_VALUE)
         )
     )
     tool = _extract_tool(db, client)
@@ -413,7 +405,7 @@ async def test_extract_link_list_reading_reaches_the_model_end_to_end(tmp_path, 
     )
     mock_llm.set_response_handler(
         lambda request, count: LlmResponse(
-            message=LlmMessage(role="assistant", content=_TAGGED_VALUE)
+            message=LlmMessage(role="assistant", content=_EXTRACTED_VALUE)
         )
     )
     tool = _extract_tool(db, client, reading=PageReading.LINK_LIST)
@@ -495,55 +487,52 @@ async def _execute_extract(tmp_path, name: str, model_content: str):
 
 @pytest.mark.asyncio
 async def test_micro_result_render_forms(tmp_path):
-    """The enumerated main-loop render forms, whole-string, as the model reads
-    them — each UNDER its page's ``## browse:`` section header (per-page, #1682):
-    extracted, extracted-with-a-stated-shortfall, not-present, failed-after-reroll
-    (untagged), and poison-then-failed."""
+    """The main-loop render forms, whole-string, as the model reads them — each
+    UNDER its page's ``## browse:`` section header (per-page, #1682): a plain
+    extracted answer, an answer stating its own shortfall, an answer saying the
+    page carries none of it, and failed-after-reroll (#2615: one failure render
+    now, whatever kind of draw never came back usable)."""
     header = f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n"
 
     # Success renders the VALUE ALONE — no fetch-handle tail (the "saved"
     # clause read as the remembering being done on the chat teach round; the
-    # failure renders below keep the log_get read as their remedy).
-    result, _handle_id = await _execute_extract(tmp_path, "ok", _TAGGED_VALUE)
+    # failure render below keeps the log_get read as its remedy).
+    result, _handle_id = await _execute_extract(tmp_path, "ok", _EXTRACTED_VALUE)
     assert result.message == f"{header}{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     assert result.success is True
 
-    # A stated shortfall (#2360) renders AFTER the value, so a reply can say what
-    # was found AND what was not — no fetch-handle tail here either, the same as
-    # the plain success above.
+    # A stated shortfall (#2360) is now said INSIDE the plain-text value itself
+    # (#2615) — nothing composes it separately any more, so the render is the
+    # same ``{instruction}: {value}`` form as the plain success above.
     result, _handle_id = await _execute_extract(
-        tmp_path, "ok-with-shortfall", _TAGGED_VALUE_WITH_SHORTFALL
+        tmp_path, "ok-with-shortfall", _VALUE_WITH_SHORTFALL
     )
-    assert result.message == (
-        f"{header}{_INSTRUCTION}: {_EXTRACTED_VALUE} Not on the page: {_SHORTFALL}."
-    )
+    assert result.message == f"{header}{_INSTRUCTION}: {_VALUE_WITH_SHORTFALL}"
     assert result.success is True
 
-    result, handle_id = await _execute_extract(tmp_path, "absent", _TAGGED_NOT_PRESENT)
-    assert result.message == (
-        f"{header}"
-        "The page doesn't contain 'the current bid amount' — the page lists no bid amount. "
-        f"Full page content saved as log='browse-results' id={handle_id}."
-    )
-    # NOT_PRESENT is a successful read of an absent fact, not a failure.
+    # A page carrying none of what was asked is still a SUCCESSFUL draw (#2615):
+    # the plain text says so, and the render is the same success form — no
+    # handle clause, because the page was read and the answer stands on its own.
+    result, _handle_id = await _execute_extract(tmp_path, "absent", _NOT_PRESENT_ANSWER)
+    assert result.message == f"{header}{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
     assert result.success is True
 
-    result, handle_id = await _execute_extract(tmp_path, "untagged", _UNTAGGED_APOLOGY)
-    assert result.message == (
-        f"{header}"
-        "Couldn't extract 'the current bid amount' from the page — the extractor returned "
-        "nothing usable. Full page content saved as "
-        f"log='browse-results' id={handle_id}."
-    )
-    assert result.success is False
-    # The apology prose was never promoted to a value (the confabulation leak).
-    assert _UNTAGGED_APOLOGY not in result.message
-
+    # Every unusable draw — garbled or blank alike — reads the same failure form
+    # (#2615: there is no second failure KIND left to render differently).
     result, handle_id = await _execute_extract(tmp_path, "poison", "...???...")
     assert result.message == (
         f"{header}"
-        "Couldn't extract 'the current bid amount' from the page — the extractor output was "
-        "unusable after 3 attempts. Full page content saved as "
+        "Couldn't extract 'the current bid amount' from the page — the extractor never "
+        "produced a usable answer after 3 attempts. Full page content saved as "
+        f"log='browse-results' id={handle_id}."
+    )
+    assert result.success is False
+
+    result, handle_id = await _execute_extract(tmp_path, "blank", _BLANK_DRAW)
+    assert result.message == (
+        f"{header}"
+        "Couldn't extract 'the current bid amount' from the page — the extractor never "
+        "produced a usable answer after 3 attempts. Full page content saved as "
         f"log='browse-results' id={handle_id}."
     )
     assert result.success is False
@@ -567,7 +556,7 @@ async def test_two_page_batch_yields_two_attributed_sections(tmp_path, mock_llm)
         retry_delay=0.0,
     )
     mock_llm.set_response_handler(
-        _page_router({_MARKER_1: _TAGGED_VALUE, _MARKER_2: _TAGGED_VALUE_2})
+        _page_router({_MARKER_1: _EXTRACTED_VALUE, _MARKER_2: _EXTRACTED_VALUE_2})
     )
     tool = _multi_extract_tool(
         db, client, _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2})
@@ -604,12 +593,16 @@ async def test_two_page_batch_yields_two_attributed_sections(tmp_path, mock_llm)
 
 
 @pytest.mark.asyncio
-async def test_not_present_page_does_not_mask_extracted_page(tmp_path):
-    """NOT_PRESENT on page 1 + EXTRACTED on page 2: each renders honestly in its OWN
-    section — the not-present page never masks the other page's extracted value, and
-    the extracted value never leaks into the not-present section (#1682)."""
+async def test_a_none_of_it_page_does_not_mask_extracted_page(tmp_path):
+    """A page answering "none of it" on page 1 + an ordinary extracted answer on
+    page 2: each renders honestly in its OWN section — the "none of it" page never
+    masks the other page's extracted value, and the extracted value never leaks
+    into the other section (#1682).  Both are the SAME outcome since #2615 (there
+    is no second success outcome left to collapse into one render) — the thing
+    this test still holds is per-page attribution, not which outcome each lands
+    on."""
     db = _make_db(tmp_path)
-    model = _responds_routed({_MARKER_1: _TAGGED_NOT_PRESENT, _MARKER_2: _TAGGED_VALUE_2})
+    model = _responds_routed({_MARKER_1: _NOT_PRESENT_ANSWER, _MARKER_2: _EXTRACTED_VALUE_2})
     tool = _multi_extract_tool(
         db, model, _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2})
     )
@@ -620,15 +613,14 @@ async def test_not_present_page_does_not_mask_extracted_page(tmp_path):
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
-    # Page 1 renders the honest not-present form under its own header.
+    # Page 1 renders its own honest "none of it" text under its own header.
     assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n")
-    assert "The page doesn't contain 'the current bid amount'" in sections[0]
-    assert _NOT_PRESENT_REASON in sections[0]
+    assert _NOT_PRESENT_ANSWER in sections[0]
     # Page 2's extracted value renders under ITS header — not masked, not leaked.
     assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n")
     assert _EXTRACTED_VALUE_2 in sections[1]
     assert _EXTRACTED_VALUE_2 not in sections[0]
-    # Both are successful reads (an extracted value + an honest absence).
+    # Both are successful reads (an extracted answer + an honest "none of it" one).
     assert result.success is True
 
 
@@ -638,7 +630,7 @@ async def test_failed_fetch_section_coexists_with_extracted_section(tmp_path):
     alongside a successfully-extracted page's section (#1682) — the read failure
     stays visible, and its slot never consumes another page's handle."""
     db = _make_db(tmp_path)
-    model = _responds_routed({_MARKER_2: _TAGGED_VALUE_2})
+    model = _responds_routed({_MARKER_2: _EXTRACTED_VALUE_2})
     tool = _multi_extract_tool(
         db,
         model,
@@ -665,18 +657,17 @@ async def test_failed_fetch_section_coexists_with_extracted_section(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_failed_fetch_in_the_middle_keeps_its_slot_and_its_siblings_handles(tmp_path):
+async def test_failed_fetch_in_the_middle_keeps_its_slot(tmp_path):
     """A read failure sits in ITS OWN slot and consumes no page's handle — the half of
     the #1682 contract the concurrent batch (#1941) has to keep structurally.
 
-    The failure is in the MIDDLE of three queries, so both claims are testable at
-    once: the error section renders between its siblings (page order, not completion
-    order), and the last page's NOT_PRESENT render carries the handle of ITS OWN
-    stored entry — the second of the two stored, not the first.  The handles are
-    bound in section order before any draw is issued, so the un-stored failed fetch
-    cannot slide page 3's handle onto page 1."""
+    The failure is in the MIDDLE of three queries, so the claim is testable directly:
+    the error section renders between its siblings (page order, not completion
+    order).  Which STORED entry belongs to which page (#2615: no longer visible in a
+    success render — there is no handle clause on one any more, see
+    ``_render_micro_result``) is verified against the store itself."""
     db = _make_db(tmp_path)
-    model = _responds_routed({_MARKER_1: _TAGGED_VALUE, _MARKER_3: _TAGGED_NOT_PRESENT})
+    model = _responds_routed({_MARKER_1: _EXTRACTED_VALUE, _MARKER_3: _EXTRACTED_VALUE_3})
     tool = _multi_extract_tool(
         db,
         model,
@@ -690,29 +681,22 @@ async def test_failed_fetch_in_the_middle_keeps_its_slot_and_its_siblings_handle
         CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION
     )
 
-    # Only the two READ pages were stored; the failed fetch stored nothing.
+    # Only the two READ pages were stored; the failed fetch stored nothing.  Each
+    # stored entry is attributed to its own page by content, not by a render clause.
     browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert browse_log is not None
     stored = browse_log.read_all()
     assert len(stored) == 2
-    handles = {
-        marker: next(entry.id for entry in stored if marker in entry.content)
-        for marker in (_MARKER_1, _MARKER_3)
-    }
+    assert any(_MARKER_1 in entry.content for entry in stored)
+    assert any(_MARKER_3 in entry.content for entry in stored)
     assert result.message.split(PennyConstants.SECTION_SEPARATOR) == [
         f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
         f"{PennyConstants.BROWSE_ERROR_HEADER}{_PAGE_URL_2}\n"
         "Could not read this page: page unavailable. Try a different source or a "
         "reworded query; if other queries in this batch succeeded, work from those "
         "instead of retrying this one.",
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_3}\n"
-        "The page doesn't contain 'the current bid amount' — the page lists no bid "
-        "amount. Full page content saved as "
-        f"log='browse-results' id={handles[_MARKER_3]}.",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_3}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_3}",
     ]
-    # Page 3's read is its OWN entry's (interpolated above); page 1's appears
-    # nowhere, so the un-stored failed fetch slid no read onto its neighbour.
-    assert f"log='browse-results' id={handles[_MARKER_1]}" not in result.message
     assert result.success is True
 
 
@@ -755,7 +739,7 @@ async def test_search_beside_a_page_read_extracts_only_the_page(tmp_path):
     draw whose content isn't page 1's, so a draw over the search results would fail the
     test rather than pass unnoticed."""
     db = _make_db(tmp_path)
-    model = _responds_routed({_MARKER_1: _TAGGED_VALUE})
+    model = _responds_routed({_MARKER_1: _EXTRACTED_VALUE})
     tool = _multi_extract_tool(
         db,
         model,
@@ -782,16 +766,19 @@ async def test_search_beside_a_page_read_extracts_only_the_page(tmp_path):
 
 @pytest.mark.asyncio
 async def test_failed_extraction_hands_back_the_pages_links(tmp_path):
-    """A page read whose extractor never produces a usable tagged line renders the
+    """A page read whose extractor never produces a usable answer renders the
     failure sentence AND the page's own standalone links (#2141).
 
     With ``extract`` set the body never enters the conversation, so a failure saying
     only that it failed left the chat model nothing to open — it re-searched, landed on
     the same page, and looped until the pathology gate stopped it.  The links are the
     one part of the page it can act on, so they come back with the failure: the fetch
-    handle remedies the body, the links remedy the next call."""
+    handle remedies the body, the links remedy the next call.
+
+    Since #2615 there is no tagged line to fail to produce — a degenerate draw is the
+    one way left to land here, so that is what this test drives."""
     db = _make_db(tmp_path)
-    model = _responds(_UNTAGGED_APOLOGY)
+    model = _responds("...???...")
     tool = _multi_extract_tool(db, model, _provider(_CATALOGUE_TEXT))
 
     result = await tool.execute(CallLink.new_top(), queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
@@ -801,8 +788,8 @@ async def test_failed_extraction_hands_back_the_pages_links(tmp_path):
     handle_id = browse_log.read_all()[-1].id
     assert result.message == (
         f"{PennyConstants.BROWSE_PAGE_HEADER}{_CATALOGUE_URL}\n"
-        "Couldn't extract 'the current bid amount' from the page — the extractor returned "
-        "nothing usable. Full page content saved as "
+        "Couldn't extract 'the current bid amount' from the page — the extractor never "
+        "produced a usable answer after 3 attempts. Full page content saved as "
         f"log='browse-results' id={handle_id}.\n{_LINKS_CLAUSE}"
     )
     assert result.success is False
@@ -827,7 +814,7 @@ async def test_page_batch_draws_concurrently_and_renders_in_page_order(tmp_path)
     draws — the batch is a fan-out, not a retry."""
     db = _make_db(tmp_path)
     probe = _OverlapProbe(
-        {_MARKER_1: _TAGGED_VALUE, _MARKER_2: _TAGGED_VALUE_2, _MARKER_3: _TAGGED_VALUE_3}
+        {_MARKER_1: _EXTRACTED_VALUE, _MARKER_2: _EXTRACTED_VALUE_2, _MARKER_3: _EXTRACTED_VALUE_3}
     )
     tool = _multi_extract_tool(
         db,
@@ -859,7 +846,7 @@ async def test_single_page_batch_is_one_draw_rendered_unchanged(tmp_path):
     pre-#1941 sequential form — the gather is over the planned batch, so the
     single-page path costs exactly one draw with nothing in flight beside it."""
     db = _make_db(tmp_path)
-    probe = _OverlapProbe({_MARKER_1: _TAGGED_VALUE})
+    probe = _OverlapProbe({_MARKER_1: _EXTRACTED_VALUE})
     tool = _multi_extract_tool(db, cast(Any, probe), _provider_by_url({_PAGE_URL: _PAGE_TEXT}))
 
     result = await tool.execute(CallLink.new_top(), queries=[_PAGE_URL], extract=_INSTRUCTION)
@@ -882,7 +869,7 @@ async def test_poisoned_draw_rerolls_only_its_own_context(tmp_path):
     db = _make_db(tmp_path)
     poison = "...???..."
     model, draws = _responds_in_sequence(
-        {_MARKER_1: [poison, poison, _TAGGED_VALUE], _MARKER_2: [_TAGGED_VALUE_2]}
+        {_MARKER_1: [poison, poison, _EXTRACTED_VALUE], _MARKER_2: [_EXTRACTED_VALUE_2]}
     )
     tool = _multi_extract_tool(
         db, model, _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2})
@@ -925,7 +912,7 @@ async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
                 raise LlmTimeoutError("model call timed out")
             await asyncio.sleep(0)
             finished.append(_MARKER_2)
-            return LlmResponse(message=LlmMessage(role="assistant", content=_TAGGED_VALUE_2))
+            return LlmResponse(message=LlmMessage(role="assistant", content=_EXTRACTED_VALUE_2))
 
     tool = _multi_extract_tool(
         db,
@@ -966,7 +953,7 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
         async def chat(self, messages: list[LlmMessage], **_kwargs: Any) -> LlmResponse:
             content = messages[-1].content
             if _MARKER_1 in content:
-                return LlmResponse(message=LlmMessage(role="assistant", content=_TAGGED_VALUE))
+                return LlmResponse(message=LlmMessage(role="assistant", content=_EXTRACTED_VALUE))
             await asyncio.sleep(10)  # cancelled by the tool's own timeout, well short of 10s
             raise AssertionError("page 2's draw should have been cancelled")
 
@@ -1011,29 +998,25 @@ def test_render_tool_call_names_the_micro_context_browse_step():
     )
 
 
-# ── MicroContext unit: tag parse, byte-identity, untagged + poison rerolls ─────
+# ── MicroContext unit: plain-text draw, byte-identity, poison reroll (#2615) ──
 
 
 @pytest.mark.asyncio
 async def test_micro_context_returns_byte_identical_value_with_attribution():
-    """A tagged draw is the extracted value — the payload after the tag, stripped
-    once — and the call carries the ledger attribution.
-
-    No ``MISSING:`` line was drawn, so ``missing`` reads empty — the honest "the
-    draw named nothing missing" rather than an absent field (#2360)."""
-    model = _responds(f"  {_TAGGED_VALUE}  ")
+    """A draw's plain text is the extracted value — stripped once, verbatim
+    otherwise (#2615: nothing parses it) — and the call carries the ledger
+    attribution, drawn with thinking OFF (reading a page is not a reasoning
+    task)."""
+    model = _responds(f"  {_EXTRACTED_VALUE}  ")
     result = await MicroContext(cast(Any, model)).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top(), run_target="widget-watch"
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == _EXTRACTED_VALUE
-    assert result.missing == ""
     assert model.requests[0]["agent_name"] == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
     assert model.requests[0]["prompt_type"] == PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE
     assert model.requests[0]["run_target"] == "widget-watch"
-    # The extractor is untouched by the notifier's thinking-off lever (#2618):
-    # its draw keeps the client's own default (thinking on).
-    assert model.requests[0]["thinking_enabled"] is True
+    assert model.requests[0]["thinking_enabled"] is False
     # The default reading is ARTICLE (#2388) — the rendered user turn is
     # byte-identical to what it was before ``reading`` existed: no note, nothing
     # before ``Content:`` beyond the instruction.
@@ -1049,7 +1032,7 @@ async def test_micro_context_link_list_reading_adds_one_note_before_content():
     from the text's shape) gets one note, placed BEFORE ``Content:``, saying the
     page was read as its list of links — the byte-identical test above pins its
     absence on every other reading."""
-    model = _responds(_TAGGED_VALUE)
+    model = _responds(_EXTRACTED_VALUE)
     result = await MicroContext(cast(Any, model)).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top(), reading=PageReading.LINK_LIST
     )
@@ -1060,65 +1043,26 @@ async def test_micro_context_link_list_reading_adds_one_note_before_content():
 
 
 @pytest.mark.asyncio
-async def test_micro_context_not_present_is_enumerated_not_a_value():
-    """A ``NOT_PRESENT:`` draw classifies as the enumerated not-present outcome
-    carrying the reason — never as an extracted value.  Not-present is a
-    successful read of an absent fact, distinct from EXTRACTION_FAILED.
-
-    ``missing`` (#2360) is read only on the ``EXTRACTED`` branch — a draw that
-    already answers nothing has no shortfall to add beside its ``reason``."""
-    model = _responds(_TAGGED_NOT_PRESENT)
+async def test_micro_context_plain_text_answer_needs_no_tag():
+    """A page the extractor finds nothing on is still an ``EXTRACTED`` draw whose
+    plain text says so (#2615) — there is no second outcome, and no tag, for it to
+    land on instead."""
+    model = _responds(_NOT_PRESENT_ANSWER)
     result = await MicroContext(cast(Any, model)).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
-    assert result.outcome == MicroExtractOutcome.NOT_PRESENT
-    assert result.reason == _NOT_PRESENT_REASON
-    assert result.value == ""
-    assert result.missing == ""
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    assert result.value == _NOT_PRESENT_ANSWER
     assert len(model.requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_micro_context_reads_a_leading_missing_line_as_the_stated_shortfall():
-    """The stated shortfall (#2360): a ``MISSING:`` line opening the draw, BEFORE
-    ``EXTRACTED:``, is read as the shortfall alongside the extracted value — the
-    place the model kept wanting to put this observation, now declared in the
-    shape rather than argued into existence on every draw.
-
-    ``EXTRACTED:``'s anchor is ANYWHERE rather than OPENS_DRAW for exactly this: it
-    must still be found at line 0 with no ``MISSING:`` line (the sibling tests
-    above) and at line 1 when one precedes it, here."""
-    model = _responds(_TAGGED_VALUE_WITH_SHORTFALL)
-    result = await MicroContext(cast(Any, model)).extract(
-        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
-    )
-    assert result.outcome == MicroExtractOutcome.EXTRACTED
-    assert result.value == _EXTRACTED_VALUE
-    assert result.missing == _SHORTFALL
-
-
-@pytest.mark.asyncio
-async def test_micro_context_malformed_missing_line_is_absent_not_a_violation():
-    """``MISSING:`` is OPTIONAL at the grammar level (#2360): a blank shortfall —
-    the tag with nothing after it — is simply absent, never a reroll, exactly
-    like every other OPTIONAL line's "absence is never a verdict" (#1770)."""
-    model = _responds(f"{EXTRACT_MISSING_TAG}   \n{_TAGGED_VALUE}")
-    result = await MicroContext(cast(Any, model)).extract(
-        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
-    )
-    assert result.outcome == MicroExtractOutcome.EXTRACTED
-    assert result.value == _EXTRACTED_VALUE
-    assert result.missing == ""
-    assert len(model.requests) == 1  # absence costs nothing — no reroll
-
-
-@pytest.mark.asyncio
-async def test_micro_context_extracts_multi_line_digest_value():
-    """A multi-line EXTRACTED value (a bulleted digest, its first item beginning on
-    the tag's own line) round-trips WHOLE (#1682): the value is EVERYTHING after the
-    tag, so an item-per-line list survives the parse intact into MicroContextResult."""
+async def test_micro_context_extracts_multi_line_value_whole():
+    """A multi-line value (a bulleted digest) round-trips WHOLE (#1682/#2615): the
+    plain-text draw IS the value — stripped once, nothing else touched — so an
+    item-per-line list survives into ``MicroContextResult`` byte-identical."""
     digest = "Notable lots:\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids\n- Lot 7: 3 zorkmids"
-    model = _responds(f"{EXTRACTED_TAG} {digest}")
+    model = _responds(digest)
     result = await MicroContext(cast(Any, model)).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
@@ -1127,89 +1071,31 @@ async def test_micro_context_extracts_multi_line_digest_value():
     assert result.value.count("\n") == 3  # the four-line digest is intact
 
 
-@pytest.mark.asyncio
-async def test_micro_context_not_present_reason_stays_single_line():
-    """A NOT_PRESENT draw takes only its FIRST LINE as the reason (#1682): trailing
-    lines (a model that keeps talking) can never be multi-line-promoted into the
-    reason, so a not-present apology never smuggles a body value through."""
-    model = _responds(f"{NOT_PRESENT_TAG} no bid amount here\nbut lot 42 looks interesting")
-    result = await MicroContext(cast(Any, model)).extract(
-        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
-    )
-    assert result.outcome == MicroExtractOutcome.NOT_PRESENT
-    assert result.reason == "no bid amount here"
-    assert "lot 42" not in result.reason
-
-
-@pytest.mark.asyncio
-async def test_micro_context_tolerates_a_decorated_tag_line_and_keeps_the_value_verbatim():
-    """Tolerance is declared ONCE and applied to the TAG'S OWN LINE only (#1814): a
-    draw whose opening tag arrives bolded, list-marked or quoted still parses, while
-    the value's later lines are returned untouched — a markdown digest is the value,
-    not grammar, so stripping decoration from it would corrupt what was extracted."""
-    digest = "**Notable lots:**\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids"
-    model = _responds(f"- **{EXTRACTED_TAG}** {digest}")
-    result = await MicroContext(cast(Any, model)).extract(
-        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
-    )
-    assert result.outcome == MicroExtractOutcome.EXTRACTED
-    # Line 1 lost its decoration with the tag; every later line is byte-identical.
-    assert result.value == "Notable lots:\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids"
-
-    quoted = _responds(f'{NOT_PRESENT_TAG} "{_NOT_PRESENT_REASON}"')
-    reason = await MicroContext(cast(Any, quoted)).extract(
-        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
-    )
-    assert reason.outcome == MicroExtractOutcome.NOT_PRESENT
-    assert reason.reason == _NOT_PRESENT_REASON
-
-
-def test_micro_context_system_prompt_declares_multiline_contract():
-    """Whole-render literal of the extraction system prompt (#1682/#1942/#2360): an
-    optional MISSING: line may open the draw, then one of the two tags — an EXTRACTED
-    value may be a multi-line digest / list, a NOT_PRESENT reason stays a single line —
-    and the boundary between the two tags is STATED: content carrying some of what was
-    asked for is a read, and NOT_PRESENT is for content carrying none of it.  #2360 gives
-    the model a place for the thing it kept wanting to say anyway: a MISSING: line naming,
-    together and once, whatever the instruction named that the page does not carry at
-    all — in plain words, with permission to give the part that IS there as well as the
-    prohibition on inventing the part that is not.
-
-    Round 2 of #2360's fix answered a DIFFERENT loop the first round's thinking traces
-    showed on a real-size, unbounded list ask: past the partial/missing decision, the
-    model re-scanned an already-drafted item list to double-check completeness ("Wait,
-    I'll check if there's any other story. No."). Round 3 replaces the list-format
-    aside: between drafts the model argued about the OUTPUT FORMAT of one item — whether
-    headline, link and summary go on one line or two — because the prompt said "a list
-    (put one item per line)" while an item has several parts. The prompt now says what
-    one item's line IS (its parts, in the order the instruction names them, " — "
-    separated) instead of leaving the shape of an item to argue about."""
+def test_micro_context_system_prompt_is_plain_text_with_no_tags():
+    """Whole-render literal of the extraction system prompt (#2615): the tagged
+    contract (#1682/#1942/#2360) retired entirely — reading a page is not a
+    reasoning task, so the draw answers in plain text, as a list when several
+    things are asked for, naming a shortfall or a total absence in a plain
+    sentence, never a separate tagged line."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
-        "An optional MISSING: line may open your output (see below); whether or not it "
-        "is there, the next line — or the first, if it is not — opens with one of these "
-        "two tags:\n"
-        "EXTRACTED: <the value — it may begin on this same line>\n"
-        "NOT_PRESENT: <one short line naming what is missing>\n"
-        "After EXTRACTED:, the extracted value is EVERYTHING that follows — as "
-        "long as the instruction requires: a single value, one or more paragraphs, or "
-        "a list. In a list, each item is one line holding that item's parts in the "
-        'order the instruction names them, separated by " — "; a part the page does '
-        "not give for that item is simply left off that item's line.\n"
-        "An instruction often names several things at once, and a page rarely carries "
-        "all of them. When the page carries at least one, write EXTRACTED: and give "
-        "exactly what it has for each thing named — a thing that is only partly on the "
-        "page still gets a line for the part that is there. Whatever the instruction "
-        "named that is not in your answer because the page does not give it — for a "
-        "list, a part that none of your items has — name it, all of it together, in "
-        "one short line, before EXTRACTED:\n"
-        "MISSING: <one short line naming what was asked for and is not on the page>\n"
-        "Use NOT_PRESENT:, on a single line, when the page carries NONE of what was "
-        "asked for. Never invent a value that is not in the content — when something "
-        "named is not there, say so on MISSING: (or NOT_PRESENT: when nothing is) "
-        "instead of guessing it. Write nothing outside the value itself — no preamble, "
-        "no explanation, no restating the instruction."
+        "Answer in plain text from the page alone, as a list with one item per "
+        "line when the instruction asks for several, and never a value the page "
+        "doesn't state.\n"
+        "\n"
+        "An instruction often names several things at once, and a page rarely "
+        "carries all of them. Give what the page has for each thing named, in the "
+        "order the instruction names them. For a thing the page does not carry at "
+        "all, say so plainly in one short sentence — which thing, and that the "
+        "page does not have it — instead of leaving it out silently or guessing "
+        "at it.\n"
+        "\n"
+        "If the page carries none of what was asked for, say so plainly in one "
+        "sentence and stop there.\n"
+        "\n"
+        "Write only the answer — no preamble, no restating the instruction, and "
+        "nothing about how you are answering."
     )
 
 
@@ -1234,7 +1120,7 @@ def test_extract_parameter_description_whole_render(db: Database):
     so "only the extracted value is returned here" stopped being true of a search query,
     and a description that is false about half its own argument's inputs is worse than
     one that names the exception."""
-    tool = _extract_tool(db, _responds(_TAGGED_VALUE))
+    tool = _extract_tool(db, _responds(_EXTRACTED_VALUE))
     assert tool.parameters["properties"]["extract"]["description"] == (
         "Optional. One instruction naming what to pull out of the fetched "
         'pages (e.g. "the current bid amount"). Use the task\'s own words '
@@ -1251,13 +1137,12 @@ def test_extract_parameter_description_whole_render(db: Database):
 
 
 @pytest.mark.asyncio
-async def test_micro_context_untagged_is_rerolled_then_fails():
-    """Untagged (but clean) output is a contract violation: discarded and re-drawn on
-    the unchanged context for the WHOLE budget — the same patience poison gets, since
-    a violation is DETECTED against the declared shape rather than judged — then
-    honest EXTRACTION_FAILED.  The apology prose is never promoted to a value, and a
-    blank draw takes the same path (no tag to parse)."""
-    model = _responds(_UNTAGGED_APOLOGY)
+async def test_micro_context_blank_draw_is_discarded_and_rerolled():
+    """A blank draw (#2615: there is no tag left to catch this, so ``_is_poison``
+    screens it directly via ``is_empty_draw``) is discarded and re-drawn on the
+    unchanged context for the whole budget, then fails honestly — the same
+    patience a garbled collapse gets."""
+    model = _responds(_BLANK_DRAW)
     result = await MicroContext(cast(Any, model)).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
@@ -1265,25 +1150,18 @@ async def test_micro_context_untagged_is_rerolled_then_fails():
     assert result.value == ""
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
-    blank = _responds("   ")
-    result = await MicroContext(cast(Any, blank)).extract(
-        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
-    )
-    assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
-    assert len(blank.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
-
 
 @pytest.mark.asyncio
-async def test_micro_context_untagged_reroll_can_recover():
-    """A reroll re-draws on the unchanged context — a tagged draw recovers the
-    extraction, and it can arrive anywhere inside the budget: TWO untagged draws
+async def test_micro_context_reroll_can_recover():
+    """A reroll re-draws on the unchanged context — a usable draw recovers the
+    extraction, and it can arrive anywhere inside the budget: two unusable draws
     still leave a third, and the run costs exactly the draws it took."""
     model = MockLlmClient()
     model.set_response_handler(
         lambda request, count: LlmResponse(
             message=LlmMessage(
                 role="assistant",
-                content=_UNTAGGED_APOLOGY if count == 1 else _TAGGED_VALUE,
+                content="...???..." if count == 1 else _EXTRACTED_VALUE,
             )
         )
     )
@@ -1299,7 +1177,7 @@ async def test_micro_context_untagged_reroll_can_recover():
         lambda request, count: LlmResponse(
             message=LlmMessage(
                 role="assistant",
-                content=_UNTAGGED_APOLOGY if count <= 2 else _TAGGED_VALUE,
+                content="...???..." if count <= 2 else _EXTRACTED_VALUE,
             )
         )
     )
@@ -1314,23 +1192,44 @@ async def test_micro_context_untagged_reroll_can_recover():
 @pytest.mark.asyncio
 async def test_micro_context_poison_is_discarded_and_rerolled():
     """Poison output (a degeneration collapse) is discarded and re-drawn on the
-    unchanged context up to the reroll budget, then fails honestly."""
+    unchanged context up to the reroll budget, then fails honestly — the one
+    failure outcome left once the tagged shape retired (#2615)."""
     model = _responds("...???...")
     result = await MicroContext(cast(Any, model), reroll_attempts=3).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
-    assert result.outcome == MicroExtractOutcome.POISON_REROLL_FAILED
+    assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
     assert result.value == ""
     assert len(model.requests) == 3
 
 
 @pytest.mark.asyncio
-async def test_micro_context_cut_draw_gets_one_thinking_off_last_draw():
+async def test_extract_always_draws_with_thinking_off():
+    """Browse-extract draws with thinking OFF on every attempt (#2615) — reading a
+    page is not a reasoning task, and this is the one customer that always says
+    so, unconditionally, from the first draw."""
+    model = _responds(_EXTRACTED_VALUE)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    assert model.requests[0]["thinking_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_draw_clean_cut_draw_gets_one_thinking_off_last_draw():
     """A draw the token budget cut (``finish_reason="length"``, empty content)
     gets ONE more call on the same messages with thinking disabled and the same
     budget (#2476), and that response answers the draw in place of the cut one —
-    the parse then reads it like any other draw.  Both calls carry the call kind's
-    own token budget, resolved off the client's ``runtime`` by ``agent_name``."""
+    the poison screen then reads it like any other draw.  Both calls carry the
+    call kind's own token budget, resolved off the client's ``runtime`` by
+    ``agent_name``.
+
+    Exercised directly against ``_draw_clean`` with ``thinking_enabled=True``
+    (#2615): browse-extract's own ``extract()`` always draws thinking OFF from
+    the first attempt, so this retry — whose whole point is turning thinking off
+    — never fires for it any more (see the guard test below); the mechanic still
+    serves a customer that draws with thinking on by default."""
     model = MockLlmClient(
         runtime=RuntimeParams(env_overrides={"TOKEN_BUDGET_BROWSE_EXTRACT": 1234})
     )
@@ -1338,16 +1237,15 @@ async def test_micro_context_cut_draw_gets_one_thinking_off_last_draw():
         lambda request, count: LlmResponse(
             message=LlmMessage(
                 role="assistant",
-                content="" if count == 1 else _TAGGED_VALUE,
+                content="" if count == 1 else _EXTRACTED_VALUE,
             ),
             finish_reason="length" if count == 1 else None,
         )
     )
-    result = await MicroContext(cast(Any, model)).extract(
-        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    text = await MicroContext(cast(Any, model))._draw_clean(
+        _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=True
     )
-    assert result.outcome == MicroExtractOutcome.EXTRACTED
-    assert result.value == _EXTRACTED_VALUE
+    assert text == _EXTRACTED_VALUE
     assert len(model.requests) == 2
     # Both calls carried the draw's kind budget, resolved from this client's runtime.
     assert model.requests[0]["token_budget"] == 1234
@@ -1357,18 +1255,38 @@ async def test_micro_context_cut_draw_gets_one_thinking_off_last_draw():
     assert model.requests[1]["thinking_enabled"] is False
 
 
-def test_micro_result_render_by_handle_is_a_typed_id(tmp_path):
-    """The fetch handle is a typed ``log='browse-results' id=<id>`` read
-    (rendered directly) — on the FAILURE renders, where it is the remedy.  A
-    successful extraction renders the value alone: the "saved" tail read as the
-    remembering being done at exactly the moment a chat teach round held the
-    value (2026-07-19), so success carries no handle clause.
+@pytest.mark.asyncio
+async def test_draw_clean_skips_the_cut_retry_when_already_thinking_off():
+    """The cut-draw retry's whole point is turning thinking off (#2476) — so when a
+    draw already ran with it off (every browse-extract draw, #2615), a second,
+    identical call would buy nothing.  The guard (``not retried_cut and
+    thinking_enabled``) skips it: a cut draw already thinking-off costs exactly
+    one call, whatever its content."""
+    model = MockLlmClient()
+    model.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(role="assistant", content=""),
+            finish_reason="length",
+        )
+    )
+    text = await MicroContext(cast(Any, model))._draw_clean(
+        _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=False
+    )
+    assert text is None  # every attempt drew the same empty, cut response
+    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    assert all(request["thinking_enabled"] is False for request in model.requests)
 
-    The page's LINKS follow the same split (#2141): they are handed to every render, and
-    only the FAILURE renders append them.  NOT_PRESENT is a successful read of an absent
-    fact — the page was fetched and the answer is that the fact isn't there — so there is
-    nothing for a link to recover from, and offering one would invite a re-read of a page
-    already read."""
+
+def test_micro_result_render_by_handle_is_a_typed_id():
+    """The fetch handle is a typed ``log='browse-results' id=<id>`` read
+    (rendered directly) — on the FAILURE render, where it is the remedy
+    (#2615: the one failure outcome left).  A successful extraction renders
+    the value alone: the "saved" tail read as the remembering being done at
+    exactly the moment a chat teach round held the value (2026-07-19), so
+    success carries no handle clause, whatever the plain text says.
+
+    The page's LINKS follow the same split (#2141): handed to every render, and
+    only the FAILURE render appends them."""
     tool = BrowseTool(max_calls=1, embedding_client=cast(Any, MockLlmClient()))
     stored = [cast(Any, SimpleNamespace(id=7))]
     links = f"\n{_LINKS_CLAUSE}"
@@ -1380,23 +1298,20 @@ def test_micro_result_render_by_handle_is_a_typed_id(tmp_path):
     )
     assert body == f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     body = tool._render_micro_result(
-        MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason="no bid listed."),
+        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=_NOT_PRESENT_ANSWER),
         _INSTRUCTION,
         stored,
         links,
     )
-    assert body == (
-        "The page doesn't contain 'the current bid amount' — no bid listed. "
-        "Full page content saved as log='browse-results' id=7."
-    )
+    assert body == f"{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
     body = tool._render_micro_result(
-        MicroContextResult(outcome=MicroExtractOutcome.POISON_REROLL_FAILED),
+        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTION_FAILED),
         _INSTRUCTION,
         stored,
         links,
     )
     assert body == (
-        "Couldn't extract 'the current bid amount' from the page — the extractor output "
-        "was unusable after 3 attempts. Full page content saved as "
+        "Couldn't extract 'the current bid amount' from the page — the extractor never "
+        "produced a usable answer after 3 attempts. Full page content saved as "
         f"log='browse-results' id=7.\n{_LINKS_CLAUSE}"
     )

@@ -252,17 +252,14 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     StoredEntry,
     StoredImage,
-    unsourced_specifics,
 )
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import (
     BOARD_GAMES,
     ENACTING_TOOLS,
-    EXTRACT_TAGGED_ANSWER,
-    EXTRACT_TAGGED_ASK,
-    EXTRACT_TAGGED_BYLINE,
-    EXTRACT_TAGGED_PAGE,
-    EXTRACT_UNSOURCED_NAME,
+    EXTRACT_PLAIN_ANSWER,
+    EXTRACT_PLAIN_ASK,
+    EXTRACT_PLAIN_PAGE,
     LISTING_URL,
     CannedPage,
     SynthCollection,
@@ -288,7 +285,6 @@ from penny.tools.collection_instantiation import _LINE_ESCAPE
 from penny.tools.micro_context import (
     _USER_TEMPLATE,
     MICRO_CONTEXT_SYSTEM_PROMPT,
-    NOT_PRESENT_TAG,
     MicroContext,
     MicroContextResult,
     MicroExtractOutcome,
@@ -3796,7 +3792,7 @@ def test_a_case_states_the_behaviour_it_checks() -> None:
 def _extraction_observation(db: Database) -> SampleObservation:
     return _observe_extraction(
         db,
-        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=EXTRACT_TAGGED_ANSWER),
+        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=EXTRACT_PLAIN_ANSWER),
         name="draw-1 (the ask)",
         phrasing="the ask",
         arm=0,
@@ -3844,7 +3840,7 @@ def test_every_micro_context_observer_is_given_the_contract_it_drew_under(
         messages=[
             message.to_log_dict()
             for message in MicroContext._messages(
-                EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK, contract, user_template
+                EXTRACT_PLAIN_PAGE, EXTRACT_PLAIN_ASK, contract, user_template
             )
         ],
         agent_name=agent_name,
@@ -3854,47 +3850,18 @@ def test_every_micro_context_observer_is_given_the_contract_it_drew_under(
 
     assert observation.complete
     assert contract in observation.given
-    assert EXTRACT_TAGGED_PAGE in observation.given
-    assert EXTRACT_TAGGED_PAGE in observation.given.content
+    assert EXTRACT_PLAIN_PAGE in observation.given
+    assert EXTRACT_PLAIN_PAGE in observation.given.content
     assert contract not in observation.given.content
 
 
-def test_an_extraction_answer_carrying_the_contract_tags_invents_nothing(tmp_path) -> None:
-    """The claim that failed, end to end (#2078): the probe over an extraction sample's own
-    observation.
-
-    The drawn value marks each story's missing field with `NOT_PRESENT`, whose tail glues
-    across the line break into a name phrase the page does not carry — 2 of 15 correct draws
-    failed `nothing invented` on it.  With the contract in the haystack the claim holds, and
-    the paired guard asks for a real invention back: one byline swapped for a name nowhere in
-    the prompt is still reported, so this is not "a capitalised word is never an invention"."""
-    db = _make_db(tmp_path, "extraction-given")
-    _log_prompt(
-        db,
-        # ``_messages`` returns typed ``LlmMessage``s (#2563); ``_log_prompt`` stores
-        # exactly the dict shape production logs, so lower them here.
-        messages=[
-            message.to_log_dict()
-            for message in MicroContext._messages(EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK)
-        ],
-        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-    )
-
-    sourced = _extraction_observation(db)
-    assert NOT_PRESENT_TAG in sourced.given
-    assert unsourced_specifics(sourced.output_text, sourced.given) == []
-
-    invented = _observe_extraction(
-        db,
-        MicroContextResult(
-            outcome=MicroExtractOutcome.EXTRACTED,
-            value=EXTRACT_TAGGED_ANSWER.replace(EXTRACT_TAGGED_BYLINE, EXTRACT_UNSOURCED_NAME, 1),
-        ),
-        name="draw-2 (the ask)",
-        phrasing="the ask",
-        arm=0,
-    )
-    assert unsourced_specifics(invented.output_text, invented.given) == ["Casimir", "Oyelaran"]
+# A second test here, ``test_an_extraction_answer_carrying_the_contract_tags_invents_nothing``,
+# pinned the specific artifact of browse-extract's old tagged shape (#2078): a
+# ``NOT_PRESENT:``/``EXTRACTED:`` tag's own tail gluing, with no separating space, into the
+# next line's capitalised headline.  #2615 retired that tagged shape — browse-extract now
+# draws plain text, with nothing for a parser to glue — so the artifact cannot recur, and the
+# test retired with it.  The broader invariant it stood in for (the haystack is the WHOLE
+# prompt, contract included) is the one the test above still proves directly.
 
 
 # ── The idle answering cases' own fixtures (#2008) ───────────────────────────
