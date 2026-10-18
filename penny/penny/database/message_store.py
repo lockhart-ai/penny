@@ -234,7 +234,23 @@ def _in_send_order(message: MessageLog) -> tuple[datetime, int]:
 
 
 class MessageStore:
-    """Manages MessageLog, PromptLog, and CommandLog records."""
+    """Manages MessageLog, PromptLog, and CommandLog records.
+
+    Table of contents, in file order: live step pub/sub for a connected addon
+    (``subscribe_*``/``publish_*``) · message logging (``log_message``,
+    ``log_prompt``, ``log_command``) · message metadata
+    (``set_signal_timestamp``, ``set_external_id``) · embedding backfill
+    (``messages_without_embeddings``, ``set_embedding``) · message lookup
+    (``get_by_id``, ``get_by_ids``, ``find_by_external_id``,
+    ``find_outgoing_by_content``) · thread context (``get_thread_context``) ·
+    conversation queries (``get_conversation_leaves``, ``get_user_messages``,
+    ``get_messages_since``, the iOS history page via ``ios_history_page``/
+    ``ios_history_count``, ``get_unprocessed``, ``get_user_reactions``,
+    ``mark_processed``) · aggregate + run queries (``count``/
+    ``count_active_threads``, ``set_run_outcome``, the ``recent_*`` activity
+    reads, ``run_call_groups``, ``get_prompt_log_runs``, ``get_run``,
+    ``get_target_runs``, ``prompt_perf``, and the run/prompt serializers
+    behind them)."""
 
     def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
@@ -492,33 +508,45 @@ class MessageStore:
                 session.refresh(log)
                 logger.debug("Logged prompt exchange (model=%s)", model)
                 if self._prompt_logged_listeners and run_id:
-                    input_tokens, output_tokens = self._extract_token_usage(response_payload)
-                    self._publish_prompt_logged(
-                        {
-                            "id": log.id,
-                            "timestamp": log.timestamp.isoformat(),
-                            "model": model,
-                            "agent_name": agent_name or "",
-                            "prompt_type": prompt_type or "",
-                            "duration_ms": duration_ms or 0,
-                            "input_tokens": input_tokens,
-                            "output_tokens": output_tokens,
-                            "run_id": run_id,
-                            "run_target": run_target,
-                            "messages": messages,
-                            "response": response_payload,
-                            "thinking": thinking or "",
-                            "has_tools": tools is not None,
-                            "made_tool_call": self._made_tool_call(response_payload),
-                            "parent_run_id": parent_run_id,
-                            "parent_tool_call_id": parent_tool_call_id,
-                            "call_outcome": call_outcome,
-                            "call_error_class": call_error_class,
-                            "call_error_message": call_error_message,
-                        }
-                    )
+                    self._notify_prompt_logged(log, messages, response_payload)
         except Exception as e:
             logger.error("Failed to log prompt: %s", e)
+
+    def _notify_prompt_logged(
+        self, log: PromptLog, messages: list[dict], response_payload: dict
+    ) -> None:
+        """Publish a just-logged prompt to every subscriber.
+
+        ``log`` already carries everything ``log_prompt`` was handed, so every
+        scalar field is read straight off it; ``messages``/``response_payload``
+        are passed as the live Python objects the caller already built —
+        ``log`` stores them only as serialized JSON strings, and re-parsing
+        them here would be pointless work."""
+        input_tokens, output_tokens = self._extract_token_usage(response_payload)
+        self._publish_prompt_logged(
+            {
+                "id": log.id,
+                "timestamp": log.timestamp.isoformat(),
+                "model": log.model,
+                "agent_name": log.agent_name or "",
+                "prompt_type": log.prompt_type or "",
+                "duration_ms": log.duration_ms or 0,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "run_id": log.run_id,
+                "run_target": log.run_target,
+                "messages": messages,
+                "response": response_payload,
+                "thinking": log.thinking or "",
+                "has_tools": log.tools is not None,
+                "made_tool_call": self._made_tool_call(response_payload),
+                "parent_run_id": log.parent_run_id,
+                "parent_tool_call_id": log.parent_tool_call_id,
+                "call_outcome": log.call_outcome,
+                "call_error_class": log.call_error_class,
+                "call_error_message": log.call_error_message,
+            }
+        )
 
     def log_command(
         self,
@@ -825,44 +853,11 @@ class MessageStore:
         with self._session() as session:
             message_columns = inspect(MessageLog).local_table.c
             outbox_columns = inspect(IosOutboxItem).local_table.c
-            devices = list(session.exec(select(Device)).all())
-            if channel_types:
-                devices = [device for device in devices if device.channel_type in channel_types]
+            devices = self._ios_scoped_devices(session, channel_types)
             if not devices:
                 return [], False
-
-            device_ids = [device.id for device in devices if device.id is not None]
-            identifiers = [device.identifier for device in devices]
-            scope = or_(
-                message_columns.device_id.in_(device_ids),
-                message_columns.sender.in_(identifiers),
-                message_columns.recipient.in_(identifiers),
-            )
-            query = (
-                select(MessageLog, Device)
-                .join(Device, isouter=True)
-                .where(
-                    message_columns.direction.in_(
-                        [
-                            PennyConstants.MessageDirection.INCOMING,
-                            PennyConstants.MessageDirection.OUTGOING,
-                        ]
-                    ),
-                    message_columns.is_reaction.is_(False),
-                    scope,
-                )
-            )
-            if before is not None:
-                timestamp, message_id = before
-                query = query.where(
-                    or_(
-                        message_columns.timestamp < timestamp,
-                        and_(
-                            message_columns.timestamp == timestamp,
-                            message_columns.id < message_id,
-                        ),
-                    )
-                )
+            scope = self._ios_device_scope(message_columns, devices)
+            query = self._ios_history_query(message_columns, scope, before)
             rows = list(
                 session.exec(
                     query.order_by(
@@ -872,59 +867,135 @@ class MessageStore:
             )
             has_more = len(rows) > limit
             ordered = list(reversed(rows[:limit]))
-            message_ids = [message.id for message, _ in ordered if message.id is not None]
-            outbox_ids = []
-            for message, _ in ordered:
-                if message.external_id and message.external_id.isdecimal():
-                    outbox_ids.append(int(message.external_id))
-            outbox_rows = list(
-                session.exec(
-                    select(IosOutboxItem).where(
-                        or_(
-                            outbox_columns.message_log_id.in_(message_ids),
-                            outbox_columns.id.in_(outbox_ids),
-                        )
-                    )
-                ).all()
+            outbox_by_message_id, outbox_by_id = self._ios_outbox_maps(
+                session, outbox_columns, ordered
             )
-            outbox_by_message_id = {
-                row.message_log_id: row for row in outbox_rows if row.message_log_id is not None
-            }
-            outbox_by_id = {row.id: row for row in outbox_rows if row.id is not None}
-            resolved: list[tuple[MessageLog, Device | None, IosOutboxItem | None]] = []
-            for message, device in ordered:
-                if device is None:
-                    device = next(
-                        (
-                            candidate
-                            for candidate in devices
-                            if candidate.identifier in {message.sender, message.recipient}
-                        ),
-                        None,
-                    )
-                outbox = outbox_by_message_id.get(message.id)
-                if outbox is None and message.external_id and message.external_id.isdecimal():
-                    outbox = outbox_by_id.get(int(message.external_id))
-                resolved.append((message, device, outbox))
+            resolved = self._resolve_ios_rows(ordered, devices, outbox_by_message_id, outbox_by_id)
             return resolved, has_more
+
+    @staticmethod
+    def _ios_scoped_devices(session: Session, channel_types: list[str] | None) -> list[Device]:
+        """Devices eligible for the iOS history surface, narrowed to the given
+        channel types when any are named."""
+        devices = list(session.exec(select(Device)).all())
+        if channel_types:
+            devices = [device for device in devices if device.channel_type in channel_types]
+        return devices
+
+    @staticmethod
+    def _ios_device_scope(message_columns: Any, devices: list[Device]) -> Any:
+        """The WHERE clause scoping messagelog rows to the given devices, by
+        ``device_id`` or by sender/recipient identifier (the compatibility
+        fallback for older rows with no populated ``device_id``)."""
+        device_ids = [device.id for device in devices if device.id is not None]
+        identifiers = [device.identifier for device in devices]
+        return or_(
+            message_columns.device_id.in_(device_ids),
+            message_columns.sender.in_(identifiers),
+            message_columns.recipient.in_(identifiers),
+        )
+
+    @staticmethod
+    def _ios_history_query(
+        message_columns: Any, scope: Any, before: tuple[datetime, int] | None
+    ) -> Any:
+        """The base newest-first history query for the given scope, optionally
+        bounded to strictly before a ``(timestamp, id)`` page boundary.  The
+        caller applies its own ordering + ``limit(limit + 1)`` on top (the
+        page-size budget), so ordering/paging stay colocated at the call site."""
+        query = (
+            select(MessageLog, Device)
+            .join(Device, isouter=True)
+            .where(
+                message_columns.direction.in_(
+                    [
+                        PennyConstants.MessageDirection.INCOMING,
+                        PennyConstants.MessageDirection.OUTGOING,
+                    ]
+                ),
+                message_columns.is_reaction.is_(False),
+                scope,
+            )
+        )
+        if before is not None:
+            timestamp, message_id = before
+            query = query.where(
+                or_(
+                    message_columns.timestamp < timestamp,
+                    and_(
+                        message_columns.timestamp == timestamp,
+                        message_columns.id < message_id,
+                    ),
+                )
+            )
+        return query
+
+    @staticmethod
+    def _ios_outbox_maps(
+        session: Session,
+        outbox_columns: Any,
+        ordered: list[tuple[MessageLog, Device | None]],
+    ) -> tuple[dict[int, IosOutboxItem], dict[int, IosOutboxItem]]:
+        """Outbox rows matching the page's messages, keyed both by
+        ``message_log_id`` and by ``id`` (for legacy rows whose ``external_id``
+        is itself an outbox id)."""
+        message_ids = [message.id for message, _ in ordered if message.id is not None]
+        outbox_ids = [
+            int(message.external_id)
+            for message, _ in ordered
+            if message.external_id and message.external_id.isdecimal()
+        ]
+        outbox_rows = list(
+            session.exec(
+                select(IosOutboxItem).where(
+                    or_(
+                        outbox_columns.message_log_id.in_(message_ids),
+                        outbox_columns.id.in_(outbox_ids),
+                    )
+                )
+            ).all()
+        )
+        outbox_by_message_id = {
+            row.message_log_id: row for row in outbox_rows if row.message_log_id is not None
+        }
+        outbox_by_id = {row.id: row for row in outbox_rows if row.id is not None}
+        return outbox_by_message_id, outbox_by_id
+
+    @staticmethod
+    def _resolve_ios_rows(
+        ordered: list[tuple[MessageLog, Device | None]],
+        devices: list[Device],
+        outbox_by_message_id: dict[int, IosOutboxItem],
+        outbox_by_id: dict[int, IosOutboxItem],
+    ) -> list[tuple[MessageLog, Device | None, IosOutboxItem | None]]:
+        """Pair each page message with its device (falling back to an
+        identifier match for legacy rows with no ``device_id``) and its
+        outbox row, if any."""
+        resolved: list[tuple[MessageLog, Device | None, IosOutboxItem | None]] = []
+        for message, device in ordered:
+            if device is None:
+                device = next(
+                    (
+                        candidate
+                        for candidate in devices
+                        if candidate.identifier in {message.sender, message.recipient}
+                    ),
+                    None,
+                )
+            outbox = outbox_by_message_id.get(message.id)
+            if outbox is None and message.external_id and message.external_id.isdecimal():
+                outbox = outbox_by_id.get(int(message.external_id))
+            resolved.append((message, device, outbox))
+        return resolved
 
     def ios_history_count(self, *, channel_types: list[str] | None) -> int:
         """Count eligible history rows once at the start of an iOS sync."""
         with self._session() as session:
             message_columns = inspect(MessageLog).local_table.c
-            devices = list(session.exec(select(Device)).all())
-            if channel_types:
-                devices = [device for device in devices if device.channel_type in channel_types]
+            devices = self._ios_scoped_devices(session, channel_types)
             if not devices:
                 return 0
-
-            device_ids = [device.id for device in devices if device.id is not None]
-            identifiers = [device.identifier for device in devices]
-            scope = or_(
-                message_columns.device_id.in_(device_ids),
-                message_columns.sender.in_(identifiers),
-                message_columns.recipient.in_(identifiers),
-            )
+            scope = self._ios_device_scope(message_columns, devices)
             return int(
                 session.exec(
                     select(func.count())
@@ -1170,32 +1241,48 @@ class MessageStore:
             return []
         finished = func.max(PromptLog.timestamp)
         with self._session() as session:
-            query = (
-                select(PromptLog.run_id, finished.label("finished"))
-                .where(col(PromptLog.run_id).isnot(None))
-                .group_by(PromptLog.run_id)
-            )
-            if target == PennyConstants.CHAT_AGENT_NAME:
-                query = query.where(PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME)
-            else:
-                query = query.where(
-                    PromptLog.run_target == target,
-                    col(PromptLog.run_outcome).isnot(None),
-                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
-                )
-            if cursor is not None:
-                rows = session.exec(
-                    query.having(finished > cursor).order_by(finished.asc()).limit(limit)
-                ).all()
-            else:
-                rows = list(
-                    reversed(session.exec(query.order_by(finished.desc()).limit(limit)).all())
-                )
+            query = self._run_call_groups_query(target, finished)
+            rows = self._run_id_window(session, query, finished, cursor, limit)
             run_ids = [run_id for run_id, _ in rows if run_id is not None]
             if not run_ids:
                 return []
             grouped = self._group_runs(session, run_ids)
         return [grouped[run_id] for run_id in run_ids if run_id in grouped]
+
+    @staticmethod
+    def _run_call_groups_query(target: str, finished: Any) -> Any:
+        """The base run_id-grouped query for ``run_call_groups``: the chat
+        agent's distinct runs, or one collector's completed, non-cancelled
+        runs."""
+        query = (
+            select(PromptLog.run_id, finished.label("finished"))
+            .where(col(PromptLog.run_id).isnot(None))
+            .group_by(PromptLog.run_id)
+        )
+        if target == PennyConstants.CHAT_AGENT_NAME:
+            return query.where(PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME)
+        return query.where(
+            PromptLog.run_target == target,
+            col(PromptLog.run_outcome).isnot(None),
+            PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+        )
+
+    @staticmethod
+    def _run_id_window(
+        session: Session,
+        query: Any,
+        finished: Any,
+        cursor: datetime | None,
+        limit: int,
+    ) -> list[Any]:
+        """Cursor semantics mirroring ``Log.read_batch``: no cursor returns the
+        most recent ``limit`` rows (oldest-first); a cursor returns the next
+        ``limit`` since it."""
+        if cursor is not None:
+            return session.exec(
+                query.having(finished > cursor).order_by(finished.asc()).limit(limit)
+            ).all()
+        return list(reversed(session.exec(query.order_by(finished.desc()).limit(limit)).all()))
 
     def get_run_prompts(self, run_id: str) -> list[PromptLog]:
         """Every prompt of one run, ascending time order — the raw material the
@@ -1246,25 +1333,36 @@ class MessageStore:
         if limit <= 0:
             return []
         with self._session() as session:
-            rows = session.exec(
-                select(
-                    PromptLog.run_id,
-                    PromptLog.run_target,
-                    PromptLog.run_outcome,
-                    PromptLog.timestamp,
-                )
-                .where(
-                    col(PromptLog.run_outcome).isnot(None),
-                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
-                    col(PromptLog.run_target).isnot(None),
-                )
-                # ``id`` breaks same-timestamp ties deterministically so the
-                # activity render is stable across runs.
-                .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
-                .limit(limit)
-            ).all()
+            rows = session.exec(self._recent_collector_run_rows_query(limit)).all()
             run_ids = [run_id for run_id, _, _, _ in rows if run_id is not None]
             grouped = self._group_runs(session, run_ids) if run_ids else {}
+        return self._run_activities(rows, grouped)
+
+    @staticmethod
+    def _recent_collector_run_rows_query(limit: int) -> Any:
+        """The newest-first completed-collector-run rows (run_id, target,
+        outcome, finished_at), ``id`` breaking same-timestamp ties
+        deterministically so the activity render is stable across runs."""
+        return (
+            select(
+                PromptLog.run_id,
+                PromptLog.run_target,
+                PromptLog.run_outcome,
+                PromptLog.timestamp,
+            )
+            .where(
+                col(PromptLog.run_outcome).isnot(None),
+                PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                col(PromptLog.run_target).isnot(None),
+            )
+            .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
+            .limit(limit)
+        )
+
+    @staticmethod
+    def _run_activities(rows: Any, grouped: dict[str, list[PromptLog]]) -> list[RunActivity]:
+        """Rows → ``RunActivity``, with each run's tool-call rollup count read
+        off its grouped prompts."""
         return [
             RunActivity(
                 run_id=run_id,
@@ -1429,6 +1527,16 @@ class MessageStore:
         ``parent_run_id``/``parent_tool_call_id``, so the addon builds the
         whole nesting tree itself, to any depth, from those ids alone."""
         top_level_ids = set(run_ids)
+        all_draws, parent_of = MessageStore._walk_child_draw_levels(session, top_level_ids)
+        return MessageStore._attribute_to_top_level(all_draws, parent_of, top_level_ids)
+
+    @staticmethod
+    def _walk_child_draw_levels(
+        session: Session, top_level_ids: set[str]
+    ) -> tuple[list[PromptLog], dict[str, str]]:
+        """Walk ``parent_run_id`` outward from ``top_level_ids`` one level at a
+        time (capped at ``_CHILD_DRAW_MAX_DEPTH``), collecting every descendant
+        draw plus each run_id's own immediate parent_run_id."""
         all_draws: list[PromptLog] = []
         parent_of: dict[str, str] = {}
         frontier = top_level_ids
@@ -1451,7 +1559,14 @@ class MessageStore:
                     next_frontier.add(draw.run_id)
                 parent_of[draw.run_id] = draw.parent_run_id
             frontier = next_frontier
+        return all_draws, parent_of
 
+    @staticmethod
+    def _attribute_to_top_level(
+        all_draws: list[PromptLog], parent_of: dict[str, str], top_level_ids: set[str]
+    ) -> dict[str, list[PromptLog]]:
+        """Group every draw under the top-level run it ultimately descends
+        from (via ``_top_level_origin``), each group in ascending time order."""
         grouped: dict[str, list[PromptLog]] = {}
         for draw in all_draws:
             origin = MessageStore._top_level_origin(draw.parent_run_id, parent_of, top_level_ids)
@@ -1699,24 +1814,8 @@ class MessageStore:
         single-argument AGGREGATE ``MAX()`` — picks the larger of a run's own
         latest timestamp and its latest child draw's, coalescing a run with no
         draws (no match on the outer join) back to its own latest."""
-        own = select(
-            col(PromptLog.run_id).label("run_id"),
-            func.max(PromptLog.timestamp).label("own_max"),
-        ).where(col(PromptLog.run_id).isnot(None), col(PromptLog.parent_run_id).is_(None))
-        if agent_name:
-            own = own.where(PromptLog.agent_name == agent_name)
-        own_activity = own.group_by(PromptLog.run_id).subquery()
-
-        draw_activity = (
-            select(
-                col(PromptLog.parent_run_id).label("run_id"),
-                func.max(PromptLog.timestamp).label("draw_max"),
-            )
-            .where(col(PromptLog.parent_run_id).isnot(None))
-            .group_by(PromptLog.parent_run_id)
-            .subquery()
-        )
-
+        own_activity = MessageStore._own_activity_subquery(agent_name)
+        draw_activity = MessageStore._draw_activity_subquery()
         latest_activity = func.max(
             own_activity.c.own_max,
             func.coalesce(draw_activity.c.draw_max, own_activity.c.own_max),
@@ -1725,6 +1824,32 @@ class MessageStore:
             select(own_activity.c.run_id)
             .outerjoin(draw_activity, draw_activity.c.run_id == own_activity.c.run_id)
             .order_by(latest_activity.desc())
+        )
+
+    @staticmethod
+    def _own_activity_subquery(agent_name: str | None) -> Any:
+        """Each top-level run's own latest prompt timestamp, optionally
+        narrowed to one agent."""
+        own = select(
+            col(PromptLog.run_id).label("run_id"),
+            func.max(PromptLog.timestamp).label("own_max"),
+        ).where(col(PromptLog.run_id).isnot(None), col(PromptLog.parent_run_id).is_(None))
+        if agent_name:
+            own = own.where(PromptLog.agent_name == agent_name)
+        return own.group_by(PromptLog.run_id).subquery()
+
+    @staticmethod
+    def _draw_activity_subquery() -> Any:
+        """Each run's latest child-draw timestamp (#2434), keyed by the
+        parent run_id the draw was made on behalf of."""
+        return (
+            select(
+                col(PromptLog.parent_run_id).label("run_id"),
+                func.max(PromptLog.timestamp).label("draw_max"),
+            )
+            .where(col(PromptLog.parent_run_id).isnot(None))
+            .group_by(PromptLog.parent_run_id)
+            .subquery()
         )
 
     @staticmethod
@@ -1936,23 +2061,10 @@ class MessageStore:
         all_rows = [*prompts, *(child_draws or [])]
         started_at, ended_at = MessageStore._run_window(all_rows)
         wall_duration_ms = int((ended_at - started_at).total_seconds() * 1000)
-        total_input_tokens = 0
-        total_output_tokens = 0
-        serialized_prompts = []
-        for p in prompts:
-            record = MessageStore._serialize_prompt_record(p)
-            total_input_tokens += record["input_tokens"]
-            total_output_tokens += record["output_tokens"]
-            serialized_prompts.append(record)
-
-        # Run outcome is set on the last prompt that has one
-        run_outcome: str | None = None
-        run_reason: str | None = None
-        for p in reversed(prompts):
-            if p.run_outcome is not None or p.run_reason:
-                run_outcome = p.run_outcome
-                run_reason = p.run_reason
-                break
+        serialized_prompts, total_input_tokens, total_output_tokens = (
+            MessageStore._serialize_run_prompts(prompts)
+        )
+        run_outcome, run_reason = MessageStore._run_outcome_and_reason(prompts)
 
         # The bound collection is fixed for the whole cycle and stamped on every
         # prompt at write time, so all prompts in a run carry the same run_target
@@ -1988,3 +2100,27 @@ class MessageStore:
                 MessageStore._serialize_prompt_record(draw) for draw in (child_draws or [])
             ],
         }
+
+    @staticmethod
+    def _serialize_run_prompts(prompts: list[PromptLog]) -> tuple[list[dict], int, int]:
+        """Each prompt serialized (``_serialize_prompt_record``), plus this
+        run's own summed input/output tokens — excludes child draws, the same
+        scope as ``total_duration_ms`` (#2438)."""
+        serialized_prompts = []
+        total_input_tokens = 0
+        total_output_tokens = 0
+        for p in prompts:
+            record = MessageStore._serialize_prompt_record(p)
+            total_input_tokens += record["input_tokens"]
+            total_output_tokens += record["output_tokens"]
+            serialized_prompts.append(record)
+        return serialized_prompts, total_input_tokens, total_output_tokens
+
+    @staticmethod
+    def _run_outcome_and_reason(prompts: list[PromptLog]) -> tuple[str | None, str | None]:
+        """The run's outcome + reason, read off the last prompt that carries
+        one (every run stamps exactly one row, via ``set_run_outcome``)."""
+        for p in reversed(prompts):
+            if p.run_outcome is not None or p.run_reason:
+                return p.run_outcome, p.run_reason
+        return None, None
