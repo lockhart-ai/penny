@@ -1307,10 +1307,10 @@ async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_o
     "top 3 headlines" question over this SAME page, as the same-run control this case's cost
     is read as a ratio against.
 
-    **The STORE category is empty for this case, and that is the correct report.**  A
-    micro-context is one call that returns a typed result — it moves no machine and writes
-    nothing to any store — so there is no store claim to make.  The empty section says the
-    shape has nothing to store, not that nobody ran the checklist.
+    **The claims read the typed result, not a store (#2496).**  A micro-context is one call
+    that returns a typed result — it moves no machine and writes nothing to any store — so
+    its STORE-category claims are over the draw's recorded output, and nothing here reads a
+    collection.
     """
     cohort = await extractor_eval(
         case_id=_TOP_HEADLINES_PAST_A_RUNON_LABEL.case_id,
@@ -1326,14 +1326,12 @@ async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_o
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — which of the closed outcomes the draw committed to
+    # STORE — which of the closed outcomes the draw committed to
     cohort.claim(
         "state: the draw read the page rather than reporting it empty",
         _landed_on(_TOP_HEADLINES_PAST_A_RUNON_LABEL),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the docstring.
 
     # PROVENANCE — each of the top three headlines and its link arrived, and nothing else did
     cohort.claim(
@@ -1430,10 +1428,10 @@ async def test_the_plain_ask_over_the_same_page_costs_the_ordinary_rate(
     tokens against ~6,000 for the three-part ask over the same page; this case is read beside
     its sibling, never alone.
 
-    **The STORE category is empty for this case, and that is the correct report.**  A
-    micro-context is one call that returns a typed result — it moves no machine and writes
-    nothing to any store — so there is no store claim to make.  The empty section says the
-    shape has nothing to store, not that nobody ran the checklist.
+    **The claims read the typed result, not a store (#2496).**  A micro-context is one call
+    that returns a typed result — it moves no machine and writes nothing to any store — so
+    its STORE-category claims are over the draw's recorded output, and nothing here reads a
+    collection.
     """
     cohort = await extractor_eval(
         case_id=_TOP_HEADLINES_BARE_ASK.case_id,
@@ -1449,14 +1447,12 @@ async def test_the_plain_ask_over_the_same_page_costs_the_ordinary_rate(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — which of the closed outcomes the draw committed to
+    # STORE — which of the closed outcomes the draw committed to
     cohort.claim(
         "state: the draw read the page rather than reporting it empty",
         _landed_on(_TOP_HEADLINES_BARE_ASK),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the docstring.
 
     # PROVENANCE — each of the top three headlines arrived, and nothing else did
     cohort.claim(

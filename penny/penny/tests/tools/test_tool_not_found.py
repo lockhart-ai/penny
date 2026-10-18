@@ -393,7 +393,7 @@ class TestToolNotFoundSuggestion:
         assert result.success is False
         assert result.message == (
             "Did you mean 'done'? "
-            "done: Call this — with NO arguments — when the cycle is finished. "
+            "done: Call this when the cycle is finished, with notify set to true or false. "
             "Available tools: done. "
             "You must ONLY use the tools listed above."
         )
