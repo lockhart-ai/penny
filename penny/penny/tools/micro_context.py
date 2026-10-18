@@ -523,6 +523,7 @@ class MicroContext:
             agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
             prompt_type=PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
+            thinking_enabled=False,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -542,6 +543,7 @@ class MicroContext:
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
         reading_note: str = "",
+        thinking_enabled: bool = True,
     ) -> ParsedDraw | DrawFailure:
         """The ONE validate step every customer rides (#1814): a poison-screened
         draw, read against its DECLARED ``shape`` and checked against ``accepts``
@@ -577,6 +579,7 @@ class MicroContext:
                 prompt_type=prompt_type,
                 user_template=user_template,
                 reading_note=reading_note,
+                thinking_enabled=thinking_enabled,
             )
             if draw is None:
                 return DrawFailure.POISON
@@ -605,6 +608,7 @@ class MicroContext:
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
         reading_note: str = "",
+        thinking_enabled: bool = True,
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
         is unusable.  Mirrors the agent-loop reroll guard — discard poison, never
@@ -650,6 +654,7 @@ class MicroContext:
                 call_link=draw_link,
                 run_target=run_target,
                 token_budget=token_budget,
+                thinking_enabled=thinking_enabled,
             )
             if response.finish_reason == PennyConstants.FINISH_REASON_LENGTH and not retried_cut:
                 retried_cut = True
