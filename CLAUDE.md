@@ -123,6 +123,11 @@ browser/                        — Firefox browser extension
     protocol.ts                 — Typed WebSocket + runtime messaging protocol
     background/                 — WebSocket owner, tool dispatch, tab tracking
     sidebar/                    — Chat UI, page context toggle
+    page/                       — Full-page dashboard, one module + stylesheet per
+                                  tab (#2565): page.ts wires tabs/messages/connection;
+                                  prompts, collectors (memories), domains, config,
+                                  shared in src/; base/prompts/domains/config/
+                                  collectors .css in page/, linked in cascade order
     content/                    — Page extraction (esbuild bundled)
       extract_text.ts           — The injected script: readiness, XML, preview image, PageData
       page_text.ts              — Reading a page: the ARTICLE body Defuddle finds, or the

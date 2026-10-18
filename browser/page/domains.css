@@ -1,0 +1,301 @@
+/* Shared settings-panel container styles + the Domains tab.  Split from page.css (#2565) — rules moved unchanged. */
+/* --- Settings panels (shared container style) --- */
+
+
+.prefs-list,
+.domains-list,
+#config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pref-container {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.pref-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.pref-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.pref-expandable {
+  cursor: pointer;
+}
+
+.pref-toggle {
+  color: var(--text-muted);
+  font-size: 10px;
+  width: 16px;
+  text-align: center;
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.pref-container.expanded .pref-toggle {
+  transform: rotate(90deg);
+}
+
+.pref-name {
+  flex: 1;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pref-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.pref-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-width: 90px;
+}
+
+.pref-meta span:last-child {
+  min-width: 80px;
+}
+
+.pref-meta i {
+  width: 16px;
+  text-align: center;
+  margin-right: 4px;
+}
+
+.pref-delete {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.pref-delete:hover {
+  color: var(--status-err-text);
+  background: var(--status-err-bg);
+}
+
+.prefs-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.pref-detail {
+  display: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 16px 12px 40px;
+}
+
+.pref-container.expanded .pref-detail {
+  display: block;
+}
+
+.pref-thoughts-loading,
+.pref-thoughts-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.pref-thought-item {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pref-thought-item:last-child {
+  border-bottom: none;
+}
+
+.pref-thought-image {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.pref-thought-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.pref-thought-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-right: 8px;
+}
+
+.pref-thought-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.pref-thought-snippet {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.prefs-add {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 12px;
+}
+
+.prefs-add input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--bg-tertiary);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.prefs-add input:focus {
+  border-color: var(--accent);
+}
+
+.prefs-add button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.prefs-add button:hover {
+  background: var(--accent-hover);
+}
+
+/* --- Domains panel --- */
+
+.domains-list {
+  padding: 4px 0;
+}
+
+.domain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+.domain-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.domain-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.domain-status {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.domain-status.allowed {
+  background: var(--status-ok-bg);
+  color: var(--status-ok-text);
+}
+
+.domain-status.blocked {
+  background: var(--status-err-bg);
+  color: var(--status-err-text);
+}
+
+.domain-status:hover {
+  opacity: 0.8;
+}
+
+.domains-add {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 12px;
+}
+
+.domains-add input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--bg-tertiary);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  min-width: 0;
+}
+
+.domains-add input:focus {
+  border-color: var(--accent);
+}
+
+.domains-add select {
+  padding: 8px 6px;
+  border: 1px solid var(--bg-tertiary);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.domains-add button {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.domains-add button:hover {
+  background: var(--accent-hover);
+}
+

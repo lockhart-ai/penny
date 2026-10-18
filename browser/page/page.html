@@ -5,7 +5,13 @@
   <title>Penny</title>
   <link rel="icon" href="../icons/icon-48.png">
   <link rel="stylesheet" href="../node_modules/@fortawesome/fontawesome-free/css/all.min.css">
-  <link rel="stylesheet" href="page.css">
+  <!-- Split from page.css (#2565): the link order below reproduces the old
+       file's rule order exactly, so the cascade is unchanged. -->
+  <link rel="stylesheet" href="base.css">
+  <link rel="stylesheet" href="prompts.css">
+  <link rel="stylesheet" href="domains.css">
+  <link rel="stylesheet" href="config.css">
+  <link rel="stylesheet" href="collectors.css">
   <script type="module" src="../dist/page/page.js"></script>
 </head>
 <body>

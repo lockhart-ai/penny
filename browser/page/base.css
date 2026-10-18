@@ -1,0 +1,416 @@
+/* Shared page styles: theme, base, top-level chrome, and the legacy card/modal blocks.
+ * Split from page.css (#2565) — rules moved unchanged, in the file order that
+ * preserves today's cascade.  Linked first. */
+/* --- Theme variables --- */
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f0f0f5;
+  --bg-tertiary: #e4e4ec;
+  --text-primary: #1a1a2e;
+  --text-secondary: #555;
+  --text-muted: #888;
+  --border: #d0d0dd;
+  --accent: #7c5cbf;
+  --accent-hover: #6a4bab;
+  --accent-text: #ffffff;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --card-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.12);
+  --status-ok-bg: #d4edda;
+  --status-ok-text: #28a745;
+  --status-err-bg: #f8d7da;
+  --status-err-text: #dc3545;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #2a2a4a;
+    --bg-tertiary: #3a3a6a;
+    --text-primary: #e0e0e0;
+    --text-secondary: #aaa;
+    --text-muted: #888;
+    --border: #2a2a4a;
+    --accent: #c0a0ff;
+    --accent-hover: #d0b0ff;
+    --accent-text: #1a1a2e;
+    --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --card-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.5);
+    --status-ok-bg: #1a3a1a;
+    --status-ok-text: #6bff6b;
+    --status-err-bg: #3a2020;
+    --status-err-text: #ff6b6b;
+  }
+}
+
+/* --- Base --- */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+#header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#header-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* --- Top-level tab bar --- */
+
+#tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.tab {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab.active {
+  background: var(--accent);
+  color: var(--bg-primary);
+  border-color: var(--accent);
+}
+
+/* --- Panel loading --- */
+
+#loading,
+.panel-loading {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 48px 0;
+}
+
+/* --- Sub-tabs (thoughts new/archive, prompts agent filter) --- */
+
+#thought-tabs,
+#agent-tabs,
+#memory-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.thought-tab,
+.sub-tab {
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.thought-tab:hover,
+.sub-tab:hover {
+  color: var(--text-primary);
+}
+
+.thought-tab.active,
+.sub-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* --- Load more button --- */
+
+.load-more-btn {
+  padding: 8px 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.load-more-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+#thoughts-load-more,
+#prompts-load-more {
+  text-align: center;
+  padding: 24px 0;
+}
+
+/* Per-section "load more" inside a memory's detail view. */
+.memory-load-more {
+  text-align: center;
+  padding: 16px 0;
+}
+
+/* --- Card grid --- */
+
+#grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  position: relative;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  transition: box-shadow 0.2s, transform 0.2s;
+  margin-bottom: 14px;
+}
+
+.card:hover {
+  box-shadow: var(--card-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.card-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+  border-radius: 12px 12px 0 0;
+}
+
+.card-body {
+  padding: 16px;
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  line-height: 1.3;
+}
+
+.card-content {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.card-content a,
+#modal-text a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.card-content a:hover,
+#modal-text a:hover {
+  color: var(--accent-hover);
+}
+
+.card-content code,
+#modal-text code {
+  background: var(--bg-tertiary);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.card-actions {
+  position: absolute;
+  bottom: -14px;
+  right: -4px;
+  display: flex;
+  gap: 4px;
+  z-index: 1;
+}
+
+.reaction-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  transition: transform 0.15s, color 0.15s;
+}
+
+.reaction-btn:hover {
+  transform: scale(1.2);
+}
+
+.reaction-btn.thumbs-up:hover {
+  color: #28a745;
+}
+
+.reaction-btn.thumbs-down:hover {
+  color: #dc3545;
+}
+
+.card-image-placeholder {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  color: var(--text-muted);
+  border-radius: 12px 12px 0 0;
+}
+
+/* --- Modal --- */
+
+#modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+#modal-wrapper {
+  position: relative;
+  max-width: 640px;
+  width: 90%;
+}
+
+#modal-content {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+#modal-actions {
+  position: absolute;
+  bottom: -14px;
+  right: -4px;
+  display: flex;
+  gap: 4px;
+  z-index: 101;
+}
+
+#modal-image {
+  width: 100%;
+  max-height: 300px;
+  object-fit: cover;
+  display: block;
+  border-radius: 12px 12px 0 0;
+}
+
+#modal-image[src=""],
+#modal-image:not([src]) {
+  display: none;
+}
+
+#modal-body {
+  padding: 20px 24px 24px;
+}
+
+#modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+#modal-date {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+#modal-text {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+#modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.4);
+  color: white;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#modal-close:hover {
+  background: rgba(0, 0, 0, 0.6);
+}
+
