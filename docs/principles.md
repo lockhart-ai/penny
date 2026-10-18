@@ -27,6 +27,12 @@ Quotes are the code owner's own words.
   - background cognition at near-zero cost.
 
   A small model is the price. The discipline in this file is how that price gets paid.
+- **Fast enough to chat with smoothly.** *"penny needs to be fast enough to chat with
+  smoothly. spending 5m on thinking loops is a non starter, across the board."* Latency is
+  judged on the hardware Penny runs on, where a local model reads and writes several times
+  slower than an eval provider: every thousand thinking tokens is tens of seconds of the
+  user waiting. A step that isn't reasoning, such as reading a page, runs without thinking,
+  and a token budget only bounds the waste; it never makes minutes acceptable.
 - **Single user, security first.** One person, many devices, one conversation. Permissions
   start at zero, and untrusted content never shares a context with tools and sensitive data.
 - **The whole design in one sentence:** *"the model chooses the next tool stochastically
