@@ -1395,22 +1395,6 @@ class Agent:
             ),
         ]
 
-    def _run_messages(self, run_id: str) -> list[LlmMessage]:
-        """This run's own messages, reconstructed from its promptlog rows: the last
-        call's request plus the trailing turns no later call carried (#1778) — what
-        the turn actually saw and did, for a draw made after the run has already
-        returned (e.g. ``ChatAgent._enforce_learn_terminal``).  Empty when the run id
-        is unknown or made no model call.
-
-        The store itself still deals in dicts (out of this ticket's scope, #2603) —
-        ``LlmMessage.from_dict`` is the one conversion back, at this boundary."""
-        prompts = self.db.messages.get_run_prompts(run_id)
-        if not prompts:
-            return []
-        last = prompts[-1]
-        raw = [*last.get_messages(), *last.get_trailing_messages()]
-        return [LlmMessage.from_dict(message) for message in raw]
-
     async def _narrate_or_account(
         self,
         messages: list[LlmMessage],

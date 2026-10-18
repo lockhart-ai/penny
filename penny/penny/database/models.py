@@ -77,9 +77,6 @@ class PromptLog(SQLModel, table=True):
     # code, not nested inside a tool, so they set ``parent_run_id`` alone.
     parent_tool_call_id: str | None = None
 
-    def get_messages(self) -> list[dict]:
-        return json.loads(self.messages)
-
     def get_trailing_messages(self) -> list[dict]:
         """The trailing turns as message dicts — empty when the run round-tripped
         every result (the overwhelmingly common case, and every pre-#1778 row)."""
