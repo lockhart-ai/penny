@@ -1177,12 +1177,9 @@ _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '
 
 
 def _is_name_variant(asked: str, existing: str) -> bool:
-    """Near-certain 'same collection, different spelling' (#2270: the one shared
-    predicate, over the one pair of thresholds — ``is_name_variant`` lives in the
-    dependency-light ``similarity`` package precisely so this call and skill
-    distillation's resolved-write check (``skill_extraction.py``) read the SAME
-    rule off the SAME two constants, and cannot drift into two copies answering
-    the near-match question differently)."""
+    """Near-certain 'same collection, different spelling' (#2270) — ``is_name_variant``
+    lives in the dependency-light ``similarity`` package, over the one pair of
+    thresholds, so the near-match rule is declared once rather than copied."""
     return is_name_variant(
         asked,
         existing,

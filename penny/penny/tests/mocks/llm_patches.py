@@ -11,7 +11,6 @@ import pytest
 
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
-from penny.tools.micro_context import STATE_CLASSIFIER_SYSTEM_PROMPT
 
 # Dimension of the deterministic default embedding.  The embedding model is a
 # required prerequisite, so every test constructs an embedding client and the
@@ -68,7 +67,6 @@ class MockLlmClient:
         # the handler function, so a typo is a signature error rather than a
         # silently-ignored flag.
         self._handler_answers_micro_contexts = True
-        self._handler_answers_state_classifier = False
         self._request_count = 0
         self._embed_handler: Callable[[str, str | list[str]], list[list[float]]] | None = None
         self.embed_requests: list[dict] = []
@@ -81,7 +79,6 @@ class MockLlmClient:
         handler: Callable[[dict, int], LlmResponse],
         *,
         answers_micro_contexts: bool = True,
-        answers_state_classifier: bool = False,
     ) -> None:
         """Set a custom response handler.
 
@@ -89,12 +86,9 @@ class MockLlmClient:
             handler: Function that takes (request_data, request_count) and returns LlmResponse
             answers_micro_contexts: the handler serves browse micro-context calls itself
                 (the default — a handler that wants the built-in intercept passes False)
-            answers_state_classifier: the handler serves state-classifier calls itself
-                (opt-in — nearly every test wants the intercept; see ``chat``)
         """
         self._response_handler = handler
         self._handler_answers_micro_contexts = answers_micro_contexts
-        self._handler_answers_state_classifier = answers_state_classifier
 
     def set_default_flow(
         self, final_response: str = "test response", search_query: str = "test query"
@@ -165,20 +159,6 @@ class MockLlmClient:
                 (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
             )
             return self._make_text_response(request_data, f"EXTRACTED: {user_content}")
-        # The conversation state classifier (#1706) — micro-context customer #3,
-        # served by the same intercept and for the same reason: it is a REAL call
-        # in front of every incoming turn now, so a flow test that says nothing
-        # about the machine must not have its canned responses eaten by it (and
-        # its per-call-count assertions must not shift).  Answers ``idle``, the
-        # no-op move, so an unrelated flow test's machine stays where it was.
-        #
-        # Opt-IN rather than opt-out (the reverse of the browse intercept above):
-        # nearly every test exercises a flow that says nothing about the machine,
-        # so the intercept is the default and a handler that actually drives the
-        # classifier passes ``answers_state_classifier=True``.
-        if not self._handler_answers_state_classifier and system == STATE_CLASSIFIER_SYSTEM_PROMPT:
-            self.micro_requests.append(request_data)
-            return self._make_text_response(request_data, "STATE: idle")
         self.requests.append(request_data)
         self._request_count += 1
 

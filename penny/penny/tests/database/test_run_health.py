@@ -18,7 +18,6 @@ from penny.database.memory import (
     LoggedToolCall,
     classify_run,
     half_formed_send_reason,
-    project_run,
     render_run_calls,
     render_run_record,
 )
@@ -740,32 +739,6 @@ penny: doing great!"""
     )
 
 
-def test_project_run_origin_message_bare_and_fused_forms():
-    """The origin message a run projects for skill authoring (#1661).  A REAL chat
-    row is the BARE utterance (no ``---`` prefix), so with no separator the whole
-    turn IS the origin — the prior split-only code returned ``""`` and killed the
-    skill's description/intent derivation.  A turn that DOES carry a fused
-    Live-context block still has it stripped back off (unchanged behavior)."""
-    utterance = "save the ridge elevation"
-    bare = _prompt(
-        [_call("browse", {"queries": ["x"]})],
-        run_id="bare",
-        target=None,
-        messages=json.dumps([{"role": "user", "content": utterance}]),
-    )
-    assert project_run([bare]).origin_message == utterance
-
-    fused = _prompt(
-        [_call("browse", {"queries": ["x"]})],
-        run_id="fused",
-        target=None,
-        messages=json.dumps(
-            [{"role": "user", "content": f"live ctx{PennyConstants.SECTION_SEPARATOR}{utterance}"}]
-        ),
-    )
-    assert project_run([fused]).origin_message == utterance
-
-
 def _terminal_write_run(*, trailing: str | None) -> list[PromptLog]:
     """A run that ended the instant its ``collection_write`` came back failed — the
     shape every gap case shares (``max_steps`` on a tool step, a write-gate STOP, a
@@ -830,12 +803,6 @@ user: log the new shelf price
     step 1: collection_write(collection='shelf', entries='$42') => Memory 'shelf' not found \
 — did you mean 'shelves'?"""
     )
-    # The projection the skill extractor reads is complete too: the terminal call now
-    # pairs with its result AND its structural execution stamp, so a failed final call
-    # is certified-as-failed rather than merely unstamped.
-    projection = project_run(run)
-    assert projection.results["w1"] == "Memory 'shelf' not found — did you mean 'shelves'?"
-    assert projection.steps[0].success is False
     # Without the tail (every pre-#1778 row) the same run renders the call bare — the
     # gap this closes.
     assert (

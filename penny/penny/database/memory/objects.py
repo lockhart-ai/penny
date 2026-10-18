@@ -1530,25 +1530,6 @@ def _tool_results_by_id(prompts: list[PromptLog]) -> dict[str, str]:
     }
 
 
-def _tool_successes_by_id(prompts: list[PromptLog]) -> dict[str, bool]:
-    """``{tool_call_id: success}`` — the STRUCTURAL per-call execution stamp (#1600).
-
-    Read off the run's COMPLETE tool turns (``_run_tool_turns`` — the accumulated
-    conversation plus the trailing tail no call carried, #1778), keyed by
-    ``tool_call_id`` so each call pairs with its own outcome.  The framework wrote
-    each stamp at execution time from the tool's ``ToolResult.success``
-    (``PennyConstants.TOOL_RESULT_SUCCESS_KEY``), beside the framed result prose — so
-    "did this call succeed?" is a boolean read, not a narration parse.  A tool turn
-    with no stamp (a run logged before #1600) is simply absent from the map — the
-    caller treats an absent stamp as uncertified."""
-    successes: dict[str, bool] = {}
-    for message in _run_tool_turns(prompts):
-        call_id = message.get("tool_call_id")
-        if call_id and PennyConstants.TOOL_RESULT_SUCCESS_KEY in message:
-            successes[call_id] = bool(message[PennyConstants.TOOL_RESULT_SUCCESS_KEY])
-    return successes
-
-
 def _compact_result(content: str | None) -> str:
     """One compact line for a step's result — first non-blank line, capped.  Bulk
     results (page content) stay whole in the ledger; this render is by reference."""
@@ -1654,65 +1635,6 @@ def render_run_calls(prompts: list[PromptLog], child_draws: list[PromptLog] | No
         lines.append(conclusion)
     lines.extend(_egress_media_lines(prompts))
     return "\n".join(line for line in lines if line)
-
-
-class RunProjectionStep(BaseModel):
-    """One tool call of a run, with its absolute ordinal — the coordinate the
-    run-end skill extractor addresses (#1590/#1658).  ``ordinal`` is the run's FULL
-    tool-call position (``done`` consumes one, matching ``render_run_calls``); a
-    filtered view shows gaps, never renumbers.
-
-    ``success`` is the STRUCTURAL per-call execution stamp (#1600), hydrated from
-    the tool-result message's ``tool_success`` bit: ``True`` (the call succeeded),
-    ``False`` (it failed), or ``None`` (no stamp — a run logged before #1600).  The
-    extractor's certified-by-execution filter reads this boolean, not the framed
-    result prose."""
-
-    ordinal: int
-    call_id: str | None
-    call: LoggedToolCall
-    success: bool | None = None
-
-
-class RunProjection(BaseModel):
-    """A run decomposed for skill authoring — its triggering user message, every
-    tool call with its absolute ordinal + STRUCTURAL success stamp, and each call's
-    framed result text (#1590/#1600).  The structural decomposition: each step
-    carries its own ``success`` bit (read from the ledger's per-call stamp, #1600),
-    so the certified-by-execution check reads a boolean off the step instead of
-    parsing the result frame.  ``results`` (the framed result text) stays — the
-    distillation reads it to infer each argument's provenance."""
-
-    origin_message: str
-    steps: list[RunProjectionStep]
-    results: dict[str, str]
-
-
-def project_run(prompts: list[PromptLog]) -> RunProjection:
-    """Project a run into ``(origin_message, ordinaled steps, results-by-call-id)``
-    — the raw material the run-end skill extractor snapshots (#1590/#1658).
-
-    The step ordinals are the run's FULL tool-call ordinals (composed from the same
-    ``_run_logged_steps`` ``render_run_calls`` numbers against), so a range the
-    model reads there names the same steps here.  Results are the accumulated
-    tool-turn contents keyed by call id (the ``_tool_results_by_id`` view)."""
-    if not prompts:
-        return RunProjection(origin_message="", steps=[], results={})
-    successes = _tool_successes_by_id(prompts)
-    steps = [
-        RunProjectionStep(
-            ordinal=index,
-            call_id=call_id,
-            call=call,
-            success=successes.get(call_id) if call_id else None,
-        )
-        for index, (call_id, call) in enumerate(_run_logged_steps(prompts), start=1)
-    ]
-    return RunProjection(
-        origin_message=_opening_user_message(prompts),
-        steps=steps,
-        results=_tool_results_by_id(prompts),
-    )
 
 
 class RunLog(Log):
@@ -1844,7 +1766,4 @@ __all__ = [
     "LoggedToolCall",
     "MessageLogMemory",
     "RunLog",
-    "RunProjection",
-    "RunProjectionStep",
-    "project_run",
 ]

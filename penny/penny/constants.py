@@ -157,15 +157,6 @@ WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
 # enum exactly as it did before #1911.  What a clean close DOES carry, when the
 # collection notifies, is what telling the user came to (``NOTIFICATION_NOTES``).
 
-# The reason a cycle gets when its stored program names no call the collector could run
-# — a purely prose prompt.  Its surface is the terminator alone, so there is nothing it
-# could carry out, and the record says so rather than leaving the state to be diagnosed
-# by exclusion (visible degradation).
-COLLECTOR_UNREADABLE_PROGRAM_REASON = (
-    "cycle ended without a done() call, and its program names no runnable call to read "
-    "completion from"
-)
-
 
 class CycleEnd(StrEnum):
     """How a collector cycle ENDED — the closed set that decides both whether the
@@ -250,20 +241,12 @@ class MutationAction(StrEnum):
     """The kind of registry-entity lifecycle change a mutation event records
     (#1560).  Each create / update / archive / unarchive of a collection writes
     one ``mutation_event`` row, so "when was this archived, and by what?" is a
-    read, not a memory the model re-asserts from its own past narration.
-
-    ``DELETED`` is the SKILL registry's retirement (#1902): that table is
-    versionless and carries no archived flag, so a routine a bail takes back
-    LEAVES rather than becoming a tombstone row — and the event is the only
-    trace there is.  Naming it as its own action rather than reusing
-    ``ARCHIVED`` keeps the render honest: a reader following an archived
-    collection finds it, a reader following a deleted routine does not."""
+    read, not a memory the model re-asserts from its own past narration."""
 
     CREATED = "created"
     UPDATED = "updated"
     ARCHIVED = "archived"
     UNARCHIVED = "unarchived"
-    DELETED = "deleted"
 
 
 class MutationActor(StrEnum):
@@ -281,16 +264,10 @@ class MutationActor(StrEnum):
 class MutationEntityType(StrEnum):
     """The kind of registry entity a mutation event points at (#1560).
 
-    ``COLLECTION`` is the background mechanism post-#1556.  ``SKILL`` is the
-    second customer the enum was declared for (#1902): a round that ends in idle
-    takes its routine back — deleted outright when the round minted the name,
-    reverted to its pre-round content when the round was re-teaching one that
-    already stood — and the registry is AMBIENT, so a routine vanishing or
-    reverting between turns has to appear in the recent-changes render like any
-    other configuration change."""
+    ``COLLECTION`` is the background mechanism post-#1556 — the only registry
+    this enum currently tracks."""
 
     COLLECTION = "collection"
-    SKILL = "skill"
 
 
 class ProgressEmoji(StrEnum):

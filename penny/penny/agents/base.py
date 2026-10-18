@@ -1872,9 +1872,8 @@ class Agent:
                     "tool_call_id": tool_call_id,
                     # The STRUCTURAL per-call execution stamp (#1600): the tool's
                     # own ``success`` bit, beside the framed prose, so a reader of
-                    # this run (skill_create's certification) reads a boolean, not
-                    # narration.  Stripped from the wire in
-                    # ``LlmClient._translate_messages``.
+                    # this run reads a boolean, not narration.  Stripped from the
+                    # wire in ``LlmClient._translate_messages``.
                     PennyConstants.TOOL_RESULT_SUCCESS_KEY: result.success,
                 }
             )
