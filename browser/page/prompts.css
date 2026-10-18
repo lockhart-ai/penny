@@ -1,212 +1,238 @@
-/* Prompts tab.  Split from page.css (#2565) — rules moved unchanged. */
-/* --- Prompts --- */
+/* Prompts tab — the run list (#2567 restyle). The toolbar/filter chrome
+ * above `#runs` (#agent-tabs, .sub-tab, the flagged toggle, the search row)
+ * was already restyled in place by the shared foundation (#2566/#2593) —
+ * base.css and collectors.css own that; nothing here touches it. Every rule
+ * below styles `#runs` and what prompts.ts renders inside it: run cards,
+ * their header chips/metrics, the step/draw timeline, and the turn/record
+ * detail views. Built on shared/tokens.css + shared/components.css's
+ * `.chip`/`.chip-dot`/`.copy-btn`/`.copy-slot-empty` — see prompts.ts for
+ * the markup these pair with. */
 
-
-#runs {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.run {
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.run-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  user-select: none;
-  overflow: hidden;
-}
-
-.run-header:has(+ .run-outcome) {
-  padding-bottom: 4px;
-}
-
-.run-summary {
-  cursor: pointer;
-  border-radius: 8px;
-}
-
-.run-summary:hover {
-  background: var(--bg-tertiary);
-}
-
-.run-toggle {
-  color: var(--text-muted);
-  font-size: 12px;
-  width: 16px;
-  text-align: center;
-  transition: transform 0.2s;
-}
-
-.run.expanded .run-toggle {
-  transform: rotate(90deg);
-}
-
-.run.active-run {
-  border-left: 3px solid var(--accent);
-}
-
-.run-spinner {
-  display: none;
-  color: var(--accent);
-  font-size: 12px;
-}
-
-.run.active-run .run-spinner {
-  display: inline;
-}
-
-.run-agent {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--accent);
-  min-width: 170px;
-}
-
-.run-type {
-  font-size: 12px;
-  color: var(--text-muted);
-  min-width: 110px;
-}
-
-.run-time {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-left: auto;
-}
-
-.run-outcome {
-  display: inline-block;
-  font-size: 10px;
-  padding: 2px 8px;
-  margin: 0 0 8px 44px;
-  border-radius: 10px;
-}
-
-.run-outcome-worked {
-  color: #28a745;
-  background: rgba(40, 167, 69, 0.1);
-}
-
-.run-outcome-failed {
-  color: #dc3545;
-  background: rgba(220, 53, 69, 0.1);
-}
-
-.run-outcome-no-work {
-  color: var(--text-muted);
-  background: var(--bg-secondary);
-}
-
-.run-outcome-incomplete {
-  color: #fd7e14;
-  background: rgba(253, 126, 20, 0.1);
-}
-
-.run-outcome-cancelled {
-  color: #b8860b;
-  background: rgba(184, 134, 11, 0.1);
-}
-
-/* --- Run-health flag chips (one per RunHealth.flags) --- */
-
-.run-health {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 0 0 8px 44px;
-}
-
-.run-health-flag {
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  color: #dc3545;
-  background: rgba(220, 53, 69, 0.1);
-}
-
-.run-health-flag i {
-  margin-right: 3px;
-}
-
-/* Incomplete / tool-failures read as capacity (amber), not a hard regression. */
-.run-health-incomplete,
-.run-health-tool_failures {
-  color: #fd7e14;
-  background: rgba(253, 126, 20, 0.1);
-}
-
-/* Flagged-only toggle (in the agent-tabs row). */
+/* Flagged-only toggle (in the agent-tabs row) — unchanged from the
+ * foundation restyle (#2593): positioned at the end of the toolbar, violet
+ * when active (deliberately not red — a filter toggle isn't a failure
+ * state, and red is reserved for failed/timed-out outcomes elsewhere on
+ * this screen, matching the shared .flag-toggle.active treatment). */
 .sub-tab.flagged-toggle {
   margin-left: auto;
 }
 
-/* Deliberately NOT red — a filter toggle isn't a failure state, and red is
- * reserved for failed/timed-out outcomes elsewhere (matches the shared
- * .flag-toggle.active treatment in shared/components.css — #2566). */
 .sub-tab.flagged-toggle.active {
   color: var(--c-model);
   background: var(--c-model-soft);
 }
 
-/* --- Copy-to-clipboard buttons (run / prompt / turn JSON) --- */
+#runs {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 8px;
+}
 
-.copy-btn {
-  flex-shrink: 0;
-  margin-left: 8px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
+.run {
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-primary);
-  color: var(--text-muted);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.copy-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--text-secondary);
-}
-
-/* Role chip is a fixed-width column so the previews beside it line up. */
-.prompt-section-role {
-  flex-shrink: 0;
-  min-width: 96px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-/* One-line preview of the turn's content, filling the row, trimmed to fit. */
-.prompt-section-preview {
-  flex: 1 1 auto;
-  min-width: 0;
+  border-radius: var(--radius);
+  margin-bottom: 9px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-transform: none;
-  letter-spacing: normal;
-  font-weight: 400;
-  color: var(--text-muted);
+  box-shadow: var(--shadow-card);
 }
 
-/* Once expanded, the full content shows below — drop the inline preview. */
-.prompt-section.expanded .prompt-section-preview {
+/* The one run currently in flight (markRunActive / handleRunOutcome in
+ * prompts.ts toggle this class) — violet border + glow, same mechanism as
+ * today, just the mockup's `.run.live` treatment. */
+.run.active-run {
+  border-color: rgba(109, 70, 184, .5);
+  box-shadow: 0 0 0 1px rgba(109, 70, 184, .12), 0 3px 16px -6px rgba(109, 70, 184, .35);
+}
+
+/* --- Run header: a flexible left side (marker/name/snippet/chips) and a
+ * fixed-width right side (metrics → time → wall/model pill → copy), laid
+ * out as a grid with fixed column tracks so every run's columns land on
+ * the same vertical lines (#2567). --- */
+
+.run-summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.run-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  outline: none;
+}
+
+.run-summary:hover .run-header {
+  background: var(--row-hover);
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+.run-summary:focus-visible .run-header {
+  background: var(--row-hover);
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
+}
+
+.run-toggle {
+  color: var(--text-faint);
+  transition: transform .15s ease;
+  flex-shrink: 0;
+}
+
+.run.expanded .run-toggle {
+  transform: rotate(90deg);
+  color: var(--text-dim);
+}
+
+.run-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.run-left > * {
+  flex-shrink: 0;
+}
+
+.agent-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agent-chip .swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.agent-chip.chat {
+  color: var(--c-model);
+}
+
+.agent-chip.chat .swatch {
+  background: var(--c-model);
+}
+
+.agent-chip.collector {
+  color: var(--c-tool);
+}
+
+.agent-chip.collector .swatch {
+  background: var(--c-tool);
+}
+
+.agent-chip.history,
+.agent-chip.startup {
+  color: var(--c-sys);
+}
+
+.agent-chip.history .swatch,
+.agent-chip.startup .swatch {
+  background: var(--c-sys);
+}
+
+.agent-target {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+/* Hidden unless this run is the one `markRunActive` currently marks live —
+ * same ancestor-class mechanism the old `.run-spinner` used, just the
+ * shared pulsing dot component instead of a spinner icon. */
+.agent-chip .live-pulse {
   display: none;
 }
 
-/* Pin the copy button to the right whether the preview is shown (collapsed) or
-   hidden (expanded) — otherwise it slides left when the preview disappears. */
-.prompt-section-label .copy-btn {
-  margin-left: auto;
+.run.active-run .agent-chip .live-pulse {
+  display: inline-flex;
+}
+
+.run-snippet {
+  flex: 1 1 auto !important;
+  min-width: 30px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run.expanded .run-snippet {
+  color: var(--text);
+}
+
+/* --- Fixed right-hand cluster --- */
+
+.run-right {
+  display: grid;
+  grid-template-columns: 66px 54px 50px 82px 104px 116px 24px; /* steps ↓ ↑ tok/s time pill copy */
+  column-gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.rc {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.rc i {
+  color: var(--text-faint);
+  flex-shrink: 0;
+  width: auto;
+  margin-right: 0;
+}
+
+.rc-time {
+  color: var(--text-faint);
+  text-overflow: ellipsis;
+}
+
+.time-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.time-pair .wall {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.time-pair .model {
+  color: var(--c-tool);
+  font-weight: 600;
+}
+
+.time-pair .sep {
+  color: var(--text-faint);
+  font-weight: 400;
 }
 
 /* --- Per-run view tabs (Prompts | Record) --- */
@@ -226,7 +252,22 @@
   display: block;
 }
 
-/* The textual record — what Penny's quality collector reads of this run. */
+.run-prompts {
+  display: none;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.run.expanded .run-prompts {
+  display: block;
+}
+
+.run-view-prompts {
+  padding: 12px 14px 14px;
+}
+
+/* --- The textual record — what Penny's quality collector reads of this run --- */
+
 .run-view-record {
   position: relative;
   padding: 12px;
@@ -236,25 +277,19 @@
   position: absolute;
   top: 8px;
   right: 8px;
-  /* Sit above the white code panel rather than tinting with it. */
-  background: #ffffff;
-  color: #57606a;
-  border-color: #d0d7de;
   z-index: 1;
 }
 
-/* --- Run record as a syntax-highlighted code listing (light editor look) --- */
-
 .record-code {
   margin: 4px 0 0;
-  background: #ffffff;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-family: var(--mono);
   font-size: 12px;
   line-height: 1.6;
-  color: #24292e;
+  color: var(--text);
 }
 
 .record-line {
@@ -263,7 +298,7 @@
 }
 
 .record-line:hover {
-  background: #f6f8fa;
+  background: var(--row-hover);
 }
 
 .record-ln {
@@ -271,9 +306,9 @@
   width: 34px;
   padding: 0 8px;
   text-align: right;
-  color: #b0b6be;
-  background: #f6f8fa;
-  border-right: 1px solid #eaecef;
+  color: var(--text-faint);
+  background: var(--panel-alt);
+  border-right: 1px solid var(--border-soft);
   user-select: none;
 }
 
@@ -284,198 +319,398 @@
   word-break: break-word;
 }
 
-/* The header line and ⚠ flags read as comments — dim, with flag colour. */
 .record-line-header .record-src {
-  color: #6a737d;
+  color: var(--text-faint);
   font-style: italic;
 }
 
 .record-line-flag .record-src {
-  color: #b31d28;
-  background: rgba(220, 53, 69, 0.06);
+  color: var(--err);
+  background: var(--err-soft);
 }
 
 .record-line-capacity .record-src {
-  color: #bf6a02;
-  background: rgba(253, 126, 20, 0.07);
+  color: var(--warn);
+  background: var(--warn-soft);
 }
 
-/* Token colours (VS Code light-ish). */
 .tok-fn {
-  color: #6f42c1;
+  color: var(--c-model);
 }
 
 .tok-str {
-  color: #a31515;
+  color: var(--c-draw);
 }
 
 .tok-num {
-  color: #098658;
+  color: var(--ok);
 }
 
 .tok-kw {
-  color: #0000ff;
+  color: var(--c-tool);
 }
 
 .tok-key {
-  color: #001080;
+  color: var(--text-dim);
 }
 
-.run-meta,
-.prompt-meta {
-  font-size: 12px;
-  color: var(--text-muted);
+/* ============================================================
+   Run body — rail-and-indent timeline (steps + nested draws, #2567)
+   ============================================================ */
+
+.steps {
   display: flex;
-  gap: 2px;
-  align-items: center;
-  flex-shrink: 0;
+  flex-direction: column;
 }
 
-.prompt-meta {
-  margin-left: auto;
+.step-row,
+.draw-row {
+  display: flex;
 }
 
-.run-meta span,
-.prompt-meta span {
-  display: inline-flex;
-  align-items: center;
-  min-width: 60px;
+.step-row {
+  gap: 11px;
 }
 
-.run-meta span:first-child,
-.prompt-meta span:first-child {
-  min-width: 34px;
+.draw-row {
+  gap: 10px;
 }
 
-.run-meta span:nth-child(4),
-.prompt-meta span:nth-child(4) {
-  min-width: 95px;
+.step-row .rail {
+  width: 16px;
 }
 
-.run-meta i,
-.prompt-meta i {
+.draw-row .rail {
   width: 14px;
-  text-align: center;
-  margin-right: 3px;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   flex-shrink: 0;
 }
 
-/* --- Prompt list (inside expanded run) --- */
-
-.run-prompts {
-  display: none;
-  border-top: 1px solid var(--border);
+.rail .dot {
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+  position: relative;
 }
 
-.run.expanded .run-prompts {
-  display: block;
+.step-row .rail .dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 13px;
 }
 
-.prompt {
-  border-top: 1px solid var(--border);
-  padding: 12px 16px 12px 44px;
+.draw-row .rail .dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 11px;
 }
 
-.prompt:first-child {
-  border-top: none;
+.rail .dot.live {
+  background: var(--c-model);
 }
 
-.prompt-header {
+.rail .dot.live::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--c-model);
+  animation: pulse2 1.6s ease-in-out infinite;
+}
+
+.rail .dot.err {
+  background: var(--err);
+}
+
+.rail .line {
+  width: 1px;
+  flex: 1;
+  background: var(--border-soft);
+  margin-top: 4px;
+  min-height: 6px;
+}
+
+.steps > .step-row:last-child .rail .line,
+.draws > .draw-row:last-child .rail .line {
+  background: transparent;
+}
+
+/* The content column beside a row's rail — the toggleable `.prompt` card
+ * plus (always, #2567 condition 1) its own `.draws` box, never gated by
+ * the card's own expanded state. */
+.step-col {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
-  cursor: pointer;
-}
-
-.prompt-step {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--bg-tertiary);
-  border-radius: 4px;
-  padding: 2px 8px;
-  min-width: 24px;
-  text-align: center;
-}
-
-/* A draw nested under the round that made it (#2435) — a tool step, or the
-   run itself when it carries no anchor.  `.prompt-draw-children` nests again
-   for a draw made on behalf of ANOTHER draw, to any depth: each level simply
-   stacks another indent + rule, with no depth-specific rule needed. */
-.prompt-draw {
-  background: var(--bg-tertiary);
-}
-
-.prompt-draw .prompt-step {
-  min-width: auto;
-  font-style: italic;
-  white-space: nowrap;
-}
-
-.prompt-draw-children {
-  margin-left: 20px;
-  border-left: 2px solid var(--border);
-}
-
-.prompt-type {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.prompt-snippet {
-  font-size: 12px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
   min-width: 0;
 }
 
-.prompt-tools {
-  font-size: 11px;
-  color: var(--accent);
+/* --- `.prompt` — the toggleable card (step or draw). Keeps its existing
+ * class name, `data-prompt-id`, and `.expanded` toggle mechanism unchanged
+ * (#2567 condition 3 — capturePanelState/restorePanelState in prompts.ts
+ * read `.prompt[data-prompt-id]`/`.prompt.expanded` exactly as before; only
+ * what wraps and surrounds the card changed). --- */
+
+.prompt {
+  border-radius: var(--radius-sm);
+  min-width: 0;
 }
 
-/* A call that did not simply complete (#2436) — one generic style for any
-   non-"completed" outcome, since the label itself is derived from whatever
-   value Penny's runtime stamped rather than a fixed set this file enumerates. */
-.prompt-outcome {
-  font-size: 10px;
-  font-weight: 600;
-  color: #dc3545;
-  background: rgba(220, 53, 69, 0.1);
-  border-radius: 10px;
-  padding: 2px 8px;
-  white-space: nowrap;
-  flex-shrink: 0;
+.prompt-header {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  outline: none;
 }
 
-/* This call's own start time (#2438) — a step row's finer-grained companion
-   to the run header's date. */
-.prompt-start {
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
+.prompt-header:hover {
+  background: var(--row-hover);
 }
 
-/* A live step marker (#2439) — a model call or tool call pushed as running,
-   ahead of any logged record.  Never expandable (no detail exists yet), so
-   its header keeps the default cursor rather than `.prompt-header`'s pointer. */
-.prompt-running {
-  background: var(--bg-tertiary);
-  opacity: 0.85;
+.prompt-header:focus-visible {
+  background: var(--row-hover);
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
 }
 
 .prompt-running .prompt-header {
   cursor: default;
 }
 
-.prompt-running .prompt-tools {
-  color: var(--text-muted);
+/* left part: chevron-slot | icon-slot | name (truncates) | badge */
+
+.row-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
-/* --- Prompt detail sections --- */
+.row-chev {
+  width: 14px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.row-chev .chev {
+  transition: transform .15s ease;
+}
+
+.prompt.expanded .row-chev .chev {
+  transform: rotate(90deg);
+  color: var(--text-dim);
+}
+
+.row-icon {
+  width: 16px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.row-icon .ic-tool {
+  color: var(--c-tool);
+}
+
+.row-icon .ic-draw {
+  color: var(--c-draw);
+}
+
+.row-icon .ic-err {
+  color: var(--err);
+}
+
+.row-icon .ic-model {
+  color: var(--c-model);
+}
+
+.row-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 20px;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-name.plain-text {
+  font-family: var(--sans);
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.row-name.live-text {
+  color: var(--c-model);
+  font-weight: 600;
+}
+
+.row-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.row-name-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 20px;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.draw-name {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.draw-name.sys-name {
+  color: var(--c-sys);
+  font-style: italic;
+}
+
+.draw-result {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  flex: 1 1 auto;
+  min-width: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draw-result.live {
+  color: var(--c-model);
+  font-weight: 600;
+}
+
+.draw-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--c-sys);
+  border: 1px solid rgba(13, 143, 130, .3);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.step-badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--text-faint);
+  background: var(--panel-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+/* right part: fixed-width grid, identical for every step/draw row so their
+ * columns all land on the same vertical lines. */
+
+.row-right {
+  display: grid;
+  grid-template-columns: 56px 52px 84px 150px 24px; /* ↓ ↑ tok/s time copy */
+  column-gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.cell-down,
+.cell-up,
+.cell-toks {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cell-down .v,
+.cell-up .v,
+.cell-toks .v {
+  color: var(--text-dim);
+}
+
+.cell-time {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cell-time.live-text {
+  color: var(--c-model);
+  font-weight: 600;
+}
+
+.cell-copy {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* --- Draws — always visible, nested under the step or draw that made them
+ * (#2567 condition 1); never gated by `.prompt`'s own `.expanded` state. --- */
+
+.draws {
+  display: flex;
+  flex-direction: column;
+  margin-top: 2px;
+  background: var(--panel-alt);
+  border-left: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px 3px 8px;
+}
+
+/* ============================================================
+   Turn / prompt detail (thinking, messages, tool call, response) — gated
+   by `.prompt`'s own `.expanded` state, unlike the always-visible draws
+   above. Each role gets a faint tint so the boxes read as distinct.
+   ============================================================ */
 
 .prompt-detail {
   display: none;
@@ -485,51 +720,96 @@
   display: block;
 }
 
+.turn-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 9px 25px;
+}
+
 .prompt-section {
-  margin-top: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 
 .prompt-section-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-faint);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 4px 0;
+  letter-spacing: .5px;
+  padding: 6px 10px;
   cursor: pointer;
   user-select: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 7px;
+  outline: none;
+}
+
+.prompt-section-label:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
 }
 
 .prompt-section-label:hover {
-  color: var(--text-secondary);
+  color: var(--text-dim);
 }
 
 .section-toggle-icon {
   font-size: 9px;
   width: 12px;
   text-align: center;
-  transition: transform 0.2s;
+  transition: transform .2s;
+  flex-shrink: 0;
 }
 
 .prompt-section.expanded .section-toggle-icon {
   transform: rotate(90deg);
 }
 
+.prompt-section-role {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.prompt-section-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.prompt-section.expanded .prompt-section-preview {
+  display: none;
+}
+
+.prompt-section-label .copy-btn {
+  margin-left: auto;
+}
+
 .prompt-section-content {
   display: none;
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-  border-radius: 6px;
-  padding: 10px 12px;
-  line-height: 1.5;
+  padding: 9px 12px 11px;
+  border-top: 1px solid var(--border-soft);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 400px;
+  max-height: 260px;
   overflow-y: auto;
+  background: var(--panel-alt);
 }
 
 .prompt-section.expanded .prompt-section-content {
@@ -537,7 +817,7 @@
 }
 
 .prompt-section-content code {
-  background: var(--bg-primary);
+  background: var(--panel);
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 11px;
@@ -545,24 +825,134 @@
 
 /* --- Section role colors --- */
 
-.prompt-section-label[data-role="system"] {
-  color: var(--text-muted);
+.prompt-section-label[data-role="thinking"] {
+  background: var(--c-model-soft);
+  color: var(--c-model);
 }
 
 .prompt-section-label[data-role="user"] {
-  color: var(--accent);
+  background: var(--c-tool-soft);
+  color: var(--c-tool);
+}
+
+.prompt-section-label[data-role="tool"],
+.prompt-section-label[data-role="tool call"],
+.prompt-section-label[data-role="outcome"] {
+  background: var(--c-draw-soft);
+  color: var(--c-draw);
 }
 
 .prompt-section-label[data-role="assistant"],
 .prompt-section-label[data-role="response"] {
-  color: #28a745;
+  background: var(--ok-soft);
+  color: var(--ok);
 }
 
-.prompt-section-label[data-role="tool"] {
-  color: #e0a020;
+.prompt-section-label[data-role="system"] {
+  color: var(--text-faint);
 }
 
-.prompt-section-label[data-role="thinking"] {
-  color: #8b5cf6;
+/* ============================================================
+   Responsive column dropping (#2567) — the right-hand columns NEVER wrap
+   or change width; low-priority ones simply disappear, in this order:
+   tok/s, then steps (run header only), then ↓ / ↑ tokens. The left part
+   keeps truncating with an ellipsis throughout. Only at the ~420px sidebar
+   width does a row wrap at all, and even there the copy-button column
+   stays put. Chip-to-dot collapse at that width is handled generically by
+   shared/components.css's `.chip.chip-dot` rule — nothing to add here.
+   ============================================================ */
+
+@media (max-width: 1100px) {
+  .run-right {
+    grid-template-columns: 66px 54px 50px 104px 116px 24px; /* drop tok/s */
+  }
+
+  .rc-toks {
+    display: none;
+  }
+
+  .row-right {
+    grid-template-columns: 56px 52px 150px 24px; /* drop tok/s */
+  }
+
+  .cell-toks {
+    display: none;
+  }
 }
 
+@media (max-width: 900px) {
+  .run-right {
+    grid-template-columns: 54px 50px 104px 116px 24px; /* also drop steps */
+  }
+
+  .rc-steps {
+    display: none;
+  }
+}
+
+@media (max-width: 850px) {
+  .run-right {
+    grid-template-columns: 104px 116px 24px; /* also drop ↓ / ↑ */
+  }
+
+  .rc-down,
+  .rc-up {
+    display: none;
+  }
+
+  .row-right {
+    grid-template-columns: 150px 24px; /* also drop ↓ / ↑ */
+  }
+
+  .cell-down,
+  .cell-up {
+    display: none;
+  }
+}
+
+@media (max-width: 460px) {
+  #runs {
+    padding: 2px 2px 6px;
+  }
+
+  /* The only breakpoint where a header may wrap — right part drops to its
+   * own full-width line, still right-aligned, copy still its own fixed
+   * column so it stays under every other run's copy button. On the left
+   * line, the collector's sub-target hides — lower priority than the
+   * agent name and the snippet, which keep truncating with an ellipsis. */
+  .run-header {
+    padding: 9px 10px;
+    gap: 6px 10px;
+    flex-wrap: wrap;
+  }
+
+  .run-left {
+    flex-wrap: nowrap;
+  }
+
+  .agent-target {
+    display: none;
+  }
+
+  .run-right {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    grid-template-columns: 96px 22px;
+  }
+
+  .rc-time {
+    display: none;
+  }
+
+  .run-view-prompts {
+    padding: 9px 6px 10px;
+  }
+
+  .row-right {
+    grid-template-columns: 110px 20px;
+  }
+
+  .turn-detail {
+    margin-left: 16px;
+  }
+}
