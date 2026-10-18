@@ -91,7 +91,7 @@ if TYPE_CHECKING:
         RunActivity,
         RunOutcomeStamp,
     )
-    from penny.database.models import MemoryRow, MutationEvent
+    from penny.database.models import MemoryEntry, MemoryRow, MutationEvent
 
 # The first ``https?://`` URL in a job's prompt (#2495) — the page the job reads,
 # rendered whole on its instructions line no matter how the prompt is capped.
@@ -595,7 +595,7 @@ class SelfStateHeader:
 # ── The shared standing-rules render (#2633) ──────────────────────────────────
 
 
-def standing_rules_entries(db: Database) -> list[MemoryRow]:
+def standing_rules_entries(db: Database) -> list[MemoryEntry]:
     """Every entry in the ``rules`` collection — empty when the collection does not
     exist (``db.memory`` returns ``None`` on a name nothing has created)."""
     collection = db.memory(PennyConstants.MEMORY_RULES_COLLECTION)
