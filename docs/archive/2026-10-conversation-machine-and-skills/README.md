@@ -31,6 +31,6 @@ notify flag, run as written with no rendering seam in between.
 ## Where the live docs are now
 
 `penny/CLAUDE.md` and `docs/reference/*.md` describe the naive job runtime. The
-conversation-machine reference itself was archived separately, alongside this snapshot,
-as `docs/archive/conversation-machine.md` (#2541) — read it together with this
-snapshot's `docs/reference/` files for the full picture of what the era covered.
+conversation-machine reference itself (#2541) lives in this snapshot's own
+`docs/reference/conversation-machine.md`, beside its siblings here, for the full
+picture of what the era covered.
