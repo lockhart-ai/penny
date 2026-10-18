@@ -1005,12 +1005,14 @@ def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> 
     helper that returns every ``memory`` row, and migration 0026 seeds four system LOG
     markers into every database that has ever migrated — so the probe was asserting
     something no Penny has ever been true of.  Both directions, since a read that filtered
-    everything out would pass this as vacuously as the correct one: the four markers are
-    invisible to it, and a real collection is not."""
+    everything out would pass this as vacuously as the correct one: the four markers —
+    and, since #2633, the seeded empty ``rules`` collection — are invisible to it, and a
+    real collection is not."""
     assert sorted(row.name for row in db.memories.list_all()) == [
         "browse-results",
         "collector-runs",
         "penny-messages",
+        "rules",
         "user-messages",
     ]
     assert collection_names(db) == []

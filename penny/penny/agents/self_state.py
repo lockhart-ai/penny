@@ -47,6 +47,14 @@ one guess-free tool call from the detail). Sections:
   lookup.
 - A pointers line naming the fetch tools for anything deeper.
 
+Standing rules (#2633): the seeded ``rules`` collection — the things the user has
+asked Penny to always or never do — renders in full here (``_standing_rules_section``,
+one shared render the collector cycle's prompt and the notify document also show),
+oldest first, each entry as ``- <key>: <content> (added <date>)``.  With none, the
+section shows one line naming the empty collection, so the ``rules`` anchor is on
+screen before the first rule is ever written.  Only this collection renders this
+way: another collection's content never enters the prompt as standing instructions.
+
 Autonomous-send (emission) rows join the recent-activity block (#1568): each
 delivered mechanism send renders one ``sent · <when> · <mechanism> — "<snippet>"``
 line, interleaved by time with the runs and mutations, so Penny sees her own
@@ -102,6 +110,7 @@ class SelfStateHeader:
     MECHANISMS_HEADER = "### Jobs"
     ACTIVITY_HEADER = "### Recent activity"
     MAP_HEADER = "### Your memory"
+    STANDING_RULES_HEADER = "### Standing rules"
     DURABLE_HEADER = "### About the user"
 
     # Whether proactive notifications are going out, rendered in BOTH directions and
@@ -144,6 +153,13 @@ class SelfStateHeader:
     EMPTY_MAP = "(no stores yet)"
     NO_PROFILE = "(no profile set yet)"
 
+    # The standing-rules section's empty form (#2633): the state, not an imperative —
+    # it names the collection the first rule will land in, so the `rules` anchor is on
+    # screen even before any rule exists and the write is one guess-free call away.
+    EMPTY_STANDING_RULES = (
+        "(none yet — when the user asks you to always or never do something, it goes in `rules`)"
+    )
+
     # The overflow tail activity still shows past its cap — the fetch tool named so
     # the remainder is one guess-free call away (nothing is silently dropped; n≤1
     # holds). Mechanisms and the store map carry no cap (#2288): the whole
@@ -176,6 +192,7 @@ class SelfStateHeader:
             self._mechanisms_section(),
             self._activity_section(),
             self._memory_map_section(),
+            self._standing_rules_section(),
             self._durable_core_section(),
             self.POINTERS,
         ]
@@ -541,6 +558,12 @@ class SelfStateHeader:
 
     # ── Durable user-fact core ───────────────────────────────────────────────
 
+    def _standing_rules_section(self) -> str:
+        """The standing rules the user has given — the shared render one level down
+        (``standing_rules_section``), which the collector cycle's prompt and the notify
+        document show too (#2633)."""
+        return standing_rules_section(self.db)
+
     def _durable_core_section(self) -> str:
         """The small, stable set of deterministic user facts — name, timezone,
         location — so the personal tone survives without a lookup. These change
@@ -554,3 +577,33 @@ class SelfStateHeader:
             lines.append(f"- timezone: {info.timezone}")
             lines.append(f"- location: {info.location}")
         return "\n".join(lines)
+
+
+# ── The shared standing-rules render (#2633) ──────────────────────────────────
+
+
+def render_standing_rules(db: Database) -> str:
+    """The standing rules' BODY: every entry in the ``rules`` collection in full,
+    oldest first, each as ``- <key>: <content> (added <date>)`` — a verbatim render
+    of the store, the same as any other data section.
+
+    With none — or no collection row at all — the one empty-collection line renders
+    instead, so the ``rules`` anchor is on screen in every state: the write that adds
+    the first rule, and the read that answers "what are my standing rules", are both
+    one guess-free call from this section wherever it appears."""
+    collection = db.memory(PennyConstants.MEMORY_RULES_COLLECTION)
+    entries = collection.read_all() if collection is not None else []
+    if not entries:
+        return SelfStateHeader.EMPTY_STANDING_RULES
+    return "\n".join(
+        f"- {entry.key}: {entry.content} (added {format_log_timestamp(entry.created_at)})"
+        for entry in entries
+    )
+
+
+def standing_rules_section(db: Database) -> str:
+    """The whole ``### Standing rules`` section — the ONE render the three model-facing
+    surfaces share (#2633): the chat self-state header (``SelfStateHeader.render``),
+    every collector cycle's system prompt, and the notify composer's document.  Written
+    once so the three can never disagree about what a rule says."""
+    return f"{SelfStateHeader.STANDING_RULES_HEADER}\n{render_standing_rules(db)}"

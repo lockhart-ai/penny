@@ -852,3 +852,10 @@ class PennyConstants:
     # the USER built, which is what let the catalog's hide-list and the duplicate
     # check's skip-list go with them.  ``SYSTEM_LOGS`` above is untouched — the four
     # logs are Python-populated perception, not collections anybody would rebuild.
+    # The one deliberate exception since (#2633, migration 0119): the seeded
+    # ``rules`` collection — standing instructions the user has given ("always X",
+    # "never Y").  A seeded row with a known key is universal, so the migration is
+    # allowed; the ``### Standing rules`` section (``agents/self_state.py``) renders
+    # its entries in full wherever Penny acts, so this name is the anchor those
+    # renders and the write verbs share.
+    MEMORY_RULES_COLLECTION = "rules"

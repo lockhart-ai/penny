@@ -104,6 +104,7 @@ _SELF_STATE_SECTION_HEADERS = frozenset(
         SelfStateHeader.MECHANISMS_HEADER,
         SelfStateHeader.ACTIVITY_HEADER,
         SelfStateHeader.MAP_HEADER,
+        SelfStateHeader.STANDING_RULES_HEADER,
         SelfStateHeader.DURABLE_HEADER,
     }
 )

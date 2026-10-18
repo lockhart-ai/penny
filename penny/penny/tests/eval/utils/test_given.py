@@ -169,6 +169,9 @@ def test_the_self_state_headers_own_data_sections_are_given_an_example_is_not() 
             SelfStateHeader.HEADER,
             f"{SelfStateHeader.MECHANISMS_HEADER}\n"
             f"- watch-prices — active · {cadence} · notify: on · no runs yet",
+            f"{SelfStateHeader.STANDING_RULES_HEADER}\n"
+            "- page links: always include a link when you mention a page "
+            "(added 2026-07-11 07:00 UTC)",
             f"{SelfStateHeader.DURABLE_HEADER}\n- name: Alex\n- timezone: America/Denver",
             SelfStateHeader.POINTERS,
         ]
@@ -179,8 +182,10 @@ def test_the_self_state_headers_own_data_sections_are_given_an_example_is_not() 
 
     assert cadence in given.content
     assert example_only not in given.content
+    assert "always include a link when you mention a page" in given.content
     assert "You are Penny." not in given.content
     assert SelfStateHeader.MECHANISMS_HEADER not in given.content
+    assert SelfStateHeader.STANDING_RULES_HEADER not in given.content
     assert SelfStateHeader.POINTERS not in given.content
     assert "name: Alex" in given.content
     assert "timezone: America/Denver" in given.content

@@ -119,7 +119,7 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.constants import PageReading
+from penny.constants import PageReading, PennyConstants
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.penny import Penny
@@ -551,12 +551,19 @@ def _entries_carrying(db: Database, token: str) -> list[str]:
 
 
 def assert_the_store_is_cold(db: Database) -> None:
-    """The registry holds no collection at all — the production cold start since migration
-    0108, and the entry condition the empty-store case exists to measure.
+    """The registry holds no collection the turn could answer OUT OF — the production
+    cold start, and the entry condition the empty-store case exists to measure.
 
-    A leftover collection would give the turn something to answer OUT OF, which is the
-    opposite of the world this case claims."""
-    held = sorted(row.name for row in db.memories.list_all() if row.type == MemoryType.COLLECTION)
+    The migration-seeded ``rules`` collection (#2633) is permanent furniture of every
+    database that has ever migrated, the way migration 0026's four log markers are:
+    it seeds EMPTY, so it hands the turn nothing to answer from, and demanding its
+    absence would assert something no Penny has ever been true of.  A leftover
+    collection with anything IN it is still the failure this probe exists to catch."""
+    held = sorted(
+        row.name
+        for row in db.memories.list_all()
+        if row.type == MemoryType.COLLECTION and row.name != PennyConstants.MEMORY_RULES_COLLECTION
+    )
     assert not held, f"the cold-start world must hold no collection, got {held}"
 
 

@@ -45,6 +45,10 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ValidationError
 
 from penny.agents.models import ToolCallRecord
+from penny.agents.self_state import (
+    SelfStateHeader,
+    standing_rules_section,
+)
 from penny.constants import CycleEnd, CycleTrigger, PennyConstants
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import MemoryEntry, MemoryRow
@@ -150,13 +154,19 @@ class NotificationInput(BaseModel):
     """Everything the notify micro-context is given, assembled framework-side.
 
     A single typed value rather than five arguments, because the render and the
-    assembly are two halves of one contract and a test drives the render alone."""
+    assembly are two halves of one contract and a test drives the render alone.
+
+    ``standing_rules`` is the shared ``### Standing rules`` section (#2633), rendered
+    off the store at assembly (``standing_rules_section``) so a rule the user gave
+    holds in the notification too.  Empty falls back to the empty-collection line,
+    which is what a store without the rules collection renders."""
 
     collection: str
     description: str
     calls: tuple[CycleCall, ...] = ()
     written: tuple[WrittenEntry, ...] = ()
     related: tuple[RelatedMessages, ...] = ()
+    standing_rules: str = ""
 
 
 _LEAD = "The `{collection}` job just ran on its own, and it is time to tell the user."
@@ -197,7 +207,10 @@ def render_notification(document: NotificationInput) -> str:
     closest prior messages sitting nearest the draw, one measured composition took the
     PREVIOUS notification's lead as its template and re-reported it as today's top
     story.  Every section is BOUNDED here rather than at the assembly, so the bound
-    holds whatever put the facts in front of it, and every cut states itself."""
+    holds whatever put the facts in front of it, and every cut states itself.
+
+    The standing rules close the document (#2633): standing context, not this cycle's
+    news, so they sit behind it."""
     return "\n".join(
         [
             _LEAD.format(collection=document.collection),
@@ -215,6 +228,9 @@ def render_notification(document: NotificationInput) -> str:
             "",
             _RELATED_HEAD,
             _render_related(document.related),
+            "",
+            document.standing_rules
+            or f"{SelfStateHeader.STANDING_RULES_HEADER}\n{SelfStateHeader.EMPTY_STANDING_RULES}",
         ]
     )
 
@@ -396,6 +412,7 @@ class CollectorNotifier:
             calls=tuple(_cycle_call(record) for record in records),
             written=tuple(_written_entry(entry) for entry in written),
             related=await self._related(target, written),
+            standing_rules=standing_rules_section(self._db),
         )
 
     async def _related(

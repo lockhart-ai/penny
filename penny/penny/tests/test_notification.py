@@ -90,7 +90,11 @@ def test_notify_document_renders_whole():
         "top of this document.\n"
         "\n"
         "### user-messages\n"
-        "1. [2026-08-19 07:03 UTC] when does the dawn one leave?"
+        "1. [2026-08-19 07:03 UTC] when does the dawn one leave?\n"
+        "\n"
+        "### Standing rules\n"
+        "(none yet — when the user asks you to always or never do something, it goes in "
+        "`rules`)"
     )
 
 
@@ -133,7 +137,11 @@ def test_notify_document_states_a_no_write_cycle_and_a_nothing_matched_lookup():
         "   → (this call failed) ## browse error: unreachable\n"
         "\n"
         "## Background: earlier messages\n"
-        "Nothing in your past messages matched this — there is no callback to make."
+        "Nothing in your past messages matched this — there is no callback to make.\n"
+        "\n"
+        "### Standing rules\n"
+        "(none yet — when the user asks you to always or never do something, it goes in "
+        "`rules`)"
     )
 
 
@@ -283,7 +291,11 @@ def test_an_oversized_cycle_assembles_under_the_declared_bound():
         "\n"
         "### penny-messages\n"
         "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) "
-        "The pier 1 lantern went dark overnight."
+        "The pier 1 lantern went dark overnight.\n"
+        "\n"
+        "### Standing rules\n"
+        "(none yet — when the user asks you to always or never do something, it goes in "
+        "`rules`)"
     )
 
     # The input carried the production failure's bulk; the render carries the budget.
@@ -332,7 +344,11 @@ def test_a_prior_notification_cannot_displace_this_cycles_writes():
         "top of this document.\n"
         "\n"
         "### penny-messages\n"
-        "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) pier 1 went dark"
+        "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) pier 1 went dark\n"
+        "\n"
+        "### Standing rules\n"
+        "(none yet — when the user asks you to always or never do something, it goes in "
+        "`rules`)"
     )
 
     # This cycle's find leads; the stale one is reachable only inside the labelled
@@ -472,3 +488,48 @@ def test_send_queue_store_round_trip(db):
     nxt = db.send_queue.next_pending()
     assert nxt is not None and nxt.content == "two"
     assert [item.content for item in db.send_queue.pending_items()] == ["two"]
+
+
+def test_the_assembled_document_carries_the_standing_rules_section(db):
+    """The assembly renders the shared standing-rules section off the store (#2633),
+    so a rule the user gave holds in the notification the same way it holds in the
+    chat header and in every collector cycle's prompt — the ONE render in three
+    places, stamped with the same wall-clock read the render shows.
+
+    The embedding client is one pointed at nothing that answers — the documented
+    transient-failure path — so the related-message lookup yields no groups and
+    this test is about the standing-rules assembly alone."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from penny.database.memory.objects import EntryInput
+    from penny.datetime_utils import format_log_timestamp
+    from penny.llm.client import LlmClient
+    from penny.tests.conftest import require_memory
+
+    failing = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        max_retries=1,
+        retry_delay=0.0,
+    )
+
+    db.memories.create_collection(
+        "rules", "Standing instructions the user has given: things to always or never do"
+    )
+    require_memory(db, "rules").write(
+        [EntryInput(key="page links", content="always include a link when you mention a page")],
+        author="user",
+    )
+    stored = require_memory(db, "rules").read_all()[0]
+
+    notifier = CollectorNotifier(db, failing, MagicMock())
+    target = db.memories.get("rules")
+    assert target is not None
+    document = asyncio.run(notifier._document(target, "run-x", []))
+
+    assert document.standing_rules == (
+        "### Standing rules\n"
+        f"- page links: always include a link when you mention a page "
+        f"(added {format_log_timestamp(stored.created_at)})"
+    )

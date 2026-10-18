@@ -814,17 +814,17 @@ class TestMigrate:
 
     def test_0108_leaves_no_seeded_collection_at_all(self, tmp_path):
         """THE WATCHED DELETION (#1911's soft reboot), over the full chain: migration
-        0108 drops the last migration-seeded collection, so a post-migration database
-        carries NONE.
+        0108 dropped the last migration-seeded collection of its arc, so nothing the
+        user did not build survived it.
 
         0097 removed eight generic catch-alls and kept ``dislikes`` as "very narrow and
         specific"; the ruling retires that exemption too — no intermediate legacy
         structure is left standing.  Asserted as the whole end-state rather than by
-        name: every collection row is gone, with no entries and no cursors behind it,
-        and the only ``memory`` rows left are the four log markers, which are
-        Python-populated perception rather than collections anybody would rebuild.
-        There is consequently no stored ``extraction_prompt`` in a fresh database at
-        all — every program from here on is one the user taught."""
+        name: the only ``memory`` rows left are the four log markers — Python-populated
+        perception rather than collections anybody would rebuild — plus the ONE
+        collection 0119 (#2633) deliberately re-introduced: the seeded, EMPTY ``rules``
+        collection, with no entries, no cursors, and no stored ``extraction_prompt`` —
+        every program from here on is one the user taught."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -845,8 +845,14 @@ class TestMigrate:
         ).fetchone()[0]
         conn.close()
 
-        assert collections == set()
-        assert rows == {"user-messages", "penny-messages", "browse-results", "collector-runs"}
+        assert collections == {"rules"}
+        assert rows == {
+            "user-messages",
+            "penny-messages",
+            "browse-results",
+            "collector-runs",
+            "rules",
+        }
         assert entries == 0
         assert cursors == 0
         assert prompts == 0
@@ -2034,4 +2040,49 @@ class TestMigrate:
         assert "notes" not in logged  # it had no trigger to lose
         assert "2 collection(s) lost their trigger" in logged
         assert "collection_set(name=<collection>, schedule='FREQ=HOURLY')" in logged
+        conn.close()
+
+    def test_0119_seeds_the_rules_collection(self, tmp_path):
+        """Migration 0119 (#2633): the seeded ``rules`` collection — standing rules the
+        user gives Penny — exists on every deployment, with its description and no
+        extraction prompt (a plain collection: no schedule, no prompt, no new flag).
+        The migration is the row's single source of truth; the render
+        (``agents/self_state.py``) reads it.  Idempotent — a second application
+        neither duplicates the row nor fails."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE memory ("
+            "  name TEXT PRIMARY KEY, type TEXT NOT NULL, description TEXT NOT NULL,"
+            "  archived BOOLEAN NOT NULL DEFAULT 0, notify BOOLEAN NOT NULL DEFAULT 0,"
+            "  extraction_prompt TEXT, schedule TEXT, created_at TIMESTAMP NOT NULL,"
+            "  updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00')"
+        )
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0119_seed_rules_collection.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0119", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+        mod.up(conn)  # idempotent — a second application adds nothing
+
+        rows = conn.execute(
+            "SELECT name, type, description, extraction_prompt, schedule, archived "
+            "FROM memory WHERE name='rules'"
+        ).fetchall()
+        assert len(rows) == 1
+        name, type_, description, prompt, schedule, archived = rows[0]
+        assert (name, type_) == ("rules", "collection")
+        assert description == (
+            "Standing instructions the user has given: things to always or never do"
+        )
+        assert prompt is None and schedule is None and not archived
         conn.close()

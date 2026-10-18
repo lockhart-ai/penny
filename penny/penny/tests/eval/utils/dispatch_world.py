@@ -8,8 +8,8 @@ about the world before a turn is driven, so the claims live here once rather tha
     tools the hook that mocks the boundary is the same hook that registers them, so a hook
     that silently failed would score every sample a dispatch miss the model was never
     offered; and
-  * the registry holds NO COLLECTION — nothing has been pre-seeded since migration 0108,
-    which is what makes each module's "nothing was created" check a TOTAL reading of what
+  * the registry holds NO COLLECTION — nothing the user or a sample built, which is
+    what makes each module's "nothing was created" check a TOTAL reading of what
     the turn touched rather than a sample of it.
 
 **The second claim is about COLLECTIONS, never about every memory row.**  Migration 0026
@@ -19,7 +19,9 @@ furniture: a fresh deployment has them, so a probe that demanded an empty ``memo
 was asserting something no Penny has ever been true of.  It failed all eight dispatch cases
 at the probe on their first live run, before a single sample was driven, which is why the
 shape read lives in ONE function here and why the pins in ``tests/test_eval_harness.py``
-run it against a real migrated database inside ``make check``.
+run it against a real migrated database inside ``make check``.  Migration 0119 (#2633)
+adds one more piece of the same furniture: the seeded, EMPTY ``rules`` collection, which
+seeds nothing to answer out of and is exempted by its known key the same way.
 
 Nothing in here is eval-marked: it is plain helper code the ``eval`` modules and the
 deterministic harness pins both import, the same way ``fixtures.py`` and ``report.py`` are.
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.database.models import MemoryRow
@@ -43,7 +46,15 @@ def collection_rows(db: Database) -> list[MemoryRow]:
     present in every migrated database.  Reading the shape off the row's own ``type``
     column keeps this the runtime's definition rather than a list of names to maintain — a
     new system log would join the table without anything here needing to know."""
-    return [row for row in db.memories.list_all() if row.type == MemoryType.COLLECTION]
+    return [
+        row
+        for row in db.memories.list_all()
+        if row.type == MemoryType.COLLECTION
+        # The seeded ``rules`` collection (#2633, migration 0119) is the same kind of
+        # permanent furniture the four log markers are: on every migrated database,
+        # empty, and seeded by known key — not something a sample built.
+        and row.name != PennyConstants.MEMORY_RULES_COLLECTION
+    ]
 
 
 def collection_names(db: Database) -> list[str]:
@@ -57,7 +68,8 @@ def assert_no_collections(db: Database, case_id: str) -> None:
 
     The system log markers are deliberately not counted: they are seeded by migration 0026
     into every database, so counting them would make this assertion unsatisfiable — which
-    is exactly the bug it now pins."""
+    is exactly the bug it now pins.  The seeded ``rules`` collection (#2633) joins them:
+    migration 0119 seeds it empty into every database, by known key."""
     held = collection_names(db)
     assert not held, f"{case_id}: the world must hold no collection, it holds {held}"
 

@@ -52,6 +52,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
+from penny.agents.self_state import standing_rules_section
 from penny.config import Config
 from penny.constants import (
     CYCLE_END_RETRY_REASONS,
@@ -921,11 +922,18 @@ class Collector(BackgroundAgent):
         collection holds now (#1914) and what this collector's recent runs did (#1569).
         Holdings first — the entries are what the prompt acts ON, so they sit next to
         it, and the run outcomes close the prompt as they always have.
+
+        The standing rules render between the job's own instructions and the state
+        blocks (#2633): the same shared section the chat self-state header shows, so a
+        rule about how she speaks or what she uses holds in every cycle without a
+        lookup.
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
         return (
             self._compose_prompt(fresh)
+            + "\n\n"
+            + standing_rules_section(self.db)
             + self._holdings_section(fresh.name)
             + self._run_history_section(fresh.name)
         )

@@ -101,6 +101,14 @@ def _add_entries(session: Session, name: str, count: int, *, when: datetime) -> 
         )
 
 
+def _add_rule(session: Session, key: str, content: str, when: datetime) -> None:
+    """One standing rule — an entry in the ``rules`` collection the way a user's
+    ``collection_write`` leaves one (a short key, the rule in their words)."""
+    session.add(
+        MemoryEntry(memory_name="rules", key=key, content=content, author="user", created_at=when)
+    )
+
+
 def _add_written_entry(
     session: Session,
     *,
@@ -322,6 +330,18 @@ def _seed_kitchen_sink(db: Database) -> None:
             updated_at=_t(6),
         )
         _add_entries(session, "favorites", 2, when=_t(7))
+        # The seeded rules collection (#2633) holding two rules — the WITH-rules form
+        # of the standing-rules section, oldest first; every other literal in this
+        # file renders its empty form.
+        _add_collection(
+            session,
+            "rules",
+            description=("Standing instructions the user has given: things to always or never do"),
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_rule(session, "page links", "always include a link when you mention a page", _t(7))
+        _add_rule(session, "no metric units", "never use metric units", _t(7, 30))
         _add_run(
             session,
             run_id="7f3a1b2c",
@@ -1125,7 +1145,13 @@ _KITCHEN_SINK = (
     "- news-digest (collection, 0 entries) — gather headlines\n"
     "- price-watch (collection, 1 entries) — watch a product price\n"
     "- reminder (collection, 0 entries) — one-off reminder\n"
+    "- rules (collection, 2 entries) — Standing instructions the user has given: things "
+    "to always or never do\n"
     "archived: `old-watch`\n"
+    "\n"
+    "### Standing rules\n"
+    "- page links: always include a link when you mention a page (added 2026-07-11 07:00 UTC)\n"
+    "- no metric units: never use metric units (added 2026-07-11 07:30 UTC)\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -1158,6 +1184,10 @@ _SCHEDULE_MECH = (
     "- one-off (collection, 0 entries) — check it once, at nine\n"
     "- twice-daily (collection, 0 entries) — check the peak morning and evening\n"
     "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
+    "\n"
     "### About the user\n"
     "- name: Alex\n"
     "- timezone: America/Toronto\n"
@@ -1181,6 +1211,10 @@ _EMPTY = (
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"
+    "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1215,6 +1249,10 @@ _OVERFLOW = (
     "### Your memory\n"
     "- watcher (collection, 0 entries) — a watcher\n"
     "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
+    "\n"
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
@@ -1241,6 +1279,10 @@ _ARCHIVED_HEAVY = (
     "### Your memory\n"
     "- live-watch (collection, 0 entries) — still running\n"
     "archived: `retired-0`, `retired-1`, `retired-2`\n"
+    "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1277,6 +1319,10 @@ _INSTRUCTION_SHAPES = (
     "- keepsakes (collection, 0 entries) — things worth keeping\n"
     "- plain-note (collection, 0 entries) — count the boats\n"
     "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
+    "\n"
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
@@ -1305,6 +1351,10 @@ _RUN_OUTCOME_MATRIX = (
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"
+    "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1338,6 +1388,10 @@ _RUN_WRITES = (
     "- news-digest (collection, 0 entries) — gather headlines\n"
     "- watchlist (collection, 2 entries) — pages watched\n"
     "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
+    "\n"
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
@@ -1363,6 +1417,10 @@ _RUN_WRITES_MULTI_COLLECTION = (
     "- dislikes (collection, 1 entries) — things disliked\n"
     "- likes (collection, 1 entries) — things liked\n"
     "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
+    "\n"
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
@@ -1385,6 +1443,10 @@ _EXCLUSION_RENDER = (
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"
+    "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1424,6 +1486,10 @@ _MUTATION_CHANGED_FIELDS_MATRIX = (
     "### Your memory\n"
     "(no stores yet)\n"
     "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
+    "\n"
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
@@ -1462,6 +1528,10 @@ _MUTATION_NOTE_MATRIX = (
     "### Your memory\n"
     "(no stores yet)\n"
     "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
+    "\n"
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
@@ -1487,6 +1557,10 @@ _EMISSION_MATRIX = (
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"
+    "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1517,6 +1591,10 @@ _MUTATION_BARE_MATRIX = (
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"
+    "\n"
+    "### Standing rules\n"
+    "(none yet — when the user asks you to always or never do something, it goes in "
+    "`rules`)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
