@@ -21,11 +21,12 @@ import httpx
 import openai
 import pytest
 
+from penny.constants import PennyConstants
 from penny.database.message_store import PromptPerf
 from penny.database.models import PromptLog
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmFault, LlmResponseError, LlmTimeoutError
+from penny.llm.models import CallOutcome, LlmError, LlmFault, LlmResponseError, LlmTimeoutError
 from penny.tests import conftest as root_conftest
 from penny.tests.eval import conftest as eval_conftest
 from penny.tests.eval.utils import cohort as eval_cohort
@@ -77,6 +78,29 @@ def _rate_limited() -> openai.APIStatusError:
     return openai.RateLimitError("Error code: 429", response=response, body=None)
 
 
+def _server_error() -> openai.APIStatusError:
+    """A real 500 the way the SDK raises it."""
+    request = httpx.Request("POST", "https://gateway.example/api/v1/chat/completions")
+    response = httpx.Response(500, request=request, json={"error": {"message": "upstream down"}})
+    return openai.InternalServerError("Error code: 500", response=response, body=None)
+
+
+def _bad_request() -> openai.APIStatusError:
+    """A real 400 the way the SDK raises it — Penny's own malformed or oversized request,
+    never the provider's doing, and the precise shape #2526 must NOT exclude."""
+    request = httpx.Request("POST", "https://gateway.example/api/v1/chat/completions")
+    response = httpx.Response(400, request=request, json={"error": {"message": "request too long"}})
+    return openai.BadRequestError("Error code: 400", response=response, body=None)
+
+
+def _connection_refused() -> openai.APIConnectionError:
+    """A dropped connection — no HTTP status at all, so no ``fault_for_status`` reading
+    applies; it lands on ``LlmConnectionError``'s own default fault."""
+    return openai.APIConnectionError(
+        message="Connection refused", request=httpx.Request("POST", "https://gateway.example/api")
+    )
+
+
 class TestTheCohortBar:
     """More than half of a case's intended samples must have run — and the bar SAYS so."""
 
@@ -104,6 +128,41 @@ class TestTheCohortBar:
         assert results_needed(5) == 3
         assert results_needed(4) == 3
         assert results_needed(1) == 1
+
+
+class TestExcludedSamplesCountAgainstViabilityToo:
+    """Completed used to be the whole bar — a sample that ran but answered no claim
+    (excluded, #2526) still read as a result.  ``scored`` (``completed - excluded``) is
+    what the bar actually needs, so a run every one of whose samples was excluded can no
+    longer print ``5 of 5 completed`` and ``this run is a result`` in the same breath."""
+
+    def test_a_cohort_run_in_full_but_mostly_excluded_is_not_viable(self) -> None:
+        cohort = CohortRecord(case_id="cold-ask", intended=5, completed=5, excluded=4)
+        assert cohort.scored == 1
+        assert cohort.dead == 0  # every sample ran — nothing is "dead" in the old sense
+        assert not cohort.viable
+
+    def test_a_cohort_run_in_full_and_mostly_scored_stays_viable(self) -> None:
+        cohort = CohortRecord(case_id="cold-ask", intended=5, completed=5, excluded=1)
+        assert cohort.scored == 4
+        assert cohort.viable
+
+    def test_the_block_shows_the_excluded_count_and_refuses_the_run(self) -> None:
+        health = RunHealth(
+            cohorts=[CohortRecord(case_id="cold-ask", intended=5, completed=5, excluded=4)],
+            calls=20,
+        )
+        assert not health.viable
+        rendered = health.render()
+        assert "4 sample(s) ran and answered no claim (excluded) — cold-ask 4" in rendered
+        assert "not readable: cold-ask 1/5 (4 excluded)" in rendered
+        assert "REFUSED: 1 case(s) scored a fraction of their intended cohort" in rendered
+
+    def test_a_run_that_excluded_nothing_prints_no_excluded_count_line(self) -> None:
+        """The GENERAL mention of ``excluded`` in the samples line's own gloss stays —
+        it is quiet by default the same way faults and budget cuts are: no case-by-case
+        COUNT line when nothing was excluded."""
+        assert "ran and answered no claim (excluded)" not in _HEALTHY.render()
 
 
 class TestTheFaultTallyReadsWhatTheClientWrites:
@@ -174,6 +233,87 @@ class TestTheFaultTallyReadsWhatTheClientWrites:
             logger.removeHandler(tally)
 
         assert tally.calls == 0
+
+
+async def _raise_on_chat(client: LlmClient, monkeypatch, error: Exception) -> None:
+    """Drive the real client's retry loop to exhaustion on ``error``, so its own
+    ``_log_call`` writes the one promptlog row this error ends in — the write side
+    proven against the real client, never a hand-built row."""
+
+    async def refuse(**kwargs):
+        raise error
+
+    monkeypatch.setattr(client.client.chat.completions, "create", refuse)
+    with pytest.raises(LlmError):
+        await client.chat(
+            [{"role": "user", "content": "hi"}],
+            call_link=CallLink.new_top(),
+            agent_name=PennyConstants.CHAT_AGENT_NAME,
+        )
+
+
+class TestAProviderRefusalIsExcludedAsItsOwnFault:
+    """A call the PROVIDER refused outright — 429 or 5xx, after the client's own retries
+    ran out (#2526) — voids its sample as an infrastructure fault rather than scoring
+    Penny's canned apology as her own failure to reply.  Keyed to the two fields the
+    client already classifies the failure by (``call_outcome``/``call_error_fault``),
+    never to the delivered text: the apology IS a real, non-empty reply.
+
+    Narrow ON PURPOSE: a 4xx (Penny's own malformed or oversized request), a dropped
+    connection, and every other raised shape are real, scorable behaviour and must stay
+    scored, however much they resemble an infrastructure fault."""
+
+    _APOLOGY = "Sorry, I had trouble reaching the AI model. Please try again."
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error_factory", "fault"),
+        [
+            (_rate_limited, LlmFault.RATE_LIMITED),
+            (_server_error, LlmFault.SERVER_ERROR),
+        ],
+    )
+    async def test_a_429_or_5xx_persists_its_fault_and_excludes_the_sample(
+        self, db, monkeypatch, error_factory: Callable[[], Exception], fault: LlmFault
+    ) -> None:
+        client = LlmClient("https://gateway.example/api", "m", db, max_retries=1, retry_delay=0.0)
+        try:
+            await _raise_on_chat(client, monkeypatch, error_factory())
+        finally:
+            await client.close()
+
+        row = db.messages.recent_prompts(1)[0]
+        assert (row.call_outcome, row.call_error_fault) == (CallOutcome.RAISED.value, fault.value)
+        assert eval_conftest._exclusion(db, self._APOLOGY) == eval_conftest.PROVIDER_REFUSED
+        assert eval_conftest._cycles_exclusion(db, "") == eval_conftest.PROVIDER_REFUSED
+
+    @pytest.mark.asyncio
+    async def test_a_400_is_pennys_own_doing_and_stays_scored(self, db, monkeypatch) -> None:
+        """A malformed or oversized request is Penny's own failure, not the provider
+        refusing — so it must NOT exclude, whatever the reply looks like."""
+        client = LlmClient("https://gateway.example/api", "m", db, max_retries=1, retry_delay=0.0)
+        try:
+            await _raise_on_chat(client, monkeypatch, _bad_request())
+        finally:
+            await client.close()
+
+        row = db.messages.recent_prompts(1)[0]
+        assert row.call_error_fault == LlmFault.CLIENT_ERROR.value
+        assert eval_conftest._exclusion(db, self._APOLOGY) is None
+        assert eval_conftest._cycles_exclusion(db, "wrote") is None
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_connection_stays_scored_too(self, db, monkeypatch) -> None:
+        """No HTTP status at all — a different fault entirely, and still not this one."""
+        client = LlmClient("https://gateway.example/api", "m", db, max_retries=1, retry_delay=0.0)
+        try:
+            await _raise_on_chat(client, monkeypatch, _connection_refused())
+        finally:
+            await client.close()
+
+        row = db.messages.recent_prompts(1)[0]
+        assert row.call_error_fault == LlmFault.CONNECTION.value
+        assert eval_conftest._exclusion(db, self._APOLOGY) is None
 
 
 def _row(
@@ -270,7 +410,8 @@ class TestTheBlockARunPrintsAboutItself:
     def test_a_healthy_run_says_so_in_full(self) -> None:
         assert _HEALTHY.render() == (
             "samples: 10 of 10 completed · 0 dead "
-            "(completed = the sample's measured turn ran and was scored)\n"
+            "(completed = the sample's measured turn ran; excluded, below, is "
+            "completed but answered no claim)\n"
             "cases: 2 of 2 readable — a case must complete more than half the samples "
             "it intended\n"
             "model calls: 612 attempts · 0 faulted\n"
@@ -282,7 +423,8 @@ class TestTheBlockARunPrintsAboutItself:
     def test_a_degraded_run_names_the_dead_cases_and_blames_the_dominant_class(self) -> None:
         assert _DEGRADED.render() == (
             "samples: 5 of 10 completed · 5 dead "
-            "(completed = the sample's measured turn ran and was scored)\n"
+            "(completed = the sample's measured turn ran; excluded, below, is "
+            "completed but answered no claim)\n"
             "  2 boot(s) retried after a transient preflight fault — chat-browse 2\n"
             "cases: 1 of 2 readable — a case must complete more than half the samples "
             "it intended\n"
@@ -327,7 +469,8 @@ class TestTheBlockARunPrintsAboutItself:
         )
         assert cut.render() == (
             "samples: 5 of 5 completed · 0 dead "
-            "(completed = the sample's measured turn ran and was scored)\n"
+            "(completed = the sample's measured turn ran; excluded, below, is "
+            "completed but answered no claim)\n"
             "cases: 1 of 1 readable — a case must complete more than half the samples "
             "it intended\n"
             "model calls: 487 attempts · 0 faulted\n"

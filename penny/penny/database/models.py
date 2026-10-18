@@ -59,6 +59,13 @@ class PromptLog(SQLModel, table=True):
     # the canceller's to record, not this client's).
     call_error_class: str | None = None
     call_error_message: str | None = None
+    # The failed call's own ``LlmFault`` value (``penny.llm.models.LlmFault`` — "429",
+    # "5xx", "4xx", "no choices", …), set only on "timed_out"/"raised" alongside the two
+    # columns above.  The client already classifies a response error by status at the
+    # moment it raises (``fault_for_status``) — this is that same classification,
+    # persisted, so a reader can tell a provider-side refusal (429/5xx) from Penny's own
+    # malformed or oversized request (4xx) without re-parsing the error message (#2526).
+    call_error_fault: str | None = None
     # The enclosing chat/collector run this call was made ON BEHALF OF, when it is a
     # micro-context draw made inside that run rather than the run's own top-level call
     # (every micro-context customer sets this; it is None for an ordinary agent-loop

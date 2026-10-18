@@ -50,7 +50,7 @@ from penny.database.models import Media, MemoryRow, MutationEvent, PromptLog, Se
 from penny.database.mutation_store import mutation_detail
 from penny.datetime_utils import user_timezone_name
 from penny.llm.call_link import CallLink
-from penny.llm.models import strip_harmony_control_tokens
+from penny.llm.models import CallOutcome, LlmFault, strip_harmony_control_tokens
 from penny.notification import NotificationInput, render_notification
 from penny.penny import Penny
 from penny.preflight import PreflightError
@@ -2292,9 +2292,18 @@ async def _run_samples(
     voided = [outcome for outcome in driven if isinstance(outcome, eval_cohort.SampleObservation)]
     # What the case ASKED for beside what it got, recorded whatever happens next — this is
     # the only place both numbers exist, and a case that dies on its threshold must still
-    # contribute its cohort to the run's health block.
+    # contribute its cohort to the run's health block.  ``excluded`` is counted beside
+    # ``completed`` rather than folded into it (#2526): a sample that ran and was excluded
+    # DID complete its drive — the dead-sample majority bar above stays about samples that
+    # never produced a measured turn at all — but it answered no claim either, so the
+    # viability verdict reads it off ``scored`` (``completed - excluded``), not ``completed``.
+    excluded = sum(1 for result in results if result.excluded is not None)
     run_health.record_cohort(
-        case_id, intended=samples, completed=len(results), retried_boots=retried_boots
+        case_id,
+        intended=samples,
+        completed=len(results),
+        excluded=excluded,
+        retried_boots=retried_boots,
     )
     return _Drive(results=results, perf=perf, voided=voided)
 
@@ -2323,22 +2332,34 @@ EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its seeded world"
 NO_REPLY = "the measured turn produced no reply"
 # A naive chat turn (#2455) opens directly with the chat agent — there is no state
-# classifier ahead of it anymore, so there is nothing for it to run "undecided" on.  The
-# chat agent's own call can still fail at the endpoint: it raises before the client's
-# persist step and writes no row, and the user is sent Penny's canned model-error reply.
-# That reply measures the endpoint, so the sample is a harness loss.  A chat call that
-# DREW but came back unusable is not this: every reroll-exhausted draw was persisted
-# before it was discarded, so its rows are there and the failure is the model's, scored
-# like any other reply.
+# classifier ahead of it anymore, so there is nothing for it to run "undecided" on.  A
+# chat sample whose own rows carry no chat-agent call at all is one where the TURN never
+# reached its own agent — a micro-context (browse's extraction, say) ran and logged its
+# own rows, but whatever came after never got as far as the chat agent's own draw — and
+# the user was sent Penny's canned model-error reply.
 #
-# THE COST, STATED: this reads whether the turn's chat agent logged ANY row, so an endpoint
-# failure after the turn already logged a call (a tool step, then a refused call) leaves the
-# rows of the calls that came back and stays scored.  And a backend that refuses to PARSE every
-# draw as a tool call (Ollama's "error parsing tool call") raises before persisting too, so a
-# turn spent on nothing but those reads as an endpoint failure.
+# Before #2355 part A, this was ALSO how a chat call that raised at the endpoint showed
+# up: the client wrote a row only on a usable response, so a raised call wrote none and
+# "no chat-agent row" was the only signal of it.  That is no longer true — every call now
+# writes its one row however it ends (``CallOutcome``), so a chat agent that raised is
+# NOT this case: it carries a chat-agent row with ``call_outcome="raised"``, and
+# ``_chat_drew`` reads it as drawn.  A provider-side refusal (429/5xx) in that row is
+# caught separately, by ``_provider_refused``/``PROVIDER_REFUSED`` below; any OTHER
+# raised shape (a connection error, a model-not-found, Penny's own malformed/oversized
+# request) is left to be scored — the reply IS Penny's canned apology, and that is
+# exactly what she did.
 NO_CHAT_DRAW = "the chat model's call failed at the endpoint, so the reply is Penny's canned error"
 NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
 NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world the case built"
+# A call the PROVIDER refused outright — rate limited (429) or a server error (5xx) —
+# after the client's own retries ran out (#2526).  Keyed to the two recorded fields the
+# client classifies the failure by (``call_outcome``/``call_error_fault``), never to the
+# delivered text: the canned apology IS a reply, so nothing about its wording tells a
+# provider's refusal apart from the model genuinely declining.  Deliberately narrow — a
+# 4xx (Penny's own malformed or oversized request), a connection error, a timeout, a
+# tool-parse failure and a "no choices" 200 are all real, scorable behaviour, not an
+# infrastructure fault, however much they resemble one.
+PROVIDER_REFUSED = "the model call was refused by the provider (rate limited or a server error)"
 # The sample the rig never got STARTED (#2070).  Its siblings above are read off a live
 # database, because the sample ran and left one; this one is written by ``_run_samples``
 # when standing the world up raised — a preflight against an unreachable endpoint, a
@@ -2722,13 +2743,19 @@ def _exclusion(db: Database, reply: str) -> str | None:
     that voided one for that would void the entire cohort and refuse the run (#2017).
 
     A naive chat turn (#2455) opens directly with the chat agent, so a sample whose turn ran
-    but whose own rows carry no chat-agent draw is one whose chat call failed at the endpoint:
-    read off the promptlog, since a call that raised is exactly the call that wrote no row.
+    but whose own rows carry no chat-agent draw never reached its own agent at all (see
+    ``NO_CHAT_DRAW``'s own comment for what that is, now that #2355 logs a row on every
+    outcome).  A chat-agent call the PROVIDER refused outright (``PROVIDER_REFUSED``) is
+    checked separately and BEFORE the reply is read, since that call's row is there and the
+    delivered reply is Penny's canned apology — a real, non-empty reply that would otherwise
+    read as the model's own failure to answer.
     """
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
     if not _chat_drew(db):
         return NO_CHAT_DRAW
+    if _provider_refused(db):
+        return PROVIDER_REFUSED
     if not reply.strip():
         return NO_REPLY
     return None
@@ -2739,6 +2766,25 @@ def _chat_drew(db: Database) -> bool:
     sample row directly, since a naive chat turn (#2455) opens with the chat agent and has
     no earlier classifier row to read a "since" boundary from."""
     return any(row.agent_name == PennyConstants.CHAT_AGENT_NAME for row in _sample_prompt_rows(db))
+
+
+def _provider_refused(db: Database) -> bool:
+    """Whether this sample's measured window carries a call the provider refused outright
+    (#2526) — read off the two fields the client classifies the failure by, never off any
+    delivered text.
+
+    ``call_outcome == "raised"`` is every call that never got a usable answer (a connection
+    error, a model-not-found, Penny's own malformed/oversized request, a provider's refusal —
+    see ``CallOutcome``); ``call_error_fault`` narrows that to the two shapes that are the
+    PROVIDER's own doing rather than Penny's (``fault_for_status`` in ``penny.llm.models`` —
+    429 is ``RATE_LIMITED``, 5xx is ``SERVER_ERROR``).  Checked over every row in the sample's
+    own window, main agent or micro-context alike, because any one of them poisons the
+    sample's measured turn the same way."""
+    refusing_faults = {LlmFault.RATE_LIMITED.value, LlmFault.SERVER_ERROR.value}
+    return any(
+        row.call_outcome == CallOutcome.RAISED and row.call_error_fault in refusing_faults
+        for row in _sample_prompt_rows(db)
+    )
 
 
 def _draw_exclusion(db: Database, answer: str) -> str | None:
@@ -3769,9 +3815,13 @@ def _cycles_exclusion(db: Database, script: str) -> str | None:
 
     A cycle the dispatcher REFUSED never ran against the world the case built, so every claim
     would be answered on a world the model never saw — the failure-cause partition would then
-    tag it behavioural, which is the one thing it is not."""
+    tag it behavioural, which is the one thing it is not.  Checked ahead of that: a call the
+    PROVIDER refused outright (``PROVIDER_REFUSED``, #2526) inside any of the sample's cycles
+    is the same class of infrastructure fault as a refused cycle, whichever cycle it hit."""
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
+    if _provider_refused(db):
+        return PROVIDER_REFUSED
     if CYCLE_DEAD in script:
         return NO_CYCLE
     return None
