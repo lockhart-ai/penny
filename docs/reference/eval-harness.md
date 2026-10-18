@@ -7,21 +7,14 @@ Covers the live-model eval harness's running, reporting and posting mechanics be
 **Every case declares its area, and the list of cases is generated from them (#2214).** A
 case passes its driver `area=` — a member of the closed `Area` set in `utils/catalogue.py`
 (teaching a routine · memory · answering from the web · standing jobs ·
-notifications · background collectors · reading a page · chat tools, plus the retired
-`conversation machine` value, below) — and, for a case that still declares one,
-`edge=(from_state, to_state)`, validated against `OUT_EDGES`. **There is no conversation
-machine any more** (#2455 naive baseline), so `ConversationState`/`OUT_EDGES`/`Layer.CLASSIFIER_DRAW`
-and the `conversation machine` area are all RETIRED — kept in `utils/catalogue.py`, frozen
-exactly as they last stood, only so the handful of historical cases/fixtures that already
-named an edge they walked have somewhere to validate it against; no current case declares
-either. A whole-turn case names the move its turn makes; the LAYER (whole turn ·
+notifications · background collectors · reading a page · chat tools). A whole-turn case
+names the move its turn makes; the LAYER (whole turn ·
 micro-context · collector cycle) is not declared: each driver states its own.
 `docs/eval-catalogue.md` is the document generated from those declarations — each area's cases
-(id · behaviour sentence · first wording · edge), and one row per machine edge naming the cases
-that cover it. It is generated **on demand**
+(id · behaviour sentence · first wording). It is generated **on demand**
 (`make catalogue`) and gitignored — never committed (#2395), so a PR that adds, renames or
 re-declares a case edits no shared file. **`make check` re-collects the same declarations**
-and fails on a bad area, a bad edge, or a case sharing its id with another — there is no
+and fails on a bad area or a case sharing its id with another — there is no
 committed file to go stale against. Collecting the cases calls no model and no endpoint: with
 `EVAL_CATALOGUE` naming a file, each driver validates its case, appends it as a
 `CatalogueEntry` and skips the test before a sample is stood up
@@ -183,8 +176,8 @@ carries the flag per sample (`sample_aborted`, aligned with `sample_scores`).
 
 **Every driver refuses a case that names nothing to drive** — `chat_eval` with no `ask`, `collector_cycles_eval`
 with no `arms`, a micro-context driver with no instruction, utterance or turns — one that states a floor
-or leaves `min_pass_rate` unstated, and one that states no behaviour, declares no `area` or names an
-`edge` the machine does not have, each with an error naming the case, before a sample runs. A
+or leaves `min_pass_rate` unstated, and one that states no behaviour or declares no `area`,
+each with an error naming the case, before a sample runs. A
 case is one ask in its wordings and the claims its body makes against the cohort that comes back;
 no driver takes a per-sample scorer, and a structural pin in `make check` reads that off the AST
 of `conftest.py` and every module under `tests/eval/drivers/` — **a new driver is its own module

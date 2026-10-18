@@ -55,7 +55,7 @@ catches a rise.
 
 Everything above is written for **one enactment, one entry condition, one model run** — a chat
 turn, a collector cycle seeded directly, or a micro-context call. The **end-to-end job case** is a
-declared exception to that, because it answers a question a single-edge case cannot: whether what
+declared exception to that, because it answers a question a single-enactment case cannot: whether what
 one stage builds is what the next stage actually runs on. A chat case stops at the configured row;
 a collector case seeds a program directly and runs one cycle against it. Neither can tell a swap in
 how a routine is recorded or instantiated from a swap in Penny's behaviour.
@@ -73,7 +73,7 @@ An end-to-end case drives **several SCRIPTED turns**, then the job those turns c
   the turns written for one that didn't — how many turns a sample needed is itself a measured
   variance feature (#2494).
 - **The entry condition is still seeded** — the way every case's is: what the chat phase's world
-  holds when the script starts (an empty machine, or a routine already taught and running
+  holds when the script starts (no job stood up yet, or a routine already taught and running
   elsewhere). What changes is that the round's own turns are **driven for real** rather than seeded
   as an earlier turn already having happened, because the question is whether the round's own
   output is the cycle's input.
@@ -84,15 +84,15 @@ An end-to-end case drives **several SCRIPTED turns**, then the job those turns c
   job's cycles run, and a claim reads the **union** of what they hold and sent.
 - **Claims read only:** what the store's entries hold, what reached the user (chat replies and
   collector notifications together), a created job's own terms — cadence, end, whether it tells
-  the user — and provenance. They never read which collection a job lands on, a routine's shape or
-  bound values, or which conversation-machine states the script passed through on the way. A later
-  variant that changes any of those is still measured by the same case.
+  the user — and provenance. They never read which collection a job lands on, or a routine's
+  shape or bound values. A later variant that changes any of those is still measured by the same
+  case.
 - **A failure at an early stage fails the later claims too**, by construction — a script that never
   creates a job has no cycles to run, and a cycle run against the wrong world answers nothing. The
-  sample's own **walk** — the conversation machine's moves, then every created job's own ordered
-  cycle script (`wrote` / `quiet` / `…+told`) — is what a reader opens to see which stage broke.
+  sample's own **walk** — every created job's own ordered cycle script (`wrote` / `quiet` /
+  `…+told`) — is what a reader opens to see which stage broke.
 
-**Single-edge cases keep their existing rule, unchanged.** `chat_eval` and `collector_cycles_eval`
+**Single-enactment cases keep their existing rule, unchanged.** `chat_eval` and `collector_cycles_eval`
 still drive one enactment each, with the entry condition seeded; nothing above licenses a chat or
 collector case to script multiple turns or multiple cycles into one body.
 
@@ -100,7 +100,7 @@ collector case to script multiple turns or multiple cycles into one body.
 scripted wordings of the whole conversation, an `EndToEndArm` each, carrying its own seed, its own
 chat-phase `World` and its own per-cycle pages. `SampleObservation.cycles` (a list of
 `CycleSnapshot`, `utils/cohort.py`) carries what every created job's cycles left, read beside the
-chat-phase fields a single-edge case already reads. The job-terms claims a case makes against it —
+chat-phase fields a single-enactment case already reads. The job-terms claims a case makes against it —
 `Cohort.assert_a_new_job_fires_every` / `_notifies` / `_ends_when_asked` (`utils/assertions.py`) —
 read every mechanism **born this run**, existentially: the claim is that a job she created has the
 asked terms, never that she created exactly one, since "exactly one" would assert a restraint the
@@ -217,8 +217,7 @@ accident:
 asked to keep it; what the store held before the turn still holds it, unchanged, unless the ask
 named it; and a fact is not mis-stored — a dislike filed under likes is a false fact, not a
 choice about how to work. `PROVENANCE` states that nothing stored or said was invented. That is
-the whole of what may be claimed (#2496 retired the landed category: where the machine went is
-the machine's own record, not a claim).
+the whole of what may be claimed.
 
 **No case may assert restraint.** *Wrote nothing · created no mechanism · opened no page · wrote
 nowhere else.* Whether to note, look up, or remember something the user merely mentioned is the
@@ -233,8 +232,7 @@ check calling it correct.
 
 **A no-fire case asserts `PROVENANCE` and the preservation of what was already there, and
 nothing more.** It remains its own case; what changes is its behaviour sentence, which names the
-state she stays in rather than the action she refrains from, and the state she stayed in is
-read off the walk as a measured feature rather than claimed (#2496).
+state she stays in rather than the action she refrains from.
 
 The near boundary: *nothing the ask excluded was stored* **is** an assertion, because an excluded
 token appears only on a line the ask rules out in as many words (§12). The ask named it, so a
@@ -245,7 +243,7 @@ stored exclusion is a wrong fact rather than a matter of taste.
 The three shapes the drivers serve read the rule differently, because what the model returns is
 different in each:
 
-- **Chat and a collector** leave their trail in the stores and the machine, so their assertions are
+- **Chat and a collector** leave their trail in the stores, so their assertions are
   reads of that trail: where it landed, what the store holds, which record fields the run carries.
 - **A microcontext returns a typed result, and that result splits in two.** Its **closed** fields —
   the outcome enum, a state, the parameter set minted, which spots were named — are strictly
@@ -364,7 +362,7 @@ time, on every case.**
 >
 > ### Then — for the case itself
 >
-> **Declare the area, and the edge when the case covers one** (§4).
+> **Declare the area** (§4).
 
 **The inward direction is the one nobody runs.** Outward feels like work — you are looking at a
 check and deciding its fate. Inward looks like nothing is missing, because the thing that is missing
@@ -425,7 +423,6 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
         case_id="<behaviour>-<what it does>",
         behaviour=<THE SENTENCE>,                       # what this case checks — below
         area=Area.<AREA>,                               # the part of Penny it is about — below
-        edge=(<FROM STATE>, <TO STATE>),                # only when it covers a machine edge
         model=model,
         seed=<the round this turn continues>,           # seeded, never hoped for
         world=<WORLD>,                                  # the pages, the keeps, the excludes
@@ -443,8 +440,7 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     # measured, never asserted — section B
-    cohort.measure(TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS,
-                   REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 ```
 
 The category comments are load-bearing: they are where the **inward** pass is run. A case
@@ -476,7 +472,7 @@ async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> N
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 ```
 
 Each arm's `seed` lays the entry condition down through the **store's own write path**, under the
@@ -501,7 +497,7 @@ async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
         family=_FAMILY,
     )
     # STORE — the CLOSED field of the typed result, asserted by equality.  One call
-    # returns a value; it moves no machine and writes to no store, so its claims read the
+    # returns a value and writes to no store, so its claims read the
     # draw's recorded output rather than a collection row.
     # PROVENANCE — the OPEN fields, reachable only through fact alignment, both directions
     cohort.claim("state: <what the page supplies arrived>", _carries(<ANCHOR>),
@@ -541,25 +537,23 @@ driver call, required, and it renders in the case's report header above every
 number: a case id says which fixture ran, and a rate means nothing until a reader knows what was
 being asked.
 
-**Every case declares its area, and the edge it covers when it covers one.** `area=` is a member
-of the closed `Area` set (`utils/catalogue.py`) — the part of Penny the case is about. **There is
-no conversation machine any more** (#2455 naive baseline), so `edge=` and the `conversation
-machine` area are RETIRED, kept in `utils/catalogue.py` only for the few historical cases/fixtures
-that already named an edge they walked; no current case declares either. A whole-turn case names
-the move its turn makes. The **layer** — whole turn, micro-context, collector cycle — is
+**Every case declares its area.** `area=` is a member
+of the closed `Area` set (`utils/catalogue.py`) — the part of Penny the case is about. A
+whole-turn case names the move its turn makes. The **layer** — whole turn, micro-context,
+collector cycle — is
 not declared: it is the driver the case uses.
 
 **`docs/eval-catalogue.md` is the list of every case**, generated from those declarations: each
 area's cases with their behaviour sentence and first wording. It's generated **on demand** (`make
 catalogue`) and never committed, so adding, renaming or re-declaring a case touches no shared
-file (#2395); `make check` re-collects the same declarations and fails on a bad area, a bad
-edge, or a case sharing its id with another — never on staleness, since nothing is committed to
+file (#2395); `make check` re-collects the same declarations and fails on a bad area or a case
+sharing its id with another — never on staleness, since nothing is committed to
 compare against. Collecting the cases calls no model: with `EVAL_CATALOGUE` set, each driver
 records its case and skips before a sample is stood up.
 
 **A driver refuses a case it cannot drive as a cohort**, with an error naming the case, before a
-sample runs: one with no `behaviour`, one with no `area` or with an `edge` the retired machine
-does not have, one that names nothing to drive (`ask` for chat, `arms` for a collector,
+sample runs: one with no `behaviour`, one with no `area`, one that names nothing to drive
+(`ask` for chat, `arms` for a collector,
 the instruction, utterance or turns for a microcontext), and one that leaves `min_pass_rate`
 unstated or states a floor. No driver takes a per-sample scorer: the body's claims against the
 returned cohort are the only way a case is graded.
@@ -582,7 +576,7 @@ site. It decides how the feature is *read*, not whether it is measured:
 
 | class | means | features | what it makes a divergence |
 |---|---|---|---|
-| **consequential** (the default) | a divergence implies a different end state | tool sequence, entries stored, transitions, cycle script, job terms | a finding about **that sample** — worth looking at on its own |
+| **consequential** (the default) | a divergence implies a different end state | tool sequence, entries stored, job terms, the end-to-end walk | a finding about **that sample** — worth looking at on its own |
 | **cosmetic** | a divergence is a different word for the same outcome | turns sent, reply text | a finding about the **system** — measured and reported, never a fact about one sample |
 
 A feature not in that table is classified by the question, not by the list: **does a divergence here
