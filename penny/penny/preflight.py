@@ -3,7 +3,7 @@
 Consolidates Penny's startup prerequisite checks into one legible surface so a
 fresh deploy fails fast on a hard misconfiguration (unreachable LLM endpoint,
 an unresolvable chat or embedding model) and surfaces soft degradations (a
-missing vision/image model, a disconnected browser addon, a mis-routed primary
+missing image model, a disconnected browser addon, a mis-routed primary
 channel) as visible warnings instead of silent no-ops.
 
 The ``Preflight`` orchestrator runs each check and returns a ``PreflightReport``;
@@ -54,7 +54,6 @@ class PreflightCheck(StrEnum):
 
     LLM_ENDPOINT = "llm-endpoint"
     EMBEDDING_MODEL = "embedding-model"
-    VISION_MODEL = "vision-model"
     IMAGE_MODEL = "image-model"
     BROWSER_ADDON = "browser-addon"
     PRIMARY_CHANNEL = "primary-channel"
@@ -142,7 +141,6 @@ class Preflight:
         config: Config,
         model_client: LlmClient,
         embedding_client: LlmClient,
-        vision_client: LlmClient | None,
         image_client: OllamaImageClient | None,
         browser_enabled: bool,
         browser_connected: bool,
@@ -152,7 +150,6 @@ class Preflight:
         self.config = config
         self.model_client = model_client
         self.embedding_client = embedding_client
-        self.vision_client = vision_client
         self.image_client = image_client
         self.browser_enabled = browser_enabled
         self.browser_connected = browser_connected
@@ -164,7 +161,6 @@ class Preflight:
         candidates: list[CheckResult | None] = [
             await self._check_llm_endpoint(),
             await self._check_embedding_model(),
-            await self._check_vision_model(),
             await self._check_image_model(),
             self._check_browser_addon(),
             self._check_primary_channel(),
@@ -263,29 +259,6 @@ class Preflight:
         )
 
     # ── Soft-warn checks ─────────────────────────────────────────────────
-
-    async def _check_vision_model(self) -> CheckResult | None:
-        """Vision model resolves if configured (soft warn)."""
-        if not self.config.llm_vision_model or self.vision_client is None:
-            return None
-        name = PreflightCheck.VISION_MODEL
-        model = self.config.llm_vision_model
-        url = self.config.llm_vision_api_url or self.config.llm_api_url
-        try:
-            available = await self.vision_client.list_models()
-        except LlmError as error:
-            return self._warn(
-                name,
-                f"could not verify vision model {model!r} at {url}: {error}. Image "
-                f"understanding degraded until it resolves.",
-            )
-        if model_available(model, available):
-            return self._ok(name, f"vision model {model!r} available at {url}")
-        return self._warn(
-            name,
-            f"vision model {model!r} not available at {url} — pull it "
-            f"(`ollama pull {model}`). Image understanding degraded until then.",
-        )
 
     async def _check_image_model(self) -> CheckResult | None:
         """Image-generation model resolves if configured (soft warn)."""

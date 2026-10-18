@@ -161,9 +161,6 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_model": os.getenv("LLM_MODEL", "gpt-oss:20b"),
         "llm_api_key": os.getenv("LLM_API_KEY", "not-needed"),
         "llm_provider": os.getenv("LLM_PROVIDER"),
-        "llm_vision_model": os.getenv("LLM_VISION_MODEL"),
-        "llm_vision_api_url": os.getenv("LLM_VISION_API_URL"),
-        "llm_vision_api_key": os.getenv("LLM_VISION_API_KEY"),
         "llm_image_model": os.getenv("LLM_IMAGE_MODEL"),
         "llm_embedding_model": os.getenv("LLM_EMBEDDING_MODEL"),
         "llm_embedding_api_url": os.getenv("LLM_EMBEDDING_API_URL"),
@@ -246,9 +243,6 @@ class Config:
     log_file: str | None = None
     log_max_bytes: int = 10 * 1024 * 1024  # 10 MB
     log_backup_count: int = 5
-    llm_vision_model: str | None = None  # Vision model for image understanding
-    llm_vision_api_url: str | None = None  # Override API URL for vision model
-    llm_vision_api_key: str | None = None  # Override API key for vision model
     llm_image_model: str | None = None  # Image generation model (e.g., x/z-image-turbo)
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model

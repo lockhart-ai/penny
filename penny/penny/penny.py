@@ -102,8 +102,8 @@ class Penny:
         """Create an LlmClient with standard configuration.
 
         ``provider_pin`` belongs to an ENDPOINT rather than to the deployment, so
-        each caller states its own: a client pointed somewhere else (the vision or
-        embedding endpoint) is talking to a different service, and an upstream pinned
+        each caller states its own: a client pointed somewhere else (the embedding
+        endpoint) is talking to a different service, and an upstream pinned
         for the chat gateway means nothing there.
         """
         return LlmClient(
@@ -128,15 +128,6 @@ class Penny:
         self.model_client = self._create_llm_client(
             config.llm_model,
             provider_pin=ProviderPin.pin(config.llm_provider),
-        )
-        self.vision_model_client = (
-            self._create_llm_client(
-                config.llm_vision_model,
-                api_url=config.llm_vision_api_url,
-                api_key=config.llm_vision_api_key,
-            )
-            if config.llm_vision_model
-            else None
         )
         # Embedding model is a required prerequisite (validated at config load),
         # so the client is always constructed — memory dedup and similarity
@@ -250,7 +241,6 @@ class Penny:
             model_client=self.model_client,
             db=self.db,
             config=config,
-            vision_model_client=self.vision_model_client,
             embedding_model_client=self.embedding_model_client,
             image_client=self.image_client,
             email_tools_builder=self.email_tools_builder,
@@ -393,7 +383,7 @@ class Penny:
         """Run the startup setup-health checks; abort on a hard prerequisite failure.
 
         Consolidates the startup prerequisite checks (LLM endpoint + chat model,
-        embedding model, vision/image models, browser addon, primary-channel
+        embedding model, image model, browser addon, primary-channel
         routing) into one legible log summary. Hard failures raise
         ``PreflightError`` — caught in ``main()`` and surfaced in ``penny.log``
         before exiting — instead of letting every downstream call fail opaquely.
@@ -410,7 +400,6 @@ class Penny:
             config=self.config,
             model_client=self.model_client,
             embedding_client=self.embedding_model_client,
-            vision_client=self.vision_model_client,
             image_client=self.image_client,
             browser_enabled=self.config.browser_enabled,
             browser_connected=bool(browser and browser.has_browser_connection),
@@ -548,8 +537,6 @@ class Penny:
         logger.info("Starting Penny AI agent...")
         logger.info("Channel: %s (sender_id=%s)", self.config.channel_type, self.channel.sender_id)
         logger.info("Ollama model: %s", self.config.llm_model)
-        if self.config.llm_vision_model:
-            logger.info("Ollama model: %s (vision)", self.config.llm_vision_model)
         if self.config.llm_image_model:
             logger.info("Ollama model: %s (image generation)", self.config.llm_image_model)
 
@@ -680,8 +667,6 @@ class Penny:
         await self.channel.close()
         await Agent.close_all()
         await self.model_client.close()
-        if self.vision_model_client:
-            await self.vision_model_client.close()
         if self.embedding_model_client:
             await self.embedding_model_client.close()
         if self.email_client:

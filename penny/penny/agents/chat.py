@@ -14,7 +14,7 @@ from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
-from penny.constants import ChatPromptType, PennyConstants, RunOutcome
+from penny.constants import ChatPromptType, RunOutcome
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
@@ -48,8 +48,8 @@ class ChatAgent(Agent):
       via ``_build_conversation`` and ``history=``.
 
     The system prompt is identity + (page hint) + instructions + the self-state
-    header.  Vision messages bypass the tool surface and use the captioner;
-    everything else runs the standard agentic loop.
+    header.  Every turn — image or not — runs the standard agentic loop; an
+    image rides the turn's own user message (#2635) for the chat model to read.
     """
 
     name: str = "chat"
@@ -253,7 +253,8 @@ class ChatAgent(Agent):
     ) -> ControllerResponse:
         """Handle an incoming message — summary method.
 
-        Builds context, processes images, runs agentic loop.
+        Builds context, runs agentic loop. Images ride the turn's own user
+        message (#2635).
 
         ``call_link`` (#2458) is REQUIRED — a top-level run starter in its own right,
         built by the channel (``CallLink.top(run_id)``) before this turn is even
@@ -269,26 +270,8 @@ class ChatAgent(Agent):
         self._pending_page_context = page_context
         run_id = call_link.run_id
         try:
-            content, has_images = await self._process_images(content, images, call_link)
             self._current_message = content
             history = self.get_history(sender, quoted_text=quoted_text)
-
-            if has_images:
-                logger.info("Handling vision message from %s", sender)
-                self._install_tools([])
-                system_prompt = await self._build_system_prompt(
-                    sender, instructions=Prompt.VISION_RESPONSE_PROMPT
-                )
-                return await self.run(
-                    prompt=content,
-                    history=history,
-                    max_steps=PennyConstants.VISION_MAX_STEPS,
-                    call_link=call_link,
-                    system_prompt=system_prompt,
-                    on_progress=on_progress,
-                    progress_scope="foreground",
-                    prompt_type=ChatPromptType.VISION_MESSAGE,
-                )
 
             logger.info("Handling message from %s (conversation mode)", sender)
             self._install_tools(self.get_tools(run_id=run_id))
@@ -299,6 +282,7 @@ class ChatAgent(Agent):
                 call_link=call_link,
                 history=history,
                 system_prompt=system_prompt,
+                images=images,
                 on_tool_start=on_tool_start,
                 on_progress=on_progress,
                 progress_scope="foreground",
@@ -327,9 +311,10 @@ class ChatAgent(Agent):
         prompt: str,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
+        images: list[str] | None = None,
     ) -> list[LlmMessage]:
         """Build messages, injecting page context as a synthetic tools result."""
-        messages = super()._build_messages(prompt, history, system_prompt)
+        messages = super()._build_messages(prompt, history, system_prompt, images=images)
         if self._pending_page_context:
             self._inject_page_context(messages, self._pending_page_context)
         return messages
@@ -462,51 +447,6 @@ class ChatAgent(Agent):
 
     # ── Vision ────────────────────────────────────────────────────────────
 
-    async def caption_image(self, image_b64: str, call_link: CallLink) -> str:
-        """Caption an image using the vision model.
-
-        The channel layer rejects image messages before they reach this
-        method when ``LLM_VISION_MODEL`` is unset, so the client is
-        guaranteed to exist by the time we get here. Guard explicitly so
-        the type narrows without an assert.
-
-        ``call_link`` (#2458) is REQUIRED — the caller's own turn link when
-        called from inside a turn (``_process_images``, its only production
-        caller); a direct caller with no turn in progress supplies its own
-        (``CallLink.new_top()``). This caption is its own ledger-visible run —
-        ``call_link.child()`` mints its own run id, linking back to whatever
-        ``call_link`` names as parent.
-        """
-        if self._vision_model_client is None:
-            raise RuntimeError(
-                "caption_image called without a vision model client — "
-                "channel-layer validation should have rejected this message"
-            )
-        messages = [
-            LlmMessage(role="user", content=Prompt.VISION_AUTO_DESCRIBE_PROMPT, images=[image_b64]),
-        ]
-        response = await self._vision_model_client.chat(
-            messages=messages,
-            agent_name=self.name,
-            prompt_type=ChatPromptType.VISION_CAPTION,
-            call_link=call_link.child(),
-        )
-        return response.content.strip()
-
-    # ── Image processing ──────────────────────────────────────────────────
-
-    async def _process_images(
-        self, content: str, images: list[str] | None, call_link: CallLink
-    ) -> tuple[str, bool]:
-        """Caption images with vision model and build combined text prompt."""
-        if not images:
-            return content, False
-
-        captions = [await self.caption_image(img, call_link) for img in images]
-        caption = ", ".join(captions)
-        if content:
-            content = Prompt.VISION_IMAGE_CONTEXT.format(user_text=content, caption=caption)
-        else:
-            content = Prompt.VISION_IMAGE_ONLY_CONTEXT.format(caption=caption)
-        logger.info("Built vision prompt: %s", content[:200])
-        return content, True
+    # Retired with the caption step (#2635): an image rides the turn's own user
+    # message (``Agent.run(images=…)``) for the chat model to read directly —
+    # there is no separate caption call and no vision model client.

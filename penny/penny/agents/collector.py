@@ -175,14 +175,12 @@ class Collector(BackgroundAgent):
         config: Config,
         *,
         embedding_model_client: LlmClient,
-        vision_model_client: LlmClient | None = None,
     ) -> None:
         super().__init__(
             model_client=model_client,
             db=db,
             config=config,
             embedding_model_client=embedding_model_client,
-            vision_model_client=vision_model_client,
         )
         # Set per-cycle inside ``_execute_cycle``.  The scheduler runs cycles
         # one at a time, but on-demand triggers (chat's extraction-prompt test

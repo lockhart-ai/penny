@@ -254,11 +254,9 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 
 **LLM** (OpenAI-compatible endpoint — no Ollama-specific dependencies in the runtime):
 - `LLM_API_URL`: API endpoint (default: http://host.docker.internal:11434)
-- `LLM_MODEL`: Single text model for all penny agents — chat, thinking, history, notify (default: gpt-oss:20b)
+- `LLM_MODEL`: Single text model for all penny agents — chat, thinking, history, notify (default: gpt-oss:20b). Image attachments ride the chat turn's own user message for this model to read directly (it must understand images — a non-vision model fails the turn honestly rather than silently dropping the image; the separate `LLM_VISION_MODEL` captioning setup retired in #2635)
 - `LLM_API_KEY`: API key (default: "not-needed")
 - `LLM_PROVIDER`: Which upstream to **pin** when `LLM_API_URL` points at a routing gateway that serves one model from several providers (e.g. `Groq`). Optional; unset sends no routing field at all, and a direct endpoint ignores it. A **hard pin** — every request goes to exactly that provider with `allow_fallbacks: false`, so nothing is ever routed somewhere nobody chose (upstreams serving one model are not interchangeable: one was measured replacing every plain-text tool result with `{}`). A pin gets only that one provider's capacity, so size concurrency to what it sustains. Name it as the gateway reports it back (OpenRouter answers `Groq`, not `groq`); which provider answered comes back on every response and is recorded
-- `LLM_VISION_MODEL`: Vision model for image understanding (e.g., qwen3-vl). Optional; if unset, image messages get an acknowledgment response
-- `LLM_VISION_API_URL` / `LLM_VISION_API_KEY`: Override endpoint for vision model
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., embeddinggemma) — backs Penny's memory (preference dedup and similarity recall). Penny fails fast at startup if it is unset; there is no degraded, embedding-less mode
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override endpoint for embedding model
 - `LLM_IMAGE_MODEL`: Image generation model (e.g., x/z-image-turbo). Optional; enables the `generate_image` chat tool. Uses Ollama's native REST API at `LLM_IMAGE_API_URL`

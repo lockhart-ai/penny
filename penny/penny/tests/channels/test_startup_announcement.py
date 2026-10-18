@@ -491,13 +491,12 @@ async def test_startup_preflight_passes_when_models_available(make_config, mock_
 
 @pytest.mark.asyncio
 async def test_startup_preflight_skips_unconfigured_optional_models(test_config, mock_llm):
-    """Unconfigured vision/image models are skipped by preflight — not warned, not failed."""
+    """An unconfigured image-generation model is skipped by preflight — not warned, not failed."""
     penny = Penny(test_config)
     try:
         report = await penny._build_preflight().run()
         assert not report.has_failures
         names = {r.name for r in report.results}
-        assert PreflightCheck.VISION_MODEL not in names
         assert PreflightCheck.IMAGE_MODEL not in names
     finally:
         await penny.shutdown()

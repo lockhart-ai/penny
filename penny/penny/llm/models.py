@@ -266,7 +266,7 @@ class LlmMessage(BaseModel):
     Carries every field any role in use today needs — a plain system/user turn
     only ever sets ``role``/``content``; an assistant turn adds ``tool_calls``
     and/or ``thinking``; a tool-result turn adds ``tool_call_id`` and
-    ``tool_success``; a vision turn adds ``images``.  One model, not a family
+    ``tool_success``; a user turn with an attachment adds ``images``.  One model, not a family
     per role: the shapes differ only in which optional fields are populated, so
     a role union would fragment every call site into a ``match`` for no gain.
     """
@@ -282,8 +282,8 @@ class LlmMessage(BaseModel):
     # only: ``LlmClient._translate_messages`` drops it before the wire, but it
     # stays on the logged/stored shape ``to_log_dict()`` produces.
     tool_success: bool | None = None
-    # Base64 image payloads — set only on a vision user turn (Ollama-style
-    # ``images``, translated to OpenAI content-parts by ``LlmClient.
+    # Image attachments as data URIs — set only on the user turn they arrived with
+    # (#2635; translated to OpenAI ``image_url`` content parts by ``LlmClient.
     # _translate_messages`` at the wire boundary, never here).
     images: list[str] | None = None
 

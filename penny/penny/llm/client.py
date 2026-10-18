@@ -1201,14 +1201,47 @@ def _dispatched_calls(call: dict) -> list[dict]:
     ]
 
 
+# Base64 prefixes of each supported image format's magic bytes — the first bytes
+# of the file, read off the base64 string itself (base64 maps 3 bytes to 4 chars, so
+# a 3-4 byte magic shows up as a fixed prefix). An image that carries none of them
+# is assumed to be a JPEG, the most common capture format.
+_B64_IMAGE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("/9j/", "image/jpeg"),
+    ("iVBOR", "image/png"),
+    ("R0lGOD", "image/gif"),
+    ("UklGR", "image/webp"),
+)
+_DEFAULT_IMAGE_MIME = "image/jpeg"
+
+
+def _image_data_uri(image: str) -> str:
+    """Normalize one image to an OpenAI ``image_url`` data URI.
+
+    A ``data:`` URI (what the channels hand over, carrying the attachment's own
+    mime type) passes through as-is; bare base64 gets its mime type detected from
+    the image's magic bytes.
+    """
+    if image.startswith("data:"):
+        return image
+    mime = next(
+        (detected for prefix, detected in _B64_IMAGE_PREFIXES if image.startswith(prefix)),
+        _DEFAULT_IMAGE_MIME,
+    )
+    return f"data:{mime};base64,{image}"
+
+
 def _translate_vision_message(message: dict) -> dict:
-    """Translate Ollama-style vision message to OpenAI content-parts format."""
+    """Translate a message carrying images to OpenAI content-parts format.
+
+    Each image becomes one ``image_url`` part whose URL is a data URI with the
+    image's real mime type (#2635) — never a hardcoded label.
+    """
     content_parts: list[dict] = [{"type": "text", "text": message.get("content", "")}]
     for image_b64 in message.get("images", []):
         content_parts.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                "image_url": {"url": _image_data_uri(image_b64)},
             }
         )
     return {"role": message["role"], "content": content_parts}

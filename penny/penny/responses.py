@@ -72,12 +72,6 @@ class PennyResponse:
     UNKNOWN_COMMAND = "Unknown command: /{command_name}. Use /commands to see available commands."
     COMMAND_ERROR = "Failed to run command: {error}"
 
-    # ── Vision ───────────────────────────────────────────────────────────────
-
-    VISION_NOT_CONFIGURED_MESSAGE = (
-        "I can see you sent an image but I don't have vision configured right now."
-    )
-
     # ── Config ───────────────────────────────────────────────────────────────
 
     CONFIG_HEADER = "**Runtime Configuration**"

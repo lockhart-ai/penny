@@ -1,37 +1,46 @@
-"""Integration tests for Signal vision (image attachment) handling."""
+"""Integration tests for Signal image attachment handling.
+
+Since #2635 an image rides the current turn's own user message straight to the
+chat model — no separate caption call, no vision model, full tool surface.
+"""
+
+import base64
 
 import pytest
 
-from penny.llm.call_link import CallLink
-from penny.prompts import Prompt
-from penny.responses import PennyResponse
+from penny.constants import PennyConstants
 from penny.tests.conftest import TEST_SENDER, wait_until
 
 # Minimal valid JPEG header bytes for testing
 FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
 
 
+def _image_urls(request) -> list[str]:
+    """Every image_url data URI in a request's user messages, in order."""
+    urls: list[str] = []
+    for message in request["messages"]:
+        if message["role"] == "user" and isinstance(message.get("content"), list):
+            urls.extend(
+                part["image_url"]["url"]
+                for part in message["content"]
+                if part.get("type") == "image_url"
+            )
+    return urls
+
+
 @pytest.mark.asyncio
-async def test_image_with_text_captions_then_forwards(
+async def test_image_with_text_goes_to_the_chat_model(
     signal_server,
     mock_llm,
     make_config,
     test_user_info,
     running_penny,
 ):
-    """Image + text: vision model captions, then main model responds without search."""
-    config = make_config(llm_vision_model="test-vision-model")
+    """Image + text: one call to the chat model, the image on the turn's user message."""
+    config = make_config()
+    mock_llm.set_default_flow(final_response="that's a cute cat! 🐱")
 
-    def handler(request, count):
-        if count == 1:
-            # Vision model captioning call
-            return mock_llm._make_text_response(request, "a cute orange cat")
-        # Main model: direct response without tool call
-        return mock_llm._make_text_response(request, "that's a cute cat! 🐱")
-
-    mock_llm.set_response_handler(handler)
-
-    async with running_penny(config):
+    async with running_penny(config) as penny:
         await signal_server.push_image_message(
             sender=TEST_SENDER,
             image_data=FAKE_JPEG,
@@ -41,71 +50,44 @@ async def test_image_with_text_captions_then_forwards(
         response = await signal_server.wait_for_message(timeout=10.0)
         assert "cat" in response["message"].lower()
 
-        # Verify two-step flow: vision model called first, then main model
-        await wait_until(lambda: len(mock_llm.requests) >= 2)
+        await wait_until(lambda: len(mock_llm.requests) >= 1)
+        # Every call so far went to the chat model — no separate caption call (#2635)
+        assert all(r["model"] == "test-model" for r in mock_llm.requests)
+        request = mock_llm.requests[0]
 
-        # First call: vision model with images
-        caption_request = mock_llm.requests[0]
-        assert caption_request["model"] == "test-vision-model"
-        user_msgs = [m for m in caption_request["messages"] if m["role"] == "user"]
-        # Vision messages use OpenAI content-parts format with image_url entries
-        assert any(
-            isinstance(m.get("content"), list)
-            and any(part.get("type") == "image_url" for part in m["content"])
-            for m in user_msgs
-        )
-        assert any(
-            isinstance(m.get("content"), list)
-            and any(
-                Prompt.VISION_AUTO_DESCRIBE_PROMPT in part.get("text", "")
-                for part in m["content"]
-                if part.get("type") == "text"
-            )
-            for m in user_msgs
-        )
+        # The image rides the turn's own user message as a data URI carrying the
+        # attachment's real mime type
+        expected_uri = f"data:image/jpeg;base64,{base64.b64encode(FAKE_JPEG).decode()}"
+        assert _image_urls(request) == [expected_uri]
 
-        # Second call: main model with combined text prompt (no images, no tools)
-        foreground_request = mock_llm.requests[1]
-        assert foreground_request["model"] == "test-model"
-        user_msgs = [m for m in foreground_request["messages"] if m["role"] == "user"]
-        assert not any(
-            isinstance(m.get("content"), list)
-            and any(part.get("type") == "image_url" for part in m["content"])
-            for m in user_msgs
+        # The full tool surface is installed — an image turn is an ordinary turn
+        assert request.get("tools")
+
+        # The normal conversation prompt, not a vision-specific instruction
+        system_msgs = [m for m in request["messages"] if m["role"] == "system"]
+        assert "sent an image" not in system_msgs[0]["content"]
+
+        # The conversation record keeps a marker where the image was, so a later
+        # turn reads it without the image ever being resent
+        history = penny.chat_agent.get_history(TEST_SENDER)
+        assert any(
+            role == "user"
+            and f"what's in this photo? {PennyConstants.IMAGE_HISTORY_MARKER}" in content
+            for role, content in history
         )
-        # Combined prompt should contain user text and caption
-        expected = Prompt.VISION_IMAGE_CONTEXT.format(
-            user_text="what's in this photo?", caption="a cute orange cat"
-        )
-        assert any(expected in m.get("content", "") for m in user_msgs)
-        # Verify no tools were provided (None = tools disabled)
-        assert foreground_request.get("tools") is None
-        # Verify vision response prompt (not search prompt) was used
-        system_msgs = [m for m in foreground_request["messages"] if m["role"] == "system"]
-        system_text = system_msgs[0]["content"]
-        assert "sent an image" in system_text
-        assert Prompt.VISION_RESPONSE_PROMPT in system_text
 
 
 @pytest.mark.asyncio
-async def test_image_without_text_captions_then_forwards(
+async def test_image_without_text_goes_to_the_chat_model(
     signal_server,
     mock_llm,
     make_config,
     test_user_info,
     running_penny,
 ):
-    """Image with no text: vision model captions, forwarded without search."""
-    config = make_config(llm_vision_model="test-vision-model")
-
-    def handler(request, count):
-        if count == 1:
-            # Vision model captioning
-            return mock_llm._make_text_response(request, "a sunset over the ocean")
-        # Main model: direct response without tool call
-        return mock_llm._make_text_response(request, "beautiful sunset! 🌅")
-
-    mock_llm.set_response_handler(handler)
+    """Image with no text: one chat-model call, the image on an otherwise-empty user turn."""
+    config = make_config()
+    mock_llm.set_default_flow(final_response="beautiful sunset! 🌅")
 
     async with running_penny(config):
         await signal_server.push_image_message(
@@ -117,67 +99,12 @@ async def test_image_without_text_captions_then_forwards(
         response = await signal_server.wait_for_message(timeout=10.0)
         assert "sunset" in response["message"].lower()
 
-        await wait_until(lambda: len(mock_llm.requests) >= 2)
-
-        # First call: vision model captioning with describe prompt
-        caption_request = mock_llm.requests[0]
-        assert caption_request["model"] == "test-vision-model"
-
-        # Second call: main model with image-only context (no images, no tools)
-        foreground_request = mock_llm.requests[1]
-        assert foreground_request["model"] == "test-model"
-        user_msgs = [m for m in foreground_request["messages"] if m["role"] == "user"]
-        assert not any("images" in m for m in user_msgs)
-        expected = Prompt.VISION_IMAGE_ONLY_CONTEXT.format(caption="a sunset over the ocean")
-        assert any(expected in m.get("content", "") for m in user_msgs)
-        # Verify no tools were provided (None = tools disabled)
-        assert foreground_request.get("tools") is None
-        # Verify vision response prompt (not search prompt) was used
-        system_msgs = [m for m in foreground_request["messages"] if m["role"] == "system"]
-        system_text = system_msgs[0]["content"]
-        assert "sent an image" in system_text
-        assert Prompt.VISION_RESPONSE_PROMPT in system_text
-
-
-@pytest.mark.asyncio
-async def test_image_without_vision_model_sends_acknowledgment(
-    signal_server,
-    mock_llm,
-    test_config,
-    test_user_info,
-    running_penny,
-):
-    """When vision model is not configured, send acknowledgment message."""
-    # test_config has no llm_vision_model (None by default)
-    async with running_penny(test_config):
-        await signal_server.push_image_message(
-            sender=TEST_SENDER,
-            image_data=FAKE_JPEG,
-            text="what's this?",
-        )
-
-        response = await signal_server.wait_for_message(timeout=10.0)
-        assert PennyResponse.VISION_NOT_CONFIGURED_MESSAGE in response["message"]
-
-        # Verify Ollama was NOT called
-        assert len(mock_llm.requests) == 0
-
-
-@pytest.mark.asyncio
-async def test_caption_image_raises_when_vision_client_missing(
-    signal_server, mock_llm, test_config, test_user_info, running_penny
-):
-    """``caption_image`` defends against being called when no vision client exists.
-
-    The channel layer normally rejects image messages before they reach
-    the chat agent, but the contract on ``caption_image`` itself is that
-    it raises explicitly (instead of relying on an ``assert`` that gets
-    stripped under ``python -O``).
-    """
-    async with running_penny(test_config) as penny:
-        penny.chat_agent._vision_model_client = None
-        with pytest.raises(RuntimeError, match="vision model client"):
-            await penny.chat_agent.caption_image("ZmFrZS1pbWFnZS1iYXNlNjQ=", CallLink.new_top())
+        await wait_until(lambda: len(mock_llm.requests) >= 1)
+        assert all(r["model"] == "test-model" for r in mock_llm.requests)
+        request = mock_llm.requests[0]
+        expected_uri = f"data:image/jpeg;base64,{base64.b64encode(FAKE_JPEG).decode()}"
+        assert _image_urls(request) == [expected_uri]
+        assert request.get("tools")
 
 
 @pytest.mark.asyncio
@@ -188,8 +115,8 @@ async def test_non_image_attachment_ignored(
     test_user_info,
     running_penny,
 ):
-    """Non-image attachments (e.g., PDF) don't trigger vision pipeline."""
-    config = make_config(llm_vision_model="test-vision-model")
+    """Non-image attachments (e.g., PDF) are skipped, not sent to the model."""
+    config = make_config()
     mock_llm.set_default_flow(
         final_response="here's what I found about documents 📄",
     )
@@ -204,11 +131,8 @@ async def test_non_image_attachment_ignored(
 
         await signal_server.wait_for_message(timeout=10.0)
 
-        # Should process as normal text message (no images in request)
         await wait_until(lambda: len(mock_llm.requests) >= 1)
         first_request = mock_llm.requests[0]
+        assert _image_urls(first_request) == []
         user_messages = [m for m in first_request["messages"] if m["role"] == "user"]
         assert not any("images" in m for m in user_messages)
-
-        # Should use the main model, not vision model
-        assert first_request["model"] == "test-model"

@@ -57,7 +57,7 @@ class IncomingMessage(BaseModel):
     signal_timestamp: int | None = None  # Original Signal timestamp (ms since epoch)
     is_reaction: bool = False  # True if this is a reaction message
     reacted_to_external_id: str | None = None  # External ID of message being reacted to
-    images: list[str] = Field(default_factory=list)  # Base64-encoded image data
+    images: list[str] = Field(default_factory=list)  # Image attachments as data URIs
     page_context: PageContext | None = None  # Current page the user is viewing (browser only)
 
 
@@ -571,13 +571,7 @@ class MessageChannel(ABC):
             logger.exception("Also failed to tell %s this turn failed", recipient)
 
     async def _validate_message(self, message: IncomingMessage) -> bool:
-        """Check vision config and notify scheduler. Returns False if message should be dropped."""
-        if message.images:
-            vision_model = self._config.llm_vision_model if self._config else None
-            if not vision_model:
-                await self.send_message(message.sender, PennyResponse.VISION_NOT_CONFIGURED_MESSAGE)
-                return False
-
+        """Notify the scheduler of the incoming message. Returns False if dropped."""
         if self._scheduler:
             self._scheduler.notify_message()
 
@@ -758,11 +752,17 @@ class MessageChannel(ABC):
         already (#2371: split out so a failure here can be reported with the
         run's own ``response.tool_calls``, which ``_run_message_through_agent``
         doesn't have once control returns to it)."""
-        incoming_embedding = await self._embed_message(message.content)
+        # The conversation record keeps a short deterministic marker where the image was
+        # (#2635) — the attachment itself rides only the turn's own user message and
+        # is never resent into history, so a later turn reads this line instead.
+        logged_content = message.content
+        if message.images:
+            logged_content = f"{logged_content} {PennyConstants.IMAGE_HISTORY_MARKER}".strip()
+        incoming_embedding = await self._embed_message(logged_content)
         incoming_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             user_sender,
-            message.content,
+            logged_content,
             parent_id=parent_id,
             signal_timestamp=message.signal_timestamp,
             device_id=device_id,

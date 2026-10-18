@@ -74,7 +74,6 @@ def _build_preflight(
     embed_error: Exception | None = None,
     embed_specific_available: list[str] | None = None,
     embed_specific_error: Exception | None = None,
-    vision_available: list[str] | None = None,
     image_available: list[str] | None = None,
     browser_enabled: bool = False,
     browser_connected: bool = False,
@@ -102,11 +101,6 @@ def _build_preflight(
         error=embed_specific_error,
     )
 
-    vision_client: LlmClient | None = None
-    if config.llm_vision_model:
-        vision_client = _llm_client(config.llm_vision_model)
-        _stub_list_models(monkeypatch, vision_client, available=vision_available or [])
-
     image_client: OllamaImageClient | None = None
     if config.llm_image_model:
         image_client = _image_client(config.llm_image_model)
@@ -116,7 +110,6 @@ def _build_preflight(
         config=config,
         model_client=model_client,
         embedding_client=embedding_client,
-        vision_client=vision_client,
         image_client=image_client,
         browser_enabled=browser_enabled,
         browser_connected=browser_connected,
@@ -145,7 +138,6 @@ async def test_all_green(monkeypatch, test_config):
     assert _status(report, PreflightCheck.EMBEDDING_MODEL) is CheckStatus.OK
     assert _status(report, PreflightCheck.PRIMARY_CHANNEL) is CheckStatus.OK
     # Unconfigured optional models and disabled browser are skipped, not warned.
-    assert _status(report, PreflightCheck.VISION_MODEL) is None
     assert _status(report, PreflightCheck.IMAGE_MODEL) is None
     assert _status(report, PreflightCheck.BROWSER_ADDON) is None
     # Logging the report never raises.
@@ -254,14 +246,13 @@ async def test_embedding_endpoint_unreachable_hard_fails(monkeypatch, test_confi
 
 
 @pytest.mark.asyncio
-async def test_vision_and_image_missing_soft_warn(monkeypatch, make_config):
-    """Configured-but-missing vision/image models warn but never fail startup."""
-    config = make_config(llm_vision_model="vision-model", llm_image_model="image-model")
-    preflight = _build_preflight(monkeypatch, config, vision_available=[], image_available=[])
+async def test_image_missing_soft_warn(monkeypatch, make_config):
+    """A configured-but-missing image-generation model warns but never fails startup."""
+    config = make_config(llm_image_model="image-model")
+    preflight = _build_preflight(monkeypatch, config, image_available=[])
     report = await preflight.run()
 
     assert not report.has_failures
-    assert _status(report, PreflightCheck.VISION_MODEL) is CheckStatus.WARN
     assert _status(report, PreflightCheck.IMAGE_MODEL) is CheckStatus.WARN
 
 

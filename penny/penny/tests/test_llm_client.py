@@ -26,6 +26,7 @@ from penny.llm.call_link import CallLink
 from penny.llm.client import (
     LlmClient,
     _extract_model_ids,
+    _image_data_uri,
     _summarize_httpx_error,
     _summarize_llm_error,
 )
@@ -1117,7 +1118,9 @@ FROZEN_INTERNAL_MESSAGES = [
 ]
 
 # The wire shape ``_translate_messages`` produces today: ``tool_success`` stripped,
-# ``images`` folded into OpenAI content-parts — everything else untouched.
+# ``images`` folded into OpenAI content-parts with each image's real mime type
+# (bare base64 with no magic prefix defaults to ``image/jpeg``) — everything else
+# untouched.
 FROZEN_WIRE_MESSAGES = [
     _FROZEN_SYSTEM,
     _FROZEN_USER,
@@ -1129,7 +1132,7 @@ FROZEN_WIRE_MESSAGES = [
         "role": "user",
         "content": [
             {"type": "text", "text": "what's in this photo?"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,c3VpdGNhc2U="}},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,c3VpdGNhc2U="}},
         ],
     },
 ]
@@ -1233,3 +1236,24 @@ class TestTypedMessagesMatchTheFrozenPayload:
         assert sent["messages"] == FROZEN_WIRE_MESSAGES
         assert sent["extra_body"] == {"reasoning": {"enabled": True}}
         await client.close()
+
+
+class TestImageDataUri:
+    """``_image_data_uri`` (#2635): a data URI passes through; bare base64 gets its
+    mime type read off the image's magic bytes, defaulting to JPEG."""
+
+    @pytest.mark.parametrize(
+        ("image", "expected"),
+        [
+            ("/9j/4AAQSkZJRg==", "data:image/jpeg;base64,/9j/4AAQSkZJRg=="),
+            ("iVBORw0KGgo=", "data:image/png;base64,iVBORw0KGgo="),
+            ("R0lGODlhAQ==", "data:image/gif;base64,R0lGODlhAQ=="),
+            ("UklGRh4A", "data:image/webp;base64,UklGRh4A"),
+            # No magic prefix — assumed JPEG, the most common capture format
+            ("c3VpdGNhc2U=", "data:image/jpeg;base64,c3VpdGNhc2U="),
+            # A URI the channel already labelled passes through untouched
+            ("data:image/webp;base64,UklGRh4A", "data:image/webp;base64,UklGRh4A"),
+        ],
+    )
+    def test_mime_type_comes_from_the_image_itself(self, image: str, expected: str) -> None:
+        assert _image_data_uri(image) == expected

@@ -33,7 +33,7 @@ flowchart TD
 
 - **Channels**: Signal (WebSocket + REST) or Discord (discord.py bot)
 - **Ollama**: Local LLM inference (default model: gpt-oss:20b)
-- **Vision**: Optional vision model (e.g., qwen3-vl) for processing image attachments from Signal
+- **Vision**: Image attachments ride the chat turn's own user message for the chat model to read directly (#2635) — no separate caption call or vision model
 - **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via the `generate_image` chat tool (config-gated on `LLM_IMAGE_MODEL`)
 - **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for memory dedup and similarity recall — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
 - **Browser Extension**: Web search and page reading — all web access goes through the connected browser
@@ -66,10 +66,10 @@ penny/
   clock.py            — `Clock`: the one place the runtime asks what time it is (#2207) — production's real clock, the eval harness's pinned one
   config_params.py    — ConfigParam + RuntimeParams: runtime-configurable settings with 3-tier lookup
   constants.py        — Enums (SearchTrigger), reaction emojis, browse constants
-  prompts.py          — LLM prompt templates (chat conversation, vision, email-summarize).  Collector prompts live on memory rows (extraction_prompt) instead
+  prompts.py          — LLM prompt templates (chat conversation, email-summarize).  Collector prompts live on memory rows (extraction_prompt) instead
   responses.py        — All user-facing response strings (PennyResponse class)
   startup.py          — Startup announcement message generation (git commit info)
-  preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on vision/image/browser/channel issues
+  preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on image/browser/channel issues
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
   notification.py     — Composes the one message a finished collector cycle sends (#1911) — bounded and ordered
   agents/
@@ -269,7 +269,7 @@ All tables are SQLModel classes in `database/models.py` — the prompt/message l
 - **Global idle threshold**: Single configurable idle time (default: 60s) controls when idle-dependent tasks become eligible
 - **Background cancellation**: Foreground message processing cancels active background tasks (`task.cancel()`) to free the LLM immediately; cancelled work is idempotent and retried next cycle
 - **Commands don't interrupt background**: Slash commands run cooperatively without cancelling the active background task
-- **Vision captioning**: When images are present and `LLM_VISION_MODEL` is configured, the vision model captions the image first with a vision-specific system prompt, then a combined prompt is forwarded to the text LLM. Search tools are disabled for image messages
+- **Images in the chat turn**: An image attachment rides the current turn's own user message as a data URI with the attachment's real mime type (#2635) — the chat model reads it directly, under chat's token budget and thinking-off last draw. There is no separate caption call and no `LLM_VISION_MODEL` (a non-vision chat model fails the turn honestly through the model-error path). The conversation record keeps a deterministic marker where the image was; history never resends the image
 - **Image side-channel** — moved to `docs/reference/agents.md`.
 - **Channel abstraction**: Signal and Discord share the same interface; easy to add more platforms
 - **Async throughout**: asyncio, httpx.AsyncClient, openai.AsyncOpenAI, discord.py

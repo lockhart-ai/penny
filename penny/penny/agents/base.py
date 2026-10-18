@@ -245,7 +245,6 @@ class Agent:
         model_client: LlmClient,
         db: Database,
         config: Config,
-        vision_model_client: LlmClient | None = None,
         allow_repeat_tools: bool = False,
         *,
         embedding_model_client: LlmClient,
@@ -265,7 +264,6 @@ class Agent:
         self.allow_repeat_tools = allow_repeat_tools
 
         self._model_client = model_client
-        self._vision_model_client = vision_model_client
         self._embedding_model_client = embedding_model_client
 
         self._browse_tool: BrowseTool | None = None
@@ -463,6 +461,7 @@ class Agent:
         call_link: CallLink,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
+        images: list[str] | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
         prompt_type: str | None = None,
@@ -474,10 +473,15 @@ class Agent:
         top link (``CallLink.top(run_id)``) and passes it in; there is no default
         and no fallback, so every caller must supply one.  ``run_id`` (for DB/
         progress purposes, distinct from the model-call linkage) is read off it.
+
+        ``images`` (#2635) are the current turn's attachments (data URIs) — carried
+        on the turn's own user message, so the ordinary loop reads them: chat's
+        token budget and the thinking-off last draw both apply.  They ride only
+        this turn; history never resends them.
         """
         run_id = call_link.run_id
         self._tool_result_text = []
-        messages = self._build_messages(prompt, history, system_prompt)
+        messages = self._build_messages(prompt, history, system_prompt, images=images)
         tools = self._tool_registry.get_ollama_tools()
         return await self._run_agentic_loop(
             messages,
@@ -1975,12 +1979,17 @@ class Agent:
         prompt: str,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
+        images: list[str] | None = None,
     ) -> list[LlmMessage]:
         """Build message list for Ollama chat API.
 
         The system_prompt is the full prompt body (identity, context,
         instructions) built by each agent's _build_system_prompt method.
         This method only prepends the timestamp.
+
+        ``images`` ride the current turn's user message (#2635) — data URIs,
+        translated to ``image_url`` content parts on the wire.  History never
+        carries them: a past turn reads only its text.
         """
         effective = system_prompt or self.system_prompt
         system_content = f"{current_datetime_line(self.db)}\n\n{effective}"
@@ -1991,7 +2000,7 @@ class Agent:
             for role, content in history:
                 messages.append(LlmMessage(role=MessageRole(role), content=content))
 
-        messages.append(LlmMessage(role=MessageRole.USER, content=prompt))
+        messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
         return messages
 
     # ── System prompt building (template method pattern) ─────────────────

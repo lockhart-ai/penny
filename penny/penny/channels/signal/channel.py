@@ -781,7 +781,9 @@ class SignalChannel(MessageChannel):
 
             image_data = await self._download_attachment(attachment.id)
             if image_data:
-                images.append(image_data)
+                # Data URI with the attachment's own mime type (#2635) — the chat
+                # model reads the image directly, so it is labelled truthfully.
+                images.append(f"data:{attachment.contentType};base64,{image_data}")
 
         if images:
             logger.info("Downloaded %d image attachment(s)", len(images))

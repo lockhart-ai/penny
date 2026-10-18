@@ -113,16 +113,15 @@ flowchart TB
 
 ### Models
 
-Penny uses up to four LLM model roles, all running locally by default:
+Penny uses up to three LLM model roles, all running locally by default:
 
 | Role | Env | Purpose | Required? |
 |---|---|---|---|
-| **Text** | `LLM_MODEL` | Single model for all of Penny's reasoning — chat and background work | Yes |
+| **Text** | `LLM_MODEL` | Single model for all of Penny's reasoning — chat and background work, including reading photo attachments sent in chat | Yes |
 | **Embedding** | `LLM_EMBEDDING_MODEL` | Embeddings for knowledge retrieval, message similarity, and preference dedup | Yes |
-| **Vision** | `LLM_VISION_MODEL` | Image captioning when users send photos | Optional |
 | **Image** | `LLM_IMAGE_MODEL` | Image generation (ask Penny to draw — the `generate_image` tool) | Optional |
 
-Text, vision, and embedding all go through the OpenAI SDK and can each point at a different OpenAI-compatible endpoint via the corresponding `LLM_*_API_URL` / `LLM_*_API_KEY` overrides — useful when running text on one machine and embeddings on another. Image generation is the one exception: it talks to Ollama's `/api/generate` endpoint directly (set `LLM_IMAGE_API_URL`), because there's no OpenAI-compatible image generation protocol that works with local models.
+Text and embedding go through the OpenAI SDK and can each point at a different OpenAI-compatible endpoint via the corresponding `LLM_*_API_URL` / `LLM_*_API_KEY` overrides — useful when running text on one machine and embeddings on another. Image generation is the one exception: it talks to Ollama's `/api/generate` endpoint directly (set `LLM_IMAGE_API_URL`), because there's no OpenAI-compatible image generation protocol that works with local models. A photo sent in chat rides the chat turn's own user message to the text model, so `LLM_MODEL` must understand images.
 
 ### Scheduling
 
@@ -275,9 +274,8 @@ IOS_APNS_SANDBOX=true                     # Fallback only: devices report sandbo
 # LLM Configuration — any OpenAI-compatible endpoint (Ollama, omlx, vLLM,
 # OpenAI cloud, ...). The example URL points at a local Ollama instance.
 LLM_API_URL="http://host.docker.internal:11434/v1"
-LLM_MODEL="gpt-oss:20b"                   # Single model for all agents
+LLM_MODEL="gpt-oss:20b"                   # Single model for all agents — reads photo attachments in chat
 # LLM_API_KEY="not-needed"                # Default fine for unauthenticated local backends
-# LLM_VISION_MODEL="qwen3-vl"             # Optional, enables vision/image messages
 LLM_EMBEDDING_MODEL="embeddinggemma"      # Required — backs memory (preference dedup + similarity recall)
 # LLM_IMAGE_MODEL="x/z-image-turbo"       # Optional, enables the generate_image tool (uses LLM_IMAGE_API_URL)
 # LLM_IMAGE_API_URL="http://host.docker.internal:11434"  # Ollama REST for image generation
@@ -316,10 +314,8 @@ Penny auto-detects which channel to use based on configured credentials:
 
 **LLM** — Penny talks to any OpenAI-compatible endpoint via the OpenAI Python SDK. There are no Ollama-specific dependencies in the runtime.
 - `LLM_API_URL`: API endpoint (default: `http://host.docker.internal:11434`)
-- `LLM_MODEL`: Single text model for all agents (default: `gpt-oss:20b`)
+- `LLM_MODEL`: Single text model for all agents (default: `gpt-oss:20b`). Photo attachments ride the chat turn's own user message to this model, so it must understand images
 - `LLM_API_KEY`: API key (default: `"not-needed"`, fine for unauthenticated local backends)
-- `LLM_VISION_MODEL`: Vision model for image understanding (e.g., `qwen3-vl`). Optional; enables image messages
-- `LLM_VISION_API_URL` / `LLM_VISION_API_KEY`: Override API URL/key for the vision model (e.g., to run vision on a different host)
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., `embeddinggemma`) that backs preference/knowledge/message embeddings — Penny fails fast at startup if it is unset
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override API URL/key for the embedding model
 - `LLM_IMAGE_MODEL`: Image generation model (e.g., `x/z-image-turbo`). Optional; enables the `generate_image` chat tool (ask Penny to draw). Image generation is the one non-OpenAI endpoint — it talks to Ollama's `/api/generate` directly
@@ -399,7 +395,7 @@ make check       # Run format, lint, typecheck, and tests
 
 CI runs `make check` in Docker on every push to `main` and on pull requests via GitHub Actions. Pull requests touching `penny-client/` also run `make client-check` on a macOS runner, building the iOS app and running its test suite on a simulator.
 
-Tests cover the full message flow (search, response, threading, typing indicators), all background agents (history, thinking, notify, scheduler coordination), every slash command, vision processing, and tool edge cases. External services are replaced with mock servers and SDK patches — a mock Signal WebSocket server and a mock LLM client (`MockLlmClient`, patches `openai.AsyncOpenAI`) with configurable responses.
+Tests cover the full message flow (search, response, threading, typing indicators), all background agents (history, thinking, notify, scheduler coordination), every slash command, image handling, and tool edge cases. External services are replaced with mock servers and SDK patches — a mock Signal WebSocket server and a mock LLM client (`MockLlmClient`, patches `openai.AsyncOpenAI`) with configurable responses.
 
 </details>
 

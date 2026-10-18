@@ -184,17 +184,6 @@ class Prompt:
         "Emails:\n{emails}"
     )
 
-    # Vision prompts
-    VISION_AUTO_DESCRIBE_PROMPT = "Describe this image in detail."
-
-    VISION_RESPONSE_PROMPT = (
-        "The user sent an image. Respond naturally to the image description provided."
-    )
-
-    VISION_IMAGE_CONTEXT = "User said '{user_text}' and included an image of: {caption}"
-
-    VISION_IMAGE_ONLY_CONTEXT = "User sent an image of: {caption}"
-
     # An invalid draw carries NO nudge (#1839/#1937).  A draw that was meant to be a
     # tool call and is not one — a tool-parse failure, a collector's prose or
     # done-as-JSON-text, a chat reply that is a serialized call — and a chat draw that

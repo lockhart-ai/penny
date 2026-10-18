@@ -339,11 +339,13 @@ PERMISSION_RESOLUTION_EMOJIS: dict[PermissionResolution, str] = {
 
 
 class ChatPromptType(StrEnum):
-    """Prompt types emitted by ChatAgent flows. Logged to promptlog.prompt_type."""
+    """Prompt types emitted by ChatAgent flows. Logged to promptlog.prompt_type.
+
+    The separate ``vision_message``/``vision_caption`` types retired with the
+    caption step (#2635) — an image turn is an ordinary ``user_message`` run.
+    """
 
     USER_MESSAGE = "user_message"
-    VISION_MESSAGE = "vision_message"
-    VISION_CAPTION = "vision_caption"
 
 
 class PennyConstants:
@@ -520,8 +522,12 @@ class PennyConstants:
     # Vision constants
     VISION_SUPPORTED_CONTENT_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp")
 
+    # The conversation-record marker written where an image attachment was (#2635):
+    # the image itself rides only its turn's own user message and history carries
+    # this line instead — written by the channel at the log site, never by the model.
+    IMAGE_HISTORY_MARKER = "[sent a photo]"
+
     # Agent loop constants
-    VISION_MAX_STEPS = 1
     RESPONSE_VALIDATION_RETRIES = 5
     # How many times the loop re-rolls a degenerate (punctuation-collapse) model
     # output before throwing out the whole run.  The bad output is DISCARDED, never
