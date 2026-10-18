@@ -88,11 +88,18 @@ def test_notify_system_prompt_is_pinned_whole():
         "\n"
         "Write the message they will actually receive:\n"
         "1. Open with a quick greeting.\n"
-        "2. Name every item under what it wrote this cycle, in plain words — not a "
-        "description of the skill, and not just the ones that look most relevant: the "
-        "job already decided what counted as a find, so every one of them gets named.\n"
-        "3. Include the source link when the run has one.\n"
-        "4. Add one line calling back to an earlier message ONLY when one of them is "
+        "2. Tell them what the job found in flowing, conversational sentences — the way "
+        "you'd tell a friend what you turned up, not a form to fill in. Name every item "
+        "under what it wrote this cycle — not just the ones that look most relevant: the "
+        "job already decided what counted as a find, so every one of them gets named — "
+        "and give each one the facts that make it worth telling, read straight from the "
+        "record: where it's listed, its price, and what changed about it (a price drop, "
+        "a new listing, something hard to find). The items' storage labels (like "
+        "`listing-01`) are bookkeeping — talk about the things themselves.\n"
+        "3. When the record says more entries exist than are listed, mention that too, "
+        "in the same breath, so the count is never a surprise.\n"
+        "4. Include the source link when the run has one.\n"
+        "5. Add one line calling back to an earlier message ONLY when one of them is "
         "genuinely about this. When none of them is, say nothing about them — that is "
         "the ordinary case and it is fine.\n"
         "\n"
@@ -121,6 +128,9 @@ async def test_the_document_is_the_whole_user_turn_and_the_draw_is_attributed():
     assert model.calls[0]["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
     assert model.calls[0]["prompt_type"] == PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE
     assert model.calls[0]["run_target"] == "tide-times"
+    # The composer draws with thinking OFF (#2618) — the one customer that asks
+    # for it; every other customer keeps the client's own default.
+    assert model.calls[0]["thinking_enabled"] is False
 
 
 @pytest.mark.asyncio

@@ -1031,6 +1031,9 @@ async def test_micro_context_returns_byte_identical_value_with_attribution():
     assert model.requests[0]["agent_name"] == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
     assert model.requests[0]["prompt_type"] == PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE
     assert model.requests[0]["run_target"] == "widget-watch"
+    # The extractor is untouched by the notifier's thinking-off lever (#2618):
+    # its draw keeps the client's own default (thinking on).
+    assert model.requests[0]["thinking_enabled"] is True
     # The default reading is ARTICLE (#2388) — the rendered user turn is
     # byte-identical to what it was before ``reading`` existed: no note, nothing
     # before ``Content:`` beyond the instruction.
