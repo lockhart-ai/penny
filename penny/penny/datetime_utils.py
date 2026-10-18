@@ -180,3 +180,46 @@ def user_timezone_name(db: Database) -> str | None:
         return None
     user_info = db.users.get_info(sender)
     return user_info.timezone if user_info is not None else None
+
+
+_SECOND = "second"
+_MINUTE = "minute"
+_HOUR = "hour"
+
+
+def _count_of(n: int, unit: str) -> str:
+    """Format a count with its unit, pluralizing if needed."""
+    return f"{n} {unit}" if n == 1 else f"{n} {unit}s"
+
+
+def _two_units(big: int, big_unit: str, small: int, small_unit: str) -> str:
+    """Combine two time units, omitting the small one if zero."""
+    big_part = _count_of(big, big_unit)
+    if small == 0:
+        return big_part
+    return f"{big_part} {_count_of(small, small_unit)}"
+
+
+def format_duration_plain_words(milliseconds: int) -> str:
+    """Render a duration in milliseconds as human-readable plain words.
+
+    Returns a string like "45 seconds", "1 minute 30 seconds", "1 hour 5 minutes".
+    Rules:
+    - Under 60 seconds: whole seconds ("45 seconds", "1 second")
+    - Otherwise minutes, plus seconds if not whole ("5 minutes", "1 minute 30 seconds")
+    - For an hour or more: hours and minutes ("1 hour", "2 hours 15 minutes")
+    """
+    total_seconds = milliseconds // 1000
+
+    if total_seconds < 60:
+        return _count_of(total_seconds, _SECOND)
+
+    total_minutes = total_seconds // 60
+    remainder_seconds = total_seconds % 60
+
+    if total_minutes < 60:
+        return _two_units(total_minutes, _MINUTE, remainder_seconds, _SECOND)
+
+    total_hours = total_minutes // 60
+    remainder_minutes = total_minutes % 60
+    return _two_units(total_hours, _HOUR, remainder_minutes, _MINUTE)
