@@ -40,6 +40,7 @@ from penny.tools.collection_instantiation import (
     ScheduleError,
     describe_schedule,
     describe_schedule_field,
+    next_occurrence,
     parse_expires_at,
     parse_schedule,
     render_schedule_clause,
@@ -291,16 +292,10 @@ class TestScheduleGrammar:
             # Surrounding whitespace is trimmed, never treated as part of the rule.
             ("  FREQ=HOURLY  ", "FREQ=HOURLY", None, None),
             # COUNT lifts into max_runs and STAYS in the rule, so a rendered schedule
-            # re-passed lifts the same quota.
+            # re-passed lifts the same quota.  UNTIL has no accepted row here at all —
+            # it is refused outright (#2511, see test_refused_schedules_teach_actionably).
             ("FREQ=DAILY;COUNT=1", "FREQ=DAILY;COUNT=1", 1, None),
             ("FREQ=DAILY;COUNT=3", "FREQ=DAILY;COUNT=3", 3, None),
-            # UNTIL lifts into expires_at, in both RFC 5545 spellings.
-            (
-                "FREQ=DAILY;UNTIL=20260901T000000Z",
-                "FREQ=DAILY;UNTIL=20260901T000000Z",
-                None,
-                datetime(2026, 9, 1, tzinfo=UTC),
-            ),
             # A DTSTART line, written across two lines OR on one with the \n escape:
             # the same schedule, stored the same way, so the render round-trips.
             (
@@ -352,12 +347,28 @@ class TestScheduleGrammar:
             ("FREQ=DAILY\\nFREQ=WEEKLY", "The schedule 'FREQ=DAILY\\nFREQ=WEEKLY' has more"),
             # A quota that isn't a quota.
             ("FREQ=DAILY;COUNT=0", "The schedule 'FREQ=DAILY;COUNT=0' has COUNT=0"),
+            # A job's end is said ONE way (#2511) — a schedule's own UNTIL= is refused
+            # outright, naming expires_at as where the end goes instead.
+            (
+                "FREQ=DAILY;UNTIL=20260901T000000Z",
+                "The schedule 'FREQ=DAILY;UNTIL=20260901T000000Z' sets UNTIL=20260901T000000Z —",
+            ),
         ],
     )
     def test_refused_schedules_teach_actionably(self, schedule, expected_lead):
         with pytest.raises(ScheduleError) as raised:
             parse_schedule(schedule)
         assert str(raised.value).startswith(expected_lead)
+
+    def test_a_stored_untils_read_path_is_unaffected(self):
+        """The refusal guards the WRITE boundary only (#2511) — a row whose schedule
+        already carries UNTIL= from before the refusal existed still parses and fires
+        on it unchanged everywhere a stored rule is read, never re-validated through
+        ``parse_schedule``."""
+        schedule = "FREQ=DAILY;UNTIL=20261019T000000Z"
+        anchor = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
+        assert next_occurrence(schedule, anchor, None) == datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
+        assert describe_schedule(_row_with_schedule(schedule)) == f"every day (rule: `{schedule}`)"
 
     def test_the_taught_examples_say_whose_clock_each_time_is_on(self):
         """The grammar the model is taught, asserted WHOLE (#1932).
@@ -577,6 +588,30 @@ class TestScheduleRoundTrip:
         assert stored.schedule == "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"
         assert render_schedule_clause(stored) == "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"
 
+    @pytest.mark.asyncio
+    async def test_creation_refuses_the_schedules_own_until_and_names_expires_at(self, db):
+        """A schedule stating its own ``UNTIL=`` is refused through the real tool call,
+        naming ``expires_at`` as where a job's end goes instead — a job's end is said
+        ONE way."""
+        db.users.save_info(
+            sender="test-user",
+            name="Test User",
+            location="Somewhere",
+            timezone="America/Los_Angeles",
+            date_of_birth="1990-01-01",
+        )
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            name="weekend-watch",
+            description="a weekend watch",
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
+            schedule="FREQ=DAILY;UNTIL=20261019T000000Z",
+        )
+        assert result.success is False
+        assert "sets UNTIL=20261019T000000Z" in result.message
+        assert "expires_at" in result.message
+        assert db.memories.get("weekend-watch") is None
+
 
 def _row_with_schedule(schedule: str | None) -> MemoryRow:
     """A bare row carrying only a schedule — ``describe_schedule``/``has_schedule`` read
@@ -660,7 +695,10 @@ class TestDescribeSchedule:
 
     def test_the_end_condition_is_not_restated_inside_the_words(self):
         """``UNTIL=`` is already lifted onto ``expires_at`` and rendered on its own
-        line — stating it again here would say the same fact twice."""
+        line — stating it again here would say the same fact twice.  Reads a row
+        directly rather than through ``parse_schedule``, since #2511 refuses a fresh
+        write stating its own ``UNTIL=``; this covers a row that already carries one
+        from before that refusal existed."""
         schedule = "FREQ=DAILY;UNTIL=20260901T000000Z"
         words = describe_schedule(_row_with_schedule(schedule))
         assert words == f"every day (rule: `{schedule}`)"
