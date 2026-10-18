@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Literal
 
 import websockets
 from pydantic import BaseModel, ValidationError
-from sqlmodel import Session
 from websockets.asyncio.server import Server, ServerConnection
 
 from penny.channels.base import IncomingMessage, MessageChannel, PageContext, ProgressTracker
@@ -108,7 +107,6 @@ from penny.database.memory import (
     MemoryTypeError,
 )
 from penny.database.message_store import CallStarted, ToolFinished, ToolStarted
-from penny.database.models import RuntimeConfig
 from penny.datetime_utils import user_timezone_name
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
@@ -1296,22 +1294,7 @@ class BrowserChannel(MessageChannel):
         except ValueError as e:
             logger.warning("Invalid config value %s=%s: %s", req.key, req.value, e)
             return
-        with Session(self._db.engine) as session:
-            existing = session.get(RuntimeConfig, req.key)
-            if existing:
-                existing.value = str(validated)
-                existing.updated_at = self._db.clock.now()
-                session.add(existing)
-            else:
-                session.add(
-                    RuntimeConfig(
-                        key=req.key,
-                        value=str(validated),
-                        description=param.description,
-                        updated_at=self._db.clock.now(),
-                    )
-                )
-            session.commit()
+        self._db.config.set(req.key, str(validated), param.description)
         logger.info("Config updated via browser: %s = %s", req.key, validated)
         await self._handle_config_request(ws)
 

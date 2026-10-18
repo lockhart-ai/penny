@@ -24,10 +24,6 @@ class ConfigCommand(Command):
 
     async def execute(self, args: str, context: CommandContext) -> CommandResult:
         """Execute config command."""
-        from sqlmodel import Session, select
-
-        from penny.database.models import RuntimeConfig
-
         parts = args.strip().split(maxsplit=1)
 
         # Case 1: List all config
@@ -76,23 +72,7 @@ class ConfigCommand(Command):
             return CommandResult(text=PennyResponse.CONFIG_INVALID_VALUE.format(key=key, error=e))
 
         # Store in database
-        with Session(context.db.engine) as session:
-            existing = session.exec(select(RuntimeConfig).where(RuntimeConfig.key == key)).first()
-
-            if existing:
-                existing.value = str(parsed_value)
-                existing.updated_at = context.db.clock.now()
-                session.add(existing)
-            else:
-                new_config = RuntimeConfig(
-                    key=key,
-                    value=str(parsed_value),
-                    description=param.description,
-                    updated_at=context.db.clock.now(),
-                )
-                session.add(new_config)
-
-            session.commit()
+        context.db.config.set(key, str(parsed_value), param.description)
 
         # Config changes take effect immediately via RuntimeParams DB lookup
         return CommandResult(text=PennyResponse.CONFIG_UPDATED.format(key=key, value=parsed_value))

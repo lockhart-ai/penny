@@ -8,6 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from penny.clock import Clock
 from penny.config_params import RuntimeParams
+from penny.database.config_store import ConfigStore
 from penny.database.cursor_store import CursorStore
 from penny.database.device_store import DeviceStore
 from penny.database.domain_permission_store import DomainPermissionStore
@@ -27,6 +28,7 @@ class Database:
     """Database facade — provides access to domain-specific stores.
 
     Stores:
+        config: Runtime-configurable parameter overrides (the `runtime_config` table)
         cursors: Per-agent read cursors into log-shaped memories
         devices: Device registration and lookup
         domain_permissions: Domain access permissions for browser tools
@@ -53,6 +55,7 @@ class Database:
         # is handed the same one, so no two tables can disagree about when it is.
         self.clock = clock if clock is not None else Clock()
 
+        self.config = ConfigStore(self.engine, self.clock)
         self.cursors = CursorStore(self.engine, self.clock)
         self.devices = DeviceStore(self.engine, self.clock)
         self.domain_permissions = DomainPermissionStore(self.engine, self.clock)

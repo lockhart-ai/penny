@@ -492,12 +492,7 @@ class RuntimeParams:
     def _get_db_value(self, key: str) -> Any:
         """Look up a runtime config override from the database."""
         assert self._db is not None  # Caller guards with `if self._db is not None`
-        from sqlmodel import Session, select
-
-        from penny.database.models import RuntimeConfig
-
-        with Session(self._db.engine) as session:
-            result = session.exec(select(RuntimeConfig).where(RuntimeConfig.key == key)).first()
+        result = self._db.config.get(key)
 
         if result is None:
             return None

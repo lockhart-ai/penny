@@ -17,7 +17,6 @@ import httpx
 import websockets
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
-from sqlmodel import Session
 from websockets.asyncio.server import Server, ServerConnection
 
 from penny.agents.base import AgentProgressEvent, ProgressCallback
@@ -112,7 +111,6 @@ from penny.database.memory import (
     MemoryNotFoundError,
     MemoryTypeError,
 )
-from penny.database.models import RuntimeConfig
 from penny.datetime_utils import user_timezone_name
 from penny.llm.embeddings import serialize_embedding
 from penny.tools.collection_instantiation import describe_schedule
@@ -437,22 +435,7 @@ class IosChannel(MessageChannel):
             logger.warning("Invalid config value %s=%s: %s", req.key, req.value, error)
             await self._handle_config_request(ws, request_id=req.request_id, error=str(error))
             return
-        with Session(self._db.engine) as session:
-            existing = session.get(RuntimeConfig, req.key)
-            if existing:
-                existing.value = str(validated)
-                existing.updated_at = self._db.clock.now()
-                session.add(existing)
-            else:
-                session.add(
-                    RuntimeConfig(
-                        key=req.key,
-                        value=str(validated),
-                        description=param.description,
-                        updated_at=self._db.clock.now(),
-                    )
-                )
-            session.commit()
+        self._db.config.set(req.key, str(validated), param.description)
         logger.info("Config updated via iOS: %s = %s", req.key, validated)
         await self._handle_config_request(ws, request_id=req.request_id)
 
