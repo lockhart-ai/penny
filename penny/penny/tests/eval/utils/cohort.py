@@ -1822,6 +1822,11 @@ _INVISIBLE_BREAKS = "\u00ad\u200b\u200c\u200d\u2060\ufeff"
 _JOIN_INSIDE_A_WORD = re.compile(
     rf"(?<=[^\W\d_])[{re.escape(_HYPHENS + _INVISIBLE_BREAKS)}]+(?=[^\W\d_])"
 )
+# The visible hyphen alone (never an invisible break, which draws nothing and so is never a
+# boundary) BETWEEN TWO LETTERS, the same mark ``_JOIN_INSIDE_A_WORD`` fuses, read the other
+# way: a mark a world could equally have written as the gap between two words.  `camera-kit`
+# and `camera kit` are the same run of words this folds to either side of (#2529).
+_HYPHEN_BETWEEN_LETTERS = re.compile(rf"(?<=[^\W\d_])[{re.escape(_HYPHENS)}]+(?=[^\W\d_])")
 
 
 def fold_for_token_match(text: str) -> str:
@@ -1841,16 +1846,34 @@ def fold_for_token_match(text: str) -> str:
     return fold_typography("".join(kept))
 
 
+def fold_hyphen_to_space(text: str) -> str:
+    """``text`` with each word's own hyphen turned into a SPACE, then folded through
+    ``fold_typography`` — the two-word reading of a hyphenated run, beside the one-word reading
+    ``fold_for_token_match`` gives it.  Addresses are left as written, for the reason
+    ``fold_for_token_match`` leaves them: a hyphen inside a domain names a different site, not
+    a word boundary.  ``token_stands_in`` asks both readings (#2529)."""
+    kept: list[str] = []
+    cursor = 0
+    for address in _URL_PATTERN.finditer(text):
+        kept += [_HYPHEN_BETWEEN_LETTERS.sub(" ", text[cursor : address.start()]), address.group()]
+        cursor = address.end()
+    kept.append(_HYPHEN_BETWEEN_LETTERS.sub(" ", text[cursor:]))
+    return fold_typography("".join(kept))
+
+
 def token_stands_in(token: str, text: str) -> bool:
     """Whether a token the world names stands in ``text`` — a reply, or an entry.
 
     THE ONE token match, for every claim that looks for a world's token.  The token stands
-    there as written (typography folded, the comparison this has always been), or as the same
-    word hyphenated another way.  Either reading is the token; neither makes a different word
-    one."""
-    return fold_typography(token) in fold_typography(text) or fold_for_token_match(
-        token
-    ) in fold_for_token_match(text)
+    there as written (typography folded, the comparison this has always been), as the same
+    word hyphenated another way, or as the same run of words with its hyphen read as the gap
+    between them (`camera-kit-price-watch` standing in for `camera kit`, #2529).  Any of these
+    readings is the token; none of them makes a different word one."""
+    return (
+        fold_typography(token) in fold_typography(text)
+        or fold_for_token_match(token) in fold_for_token_match(text)
+        or fold_hyphen_to_space(token) in fold_hyphen_to_space(text)
+    )
 
 
 _POSSESSIVE = "'s"
@@ -2123,6 +2146,45 @@ _LIST_SEPARATOR = ","
 _DECIMAL_POINT = "."
 _PLAIN_DECIMAL = re.compile(r"\d+(?:\.\d+)?")
 _ZERO = "0"
+# The cardinal number words zero through twenty, each the digit it spells — a closed list, so
+# ``four`` sources ``4`` and ``4`` sources ``four`` by the same reading a figure written two
+# ways already shares, never a word read in because one case happened to write it (#2529).
+#
+# A number word HYPHENATED to another word is not a number said aloud — it is a compound, the
+# way a hyphen joins any other two words into one (`One-pot orzo`, `twenty-four`) — so neither
+# side of the word is read as a figure.  MEASURED: without this, a recipe titled `One-pot orzo`
+# sourced an invented `1 tsp` nowhere the round actually stated a quantity.
+_NUMBER_WORDS = {
+    word: str(value)
+    for value, word in enumerate(
+        (
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+            "twenty",
+        )
+    )
+}
+_NUMBER_WORD = re.compile(
+    rf"(?<![{re.escape(_HYPHENS)}])\b({'|'.join(_NUMBER_WORDS)})\b(?![{re.escape(_HYPHENS)}])"
+)
 # What a word is made of once folded.  The name grammar is ASCII, so the world's words are cut
 # on the same alphabet: a reply's `Café` is read as `Caf`, and so is the world's.  A digit run
 # is a token of its own so two words either side of a figure are not side by side.
@@ -2183,8 +2245,19 @@ def _told(hour: int, minutes: str) -> list[str]:
 
 
 def _figures(folded: str) -> frozenset[str]:
-    """Every form of every number ``folded`` states."""
-    return frozenset(form for readings in _figure_readings(folded) for form in readings)
+    """Every form of every number the WORLD's content states, the words it spells its small
+    numbers in included: a world that says ``four`` sources a reply or an entry that states
+    ``4`` (#2529).  Generic by construction — the closed list is every cardinal zero through
+    twenty, never a word a particular case happens to use.
+
+    Called ONLY on the given side (``_read_world`` reads it off ``content``, never off the text
+    a claim is checking).  A number word is ordinary prose everywhere else: the specific-value
+    grammar (``_SPECIFIC``/``_NUMBER``) only ever recognises a number written in DIGITS, so
+    ``one`` or ``two`` in a reply or a stored entry is never itself a value that needs sourcing
+    — only a digit a reply states can be, and this is what it is checked against."""
+    return frozenset(form for readings in _figure_readings(folded) for form in readings) | (
+        frozenset(_NUMBER_WORDS[word] for word in _NUMBER_WORD.findall(folded))
+    )
 
 
 def _months_named(folded: str) -> list[str]:
