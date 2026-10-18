@@ -13,7 +13,6 @@ from penny.database.device_store import DeviceStore
 from penny.database.domain_permission_store import DomainPermissionStore
 from penny.database.email_rule_store import EmailRuleStore
 from penny.database.ios_store import IosStore
-from penny.database.machine_store import MachineStore
 from penny.database.media_store import MediaStore
 from penny.database.memory import Memory, MemoryStore
 from penny.database.message_store import MessageStore
@@ -32,13 +31,11 @@ class Database:
         devices: Device registration and lookup
         domain_permissions: Domain access permissions for browser tools
         email_rules: Persisted email-organisation rules (plugin email backends)
-        machine: Conversation state machine — its append-only transition log (#1706)
         media: Binary media referenced by memory entries via <media:ID> tokens
         memories: Unified collection + log access (task/memory framework)
         messages: Message/prompt/command logging, threading, queries
         mutations: Registry-mutation event ledger (create/update/archive provenance)
         send_queue: Durable outbound message queue, drained on the send cooldown
-        skills: Versionless skill registry (certified-by-execution tool-call scripts)
         users: UserInfo, sender queries, mute state
     """
 
@@ -61,7 +58,6 @@ class Database:
         self.domain_permissions = DomainPermissionStore(self.engine, self.clock)
         self.email_rules = EmailRuleStore(self.engine, self.clock)
         self.ios = IosStore(self.engine, self.clock)
-        self.machine = MachineStore(self.engine, self.clock)
         self.media = MediaStore(self.engine, self.clock)
         # The registry-mutation ledger (#1560) and the send queue (#1634) are both
         # constructed before ``memories`` so the memory store can record

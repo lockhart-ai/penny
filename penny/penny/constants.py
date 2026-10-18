@@ -133,31 +133,21 @@ class WriteGateOutcome(StrEnum):
 # model reaches its close and records with ``done(notify=…)`` whether the user should
 # hear about the cycle — whether telling the user is the cycle's decision to make and
 # be measured on, not a verdict the gate issues before the close exists to carry it.
-# What actually stops a cycle is ``WRITE_GATE_STOP_WORTHY_OUTCOMES`` below, EMPTY
-# since #2385; this table keeps the two reasons for the LEGACY rows they stamped (the
-# run-record renders read the stamped reason off the declared table) and for the eval
-# cases that read it verbatim, and names the reason a future member would stamp.
+# Nothing stops a cycle on a write-gate outcome any more (#2538 removed the always-empty
+# ``WRITE_GATE_STOP_WORTHY_OUTCOMES`` membership check); this table keeps the two reasons
+# for the LEGACY rows they stamped (the run-record renders read the stamped reason off
+# the declared table) and for the eval cases that read it verbatim.
 #
 # ``NEW_KEY`` / ``KEY_EXISTS_CHANGED`` never stopped (an accumulator keeps going
 # mid-script), and ``DUPLICATE`` / ``DEGENERATE`` stay surfaced-but-recoverable — a
 # divergent-value collision is NEWS about a stored entry, so stopping on it would
-# silence the change it carries.  Later stages add per-collection gate shape as DATA
-# that extends THESE tables (e.g. an accumulator that stops when its whole batch is
-# unchanged), never new loop code.
+# silence the change it carries.
 WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
     WriteGateOutcome.KEY_EXISTS_UNCHANGED: "the value was unchanged since the last observation",
     WriteGateOutcome.DUPLICATE_UNCHANGED: (
         "the value was already recorded, under a different key, since the last observation"
     ),
 }
-
-# Which write-gate outcomes actually END a collector run at the chokepoint (#1587's
-# STOP semantics, split from the reasons table by #2385).  EMPTY since #2385: no
-# outcome stops a cycle — an unchanged write returns normally and the model closes
-# with ``done(notify=…)`` — so the collector's stop hook reads only the terminator
-# today, and a later table member is data here, not new loop code.  Membership, not
-# the reasons table above, is what makes an outcome STOP-worthy.
-WRITE_GATE_STOP_WORTHY_OUTCOMES: frozenset[WriteGateOutcome] = frozenset()
 
 
 # ``COLLECTOR_COVERED_REASON`` is RETIRED (#1916, with the coverage exit it named).  A
@@ -286,22 +276,6 @@ class MutationActor(StrEnum):
 
     USER_RUN = "user-run"
     SYSTEM = "system"
-
-
-class TransitionCause(StrEnum):
-    """What moved the conversation state machine (#1706).
-
-    ``CLASSIFIER`` — a scoped micro-context draw over the current state's
-    out-edges decided it; the row carries the run whose promptlog holds the
-    draw.  ``STRUCTURAL`` — no model was in the loop (the post-apply reset,
-    which is a fact about the edge table, not a judgment).  The same split the
-    mutation ledger draws between a user-run and a system actor: it is what
-    lets per-edge classifier accuracy be scored over production history without
-    structural moves inflating it.
-    """
-
-    CLASSIFIER = "classifier"
-    STRUCTURAL = "structural"
 
 
 class MutationEntityType(StrEnum):
@@ -666,39 +640,7 @@ class PennyConstants:
     # bulk page content never enters the parent run's context.
     BROWSE_EXTRACT_AGENT_NAME = "browse-extract"
     BROWSE_MICRO_CONTEXT_PROMPT_TYPE = "browse_micro_context"
-    # The ledger identity of a run-end skill-naming micro-context (#1665) — the
-    # SECOND customer of the micro-context machinery.  After a qualifying chat run
-    # is distilled, one single-shot model call writes a GENERIC name + description
-    # for the routine (the tagged NAME:/DESCRIPTION: contract); it logs its own
-    # promptlog rows under this agent/prompt type so run traces attribute it.
-    SKILL_NAMING_AGENT_NAME = "skill-namer"
-    SKILL_NAMING_PROMPT_TYPE = "skill_naming"
-    # The ledger identity of a conversation-state classification (#1706) — the
-    # THIRD customer of the micro-context machinery.  Once per incoming message a
-    # single-shot model call picks the machine's next state from the CURRENT
-    # state's out-edges (the tagged STATE: contract); it logs its own promptlog
-    # rows under this agent/prompt type so every transition is attributable and
-    # replayable from production history.
-    STATE_CLASSIFIER_AGENT_NAME = "state-classifier"
-    STATE_CLASSIFIER_PROMPT_TYPE = "state_classifier"
-    # The ledger identity of a run-end skill-FRAMING micro-context (#1830) — the
-    # FOURTH customer of the micro-context machinery.  Beside the labeller, and from
-    # the user's ask ALONE, one single-shot model call writes the routine's public
-    # INTERFACE: its generic name, its one-line description, and the parameter(s) the
-    # user would have to say again (the tagged NAME:/DESCRIPTION:/PARAMETER contract).
-    # Its own agent/prompt type, so a run trace shows the two draws as the two
-    # questions they are — implementation and interface, sharing no evidence (#1824).
-    SKILL_FRAME_AGENT_NAME = "skill-framer"
-    SKILL_FRAME_PROMPT_TYPE = "skill_frame"
-    # The ledger identity of a skill-BINDING micro-context (#1867) — the FIFTH
-    # customer of the micro-context machinery.  Given a routine that ALREADY exists
-    # and the user's own words asking for it on a new occasion, one single-shot
-    # model call fills each declared parameter from those words (the tagged
-    # VALUE/MISSING contract).  Its own agent/prompt type, so the routing draw and
-    # the filling draw stay the two separate questions they are (#1803).
-    SKILL_BIND_AGENT_NAME = "skill-binder"
-    SKILL_BIND_PROMPT_TYPE = "skill_bind"
-    # The ledger identity of the NOTIFY-COMPOSING micro-context (#1911) — the SIXTH
+    # The ledger identity of the NOTIFY-COMPOSING micro-context (#1911) — the SECOND
     # customer, and the first that closes a collector cycle rather than a chat turn.
     # Its own agent/prompt type so a run trace shows the message-writing draw apart
     # from the cycle's own calls: they are two contexts, and the whole point of the

@@ -39,7 +39,6 @@ pytestmark = pytest.mark.bare_db
 _DOCUMENT = NotificationInput(
     collection="ferry-departures",
     description="the dawn sailing on the north pier timetable",
-    routine="check_timetable",
     calls=(
         CycleCall(
             call="browse(queries=['https://northpier.example/departures'])",
@@ -76,7 +75,6 @@ def test_notify_document_renders_whole():
     assert render_notification(_DOCUMENT) == (
         "The `ferry-departures` job just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the dawn sailing on the north pier timetable\n"
-        "The skill it runs: check_timetable\n"
         "\n"
         "## What it wrote this cycle\n"
         "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
@@ -165,7 +163,6 @@ _LONG_KEY = "lanterns-" + "-".join(str(n) for n in range(1, 60))
 _OVERSIZED = NotificationInput(
     collection="harbour-watch",
     description="the pier lanterns on the harbour front",
-    routine="watch_lanterns",
     calls=(
         CycleCall(call="browse(queries=['https://harbour.example/'])", result=_PAGE),
         CycleCall(call=_WRITE_CALL, result="Wrote 10 entries to 'harbour-watch'."),
@@ -235,7 +232,6 @@ def test_an_oversized_cycle_assembles_under_the_declared_bound():
     assert rendered == (
         "The `harbour-watch` job just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the pier lanterns on the harbour front\n"
-        "The skill it runs: watch_lanterns\n"
         "\n"
         "## What it wrote this cycle\n"
         f"- into `harbour-watch`, under `{_LONG_KEY[:120]}"

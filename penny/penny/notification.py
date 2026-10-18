@@ -154,7 +154,6 @@ class NotificationInput(BaseModel):
 
     collection: str
     description: str
-    routine: str | None = None
     calls: tuple[CycleCall, ...] = ()
     written: tuple[WrittenEntry, ...] = ()
     related: tuple[RelatedMessages, ...] = ()
@@ -162,7 +161,6 @@ class NotificationInput(BaseModel):
 
 _LEAD = "The `{collection}` job just ran on its own, and it is time to tell the user."
 _ABOUT = "What this collection is for: {description}"
-_ROUTINE = "The skill it runs: {routine}"
 _WROTE_HEAD = "## What it wrote this cycle"
 _WROTE_NONE = "It wrote nothing down this cycle."
 _DID_HEAD = "## How it got there"
@@ -208,7 +206,6 @@ def render_notification(document: NotificationInput) -> str:
                     document.description, PennyConstants.NOTIFY_DESCRIPTION_CHARS
                 )
             ),
-            *([_ROUTINE.format(routine=document.routine)] if document.routine else []),
             "",
             _WROTE_HEAD,
             _render_written(document.written),
@@ -396,17 +393,10 @@ class CollectorNotifier:
         return NotificationInput(
             collection=target.name,
             description=target.description,
-            routine=self._routine_line(target),
             calls=tuple(_cycle_call(record) for record in records),
             written=tuple(_written_entry(entry) for entry in written),
             related=await self._related(target, written),
         )
-
-    @staticmethod
-    def _routine_line(target: MemoryRow) -> str | None:
-        """Which routine ran, by name — absent for a hand-authored collection, which
-        has none, so its document renders one line shorter rather than saying so."""
-        return target.skill_name
 
     async def _related(
         self, target: MemoryRow, written: Sequence[MemoryEntry]

@@ -292,19 +292,6 @@ class MemoryRow(SQLModel, table=True):
     # there is no interval column to widen and no auto-throttle to widen it.  NULL for a
     # log or an inert collection (one with no job yet), which never dispatches.
     schedule: str | None = Field(default=None)
-    # Skill provenance (#1603): the skill this collection was instantiated from
-    # (#1591's front door) and the params bound into its render — so "which skill
-    # made this, and with what?" is a read off the collection's own row, and a
-    # future rebind/re-render has the current bindings as reachable input.
-    # ``skill_name`` is a by-name reference to ``skill.name`` (a plain column, not a
-    # DB FK — a skill is re-teachable / REPLACE-able, so the reference must survive a
-    # re-teach); ``skill_params`` is the bound params as a JSON object.  Both NULL for
-    # a hand-authored / seeded / migration collection (no skill origin), so its
-    # catalog / metadata render is byte-identical to the pre-provenance shape.  The
-    # rendered ``extraction_prompt`` is the snapshot that actually runs — these name
-    # the recipe it came from, they don't drive it.
-    skill_name: str | None = Field(default=None)
-    skill_params: str | None = Field(default=None)
     # Provenance + lifecycle (operational registry, #1566) — every mechanism
     # created from a chat request can answer *who* asked for it, *what* run
     # created it, and *when* it ends, by a read.  All nullable: seeded / system
@@ -582,87 +569,3 @@ class EmailRule(SQLModel, table=True):
     enabled: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_applied_at: datetime | None = None  # When this rule was last triggered
-
-
-class StateTransition(SQLModel, table=True):
-    """One move of the conversation state machine — and, as the newest row, the
-    machine's whole state (#1706).
-
-    An append-only log with no materialized twin: the newest row's ``to_state``
-    IS where the machine stands, its ``anchor_message_id`` IS the ask a parked
-    round is anchored to, its ``created_at`` IS when the machine last moved.  A
-    current-state row alongside would carry nothing that isn't derivable, and
-    would mean two writes per move that can disagree — so there is one write,
-    and a failed write moves nothing.  (The mutation ledger's ``memory`` twin
-    earns itself because a ``memory`` row carries name/description/prompt/cadence,
-    facts no event derives; the shape does not transfer here.)  No row is
-    seeded: the cold start is the ABSENCE of history, not a row asserting it.
-
-    Every classified draw writes a row, INCLUDING a draw that moved nothing:
-    ``outcome`` carries the ``StateDrawOutcome``, so a contract failure the
-    machine held its state on (fail → stay) is distinguishable from a decided
-    hold (idle → idle) that meant it.  Scoring per-edge accuracy over production
-    history needs both — a ledger that records only successful transitions
-    reports a perfect classifier by construction.
-
-    ``cause`` separates the two kinds of move: ``classifier`` (a model draw,
-    carrying its ``run_id`` join key into the promptlog) and ``structural`` (no
-    model in the loop — the post-apply reset), mirroring the mutation ledger's
-    user-run / system actor split.
-    """
-
-    __tablename__ = "state_transition"
-
-    id: int | None = Field(default=None, primary_key=True)
-    # Both ends of the move on one row.  ``from_state`` is derivable from the
-    # previous row's ``to_state``, but on an append-only log a row that states
-    # its own whole move is self-describing and cheaper to read.
-    from_state: str  # ConversationState value
-    to_state: str  # ConversationState value
-    cause: str = Field(index=True)  # TransitionCause value: classifier | structural
-    # The draw's terminal outcome (``StateDrawOutcome``) for a classifier move;
-    # NULL for a structural one, which runs no model and so has no draw.
-    outcome: str | None = None
-    # The instigating ask the machine is anchored to AFTER this move — set on
-    # entry to a parked state, carried unchanged through the round, NULL once
-    # idle.  A fact about this transition (like ``to_state``), not a copy of
-    # another table's column, so the anchor's whole history is readable.
-    anchor_message_id: int | None = Field(default=None, foreign_key="messagelog.id")
-    # The message that provoked the move, and the run whose promptlog rows carry
-    # the draw itself (the ledger join key) — the run NULL for a structural move.
-    message_id: int | None = Field(default=None, foreign_key="messagelog.id")
-    run_id: str | None = Field(default=None, index=True)
-    # The skill a SKILL-GATED decision bound, by name (``skill.name``) — a plain
-    # column like ``messagelog.mechanism``, since a skill is REPLACE-able by name.
-    skill_name: str | None = None
-    # The round's FRAMING (#1868) as serialized ``RoundFraming`` JSON: the signature the
-    # framer drew when the machine entered learn, and the container Python built from it.
-    # Beside ``skill_name`` because it answers the same kind of question about the move —
-    # what routine this is about — for the case where the routine does not exist yet: the
-    # skill row still enters the registry only at run end, from the ledger, so a framed
-    # name is not a ``skill.name`` to reference and would be a dangling one if it were.
-    # A draw varies, so the entry decision is RECORDED and later read rather than re-drawn
-    # (a re-draw is not a re-read); it rides the anchor's lifecycle — set on entry, carried
-    # while parked, NULL once idle.
-    skill_frame: str | None = None
-    # The round's PARTIAL binding (#1894) as serialized ``RoundShortfall`` JSON: the routine
-    # the ask is covered by, the values the user's words already settled, and the parameters
-    # that got none.  ``skill_frame``'s sibling — the same round state for a round the words
-    # fall SHORT of, which has no signature and no container yet — recorded for the same
-    # reason: a draw varies, so what a round is waiting on is READ on every later turn
-    # instead of being re-derived from raw conversation.  Only a move that LANDS in request
-    # carries one: a round that gets its details bound carries a framing instead, one that
-    # turns out to be about a different task carries neither, and idle clears it.
-    round_shortfall: str | None = None
-    # The round's PROVENANCE (#1902) as serialized ``RoundProvenance`` JSON: what the
-    # round's own registry write REPLACED.  Three states, because calling a round off owes
-    # the registry three different things — NULL when the round minted nothing (a
-    # skill-gated round binds a routine the user already had and teaches nothing, so a bail
-    # leaves it alone), present-and-empty when the round minted its pinned name over
-    # nothing (a bail deletes it), and present-carrying-a-row when the round was re-teaching
-    # (a bail restores that row, since by then the round's own extraction has replaced what
-    # the routine does).  Round state like the two above, settled at the same moment (the
-    # move that mints the routine — the last point at which "what was here before" is still
-    # readable) and carried the same way: set on entry, carried while parked, NULL at idle.
-    round_provenance: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)

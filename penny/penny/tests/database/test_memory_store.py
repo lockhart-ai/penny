@@ -154,9 +154,8 @@ class TestMemoryMetadata:
         db.memories.create_collection(
             "kelp-prices",
             "kelp prices",
+            extraction_prompt="Browse the listing and write the current price.",
             schedule="FREQ=DAILY;BYHOUR=9",
-            skill_name="watch-a-price",
-            skill_params={"page": "kelp"},
             expires_at=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
             created_by_run_id="run-create",
         )
@@ -164,19 +163,18 @@ class TestMemoryMetadata:
             "kelp-prices",
             description="kelp prices, daily",
             notify=True,
+            extraction_prompt="Browse the listing and write the current price and seller.",
             schedule="FREQ=DAILY;BYHOUR=18",
             expires_at=datetime(2026, 7, 1, 12, 0, tzinfo=UTC),
-            skill_name="watch-a-price-closely",
-            skill_params={"page": "kelp"},
             run_id="run-fix",
         )
         priors = db.mutations.priors_for_run("kelp-prices", "run-fix")
         assert priors == {
             "description": "kelp prices",
             "notify": "False",
+            "extraction_prompt": "Browse the listing and write the current price.",
             "schedule": "FREQ=DAILY;BYHOUR=9",
             "expires_at": "2026-06-01 12:00 UTC",
-            "skill": "watch-a-price",
         }
         # A field that held NOTHING is a positive statement, not an absence: a second
         # collection with no schedule reports its schedule prior as None rather than
@@ -244,8 +242,6 @@ class TestMemoryMetadata:
             extraction_prompt="1. done().",
             schedule="FREQ=HOURLY",
             expires_at=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
-            skill_name="a-skill",
-            skill_params={},
         )
         changed = update.apply_to(row)
         assert set(changed) <= set(_FIELD_PRIORS)

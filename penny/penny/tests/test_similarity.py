@@ -184,12 +184,12 @@ _KNOWN_MISSES = [
 
 
 def _same(name_a: str, name_b: str) -> bool:
-    """``is_same_job`` on two bare names (no skill attached on either side)."""
+    """``is_same_job`` on two bare names."""
     return is_same_job(JobSide(name=name_a), JobSide(name=name_b))
 
 
 class TestIsSameJob:
-    """The two-tier job-identity rule scored against the labelled corpus."""
+    """The job-identity rule (name containment) scored against the labelled corpus."""
 
     @pytest.mark.parametrize(("name_a", "name_b"), _DUPLICATE_PAIRS)
     def test_labelled_duplicates_are_caught(self, name_a: str, name_b: str) -> None:
@@ -214,46 +214,3 @@ class TestIsSameJob:
         caught = sum(1 for pair in _DUPLICATE_PAIRS + _KNOWN_MISSES if _same(*pair))
         false_merges = sum(1 for pair in _DISTINCT_PAIRS if _same(*pair))
         assert (caught, false_merges) == (17, 0)
-
-    def test_same_skill_and_params_is_the_same_job_whatever_the_names(self) -> None:
-        """Tier 1: identical bound skills are one job even when the names share
-        nothing — the case where names carry no usable signal at all."""
-        params = {"url": "https://example.test/listing", "field": "price"}
-        assert is_same_job(
-            JobSide(name="aurora-deck-2-price", skill="Watch a page field", params=params),
-            JobSide(name="harbor-ferry-times", skill="Watch a page field", params=params),
-        )
-
-    def test_same_skill_different_params_is_a_different_job(self) -> None:
-        """Tier 1 is what separates the pair that defeats every name rule: the same
-        routine bound to a DIFFERENT listing is a different job."""
-        assert not is_same_job(
-            JobSide(
-                name="aurora-deck-2-price",
-                skill="Watch a page field",
-                params={"url": "https://example.test/deck-2"},
-            ),
-            JobSide(
-                name="aurora-deck-3-price",
-                skill="Watch a page field",
-                params={"url": "https://example.test/deck-3"},
-            ),
-        )
-
-    def test_skill_on_one_side_only_contributes_nothing(self) -> None:
-        """Field-wise over the POPULATED INTERSECTION: an inert collection (no skill)
-        is neither merged into an instantiated one for lacking a skill nor separated
-        from it — tier 1 abstains and tier 2 decides on the names alone."""
-        instantiated = JobSide(
-            name="aurora-deck-2-price", skill="Watch a page field", params={"url": "u"}
-        )
-        assert is_same_job(JobSide(name="aurora-deck-2-prices"), instantiated)
-        assert not is_same_job(JobSide(name="harbor-ferry-times"), instantiated)
-
-    def test_unbound_skill_on_both_sides_falls_through_to_the_names(self) -> None:
-        """A skill with no bindings says nothing about which job it is running, so an
-        empty ``params`` is an absent field, not a match."""
-        assert not is_same_job(
-            JobSide(name="aurora-deck-2-price", skill="Watch a page field", params={}),
-            JobSide(name="harbor-ferry-times", skill="Watch a page field", params={}),
-        )

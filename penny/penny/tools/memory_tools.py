@@ -30,7 +30,6 @@ from similarity.embeddings import is_name_variant
 
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
-    WRITE_GATE_STOP_WORTHY_OUTCOMES,
     MutationEntityType,
     PennyConstants,
     WriteGateOutcome,
@@ -1491,8 +1490,7 @@ class CollectionWriteTool(MemoryTool):
         true when any entry changed durable state — a NEW_KEY write OR a
         KEY_EXISTS_CHANGED baseline auto-refresh (#1633); an all-duplicate /
         unchanged / degenerate batch changed nothing, so it reads as no-work for the
-        throttle.  ``stop`` carries the write-gate STOP (collector context only),
-        honored by the collector loop."""
+        throttle."""
         by = self._bucket(results)
         self._log_rejections(memory, by)
         parts = self._message_parts(memory, by)
@@ -1500,7 +1498,6 @@ class CollectionWriteTool(MemoryTool):
         return ToolResult(
             message=message,
             mutated=any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results),
-            stop=self._stop_outcome(results),
         )
 
     @staticmethod
@@ -1571,27 +1568,6 @@ class CollectionWriteTool(MemoryTool):
         somewhere else."""
         rejections = "\n".join(_format_duplicate(memory, result) for result in duplicates)
         return f"{rejections}\n{self._duplicate_close(all_duplicates=all_duplicates)}"
-
-    def _stop_outcome(self, results: list[WriteResult]) -> WriteGateOutcome | None:
-        """The write-gate STOP for this call — honored only in a collector (must-act)
-        context, so chat gets the enumerated text but never a loop-stop (#1587).
-
-        Fires when the whole write resolved to a single STOP-worthy outcome (nothing
-        new landed).  Since #2385 NOTHING is: the unchanged-value outcomes' STOP was
-        removed on the code owner's ruling — the write returns normally and the cycle
-        goes on to record the quiet close itself — so the declared
-        ``WRITE_GATE_STOP_WORTHY_OUTCOMES`` set is empty and this returns ``None`` for
-        every outcome the gate can produce.  The hook stays so a later member is data
-        in that set, not new loop code; the stamped reason it would carry is named in
-        ``WRITE_GATE_STOP_REASONS``."""
-        if self._scope is None or not results:
-            return None
-        outcomes = {r.outcome for r in results}
-        if len(outcomes) == 1:
-            only = next(iter(outcomes))
-            if only in WRITE_GATE_STOP_WORTHY_OUTCOMES:
-                return only
-        return None
 
     @staticmethod
     def _duplicate_close(*, all_duplicates: bool) -> str:

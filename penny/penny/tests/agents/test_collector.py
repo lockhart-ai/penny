@@ -36,7 +36,6 @@ from penny.constants import (
     CYCLE_END_RETRY_REASONS,
     HEALTHY_CYCLE_ENDS,
     WRITE_GATE_STOP_REASONS,
-    WRITE_GATE_STOP_WORTHY_OUTCOMES,
     CycleEnd,
     CycleTrigger,
     MutationAction,
@@ -2383,10 +2382,10 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
     the declared table names the stamped reason, and a STOP that also changed durable
     state stays ``worked``.
 
-    No write-gate outcome produces a stop any more (#2385 moved STOP-worthiness into
-    the now-empty ``WRITE_GATE_STOP_WORTHY_OUTCOMES``), so the path is unreachable
-    end-to-end today — the hook reads whatever a record carries, so the render stays
-    honest for a legacy row or a future member."""
+    No write-gate outcome produces a stop any more (#2385 retired the write gate's own
+    STOP-worthiness, and #2538 removed the now-dead membership check it had been
+    reduced to), so the path is unreachable end-to-end today — the hook reads whatever
+    a record carries, so the render stays honest for a legacy row."""
     collector, _ = _make_collector(test_config, tmp_path)
     reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
@@ -2420,10 +2419,6 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
         RunOutcome.WORKED,
         WRITE_GATE_STOP_REASONS[WriteGateOutcome.DUPLICATE_UNCHANGED],
     )
-
-    # The stop-worthy SET is empty: nothing the write gate produces stops a cycle,
-    # so the set is the only thing a future member extends.
-    assert not WRITE_GATE_STOP_WORTHY_OUTCOMES
 
 
 def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_config, tmp_path):

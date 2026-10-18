@@ -644,14 +644,14 @@ class Collector(BackgroundAgent):
         """A collector cycle ends on a successful ``done()`` OR a write-gate STOP.
 
         The base terminator is ``done()`` (#1569, restored #1916); a collector
-        additionally honors a STOP carried by a tool result (any member of
-        ``WRITE_GATE_STOP_WORTHY_OUTCOMES``, declared as data) — a deliberate close at
-        the write chokepoint, so no trailing ``done()`` is required.  Since #2385 the
-        set holds NO members — an unchanged write no longer ends the cycle; the model
-        closes with ``done(notify=…)`` and the quiet decision is its own — so this
-        hook reads only the terminator today, and stays so a later member is data, not
-        new loop code.  STOP is honored only here (must-act cadence); the chat loop
-        uses the base and never stops on a write outcome.
+        additionally honors a STOP carried by a tool result's ``stop_reason`` — a
+        deliberate close at the write chokepoint, so no trailing ``done()`` is
+        required.  Since #2385 no write-gate outcome ever stamps one — an unchanged
+        write no longer ends the cycle; the model closes with ``done(notify=…)`` and
+        the quiet decision is its own — so this hook reads only the terminator today,
+        and stays so a legacy-stamped row (or a future member) still renders honestly.
+        STOP is honored only here (must-act cadence); the chat loop uses the base and
+        never stops on a write outcome.
 
         What this replaced is the coverage read (#1911): the calls the program makes
         were settled before the cycle began, so a cycle that departed from them for a

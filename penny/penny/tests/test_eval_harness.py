@@ -1544,14 +1544,12 @@ def test_a_seeded_prior_turn_is_not_read_as_this_samples_work(tmp_path) -> None:
 
 
 # Every micro-context that draws on the cohort path, by the ledger identity its rows carry.
-# Listed because the completeness gate has to hold for each of them and the framer's is the
-# only one a run has ever exercised through it (#2076).
+# Listed because the completeness gate has to hold for each of them (#2076).  The skill-framer/
+# -binder/-namer and the state classifier retired with the skill framework and conversation
+# machine (#2538); the browse extractor and the notify composer are the two that remain.
 _MICRO_CONTEXT_AGENTS = (
-    PennyConstants.SKILL_FRAME_AGENT_NAME,
-    PennyConstants.SKILL_BIND_AGENT_NAME,
-    PennyConstants.SKILL_NAMING_AGENT_NAME,
-    PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+    PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
 )
 
 
@@ -1639,10 +1637,10 @@ def test_draw_rerolled_reads_the_repeated_context_a_discarded_draw_leaves(tmp_pa
     # never on the run it belongs to.
     micro = _make_db(tmp_path, "micro")
     document = [{"role": "user", "content": "the rendered routine"}]
-    frame_agent = PennyConstants.SKILL_FRAME_AGENT_NAME
-    _log_prompt(micro, messages=document, run_id="draw-1", agent_name=frame_agent)
+    extract_agent = PennyConstants.BROWSE_EXTRACT_AGENT_NAME
+    _log_prompt(micro, messages=document, run_id="draw-1", agent_name=extract_agent)
     assert not draw_rerolled(micro)
-    _log_prompt(micro, messages=document, run_id="draw-2", agent_name=frame_agent)
+    _log_prompt(micro, messages=document, run_id="draw-2", agent_name=extract_agent)
     assert draw_rerolled(micro)
 
 
@@ -2273,21 +2271,14 @@ def _observed_chat_sample(
     tmp_path,
     name: str,
     *,
-    classifier_answered: bool = True,
     chat_draws: Sequence[dict] = _ANSWERED,
     reply: str = "an answer",
 ) -> SampleObservation:
     """One chat sample read through the real chat observer, its promptlog in production's order:
-    the classifier's draw (when its call came back), then the chat agent's draws (one row per
-    call that came back — none when the endpoint failed every call).  The machine recorded no
-    move."""
+    the chat agent's draws, one row per call that came back — none when the endpoint failed
+    every call.  A naive chat turn (#2455) opens directly with the chat agent; there is no
+    state classifier ahead of it to draw first."""
     db = migrated_db(str(tmp_path / f"{name}.db"))
-    if classifier_answered:
-        _log_prompt(
-            db,
-            response=_content_response("STATE: idle"),
-            agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
-        )
     for draw in chat_draws:
         _log_prompt(db, response=draw, agent_name=PennyConstants.CHAT_AGENT_NAME)
     return _observe_sample(
@@ -2629,21 +2620,15 @@ _BROWSE_CALL = {"function": {"name": "browse", "arguments": _BROWSE_ARGS}}
 _REPLY_TEXT = "Lake Baikal — 1,642 m."
 
 
-def _three_micro_context_ledger(db: Database) -> None:
-    """One chat turn's promptlog exactly as production writes it (#1773): the state classifier
-    draws BEFORE the chat agent, a browse-extract sub-model runs INSIDE the browse call, and the
-    run-end skill labeller names the routine AFTER the reply — each with its own ``agent_name``,
-    interleaved with the two main-agent rows in ledger order."""
-    _log_prompt(
-        db,
-        agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
-        messages=[
-            {"role": "system", "content": "Pick one state."},
-            {"role": "user", "content": "current: idle · newest message: deepest lake?"},
-        ],
-        response=_content_response("STATE: idle"),
-        thinking="a question, not a task",
-    )
+def _micro_context_ledger(db: Database) -> None:
+    """One chat turn's promptlog exactly as production writes it (#1773): a browse-extract
+    sub-model runs INSIDE the browse call, with its own ``agent_name``, interleaved with the
+    two main-agent rows in ledger order.
+
+    #2538 dropped this fixture's other two actors (the state classifier at the turn's head,
+    the run-end skill namer at its close) along with the conversation machine and the skill
+    registry they served — the browse extractor is the one micro-context still in production
+    on a chat turn."""
     _log_prompt(
         db,
         messages=[
@@ -2674,34 +2659,23 @@ def _three_micro_context_ledger(db: Database) -> None:
         response=_content_response(_REPLY_TEXT),
         thinking="the source says 1,642 m",
     )
-    _log_prompt(
-        db,
-        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
-        messages=[
-            {"role": "system", "content": "Name the routine."},
-            {"role": "user", "content": "steps: browse"},
-        ],
-        response=_content_response("NAME: look-up-lake-depth"),
-        thinking="a generic name",
-    )
 
 
 def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monkeypatch) -> None:
-    # #1773: `_micro_batches` admitted only browse-extract rows, so the classifier's decision and
-    # the labeller's adjudication were invisible — and, being main-agent rows to the turn walk,
-    # their scoped slices rendered as PHANTOM `👤 user` steps ahead of the real one.  All three
-    # micro-contexts now render as named actors at the anchor their placement declares: the
-    # classifier at the head of the turn it decided, the browse extraction after the call that
-    # spawned it (unchanged FIFO pairing), the labeller closing the turn.  Whole-render literal.
+    # #1773: `_micro_batches` admitted only browse-extract rows, so another micro-context's
+    # draw was a main-agent row to the turn walk, and its scoped slice rendered as a PHANTOM
+    # `👤 user` step ahead of the real one.  A micro-context renders as a named actor at the
+    # anchor its placement declares: the browse extraction after the call that spawned it
+    # (unchanged FIFO pairing).  Whole-render literal.
     #
     # #1997: the sample carries only its OWN sequence.  Each actor's SYSTEM PROMPT is deposited
-    # for the case document, which states each distinct one once instead of restating four of
-    # them under every sample — so the second half of this test is that the extraction still
-    # captures all four, at the one moment the sample's database is live to be read.
+    # for the case document, which states each distinct one once instead of restating it under
+    # every sample — so the second half of this test is that the extraction still captures it,
+    # at the one moment the sample's database is live to be read.
     monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
     db = _make_db(tmp_path)
-    _three_micro_context_ledger(db)
+    _micro_context_ledger(db)
     result = SampleResult.graded([Check("browsed", ok=True, anchor="browse(", kind="spine")])
     _case_prompts.pop("micro-actors", None)
     _write_sample_report(db, "micro-actors", 0, result=result, reply=_REPLY_TEXT)
@@ -2709,22 +2683,16 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
     assert [
         (sample, prompt.context, prompt.text) for sample, prompt in _case_prompts["micro-actors"]
     ] == [
-        ("sample 1", "state-classifier", "Pick one state."),
         ("sample 1", "", "You are Penny."),
         ("sample 1", "browse-extract", "Extract one value."),
-        ("sample 1", "skill-namer", "Name the routine."),
     ], "every actor's prompt reaches the case document, none render under the sample"
 
     assert _sample_report_text(tmp_path, "micro-actors") == (
-        "<details><summary>sample 1 — ✅ pass · 0s · 5 calls</summary>\n"
+        "<details><summary>sample 1 — ✅ pass · 0s · 3 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
         "|---|---|---|\n"
         "| expected | C1 [spine]⚖ browsed |  |\n"
-        "| actual | 🧩 state-classifier ← user turn: current: idle · newest message: "
-        "deepest lake? |  |\n"
-        "| 💭 | thinking (state-classifier) — 22 chars: a question, not a task |  |\n"
-        "| actual | 🧩 state-classifier → STATE: idle |  |\n"
         "| 💭 | check a source |  |\n"
         '| actual | 🔧 browse({"queries": ["lake"], "extract": "depth"}) | ✅ C1 |\n'
         "| actual | 🧩 browse-extract ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
@@ -2734,10 +2702,6 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "| 💭 | <details><summary>thinking — 23 chars</summary>"
         "the source says 1,642 m</details> |  |\n"
         '| actual | 🤖 "Lake Baikal — 1,642 m." |  |\n'
-        "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
-        "| 💭 | thinking (skill-namer) — 14 chars: "
-        "a generic name |  |\n"
-        "| actual | 🧩 skill-namer → NAME: look-up-lake-depth |  |\n"
         "\n"
         "</details>\n"
         "\n"
@@ -2775,22 +2739,25 @@ def _shipped_micro_context_agents() -> set[str]:
 
 _MICRO_PROMPT_CASE = "micro-prompts"
 _QUIET_CUSTOMER_CASE = "micro-prompts-quiet"
-_CLASSIFIER_PROMPT = "Pick one state."
-_NAMER_PROMPT = "Name the routine."
+_EXTRACT_PROMPT = "Extract one value."
+_NOTIFY_PROMPT = "Compose one message."
 
 
 def _two_customer_ledger(db: Database) -> None:
-    """One microcontext sample's promptlog as a two-customer run leaves it (#1803): the state
-    classifier's draw, the run-end labeller's, and — between them — a main-agent row that is
-    neither, so what the deposit is SCOPED to is assertable rather than assumed."""
+    """One microcontext sample's promptlog as a two-customer run leaves it (#1803): a
+    browse-extraction draw, a notify-composing draw, and — between them — a main-agent
+    row that is neither, so what the deposit is SCOPED to is assertable rather than
+    assumed.  The two customers don't share a real turn in production (#2538: one closes
+    a chat call, the other a collector cycle) — this fixture is about the generic
+    deposit-and-scope mechanism, not a production trace."""
     _log_prompt(
         db,
-        agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         messages=[
-            {"role": "system", "content": _CLASSIFIER_PROMPT},
-            {"role": "user", "content": "current: idle · newest message: watch the listing"},
+            {"role": "system", "content": _EXTRACT_PROMPT},
+            {"role": "user", "content": "Instruction: price · Content: watch the listing"},
         ],
-        response=_content_response("STATE: learn"),
+        response=_content_response("EXTRACTED: watching"),
         thinking="a task, not a question",
     )
     _log_prompt(
@@ -2803,12 +2770,12 @@ def _two_customer_ledger(db: Database) -> None:
     )
     _log_prompt(
         db,
-        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
+        agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
         messages=[
-            {"role": "system", "content": _NAMER_PROMPT},
-            {"role": "user", "content": "steps: browse"},
+            {"role": "system", "content": _NOTIFY_PROMPT},
+            {"role": "user", "content": "wrote: watching the listing"},
         ],
-        response=_content_response("NAME: watch-the-listing"),
+        response=_content_response("the listing is being watched"),
     )
 
 
@@ -2825,8 +2792,8 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
     _case_prompts.pop(_MICRO_PROMPT_CASE, None)
     customers = (
-        PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
-        PennyConstants.SKILL_NAMING_AGENT_NAME,
+        PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
     )
     result = SampleResult.graded([Check("named the routine", ok=True, kind="state")])
     for index in range(2):
@@ -2845,10 +2812,10 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
         (sample, prompt.context, prompt.text)
         for sample, prompt in _case_prompts[_MICRO_PROMPT_CASE]
     ] == [
-        ("sample 1", "state-classifier", _CLASSIFIER_PROMPT),
-        ("sample 1", "skill-namer", _NAMER_PROMPT),
-        ("sample 2", "state-classifier", _CLASSIFIER_PROMPT),
-        ("sample 2", "skill-namer", _NAMER_PROMPT),
+        ("sample 1", "browse-extract", _EXTRACT_PROMPT),
+        ("sample 1", "notify-composer", _NOTIFY_PROMPT),
+        ("sample 2", "browse-extract", _EXTRACT_PROMPT),
+        ("sample 2", "notify-composer", _NOTIFY_PROMPT),
     ], "both customers under test deposit, in ledger order; the main agent neither was does not"
 
     # The case document's own section, composed exactly as case close composes it
@@ -2858,18 +2825,18 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
     ) == (
         "<details><summary>System prompts — 2 contexts · 2 shared by every sample</summary>\n"
         "\n"
-        "<details><summary>skill-namer — 17 chars · every sample</summary>\n"
+        "<details><summary>browse-extract — 18 chars · every sample</summary>\n"
         "\n"
         "```\n"
-        "Name the routine.\n"
+        "Extract one value.\n"
         "```\n"
         "\n"
         "</details>\n"
         "\n"
-        "<details><summary>state-classifier — 15 chars · every sample</summary>\n"
+        "<details><summary>notify-composer — 20 chars · every sample</summary>\n"
         "\n"
         "```\n"
-        "Pick one state.\n"
+        "Compose one message.\n"
         "```\n"
         "\n"
         "</details>\n"
@@ -2878,13 +2845,15 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
     )
 
     block = _sample_report_text(tmp_path, _MICRO_PROMPT_CASE)
-    assert _CLASSIFIER_PROMPT not in block and _NAMER_PROMPT not in block, (
+    assert _EXTRACT_PROMPT not in block and _NOTIFY_PROMPT not in block, (
         "a sample carries only its own sequence — the prompt is stated once, on the case (#1997)"
     )
 
     # A customer that never drew has no prompt to state, so the placeholder sample deposits none
     # rather than an empty entry the case-close path would then have to tell apart from a real one
     # — and it still renders its honest placeholder, pinned whole beside the deposit it withholds.
+    # An arbitrary name proves it: it need not be a registered micro-context, only absent from
+    # this ledger.
     quiet = _make_db(tmp_path, _QUIET_CUSTOMER_CASE)
     _two_customer_ledger(quiet)
     _write_classifier_report(
@@ -2893,7 +2862,7 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
         0,
         result=result,
         phrasing="watch the listing",
-        agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
+        agent_names=("a-quiet-customer",),
     )
     assert _QUIET_CUSTOMER_CASE not in _case_prompts
     assert _sample_report_text(tmp_path, _QUIET_CUSTOMER_CASE) == (
@@ -3008,7 +2977,6 @@ def test_an_end_to_end_sample_that_built_no_job_is_complete_and_fails_its_claims
     # A migrated db, not the bare schema ``_make_db`` builds: ``outgoing_replies`` reads the
     # ``penny-messages`` log a migration seeds, the way a real sample's database always has it.
     db = migrated_db(str(tmp_path / "end-to-end-no-job.db"))
-    _log_prompt(db, agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME, run_id="r1")
     _log_prompt(db, agent_name=PennyConstants.CHAT_AGENT_NAME, run_id="r1")
 
     observation = _observe_end_to_end(
@@ -3074,7 +3042,6 @@ def test_an_end_to_end_sample_reply_holds_only_this_runs_messages(tmp_path) -> N
     # A migrated db, not the bare schema ``_make_db`` builds: ``outgoing_replies`` reads the
     # ``penny-messages`` log a migration seeds, the way a real sample's database always has it.
     db = migrated_db(str(tmp_path / "end-to-end-seeded-reply.db"))
-    _log_prompt(db, agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME, run_id="r1")
     _log_prompt(db, agent_name=PennyConstants.CHAT_AGENT_NAME, run_id="r1")
     db.messages.log_message(
         direction=PennyConstants.MessageDirection.OUTGOING,

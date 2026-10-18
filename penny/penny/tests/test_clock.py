@@ -29,7 +29,7 @@ from sqlmodel import SQLModel
 import penny as penny_package
 from penny.agents.collector import Collector
 from penny.clock import Clock
-from penny.constants import ChannelType, PennyConstants, TransitionCause
+from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.datetime_utils import current_datetime_line
@@ -229,7 +229,7 @@ _ON_THE_MACHINES_CLOCK = {
     # How long the process has been up.
     "penny.py": 1,
     # The models' own defaults — the fallback for a row built outside a store.
-    "database/models.py": 25,
+    "database/models.py": 24,
     # When a migration was applied, in the runner's own bookkeeping table.
     "database/migrate.py": 1,
     # How long a model call took.
@@ -318,12 +318,11 @@ _UNTIL_TEN_TONIGHT = _ends_when_asked(_JOB, until_tonight_at(22))
 def _a_turn_that_stood_a_job_up(
     tmp_path, name: str, starts_at: datetime, *, rule: str, ends: str | None
 ) -> tuple[Database, SampleObservation]:
-    """One apply turn on a sample's clock, read back through the chat observer.
+    """One chat turn on a sample's clock, read back through the chat observer.
 
-    The classifier draws, the machine lands in apply, and the job is stood up on ``rule``
-    with the end ``ends`` says — resolved by the function ``collection_configure`` resolves it
-    with, against the same database, so the instant the words are counted from is the one
-    production counts them from.
+    The job is stood up on ``rule`` with the end ``ends`` says — resolved by the function
+    ``collection_configure`` resolves it with, against the same database, so the instant
+    the words are counted from is the one production counts them from.
 
     ``turn_at`` is read off the last scripted message ``TEST_SENDER`` sent (#2496 naive
     baseline: there is no conversation machine, so no transition row's ``created_at``
@@ -334,12 +333,6 @@ def _a_turn_that_stood_a_job_up(
         direction=PennyConstants.MessageDirection.INCOMING,
         sender=TEST_SENDER,
         content="watch this and stand up the job",
-    )
-    _log_draw(db, PennyConstants.STATE_CLASSIFIER_AGENT_NAME, "STATE: apply")
-    db.machine.record_transition(
-        from_state="learn",
-        to_state="apply",
-        cause=TransitionCause.CLASSIFIER,
     )
     schedule = parse_schedule(rule)
     db.memories.create_collection(

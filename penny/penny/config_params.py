@@ -445,42 +445,6 @@ ConfigParam(
     group=GROUP_TOKEN_BUDGETS,
 )
 
-ConfigParam(
-    key="TOKEN_BUDGET_SKILL_BINDER",
-    description="Max completion tokens for a skill-binding micro-context call",
-    type=int,
-    default=4000,
-    validator=_validate_positive_int,
-    group=GROUP_TOKEN_BUDGETS,
-)
-
-ConfigParam(
-    key="TOKEN_BUDGET_SKILL_FRAMER",
-    description="Max completion tokens for a skill-framing micro-context call",
-    type=int,
-    default=9000,
-    validator=_validate_positive_int,
-    group=GROUP_TOKEN_BUDGETS,
-)
-
-ConfigParam(
-    key="TOKEN_BUDGET_SKILL_NAMER",
-    description="Max completion tokens for a skill-naming micro-context call",
-    type=int,
-    default=7000,
-    validator=_validate_positive_int,
-    group=GROUP_TOKEN_BUDGETS,
-)
-
-ConfigParam(
-    key="TOKEN_BUDGET_STATE_CLASSIFIER",
-    description="Max completion tokens for a state-classifier micro-context call",
-    type=int,
-    default=3500,
-    validator=_validate_positive_int,
-    group=GROUP_TOKEN_BUDGETS,
-)
-
 # Which ConfigParam names which call kind's budget.  A kind absent from this table — a
 # future agent, or a test's made-up name — gets no cap: ``token_budget_for`` returns
 # ``None`` rather than inventing a number nobody chose for it.
@@ -489,10 +453,6 @@ TOKEN_BUDGET_PARAM_BY_AGENT_NAME: dict[str, str] = {
     PennyConstants.COLLECTOR_AGENT_NAME: "TOKEN_BUDGET_COLLECTOR",
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: "TOKEN_BUDGET_BROWSE_EXTRACT",
     PennyConstants.NOTIFY_COMPOSE_AGENT_NAME: "TOKEN_BUDGET_NOTIFY_COMPOSER",
-    PennyConstants.SKILL_BIND_AGENT_NAME: "TOKEN_BUDGET_SKILL_BINDER",
-    PennyConstants.SKILL_FRAME_AGENT_NAME: "TOKEN_BUDGET_SKILL_FRAMER",
-    PennyConstants.SKILL_NAMING_AGENT_NAME: "TOKEN_BUDGET_SKILL_NAMER",
-    PennyConstants.STATE_CLASSIFIER_AGENT_NAME: "TOKEN_BUDGET_STATE_CLASSIFIER",
 }
 
 
