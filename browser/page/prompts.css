@@ -30,9 +30,11 @@
   /* The ONE metric-column grid (#2610) shared by run headers
    * (.run-right) and every step/draw/running row (.row-right), so all
    * rows' columns land on the same vertical lines. Track order:
-   * steps ↓ ↑ tok/s time duration copy. The narrow breakpoints below
-   * shrink — never drop — these tracks. */
-  --metric-cols: 72px 46px 46px 92px 86px 106px 24px;
+   * steps ↓ ↑ tok/s time duration copy. Sized for the widest realistic
+   * value per column — `100 steps`, `999.9k`, `101.2 tok/s`,
+   * `9:44:14 a.m.`, the pill `12m 34s / 12m 30s`, the 24px copy button.
+   * The narrow breakpoints below shrink — never drop — these tracks. */
+  --metric-cols: 78px 58px 58px 94px 86px 138px 24px;
   --metric-gap: 8px;
 }
 
@@ -897,7 +899,7 @@
 /* ============================================================
    Responsive metric tracks (#2610) — the columns NEVER disappear; as the
    window narrows the shared tracks, the gap and the wall/model pill's
-   padding shrink in steps (~1100 / ~900 / ~700), the tok/s unit drops to a
+   padding shrink in steps (~1100 / ~900 / ~700 / ~560), the tok/s unit drops to a
    smaller and then title-only form (the number stays), and the flexible
    left side (name, snippet) gives up the room, truncating with an
    ellipsis throughout. One track list for run headers and every
@@ -907,8 +909,15 @@
 
 @media (max-width: 1100px) {
   #runs {
-    --metric-cols: 72px 44px 44px 80px 85px 100px 24px;
+    --metric-cols: 64px 58px 58px 80px 86px 132px 24px;
     --metric-gap: 6px;
+  }
+
+  /* The run header's steps icon leaves before the column does — the count
+   * ("100 steps" = 62px) still fits the shrunken track, the icon no
+   * longer does. */
+  .rc-steps i {
+    display: none;
   }
 
   /* The tok/s unit shrinks rather than vanishing yet. */
@@ -923,14 +932,8 @@
 
 @media (max-width: 900px) {
   #runs {
-    --metric-cols: 58px 44px 44px 80px 85px 92px 24px;
+    --metric-cols: 64px 58px 58px 80px 86px 124px 24px;
     --metric-gap: 5px;
-  }
-
-  /* The run header's steps icon leaves before the column does — the count
-   * still fits the shrunken track, the icon no longer does. */
-  .rc-steps i {
-    display: none;
   }
 
   .time-pair {
@@ -941,7 +944,7 @@
 
 @media (max-width: 700px) {
   #runs {
-    --metric-cols: 58px 44px 44px 50px 85px 88px 24px;
+    --metric-cols: 64px 58px 58px 52px 86px 120px 24px;
     --metric-gap: 4px;
   }
 
@@ -953,6 +956,29 @@
 
   .time-pair {
     padding: 2px 3px;
+  }
+}
+
+@media (max-width: 560px) {
+  #runs {
+    --metric-cols: 56px 52px 52px 48px 74px 108px 24px;
+    --metric-gap: 3px;
+  }
+
+  /* One notch smaller type so all seven tracks fit the ~440-500px window
+   * at every nesting depth; the left side keeps truncating. */
+  .rc,
+  .cell-steps,
+  .cell-down,
+  .cell-up,
+  .cell-toks,
+  .cell-time,
+  .cell-dur {
+    font-size: 10px;
+  }
+
+  .time-pair {
+    font-size: 10px;
   }
 }
 
@@ -990,27 +1016,6 @@
     /* Right padding matches .run-header's at this width — the shared right
      * edge (#2605) is still set once, here, by the run body. */
     padding: 9px 10px 10px 6px;
-  }
-
-  /* One notch smaller type so all seven tracks fit the ~440px line at
-   * every nesting depth; the left side keeps truncating. */
-  #runs {
-    --metric-cols: 52px 40px 40px 44px 74px 78px 24px;
-    --metric-gap: 3px;
-  }
-
-  .rc,
-  .cell-steps,
-  .cell-down,
-  .cell-up,
-  .cell-toks,
-  .cell-time,
-  .cell-dur {
-    font-size: 10px;
-  }
-
-  .time-pair {
-    font-size: 10px;
   }
 
   .turn-detail {
