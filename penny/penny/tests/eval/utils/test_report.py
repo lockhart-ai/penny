@@ -616,9 +616,7 @@ def _rows(*specs: tuple[str, int, int, list[str]]) -> list[cohort.AssertionRow]:
 
 
 def _observation(name: str, arm: str, tools: list[str], reply: str = "ok"):
-    return cohort.SampleObservation(
-        name=name, phrasing=arm, landed="learn", tool_sequence=tools, reply=reply
-    )
+    return cohort.SampleObservation(name=name, phrasing=arm, tool_sequence=tools, reply=reply)
 
 
 def test_every_claim_renders_the_same_way_and_none_carries_a_floor():
@@ -747,7 +745,7 @@ def test_the_checks_row_is_coloured_on_its_aggregate_not_on_its_worst_claim():
             label="state: a", passed=78, total=78, category=cohort.SpecCategory.STORE
         ),
         cohort.AssertionRow(
-            label="state: b", passed=9, total=12, category=cohort.SpecCategory.LANDED
+            label="state: b", passed=9, total=12, category=cohort.SpecCategory.STORE
         ),
     ]
     sections = report.CaseSections(case_id="c", model="m", assertions=rows)
@@ -765,7 +763,7 @@ def test_the_checks_row_is_coloured_on_its_aggregate_not_on_its_worst_claim():
                 label="state: a", passed=40, total=50, category=cohort.SpecCategory.STORE
             ),
             cohort.AssertionRow(
-                label="state: b", passed=0, total=10, category=cohort.SpecCategory.LANDED
+                label="state: b", passed=0, total=10, category=cohort.SpecCategory.STORE
             ),
         ],
     )
@@ -892,7 +890,7 @@ def test_the_samples_row_states_how_many_ended_on_a_model_error():
     pooled sample's reply claims were read off a reply the model actually composed (#2252). A
     healthy case's row omits the clause entirely rather than stating a zero."""
     aborted = cohort.SampleObservation(
-        name="c-1 (a)", phrasing="a", landed="idle", reply="apology", aborted_on_model_error=True
+        name="c-1 (a)", phrasing="a", reply="apology", aborted_on_model_error=True
     )
     variance = cohort.pool([aborted, _observation("c-2 (a)", "a", ["browse"])], [])
     rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
@@ -1004,7 +1002,6 @@ def _shaped(name: str, arm: str, shape: str) -> cohort.SampleObservation:
     return cohort.SampleObservation(
         name=name,
         phrasing=arm,
-        landed="learn",
         routines=[cohort.RoutineRecord(name="r", shape=shape, names_a_destination=True)],
         reply=f"done, {shape}",
     )
@@ -1086,9 +1083,6 @@ def test_the_three_sections_render_whole():
                 "5/6 checks · 83% · lowest 0.67 `reply: every specific value in it is sourced`",
                 "\n\n".join(
                     [
-                        # A category nobody wrote a claim for renders as a GAP, not a blank —
-                        # this case checks nothing of that kind, which is the finding.
-                        "**landed** — _no claim. This case asserts nothing in this category._",
                         "**store**",
                         "\n".join(
                             [
@@ -1514,7 +1508,7 @@ def test_a_thinking_trace_shorter_than_its_own_label_renders_inline():
 
 
 def test_every_spec_category_renders_including_the_empty_ones():
-    """The design permits exactly THREE kinds of deterministic assertion, and a category nobody
+    """The design permits exactly TWO kinds of deterministic assertion, and a category nobody
     wrote a claim for is a FINDING rather than a blank: it says this case checks nothing of that
     kind, which is what a reader porting the next case needs to see."""
     rendered = report.CaseSections(
@@ -1522,16 +1516,16 @@ def test_every_spec_category_renders_including_the_empty_ones():
         model="m",
         assertions=[
             cohort.AssertionRow(
-                label="state: the machine landed in learn",
+                label="state: the store holds at least one entry",
                 passed=3,
                 total=3,
-                category=cohort.SpecCategory.LANDED,
+                category=cohort.SpecCategory.STORE,
             )
         ],
     ).render()
 
-    assert "**landed**" in rendered
-    for missing in ("store", "provenance"):
+    assert "**store**" in rendered
+    for missing in ("provenance",):
         assert f"**{missing}** — _no claim." in rendered, f"{missing} must render as a gap"
     assert "what a missed sample saw" not in rendered, (
         "nothing missed, so the section spends no table on why"

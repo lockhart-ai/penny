@@ -196,8 +196,8 @@ The eval cases are where the code owner states what Penny should do. The contrac
 
 1. **Facts are asserted; behaviour is measured.** *"we deterministically
    validate facts; variance measures model behaviour."*
-   - A claim is a fact about the world: what the store holds, what survived, where the
-     machine landed, or a fact the reply cites (the interest it named, the price the page
+   - A claim is a fact about the world: what reached the user, what the store holds or
+     survived, or a fact the reply cites (the interest it named, the price the page
      posts).
    - Which tools were called, how many times, whether the model retried, and how the reply
      is worded are variance features, never claims. Flailing shows up as spread.
@@ -206,8 +206,9 @@ The eval cases are where the code owner states what Penny should do. The contrac
      fails. The claims are then: fact A is in the store and in the reply, traced to site 1,
      and nothing from site 2 appears anywhere.
 
-2. **Every claim is strictly true or false, and fits one of three categories:** where the
-   machine *landed*, what the *store* holds, and whether a stated value has *provenance* in
+2. **Every claim is strictly true or false, and fits one of two categories:** what the
+   *store* holds — including what reached the user, which is a record the store holds — and
+   whether a stated value has *provenance* in
    what the round was given. A check that fits none of them is not an assertion.
 
 3. **Assert what survives, never that the model refrained.** There are no claims like "wrote

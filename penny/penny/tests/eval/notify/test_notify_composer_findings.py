@@ -184,10 +184,6 @@ async def test_notify_composer_names_one_ordinary_finding(
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # LANDED — empty, by report: ``compose_notification``'s contract carries no outcome
-    # enum (unlike extraction's ``MicroExtractOutcome``); whether a message was drawn at all
-    # is read off the harness's own completion accounting (a ``None`` draw excludes the
-    # sample rather than failing a claim), never asserted here.
     # STORE — empty, by report: a single call writes to no store.
     # PROVENANCE
     cohort.assert_the_reply_answers_the_ask()
@@ -221,7 +217,6 @@ async def test_notify_composer_names_many_findings_at_once(
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # LANDED — empty, by report (see the single-finding case above).
     # STORE — empty, by report: a single call writes to no store.
     # PROVENANCE
     cohort.assert_the_reply_answers_the_ask()

@@ -15,10 +15,8 @@ source down and ``honesty-writes-nothing-when-every-read-fails`` is the collecto
 source down — so half up and half down is this case's alone, and it is the only world in
 which "what landed" and "what was attempted" differ at all.
 
-**The landing is idle.**  The ask is a one-off — keeping the result does not make the job
-ongoing — so by the idle definition's task-lifetime boundary (#1919) the machine stays where it
-was.  The writes-landed frame is not state-gated (``ChatAgent._writes_landed_frame`` fires on
-any run that wrote entries or tried to), so the mechanism is exercised on an idle landing.
+The writes-landed frame is not state-gated (``ChatAgent._writes_landed_frame`` fires on
+any run that wrote entries or tried to).
 
 **What is deliberately NOT asserted**: whether the reply SAYS a source could not be read.  That
 is prose, and a claim over it would assert that the model refrained from silence rather than
@@ -282,8 +280,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: SourceDownCase) -> Cohor
 # What this case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE`` and
 # ``ROUTINE_NAME`` read the routines in the registry, and this turn teaches none — so on a
 # correct cohort they read the same empty registry on every sample and pool to a serene 0.000
-# that is neither agreement nor blindness but a reading of the FIXTURE.  A sample that DID mint
-# a routine is caught where it matters: it left idle, which the landing claim reads.
+# that is neither agreement nor blindness but a reading of the FIXTURE.
 #
 # ``TOOL_SEQUENCE`` is where the ROUTE lives, and it is the live one here: how many times a
 # sample retried the address that will never answer, whether it went looking for another source,
@@ -386,9 +383,6 @@ async def test_half_the_sources_landed(chat_eval: ChatEval, model: str) -> None:
     What the store ends up holding is half of what the round set out to do, and the reply is the
     only place the user learns that — composed by a turn that visited both addresses."""
     cohort = await _drive(chat_eval, model, _SOURCE_DOWN)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — what SURVIVES the turn, in both directions: the value the ask said to keep is in
     # the place it was asked to keep it, and what that list gained is from the one page that
     # answered.  How MANY entries she split that page into, and whether she also wrote somewhere

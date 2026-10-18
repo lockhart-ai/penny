@@ -1004,7 +1004,7 @@ class CaseSections:
     def _assertions(self) -> str:
         """Grouped by SPEC CATEGORY, with every category rendered — including the empty ones.
 
-        The design permits exactly three kinds of deterministic assertion, and a category nobody
+        The design permits exactly two kinds of deterministic assertion, and a category nobody
         wrote a claim for is a finding rather than a blank: it says this case checks nothing of
         that kind, which is exactly what a reader porting the next case needs to see."""
         if not self.assertions:

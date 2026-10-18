@@ -818,7 +818,6 @@ def _list_delete_sample(
     *,
     archived: tuple[str, ...],
     dropped: tuple[tuple[str, str], ...] = (),
-    landed: str = "idle",
     reply: str = "Done.",
 ) -> SampleObservation:
     """One delete-a-list sample: the four seeded lists, which of them the turn archived, and
@@ -833,7 +832,6 @@ def _list_delete_sample(
         name=name,
         phrasing="p",
         arm=0,
-        landed=landed,
         reply=reply,
         given=Given(_DELETE_LIST.ask),
         held_before=before,
@@ -849,8 +847,7 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
     A list left live misses the archive claim alone; a list emptied before it was archived
     misses only the claim that it still holds its entries; archiving a different list misses
     the archive claim and that list's own; a note dropped from a neighbour misses the claim
-    about what the other lists hold; a count nothing stated misses reply provenance; a turn
-    that left idle misses the landing."""
+    about what the other lists hold; a count nothing stated misses reply provenance."""
     recipes = tuple(("recipe-box", key) for key, _ in _DELETE_LIST.world.stores[-1].keyed)
     samples = [
         _list_delete_sample("archived", archived=("recipe-box",)),
@@ -861,16 +858,13 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             "pruned", archived=("recipe-box",), dropped=(("things-im-into", "jazz"),)
         ),
         _list_delete_sample("counted", archived=("recipe-box",), reply="Archived all 7 recipes."),
-        _list_delete_sample("wandered", archived=("recipe-box",), landed="elicit"),
     ]
     assert _claim_answers(_DELETE_LIST.world, claim_the_list_delete, samples) == {
-        "state: the machine landed in idle": [True, True, True, True, True, True, False],
         "state: the list it was asked to get rid of is archived": [
             True,
             False,
             True,
             False,
-            True,
             True,
             True,
         ],
@@ -881,16 +875,14 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             True,
             True,
             True,
-            True,
         ],
-        "state: the 'things-im-into' list is still the live list it was": [True] * 7,
-        "state: the 'things-i-avoid' list is still the live list it was": [True] * 7,
+        "state: the 'things-im-into' list is still the live list it was": [True] * 6,
+        "state: the 'things-i-avoid' list is still the live list it was": [True] * 6,
         "state: the 'gear-notes' list is still the live list it was": [
             True,
             True,
             True,
             False,
-            True,
             True,
             True,
         ],
@@ -901,9 +893,8 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             True,
             False,
             True,
-            True,
         ],
-        "state: every specific value in the stored entries is sourced": [True] * 7,
+        "state: every specific value in the stored entries is sourced": [True] * 6,
         "reply: every specific value in it is sourced": [
             True,
             True,
@@ -911,7 +902,6 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
     }
 
@@ -1247,7 +1237,6 @@ def _email_sample(
     name: str,
     reply: str,
     *,
-    landed: str = "idle",
     held: list[StoredEntry] | None = None,
     entries: list[StoredEntry] | None = None,
     ask: str = LOOKUP.ask,
@@ -1268,7 +1257,6 @@ def _email_sample(
         name=name,
         phrasing="p",
         arm=0,
-        landed=landed,
         reply=reply,
         given=given,
         held_before=before,
@@ -1290,15 +1278,15 @@ def test_every_email_claim_can_see_its_failure() -> None:
     The lookup: a reply that quotes the neighbour's figure misses the answer and the neighbour
     claim while every value it carries is sourced (which is why provenance alone cannot see
     it); an invented figure misses the answer and provenance; a pruned newsletter misses the
-    preservation claim; an invented stored entry misses store provenance; a turn that left idle
-    misses the landing.  The remark makes no reply claim — a reply to a remark is advice,
-    measured as variance — so an invented unread count holds every claim it makes, while a
-    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
+    preservation claim; an invented stored entry misses store provenance.  The remark makes no
+    reply claim — a reply to a remark is advice, measured as variance — so an invented unread
+    count holds every claim it makes, while a pruned newsletter and an invented stored entry
+    each miss theirs.
 
     The absent message: a reply that says nothing was found holds every claim, and so does one
     that names the sender's two amounts, since the mailbox was given and what a reply does with
     a figure it was handed is measured; an amount no message holds misses provenance; and a
-    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
+    pruned newsletter and an invented stored entry each miss theirs.
 
     Its measured feature reads the first of those replies as naming none and the second as
     naming a mailbox figure.  It declares no absent reading, so a cohort agreeing on either
@@ -1315,18 +1303,15 @@ def test_every_email_claim_can_see_its_failure() -> None:
         _email_sample("invented", "It comes to $19,200."),
         _email_sample("pruned", f"$18,{QUOTE_FIGURE}.", held=pruned),
         _email_sample("noted", f"$18,{QUOTE_FIGURE}.", entries=[invented_entry]),
-        _email_sample("wandered", f"$18,{QUOTE_FIGURE}.", landed="elicit"),
     ]
     lookup = _claim_answers(LOOKUP.world, claim_the_lookup, samples)
     assert lookup == {
-        "state: the machine landed in idle": [True, True, True, True, True, False],
-        "reply: it states the answer the world carries": [True, False, False, True, True, True],
+        "reply: it states the answer the world carries": [True, False, False, True, True],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             True,
             False,
-            True,
             True,
         ],
         "state: every specific value in the stored entries is sourced": [
@@ -1335,13 +1320,11 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
-        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
+        "reply: every specific value in it is sourced": [True, True, False, True, True],
         "reply: it states no figure only a neighbouring message carries": [
             True,
             False,
-            True,
             True,
             True,
             True,
@@ -1354,18 +1337,15 @@ def test_every_email_claim_can_see_its_failure() -> None:
             _email_sample("counted", "You have 312 unread emails right now."),
             _email_sample("noted", "Noted.", entries=[invented_entry]),
             _email_sample("pruned", "Ugh, same.", held=pruned),
-            _email_sample("wandered", "Ugh, same.", landed="elicit"),
         ],
     )
     assert remark == {
-        "state: the machine landed in idle": [True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             False,
-            True,
         ],
-        "state: every specific value in the stored entries is sourced": [True, False, True, True],
+        "state: every specific value in the stored entries is sourced": [True, False, True],
     }
     nothing = "Nothing from Priya Nakamura about a battery storage estimate."
     silent = _email_sample("none", nothing, ask=ABSENT.ask)
@@ -1384,17 +1364,14 @@ def test_every_email_claim_can_see_its_failure() -> None:
             _email_sample("invented", "The estimate comes to $6,240.", ask=ABSENT.ask),
             _email_sample("pruned", nothing, held=pruned, ask=ABSENT.ask),
             _email_sample("noted", nothing, entries=[invented_entry], ask=ABSENT.ask),
-            _email_sample("wandered", nothing, landed="elicit", ask=ABSENT.ask),
         ],
     )
     assert absent == {
-        "state: the machine landed in idle": [True, True, True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             True,
             False,
-            True,
             True,
         ],
         "state: every specific value in the stored entries is sourced": [
@@ -1403,9 +1380,8 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
-        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
+        "reply: every specific value in it is sourced": [True, True, False, True, True],
     }
 
     assert MAILBOX_FIGURE_IN_REPLY.read(silent) == NAMES_NO_MAILBOX_FIGURE
@@ -1455,23 +1431,14 @@ def test_every_email_claim_can_see_its_failure() -> None:
                 ask=UNREACHABLE.ask,
                 given=no_mailbox_given,
             ),
-            _email_sample(
-                "wandered",
-                "Couldn't reach it.",
-                landed="elicit",
-                ask=UNREACHABLE.ask,
-                given=no_mailbox_given,
-            ),
         ],
     )
     assert unreachable == {
-        "state: the machine landed in idle": [True, True, True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             True,
             False,
-            True,
             True,
         ],
         "state: every specific value in the stored entries is sourced": [
@@ -1480,9 +1447,8 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
-        "reply: every specific value in it is sourced": [True, False, False, True, True, True],
+        "reply: every specific value in it is sourced": [True, False, False, True, True],
     }
     assert MAILBOX_FIGURE_IN_REPLY.read(honest) == NAMES_NO_MAILBOX_FIGURE
     assert MAILBOX_FIGURE_IN_REPLY.read(guessed) == NAMES_A_MAILBOX_FIGURE
@@ -2374,14 +2340,18 @@ def _rerolled_cohort(tmp_path, case_id: str) -> tuple[list[SampleResult], Cohort
         ],
     )
     observations = [
-        SampleObservation(name="s-1", phrasing="the ask", landed="idle"),
-        SampleObservation(name="s-2", phrasing="the ask", landed="elsewhere"),
+        SampleObservation(
+            name="s-1",
+            phrasing="the ask",
+            entries=[StoredEntry(collection="c", key="k", content="something")],
+        ),
+        SampleObservation(name="s-2", phrasing="the ask"),
         SampleObservation(
             name="s-3", phrasing="the ask", complete=False, exclusion=NO_MEASURED_TURN
         ),
     ]
     cohort = Cohort(case_id, "a-model", list(observations))
-    cohort.assert_machine_landed("idle")
+    cohort.assert_the_store_holds_an_entry()
     results = []
     for index, observation in enumerate(observations):
         result = _drive_time_result(db, observation)

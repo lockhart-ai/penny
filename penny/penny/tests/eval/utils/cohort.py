@@ -1,8 +1,8 @@
 """The cohort: one request, K phrasings, pooled — and the line between what a case ASSERTS
 and what it MEASURES (#1994/#1995).
 
-**Asserted** is the state the round LEFT BEHIND: where the machine landed, what the store
-holds, and that every specific value in the reply traces to something the model was given.
+**Asserted** is the state the round LEFT BEHIND: what the store holds or survived, and that
+every specific value in the reply traces to something the model was given.
 Deterministic reads with a pass-rate floor.
 
 **Measured** is everything the model CHOSE: which tools it called and in what order, the shape
@@ -353,23 +353,12 @@ class SampleObservation(BaseModel):
     arm: int = -1
     complete: bool = True
     exclusion: str | None = None
-    landed: str | None = None
-    # The routine the move NAMED, off the landed transition's own ``skill_name`` — which
-    # routine the decision recognised as covering the ask, before anything was stood up.
-    # Beside ``landed`` because it is the same row and the same reading: where the machine
-    # went, and what it went there about.  ``None`` where the move named none, which is a
-    # real reading (an ordinary chat turn names no routine) and not a missing one.
-    decision_skill: str | None = None
-    # WHEN the landed move was recorded, and the timezone the user's profile carries — the
-    # two facts a claim about a job's end is read against, since an ask states its end on the
-    # user's own clock ("tonight", "sunday night") relative to the turn that carried it.
+    # WHEN the turn's last machine move was recorded, and the timezone the user's profile
+    # carries — the two facts a claim about a job's end is read against, since an ask states
+    # its end on the user's own clock ("tonight", "sunday night") relative to the turn that
+    # carried it.
     turn_at: datetime | None = None
     timezone: str | None = None
-    # The parameters the round is still WAITING ON, off the landed transition's own
-    # ``round_shortfall`` — their declared names, in the routine's declared order.  Empty
-    # where the move recorded no shortfall, which is the ordinary reading (only a move landing
-    # in request carries one) and not a missing one.
-    awaiting: list[str] = Field(default_factory=list)
     # The ordered moves this sample's driver walked, in the VOCABULARY of the observer that
     # read it: a chat sample carries the conversation machine's own walk (``idle→learn,
     # learn→apply``, or ``no move`` when it recorded none), a collector sample the ordered
@@ -1294,7 +1283,7 @@ def per_sample_cost(
 
 
 class SpecCategory(StrEnum):
-    """Which of the design's three kinds of deterministic assertion a claim is.
+    """Which of the design's two kinds of deterministic assertion a claim is.
 
     The list is CLOSED and the field is REQUIRED, which is the whole point: a check that fits no
     category cannot be declared, so the audit is a fact the code states rather than a review
@@ -1308,7 +1297,6 @@ class SpecCategory(StrEnum):
     anchors to, while ``category`` says which part of the design it satisfies.  Neither is
     derivable from the other — PROVENANCE has both a store-side claim and a reply-side one."""
 
-    LANDED = "landed"
     STORE = "store"
     PROVENANCE = "provenance"
 

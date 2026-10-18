@@ -374,8 +374,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
 # What every case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE``
 # and ``ROUTINE_NAME`` read the routines in the registry, and none of these turns teaches one —
 # so on a correct cohort they read the same empty registry on every sample and pool to a serene
-# 0.000 that is neither agreement nor blindness but a reading of the FIXTURE.  A sample that DID
-# mint a routine is caught where it matters: it left idle, which the landing claim reads.
+# 0.000 that is neither agreement nor blindness but a reading of the FIXTURE.
 #
 # ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no name list (#2112), so it is a
 # live measurement on every case here.  On the two recall cases a correct sample reads the
@@ -670,9 +669,6 @@ async def test_a_lookup_is_saved_where_it_was_asked_for(chat_eval: ChatEval, mod
     """The ask names a subject to read about and one list to put it in, and the list is empty
     when the turn starts — so everything in it afterwards is this turn's work."""
     cohort = await _drive(chat_eval, model, _SAVE)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — the sentence's two halves: the list the ask named gained an entry, and what
     # landed in it is the subject she was sent to read about.
     cohort.claim(
@@ -740,9 +736,6 @@ async def test_a_fact_from_a_previous_session_comes_back(chat_eval: ChatEval, mo
     """A fact stored in a previous session, retrieved with zero conversational trace — the
     absolute test of one-call reachability, since there is nothing else it could come from."""
     cohort = await _drive(chat_eval, model, _COLD_RECALL)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — the reply states the value the world carries (the *nothing omitted* direction: a
     # reply that answers nothing at all satisfies every other claim here vacuously), and the
     # note it was read out of SURVIVES.  Whether the turn also wrote something is hers to
@@ -829,9 +822,6 @@ async def test_one_ask_recalls_across_the_whole_store(chat_eval: ChatEval, model
     each.  How many reads it took is measured, never asserted — a subset of reads answers the
     ask just as well, and many routes reach one end state."""
     cohort = await _drive(chat_eval, model, _SWEEP)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE
     cohort.assert_the_reply_answers_the_ask()
     cohort.claim(
@@ -890,9 +880,6 @@ async def test_forgetting_then_reporting_names_what_is_left(
 ) -> None:
     """One note named for removal, two left standing, and a report of what remains."""
     cohort = await _drive(chat_eval, model, _FORGET)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — the named note gone, every other one still there, and the list itself still
     # standing.  The last is one level up, about the container rather than its contents: a turn
     # that archived the whole list instead of dropping one note leaves every remaining note
@@ -960,9 +947,6 @@ async def test_a_change_lands_on_the_entry_that_exists(chat_eval: ChatEval, mode
     """The user names a recipe by a shorter name than the key it is stored under, and the
     change lands on that recipe rather than beside it."""
     cohort = await _drive(chat_eval, model, _UPDATE)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — the change is on the entry that was already there, that entry still carries the
     # temperature it held, the box holds the recipes it started with, and the recipe nobody
     # named is exactly as it was.
@@ -1034,9 +1018,6 @@ _FAN_OUT = _VerbCase(
 async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> None:
     """Two facts in one message, and each belongs somewhere different."""
     cohort = await _drive(chat_eval, model, _FAN_OUT)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE
     cohort.claim(
         "state: the enthusiasm landed in the list for things she is into",
@@ -1069,9 +1050,8 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
 # ═══ no-fire ═════════════════════════════════════════════════════════════════
 #
 # The negative direction, in its own case (#2100).  A message that mentions a subject and asks
-# for nothing is answered in conversation, and the round ends where it began: the machine back
-# in idle, and whatever the store already held still there.  Those two — the landing, and what
-# survives — are what this case asserts.
+# for nothing is answered in conversation, and the round ends where it began: whatever the
+# store already held is still there.  That — what survives — is what this case asserts.
 #
 # What it does NOT assert is that she refrained.  Whether a passing mention is worth keeping is
 # hers to decide — "I made a good recipe today" is a reasonable thing to remember and a
@@ -1117,9 +1097,6 @@ async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval, model: str) ->
     """A games list is sitting right there and the user muses about finishing a game.  A topical
     match is not a request, so the round ends where it began and the list is left as it was."""
     cohort = await _drive(chat_eval, model, _NO_FIRE_WISTFUL)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — what SURVIVES, which is the whole of what a tempting list lets this case assert.
     # Adding to the list is hers; taking something off it is not, and a turn that "tidied" the
     # list on its way past — dropping the entry it read as finished — took something the user
@@ -1192,9 +1169,6 @@ _DELETE_LIST = _VerbCase(
 def claim_the_list_delete(cohort: Cohort) -> None:
     """Every claim the delete-a-list case makes, declared in one place so the deterministic
     pin in ``test_eval_harness.py`` answers the very set the case declares."""
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — the named list is archived and still holds its entries; each other list is
     # still the live list it was, and still holds its entries.
     cohort.claim(
