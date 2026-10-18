@@ -47,7 +47,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_core import CoreSchema, core_schema
-from similarity.embeddings import cosine_similarity, token_containment_ratio
+from similarity.embeddings import cosine_similarity, singularize, token_containment_ratio
 
 from penny.tests.eval.utils.worlds import World
 
@@ -1800,6 +1800,24 @@ def fold_typography(text: str) -> str:
     for mark in _DROPPED:
         text = text.replace(mark, "")
     return text.casefold()
+
+
+# Whole words only — a run of letters, never a digit (so a figure's own internal shape is left
+# alone) and never the underscore `\w` also matches.
+_WHOLE_WORD = re.compile(r"[^\W\d_]+")
+
+
+def fold_plural(text: str) -> str:
+    """``text`` with each of its own words folded to the SINGULAR form a shortfall match
+    compares through :func:`similarity.embeddings.singularize` — the same naive stem the
+    job-identity rule folds every job name through, never a word this check happens to name.
+    ``summaries`` folds to ``summary`` and ``descriptions`` to ``description`` on either side
+    of a comparison, generically — by ending, not by a list of known plurals, so a wording
+    nobody enumerated still folds the same way one that motivated this did.
+
+    Only the trailing shape of each whole word changes; casing, punctuation and spacing are
+    left to :func:`fold_typography`/``spoken_form`` on either side of this."""
+    return _WHOLE_WORD.sub(lambda match: singularize(match.group(0).casefold()), text)
 
 
 # A word written whole, with a hyphen, with the hyphen the model drew instead of one, or with an

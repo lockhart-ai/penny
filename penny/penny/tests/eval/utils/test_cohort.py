@@ -47,6 +47,7 @@ from penny.tests.eval.utils.cohort import (
     assertion_summary,
     compare_to_ceiling,
     feature_variance,
+    fold_plural,
     normalised_entropy,
     output_field,
     per_sample_cost,
@@ -1114,6 +1115,21 @@ def test_a_hyphenated_slug_stands_in_for_its_two_word_name():
     assert token_stands_in("camera kit", reply)
     # An unrelated hyphenated word is still a different phrase — never matched by chance.
     assert not token_stands_in("turntable kit", "the camera-kit-price-watch job")
+
+
+def test_a_plural_word_folds_to_the_singular_a_shortfall_word_list_names():
+    """MEASURED (#2539): a MISSING line pluralised the word the shortfall's word list spells
+    singular ("the page gives no summaries"), and a literal substring check read it as never
+    naming "summary" at all. Folding both sides through the same ending, generically, is what
+    a wording nobody enumerated still folds through."""
+    assert "summary" in fold_plural("the page gives no summaries")
+    assert "description" in fold_plural("missing: descriptions for every link")
+
+
+def test_an_unrelated_word_is_never_folded_into_one_it_merely_resembles():
+    """The fold is an ENDING rule, not a lookup — it must not turn an unrelated word into one
+    the shortfall check happens to be looking for."""
+    assert "summary" not in fold_plural("there is no summit on this page")
 
 
 def test_a_number_word_sources_its_digit_but_not_a_different_one():

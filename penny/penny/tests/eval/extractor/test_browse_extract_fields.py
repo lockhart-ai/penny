@@ -89,6 +89,7 @@ from penny.tests.eval.utils.cohort import (
     Share,
     ShareReading,
     SpecCategory,
+    fold_plural,
     output_field,
     unsourced_specifics,
 )
@@ -625,21 +626,26 @@ def _names_the_shortfall(fixture: ExtractFixture, words: tuple[str, ...]) -> Wor
     correct draw states, so a case that enlarges or narrows what the page lacks moves this
     claim with it rather than leaving it to drift out of sync.
 
-    Compared through the same ``spoken_form`` fold ``_carries`` uses, but against the
-    WORDS the case's OWN five wordings (the instruction and its phrasings) use for that
-    absent part, not one field name: the sample's wording is the ask the model read, and
-    the MISSING line it writes echoes whichever of those wordings it was given ("summary"
-    in one arm, "the time it was posted" in another), so the claim passes when the line
-    carries ANY of the case's words and fails otherwise — strictly true/false, no fuzzy
+    Compared through the same ``spoken_form`` fold ``_carries`` uses, PLUS ``fold_plural``
+    on both sides (#2539) — so a word list spelled singular ("summary") still matches a
+    MISSING line that pluralised it ("summaries"), and the reverse — against the WORDS the
+    case's OWN five wordings (the instruction and its phrasings) use for that absent part,
+    not one field name: the sample's wording is the ask the model read, and the MISSING line
+    it writes echoes whichever of those wordings it was given ("summary" in one arm, "the
+    time it was posted" in another), so the claim passes when the line carries ANY of the
+    case's words — plural or singular — and fails otherwise — strictly true/false, no fuzzy
     match.  Every fixture this claim serves declares exactly one absent expectation, so
     ``words`` describes that one part; a fixture that ever declares two needs its own
     per-field words."""
     absent = [one.field for one in fixture.expectations if not one.anchor]
 
+    def _folded(text: str) -> str:
+        return fold_plural(spoken_form(text))
+
     def answer(sample: SampleObservation, _world: World) -> Answer:
         missing = sample.field(EXTRACT_MISSING)
         named = bool(missing) and all(
-            any(spoken_form(word) in spoken_form(missing) for word in words) for _field in absent
+            any(_folded(word) in _folded(missing) for word in words) for _field in absent
         )
         return named, f"stated shortfall does not name any of {list(words)}: {missing!r}"
 
