@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from penny.commands.base import Command
 from penny.commands.models import CommandContext, CommandResult
+from penny.database.models import UserInfo
 from penny.datetime_utils import current_datetime_line, get_timezone
 from penny.llm.call_link import CallLink
 from penny.responses import PennyResponse
@@ -196,17 +197,14 @@ class ProfileCommand(Command):
             date_of_birth=dob_formatted,
         )
 
-        # Onboarding: a new profile always gets the interests prompt.  (This
-        # was gated on "no stored preferences yet", but the legacy
-        # ``preference`` table dropped with migration 0097/#1676 — profile
-        # creation IS onboarding, so the prompt now always accompanies it.)
+        # Onboarding: a new profile always gets the interests prompt.
         response = PennyResponse.PROFILE_CREATED.format(name=parsed.name)
         response += f"\n\n{PennyResponse.ONBOARDING_INTERESTS_PROMPT}"
 
         return CommandResult(text=response)
 
     async def _update_profile(
-        self, args: str, context: CommandContext, user_info: Any
+        self, args: str, context: CommandContext, user_info: UserInfo
     ) -> CommandResult:
         """Update name/location on an existing profile."""
         parsed = await self._parse_profile_update(
@@ -238,7 +236,7 @@ class ProfileCommand(Command):
         return self._update_confirmation(user_info, new_name, new_location, timezone)
 
     def _update_confirmation(
-        self, user_info: Any, new_name: str, new_location: str, timezone: str
+        self, user_info: UserInfo, new_name: str, new_location: str, timezone: str
     ) -> CommandResult:
         """Build the confirmation message for an existing-profile update."""
         changes = []
