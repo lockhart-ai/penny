@@ -195,6 +195,14 @@
   flex-shrink: 0;
 }
 
+/* The two group spans wrap the seven cells: `display: contents` keeps the
+ * cells as the shared grid's direct items at every width; at ~460px the
+ * groups become the two stacked sub-rows the narrow layout is built from
+ * (#2610). */
+.metric-group {
+  display: contents;
+}
+
 .rc {
   display: flex;
   align-items: center;
@@ -1007,9 +1015,37 @@
     display: none;
   }
 
-  .run-right {
+  /* Name/snippet alone on its own line, then the metrics on two stacked
+   * sub-rows — steps ↓ ↑ tok/s, then time duration copy — each right-
+   * aligned on the shared right edge. Every value still shows, nothing is
+   * clipped past the card, and the columns stay aligned across all rows
+   * (#2610); the copy button keeps its own column, one per row. */
+  .run-right,
+  .row-right {
     flex-basis: 100%;
-    justify-content: flex-end;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+  }
+
+  .prompt-header {
+    flex-wrap: wrap;
+    gap: 3px 10px;
+  }
+
+  .metric-group {
+    display: grid;
+    align-items: center;
+    column-gap: var(--metric-gap);
+  }
+
+  .metric-group-a {
+    grid-template-columns: 56px 52px 52px 48px;
+  }
+
+  .metric-group-b {
+    grid-template-columns: 74px 108px 24px;
   }
 
   .run-view-prompts {

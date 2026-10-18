@@ -32,6 +32,16 @@ export function formatStepCount(count: number): string {
   return count === 1 ? "1 step" : `${count} steps`;
 }
 
+/** Token counts for the ↓/↑ columns — whole below 1k, one-decimal k below
+ * 1M, one-decimal M above ("977", "13.6k", "1.2M"), the same ladder the
+ * pill's duration format uses (#2610): a run total in the millions must
+ * never outgrow the ~5-6 character track its column is sized for. */
+export function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+  return String(count);
+}
+
 function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }

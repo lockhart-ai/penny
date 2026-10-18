@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { formatPillDuration, formatRunTime, formatStepCount } from "../dist/test/prompt_format.mjs";
+import { formatPillDuration, formatRunTime, formatStepCount, formatTokens } from "../dist/test/prompt_format.mjs";
 
 test("a pill duration under 10s keeps one decimal", () => {
   assert.equal(formatPillDuration(1800), "1.8s");
@@ -64,4 +64,17 @@ test("a run time from further back carries the date", () => {
 
 test("an unparseable run time falls back to the raw string", () => {
   assert.equal(formatRunTime("not-a-date"), "not-a-date");
+});
+
+test("token counts read whole below 1k and one-decimal k below 1M", () => {
+  assert.equal(formatTokens(977), "977");
+  assert.equal(formatTokens(1000), "1.0k");
+  assert.equal(formatTokens(13_600), "13.6k");
+  assert.equal(formatTokens(998_000), "998.0k");
+});
+
+test("token counts of a million or more read as one-decimal M, never outgrowing the column (#2610)", () => {
+  assert.equal(formatTokens(1_000_000), "1.0M");
+  assert.equal(formatTokens(1_188_000), "1.2M");
+  assert.equal(formatTokens(1_234_567), "1.2M");
 });
