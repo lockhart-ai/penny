@@ -32,9 +32,10 @@
    * rows' columns land on the same vertical lines. Track order:
    * steps ↓ ↑ tok/s time duration copy. Sized for the widest realistic
    * value per column — `100 steps`, `999.9k`, `101.2 tok/s`,
-   * `9:44:14 a.m.`, the pill `12m 34s / 12m 30s`, the 24px copy button.
+   * the time track for the widest `formatRunTime` emission (see below),
+   * the pill `12m 34s / 12m 30s`, the 24px copy button.
    * The narrow breakpoints below shrink — never drop — these tracks. */
-  --metric-cols: 78px 58px 58px 94px 86px 138px 24px;
+  --metric-cols: 78px 58px 58px 94px 120px 138px 24px;
   --metric-gap: 8px;
 }
 
@@ -249,6 +250,14 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* The time track's size, shared by every breakpoint above ~560px: the
+ * widest value `formatRunTime` can produce is the date-prefixed form with a
+ * 12 o'clock hour — `Oct 15 12:48 p.m.` (short month + day + hour:minute +
+ * the locale's "p.m."/"a.m." suffix; seconds are dropped in this form), 17
+ * characters ≈ 118px in the 11.5px mono face — slightly wider than the
+ * all-today `12:57:29 p.m.` and the `Yest 12:48 p.m.` forms. Measured, not
+ * guessed (#2632 review): Menlo's 0.602em advance × 17. */
 
 .time-pair .wall {
   color: var(--text);
@@ -877,7 +886,7 @@
 
 @media (max-width: 1100px) {
   #runs {
-    --metric-cols: 64px 58px 58px 80px 86px 132px 24px;
+    --metric-cols: 64px 58px 58px 80px 120px 132px 24px;
     --metric-gap: 6px;
   }
 
@@ -900,7 +909,7 @@
 
 @media (max-width: 900px) {
   #runs {
-    --metric-cols: 64px 58px 58px 80px 86px 124px 24px;
+    --metric-cols: 64px 58px 58px 80px 120px 124px 24px;
     --metric-gap: 5px;
   }
 
@@ -912,7 +921,7 @@
 
 @media (max-width: 700px) {
   #runs {
-    --metric-cols: 64px 58px 58px 52px 86px 120px 24px;
+    --metric-cols: 64px 58px 58px 52px 120px 120px 24px;
     --metric-gap: 4px;
   }
 
@@ -929,7 +938,7 @@
 
 @media (max-width: 560px) {
   #runs {
-    --metric-cols: 56px 52px 52px 48px 74px 108px 24px;
+    --metric-cols: 56px 52px 52px 48px 104px 108px 24px;
     --metric-gap: 3px;
   }
 
@@ -1005,7 +1014,7 @@
   }
 
   .metric-group-b {
-    grid-template-columns: 74px 108px 24px;
+    grid-template-columns: 104px 108px 24px;
   }
 
   .run-view-prompts {
