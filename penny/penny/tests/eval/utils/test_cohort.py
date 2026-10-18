@@ -54,6 +54,7 @@ from penny.tests.eval.utils.cohort import (
     proposed_ceiling,
     specifics,
     text_spread,
+    token_stands_in,
     unsourced_specifics,
     variance_headline,
 )
@@ -1102,6 +1103,26 @@ def test_a_token_in_an_entry_is_read_however_its_word_was_hyphenated():
         (1, []),
         (0, ["stored the excluded ['frostfern']"]),
     ]
+
+
+def test_a_hyphenated_slug_stands_in_for_its_two_word_name():
+    """MEASURED (#2529): a sample named both jobs by quoting their slugs —
+    `camera-kit-price-watch` — and the claim that it STATES THE ANSWER read `camera kit` as
+    never said, because a hyphen between two letters only ever fused them into one word.
+    Folding it to a space as well is the other reading the same slug stands for."""
+    reply = "I'm tracking the camera-kit-price-watch job and the turntable-price-watch job."
+    assert token_stands_in("camera kit", reply)
+    # An unrelated hyphenated word is still a different phrase — never matched by chance.
+    assert not token_stands_in("turntable kit", "the camera-kit-price-watch job")
+
+
+def test_a_number_word_sources_its_digit_but_not_a_different_one():
+    """MEASURED (#2529): a stored entry paraphrased the page's `four players` as `4-player`,
+    and the provenance claim read `4` as invented because a number word and the digit it
+    spells were never the same value."""
+    assert unsourced_specifics("a 4-player mode", "it supports four players") == []
+    # An unrelated number is still a different value.
+    assert unsourced_specifics("a 5-player mode", "it supports four players") == ["5"]
 
 
 def test_a_url_runs_only_as_far_as_the_address_does():
