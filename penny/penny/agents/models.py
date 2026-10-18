@@ -17,17 +17,6 @@ class MessageRole(StrEnum):
     TOOL = "tool"
 
 
-class ChatMessage(BaseModel):
-    """A message in a chat conversation."""
-
-    role: MessageRole
-    content: str
-
-    def to_dict(self) -> dict:
-        """Convert to dict for Ollama API."""
-        return {"role": self.role.value, "content": self.content}
-
-
 class ToolCallRecord(BaseModel):
     """Record of a tool call made during an agent run."""
 

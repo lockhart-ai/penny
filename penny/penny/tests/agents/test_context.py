@@ -1,8 +1,11 @@
 """Integration tests for Agent context building (conversation, profile, page hint, sentiment)."""
 
+import json
+
 import pytest
 
 from penny.constants import PennyConstants
+from penny.llm.models import LlmMessage
 from penny.tests.conftest import TEST_SENDER
 
 # ── Conversation building ────────────────────────────────────────────────
@@ -131,20 +134,23 @@ def test_page_context_injected_as_synthetic_tool_call():
         url="https://example.com/product",
         text="This is a great product that costs $49.99",
     )
-    messages: list[dict] = [
-        {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": "what is this page?"},
+    messages: list[LlmMessage] = [
+        LlmMessage(role="system", content="system prompt"),
+        LlmMessage(role="user", content="what is this page?"),
     ]
     ChatAgent._inject_page_context(messages, page_context)
 
     assert len(messages) == 4
+    # The stored/logged shape (what ``to_log_dict`` renders): the injected call's
+    # ``arguments`` is a JSON string like every other tool call (#2604).
+    rendered = [message.to_log_dict() for message in messages]
     # Assistant tool call uses BrowseTool format (name="browse", URL in queries)
     # and carries the standard id/type so the result can reference it.
-    assert messages[2]["role"] == "assistant"
-    assert messages[2]["tool_calls"][0]["id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
-    assert messages[2]["tool_calls"][0]["type"] == "function"
-    assert messages[2]["tool_calls"][0]["function"]["name"] == "browse"
-    assert messages[2]["tool_calls"][0]["function"]["arguments"]["queries"] == [
+    assert rendered[2]["role"] == "assistant"
+    assert rendered[2]["tool_calls"][0]["id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
+    assert rendered[2]["tool_calls"][0]["type"] == "function"
+    assert rendered[2]["tool_calls"][0]["function"]["name"] == "browse"
+    assert json.loads(rendered[2]["tool_calls"][0]["function"]["arguments"])["queries"] == [
         "https://example.com/product"
     ]
     # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the same
@@ -153,17 +159,17 @@ def test_page_context_injected_as_synthetic_tool_call():
     # per-tool "You opened <url>" narration (#1480): a page-context injection is the
     # page the user is looking at, not a browse Penny ran — so the web content can't
     # read as a fresh instruction.
-    assert messages[3]["role"] == "tool"
-    assert messages[3]["tool_call_id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
-    assert "tool_name" not in messages[3]
-    assert messages[3]["content"].startswith(f"{Prompt.PAGE_CONTEXT_NARRATION} (browse result)\n")
+    assert rendered[3]["role"] == "tool"
+    assert rendered[3]["tool_call_id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
+    assert "tool_name" not in rendered[3]
+    assert rendered[3]["content"].startswith(f"{Prompt.PAGE_CONTEXT_NARRATION} (browse result)\n")
     # The narration names the page-context provenance (not the generic "You used ...").
-    assert "the page the user is currently viewing" in messages[3]["content"]
+    assert "the page the user is currently viewing" in rendered[3]["content"]
     # The retained machine tag keeps the model parsing this as a tool result.
-    assert "(browse result)" in messages[3]["content"]
+    assert "(browse result)" in rendered[3]["content"]
     # The page body (title + content) is preserved after the framing.
-    assert "$49.99" in messages[3]["content"]
-    assert "Example Product Page" in messages[3]["content"]
+    assert "$49.99" in rendered[3]["content"]
+    assert "Example Product Page" in rendered[3]["content"]
 
 
 def test_page_context_not_injected_when_empty():
@@ -171,7 +177,7 @@ def test_page_context_not_injected_when_empty():
     from penny.agents.chat import ChatAgent
     from penny.channels.base import PageContext
 
-    messages: list[dict] = [{"role": "user", "content": "hi"}]
+    messages: list[LlmMessage] = [LlmMessage(role="user", content="hi")]
     ChatAgent._inject_page_context(messages, PageContext(title="T", url="U", text=""))
     assert len(messages) == 1  # unchanged
 

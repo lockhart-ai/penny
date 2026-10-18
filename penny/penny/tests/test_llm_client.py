@@ -1051,8 +1051,7 @@ class TestMicroContextDrawLinksToItsParentCall:
 # One message of every shape in use today: system, user, an assistant tool call
 # carrying a thinking passback, its tool result (with the internal
 # ``tool_success`` stamp), the injected page-context call (``ChatAgent.
-# _inject_page_context``) whose ``arguments`` is a bare dict rather than a JSON
-# string, and a vision user message carrying ``images``.
+# _inject_page_context``), and a vision user message carrying ``images``.
 
 _FROZEN_SYSTEM = {"role": "system", "content": "You are Penny."}
 _FROZEN_USER = {"role": "user", "content": "what should I pack for a trip to Lisbon?"}
@@ -1077,8 +1076,9 @@ _FROZEN_TOOL_RESULT = {
     "tool_call_id": "call_1",
     PennyConstants.TOOL_RESULT_SUCCESS_KEY: True,
 }
-# The page-context shape (chat.py's ``_inject_page_context``): arguments is a bare
-# dict, not a JSON string, and its tool result carries no ``tool_success`` key.
+# The page-context shape (chat.py's ``_inject_page_context``): arguments is a JSON
+# string like every other tool call (#2604; a bare dict before that stage), and its
+# tool result carries no ``tool_success`` key.
 _FROZEN_PAGE_CONTEXT_CALL = {
     "role": "assistant",
     "content": "",
@@ -1088,7 +1088,7 @@ _FROZEN_PAGE_CONTEXT_CALL = {
             "type": "function",
             "function": {
                 "name": "browse",
-                "arguments": {"queries": ["https://example.com/packing-guide"]},
+                "arguments": '{"queries": ["https://example.com/packing-guide"]}',
             },
         }
     ],
@@ -1168,10 +1168,9 @@ class TestFrozenRequestPayloadToday:
 # The same six shapes, built the #2563 way: a plain ``LlmMessage(...)`` for every
 # shape a direct caller constructs fresh (system/user/an assistant tool call with a
 # thinking passback/its tool result/a vision user turn), and ``LlmMessage.from_dict``
-# for the page-context pair — the one shape stage 1 does NOT convert its own builder
-# for (``ChatAgent._inject_page_context`` stays dict-literal until #2604), so the
-# round trip through ``from_dict``/``to_log_dict`` is what carries it through this
-# boundary unchanged.
+# for the page-context pair — the shape a caller receives off a logged row rather
+# than constructs (its builder builds it typed since #2604), so the round trip
+# through ``from_dict``/``to_log_dict`` carries it through this boundary unchanged.
 TYPED_FROZEN_MESSAGES = [
     LlmMessage(role="system", content=_FROZEN_SYSTEM["content"]),
     LlmMessage(role="user", content=_FROZEN_USER["content"]),
@@ -1208,8 +1207,7 @@ class TestTypedMessagesMatchTheFrozenPayload:
         """Every typed message's ``to_log_dict()`` is byte-identical to the dict
         literal the agent loop builds for that same shape today — including the
         page-context pair, round-tripped through ``from_dict`` rather than built
-        fresh, so its raw-dict ``arguments`` quirk survives unchanged (#2604 fixes
-        it, not this stage)."""
+        fresh, its ``arguments`` a JSON string like every other call's (#2604)."""
         assert [m.to_log_dict() for m in TYPED_FROZEN_MESSAGES] == FROZEN_INTERNAL_MESSAGES
 
     @pytest.mark.asyncio

@@ -74,7 +74,7 @@ penny/
   notification.py     — Composes the one message a finished collector cycle sends (#1911) — bounded and ordered
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
-    models.py         — ChatMessage, ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
+    models.py         — ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
     chat.py           — ChatAgent: conversation-mode agent — full tool surface, the ambient self-state prompt, one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result
     self_state.py     — `SelfStateHeader`: renders Penny's operational self-state into the chat prompt's dynamic tail
     collector.py      — Collector: single dispatcher agent driving every per-collection extractor

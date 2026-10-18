@@ -242,15 +242,6 @@ class LlmToolCallFunction(BaseModel):
 
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
-    # Whether ``arguments`` wire-encodes as a bare object rather than a JSON string
-    # (#2563).  Every real model-originated call sets neither — ``arguments`` is
-    # always a JSON string on the wire, ``False`` is correct.  The one exception
-    # today is the injected page-context call (``ChatAgent._inject_page_context``),
-    # built directly as a dict literal rather than through this model, whose
-    # ``arguments`` is a bare object.  ``from_dict``/``to_log_dict`` round-trip that
-    # existing shape losslessly rather than silently changing it; #2604 removes this
-    # field once that builder constructs its call through ``LlmToolCall`` directly.
-    raw_arguments: bool = False
 
     @field_validator("name")
     @classmethod
@@ -321,11 +312,7 @@ class LlmMessage(BaseModel):
                     "type": "function",
                     "function": {
                         "name": tool_call.function.name,
-                        "arguments": (
-                            tool_call.function.arguments
-                            if tool_call.function.raw_arguments
-                            else json.dumps(tool_call.function.arguments)
-                        ),
+                        "arguments": json.dumps(tool_call.function.arguments),
                     },
                 }
                 for tool_call in self.tool_calls
@@ -359,18 +346,13 @@ class LlmMessage(BaseModel):
     @staticmethod
     def _tool_call_from_dict(data: dict[str, Any]) -> LlmToolCall:
         """One ``tool_calls`` entry off the internal dict shape — ``arguments``
-        round-trips losslessly whether it arrived as a JSON string (the normal
-        shape) or a bare object (the page-context quirk, see
-        ``LlmToolCallFunction.raw_arguments``)."""
-        raw = data["function"]["arguments"]
-        raw_arguments = not isinstance(raw, str)
-        arguments = raw if raw_arguments else json.loads(raw)
+        is always a JSON string there (the page-context call builds its arguments
+        the same way as every other call since #2604)."""
         return LlmToolCall(
             id=data["id"],
             function=LlmToolCallFunction(
                 name=data["function"]["name"],
-                arguments=arguments,
-                raw_arguments=raw_arguments,
+                arguments=json.loads(data["function"]["arguments"]),
             ),
         )
 

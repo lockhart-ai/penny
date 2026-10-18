@@ -11,13 +11,13 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from penny.agents.base import Agent, InvalidDraw, ProgressCallback
-from penny.agents.models import ControllerResponse, ToolCallRecord
+from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
-from penny.llm.models import LlmError, LlmMessage
+from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
 from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply, is_empty_draw
 from penny.tools import Tool
@@ -331,18 +331,11 @@ class ChatAgent(Agent):
         """Build messages, injecting page context as a synthetic tools result."""
         messages = super()._build_messages(prompt, history, system_prompt)
         if self._pending_page_context:
-            # ``_inject_page_context`` still builds its injection as raw dicts —
-            # it's the page-context call's own ``raw_arguments`` quirk (#2604
-            # retypes this builder); the one seam back to dicts and forward again
-            # is here, so this override keeps compiling against the now-typed
-            # base (#2603) without touching that builder.
-            dict_messages = [message.to_log_dict() for message in messages]
-            self._inject_page_context(dict_messages, self._pending_page_context)
-            messages = [LlmMessage.from_dict(message) for message in dict_messages]
+            self._inject_page_context(messages, self._pending_page_context)
         return messages
 
     @staticmethod
-    def _inject_page_context(messages: list[dict], page_context: PageContext) -> None:
+    def _inject_page_context(messages: list[LlmMessage], page_context: PageContext) -> None:
         """Inject a synthetic search call + result for page context.
 
         Uses the BrowseTool format so the synthetic history matches the tool
@@ -361,38 +354,37 @@ class ChatAgent(Agent):
             f"Title: {page_context.title}\nURL: {page_context.url}\n\n{page_context.text}"
         )
 
-        # Assistant "called" fetch with the URL in queries
+        # Assistant "called" fetch with the URL in queries — built through the typed
+        # models like every other tool call, so its ``arguments`` wire-encodes as a
+        # JSON string (#2604; it was a bare dict before this stage).
         messages.append(
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
-                        "type": "function",
-                        "function": {
-                            "name": BrowseTool.name,
-                            "arguments": {
-                                "queries": [page_context.url],
-                            },
-                        },
-                    }
+            LlmMessage(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_calls=[
+                    LlmToolCall(
+                        id=ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
+                        function=LlmToolCallFunction(
+                            name=BrowseTool.name,
+                            arguments={"queries": [page_context.url]},
+                        ),
+                    )
                 ],
-            }
+            )
         )
         # Tool "returned" the page content — framed like every real tool result via
         # the same tagged first-person envelope, but with bespoke narration naming this
         # for what it is: the page the user is currently viewing, not a search Penny ran.
         messages.append(
-            {
-                "role": "tool",
-                "content": Agent._frame_injected_result(
+            LlmMessage(
+                role=MessageRole.TOOL,
+                content=Agent._frame_injected_result(
                     BrowseTool.name,
                     Prompt.PAGE_CONTEXT_NARRATION,
                     page_content,
                 ),
-                "tool_call_id": ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
-            }
+                tool_call_id=ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
+            )
         )
 
     # ── System prompt ──────────────────────────────────────────────────────
