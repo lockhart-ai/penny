@@ -1125,6 +1125,14 @@ def test_a_number_word_sources_its_digit_but_not_a_different_one():
     assert unsourced_specifics("a 5-player mode", "it supports four players") == ["5"]
 
 
+def test_a_number_word_in_the_reply_is_never_itself_a_specific():
+    """The equivalence runs ONE way (#2529): a number word sources a digit the WORLD states it
+    for, but a number word in the reply is ordinary prose, not a quantity the reply is on the
+    hook to source — `one` especially is rarely a count.  Against given content with no digit
+    at all, a reply free with `one` and `two` states no specific that needs sourcing."""
+    assert unsourced_specifics("one of the two jobs", "your jobs are listed below") == []
+
+
 def test_a_url_runs_only_as_far_as_the_address_does():
     """Whatever the prose puts beside a URL is the prose's, not the address's.
 

@@ -2245,11 +2245,16 @@ def _told(hour: int, minutes: str) -> list[str]:
 
 
 def _figures(folded: str) -> frozenset[str]:
-    """Every form of every number ``folded`` states, the words it spells its small numbers in
-    included: ``four`` and ``4`` are one value, so a paraphrase that spells out a number it was
-    given in digits (or the other way round) is still read as the figure it sources (#2529).
-    Generic by construction — the closed list is every cardinal zero through twenty, never a
-    word a particular case happens to use."""
+    """Every form of every number the WORLD's content states, the words it spells its small
+    numbers in included: a world that says ``four`` sources a reply or an entry that states
+    ``4`` (#2529).  Generic by construction — the closed list is every cardinal zero through
+    twenty, never a word a particular case happens to use.
+
+    Called ONLY on the given side (``_read_world`` reads it off ``content``, never off the text
+    a claim is checking).  A number word is ordinary prose everywhere else: the specific-value
+    grammar (``_SPECIFIC``/``_NUMBER``) only ever recognises a number written in DIGITS, so
+    ``one`` or ``two`` in a reply or a stored entry is never itself a value that needs sourcing
+    — only a digit a reply states can be, and this is what it is checked against."""
     return frozenset(form for readings in _figure_readings(folded) for form in readings) | (
         frozenset(_NUMBER_WORDS[word] for word in _NUMBER_WORD.findall(folded))
     )
