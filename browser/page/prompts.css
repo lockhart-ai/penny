@@ -462,13 +462,17 @@
   min-width: 0;
 }
 
+/* No right padding: the shared right edge (#2605) is set once, by
+ * .run-view-prompts' right padding, and every nested container contributes
+ * zero right inset — so a row's .row-right grid (copy button last) ends on
+ * the same edge as the run header's copy button at any nesting depth. */
 .prompt-header {
   list-style: none;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 8px;
+  padding: 6px 0 6px 8px;
   border-radius: var(--radius-sm);
   outline: none;
 }
@@ -696,6 +700,9 @@
 /* --- Draws — always visible, nested under the step or draw that made them
  * (#2567 condition 1); never gated by `.prompt`'s own `.expanded` state. --- */
 
+/* The tinted nesting box keeps its left indent (border + 8px) and tint but
+ * adds no right inset (#2605): its right edge — and everything inside it —
+ * stays on the shared right edge, at any nesting depth. */
 .draws {
   display: flex;
   flex-direction: column;
@@ -703,7 +710,7 @@
   background: var(--panel-alt);
   border-left: 2px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 3px 6px 3px 8px;
+  padding: 3px 0 3px 8px;
 }
 
 /* ============================================================
@@ -945,7 +952,9 @@
   }
 
   .run-view-prompts {
-    padding: 9px 6px 10px;
+    /* Right padding matches .run-header's at this width — the shared right
+     * edge (#2605) is still set once, here, by the run body. */
+    padding: 9px 10px 10px 6px;
   }
 
   .row-right {
