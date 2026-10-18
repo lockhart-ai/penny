@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
 from penny.database.models import MemoryEntry
 from penny.datetime_utils import format_log_timestamp
@@ -151,3 +152,35 @@ def test_a_stamp_is_a_moment_wherever_the_framework_rendered_it() -> None:
         "it said 2026-13-45 99:99 UTC, which is no time at all"
     )
     assert given.moments == (_TOLD.replace(tzinfo=None), _WRITTEN)
+
+
+def test_the_self_state_headers_own_data_sections_are_given_an_example_is_not() -> None:
+    """A value the self-state header renders in one of its own DATA sections (#2530) is
+    given the same as a tool result that echoes a stored fact — Penny answering from the
+    header alone must not read as invented.  A value that appears only in an instruction's
+    *example*, outside the header, stays scaffolding: the split is read off the header's
+    OWN section titles, never off either value's wording."""
+    cadence = "every day at 07:00 AM (rule: FREQ=DAILY;BYHOUR=7)"
+    example_only = "every day at 09:00 AM (rule: FREQ=DAILY;BYHOUR=9)"
+    prompt = "\n\n".join(
+        [
+            "You are Penny.",
+            f"### Instructions\nFor example, a job might run `{example_only}`.",
+            SelfStateHeader.HEADER,
+            f"{SelfStateHeader.MECHANISMS_HEADER}\n"
+            f"- watch-prices — active · {cadence} · notify: on · no runs yet",
+            f"{SelfStateHeader.DURABLE_HEADER}\n- name: Alex\n- timezone: America/Denver",
+            SelfStateHeader.POINTERS,
+        ]
+    )
+    turns = [{"role": "system", "content": prompt}]
+
+    given = read_given(turns)
+
+    assert cadence in given.content
+    assert example_only not in given.content
+    assert "You are Penny." not in given.content
+    assert SelfStateHeader.MECHANISMS_HEADER not in given.content
+    assert SelfStateHeader.POINTERS not in given.content
+    assert "name: Alex" in given.content
+    assert "timezone: America/Denver" in given.content

@@ -15,9 +15,16 @@ for scaffolding-shaped text in a blob afterwards:
                 · every ``tool`` turn's PAYLOAD — the tool's own message, without the line the
                   framework narrates it with
                 · the entries a store read laid out, as the entries they are: key and content
+                · the self-state header's own DATA sections — Jobs, Recent activity, Your
+                  memory, About the user — every line of which is a verbatim render of the
+                  registry or the ledger, the same as a tool result that echoes a stored fact
+                  (#2530).  Read off the header's OWN section titles, never a sample's wording:
+                  a value shown only in an instruction's example stays scaffolding
 
   SCAFFOLDING   what the framework wrapped that in
-                · every ``system`` prompt — instructions, the self-state header, a run's record
+                · every ``system`` prompt apart from the self-state header's data sections —
+                  instructions, the header's own section titles and its closing pointers line,
+                  a run's record
                 · the narration line a result opens with, ending in its ``(<tool> result)`` tag
                 · the frame the entry render lays entries out in: the count line, each entry's
                   list number, each entry's stamp
@@ -33,11 +40,12 @@ is its payload, taken as it comes.  The one render read INSIDE a payload is the 
 entry render (``format_entries``), because it is the framework's, shared by every read and by
 the collector's prompt, and its count line and list numbers are the measured leak.
 
-The cost, stated: a system prompt is scaffolding whole apart from the entries it lays out, so
-a job's stored terms are content only where a content turn carries them — the classifier's
-document lists every running job with its schedule, and a read returns the rest.  Assistant
-turns stay out entirely, as they always have: a value Penny invents early in a turn rides
-into the history and would then source itself.
+The cost, stated: a system prompt is scaffolding whole apart from the entries it lays out and
+the self-state header's own data sections (#2530), so a job's stored terms are content where
+a content turn carries them, where the self-state header renders them ambiently, or where the
+classifier's document lists every running job with its schedule — and a read returns the
+rest.  Assistant turns stay out entirely, as they always have: a value Penny invents early in
+a turn rides into the history and would then source itself.
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, NamedTuple
 
+from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.models import strip_harmony_control_tokens
@@ -85,12 +94,30 @@ _COUNT_LINE_OPENS = "{count} {noun} from `"
 _COUNT_LINE_CLOSES = ":"
 _ONE_ENTRY, _MANY_ENTRIES = "entry", "entries"
 
+# The self-state header's own DATA sections (#2530) — every line of these is a verbatim
+# render of the registry or the ledger, the same as a tool result that echoes a stored fact,
+# so it is given the same as one.  Read structurally off the header's OWN section titles
+# (``SelfStateHeader``'s public constants), never by matching a sample's wording: a value
+# that appears only in an instruction's example, outside these titles, stays scaffolding.
+_SELF_STATE_SECTION_HEADERS = frozenset(
+    {
+        SelfStateHeader.MECHANISMS_HEADER,
+        SelfStateHeader.ACTIVITY_HEADER,
+        SelfStateHeader.MAP_HEADER,
+        SelfStateHeader.DURABLE_HEADER,
+    }
+)
+# The header's own closing line — fixed instruction text, never a render of a fact — closes
+# the last data section the same way a new section header would.
+_SELF_STATE_SECTION_END = SelfStateHeader.POINTERS
+
 
 class _Kind(StrEnum):
     ENTRY = "entry"
     CONTINUES = "continues"
     FRAME = "frame"
     OTHER = "other"
+    SELF_STATE = "self_state"
 
 
 class _Line(NamedTuple):
@@ -102,7 +129,7 @@ _AN_ENTRY = frozenset({_Kind.ENTRY, _Kind.CONTINUES})
 _STATED_BY_ROLE = {
     Role.USER: _AN_ENTRY | {_Kind.OTHER},
     Role.TOOL: _AN_ENTRY | {_Kind.OTHER},
-    Role.SYSTEM: _AN_ENTRY,
+    Role.SYSTEM: _AN_ENTRY | {_Kind.SELF_STATE},
 }
 
 
@@ -142,9 +169,39 @@ def _stated(role: Role, text: str, tool_name: str | None) -> str:
     """The part of one turn that was STATED to the round."""
     payload = _tool_payload(text, tool_name) if role == Role.TOOL else text
     lines = [line for line in payload.split(_LINE_BREAK) if _told_moment(line) is None]
+    read = _read_entry_renders(lines)
+    if role == Role.SYSTEM:
+        read = _mark_self_state_data(read)
     kinds = _STATED_BY_ROLE[role]
-    kept = [line.text for line in _read_entry_renders(lines) if line.kind in kinds]
+    kept = [line.text for line in read if line.kind in kinds]
     return _without_stamps(_LINE_BREAK.join(kept))
+
+
+def _mark_self_state_data(lines: Sequence[_Line]) -> list[_Line]:
+    """``lines`` with every one inside one of the self-state header's own DATA sections
+    (#2530) read as ``SELF_STATE`` — given the same as a tool result that echoes a stored
+    fact, since every line there is a verbatim render of the registry or the ledger.
+
+    A line equal to one of the header's own section titles OPENS a section (the title
+    itself stays scaffolding — it is a label, not a fact); the header's own closing
+    instruction line, or the next section title, closes it.  Nothing here reads a sample's
+    wording — only the four constants ``SelfStateHeader`` already names its sections by."""
+    marked: list[_Line] = []
+    in_section = False
+    for line in lines:
+        if line.kind != _Kind.OTHER:
+            marked.append(line)
+        elif line.text in _SELF_STATE_SECTION_HEADERS:
+            in_section = True
+            marked.append(line)
+        elif line.text == _SELF_STATE_SECTION_END:
+            in_section = False
+            marked.append(line)
+        elif in_section:
+            marked.append(_Line(_Kind.SELF_STATE, line.text))
+        else:
+            marked.append(line)
+    return marked
 
 
 def _tool_payload(text: str, tool_name: str | None) -> str:
