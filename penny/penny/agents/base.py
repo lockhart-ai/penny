@@ -2098,22 +2098,46 @@ class Agent:
 
         Fetches the last N messages (no time boundary). Consecutive same-role
         messages are merged with newlines to maintain valid turn structure.
+
+        Each past assistant turn carries a compact line naming the tools that turn
+        called, read off the turn's own prompt-log records (#2630) — the history
+        shows of a past action not just the claim ("All set! I've scheduled that")
+        but the call that backed it, so narrating a change reads as a deviation
+        from the record rather than as the shape acting takes.
         """
         conversation: list[tuple[str, str]] = []
         try:
             limit = int(self.config.runtime.MESSAGE_CONTEXT_LIMIT)
             messages = self.db.messages.get_messages_since(sender, since=datetime.min, limit=limit)
+            traces = iter(self.db.messages.chat_turn_tool_traces())
+            trace = next(traces, None)
             for msg in messages:
                 role = (
                     MessageRole.USER
                     if msg.direction == PennyConstants.MessageDirection.INCOMING
                     else MessageRole.ASSISTANT
                 )
+                content = msg.content
+                # The turn's run is the trace whose last logged call falls at or
+                # before this send — the first send after the run's last call is
+                # the reply that run produced.  A run consumed here contributes
+                # the line whether it called anything or not: ``[Tool calls:
+                # none]`` is the rendered state of a turn that only talked, so a
+                # narrated change with nothing behind it reads as inconsistent
+                # with the record, not as a shape acting takes (#2630).
+                if (
+                    role == MessageRole.ASSISTANT
+                    and trace is not None
+                    and (trace.last_call, trace.row_id) <= (msg.timestamp, msg.id or 0)
+                ):
+                    names = ", ".join(trace.tools) if trace.tools else "none"
+                    content = f"{content}\n[Tool calls: {names}]"
+                    trace = next(traces, None)
                 if conversation and conversation[-1][0] == role:
                     prev_role, prev_content = conversation[-1]
-                    conversation[-1] = (prev_role, f"{prev_content}\n{msg.content}")
+                    conversation[-1] = (prev_role, f"{prev_content}\n{content}")
                 else:
-                    conversation.append((role, msg.content))
+                    conversation.append((role, content))
             if conversation:
                 logger.debug("Built conversation (%d turns)", len(conversation))
         except Exception:

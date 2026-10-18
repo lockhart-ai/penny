@@ -14,8 +14,8 @@ from sqlmodel.sql.expression import SelectOfScalar
 
 from penny.agents.models import MessageRole
 from penny.clock import Clock
-from penny.constants import PennyConstants, RunOutcome
-from penny.database.memory.objects import classify_run, render_run_record
+from penny.constants import ChatPromptType, PennyConstants, RunOutcome
+from penny.database.memory.objects import _run_tool_calls, classify_run, render_run_record
 from penny.database.models import (
     CommandLog,
     Device,
@@ -81,6 +81,18 @@ class ToolFinished(BaseModel):
     tool_name: str
     status: str
     success: bool
+
+
+class ChatTurnTrace(NamedTuple):
+    """One chat turn's run as the conversation history reads it (#2630): when the
+    run's last logged call happened, the id of that last promptlog row (the tie-break
+    when a call and the send it produced share a timestamp), and the tool names the
+    run's OWN prompt-log records show it called — the ledger's projection, never a
+    reconstruction from the reply's wording."""
+
+    last_call: datetime
+    row_id: int
+    tools: tuple[str, ...]
 
 
 class PromptPerf(NamedTuple):
@@ -837,6 +849,50 @@ class MessageStore:
             all_messages = incoming + threaded + autonomous
             all_messages.sort(key=_in_send_order)
             return all_messages[-limit:]
+
+    def chat_turn_tool_traces(self, limit: int = 500) -> list[ChatTurnTrace]:
+        """Every chat turn's run, oldest first, as the history's tool line reads it:
+        the run's last logged call, and the tool names the run's own prompt-log
+        records show it called (the run record's projection, deduplicated).
+
+        A chat turn's reply reaches ``messagelog`` without its ``run_id`` — the
+        history therefore pairs each run with the first send at or after the run's
+        last logged call, which is the pairing production produces (a turn replies
+        right after its last call).  Bounded to the newest ``limit`` promptlog rows;
+        a run straddling that window's oldest edge is dropped rather than rendered
+        with a truncated call list."""
+        with self._session() as session:
+            rows = list(
+                session.exec(
+                    select(PromptLog)
+                    .where(
+                        PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME,
+                        PromptLog.prompt_type == ChatPromptType.USER_MESSAGE.value,
+                    )
+                    .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
+                    .limit(limit)
+                ).all()
+            )
+        rows.reverse()
+        # Group by run id in call order; a row with no run id stands alone.
+        groups: dict[tuple[str, int | str], list[PromptLog]] = {}
+        for row in rows:
+            key: tuple[str, int | str] = ("run", row.run_id) if row.run_id else ("row", row.id or 0)
+            groups.setdefault(key, []).append(row)
+        ordered = list(groups.values())
+        if len(rows) == limit and ordered:
+            ordered = ordered[1:]  # the oldest visible run may be truncated
+        traces: list[ChatTurnTrace] = []
+        for group_rows in ordered:
+            last = group_rows[-1]
+            traces.append(
+                ChatTurnTrace(
+                    last_call=last.timestamp,
+                    row_id=last.id or 0,
+                    tools=tuple(dict.fromkeys(name for name, _ in _run_tool_calls(group_rows))),
+                )
+            )
+        return traces
 
     def ios_history_page(
         self,
