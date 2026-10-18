@@ -47,8 +47,8 @@ because the moved case asserts one is present and the other gone.
 **No claim reads the machine, and none reads how a run ended (#2496).**  A collector moves
 no conversation machine, so there was never a landing to claim; and a cycle's run outcome and
 stop reason are the run record's own fields — retired as claims — so what each case asserts is
-what the store holds, what reached the user, and provenance.  How a cycle went is still
-MEASURED, as the cycle script below.
+what the store holds, what reached the user, and provenance.  How a cycle went is measured in
+the tool sequence below, never claimed.
 
 The first three cases are the whole of the collector's enactment coverage for a page whose
 only hazard is OTHER PRODUCTS' prices.  A watch over a different page, a different datum or a
@@ -81,7 +81,6 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
-    CYCLE_SCRIPT,
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
@@ -1063,7 +1062,7 @@ async def test_the_watch_writes_the_first_reading(
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ── unchanged reading: the collection already holds what the page says ───────
@@ -1104,7 +1103,7 @@ async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
     # unasked; what it catches is a quiet cycle that wrote something the page never said.
     cohort.assert_every_value_in_the_store_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED)
 
 
 # ── moved reading: the collection holds the old price, the page shows a new one ──
@@ -1141,7 +1140,7 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ── same-item decoys: a moved reading on a real-length, decoy-rich page (#2366) ──
@@ -1186,4 +1185,4 @@ async def test_the_watch_tells_the_asking_price_from_other_prices_on_the_same_li
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)

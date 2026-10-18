@@ -61,7 +61,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     fold_typography,
@@ -277,16 +276,12 @@ async def _drive(chat_eval: ChatEval, model: str, case: SourceDownCase) -> Cohor
     )
 
 
-# What this case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE`` and
-# ``ROUTINE_NAME`` read the routines in the registry, and this turn teaches none — so on a
-# correct cohort they read the same empty registry on every sample and pool to a serene 0.000
-# that is neither agreement nor blindness but a reading of the FIXTURE.
-#
-# ``TOOL_SEQUENCE`` is where the ROUTE lives, and it is the live one here: how many times a
-# sample retried the address that will never answer, whether it went looking for another source,
-# and whether it wrote once or per item are all model output, and a route is measured rather
-# than asserted.  ``ENTRIES_STORED`` carries the same question one level down at the store.
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+# What this case measures.  ``TOOL_SEQUENCE`` is where the ROUTE lives, and it is the live one
+# here: how many times a sample retried the address that will never answer, whether it went
+# looking for another source, and whether it wrote once or per item are all model output, and
+# a route is measured rather than asserted.  ``ENTRIES_STORED`` carries the same question one
+# level down at the store.
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ── The claims, as pure functions over one sample ────────────────────────────

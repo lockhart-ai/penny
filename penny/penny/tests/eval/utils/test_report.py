@@ -704,9 +704,9 @@ def test_a_cohort_measuring_only_reply_spread_still_renders_its_spread():
     both = report.CaseSections(
         case_id="c",
         model="m",
-        variance=cohort.pool(samples, [cohort.ROUTINE_SHAPE, cohort.REPLY_SPREAD]),
+        variance=cohort.pool(samples, [cohort.TOOL_SEQUENCE, cohort.REPLY_SPREAD]),
     ).render()
-    assert "| ⚪ | `routine shape` |" in both, "the structural feature still renders"
+    assert "| ⚪ | `tool sequence` |" in both, "the structural feature still renders"
     assert "Reply text over 3 pairs" in both, "and the text spread still renders beside it"
 
 
@@ -934,23 +934,26 @@ def test_one_modal_sample_is_named_and_every_other_shape_is_an_outlier():
 
 def test_a_sample_agreeing_on_one_feature_and_not_another_is_an_outlier():
     """Standing reads the sample's WHOLE shape, not any single feature — a sample matching the
-    majority tool sequence while minting its own routine shape did something else, and reading
-    one feature at a time would file it under the majority and fold it away."""
+    majority tool sequence while writing a different number of entries did something else, and
+    reading one feature at a time would file it under the majority and fold it away."""
     samples = [
         cohort.SampleObservation(
             name="c-1 (a)",
             phrasing="a",
             tool_sequence=["browse"],
-            routines=[cohort.RoutineRecord(name="r", shape="browse", names_a_destination=True)],
+            entries=[cohort.StoredEntry(collection="c", key="k1", content="v1")],
         ),
         cohort.SampleObservation(
             name="c-2 (a)",
             phrasing="a",
             tool_sequence=["browse"],
-            routines=[cohort.RoutineRecord(name="r", shape="other", names_a_destination=True)],
+            entries=[
+                cohort.StoredEntry(collection="c", key="k1", content="v1"),
+                cohort.StoredEntry(collection="c", key="k2", content="v2"),
+            ],
         ),
     ]
-    features = [cohort.TOOL_SEQUENCE, cohort.ROUTINE_SHAPE]
+    features = [cohort.TOOL_SEQUENCE, cohort.ENTRIES_STORED]
     assert [s.standing for s in cohort.standings(samples, features)] == [
         cohort.Standing.MODAL,
         cohort.Standing.OUTLIER,
@@ -976,7 +979,7 @@ _CEILING_NOTE = (
     "Each is recorded as `(feature, model, N=3, value)` and a comparison across either "
     "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
     "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
-    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
+    "(0.53 against 0.18), so a shared ceiling would measure neither._"
 )
 _PHRASING_LEAD = (
     "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
@@ -1002,7 +1005,7 @@ def _shaped(name: str, arm: str, shape: str) -> cohort.SampleObservation:
     return cohort.SampleObservation(
         name=name,
         phrasing=arm,
-        routines=[cohort.RoutineRecord(name="r", shape=shape, names_a_destination=True)],
+        tool_sequence=shape.split(" → "),
         reply=f"done, {shape}",
     )
 
@@ -1042,7 +1045,7 @@ def test_the_three_sections_render_whole():
                 rationales=["unsourced: ['449']", "unsourced: ['05:20']"],
             ),
         ],
-        variance=cohort.pool(samples, [cohort.ROUTINE_SHAPE, cohort.REPLY_SPREAD]),
+        variance=cohort.pool(samples, [cohort.TOOL_SEQUENCE, cohort.REPLY_SPREAD]),
         cost=cohort.per_sample_cost(
             samples=4,
             calls=48,
@@ -1072,7 +1075,7 @@ def test_the_three_sections_render_whole():
                     "|---|---|",
                     "| **checks** | 🟡 5 / 6 · 83% "
                     "(lowest 🟡 0.67 `reply: every specific value in it is sourced`) |",
-                    "| **variance** | ⚪ max H 0.579 `routine shape` · 1 of 1 features vary |",
+                    "| **variance** | ⚪ max H 0.579 `tool sequence` · 1 of 1 features vary |",
                     "| **samples** | 3 pooled + 1 excluded = 4 driven |",
                     "| **cost / sample** | 40,000 in · 10,000 out (80% thinking) · "
                     "12.0 calls · 200s |",
@@ -1120,14 +1123,14 @@ def test_the_three_sections_render_whole():
             ),
             report.titled_fold(
                 "⚪ Variance",
-                "1 feature · max H 0.579 `routine shape` · 1 of 1 features vary",
+                "1 feature · max H 0.579 `tool sequence` · 1 of 1 features vary",
                 "\n\n".join(
                     [
                         "\n".join(
                             [
                                 "|  | feature | distinct | modal | entropy | proposed ceiling |",
                                 "|---|---|---|---|---|---|",
-                                "| ⚪ | `routine shape` | 2 | 2/3 (0.67) | 0.579 | "
+                                "| ⚪ | `tool sequence` | 2 | 2/3 (0.67) | 0.579 | "
                                 "`0.68` @ openai/gpt-oss-20b N=3 |",
                             ]
                         ),
@@ -1139,8 +1142,8 @@ def test_the_three_sections_render_whole():
                                 "|---|---|---|---|",
                                 # BOTH wordings are flagged, and symmetrically so: each produced
                                 # a value the other did not — the finding the pooled 0.579 hides.
-                                "| `routine shape` | phrasing 1 | 1/2 | `browse → write` |",
-                                "| `routine shape` | phrasing 2 | 1/1 | "
+                                "| `tool sequence` | phrasing 1 | 1/2 | `browse → write` |",
+                                "| `tool sequence` | phrasing 2 | 1/1 | "
                                 "`browse → browse → write` |",
                             ]
                         ),
@@ -1290,7 +1293,7 @@ def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_t
         model=_MODEL,
         variance=cohort.pool(
             [_shaped(f"s{i}", "phrasing 1", "browse → write") for i in range(3)],
-            [cohort.ROUTINE_SHAPE],
+            [cohort.TOOL_SEQUENCE],
         ),
     ).render()
     assert "_No phrasing produced a value the others did not._" in rendered
@@ -1431,37 +1434,37 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
     assert "| 1 | page `ridgelinefoxes` |" in tail, "and the table it labels is right there"
 
 
-def _named(name: str, arm: str, tools: list[str], routine: str):
+def _named(name: str, arm: str, tools: list[str], turns: int):
     return cohort.SampleObservation(
         name=name,
         phrasing=arm,
         tool_sequence=tools,
-        routines=[cohort.RoutineRecord(name=routine, shape="s", names_a_destination=True)],
+        turns_driven=turns,
     )
 
 
 def test_a_feature_every_sample_differs_on_is_not_a_divergence():
     """When 14 of 15 samples are outliers, `outlier` has stopped meaning anything — and the cause
-    is a feature at maximum entropy. Every sample's framer draws its own routine name, so every
+    is a feature at maximum entropy. Every sample drives a different number of turns, so every
     diverges on it by construction, so every sample is an outlier and the section names all of
     them and therefore none.
 
     That fact belongs to the FEATURE and is already stated once in the variance table; it is not
     a finding about any one sample. So it is excluded from standing and from the divergences, and
-    a sample whose only difference was the name it drew is not an outlier at all."""
-    samples = [_named(f"c-{n}", "a", ["browse"], f"watch_price_{n}") for n in range(4)]
+    a sample whose only difference was its own turn count is not an outlier at all."""
+    samples = [_named(f"c-{n}", "a", ["browse"], n) for n in range(4)]
     # …except one, which also took a different route — the only real divergence here.
-    samples[3] = _named("c-3", "a", ["browse", "write"], "watch_price_3")
-    features = [cohort.ROUTINE_NAME, cohort.TOOL_SEQUENCE]
+    samples[3] = _named("c-3", "a", ["browse", "write"], 3)
+    features = [cohort.TURNS_DRIVEN, cohort.TOOL_SEQUENCE]
 
-    assert cohort.everywhere_distinct(samples, features) == ["routine name"]
+    assert cohort.everywhere_distinct(samples, features) == ["turns sent"]
     standings = cohort.standings(samples, features)
     assert [s.standing for s in standings] == [
         cohort.Standing.MODAL,
         cohort.Standing.TYPICAL,
         cohort.Standing.TYPICAL,
         cohort.Standing.OUTLIER,
-    ], "naming the container differently is not what makes a sample worth reading"
+    ], "driving a different number of turns is not what makes a sample worth reading"
     assert [d.feature for d in standings[3].divergences] == ["tool sequence"]
 
 
@@ -1535,28 +1538,28 @@ def test_every_spec_category_renders_including_the_empty_ones():
 def test_a_cosmetic_divergence_never_makes_an_outlier():
     """A feature unconstrained in BOTH measured models is a system-level finding for the
     variance table, not fifteen per-sample findings. Without the split, 8 of 9 outlier rows were
-    routine-name-only — reporting "60% of samples are outliers" where the true statement was
+    turns-sent-only — reporting "60% of samples are outliers" where the true statement was
     "1 of 15 diverged consequentially"."""
-    # Two samples draw the same routine name, so the feature is INFORMATIVE (not all-distinct)
-    # and reaches the consequence rule rather than being dropped before it.
+    # Two samples drove the same number of turns, so the feature is INFORMATIVE (not
+    # all-distinct) and reaches the consequence rule rather than being dropped before it.
     samples = [
         cohort.SampleObservation(
             name=f"c-{n}",
             phrasing="a",
             tool_sequence=["browse"],
-            routines=[cohort.RoutineRecord(name=routine, shape="s", names_a_destination=True)],
+            turns_driven=turns,
         )
-        for n, routine in enumerate(["watch_price", "watch_price", "monitor_price", "check_price"])
+        for n, turns in enumerate([1, 1, 2, 3])
     ]
-    features = [cohort.ROUTINE_NAME, cohort.TOOL_SEQUENCE]
+    features = [cohort.TURNS_DRIVEN, cohort.TOOL_SEQUENCE]
     standings = cohort.standings(samples, features)
 
     assert all(s.standing is not cohort.Standing.OUTLIER for s in standings), (
-        "the name the framer drew is cosmetic — it makes no outlier"
+        "the number of turns driven is cosmetic — it makes no outlier"
     )
     rendered = report.render_outliers(list(enumerate(standings, start=1)))
     assert "No sample diverged consequentially" in rendered
-    assert "2 samples differ on `routine name`" in rendered
+    assert "2 samples differ on `turns sent`" in rendered
     assert "entropy reported in Variance" in rendered
 
 

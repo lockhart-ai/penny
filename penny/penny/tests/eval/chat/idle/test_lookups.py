@@ -31,7 +31,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     fold_typography,
@@ -61,7 +60,7 @@ from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 def _held_text(sample: SampleObservation, collection: str) -> str:

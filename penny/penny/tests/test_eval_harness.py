@@ -644,8 +644,8 @@ def _names_called(function: ast.AsyncFunctionDef | ast.FunctionDef) -> set[str]:
 
 
 def test_every_driver_refuses_a_case_that_names_nothing_to_drive() -> None:
-    """Every ``*_eval`` driver fixture calls the stated-input guards, takes the case's ``area``
-    and ``edge``, and takes no per-sample scorer — so a case can only be written as one ask, in
+    """Every ``*_eval`` driver fixture calls the stated-input guards, takes the case's ``area``,
+    and takes no per-sample scorer — so a case can only be written as one ask, in
     its wordings, declared under an area, with claims made against the cohort that comes back.
 
     Structural, off each module's own AST — ``conftest.py`` and every module ``drivers/``
@@ -689,7 +689,7 @@ def test_every_driver_refuses_a_case_that_names_nothing_to_drive() -> None:
 # per-sample scorer path would take.
 _DRIVER_SUFFIX = "_eval"
 _DRIVER_GUARDS = {"_require_ask", "_require_report_only", "_declare_case"}
-_DECLARED_ARGUMENTS = {"area", "edge"}
+_DECLARED_ARGUMENTS = {"area"}
 _SCORER_ARGUMENTS = {"score", "message", "messages", "pool", "expected", "expectations", "cycles"}
 
 
@@ -2910,16 +2910,9 @@ _LABELLER_CONVERSATION = [
 ]
 
 
-def test_a_collectors_cycle_script_has_no_absent_reading_and_declares_none(tmp_path) -> None:
-    """The collector fills the same ``walk`` field from its own observer, whose vocabulary
-    contains no ``no move`` at all — so ``cycle script`` declares none rather than borrowing a
-    value it could never read.
-
-    Declaring none is honest here rather than a hole: the one shape that means nothing ran
-    EXCLUDES the sample before it is pooled, so among the samples this feature is pooled over
-    there is no reading that means nothing was seen."""
-    assert eval_cohort.CYCLE_SCRIPT.absent is None
-
+def test_a_collectors_cycle_shapes_are_distinct_and_a_dead_cycle_is_excluded(tmp_path) -> None:
+    """Four different cycles read as four different shapes, and the one shape that means
+    nothing ran EXCLUDES the sample before it is pooled."""
     ran = [
         _observed_cycle(index=0, before={}, after={"price": "84 zorkmids"}),
         _observed_cycle(index=1, before={"price": "84"}, after={"price": "84"}),
@@ -2928,9 +2921,6 @@ def test_a_collectors_cycle_script_has_no_absent_reading_and_declares_none(tmp_p
     ]
     shapes = {_cycle_shape(cycle) for cycle in ran}
     assert len(shapes) == 4, f"four cycles, four shapes: {sorted(shapes)}"
-    assert eval_cohort.TRANSITIONS.absent not in shapes, (
-        f"this observer cannot produce the chat walk's absent reading: {sorted(shapes)}"
-    )
 
     # The one shape that DOES mean nothing ran, and the gate that keeps it out of the pool.
     dead = CycleObservation(

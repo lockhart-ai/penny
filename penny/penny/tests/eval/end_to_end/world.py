@@ -29,14 +29,12 @@ from penny.tools.models import ToolResult
 
 # The sample's WHOLE walk: the conversation machine's moves through the scripted turns, then
 # every created job's own ordered cycle script ("wrote", "quiet", "…+told") — one feature
-# because ``TRANSITIONS`` and ``CYCLE_SCRIPT`` both read the identical field under two labels
-# that fit neither half of an end-to-end sample on its own.
+# because an end-to-end sample's walk is neither a chat sample's alone nor a collector's
+# alone, and no other feature in the suite reads this field.
 END_TO_END_WALK = Feature("end-to-end walk", lambda o: o.walk, absent="no move")
 
 # The routine's own name and shape are MEASURED nowhere by these cases, and this is the one
-# place that is worth saying rather than leaving as a silent omission: a round that teaches a
-# routine from scratch mints a fresh name and shape every sample, the way ``test_teach_arrives_
-# whole.py`` reports FRAMER naming spread with ``ROUTINE_NAME`` — but an end-to-end case's
+# place that is worth saying rather than leaving as a silent omission: an end-to-end case's
 # claims and features never read which collection the job lands on or what the routine is
 # called, so there is nothing here that reading the registry would answer differently from
 # reading the store the cases already read.

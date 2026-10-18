@@ -665,7 +665,7 @@ _CEILING_NOTE = (
     "Each is recorded as `(feature, model, N={n}, value)` and a comparison across either "
     "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
     "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
-    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
+    "(0.53 against 0.18), so a shared ceiling would measure neither._"
 )
 # What a SHARE is, said where its table ends.  It sits in the variance section because it is
 # measured over the same pooled samples, and it is not a variance: stated, because a number in

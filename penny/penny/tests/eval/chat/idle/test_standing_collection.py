@@ -114,7 +114,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     MechanismRecord,
     SampleObservation,
     SpecCategory,
@@ -435,12 +434,7 @@ async def _drive(
     )
 
 
-# What every case measures.  ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are absent: they read the
-# routines in the registry, and none of these turns teaches one — so on a correct cohort they
-# read the world's own seeded routine on every sample and pool to a serene 0.000 that is
-# neither agreement nor blindness but a reading of the FIXTURE.  A sample that DID mint one
-# left idle, which the landing claim reads.
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ── The claims, as pure functions over one sample ─────────────────────────────

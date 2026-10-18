@@ -71,7 +71,7 @@ from penny.tests.eval.utils.artifacts import FailureCause
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
 from penny.tests.eval.utils.budget_hits import BudgetHits, tally_budget_hits
-from penny.tests.eval.utils.catalogue import Area, Edge, Layer
+from penny.tests.eval.utils.catalogue import Area, Layer
 from penny.tests.eval.utils.clock import SAMPLE_TIMEZONE, PinnedClock
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
 from penny.tests.eval.utils.given import read_given
@@ -2428,15 +2428,6 @@ def reply_embedding(db: Database, reply: str) -> list[float] | None:
     return deserialize_embedding(row.embedding)
 
 
-def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
-    """Every routine the round minted, as the registry holds it — always ``[]`` on this
-    branch (#2455 naive baseline): there is no skill registry, so no round ever mints a
-    routine into one.  Kept as a function (not inlined at the call site) so the field it
-    feeds stays named the same on ``SampleObservation``."""
-    del db
-    return []
-
-
 def _stored_entries(db: Database) -> list[eval_cohort.StoredEntry]:
     """Every COLLECTION entry this sample wrote, wherever it landed — the run-id stamp
     answering "what did she store", so a case never has to guess which container a framed
@@ -2690,7 +2681,6 @@ def _observe_sample(
         turn_at=_last_scripted_turn_at(db),
         timezone=user_timezone_name(db),
         walk=_machine_walk(db),
-        routines=_routine_records(db),
         entries=_stored_entries(db),
         held=_held_entries(db),
         held_before=held_before,
@@ -3148,11 +3138,10 @@ def _declare_case(
     layer: Layer,
     behaviour: str,
     area: Area | None,
-    edge: Edge | None,
     wording: str,
 ) -> eval_catalogue.CatalogueEntry:
-    """Refuse a case that states no behaviour, declares no area or names an edge the machine
-    has not got, before any sample runs — and return the case as the catalogue lists it.
+    """Refuse a case that states no behaviour or declares no area, before any sample runs —
+    and return the case as the catalogue lists it.
 
     In catalogue mode the case is recorded and the test stops here, so collecting the suite
     stands up no sample, endpoint check or database of its own."""
@@ -3161,7 +3150,6 @@ def _declare_case(
         layer=layer,
         sentence=_stated_behaviour(case_id, behaviour),
         area=area,
-        edge=edge,
         wording=wording,
         node_id=request.node.nodeid.partition(_PARAMETER_SUFFIX)[0],
     )
@@ -3411,7 +3399,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         case_id: str,
         behaviour: str = "",
         area: Area | None = None,
-        edge: Edge | None = None,
         ask: str | None = None,
         also_phrased: Sequence[str] = (),
         world: World | None = None,
@@ -3436,7 +3423,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             layer=Layer.WHOLE_TURN,
             behaviour=behaviour,
             area=area,
-            edge=edge,
             wording=ask or "",
         )
         eval_artifacts.begin_case(case_id)
@@ -3918,7 +3904,6 @@ def collector_cycles_eval(
         collection: str,
         behaviour: str = "",
         area: Area | None = None,
-        edge: Edge | None = None,
         arms: Sequence[CycleArm] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -3939,7 +3924,6 @@ def collector_cycles_eval(
             layer=Layer.COLLECTOR_CYCLE,
             behaviour=behaviour,
             area=area,
-            edge=edge,
             wording=arms[0].text,
         )
         eval_artifacts.begin_case(case_id)
@@ -4266,7 +4250,6 @@ def end_to_end_eval(
         case_id: str,
         behaviour: str = "",
         area: Area | None = None,
-        edge: Edge | None = None,
         arms: Sequence[EndToEndArm] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -4277,9 +4260,7 @@ def end_to_end_eval(
         """Drive one end-to-end script per sample and return the COHORT.
 
         A case with no ``arms`` is refused by name, the way every other driver refuses a case
-        that names nothing to drive.  ``edge`` stays ``None`` on every case so far: an
-        end-to-end script walks several machine edges in one sample, and no single one of
-        them is what the case is about (#2375)."""
+        that names nothing to drive."""
         _require_ask(case_id, "end_to_end_eval", "arms=[EndToEndArm(...), …]", arms)
         _require_report_only(case_id, min_pass_rate)
         catalogued = _declare_case(
@@ -4288,7 +4269,6 @@ def end_to_end_eval(
             layer=Layer.WHOLE_TURN,
             behaviour=behaviour,
             area=area,
-            edge=edge,
             wording=arms[0].label,
         )
         eval_artifacts.begin_case(case_id)
@@ -4622,7 +4602,6 @@ def extractor_eval(
         instruction: str,
         behaviour: str = "",
         area: Area | None = None,
-        edge: Edge | None = None,
         also_instructed: Sequence[str] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -4654,7 +4633,6 @@ def extractor_eval(
             layer=Layer.MICRO_CONTEXT,
             behaviour=behaviour,
             area=area,
-            edge=edge,
             wording=instruction,
         )
         eval_artifacts.begin_case(case_id)
@@ -4801,7 +4779,6 @@ def notify_composer_eval(
         world: World,
         behaviour: str = "",
         area: Area | None = None,
-        edge: Edge | None = None,
         also_described: Sequence[str] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -4826,7 +4803,6 @@ def notify_composer_eval(
             layer=Layer.MICRO_CONTEXT,
             behaviour=behaviour,
             area=area,
-            edge=edge,
             wording=description,
         )
         eval_artifacts.begin_case(case_id)

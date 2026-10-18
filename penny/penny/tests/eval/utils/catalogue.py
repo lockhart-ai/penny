@@ -5,9 +5,8 @@ that list as a document.  It is generated from the cases, so it cannot say somet
 cases do not — and generated ON DEMAND, not committed (#2395): a case PR never edits it, so
 two case PRs never land their new rows on the same line.
 
-A case declares two things to its driver: the ``area`` of Penny it is about (:class:`Area`,
-a closed set) and, where it covers one, the machine ``edge`` it moves along.  Its
-:class:`Layer` is not declared — it is which driver the case uses.
+A case declares one thing to its driver: the ``area`` of Penny it is about (:class:`Area`,
+a closed set).  Its :class:`Layer` is not declared — it is which driver the case uses.
 
 Collecting the cases runs no model.  With ``EVAL_CATALOGUE`` naming a file, every driver
 validates the case it was handed, appends it to that file as a :class:`CatalogueEntry`, and
@@ -24,8 +23,8 @@ CLI:
       check`` — this is the only part of the catalogue that gates anything; there is no
       file to compare against, since none is committed).
 
-Both exit 1, naming the case, when a case states no behaviour, declares no area, names an
-edge the machine does not have, or shares its id with another case.
+Both exit 1, naming the case, when a case states no behaviour, declares no area, or shares
+its id with another case.
 """
 
 from __future__ import annotations
@@ -42,53 +41,10 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 
-class ConversationState(StrEnum):
-    """The conversation machine's retired state set (#2455 naive baseline: there is no
-    machine left to draw these — kept here, as plain strings once were enum members,
-    only so the few historical cases/fixtures that still name an edge they walked have
-    somewhere to validate it against)."""
-
-    IDLE = "idle"
-    ELICIT = "elicit"
-    LEARN = "learn"
-    REQUEST = "request"
-    APPLY = "apply"
-
-
-# The edge table the retired conversation machine offered — frozen here exactly as it
-# last stood, never extended, since nothing draws a move along it anymore (#2455).
-OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
-    ConversationState.IDLE: (
-        ConversationState.APPLY,
-        ConversationState.REQUEST,
-        ConversationState.LEARN,
-        ConversationState.ELICIT,
-        ConversationState.IDLE,
-    ),
-    ConversationState.ELICIT: (
-        ConversationState.LEARN,
-        ConversationState.ELICIT,
-        ConversationState.IDLE,
-    ),
-    ConversationState.LEARN: (
-        ConversationState.APPLY,
-        ConversationState.LEARN,
-        ConversationState.IDLE,
-    ),
-    ConversationState.REQUEST: (
-        ConversationState.APPLY,
-        ConversationState.ELICIT,
-        ConversationState.IDLE,
-    ),
-    ConversationState.APPLY: (),
-}
-
-
 class Area(StrEnum):
     """The part of Penny a case is about.  Closed: a case names one of these or is refused.
     Declaration order is the order the catalogue renders them in."""
 
-    CONVERSATION_MACHINE = "conversation machine"
     TEACHING_A_ROUTINE = "teaching a routine"
     MEMORY = "memory"
     ANSWERING_FROM_THE_WEB = "answering from the web"
@@ -108,10 +64,6 @@ class Layer(StrEnum):
     COLLECTOR_CYCLE = "collector cycle"
 
 
-# One move of the conversation machine: the state it is drawn from, and the state it lands in.
-Edge = tuple[ConversationState, ConversationState]
-
-
 class CatalogueEntry(BaseModel):
     """One case as the catalogue lists it."""
 
@@ -119,7 +71,6 @@ class CatalogueEntry(BaseModel):
 
     case_id: str
     area: Area
-    edge: Edge | None
     layer: Layer
     sentence: str
     wording: str
@@ -141,15 +92,10 @@ _NO_AREA = (
     "{case_id}: a case must declare its area — area=Area.<NAME>, one of: {areas} "
     "(penny.tests.eval.utils.catalogue)"
 )
-_NOT_AN_EDGE = (
-    "{case_id}: edge=({origin}, {landing}) is not an edge of the conversation machine — "
-    "from {origin} it offers {offered}"
-)
-_NO_OUT_EDGES = "nothing"
 _DUPLICATE_ID = "{case_id}: declared by more than one case — {nodes}; a case id names one case"
 _COLLECTION_FAILED = (
-    "catalogue: the eval cases could not be collected — every case states its behaviour, "
-    "declares its area, and names only an edge the machine has:\n{output}"
+    "catalogue: the eval cases could not be collected — every case states its behaviour "
+    "and declares its area:\n{output}"
 )
 
 
@@ -159,7 +105,6 @@ def declare(
     layer: Layer,
     sentence: str,
     area: Area | None,
-    edge: Edge | None,
     wording: str,
     node_id: str,
 ) -> CatalogueEntry:
@@ -167,32 +112,13 @@ def declare(
     if not isinstance(area, Area):
         areas = ", ".join(member.value for member in Area)
         raise ValueError(_NO_AREA.format(case_id=case_id, areas=areas))
-    if edge is not None:
-        _require_machine_edge(case_id, edge)
     return CatalogueEntry(
         case_id=case_id,
         area=area,
-        edge=edge,
         layer=layer,
         sentence=sentence,
         wording=wording,
         node_id=node_id,
-    )
-
-
-def _require_machine_edge(case_id: str, edge: Edge) -> None:
-    """Refuse an edge that is not in the machine's own table."""
-    origin, landing = edge
-    offered = OUT_EDGES.get(origin, ())
-    if landing in offered:
-        return
-    raise ValueError(
-        _NOT_AN_EDGE.format(
-            case_id=case_id,
-            origin=str(origin),
-            landing=str(landing),
-            offered=", ".join(offered) or _NO_OUT_EDGES,
-        )
     )
 
 
@@ -266,32 +192,17 @@ _HEAD = """\
 The behaviours Penny supports, one row per eval case, grouped by the area of Penny each case \
 is about. Generated from the cases by `make catalogue`; not committed, and not edited by hand.
 
-A case declares its area and, where it covers one, the edge of the conversation machine it \
-moves along. The first wording is the first of the wordings the case is driven in."""
+A case declares its area. The first wording is the first of the wordings the case is driven \
+in."""
 
-_AREA_TABLE_HEAD = "| Case | Behaviour | First wording | Edge |\n|---|---|---|---|"
+_AREA_TABLE_HEAD = "| Case | Behaviour | First wording |\n|---|---|---|"
 _NO_CASES = "No cases."
-_COVERAGE_HEAD = f"""\
-## Machine edge coverage
-
-One row per edge of the conversation machine. A classifier draw covers an edge when a case \
-draws that decision on its own; a whole turn covers it when a case drives the chat turn that \
-makes the move.
-
-| Edge | {Layer.CLASSIFIER_DRAW.capitalize()} | {Layer.WHOLE_TURN.capitalize()} |
-|---|---|---|"""
-_UNCOVERED = "—"
-_ARROW = " → "
 
 
 def render(entries: Sequence[CatalogueEntry]) -> str:
     """The whole catalogue document for these cases."""
     ordered = sorted(entries, key=lambda entry: entry.case_id)
-    sections = [
-        _HEAD,
-        *(_area_section(area, ordered) for area in Area),
-        _edge_coverage(ordered),
-    ]
+    sections = [_HEAD, *(_area_section(area, ordered) for area in Area)]
     return "\n\n".join(sections) + "\n"
 
 
@@ -303,34 +214,8 @@ def _area_section(area: Area, entries: Sequence[CatalogueEntry]) -> str:
 
 
 def _case_row(entry: CatalogueEntry) -> str:
-    edge = _edge_label(entry.edge) if entry.edge is not None else ""
-    cells = [_code(entry.case_id), _cell(entry.sentence), _cell(entry.wording), edge]
+    cells = [_code(entry.case_id), _cell(entry.sentence), _cell(entry.wording)]
     return f"| {' | '.join(cells)} |"
-
-
-def _edge_coverage(entries: Sequence[CatalogueEntry]) -> str:
-    """Which cases cover each machine edge, by the layer they drive."""
-    rows = [
-        f"| {_edge_label((origin, landing))} "
-        f"| {_covering(entries, (origin, landing), Layer.CLASSIFIER_DRAW)} "
-        f"| {_covering(entries, (origin, landing), Layer.WHOLE_TURN)} |"
-        for origin, landings in OUT_EDGES.items()
-        for landing in landings
-    ]
-    return "\n".join([_COVERAGE_HEAD, *rows])
-
-
-def _covering(entries: Sequence[CatalogueEntry], edge: Edge, layer: Layer) -> str:
-    """The cases covering one edge at one layer, or the dash that says there are none."""
-    covering = [
-        _code(entry.case_id) for entry in entries if entry.edge == edge and entry.layer is layer
-    ]
-    return ", ".join(covering) or _UNCOVERED
-
-
-def _edge_label(edge: Edge) -> str:
-    origin, landing = edge
-    return f"{origin}{_ARROW}{landing}"
 
 
 def _code(text: str) -> str:
@@ -351,7 +236,7 @@ USAGE = (
     f"       python -m penny.tests.eval.utils.catalogue {CHECK_CMD}"
 )
 _WROTE = "catalogue: {count} cases → {path}"
-_VALID = "catalogue: {count} cases declare a valid area, edge and a unique id"
+_VALID = "catalogue: {count} cases declare a valid area and a unique id"
 
 
 def main(argv: list[str]) -> int:

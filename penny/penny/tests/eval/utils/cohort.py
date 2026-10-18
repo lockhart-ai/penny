@@ -115,25 +115,6 @@ class Given(str):
 
 
 # ── What one sample left behind ──────────────────────────────────────────────
-class RoutineRecord(BaseModel):
-    """One routine the round minted, as the registry holds it."""
-
-    name: str
-    shape: str
-    names_a_destination: bool
-    # Spots the labelling draw left as leaf parameters.  A named spot stops being a parameter,
-    # and the labeller names every spot unconditionally — so a leftover one means the draw FELL
-    # BACK and the routine kept its arg-derived names.
-    open_parameters: list[str] = Field(default_factory=list)
-    # Every string at the leaves of the demonstrated call arguments the routine records — what
-    # it will actually fetch and look for each run, as against ``shape``, which is one altitude
-    # up and carries no argument values at all.  A FLAT list rather than one keyed by tool or
-    # by argument position: a skill is an arbitrary tool sequence, so which call carries the
-    # page and which carries what to look for is not something a reader can know, and a reading
-    # keyed to either stops firing for a shape nobody enumerated.
-    demonstrated_values: list[str] = Field(default_factory=list)
-
-
 class StoredEntry(BaseModel):
     """One entry the round wrote, WHOLE — key and content.
 
@@ -363,11 +344,9 @@ class SampleObservation(BaseModel):
     # read it: a chat sample carries the conversation machine's own walk (``idle→learn,
     # learn→apply``, or ``no move`` when it recorded none), a collector sample the ordered
     # shapes of its cycles (``wrote, quiet, wrote+told``).  One field because both answer
-    # "what did this run do, in order", and two features read it — :data:`TRANSITIONS` and
-    # :data:`CYCLE_SCRIPT` — because the readings they can produce are not the same set, and
-    # a feature's ``absent`` is a claim about the observer that fills it.
+    # "what did this run do, in order" and an end-to-end sample is neither alone — see
+    # :data:`end_to_end.world.END_TO_END_WALK`, the one feature that reads it.
     walk: str = ""
-    routines: list[RoutineRecord] = Field(default_factory=list)
     entries: list[StoredEntry] = Field(default_factory=list)
     # Every entry the store HOLDS when the sample ends — the same ``StoredEntry`` shape as
     # ``entries``, because it is the same three facts about the same rows and two shapes for
@@ -590,49 +569,15 @@ class Feature:
 TOOL_SEQUENCE = Feature(
     "tool sequence", lambda o: " → ".join(o.tool_sequence) or "no call", absent="no call"
 )
-ROUTINE_SHAPE = Feature(
-    "routine shape",
-    lambda o: " | ".join(r.shape for r in o.routines) or "no routine",
-    absent="no routine",
-)
-# What the framer called the routine.  Measured DIRECTLY rather than through the container it
-# produces: a container name is `derive_collection_name(skill.name, [parameter values])`, and on
-# the reference run the parameter half was byte-identical across all 18 samples — so measuring
-# the container measured the routine name through a slug function, under a label that hid what
-# it was.  Nothing about the naming MECHANISM is loose: `round_framing.container_name` is fully
-# deterministic and public precisely so a fixture cannot grow a second copy of the scheme.  What
-# varies is the framer's output, upstream of it.
-#
-# COSMETIC because the end state is equivalent whichever name is drawn — `watch_price` and
-# `monitor_listing_price` leave the same round, the same write and the same container shape
-# behind — so its spread belongs in the variance table as the FRAMER's naming spread, never as
-# a fact about one sample.
-ROUTINE_NAME = Feature(
-    "routine name",
-    lambda o: ", ".join(sorted({r.name for r in o.routines})) or "none",
-    consequence=Consequence.COSMETIC,
-    absent="none",
-)
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
 # How many of an end-to-end script's turns were actually sent (#2494) — a Penny who stands
 # the job up on the first turn and a Penny who asks first and is walked through it both reach
 # the same claims, so a different count is not a different end state: it is the mechanism's
-# own spread, reported beside the routine naming spread rather than read as a fact about any
-# one sample.
+# own spread, reported as a COSMETIC divergence rather than read as a fact about any one
+# sample.
 TURNS_DRIVEN = Feature(
     "turns sent", lambda o: str(o.turns_driven), consequence=Consequence.COSMETIC
 )
-# The CONVERSATION MACHINE's walk, as a chat observer reads it: ``no move`` is what it returns
-# for a sample whose machine recorded no transition at all, so the blindness guard has a
-# reading it can actually fire on.
-TRANSITIONS = Feature("transitions", lambda o: o.walk, absent="no move")
-# What a COLLECTOR's cycles did, in order — the same observation field read by the observer a
-# collector has instead of a machine walk, in that observer's own vocabulary (``wrote`` ·
-# ``quiet`` · ``…+told``).  It declares NO absent reading, because none exists among the samples
-# it is pooled over: every cycle that ran has one of those shapes, and the one shape that means
-# nothing ran (``no run``) EXCLUDES the sample before pooling.  Sharing ``transitions``' own
-# ``no move`` here would be a declaration this path can never produce (#2061).
-CYCLE_SCRIPT = Feature("cycle script", lambda o: o.walk)
 
 # What ``JOB_TERMS`` reads on a turn that stood no job up — and the words the three terms are
 # rendered in.  Named because a feature's value is a diff-join key exactly as a claim's label
@@ -844,8 +789,8 @@ class VarianceFeature(BaseModel):
         distinct" because that reads the wrong quantity at small N — two distinct values in
         three samples is ordinary spread, not saturation, and it would have silenced ceilings
         on cohorts that plainly deserve one.  Measured on the reference run this separates the
-        real cases cleanly: the framer's naming sits at modal 5/15 and proposes nothing, while
-        tool sequence at 13/15 and routine shape at 15/15 both propose.
+        real cases cleanly: a feature with no majority at all proposes nothing, while tool
+        sequence at 13/15 proposes.
 
         It needs no new constant — "half" is the same majority notion standing decides on — and
         it is read off the two numbers the table already shows.  A judgement about where to stop
@@ -970,9 +915,9 @@ class VarianceHeadline(BaseModel):
     jobs and saturation belongs only to the second: a ceiling exists to catch a RISE, so a
     feature with no majority behaviour can carry none, and ``proposed_ceiling`` still refuses
     one.  The headline answers a different question — *which aspect of this case is most
-    variant* — and excluding a saturated feature from it hides exactly the answer.  If the
-    framer's naming is the most variant thing here, that is true, and it is a finding about the
-    system rather than noise.
+    variant* — and excluding a saturated feature from it hides exactly the answer.  If a
+    COSMETIC feature is the most variant thing here, that is true, and it is a finding about
+    the system rather than noise.
 
     ``varying`` is the shape beside the magnitude, because "a bunch at zero and one high" and
     "everything wobbling" are different findings that one maximum cannot tell apart.  Counted
@@ -1378,7 +1323,7 @@ class FeatureDivergence(BaseModel):
     """One feature on which a sample did something the representative did not.
 
     This — not the sample's transcript — is what makes an outlier legible.  A sample is outlying
-    on a SPECIFIC feature, so rendering 19,000 characters of prose to say "its routine shape was
+    on a SPECIFIC feature, so rendering 19,000 characters of prose to say "its tool sequence was
     `browse → browse` where the representative's was `browse → log_read → collection_write`" is
     the wrong thing by three orders of magnitude.  Show the divergence and its evidence; the
     whole transcript is in the artifact for a reader who then wants it."""
@@ -1453,8 +1398,8 @@ def sample_shape(sample: SampleObservation, features: Sequence[Feature]) -> str:
     """One sample's whole measured shape — every feature's value at once.
 
     The shape, not any single feature, is what makes a sample typical or not: a sample agreeing
-    on tool sequence while inventing its own routine shape is an outlier, and reading one feature
-    at a time would file it under the majority."""
+    on one feature while diverging on another is an outlier, and reading one feature at a time
+    would file it under the majority."""
     return " · ".join(feature.read(sample) for feature in features if feature is not REPLY_SPREAD)
 
 

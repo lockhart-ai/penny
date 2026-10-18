@@ -126,7 +126,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     Feature,
     SampleObservation,
     SpecCategory,
@@ -509,9 +508,8 @@ def claim_the_remark(cohort: Cohort) -> None:
 
 # ``TOOL_SEQUENCE`` carries the route — which field she searched on, whether she read the message
 # or answered from its preview, whether she looked at all on the remark.  ``ENTRIES_STORED``
-# carries whether a turn chose to note something.  The registry features are out: neither ask
-# teaches a routine, so they would read the same empty registry on every sample.
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+# carries whether a turn chose to note something.
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 # The two readings of ``MAILBOX_FIGURE_IN_REPLY``.  Named because a feature's value is a
 # diff-join key: one respelling splits its history into two distributions.

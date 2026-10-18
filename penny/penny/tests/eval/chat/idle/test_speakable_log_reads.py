@@ -112,7 +112,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     fold_typography,
@@ -566,14 +565,11 @@ async def _drive(chat_eval: ChatEval, model: str, case: _LogReadCase) -> Cohort:
     )
 
 
-# What both cases measure.  ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are absent: they read the
-# routines in the registry, and neither turn teaches one — so on a correct cohort they read the
-# world's own seeded routines on every sample and pool to a serene 0.000 that is neither
-# agreement nor blindness but a reading of the FIXTURE.  ``TOOL_SEQUENCE`` is where a sample
-# that went and looked the topic up stands apart from one that looked back — the divergence
-# these cases are named against — and it is measured rather than asserted, because WHICH read
-# verb answers a look-back is hers to choose and the claims below name none.
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+# What both cases measure.  ``TOOL_SEQUENCE`` is where a sample that went and looked the
+# topic up stands apart from one that looked back — the divergence these cases are named
+# against — and it is measured rather than asserted, because WHICH read verb answers a
+# look-back is hers to choose and the claims below name none.
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ═══ what she said ═══════════════════════════════════════════════════════════

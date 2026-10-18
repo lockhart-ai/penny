@@ -79,7 +79,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     fold_typography,
@@ -257,7 +256,7 @@ async def test_a_request_for_a_picture_draws_it(chat_eval: ChatEval, model: str)
     # asks the model to elaborate, so no provenance claim reads it.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ═══ the topic alone ═════════════════════════════════════════════════════════
@@ -281,4 +280,4 @@ async def test_a_remark_about_a_painting_stays_in_idle(chat_eval: ChatEval, mode
     # PROVENANCE — the reply half: no painter, gallery or title she was not given.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)

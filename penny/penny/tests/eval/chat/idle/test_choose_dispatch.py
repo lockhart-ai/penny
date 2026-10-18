@@ -53,7 +53,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     fold_typography,
@@ -211,4 +210,4 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
     # got to the pick, not whether the pick is right: what the reply DID with it is the claim
     # above, and a sample that free-chose is caught there rather than here, since it reports an
     # option no record holds.
-    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)

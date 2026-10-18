@@ -43,7 +43,6 @@ from penny.tests.eval.utils.catalogue import (
     CATALOGUE_ENV,
     Area,
     CatalogueEntry,
-    ConversationState,
     Layer,
     load,
 )
@@ -871,21 +870,12 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
             with pytest.raises(ValueError, match=f"{driver}: a case must declare its area"):
                 await drive(case_id=driver, behaviour=_SENTENCE, min_pass_rate=None, area="memory")
 
-    async def test_a_case_must_state_its_behaviour_and_name_only_an_edge_the_machine_has(
-        self, every_driver, monkeypatch
-    ):
-        """A blank behaviour sentence and an edge outside ``OUT_EDGES`` are both refused by the
-        case's name."""
+    async def test_a_case_must_state_its_behaviour(self, every_driver, monkeypatch):
+        """A blank behaviour sentence is refused by the case's name."""
         monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
         drive = every_driver["chat_eval"]
-        machine = {"min_pass_rate": None, "area": Area.CONVERSATION_MACHINE}
         with pytest.raises(ValueError, match="blank: a case must state the behaviour it checks"):
-            await drive(case_id="blank", behaviour="  ", **machine)
-        unreachable = "from request it offers apply, elicit, idle"
-        with pytest.raises(ValueError, match=rf"parked: edge=\(request, request\).*{unreachable}"):
-            await drive(case_id="parked", behaviour=_SENTENCE, edge=(_REQUEST, _REQUEST), **machine)
-        with pytest.raises(ValueError, match=r"done: edge=\(apply, idle\).*it offers nothing"):
-            await drive(case_id="done", behaviour=_SENTENCE, edge=(_APPLY, _IDLE), **machine)
+            await drive(case_id="blank", behaviour="  ", min_pass_rate=None, area=Area.MEMORY)
 
     async def test_catalogue_mode_records_the_case_and_stops_before_any_sample(
         self, every_driver, monkeypatch, tmp_path, request
@@ -897,7 +887,6 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
         monkeypatch.setenv(CATALOGUE_ENV, str(gathered))
         monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
         monkeypatch.setattr(eval_conftest.eval_artifacts, "begin_case", _no_sample_may_start)
-        edge = (_IDLE, _ELICIT)
         for driver, drive in every_driver.items():
             with pytest.raises(pytest.skip.Exception, match="catalogued"):
                 await drive(
@@ -905,13 +894,11 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
                     behaviour=f"  {_SENTENCE}  ",
                     min_pass_rate=None,
                     area=Area.MEMORY,
-                    edge=edge,
                 )
         assert load(gathered) == [
             CatalogueEntry(
                 case_id=driver,
                 area=Area.MEMORY,
-                edge=edge,
                 layer=layer,
                 sentence=_SENTENCE,
                 wording=wording,
@@ -943,10 +930,6 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
 # layer, and the first wording — an ask of several turns written on one line.
 _ASK = "what does it cost?"
 _INSTRUCTION = "the price on the page"
-_IDLE = ConversationState.IDLE
-_ELICIT = ConversationState.ELICIT
-_REQUEST = ConversationState.REQUEST
-_APPLY = ConversationState.APPLY
 _CATALOGUED = (
     ("chat_eval", Layer.WHOLE_TURN, _ASK),
     ("collector_cycles_eval", Layer.COLLECTOR_CYCLE, _INSTRUCTION),

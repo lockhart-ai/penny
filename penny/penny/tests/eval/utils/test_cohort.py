@@ -21,7 +21,6 @@ from penny.responses import PennyResponse
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.cohort import (
-    CYCLE_SCRIPT,
     ENTRIES_STORED,
     FIELD_UNSET,
     JOB_TERMS,
@@ -29,17 +28,13 @@ from penny.tests.eval.utils.cohort import (
     NO_NOTIFICATION_SENT,
     NO_REPLY_RECORDED,
     REPLY_SPREAD,
-    ROUTINE_NAME,
-    ROUTINE_SHAPE,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     Arm,
     AssertionRow,
     AssertionSummary,
     Given,
     MechanismRecord,
     OutputField,
-    RoutineRecord,
     SampleObservation,
     SpecCategory,
     StoredEntry,
@@ -86,10 +81,12 @@ def _one_arm(world: World) -> list[Arm]:
 
 
 def _sample(name: str, arm: str, shape: str, **kwargs) -> SampleObservation:
-    """One observation carrying a routine of the given SHAPE — the feature every test here
-    measures, since what is under test is the statistic and not the reading of it."""
-    routines = [RoutineRecord(name="r", shape=shape, names_a_destination=True)]
-    return SampleObservation(name=name, phrasing=arm, arm=0, routines=routines, **kwargs)
+    """One observation carrying a tool sequence of the given SHAPE — the feature every test
+    here measures by default, since what is under test is the statistic and not the reading
+    of it.  ``kwargs`` wins when a caller already supplies ``tool_sequence`` of its own, so a
+    test that measures a DIFFERENT field through this same helper is unaffected."""
+    kwargs.setdefault("tool_sequence", shape.split(" → "))
+    return SampleObservation(name=name, phrasing=arm, arm=0, **kwargs)
 
 
 # ── The statistic ────────────────────────────────────────────────────────────
@@ -118,7 +115,7 @@ def test_a_feature_reports_its_modal_share_and_its_per_phrasing_rows():
         _sample("s3", "p2", "browse → write"),
         _sample("s4", "p2", "browse → browse → write"),
     ]
-    feature = feature_variance(ROUTINE_SHAPE, samples)
+    feature = feature_variance(TOOL_SEQUENCE, samples)
     assert (feature.distinct, feature.modal, feature.n) == (2, 3, 4)
     assert round(feature.modal_share, 2) == 0.75
     rows = {row.arm: row for row in feature.phrasings}
@@ -138,7 +135,7 @@ def test_a_phrasing_that_agrees_with_its_neighbours_is_not_flagged():
         _sample("s3", "p2", "one"),
         _sample("s4", "p2", "two"),
     ]
-    assert all(not row.flagged for row in feature_variance(ROUTINE_SHAPE, samples).phrasings)
+    assert all(not row.flagged for row in feature_variance(TOOL_SEQUENCE, samples).phrasings)
 
 
 def test_one_phrasing_flags_nothing_because_there_is_no_other_wording_to_differ_from():
@@ -146,7 +143,7 @@ def test_one_phrasing_flags_nothing_because_there_is_no_other_wording_to_differ_
     is trivially unique to the only arm there is, and flagging it would report the shape of the
     cohort as a finding."""
     samples = [_sample(f"s{i}", "phrasing 1", str(i)) for i in range(3)]
-    rows = feature_variance(ROUTINE_SHAPE, samples).phrasings
+    rows = feature_variance(TOOL_SEQUENCE, samples).phrasings
     assert [row.arm for row in rows] == ["phrasing 1"]
     assert rows[0].distinct == 3 and rows[0].only_here == [] and not rows[0].flagged
 
@@ -155,7 +152,7 @@ def test_total_agreement_is_zero_and_never_negative_zero():
     """Total agreement is the one reading of this statistic that has to be unmistakable, and
     the sum computes to NEGATIVE zero — which renders as ``-0.000`` and reads as a number
     rather than as the absence of one."""
-    feature = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(3)])
+    feature = feature_variance(TOOL_SEQUENCE, [_sample(f"s{i}", "p1", "same") for i in range(3)])
     assert feature.entropy == 0.0
     assert f"{feature.entropy:.3f}" == "0.000"
 
@@ -171,7 +168,7 @@ def test_a_dead_sample_is_excluded_by_name_before_anything_is_pooled():
             name="s3", phrasing="p1", complete=False, exclusion="the measured turn never ran"
         ),
     ]
-    variance = pool(samples, [ROUTINE_SHAPE, REPLY_SPREAD])
+    variance = pool(samples, [TOOL_SEQUENCE, REPLY_SPREAD])
     assert (variance.pooled, variance.driven) == (2, 3)
     assert [(row.name, row.reason) for row in variance.excluded] == [
         ("s3", "the measured turn never ran")
@@ -189,7 +186,7 @@ def test_reply_spread_reads_the_embeddings_the_replies_already_carry():
         ),
         SampleObservation(name="s3", phrasing="p2", reply="a goalie was signed"),
     ]
-    spread = pool(samples, [ROUTINE_SHAPE, REPLY_SPREAD]).text
+    spread = pool(samples, [TOOL_SEQUENCE, REPLY_SPREAD]).text
     assert spread is not None
     # Three replies → three text pairs, but only one pair has embeddings on both sides.
     assert spread.pairs == 3
@@ -225,13 +222,13 @@ def _mixed() -> VarianceFeature:
     Not every-sample-distinct, which is now the SATURATED case and proposes nothing."""
     shapes = ["a", "a", "a", "b", "b", "c"]
     return feature_variance(
-        ROUTINE_SHAPE, [_sample(f"s{i}", "p1", shape) for i, shape in enumerate(shapes)]
+        TOOL_SEQUENCE, [_sample(f"s{i}", "p1", shape) for i, shape in enumerate(shapes)]
     )
 
 
 def _quiet() -> VarianceFeature:
     """The same cohort SIZE as `_mixed`, because a ceiling refuses comparison across N."""
-    return feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(6)])
+    return feature_variance(TOOL_SEQUENCE, [_sample(f"s{i}", "p1", "same") for i in range(6)])
 
 
 def test_a_ceiling_sits_a_sampling_margin_above_the_observed_value():
@@ -255,7 +252,7 @@ def test_a_feature_with_nowhere_left_to_rise_proposes_no_ceiling():
     # The framer's naming shape from the reference run: nine distinct names, the commonest held
     # by four of fifteen — no majority behaviour at all.
     scattered = feature_variance(
-        ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i // 4)) for i in range(15)]
+        TOOL_SEQUENCE, [_sample(f"s{i}", "p1", str(i // 4)) for i in range(15)]
     )
     assert scattered.modal * 2 < scattered.n
     assert scattered.saturated
@@ -288,7 +285,7 @@ def test_a_ceiling_refuses_to_be_compared_across_models_or_cohort_sizes():
     assert _OTHER_MODEL in other_model.note
 
     smaller = feature_variance(
-        ROUTINE_SHAPE, [_sample(f"s{i}", "p1", shape) for i, shape in enumerate(["a", "a", "b"])]
+        TOOL_SEQUENCE, [_sample(f"s{i}", "p1", shape) for i, shape in enumerate(["a", "a", "b"])]
     )
     other_size = compare_to_ceiling(ceiling, smaller, _MODEL)
     assert not other_size.comparable and "N=3" in other_size.note
@@ -1629,7 +1626,8 @@ def test_a_feature_that_read_nothing_on_every_sample_is_blind_not_agreed():
     chat agent's rows comes back empty on every sample.  Entropy is 0.000 either way, so
     without this the report files a blindfold beside a cohort in perfect agreement."""
     blind = feature_variance(
-        TOOL_SEQUENCE, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+        TOOL_SEQUENCE,
+        [SampleObservation(name=f"s{index}", phrasing="p1") for index in range(6)],
     )
     assert blind.entropy == 0.0
     assert blind.blind, "every sample read TOOL_SEQUENCE's absent value"
@@ -1645,7 +1643,7 @@ def test_a_feature_that_read_nothing_on_every_sample_is_blind_not_agreed():
     # holding nothing — the same reachability the observer-side pins hold the walk and the
     # structured fields to (#2061), read here off the feature's own lambda.
     nothing = SampleObservation(name="s1", phrasing="p1")
-    for feature in (TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME):
+    for feature in (TOOL_SEQUENCE, JOB_TERMS):
         assert feature.read(nothing) == feature.absent, f"{feature.name} cannot read nothing"
 
 
@@ -1653,7 +1651,8 @@ def test_a_blind_feature_proposes_no_ceiling():
     """A ceiling recorded on a feature that read nothing locks the blindness in as the
     expected behaviour, and the guard it prints could never fire."""
     blind = feature_variance(
-        TOOL_SEQUENCE, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+        TOOL_SEQUENCE,
+        [SampleObservation(name=f"s{index}", phrasing="p1") for index in range(6)],
     )
     assert proposed_ceiling(blind, _MODEL) is None
 
@@ -1667,33 +1666,11 @@ def test_a_blind_feature_proposes_no_ceiling():
 def test_a_feature_declaring_no_absent_reading_is_never_blind():
     """A feature that declares no saw-nothing reading, and reads a real value, is agreement —
     however uniform it is.  ``entries stored`` reading ``0`` on every sample is a fact about
-    the round, not a hole in the measurement.
-
-    ``cycle script`` is the same statement about the collector path (#2061): every cycle that
-    ran has a shape, and the shape meaning nothing ran excludes the sample before pooling, so
-    the honest declaration is none — and a cohort of real scripts reads as the agreement it is
-    rather than as a measurement that never happened."""
+    the round, not a hole in the measurement."""
     entries = feature_variance(
         ENTRIES_STORED, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
     )
     assert entries.distinct == 1 and not entries.blind
-
-    assert CYCLE_SCRIPT.absent is None, "no collector observation reads nothing"
-    scripts = feature_variance(
-        CYCLE_SCRIPT,
-        [
-            _sample(f"s{index}", "p1", "shape", walk="wrote, quiet, wrote+told")
-            for index in range(6)
-        ],
-    )
-    assert scripts.distinct == 1 and not scripts.blind
-
-    # The chat walk's own declaration DOES fire — its observer really returns "no move" for a
-    # machine that recorded none, which is what makes the guard armed there and not here.
-    still = feature_variance(
-        TRANSITIONS, [_sample(f"s{index}", "p1", "shape", walk="no move") for index in range(6)]
-    )
-    assert still.blind and proposed_ceiling(still, _MODEL) is None
 
 
 def test_a_field_that_is_empty_on_every_sample_is_blind_whatever_it_declares():

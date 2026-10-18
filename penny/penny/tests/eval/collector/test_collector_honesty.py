@@ -65,7 +65,6 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
-    CYCLE_SCRIPT,
     ENTRIES_STORED,
     TOOL_SEQUENCE,
     SampleObservation,
@@ -293,7 +292,7 @@ def _arms(failure: ReadFailure) -> list[CycleArm]:
 #   rise rather than as one sample's failed check.
 # * "closed with done() rather than running out of steps", the legacy advisory.  A close is
 #   what separates ``no_work`` from ``failed`` on the run record — retired as a claim with the
-#   run outcome (#2496); how a cycle closed shows in the cycle script's measured spread.
+#   run outcome (#2496), and not measured separately here either.
 #
 # And two the inward pass could not write, for the same reason each time — the job does not
 # notify, so nothing can reach the send queue and there is no reply:
@@ -351,4 +350,4 @@ async def test_the_cycle_writes_nothing_when_every_read_fails(
 
     # REPLY_SPREAD is not measured: the job does not notify, so every sample's reply is
     # empty and a spread over no pair prints a number where there is no measurement.
-    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED)

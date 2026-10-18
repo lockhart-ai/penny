@@ -114,7 +114,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     StoredEntry,
@@ -371,23 +370,19 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
     )
 
 
-# What every case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE``
-# and ``ROUTINE_NAME`` read the routines in the registry, and none of these turns teaches one —
-# so on a correct cohort they read the same empty registry on every sample and pool to a serene
-# 0.000 that is neither agreement nor blindness but a reading of the FIXTURE.
-#
-# ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no name list (#2112), so it is a
-# live measurement on every case here.  On the two recall cases a correct sample reads the
-# store, and how it reaches the answer — one aimed read, a sweep of three, a ``find`` — is the
-# spread those cases exist to watch.  On the NO-FIRE case it is where ACTING shows up, and
-# it reads live there too: answering a message about the store is itself done by reading the
-# store, so a cohort that answered and moved on agrees on the calls it took to do that, and a
-# sample that went further — writing, minting a container, opening a page — is the spread beside
-# it.  ``ENTRIES_STORED`` carries the other half one level down, at the store rather than at the
-# call: ``0`` on every sample that wrote nothing, and the sample that wrote something is the
-# divergence.  Both are measured rather than claimed, because whether a passing mention is worth
-# keeping is hers to decide, and a spread is the honest place a decision that varies is reported.
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+# What every case measures.  ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no
+# name list (#2112), so it is a live measurement on every case here.  On the two recall cases
+# a correct sample reads the store, and how it reaches the answer — one aimed read, a sweep
+# of three, a ``find`` — is the spread those cases exist to watch.  On the NO-FIRE case it is
+# where ACTING shows up, and it reads live there too: answering a message about the store is
+# itself done by reading the store, so a cohort that answered and moved on agrees on the calls
+# it took to do that, and a sample that went further — writing, minting a container, opening a
+# page — is the spread beside it.  ``ENTRIES_STORED`` carries the other half one level down, at
+# the store rather than at the call: ``0`` on every sample that wrote nothing, and the sample
+# that wrote something is the divergence.  Both are measured rather than claimed, because
+# whether a passing mention is worth keeping is hers to decide, and a spread is the honest
+# place a decision that varies is reported.
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ── The claims, as pure functions over one sample ────────────────────────────

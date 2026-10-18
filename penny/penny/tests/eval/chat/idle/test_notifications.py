@@ -64,7 +64,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
 )
@@ -179,7 +178,7 @@ async def test_an_explicit_mute_request_mutes_notifications(
     # TOOL_SEQUENCE is measured and never asserted — the call is a route, and which verb reached
     # the switch is hers.  What a divergence here means is a sample that took a different path to
     # the same end state, which is a sample worth opening rather than a claim worth making.
-    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ═══ asked to unmute ═════════════════════════════════════════════════════════
@@ -271,7 +270,7 @@ async def test_an_explicit_unmute_request_unmutes_notifications(
     # PROVENANCE — the REPLY half; the STORE half is absent for the mute case's reason.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ═══ the topic alone ═════════════════════════════════════════════════════════
@@ -362,4 +361,4 @@ async def test_a_remark_about_notifications_leaves_them_on(chat_eval: ChatEval, 
     # PROVENANCE — the reply half only; the STORE half is absent for the fire direction's reason.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)

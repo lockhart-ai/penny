@@ -176,31 +176,6 @@ class Cohort:
         return outcomes
 
     # ── the claims ───────────────────────────────────────────────────────────
-    def assert_a_routine_reached_the_registry(self) -> None:
-        self.claim(
-            "state: the round taught a routine",
-            lambda s, _world: (bool(s.routines), "nothing reached the registry"),
-            SpecCategory.STORE,
-        )
-
-    def assert_the_routine_names_a_destination(self) -> None:
-        """A PROPERTY of the routine, never its shape.
-
-        Read off the ATTACHMENT MARK, which distillation sets on any leaf whose demonstrated
-        value named one of Penny's own collections — registry-derived, so it is true of a
-        write, of a log append, and of a plugin verb nobody has heard of, and false of a
-        routine that only browses.  Keyed to the mark and never to a tool NAME, because a skill
-        is an arbitrary tool sequence and a name-keyed rule would simply not fire for a shape
-        nobody enumerated.
-
-        The defect it catches: a routine that browses and never persists runs every cycle for
-        ever and keeps nothing, and no check in the suite could see it."""
-        self.claim(
-            "state: the routine it recorded names somewhere to act",
-            _names_a_destination,
-            SpecCategory.STORE,
-        )
-
     def assert_the_store_holds_an_entry(self) -> None:
         self.claim(
             "state: the store holds at least one entry",
@@ -243,18 +218,6 @@ class Cohort:
         """Learning must not INSTANTIATE: teaching a round does not set it running."""
         self.claim(
             "state: nothing it created was scheduled", _nothing_scheduled, SpecCategory.STORE
-        )
-
-    def assert_every_spot_is_a_placeholder(self) -> None:
-        """Every spot in the routine was named by the labeller.
-
-        A named spot stops being a leaf parameter, and the labeller names every spot
-        unconditionally — so a leftover one means the labelling draw fell back as a whole and the
-        routine kept its arg-derived names."""
-        self.claim(
-            "state: every spot in the routine is a placeholder",
-            _placeholders_only,
-            SpecCategory.STORE,
         )
 
     def assert_nothing_excluded_was_stored(self) -> None:
@@ -505,11 +468,6 @@ class Cohort:
 
 
 # ── The claims themselves, as pure functions over one sample ─────────────────
-def _names_a_destination(sample: SampleObservation, _world: World) -> Answer:
-    missing = [r.name for r in sample.routines if not r.names_a_destination]
-    return bool(sample.routines) and not missing, f"no destination in {missing}"
-
-
 def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
     stored = sample.stored_text
     missed = [
@@ -544,13 +502,6 @@ def _wrote_into_container(sample: SampleObservation, _world: World) -> Answer:
 
 def _nothing_scheduled(sample: SampleObservation, _world: World) -> Answer:
     return not sample.scheduled, f"scheduled {sample.scheduled}"
-
-
-def _placeholders_only(sample: SampleObservation, _world: World) -> Answer:
-    asking = sorted({p for routine in sample.routines for p in routine.open_parameters})
-    # Vacuously true over an empty registry, which would render a round that produced nothing as
-    # a pass — so the claim only speaks where a routine exists.
-    return bool(sample.routines) and not asking, f"still a leaf parameter: {asking}"
 
 
 def _held_survives(sample: SampleObservation, _world: World) -> Answer:

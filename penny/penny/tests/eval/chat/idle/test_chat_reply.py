@@ -145,7 +145,6 @@ from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     Share,
     ShareReading,
@@ -165,11 +164,6 @@ _HONESTY_FAMILY = "chat-honesty"
 
 # What every case here measures.
 #
-# ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are OUT: an idle turn that answers a question mints
-# no routine, so every sample reads each feature's own declared ``absent`` value, the pooler
-# marks the case BLIND and the report renders a red row with no proposed ceiling — on all five
-# cases, reporting the fixture rather than the behaviour.
-#
 # ``ENTRIES_STORED`` is IN, and it is where a write the turn chose to make shows: a cohort
 # that answered and wrote nothing reads ``"0"`` on every sample, and a sample that wrote
 # something reads ``"1"`` and diverges, so the ceiling it proposes is one that can fire.  That
@@ -177,7 +171,7 @@ _HONESTY_FAMILY = "chat-honesty"
 # reading: it read the store, and the store held nothing new this turn.  Worth knowing about
 # the mechanism either way: the feature declares no ``absent``, so the pooler could not mark
 # it blind if a case ever did make it unreadable.
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ── The pages ────────────────────────────────────────────────────────────────
