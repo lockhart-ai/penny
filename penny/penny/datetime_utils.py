@@ -37,6 +37,20 @@ def stored_as_utc(when: datetime) -> datetime:
     return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
+def utc_isoformat(when: datetime) -> str:
+    """A database timestamp as an ISO string that ALWAYS carries an offset.
+
+    The one chokepoint every wire payload's datetimes serialize through (browser
+    channel payloads, the prompt-log records).  SQLite hands naive values back,
+    and JavaScript parses an offset-less ISO string as LOCAL time — so an
+    offset-less wire stamp displays hours off and sorts wrongly against
+    timezone-aware ones (a live ``call_started`` time from ``Clock.now()`` is
+    aware, so a running entry once sorted above finished runs, #2638).  Naive IS
+    UTC (``stored_as_utc``); an already-aware value passes through untouched,
+    never shifted."""
+    return stored_as_utc(when).isoformat()
+
+
 def format_log_timestamp(when: datetime) -> str:
     """Render a log/entry timestamp for the model — compact, absolute, UTC.
 

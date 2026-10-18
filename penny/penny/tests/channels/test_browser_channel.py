@@ -1585,6 +1585,21 @@ class TestBrowserPromptLogHandlers:
         )
         return ws.sent[0]
 
+    def _connect(self, channel: BrowserChannel, label: str, ws) -> None:
+        channel._connections[label] = ConnectionInfo(ws=cast(Any, ws), registered=True)
+
+    @staticmethod
+    async def _settle(before: set[asyncio.Task[Any]]) -> None:
+        """Await every task the callbacks scheduled — the awaiting IS the assertion.
+
+        A fan-out that raises into a detached task fails nothing on its own: asyncio
+        reports it only when the task is collected, as a warning naming no cause.
+        Awaiting it here makes that failure the test's failure, with the real
+        traceback.
+        """
+        for task in [t for t in asyncio.all_tasks() if t not in before]:
+            await asyncio.wait_for(task, timeout=2.0)
+
     @pytest.mark.asyncio
     async def test_prompt_logs_request_returns_runs(self, tmp_path):
         """Basic prompt logs request returns grouped runs."""
@@ -1799,6 +1814,27 @@ class TestBrowserPromptLogHandlers:
         ``timestamp - duration_ms`` — not the raw logged timestamp, which
         ``PromptLog.timestamp`` stamps when the call ENDS (#2438)."""
         channel, db = self._channel(tmp_path)
+
+        # A live call_started push (#2638), fired BEFORE the call's own row is
+        # logged — the real sequence: its ``started_at`` is timezone-aware
+        # (``Clock.now()``), so the run's wire timestamps must carry an offset
+        # too — a naive one read as local time sorted a running entry above the
+        # finished ones, and a naive/aware comparison raised TypeError.
+        live = _MockWs()
+        self._connect(channel, "firefox-live", live)
+        before = asyncio.all_tasks()
+        db.messages.publish_call_started(
+            run_id="run1",
+            parent_run_id=None,
+            parent_tool_call_id=None,
+            agent_name="chat",
+            prompt_type="chat",
+            model="m",
+            run_target=None,
+        )
+        await self._settle(before)
+        call_started_at = live.sent[0]["started_at"]
+
         db.messages.log_prompt(
             model="m",
             messages=[],
@@ -1815,7 +1851,17 @@ class TestBrowserPromptLogHandlers:
         response = await self._request_prompt_logs(channel)
         run = next(r for r in response["runs"] if r["run_id"] == "run1")
         started_at = datetime.fromisoformat(run["started_at"])
-        assert started_at == logged_at - timedelta(milliseconds=5_000)
+        assert started_at == logged_at.replace(tzinfo=UTC) - timedelta(milliseconds=5_000)
+        # Every wire datetime is timezone-aware UTC — the DB's naive stamps
+        # leave with ``+00:00`` attached, the aware live one keeps its own.
+        assert call_started_at.endswith("+00:00")
+        assert run["prompts"][0]["timestamp"] == logged_at.replace(tzinfo=UTC).isoformat()
+        assert run["prompts"][0]["timestamp"].endswith("+00:00")
+        # ... so the live time compares against the finished record's — the
+        # call started before the row logging it landed, in that order.
+        assert datetime.fromisoformat(call_started_at) <= datetime.fromisoformat(
+            run["prompts"][0]["timestamp"]
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_logs_wall_time_spans_a_long_running_child_draw(self, tmp_path):
@@ -1878,7 +1924,7 @@ class TestBrowserPromptLogHandlers:
         response = await self._request_prompt_logs(channel)
         run = next(r for r in response["runs"] if r["run_id"] == "run1")
         assert run["total_duration_ms"] == 10  # model time: the run's own call only
-        assert run["ended_at"] == draw_end.isoformat()
+        assert run["ended_at"] == draw_end.replace(tzinfo=UTC).isoformat()
         assert run["wall_duration_ms"] >= 233_000  # wall time: reaches the draw's own end
         assert run["wall_duration_ms"] > run["total_duration_ms"]
 

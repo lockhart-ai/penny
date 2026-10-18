@@ -107,7 +107,7 @@ from penny.database.memory import (
     MemoryTypeError,
 )
 from penny.database.message_store import CallStarted, ToolFinished, ToolStarted
-from penny.datetime_utils import user_timezone_name
+from penny.datetime_utils import user_timezone_name, utc_isoformat
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
     Schedule,
@@ -220,7 +220,7 @@ class BrowserChannel(MessageChannel):
             prompt_type=event.prompt_type,
             model=event.model,
             run_target=event.run_target,
-            started_at=event.started_at.isoformat(),
+            started_at=utc_isoformat(event.started_at),
         )
         self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_CALL_STARTED)
 
@@ -231,7 +231,7 @@ class BrowserChannel(MessageChannel):
             tool_call_id=event.tool_call_id,
             tool_name=event.tool_name,
             status=event.status,
-            started_at=event.started_at.isoformat(),
+            started_at=utc_isoformat(event.started_at),
         )
         self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_TOOL_STARTED)
 
@@ -1019,7 +1019,7 @@ class BrowserChannel(MessageChannel):
             return []
         cursors = self._db.cursors.list_for(memory.name)
         return [
-            CursorRecord(log_name=log_name, last_read_at=last_read_at.isoformat())
+            CursorRecord(log_name=log_name, last_read_at=utc_isoformat(last_read_at))
             for log_name, last_read_at in sorted(cursors)
         ]
 
@@ -1036,7 +1036,7 @@ class BrowserChannel(MessageChannel):
             # picker never re-derives it in TypeScript (#2442).
             schedule_description=describe_schedule(memory, user_timezone_name(self._db)) or None,
             last_collected_at=(
-                memory.last_collected_at.isoformat() if memory.last_collected_at else None
+                utc_isoformat(memory.last_collected_at) if memory.last_collected_at else None
             ),
             entry_count=entry_count,
         )
@@ -1048,7 +1048,7 @@ class BrowserChannel(MessageChannel):
             key=entry.key,
             content=entry.content,
             author=entry.author,
-            created_at=entry.created_at.isoformat(),
+            created_at=utc_isoformat(entry.created_at),
         )
 
     # ── Memory edits (refresh fanned out via _on_memory_changed) ─────────

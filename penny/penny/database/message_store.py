@@ -23,6 +23,7 @@ from penny.database.models import (
     MessageLog,
     PromptLog,
 )
+from penny.datetime_utils import utc_isoformat
 
 logger = logging.getLogger(__name__)
 
@@ -548,7 +549,7 @@ class MessageStore:
         self._publish_prompt_logged(
             {
                 "id": log.id,
-                "timestamp": log.timestamp.isoformat(),
+                "timestamp": utc_isoformat(log.timestamp),
                 "model": log.model,
                 "agent_name": log.agent_name or "",
                 "prompt_type": log.prompt_type or "",
@@ -2058,7 +2059,7 @@ class MessageStore:
         return {
             "id": p.id,
             "run_id": p.run_id,
-            "timestamp": p.timestamp.isoformat(),
+            "timestamp": utc_isoformat(p.timestamp),
             "model": p.model,
             "agent_name": p.agent_name or "",
             "prompt_type": p.prompt_type or "",
@@ -2149,8 +2150,8 @@ class MessageStore:
             "run_id": run_id,
             "agent_name": prompts[0].agent_name or "unknown",
             "prompt_count": len(prompts),
-            "started_at": started_at.isoformat(),
-            "ended_at": ended_at.isoformat(),
+            "started_at": utc_isoformat(started_at),
+            "ended_at": utc_isoformat(ended_at),
             "total_duration_ms": total_duration_ms,
             "wall_duration_ms": wall_duration_ms,
             "total_input_tokens": total_input_tokens,
