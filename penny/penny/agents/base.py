@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, assert_never
 from penny.agents.models import (
     BUDGET_EXCEEDED,
     REROLL_EXHAUSTED,
-    ChatMessage,
     ControllerResponse,
     MessageRole,
     ModelCallAbortedError,
@@ -97,7 +96,7 @@ class CycleResult:
 class _StepResult:
     """Result of processing all tool calls in one agentic loop step."""
 
-    messages: list[dict]
+    messages: list[LlmMessage]
     records: list[ToolCallRecord]
     source_urls: list[str]
 
@@ -118,7 +117,7 @@ class _LoggedBoundary:
 
     turns: int = 0
 
-    def tail(self, messages: list[dict]) -> list[dict]:
+    def tail(self, messages: list[LlmMessage]) -> list[LlmMessage]:
         """The turns no model call carried.  Empty until a call has been made: with no
         call there is no record of this run to complete, and everything in ``messages``
         is still just the input the loop was handed."""
@@ -496,7 +495,7 @@ class Agent:
 
     async def _run_agentic_loop(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         tools: list[dict],
         steps: int,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
@@ -534,7 +533,11 @@ class Agent:
         finally:
             # The tail closes the record BEFORE the terminal event, so a reader woken
             # by that event never sees a run whose last outcome is still missing.
-            self.db.messages.set_run_trailing_messages(run_id, logged.tail(messages))
+            # The DB store still deals in dicts (out of this ticket's scope, #2603) —
+            # the one conversion back, at this boundary.
+            self.db.messages.set_run_trailing_messages(
+                run_id, [message.to_log_dict() for message in logged.tail(messages)]
+            )
             await self._notify_progress(
                 on_progress,
                 AgentProgressEvent(
@@ -574,7 +577,7 @@ class Agent:
         error: ModelCallError,
         step: int,
         records: list[ToolCallRecord],
-        messages: list[dict],
+        messages: list[LlmMessage],
         run_id: str | None,
         call_link: CallLink,
         prompt_type: str | None,
@@ -647,7 +650,7 @@ class Agent:
 
     async def _run_agentic_loop_body(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         tools: list[dict],
         steps: int,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
@@ -768,7 +771,7 @@ class Agent:
         step: int,
         is_final_step: bool,
         step_tools: list[dict],
-        messages: list[dict],
+        messages: list[LlmMessage],
         records: list[ToolCallRecord],
     ) -> LoopContext:
         """Snapshot the run state a validator reads — built fresh per branch so
@@ -784,7 +787,7 @@ class Agent:
         )
 
     def _reject_premature_terminator(
-        self, response: LlmResponse, messages: list[dict], ctx: LoopContext
+        self, response: LlmResponse, messages: list[LlmMessage], ctx: LoopContext
     ) -> bool:
         """Run the run-shape chain over a tool-call response; apply a
         ``RejectToolCall`` (premature first-move ``done()``) in place.
@@ -810,7 +813,7 @@ class Agent:
         self,
         step_records: list[ToolCallRecord],
         records: list[ToolCallRecord],
-        messages: list[dict],
+        messages: list[LlmMessage],
         run_id: str,
     ) -> None:
         """Template hook: called once a tool step's results are already absorbed into
@@ -843,7 +846,7 @@ class Agent:
     async def _nudge_text_step(
         self,
         response: LlmResponse,
-        messages: list[dict],
+        messages: list[LlmMessage],
         ctx: LoopContext,
         run_id: str,
         call_link: CallLink,
@@ -863,8 +866,8 @@ class Agent:
         ctx = await self._prepare_text_shape(response, ctx, run_id, call_link)
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
-                messages.append(response.message.to_log_dict())
-                messages.append({"role": MessageRole.USER, "content": message})
+                messages.append(response.message)
+                messages.append(LlmMessage(role=MessageRole.USER, content=message))
                 return True
             case Proceed():
                 return False
@@ -893,28 +896,28 @@ class Agent:
 
     @staticmethod
     def _append_rejected_tool_calls(
-        response: LlmResponse, messages: list[dict], message: str
+        response: LlmResponse, messages: list[LlmMessage], message: str
     ) -> None:
         """Append the assistant turn + a failed tool-result for each call, exactly
         as ``_dedup_tool_calls`` rejects a repeat in place."""
-        messages.append(response.message.to_log_dict())
+        messages.append(response.message)
         for call in response.message.tool_calls or []:
             messages.append(
-                {
-                    "role": MessageRole.TOOL,
-                    "content": Agent._frame_injected_result(
+                LlmMessage(
+                    role=MessageRole.TOOL,
+                    content=Agent._frame_injected_result(
                         call.function.name,
                         Prompt.REJECTED_CALL_NARRATION.format(tool_name=call.function.name),
                         message,
                     ),
-                    "tool_call_id": call.id,
-                }
+                    tool_call_id=call.id,
+                )
             )
 
     def _absorb_tool_step_result(
         self,
         result: Any,
-        messages: list[dict],
+        messages: list[LlmMessage],
         tool_call_records: list[ToolCallRecord],
         source_urls: list[str],
     ) -> None:
@@ -932,15 +935,13 @@ class Agent:
     async def after_step(
         self,
         step_records: list[ToolCallRecord],
-        step_messages: list[dict],
-        conversation: list[dict] | None = None,
+        step_messages: list[LlmMessage],
+        conversation: list[LlmMessage] | None = None,
     ) -> None:
         """Capture tool result text for URL validation. Override in subclasses (call super)."""
         for message in step_messages:
-            if message.get("role") == MessageRole.TOOL:
-                content = message.get("content", "")
-                if content:
-                    self._tool_result_text.append(content)
+            if message.role == MessageRole.TOOL and message.content:
+                self._tool_result_text.append(message.content)
 
     def should_stop_loop(self, records: list[ToolCallRecord]) -> bool:
         """Check if the loop should stop early.
@@ -958,7 +959,7 @@ class Agent:
 
     async def _call_model_validated(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         tools: list[dict],
         call_link: CallLink,
         prompt_type: str | None,
@@ -1054,7 +1055,7 @@ class Agent:
 
     async def _invoke_model(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         effective_tools: list[dict] | None,
         call_link: CallLink,
         prompt_type: str | None,
@@ -1087,13 +1088,11 @@ class Agent:
         """
         try:
             return await self._model_client.chat(
-                # The one conversion at this call site (#2563): ``messages`` stays
-                # ``list[dict]`` through the rest of this loop (stage 2, #2603,
-                # retypes it) — ``LlmClient.chat()`` is the direct caller stage 1
-                # converts, so the minimum needed here is this one boundary.
-                # ``from_dict`` round-trips every shape in use today losslessly,
-                # including the injected page-context call's raw-dict arguments.
-                messages=[LlmMessage.from_dict(message) for message in messages],
+                # ``messages`` is typed end to end through the loop now (#2563's
+                # stage 2, #2603) — no conversion left at this boundary.
+                # ``LlmClient.chat()`` does its own one hand-off to a dict, at the
+                # wire/log boundary (``to_log_dict()``, stage 1, #2608).
+                messages=messages,
                 tools=effective_tools,
                 agent_name=self.name,
                 prompt_type=prompt_type,
@@ -1116,7 +1115,7 @@ class Agent:
 
     async def _invoke_nondegenerate(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         effective_tools: list[dict] | None,
         call_link: CallLink,
         prompt_type: str | None,
@@ -1290,7 +1289,7 @@ class Agent:
         response,
         source_urls: list[str],
         tool_call_records: list[ToolCallRecord],
-        messages: list[dict],
+        messages: list[LlmMessage],
         run_id: str | None,
         call_link: CallLink,
         prompt_type: str | None,
@@ -1341,7 +1340,7 @@ class Agent:
     async def _empty_content_fallback(
         self,
         tool_call_records: list[ToolCallRecord],
-        messages: list[dict],
+        messages: list[LlmMessage],
         run_id: str | None,
         call_link: CallLink,
         prompt_type: str | None,
@@ -1386,29 +1385,35 @@ class Agent:
     # and by ChatAgent's (chat.py): one template method, no flags.
 
     @staticmethod
-    def _with_facts_turn(messages: list[dict], facts: str) -> list[dict]:
+    def _with_facts_turn(messages: list[LlmMessage], facts: str) -> list[LlmMessage]:
         """``messages`` plus one user turn stating ``facts`` — the shape every
         narrate-or-account call site hands the draw."""
         return [
             *messages,
-            {"role": "user", "content": Prompt.NARRATE_TERMINAL_FACTS.format(facts=facts)},
+            LlmMessage(
+                role=MessageRole.USER, content=Prompt.NARRATE_TERMINAL_FACTS.format(facts=facts)
+            ),
         ]
 
-    def _run_messages(self, run_id: str) -> list[dict]:
+    def _run_messages(self, run_id: str) -> list[LlmMessage]:
         """This run's own messages, reconstructed from its promptlog rows: the last
         call's request plus the trailing turns no later call carried (#1778) — what
         the turn actually saw and did, for a draw made after the run has already
         returned (e.g. ``ChatAgent._enforce_learn_terminal``).  Empty when the run id
-        is unknown or made no model call."""
+        is unknown or made no model call.
+
+        The store itself still deals in dicts (out of this ticket's scope, #2603) —
+        ``LlmMessage.from_dict`` is the one conversion back, at this boundary."""
         prompts = self.db.messages.get_run_prompts(run_id)
         if not prompts:
             return []
         last = prompts[-1]
-        return [*last.get_messages(), *last.get_trailing_messages()]
+        raw = [*last.get_messages(), *last.get_trailing_messages()]
+        return [LlmMessage.from_dict(message) for message in raw]
 
     async def _narrate_or_account(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         facts: str,
         tool_call_records: list[ToolCallRecord],
         run_id: str | None,
@@ -1493,7 +1498,7 @@ class Agent:
 
     async def _draw_narration(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,
@@ -1671,7 +1676,7 @@ class Agent:
         legitimate retry-after-remediation / re-read-after-write runs next time.
         """
         logger.info("Model requested %d tool call(s)", len(response.message.tool_calls or []))
-        messages: list[dict] = [response.message.to_log_dict()]
+        messages: list[LlmMessage] = [response.message]
         records: list[ToolCallRecord] = []
         source_urls: list[str] = []
 
@@ -1722,7 +1727,7 @@ class Agent:
         response: Any,
         called_tools: set[tuple[str, ...]],
         prior_records: list[ToolCallRecord],
-        messages: list[dict],
+        messages: list[LlmMessage],
     ) -> list[tuple[str, str, dict, str | None]]:
         """Filter out repeat tool calls, returning the pending ones to execute.
 
@@ -1782,7 +1787,7 @@ class Agent:
         tool_call_id: str,
         tool_name: str,
         prior: ToolCallRecord | None,
-        messages: list[dict],
+        messages: list[LlmMessage],
     ) -> None:
         """Append the in-place rejection for a blocked duplicate, framed OUTCOME-FIRST
         (#1673) so the model reads what happened to the action, not procedural
@@ -1794,12 +1799,12 @@ class Agent:
         """
         narration, body = self._duplicate_rejection_frame(tool_name, prior)
         messages.append(
-            {
-                "role": MessageRole.TOOL,
-                "content": self._frame_injected_result(tool_name, narration, body),
-                "tool_call_id": tool_call_id,
-                PennyConstants.TOOL_RESULT_SUCCESS_KEY: False,
-            }
+            LlmMessage(
+                role=MessageRole.TOOL,
+                content=self._frame_injected_result(tool_name, narration, body),
+                tool_call_id=tool_call_id,
+                tool_success=False,
+            )
         )
 
     @staticmethod
@@ -1854,7 +1859,7 @@ class Agent:
         self,
         pending: list[tuple[str, str, dict, str | None]],
         results: list[tuple[ToolResult, ToolCallRecord, list[str]]],
-        messages: list[dict],
+        messages: list[LlmMessage],
         records: list[ToolCallRecord],
         source_urls: list[str],
     ) -> None:
@@ -1872,16 +1877,16 @@ class Agent:
             records.append(record)
             source_urls.extend(urls)
             messages.append(
-                {
-                    "role": MessageRole.TOOL,
-                    "content": Tool.format_result(tool_name, arguments, result),
-                    "tool_call_id": tool_call_id,
+                LlmMessage(
+                    role=MessageRole.TOOL,
+                    content=Tool.format_result(tool_name, arguments, result),
+                    tool_call_id=tool_call_id,
                     # The STRUCTURAL per-call execution stamp (#1600): the tool's
                     # own ``success`` bit, beside the framed prose, so a reader of
                     # this run reads a boolean, not narration.  Stripped from the
-                    # wire in ``LlmClient._translate_messages``.
-                    PennyConstants.TOOL_RESULT_SUCCESS_KEY: result.success,
-                }
+                    # wire in ``LlmClient._translate_messages`` (via ``to_log_dict``).
+                    tool_success=result.success,
+                )
             )
 
     async def _execute_single_tool(
@@ -1964,7 +1969,7 @@ class Agent:
 
     # ── URL validation ──────────────────────────────────────────────────
 
-    def _get_source_text(self, messages: list[dict] | None = None) -> str:
+    def _get_source_text(self, messages: list[LlmMessage] | None = None) -> str:
         """Combined source text for URL validation.
 
         Includes the full message context (system prompt, conversation history,
@@ -1975,9 +1980,8 @@ class Agent:
         parts = list(self._tool_result_text)
         if messages:
             for message in messages:
-                content = message.get("content")
-                if isinstance(content, str) and content:
-                    parts.append(content)
+                if message.content:
+                    parts.append(message.content)
         return "\n".join(parts)
 
     # ── Message building ─────────────────────────────────────────────────
@@ -1987,7 +1991,7 @@ class Agent:
         prompt: str,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
-    ) -> list[dict]:
+    ) -> list[LlmMessage]:
         """Build message list for Ollama chat API.
 
         The system_prompt is the full prompt body (identity, context,
@@ -1997,13 +2001,13 @@ class Agent:
         effective = system_prompt or self.system_prompt
         system_content = f"{current_datetime_line(self.db)}\n\n{effective}"
 
-        messages = [ChatMessage(role=MessageRole.SYSTEM, content=system_content).to_dict()]
+        messages = [LlmMessage(role=MessageRole.SYSTEM, content=system_content)]
 
         if history:
             for role, content in history:
-                messages.append(ChatMessage(role=MessageRole(role), content=content).to_dict())
+                messages.append(LlmMessage(role=MessageRole(role), content=content))
 
-        messages.append(ChatMessage(role=MessageRole.USER, content=prompt).to_dict())
+        messages.append(LlmMessage(role=MessageRole.USER, content=prompt))
         return messages
 
     # ── System prompt building (template method pattern) ─────────────────
@@ -2181,7 +2185,7 @@ class BackgroundAgent(Agent):
 
     async def _draw_narration(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,

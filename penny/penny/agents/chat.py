@@ -162,7 +162,7 @@ class ChatAgent(Agent):
         self,
         step_records: list[ToolCallRecord],
         records: list[ToolCallRecord],
-        messages: list[dict],
+        messages: list[LlmMessage],
         run_id: str,
     ) -> None:
         """Append what this run has WRITTEN so far to the end of the step's own tool
@@ -203,12 +203,12 @@ class ChatAgent(Agent):
         return any(Tool.asks_to_store(record.tool) for record in step_records)
 
     @staticmethod
-    def _append_to_last_tool_result(messages: list[dict], addendum: str) -> None:
+    def _append_to_last_tool_result(messages: list[LlmMessage], addendum: str) -> None:
         """Append ``addendum`` to the content of the LAST message in ``messages`` — the
         step's own tool result, since this is only ever called right after a tool step's
         results have been absorbed into it (#2473)."""
         last = messages[-1]
-        messages[-1] = {**last, "content": f"{last['content']}\n\n{addendum}"}
+        messages[-1] = last.model_copy(update={"content": f"{last.content}\n\n{addendum}"})
 
     def _writes_landed_frame(self, records: list[ToolCallRecord], run_id: str) -> str | None:
         """The record of what this run SAVED, rendered for the reply to be written after
@@ -327,11 +327,18 @@ class ChatAgent(Agent):
         prompt: str,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
-    ) -> list[dict]:
+    ) -> list[LlmMessage]:
         """Build messages, injecting page context as a synthetic tools result."""
         messages = super()._build_messages(prompt, history, system_prompt)
         if self._pending_page_context:
-            self._inject_page_context(messages, self._pending_page_context)
+            # ``_inject_page_context`` still builds its injection as raw dicts —
+            # it's the page-context call's own ``raw_arguments`` quirk (#2604
+            # retypes this builder); the one seam back to dicts and forward again
+            # is here, so this override keeps compiling against the now-typed
+            # base (#2603) without touching that builder.
+            dict_messages = [message.to_log_dict() for message in messages]
+            self._inject_page_context(dict_messages, self._pending_page_context)
+            messages = [LlmMessage.from_dict(message) for message in dict_messages]
         return messages
 
     @staticmethod

@@ -2159,9 +2159,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
 
     # ── System message: date + body + runtime-rules tail + run history ─────
     system_text = _normalise_stamps(
-        re.sub(
-            r"Current date and time: [^\n]*", "Current date and time: DATE", messages[0]["content"]
-        )
+        re.sub(r"Current date and time: [^\n]*", "Current date and time: DATE", messages[0].content)
     )
     expected_system = (
         "Current date and time: DATE\n"
@@ -2205,13 +2203,13 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     )
 
     # ── User turn: bare (empty) — a collector runs with no user message ────
-    assert messages[-1]["role"] == "user"
-    assert messages[-1]["content"] == ""
+    assert messages[-1].role == "user"
+    assert messages[-1].content == ""
 
 
-def _datetime_line(messages: list[dict]) -> str:
+def _datetime_line(messages: list[LlmMessage]) -> str:
     """The rendered 'Current date and time:' anchor line from a message array."""
-    return messages[0]["content"].split("\n", 1)[0]
+    return messages[0].content.split("\n", 1)[0]
 
 
 def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
