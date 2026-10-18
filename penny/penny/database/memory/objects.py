@@ -947,7 +947,7 @@ def _resolve_logged_tool_name(name: str) -> str:
     and its kin) compares CURRENT names only, whether the row was logged before
     or after the rename.  The stored row is never rewritten; only the read
     projection resolves it.  Shared by ``LoggedToolCall.tool`` and
-    ``_run_tool_calls`` so the two readers cannot drift onto two answers for the
+    ``run_tool_calls`` so the two readers cannot drift onto two answers for the
     same logged name."""
     stripped = strip_harmony_control_tokens(name)
     return LEGACY_TOOL_RENAMES.get(stripped, stripped)
@@ -1051,7 +1051,7 @@ def _run_outcome(prompts: list[PromptLog]) -> tuple[str | None, str | None, str 
     return None, None, prompts[0].run_target if prompts else None
 
 
-def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
+def run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
     """Ordered (tool, arguments) for every tool call across the run's prompts.
 
     The name is the DISPATCHABLE identifier, not the verbatim one — every caller
@@ -1161,7 +1161,7 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
     the final prompt's accumulated conversation plus the trailing tail no call carried,
     #1778), so every result appears exactly once including a terminal one; the call
     counts come from the responses, so they're complete regardless."""
-    calls = _run_tool_calls(prompts)
+    calls = run_tool_calls(prompts)
     writes = sum(1 for name, _ in calls if name in _WRITE_TOOLS)
     sends = sum(1 for name, _ in calls if name == PennyConstants.SEND_MESSAGE_TOOL_NAME)
     reads = sum(
@@ -1269,7 +1269,7 @@ def classify_run(prompts: list[PromptLog]) -> RunHealth:
     if not prompts:
         return RunHealth()
     outcome, _reason, _target = _run_outcome(prompts)
-    calls = _run_tool_calls(prompts)
+    calls = run_tool_calls(prompts)
     non_done = [name for name, _ in calls if name != PennyConstants.DONE_TOOL_NAME]
     # A bail is a *deliberate* early close: the model recorded a terminating
     # done() with no real read/write/browse first.  A run that recorded NO tool
@@ -1383,7 +1383,7 @@ def render_run_record(prompts: list[PromptLog]) -> str:
     if tally:
         lines.append(tally)
     lines.extend(_health_lines(health))
-    calls = _run_tool_calls(prompts)
+    calls = run_tool_calls(prompts)
     non_done = [(name, args) for name, args in calls if name != PennyConstants.DONE_TOOL_NAME]
     if health.bailed:
         lines.append("(no tool calls)" if not calls else render_tool_call(*calls[0]))
@@ -1476,7 +1476,7 @@ def _run_conclusion(prompts: list[PromptLog]) -> str:
     if _ended_via_write_gate_stop(prompts):
         return f"stopped: {reason}"
     if target is not None:  # a collector run
-        if any(name == PennyConstants.DONE_TOOL_NAME for name, _ in _run_tool_calls(prompts)):
+        if any(name == PennyConstants.DONE_TOOL_NAME for name, _ in run_tool_calls(prompts)):
             return f"done: {outcome}" if outcome else ""
         detail = reason or outcome
         return f"ended: {detail}" if detail else ""

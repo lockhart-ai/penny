@@ -15,7 +15,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from penny.agents.models import MessageRole
 from penny.clock import Clock
 from penny.constants import ChatPromptType, PennyConstants, RunOutcome
-from penny.database.memory.objects import _run_tool_calls, classify_run, render_run_record
+from penny.database.memory.objects import classify_run, render_run_record, run_tool_calls
 from penny.database.models import (
     CommandLog,
     Device,
@@ -84,14 +84,14 @@ class ToolFinished(BaseModel):
 
 
 class ChatTurnTrace(NamedTuple):
-    """One chat turn's run as the conversation history reads it (#2630): when the
-    run's last logged call happened, the id of that last promptlog row (the tie-break
-    when a call and the send it produced share a timestamp), and the tool names the
-    run's OWN prompt-log records show it called — the ledger's projection, never a
-    reconstruction from the reply's wording."""
+    """One chat run as the conversation history reads it (#2630): the run's id and
+    the tool names the run's OWN prompt-log records show it called — the ledger's
+    projection, never a reconstruction from the reply's wording.  The history pairs
+    a trace with its reply by ``messagelog.run_id`` equality, both stamped by the
+    framework, so a send that slips between the run's last call and its reply can
+    never steal the pairing."""
 
-    last_call: datetime
-    row_id: int
+    run_id: str
     tools: tuple[str, ...]
 
 
@@ -200,6 +200,11 @@ class EmissionActivity(BaseModel):
 # activity-block emission snippet (#1568).  A short, whitespace-collapsed excerpt
 # — enough to recognise what Penny said, not the whole message.
 _EMISSION_SNIPPET_CHARS = 50
+
+# How many of the newest chat promptlog rows the conversation history's tool
+# traces read (#2630).  A run straddling the window's oldest edge is dropped
+# rather than rendered with a truncated call list.
+TOOL_TRACE_PROMPTLOG_WINDOW = 500
 
 
 def _emission_snippet(content: str) -> str:
@@ -427,6 +432,7 @@ class MessageStore:
         device_id: int | None = None,
         embedding: bytes | None = None,
         mechanism: str | None = None,
+        run_id: str | None = None,
     ) -> int | None:
         """Log a user message or agent response. Returns the message ID or None.
 
@@ -436,7 +442,10 @@ class MessageStore:
         catches rows logged without one.
 
         ``mechanism`` (#1568) names the autonomous cycle that produced an outgoing
-        send — NULL for a direct reply."""
+        send — NULL for a direct reply.  ``run_id`` (#2630) carries the opposite
+        side: the run whose reply a direct reply delivers — stamped by the
+        framework on the chat reply path, so the history pairs a run with the
+        message that answered for it by identity.  NULL for an autonomous send."""
         if direction == PennyConstants.MessageDirection.OUTGOING:
             content = self.strip_formatting(content)
         try:
@@ -453,6 +462,7 @@ class MessageStore:
                     device_id=device_id,
                     embedding=embedding,
                     mechanism=mechanism,
+                    run_id=run_id,
                     timestamp=self._clock.now(),
                 )
                 session.add(log)
@@ -850,17 +860,20 @@ class MessageStore:
             all_messages.sort(key=_in_send_order)
             return all_messages[-limit:]
 
-    def chat_turn_tool_traces(self, limit: int = 500) -> list[ChatTurnTrace]:
-        """Every chat turn's run, oldest first, as the history's tool line reads it:
-        the run's last logged call, and the tool names the run's own prompt-log
-        records show it called (the run record's projection, deduplicated).
+    def chat_turn_tool_traces(
+        self, limit: int = TOOL_TRACE_PROMPTLOG_WINDOW
+    ) -> list[ChatTurnTrace]:
+        """Every chat run, oldest first, as the history's tool line reads it: the
+        run's id, and the tool names the run's own prompt-log records show it called
+        (the run record's projection, deduplicated).
 
-        A chat turn's reply reaches ``messagelog`` without its ``run_id`` — the
-        history therefore pairs each run with the first send at or after the run's
-        last logged call, which is the pairing production produces (a turn replies
-        right after its last call).  Bounded to the newest ``limit`` promptlog rows;
-        a run straddling that window's oldest edge is dropped rather than rendered
-        with a truncated call list."""
+        The reply's ``messagelog.run_id`` carries the same id — both stamped by the
+        framework — so the history pairs by identity; a run whose reply predates
+        the stamping column has no trace here to pair, and an older row gets no
+        tool line rather than a guessed one.  Rows with no run id at all are
+        skipped outright.  Bounded to the newest ``limit`` promptlog rows; a run
+        straddling that window's oldest edge is dropped rather than rendered with
+        a truncated call list."""
         with self._session() as session:
             rows = list(
                 session.exec(
@@ -868,31 +881,27 @@ class MessageStore:
                     .where(
                         PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME,
                         PromptLog.prompt_type == ChatPromptType.USER_MESSAGE.value,
+                        col(PromptLog.run_id).is_not(None),
                     )
                     .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
                     .limit(limit)
                 ).all()
             )
         rows.reverse()
-        # Group by run id in call order; a row with no run id stands alone.
-        groups: dict[tuple[str, int | str], list[PromptLog]] = {}
+        # Group by run id in call order.
+        groups: dict[str, list[PromptLog]] = {}
         for row in rows:
-            key: tuple[str, int | str] = ("run", row.run_id) if row.run_id else ("row", row.id or 0)
-            groups.setdefault(key, []).append(row)
+            groups.setdefault(row.run_id or "", []).append(row)
         ordered = list(groups.values())
         if len(rows) == limit and ordered:
             ordered = ordered[1:]  # the oldest visible run may be truncated
-        traces: list[ChatTurnTrace] = []
-        for group_rows in ordered:
-            last = group_rows[-1]
-            traces.append(
-                ChatTurnTrace(
-                    last_call=last.timestamp,
-                    row_id=last.id or 0,
-                    tools=tuple(dict.fromkeys(name for name, _ in _run_tool_calls(group_rows))),
-                )
+        return [
+            ChatTurnTrace(
+                run_id=group_rows[0].run_id or "",
+                tools=tuple(dict.fromkeys(name for name, _ in run_tool_calls(group_rows))),
             )
-        return traces
+            for group_rows in ordered
+        ]
 
     def ios_history_page(
         self,

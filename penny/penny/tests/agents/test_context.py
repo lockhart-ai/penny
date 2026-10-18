@@ -3,8 +3,10 @@
 import json
 
 import pytest
+from sqlmodel import Session, col, select
 
 from penny.constants import PennyConstants
+from penny.database.models import MessageLog, PromptLog
 from penny.llm.models import LlmMessage
 from penny.tests.conftest import TEST_SENDER
 
@@ -90,6 +92,75 @@ async def test_conversation_merges_consecutive_same_role(
         assert "second message" in conversation[0][1]
         assert "response" in contents
         assert "proactive thought" in contents
+
+
+@pytest.mark.asyncio
+async def test_conversation_pairs_tool_calls_by_run_id(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """Each past assistant turn carries the tool line its own run's ledger rows
+    back (#2630), paired by the run id stamped on the reply — not guessed from
+    timestamps.  A turn that only talked reads ``[Tool calls: none]``; an
+    autonomous send with no run behind it carries no line at all."""
+    config = make_config()
+
+    async with running_penny(config) as penny:
+        mock_llm.set_default_flow(
+            final_response="here's what i found!",
+            search_query="https://weather.example.com/today",
+        )
+        await signal_server.push_message(
+            sender=TEST_SENDER, content="what's the weather like today?"
+        )
+        await signal_server.wait_for_message(timeout=10.0)
+
+        # The reply's row carries the same run id the chat run's own promptlog
+        # rows carry — both stamped by the framework, which is the whole join.
+        with Session(penny.db.engine) as session:
+            reply = session.exec(
+                select(MessageLog)
+                .where(
+                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                    col(MessageLog.run_id).is_not(None),
+                )
+                .order_by(col(MessageLog.id).desc())
+            ).first()
+            assert reply is not None, "the turn's reply must be logged"
+            chat_run_ids = set(
+                session.exec(
+                    select(col(PromptLog.run_id)).where(
+                        PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME
+                    )
+                ).all()
+            )
+        assert reply.run_id in chat_run_ids, (
+            "the reply's run id must be the chat run's own id, not a guess"
+        )
+
+        # A second turn that only talked: its run traces with no tools.
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, "glad that helped!"),
+            answers_micro_contexts=False,
+        )
+        await signal_server.push_message(sender=TEST_SENDER, content="thanks!")
+        await signal_server.wait_for_message(timeout=10.0)
+
+        # An autonomous send between turns has no run behind it — logged the way
+        # the drainer logs one — and must carry no tool line.
+        autonomous_id = penny.db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            penny.config.signal_number,
+            "a proactive note",
+            recipient=TEST_SENDER,
+        )
+        assert autonomous_id is not None
+
+        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        assistant_turns = [content for role, content in conversation if role == "assistant"]
+        assert assistant_turns == [
+            "here's what i found!\n[Tool calls: browse]",
+            "glad that helped!\n[Tool calls: none]\na proactive note",
+        ]
 
 
 # ── Profile context ──────────────────────────────────────────────────────

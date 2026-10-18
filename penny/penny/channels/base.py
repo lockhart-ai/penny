@@ -353,6 +353,7 @@ class MessageChannel(ABC):
         quote_message: MessageLog | None = None,
         media_ids: list[int] | None = None,
         mechanism: str | None = None,
+        run_id: str | None = None,
     ) -> int | None:
         """
         Log and deliver a conversational reply with embedding + side-channel media.
@@ -375,6 +376,11 @@ class MessageChannel(ABC):
                 names its cause.  ``None`` for a direct reply (a chat turn with a
                 live triggering user message).  Only the ``SendQueueDrainer``
                 passes it, from the queued row.
+            run_id: The run whose reply this direct reply delivers (#2630) —
+                stamped on the delivered ``messagelog`` row so the conversation
+                history pairs a run with the message that answered for it by
+                identity.  ``None`` for an autonomous send, which has no run
+                behind it.  Only the chat reply path passes it.
 
         Returns:
             Database message ID if send was successful, None otherwise
@@ -393,6 +399,7 @@ class MessageChannel(ABC):
             embedding=embedding,
             source_name=author,
             mechanism=mechanism,
+            run_id=run_id,
         )
         logger.info("Sent response to %s (%d chars)", recipient, len(content))
         return message_id if external_id is not None else None
@@ -408,6 +415,7 @@ class MessageChannel(ABC):
         embedding: list[float] | None = None,
         source_name: str | None = None,
         mechanism: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[int | None, int | None]:
         """Log an ``OUTGOING`` message to messagelog, deliver it, stamp external_id.
 
@@ -415,7 +423,9 @@ class MessageChannel(ABC):
         through, so logging happens exactly once immediately before the raw
         platform send and no outgoing message can bypass the record. We log the
         prepared content so quote matching works correctly. ``mechanism`` (#1568)
-        is stamped for an autonomous send and NULL for a direct reply. Returns
+        is stamped for an autonomous send and NULL for a direct reply;
+        ``run_id`` (#2630) the opposite side — the run whose reply a direct
+        reply delivers, NULL for an autonomous send. Returns
         ``(message_id, external_id)``.
         """
         if (not prepared or not prepared.strip()) and not attachments:
@@ -432,6 +442,7 @@ class MessageChannel(ABC):
             device_id=device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
             mechanism=mechanism,
+            run_id=run_id,
         )
         external_id = await self._send_raw(
             recipient,
@@ -775,7 +786,7 @@ class MessageChannel(ABC):
         if incoming_id is not None:
             self._db.memories.link_source_message(run_id, incoming_id)
         await self._deliver_agent_response(
-            message, user_sender, response, incoming_id, progress, self._message_agent.name
+            message, user_sender, response, incoming_id, progress, self._message_agent.name, run_id
         )
 
     async def _deliver_agent_response(
@@ -786,6 +797,7 @@ class MessageChannel(ABC):
         incoming_id: int | None,
         progress: ProgressTracker | None,
         author: str,
+        run_id: str,
     ) -> None:
         """Send the agent's response and surface delivery failures."""
         # Everything upstream (Agent._narrate_or_account, #2370) already tries to have
@@ -817,6 +829,7 @@ class MessageChannel(ABC):
             author=author,
             quote_message=incoming_log,
             media_ids=response.generated_media_ids,
+            run_id=run_id,
         )
         if sent is None:
             logger.error("Failed to deliver response to %s — notifying user", message.sender)

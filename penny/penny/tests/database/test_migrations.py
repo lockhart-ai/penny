@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 118
+        assert count == 119
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 118
+        assert count1 == 119
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 117 migrations
-        assert count == 117
+        # 0001 is skipped; the rest run = 118 migrations
+        assert count == 118
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 118  # all migrations applied
+        assert count == 119  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -271,6 +271,40 @@ class TestMigrate:
         assert "notify" in columns
         by_name = dict(conn.execute("SELECT name, notify FROM memory").fetchall())
         assert by_name == {"watched": 1, "silent": 0}
+        conn.close()
+
+    def test_0120_adds_messagelog_run_id(self, tmp_path):
+        """Migration 0120 adds nullable ``messagelog.run_id`` (#2630) — the run
+        whose reply an outgoing row carries, stamped by the framework — with
+        every pre-existing row left NULL (no run recorded, no tool line)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE messagelog (id INTEGER PRIMARY KEY, direction TEXT, content TEXT)"
+        )
+        conn.execute("INSERT INTO messagelog (direction, content) VALUES ('outgoing', 'hi')")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0120_add_messagelog_run_id.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0120", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(messagelog)").fetchall()}
+        assert "run_id" in columns
+        row = conn.execute("SELECT run_id FROM messagelog WHERE id = 1").fetchone()
+        assert row is not None and row[0] is None
         conn.close()
 
     def test_0069_regrounds_and_cleans_skills(self, tmp_path):

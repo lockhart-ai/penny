@@ -2109,8 +2109,18 @@ class Agent:
         try:
             limit = int(self.config.runtime.MESSAGE_CONTEXT_LIMIT)
             messages = self.db.messages.get_messages_since(sender, since=datetime.min, limit=limit)
-            traces = iter(self.db.messages.chat_turn_tool_traces())
-            trace = next(traces, None)
+            # The reply's ``run_id`` and the trace's are both stamped by the
+            # framework, so the pairing is an identity join, not a timestamp
+            # guess — a send that slips between a run's last call and its reply
+            # cannot steal the pairing.  A reply with no recorded run id (older
+            # rows, autonomous sends) gets no line at all.  A run consumed here
+            # contributes the line whether it called anything or not: ``[Tool
+            # calls: none]`` is the rendered state of a turn that only talked,
+            # so a narrated change with nothing behind it reads as inconsistent
+            # with the record, not as a shape acting takes (#2630).
+            tools_by_run = {
+                trace.run_id: trace.tools for trace in self.db.messages.chat_turn_tool_traces()
+            }
             for msg in messages:
                 role = (
                     MessageRole.USER
@@ -2118,21 +2128,10 @@ class Agent:
                     else MessageRole.ASSISTANT
                 )
                 content = msg.content
-                # The turn's run is the trace whose last logged call falls at or
-                # before this send — the first send after the run's last call is
-                # the reply that run produced.  A run consumed here contributes
-                # the line whether it called anything or not: ``[Tool calls:
-                # none]`` is the rendered state of a turn that only talked, so a
-                # narrated change with nothing behind it reads as inconsistent
-                # with the record, not as a shape acting takes (#2630).
-                if (
-                    role == MessageRole.ASSISTANT
-                    and trace is not None
-                    and (trace.last_call, trace.row_id) <= (msg.timestamp, msg.id or 0)
-                ):
-                    names = ", ".join(trace.tools) if trace.tools else "none"
+                if role == MessageRole.ASSISTANT and msg.run_id in tools_by_run:
+                    tools = tools_by_run.pop(msg.run_id)
+                    names = ", ".join(tools) if tools else "none"
                     content = f"{content}\n[Tool calls: {names}]"
-                    trace = next(traces, None)
                 if conversation and conversation[-1][0] == role:
                     prev_role, prev_content = conversation[-1]
                     conversation[-1] = (prev_role, f"{prev_content}\n{content}")

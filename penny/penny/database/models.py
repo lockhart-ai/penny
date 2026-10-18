@@ -119,6 +119,15 @@ class MessageLog(SQLModel, table=True):
     # (no query filters on mechanism equality; the hot read is the newest-emissions
     # scan).
     mechanism: str | None = Field(default=None)
+    # The run whose reply this outgoing row carries (#2630): stamped by the
+    # framework at log time on the direct-reply path, so the conversation
+    # history's per-turn tool line pairs a run with its reply by identity, not
+    # by a timestamp guess.  NULL for an autonomous send (the drainer's, or any
+    # ``send_message``) — a send with no run behind it can never claim one.  A
+    # by-value reference to ``promptlog.run_id`` (the FK-by-name discipline the
+    # memory layer uses, like ``mechanism`` above) — ``run_id`` is not unique on
+    # ``promptlog``, so no DB-level FK is possible; the pairing joins on it.
+    run_id: str | None = Field(default=None, index=True)
 
     __table_args__ = (
         Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),

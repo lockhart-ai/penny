@@ -1603,7 +1603,11 @@ def _log_creation_turn(db: Database) -> None:
     ]
     _log_chat_step(db, run_id=run_id, messages=conversation, response=_seeded_response(_EX4_REPLY))
     db.messages.log_message(
-        PennyConstants.MessageDirection.OUTGOING, "penny", _EX4_REPLY, parent_id=ask_id
+        PennyConstants.MessageDirection.OUTGOING,
+        "penny",
+        _EX4_REPLY,
+        parent_id=ask_id,
+        run_id=run_id,
     )
 
 
