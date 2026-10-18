@@ -64,7 +64,7 @@ Branch protection is enabled on `main`. All changes must go through pull request
 
   **The body opens with one sentence that summarises the whole PR on its own** — what changes and why, readable cold by someone who hasn't seen the issue, because the code owner reads new PRs as phone notifications that show only that first line. Never open with context that assumes the reader already knows it ("Per the review…", "Main moved…", "This adds the missing field…"). **The body then states the change and closes its ticket; it carries no generated-with footer and no session URLs** — the repo is public, and a session URL is a private link.
 
-  **Test PRs are named after the test group they implement, consistently** — not as free sentences: `test(eval): port <group>[ tranche N][ (<subset>)]`, where `<group>` is the group's name on the epic's map (`transitions`, `chat idle`, `collector recovery`, `state classifier`, `skill framer`, `skill binder`, `skill namer`, `browse extractor`). A correction to existing cases is `fix(eval): <group> <what changed>`.
+  **Test PRs are named after the test group they implement, consistently** — not as free sentences: `test(eval): port <group>[ tranche N][ (<subset>)]`, where `<group>` is the group's name on the epic's map (`transitions`, `chat idle`, `collector recovery`, `browse extractor`). A correction to existing cases is `fix(eval): <group> <what changed>`.
 
   ```
   fix(harness): resolve a bare RUN on eval-report by the invoking tree's HEAD, not recency
@@ -109,8 +109,7 @@ penny/                          — Penny chat agent (Signal/Discord)
   Dockerfile
   pyproject.toml
   CLAUDE.md                     — Penny-specific context
-github_api/                     — GitHub API client (GraphQL + REST); backs `make token`
-  api.py                        — GitHubAPI class (typed Pydantic return values)
+github_api/                     — GitHub App auth (auth.py); backs `make token`
   auth.py                       — GitHubAuth (App JWT token generation)
 similarity/                     — Similarity primitives (embeddings, dedup)
   embeddings.py                 — Pure math: cosine similarity, TCR, serialization; job-name
@@ -196,8 +195,6 @@ make token            # Generate GitHub App installation token for gh CLI
 make check            # Format check, lint, typecheck, eval-catalogue declaration checks, and run tests
 make pytest           # Run integration tests
 make eval-remote      # Live-model eval suite on OpenRouter, pinned to one provider, 8 cases x 5 samples at once (the suite's model is gemma, `google/gemma-4-26b-a4b-it` pinned to Cloudflare; name another roster entry with `LLM_MODEL=...`)
-make fmt              # Format with ruff
-make lint             # Lint with ruff
 make fix              # Format + autofix lint issues
 make catalogue        # Generate docs/eval-catalogue.md (gitignored, never committed) from the eval cases
 make typecheck        # Type check with ty

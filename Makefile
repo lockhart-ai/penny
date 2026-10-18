@@ -131,7 +131,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fmt lint fix typecheck check pytest eval-remote eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 

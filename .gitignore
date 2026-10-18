@@ -56,7 +56,6 @@ node_modules/
 
 # claude
 .claude/
-QUALITY-REVIEW.md
 penny/penny/eval-reports/
 
 # Nimbalyst (the editor harness) writes per-user state into the repo root:
