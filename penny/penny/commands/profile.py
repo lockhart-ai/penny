@@ -140,89 +140,84 @@ class ProfileCommand(Command):
 
         args = args.strip()
 
-        # No args - show current profile
         if not args:
-            user_info = context.db.users.get_info(context.user)
-            if not user_info:
-                return CommandResult(text=PennyResponse.PROFILE_NO_PROFILE)
-
-            # Format date of birth for display
-            dob_formatted = datetime.strptime(user_info.date_of_birth, "%Y-%m-%d").strftime(
-                "%B %d, %Y"
-            )
-
-            lines = [
-                PennyResponse.PROFILE_HEADER,
-                "",
-                PennyResponse.PROFILE_NAME.format(name=user_info.name),
-                PennyResponse.PROFILE_LOCATION.format(location=user_info.location),
-                PennyResponse.PROFILE_TIMEZONE.format(timezone=user_info.timezone),
-                PennyResponse.PROFILE_DOB.format(dob=dob_formatted),
-            ]
-            return CommandResult(text="\n".join(lines))
+            return self._show_profile(context)
 
         user_info = context.db.users.get_info(context.user)
-
-        # NEW PROFILE CREATION (no existing profile)
         if not user_info:
-            # Use LLM to parse profile creation arguments
-            parsed = await self._parse_profile_create(
-                args, context.model_client, current_datetime_line(context.db)
+            return await self._create_profile(args, context)
+
+        return await self._update_profile(args, context, user_info)
+
+    def _show_profile(self, context: CommandContext) -> CommandResult:
+        """Render the current profile, or the no-profile message if none exists."""
+        user_info = context.db.users.get_info(context.user)
+        if not user_info:
+            return CommandResult(text=PennyResponse.PROFILE_NO_PROFILE)
+
+        dob_formatted = datetime.strptime(user_info.date_of_birth, "%Y-%m-%d").strftime("%B %d, %Y")
+
+        lines = [
+            PennyResponse.PROFILE_HEADER,
+            "",
+            PennyResponse.PROFILE_NAME.format(name=user_info.name),
+            PennyResponse.PROFILE_LOCATION.format(location=user_info.location),
+            PennyResponse.PROFILE_TIMEZONE.format(timezone=user_info.timezone),
+            PennyResponse.PROFILE_DOB.format(dob=dob_formatted),
+        ]
+        return CommandResult(text="\n".join(lines))
+
+    async def _create_profile(self, args: str, context: CommandContext) -> CommandResult:
+        """Create a new profile (no existing profile for this user)."""
+        parsed = await self._parse_profile_create(
+            args, context.model_client, current_datetime_line(context.db)
+        )
+        if not parsed:
+            return CommandResult(text=PennyResponse.PROFILE_CREATE_PARSE_ERROR)
+
+        dob_date = dateparser.parse(parsed.date_of_birth, settings={"PREFER_DATES_FROM": "past"})
+        if not dob_date:
+            return CommandResult(
+                text=PennyResponse.PROFILE_DATE_PARSE_ERROR.format(date=parsed.date_of_birth)
             )
-            if not parsed:
-                return CommandResult(text=PennyResponse.PROFILE_CREATE_PARSE_ERROR)
+        dob_formatted = dob_date.strftime("%Y-%m-%d")
 
-            # Parse date of birth
-            dob_date = dateparser.parse(
-                parsed.date_of_birth, settings={"PREFER_DATES_FROM": "past"}
-            )
-            if not dob_date:
-                return CommandResult(
-                    text=PennyResponse.PROFILE_DATE_PARSE_ERROR.format(date=parsed.date_of_birth)
-                )
-
-            dob_formatted = dob_date.strftime("%Y-%m-%d")
-
-            # Derive timezone from location
-            timezone = await get_timezone(parsed.location)
-            if not timezone:
-                return CommandResult(
-                    text=PennyResponse.PROFILE_TIMEZONE_ERROR.format(location=parsed.location)
-                )
-
-            # Save new profile
-            context.db.users.save_info(
-                sender=context.user,
-                name=parsed.name,
-                location=parsed.location,
-                timezone=timezone,
-                date_of_birth=dob_formatted,
+        timezone = await get_timezone(parsed.location)
+        if not timezone:
+            return CommandResult(
+                text=PennyResponse.PROFILE_TIMEZONE_ERROR.format(location=parsed.location)
             )
 
-            response = PennyResponse.PROFILE_CREATED.format(name=parsed.name)
+        context.db.users.save_info(
+            sender=context.user,
+            name=parsed.name,
+            location=parsed.location,
+            timezone=timezone,
+            date_of_birth=dob_formatted,
+        )
 
-            # Onboarding: a new profile always gets the interests prompt.  (This
-            # was gated on "no stored preferences yet", but the legacy
-            # ``preference`` table dropped with migration 0097/#1676 — profile
-            # creation IS onboarding, so the prompt now always accompanies it.)
-            response += "\n\n" + PennyResponse.ONBOARDING_INTERESTS_PROMPT
+        # Onboarding: a new profile always gets the interests prompt.  (This
+        # was gated on "no stored preferences yet", but the legacy
+        # ``preference`` table dropped with migration 0097/#1676 — profile
+        # creation IS onboarding, so the prompt now always accompanies it.)
+        response = PennyResponse.PROFILE_CREATED.format(name=parsed.name)
+        response += f"\n\n{PennyResponse.ONBOARDING_INTERESTS_PROMPT}"
 
-            return CommandResult(text=response)
+        return CommandResult(text=response)
 
-        # PROFILE UPDATE (existing profile)
-
-        # Use LLM to parse profile update arguments
+    async def _update_profile(
+        self, args: str, context: CommandContext, user_info: Any
+    ) -> CommandResult:
+        """Update name/location on an existing profile."""
         parsed = await self._parse_profile_update(
             args, context.model_client, current_datetime_line(context.db)
         )
         if not parsed:
             return CommandResult(text=PennyResponse.PROFILE_UPDATE_PARSE_ERROR)
 
-        # Use parsed values or keep existing
         new_name = parsed.name if parsed.name else user_info.name
         new_location = parsed.location if parsed.location else user_info.location
 
-        # Derive new timezone from location if it changed
         if new_location != user_info.location:
             timezone = await get_timezone(new_location)
             if not timezone:
@@ -232,7 +227,6 @@ class ProfileCommand(Command):
         else:
             timezone = user_info.timezone
 
-        # Update database
         context.db.users.save_info(
             sender=context.user,
             name=new_name,
@@ -241,7 +235,12 @@ class ProfileCommand(Command):
             date_of_birth=user_info.date_of_birth,  # Keep existing DOB
         )
 
-        # Build confirmation message
+        return self._update_confirmation(user_info, new_name, new_location, timezone)
+
+    def _update_confirmation(
+        self, user_info: Any, new_name: str, new_location: str, timezone: str
+    ) -> CommandResult:
+        """Build the confirmation message for an existing-profile update."""
         changes = []
         if new_name != user_info.name:
             changes.append(PennyResponse.PROFILE_UPDATE_NAME.format(name=new_name))
