@@ -885,18 +885,16 @@ def render_tool_call(name: str, args: object) -> str:
     is added.
     """
     fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
-    if name == "collection_write":
+    if name == PennyConstants.COLLECTION_WRITE_TOOL_NAME:
         return (
             f"collection_write(collection={_collection_field(fields)!r}, "
             f"entries={_write_contents(fields)!r})"
         )
-    if name in ("log_read", "log_append"):
+    if name in (PennyConstants.LOG_READ_TOOL_NAME, PennyConstants.LOG_APPEND_TOOL_NAME):
         return f"{name}(log={_log_field(fields)!r})"
-    if name == "update_entry":
-        return f"update_entry(memory={fields.get('memory', '?')!r}, key={fields.get('key', '?')!r})"
-    if name == "send_message":
+    if name == PennyConstants.SEND_MESSAGE_TOOL_NAME:
         return f"send_message({fields.get('content', '')!r})"
-    if name == "browse":
+    if name == PennyConstants.BROWSE_TOOL_NAME:
         queries = fields.get("queries", list(fields.values()))
         extract = fields.get("extract")
         if extract:
@@ -1102,7 +1100,13 @@ def _run_tool_failures(prompts: list[PromptLog]) -> int:
     return 0
 
 
-_WRITE_TOOLS = frozenset({"collection_write", "collection_remove", "log_append"})
+_WRITE_TOOLS = frozenset(
+    {
+        PennyConstants.COLLECTION_WRITE_TOOL_NAME,
+        PennyConstants.COLLECTION_REMOVE_TOOL_NAME,
+        PennyConstants.LOG_APPEND_TOOL_NAME,
+    }
+)
 
 _ROLE_TOOL = "tool"
 
@@ -1159,11 +1163,17 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
     counts come from the responses, so they're complete regardless."""
     calls = _run_tool_calls(prompts)
     writes = sum(1 for name, _ in calls if name in _WRITE_TOOLS)
-    sends = sum(1 for name, _ in calls if name == "send_message")
+    sends = sum(1 for name, _ in calls if name == PennyConstants.SEND_MESSAGE_TOOL_NAME)
     reads = sum(
         1
         for name, _ in calls
-        if name not in _WRITE_TOOLS and name not in {"browse", "send_message", "done"}
+        if name not in _WRITE_TOOLS
+        and name
+        not in {
+            PennyConstants.BROWSE_TOOL_NAME,
+            PennyConstants.SEND_MESSAGE_TOOL_NAME,
+            PennyConstants.DONE_TOOL_NAME,
+        }
     )
     browses_ok = browses_failed = 0
     for message in _run_tool_turns(prompts):
@@ -1260,7 +1270,7 @@ def classify_run(prompts: list[PromptLog]) -> RunHealth:
         return RunHealth()
     outcome, _reason, _target = _run_outcome(prompts)
     calls = _run_tool_calls(prompts)
-    non_done = [name for name, _ in calls if name != "done"]
+    non_done = [name for name, _ in calls if name != PennyConstants.DONE_TOOL_NAME]
     # A bail is a *deliberate* early close: the model recorded a terminating
     # done() with no real read/write/browse first.  A run that recorded NO tool
     # call at all never decided to stop — it spun on rejected premature-done()s
@@ -1278,7 +1288,8 @@ def classify_run(prompts: list[PromptLog]) -> RunHealth:
     )
     exhausted_no_call = not calls and outcome == RunOutcome.FAILED.value
     degenerate = any(
-        name == "send_message" and _is_degenerate_send(_send_content(args)) for name, args in calls
+        name == PennyConstants.SEND_MESSAGE_TOOL_NAME and _is_degenerate_send(_send_content(args))
+        for name, args in calls
     )
     _browses_ok, browses_failed, _reads, writes, _sends = _run_io_tally(prompts)
     return RunHealth(
@@ -1373,7 +1384,7 @@ def render_run_record(prompts: list[PromptLog]) -> str:
         lines.append(tally)
     lines.extend(_health_lines(health))
     calls = _run_tool_calls(prompts)
-    non_done = [(name, args) for name, args in calls if name != "done"]
+    non_done = [(name, args) for name, args in calls if name != PennyConstants.DONE_TOOL_NAME]
     if health.bailed:
         lines.append("(no tool calls)" if not calls else render_tool_call(*calls[0]))
     elif (
@@ -1465,7 +1476,7 @@ def _run_conclusion(prompts: list[PromptLog]) -> str:
     if _ended_via_write_gate_stop(prompts):
         return f"stopped: {reason}"
     if target is not None:  # a collector run
-        if any(name == "done" for name, _ in _run_tool_calls(prompts)):
+        if any(name == PennyConstants.DONE_TOOL_NAME for name, _ in _run_tool_calls(prompts)):
             return f"done: {outcome}" if outcome else ""
         detail = reason or outcome
         return f"ended: {detail}" if detail else ""
@@ -1643,7 +1654,7 @@ def render_run_calls(prompts: list[PromptLog], child_draws: list[PromptLog] | No
     by_call_id, unanchored = _draws_by_tool_call(child_draws or [])
     lines = [_run_header(prompts), _run_origin(prompts)]
     for index, (call_id, call) in enumerate(_run_logged_steps(prompts), start=1):
-        if call.tool == "done":
+        if call.tool == PennyConstants.DONE_TOOL_NAME:
             continue  # consumes the coordinate (gap, never renumber), not shown
         lines.append(_step_line(index, call, results.get(call_id) if call_id else None))
         if call_id:

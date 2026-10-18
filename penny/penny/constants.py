@@ -633,6 +633,18 @@ class PennyConstants:
     # the retirement, which the run renders and the skill extractor still have to
     # recognise.  History is never rewritten.
     DONE_TOOL_NAME = "done"
+    # The real tool names a logged call is classified by when a run record is
+    # rendered (``objects.py``'s ``render_tool_call`` / ``_run_io_tally`` /
+    # ``classify_run``) — named here rather than compared as bare literals, the
+    # same shape ``DONE_TOOL_NAME`` already set.  ``SEND_MESSAGE_TOOL_NAME``
+    # stays even though the tool itself is retired (#1911): pre-retirement
+    # ``promptlog`` rows still carry the name, and history is never rewritten.
+    COLLECTION_WRITE_TOOL_NAME = "collection_write"
+    COLLECTION_REMOVE_TOOL_NAME = "collection_remove"
+    LOG_READ_TOOL_NAME = "log_read"
+    LOG_APPEND_TOOL_NAME = "log_append"
+    SEND_MESSAGE_TOOL_NAME = "send_message"
+    BROWSE_TOOL_NAME = "browse"
     # The ledger identity of a browse micro-context extraction — a fresh
     # single-shot model call (content + instruction, no tools) that runs when a
     # ``browse`` carries an ``extract`` argument.  It logs its own promptlog rows
