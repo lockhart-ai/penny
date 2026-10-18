@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
 import openai
@@ -198,6 +198,18 @@ def _extract_model_ids(payload: Any) -> list[str]:
         elif isinstance(item, dict) and isinstance(item.get("name"), str):
             ids.append(item["name"])
     return ids
+
+
+class _ChatAttemptResult(NamedTuple):
+    """One chat attempt's own outcome: the raw completion the attempt drew, and
+    its parsed response — or ``None`` for ``response`` when the completion
+    carried no choices at all. ``_chat_attempts`` reads ``response`` to tell
+    the two apart rather than the shape of what came back, so a successful
+    draw and a 200-with-no-completion draw are the same return type.
+    """
+
+    raw: openai.types.chat.ChatCompletion
+    response: LlmResponse | None
 
 
 class LlmClient:
@@ -531,9 +543,9 @@ class LlmClient:
             except openai.OpenAIError as error:
                 last_error = await self._retry_after_openai_error(attempt, error)
             else:
-                if isinstance(result, tuple):
-                    return result
-                last_error = await self._retry_after_no_choices(attempt, result)
+                if result.response is not None:
+                    return result.response, result.raw
+                last_error = await self._retry_after_no_choices(attempt, result.raw)
 
         logger.error("LLM chat failed after %d attempts: %s", self.max_retries, last_error)
         if last_error is None:
@@ -548,13 +560,12 @@ class LlmClient:
         token_budget: int | None,
         thinking_enabled: bool,
         attempt: int,
-    ) -> tuple[LlmResponse, openai.types.chat.ChatCompletion] | openai.types.chat.ChatCompletion:
+    ) -> _ChatAttemptResult:
         """Send and parse ONE chat request.
 
-        Returns the parsed response alongside the raw completion on success.
-        On a 200 that carried no completion, returns the bare raw completion
-        instead of raising — ``_retry_after_no_choices`` is what classifies that
-        as a retryable fault: an ``LlmError`` raised from here would re-raise
+        ``result.response`` is ``None`` when the 200 carried no completion at
+        all — ``_retry_after_no_choices`` is what classifies that as a
+        retryable fault: an ``LlmError`` raised from here would re-raise
         untried (the first ``except`` clause in ``_chat_attempts``), and a
         provider answering 200-with-no-completion is exactly the transient
         another attempt usually gets past.
@@ -566,11 +577,11 @@ class LlmClient:
         )
         raw = await self.client.chat.completions.create(**kwargs)
         if not raw.choices:
-            return raw
+            return _ChatAttemptResult(raw=raw, response=None)
 
         response = self._parse_response(raw)
         self._log_attempt(attempt, fault=None, provider=response.provider, detail="")
-        return response, raw
+        return _ChatAttemptResult(raw=raw, response=response)
 
     def _not_found_error(self, attempt: int, error: openai.NotFoundError) -> LlmNotFoundError:
         """Log, then build the terminal error for a model that doesn't exist — never retried."""
