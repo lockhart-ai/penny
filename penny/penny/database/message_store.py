@@ -453,6 +453,7 @@ class MessageStore:
         call_outcome: str | None = None,
         call_error_class: str | None = None,
         call_error_message: str | None = None,
+        call_error_fault: str | None = None,
     ) -> None:
         """Log a prompt/response exchange with Ollama.
 
@@ -483,6 +484,7 @@ class MessageStore:
                     call_outcome=call_outcome,
                     call_error_class=call_error_class,
                     call_error_message=call_error_message,
+                    call_error_fault=call_error_fault,
                     timestamp=self._clock.now(),
                 )
                 session.add(log)

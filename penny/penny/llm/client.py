@@ -922,10 +922,18 @@ class LlmClient:
         on every other outcome — ``log_prompt`` writes the literal ``"{}"`` for a
         call with no response, which every existing reader already treats exactly
         as it treats a falsy ``response`` (no change needed on their side).
+
+        ``error.fault`` (an ``LlmFault`` — #2526) is persisted alongside the error's own
+        class and message: every ``LlmError`` already carries this classification (set
+        the moment it raises, from the response's own status), so this is a read, not a
+        new computation — it is what lets a reader tell a provider-side refusal
+        (429/5xx) from Penny's own malformed or oversized request (4xx) without
+        re-parsing the free-text message.
         """
         if not self.db:
             return
         response = _dispatched_response(raw.model_dump()) if raw is not None else None
+        fault = getattr(error, "fault", None)
         self.db.messages.log_prompt(
             model=self.model,
             messages=messages_snapshot,
@@ -942,6 +950,7 @@ class LlmClient:
             call_outcome=outcome.value,
             call_error_class=type(error).__name__ if error is not None else None,
             call_error_message=str(error) if error is not None else None,
+            call_error_fault=fault.value if fault is not None else None,
         )
 
 

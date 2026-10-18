@@ -122,17 +122,26 @@ class ProviderTally(BaseModel):
 
 
 class CohortRecord(BaseModel):
-    """One case's cohort: how many samples it asked for, and how many produced a turn.
+    """One case's cohort: how many samples it asked for, how many produced a turn, and how
+    many of THOSE answered no claim at all.
 
     ``retried_boots`` counts the times one of its samples was stood up AGAIN because its
     preflight failed on a transient endpoint fault (#2230).  A retried boot that then ran
     is a completed sample like any other, so nothing else here would show it — and a run
     whose samples only start on their second try is a run worth knowing about.
+
+    ``excluded`` (#2526) counts samples that DID produce a measured turn — ``completed``
+    already includes them — but that the cohort could not pool: a provider refusal, a
+    dead draw, a refused cycle, named by its own reason on the sample itself.  A run where
+    most of a case's samples were excluded used to read as fully viable, because viability
+    only ever asked whether the turn ran — so a rate-limited run that answered no claim at
+    all could still print "this run is a result."
     """
 
     case_id: str
     intended: int
     completed: int
+    excluded: int = 0
     retried_boots: int = 0
 
     @property
@@ -141,9 +150,16 @@ class CohortRecord(BaseModel):
         return max(self.intended - self.completed, 0)
 
     @property
+    def scored(self) -> int:
+        """Samples that produced a measured turn AND answered a claim with it — the number
+        the viability bar actually needs, since an excluded sample is a turn with nothing
+        to read off it."""
+        return max(self.completed - self.excluded, 0)
+
+    @property
     def viable(self) -> bool:
-        """Whether this case's surviving samples can be read as the case."""
-        return cohort_is_viable(self.completed, self.intended)
+        """Whether this case's surviving, SCORED samples can be read as the case."""
+        return cohort_is_viable(self.scored, self.intended)
 
 
 class RunHealth(BaseModel):
@@ -164,6 +180,7 @@ class RunHealth(BaseModel):
             [
                 self._samples_line(),
                 *self._retried_boot_lines(),
+                *self._excluded_lines(),
                 self._cases_line(),
                 *self._dead_case_lines(),
                 self._calls_line(),
@@ -189,6 +206,12 @@ class RunHealth(BaseModel):
     def dead(self) -> int:
         """Samples the run intended and never got."""
         return max(self.intended - self.completed, 0)
+
+    @property
+    def excluded(self) -> int:
+        """Samples that ran but answered no claim at all (#2526) — a provider refusal, a
+        dead draw, a refused cycle, summed from each cohort's own count."""
+        return sum(cohort.excluded for cohort in self.cohorts)
 
     @property
     def dead_cohorts(self) -> list[CohortRecord]:
@@ -232,7 +255,8 @@ class RunHealth(BaseModel):
     def _samples_line(self) -> str:
         return (
             f"samples: {self.completed} of {self.intended} completed · {self.dead} dead "
-            "(completed = the sample's measured turn ran and was scored)"
+            "(completed = the sample's measured turn ran; excluded, below, is "
+            "completed but answered no claim)"
         )
 
     def _retried_boot_lines(self) -> list[str]:
@@ -243,6 +267,18 @@ class RunHealth(BaseModel):
         cases = " · ".join(f"{cohort.case_id} {cohort.retried_boots}" for cohort in retried)
         return [f"  {total} boot(s) retried after a transient preflight fault — {cases}"]
 
+    def _excluded_lines(self) -> list[str]:
+        """Hidden on a run that excluded nothing — the quiet case needs no line, same as
+        faults and budget cuts.  A sample named here RAN (``completed`` already counts
+        it) but answered no claim, so it is what separates a case's ``completed`` count
+        from the ``scored`` one the viability bar below actually reads."""
+        if not self.excluded:
+            return []
+        cases = " · ".join(
+            f"{cohort.case_id} {cohort.excluded}" for cohort in self.cohorts if cohort.excluded
+        )
+        return [f"  {self.excluded} sample(s) ran and answered no claim (excluded) — {cases}"]
+
     def _cases_line(self) -> str:
         readable = len(self.cohorts) - len(self.dead_cohorts)
         return f"cases: {readable} of {len(self.cohorts)} readable — {COHORT_RULE}"
@@ -251,7 +287,9 @@ class RunHealth(BaseModel):
         if not self.dead_cohorts:
             return []
         dead = " · ".join(
-            f"{cohort.case_id} {cohort.completed}/{cohort.intended}" for cohort in self.dead_cohorts
+            f"{cohort.case_id} {cohort.scored}/{cohort.intended}"
+            + (f" ({cohort.excluded} excluded)" if cohort.excluded else "")
+            for cohort in self.dead_cohorts
         )
         return [f"  not readable: {dead}"]
 
@@ -361,11 +399,23 @@ def begin_run() -> FaultTally:
     return _tally
 
 
-def record_cohort(case_id: str, *, intended: int, completed: int, retried_boots: int = 0) -> None:
-    """Record what one case asked for, what it got, and how many boots it had to retry."""
+def record_cohort(
+    case_id: str,
+    *,
+    intended: int,
+    completed: int,
+    excluded: int = 0,
+    retried_boots: int = 0,
+) -> None:
+    """Record what one case asked for, what it got, how many of those it could not pool,
+    and how many boots it had to retry."""
     _cohorts.append(
         CohortRecord(
-            case_id=case_id, intended=intended, completed=completed, retried_boots=retried_boots
+            case_id=case_id,
+            intended=intended,
+            completed=completed,
+            excluded=excluded,
+            retried_boots=retried_boots,
         )
     )
 
