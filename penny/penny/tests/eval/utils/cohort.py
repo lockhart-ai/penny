@@ -463,6 +463,11 @@ class SampleObservation(BaseModel):
     # empty; an end-to-end sample's job-terms and store claims read it instead of ``held``/
     # ``notifications``, which stay at their chat-phase values (#2375).
     cycles: list[CycleSnapshot] = Field(default_factory=list)
+    # How many of the script's turns were actually SENT, for an end-to-end sample — the first
+    # unconditionally, every one after it only while no job existed yet (#2494).  A pure chat
+    # or collector sample leaves the default: this is the end-to-end driver's own count, read
+    # nowhere else.
+    turns_driven: int = 0
 
     @property
     def stored_text(self) -> str:
@@ -620,6 +625,14 @@ ROUTINE_NAME = Feature(
     absent="none",
 )
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
+# How many of an end-to-end script's turns were actually sent (#2494) — a Penny who stands
+# the job up on the first turn and a Penny who asks first and is walked through it both reach
+# the same claims, so a different count is not a different end state: it is the mechanism's
+# own spread, reported beside the routine naming spread rather than read as a fact about any
+# one sample.
+TURNS_DRIVEN = Feature(
+    "turns sent", lambda o: str(o.turns_driven), consequence=Consequence.COSMETIC
+)
 # The CONVERSATION MACHINE's walk, as a chat observer reads it: ``no move`` is what it returns
 # for a sample whose machine recorded no transition at all, so the blindness guard has a
 # reading it can actually fire on.

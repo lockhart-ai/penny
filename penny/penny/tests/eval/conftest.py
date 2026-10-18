@@ -3994,12 +3994,16 @@ class EndToEndArm(NamedTuple):
     """ONE arm of an end-to-end cohort: a scripted wording of the whole conversation, and the
     job's own cycles that follow it.
 
-    ``turns`` is this wording's WHOLE script, driven for real, one after another, on one
-    Penny — a cold ask, any turns a routine still has to be taught or re-pointed through, and
-    the message that gives the job its terms.  Each turn is written to read sensibly against
-    whatever Penny actually said back to the one before it, since the arm drives her real
-    reply rather than a scripted one.  ``seed``/``world`` lay the chat phase's ground down —
-    an empty machine, or a job already configured and running elsewhere.  ``cycles`` is the
+    ``turns`` is this wording's WHOLE script — the first turn is the whole natural ask (the
+    page, what to watch, the cadence, the end, and "tell me when it changes"), and every turn
+    after it is a FOLLOW-UP: driven only while no job has been created yet THIS RUN, read
+    structurally off the registry before it is sent (#2494).  A Penny who stands the job up
+    on the first turn is driven once; a Penny who asks first is driven through whatever
+    follow-ups the script still needs — the walkthrough, then an acceptance restating the
+    terms, or a plain agreement.  Each turn is written to read sensibly against whatever
+    Penny actually said back to the one before it, since the arm drives her real reply rather
+    than a scripted one.  ``seed``/``world`` lay the chat phase's ground down — an empty
+    machine, or a job already configured and running elsewhere.  ``cycles`` is the
     created job's OWN real cycles that follow the script, each against its own browse
     register: the page as taught, then however the case asks it to move."""
 
@@ -4017,6 +4021,41 @@ def _discover_the_new_jobs(db: Database, before: set[str]) -> list[str]:
     else entirely (#2375), so the driver finds whatever the round built rather than look up a
     name it was told in advance."""
     return _scheduled_by_this_round(db, before)
+
+
+def _no_job_created_yet(db: Database, before: set[str]) -> bool:
+    """Whether the script has stood up NO job yet this run — the structural gate a follow-up
+    turn is driven under (#2494).  The same registry read ``_discover_the_new_jobs`` makes at
+    the script's end, called again before every turn after the first: a Penny who already
+    created a job on an earlier turn gets no further turns driven at her, a Penny who hasn't
+    gets the next one."""
+    return not _discover_the_new_jobs(db, before)
+
+
+async def _drive_end_to_end_script(
+    penny: Penny,
+    server: MockSignalServer,
+    *,
+    turns: Sequence[str],
+    before: set[str],
+    timeout: float,
+    retryable: bool,
+) -> tuple[str, int]:
+    """Drive one arm's WHOLE script for real: the first turn unconditionally, then every
+    further turn only while no job has been created yet this run (#2494).
+
+    Returns the LAST reply actually driven and how many turns were sent — the count becomes
+    the ``TURNS_DRIVEN`` variance feature, since a Penny who stands the job up on turn one and
+    a Penny who asks first and is walked through it are both measured on the same claims, and
+    only differ in how many turns it took."""
+    reply = ""
+    sent = 0
+    for turn in turns:
+        if sent and not _no_job_created_yet(penny.db, before):
+            break
+        reply = await _drive_turns(penny, server, [turn], timeout=timeout, retryable=retryable)
+        sent += 1
+    return reply, sent
 
 
 async def _drive_end_to_end_cycles(
@@ -4076,6 +4115,7 @@ def _observe_end_to_end(
     per_job: list[_DrivenCycles],
     cycles: list[eval_cohort.CycleSnapshot],
     seeded_replies: int,
+    turns_driven: int,
 ) -> eval_cohort.SampleObservation:
     """Everything an end-to-end sample left behind, read while its database is still live —
     the chat phase's own reads (the machine walk, the mechanisms, what it wrote, what it said)
@@ -4119,6 +4159,7 @@ def _observe_end_to_end(
         given=given_to_the_model(db),
         notifications=sent,
         cycles=cycles,
+        turns_driven=turns_driven,
     )
 
 
@@ -4147,7 +4188,9 @@ async def _drive_end_to_end_sample(
     # run's replies (#2375).
     seeded_replies = len(outgoing_replies(penny.db))
     before = collection_names(penny.db)
-    reply = await _drive_turns(penny, server, arm.turns, timeout=timeout, retryable=retryable)
+    reply, turns_driven = await _drive_end_to_end_script(
+        penny, server, turns=arm.turns, before=before, timeout=timeout, retryable=retryable
+    )
     jobs = _discover_the_new_jobs(penny.db, before)
     if jobs:
         cycles, per_job = await _drive_end_to_end_cycles(penny, jobs, arm.cycles)
@@ -4157,8 +4200,15 @@ async def _drive_end_to_end_sample(
     # sample that built no job or ran no cycle is COMPLETE — see ``_observe_end_to_end``.
     result = SampleResult.graded([])
     _stamp_cause(penny.db, result)
+    # ``driven`` is only the turns ACTUALLY sent — a script whose first turn stood the job up
+    # drove one, never the follow-ups the report would otherwise show as having been said.
     _write_sample_report(
-        penny.db, case_id, sample_index, result=result, reply=reply, driven=list(arm.turns)
+        penny.db,
+        case_id,
+        sample_index,
+        result=result,
+        reply=reply,
+        driven=list(arm.turns[:turns_driven]),
     )
     result.observation = observe(
         penny.db,
@@ -4168,6 +4218,7 @@ async def _drive_end_to_end_sample(
         per_job=per_job,
         snapshots=cycles,
         seeded_replies=seeded_replies,
+        turns_driven=turns_driven,
     )
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
@@ -4251,6 +4302,7 @@ def end_to_end_eval(
                 per_job: list[_DrivenCycles],
                 snapshots: list[eval_cohort.CycleSnapshot],
                 seeded_replies: int,
+                turns_driven: int,
             ) -> eval_cohort.SampleObservation:
                 return _observe_end_to_end(
                     db,
@@ -4263,6 +4315,7 @@ def end_to_end_eval(
                     per_job=per_job,
                     cycles=snapshots,
                     seeded_replies=seeded_replies,
+                    turns_driven=turns_driven,
                 )
 
             return await _drive_end_to_end_sample(

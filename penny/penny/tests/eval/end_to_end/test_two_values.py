@@ -1,9 +1,15 @@
-"""End-to-end: a known routine, with both of its values changed by the ask (#2375).
+"""End-to-end: a known routine, with both of its values changed by the ask (#2375, follow-up
+added #2494).
 
 **The declared second kind** `docs/eval-case-design.md` names: a SCRIPT of real chat turns —
-here a single cold ask that changes BOTH of the routine's varying values, the page and the
-thing to look for on it — followed by the job that turn stood up, run through its OWN real
-cycles against that page.
+here a cold ask that changes BOTH of the routine's varying values, the page and the thing to
+look for on it, in one turn — with a FOLLOW-UP agreement driven only while no job has been
+created yet this run — then the job the script stood up, run through its OWN real cycles
+against that page.
+
+The follow-up answers a Penny who offers before acting on a two-parameter rebind: she may
+land on an offer ("set it up on the new page and line?") rather than creating the job on the
+cold ask alone, and a one-turn script would never answer it.
 
 The known routine is the ferry timetable watcher — represented structurally (#2455 naive
 baseline: there is no skill registry left to teach it into) by a collection ALREADY RUNNING
@@ -19,9 +25,11 @@ This is deliberately the two-value cold stand-up — the suite's least stable sh
 the ``-two-params`` quarantine in ``test_known_routine_new_space.py`` — asked end to end,
 through the job's own cycles.  Findings are the point; the numbers go to the code owner.
 
-**Claims read only:** what the store's entries hold after each cycle, what reached the user,
-the created job's own terms (cadence, end, notify), and provenance — never which collection
-the job sits on.
+**Claims read only:** what reached the user (the chat phase's replies and the job's own
+sends), the created job's own terms (cadence, end, notify), and provenance of everything
+sent or replied — never what a cycle left in the store, which is hers to keep as she wishes
+and is measured, not claimed (``ENTRIES_STORED``, #2490), nor which collection the job sits
+on.
 
 **The pages are real-size** — several kilobytes, the watched line among the notices a real
 harbour page carries.  The night sailing's two times are mutually exclusive as numerals, and
@@ -39,7 +47,7 @@ import pytest
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
-from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at, seed_known_routine
+from penny.tests.eval.end_to_end.world import END_TO_END_WALK, seed_known_routine, sent_at
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -47,6 +55,7 @@ from penny.tests.eval.utils.cohort import (
     JOB_TERMS,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
+    TURNS_DRIVEN,
     SampleObservation,
     SpecCategory,
 )
@@ -136,7 +145,7 @@ _FAMILY = "end-to-end"
 
 _BEHAVIOUR = (
     "In a job stood up from a routine Penny already knows, when the ask changes both the page "
-    "and the thing to look for, the job's cycles record the new thing from the new page."
+    "and the thing to look for, the user is told the new thing from the new page."
 )
 
 # ── The new page the ask names, and the two readings its cycles see ──────────
@@ -147,7 +156,8 @@ _NEW_URL = "https://harborferries.example/seasonal-sailings"
 # literal the seed below writes into the old job's own entry, so the page and the
 # held value cannot drift apart.
 _OLD_ITEM_LINE = _FERRY_OLD_ITEM_VALUE
-# The marker the "not the old item's" claim reads — a stable substring of the old item's line.
+# The marker the "not the late sailing's" half of the first-cycle claim reads — a stable
+# substring of the old item's line.
 _OLD_ITEM_MARKER = "not scheduled"
 
 # The NEW item, and the two readings its value takes.
@@ -234,6 +244,11 @@ _CADENCE_TOKEN = "hour"
 _END_TOKEN = "sunday night"
 _TELLING_CLAUSES = ("let me know", "tell me", "message")
 
+# The FOLLOW-UP (#2494): driven only while the cold ask above hasn't already created the job —
+# the answer to a Penny who offers to rebind the routine onto the new page and line and waits,
+# rather than acting on the cold ask's own terms.
+_AGREEMENT = "yes, set it up as a new job on that page and line"
+
 
 def _assert_every_wording_carries_the_facts() -> None:
     """Every one of the five wordings carries the facts the claims below read — the page, the
@@ -252,8 +267,9 @@ def _assert_every_wording_carries_the_facts() -> None:
             f"{_CASE_ID}: this wording names the old item — {ask!r}"
         )
     # The new page must actually carry the old item's line at the taught value — that is what
-    # makes the "not the old item's" claim below able to fail — and each of the new item's
-    # times must appear exactly once on its own page (``datum`` enforces the second).
+    # makes the "not the late sailing's" half of the first-cycle claim below able to fail —
+    # and each of the new item's times must appear exactly once on its own page (``datum``
+    # enforces the second).
     assert _OLD_ITEM_MARKER in _BASELINE_PAGE.text, (
         f"{_CASE_ID}: the new page carries no old item, so the negative half of the first "
         "cycle's claim has nothing to be false of"
@@ -297,38 +313,74 @@ def _seed(db: Database) -> None:
 
 
 _ARMS = tuple(
-    EndToEndArm(label=ask, turns=(ask,), seed=_seed, world=_WORLD, cycles=_CYCLES) for ask in _ASKS
+    EndToEndArm(
+        label=ask,
+        turns=(ask, _AGREEMENT),
+        seed=_seed,
+        world=_WORLD,
+        cycles=_CYCLES,
+    )
+    for ask in _ASKS
 )
 
 
 # ── The claims ───────────────────────────────────────────────────────────────
 
 
-def _store_holds_the_new_item_not_the_old(sample: SampleObservation, _world: World) -> Answer:
-    """After the first cycle the store holds the night sailing's time — and not the late
-    sailing's, whose line sits on the same page at the value the routine was taught on."""
-    held = held_text_at(sample.cycles, 0)
-    ok = _NEW_BASELINE_TIME in held and _OLD_ITEM_MARKER not in held
-    return ok, f"expected {_NEW_BASELINE_TIME} and not {_OLD_ITEM_MARKER!r}; held {held!r}"
+def _told_the_night_sailing_time_by_the_first_cycle(
+    sample: SampleObservation, _world: World
+) -> Answer:
+    """By the end of the first cycle the user has been told the night sailing's time — and
+    not the late sailing's, whose line sits on the same page at the value the routine was
+    taught on.
+
+    The positive half reads the night sailing's time in any chat reply OR any notification so
+    far: the chat phase's replies with every cycle's own send stripped back out (``reply``
+    joins both), then the messages the first cycle put on the queue — nothing from a later
+    cycle counts, because "by the end of the first cycle" is the claim's own bound.  The
+    negative half reads the same surfaces for the late sailing's marker: a cycle that read
+    the wrong line on the right page told the user the wrong thing."""
+    chat_replies = sample.reply
+    for message in sample.notifications:
+        if message in chat_replies:
+            chat_replies = chat_replies.replace(message, "")
+    notifications_so_far = sent_at(sample.cycles, 0)
+    told_surfaces = [chat_replies, *notifications_so_far]
+    night = any(_NEW_BASELINE_TIME in surface for surface in told_surfaces)
+    late = any(_OLD_ITEM_MARKER in surface for surface in told_surfaces)
+    return night and not late, (
+        f"the night sailing's {_NEW_BASELINE_TIME} told: {night}; "
+        f"the late sailing's line told: {late}"
+    )
 
 
-def _store_holds_the_moved_time(sample: SampleObservation, _world: World) -> Answer:
-    """After the second cycle the store holds the night sailing's moved time — the old item's
-    line stayed put on the page, so only the watched value's movement is there to record."""
-    held = held_text_at(sample.cycles, 1)
-    return _NEW_MOVED_TIME in held, f"expected {_NEW_MOVED_TIME}; held {held!r}"
+def _told_the_moved_time_when_it_moved(sample: SampleObservation, _world: World) -> Answer:
+    """When the time moved, the user was told the moved time — the messages sent on the
+    second cycle carry the moved departure the page now posts.  Read off the cycle's own
+    sends, so a cycle that ran and sent nothing, or sent the old time, fails here."""
+    sent = sent_at(sample.cycles, 1)
+    told = [message for message in sent if _NEW_MOVED_TIME in message]
+    return bool(told), f"sent on the moved cycle: {sent}; carrying {_NEW_MOVED_TIME}: {told}"
 
 
-_MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
+_MEASURED = (
+    END_TO_END_WALK,
+    TOOL_SEQUENCE,
+    ENTRIES_STORED,
+    JOB_TERMS,
+    REPLY_SPREAD,
+    TURNS_DRIVEN,
+)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_known_routines_job_records_the_new_thing_from_the_new_page(
     end_to_end_eval: EndToEndEval, model: str
 ) -> None:
-    """One cold ask changing BOTH of the routine's varying values — the page and the line to
-    look for on it — with terms; then the job that ask stood up runs for real across the new
-    page, whose watched value holds, then moves, while the taught line beside it stays put."""
+    """A cold ask changing BOTH of the routine's varying values — the page and the line to
+    look for on it — with terms, and an agreement driven only while no job exists yet; then
+    the job the script stood up runs for real across the new page, whose watched value
+    holds, then moves, while the taught line beside it stays put."""
     cohort = await end_to_end_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
@@ -344,22 +396,27 @@ async def test_a_known_routines_job_records_the_new_thing_from_the_new_page(
     cohort.assert_a_new_job_notifies()
     cohort.assert_a_new_job_ends_when_asked(_ASKED_END)
 
-    # STORE — the two cycles, each read as what the created job(s) held at that position,
-    # union over however many jobs the script created.
+    # SENT — the two cycles, each read as what reached the user at that position, union
+    # over however many jobs the script created.  What a cycle left in the store is hers,
+    # measured as variance (``ENTRIES_STORED``), never claimed (#2490).
     cohort.claim(
-        "state: after the first cycle the store holds the night sailing's time, not the late "
-        "sailing's",
-        _store_holds_the_new_item_not_the_old,
+        "state: by the end of the first cycle the user has been told the night sailing's "
+        "time, and not the late sailing's",
+        _told_the_night_sailing_time_by_the_first_cycle,
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: after the second cycle the store holds the night sailing's moved time",
-        _store_holds_the_moved_time,
+        "state: when the time moved, the user was told the moved time",
+        _told_the_moved_time_when_it_moved,
         SpecCategory.STORE,
     )
 
+    # UNDISTURBED — the ferry job already running before the ask is left as it was (#2490's
+    # addendum): read off the mutation ledger, so a rebind, a schedule change, a notify flip,
+    # a moved end and an archive all answer it the same way.
+    cohort.assert_the_running_mechanisms_survive()
+
     # PROVENANCE
-    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

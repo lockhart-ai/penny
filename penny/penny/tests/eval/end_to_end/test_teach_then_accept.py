@@ -1,9 +1,16 @@
-"""End-to-end: a watch taught in chat, then run (#2375).
+"""End-to-end: a cold ask for a price watch (#2375, restated #2494).
 
 **The declared second kind** `docs/eval-case-design.md` names: a SCRIPT of real chat turns —
-a cold ask for a watch, the user's walkthrough once Penny asks to be taught, and an acceptance
-giving the job its terms — followed by the job those turns created, run through its OWN real
-cycles against a page that holds, then moves.
+whose FIRST turn is the whole natural ask (the page, the cadence, the end, and "tell me when
+it changes"), followed by whatever a routine still has to be taught through, driven ONLY
+while no job has been created yet this run — then the job those turns created, run through
+its OWN real cycles against a page that holds, then moves.
+
+A Penny who stands the job up from the first turn is driven once; a Penny who asks to be
+taught first gets the walkthrough and an acceptance restating the terms, same as today.
+Both are measured on the same claims, and how many turns it took is itself a measured
+feature (``TURNS_DRIVEN``) rather than a fact about either mechanism (#2494's ruling — the
+case states the goal, not the cycle a particular implementation happens to need).
 
 No routine, no job and no collection exist before the script runs: the world is COLD, so
 whatever container the round builds, whatever it names the routine, and which collection the
@@ -11,10 +18,12 @@ turns land the job on are all left to the model and read nowhere a claim depends
 driver finds the created job STRUCTURALLY (``end_to_end_eval``'s own read of whichever
 collection the script scheduled) and runs ITS cycles; the claims below never name it.
 
-**Claims read only:** what the store's entries hold after each cycle, what reached the user,
-the created job's own terms (cadence, end, notify), and provenance — never which collection
-the job sits on, the routine's shape or bound values, or which conversation-machine states the
-script passed through on the way (#2375's ruling).
+**Claims read only:** what reached the user (the chat phase's replies and the job's own
+sends), the created job's own terms (cadence, end, notify), and provenance of everything
+sent or replied — never what a cycle left in the store, which is hers to keep as she wishes
+and is measured, not claimed (``ENTRIES_STORED``, #2490), nor which collection the job sits
+on, the routine's shape or bound values, or which conversation-machine states the script
+passed through on the way (#2375's ruling).
 
 **The page is real-size** — several kilobytes, a labelled current-price line among a handful
 of other prices the page carries for unrelated items, specs, seller notes and a returns
@@ -33,7 +42,7 @@ import pytest
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
-from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at, ran_at, sent_at
+from penny.tests.eval.end_to_end.world import END_TO_END_WALK, ran_at, sent_at
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -41,6 +50,7 @@ from penny.tests.eval.utils.cohort import (
     JOB_TERMS,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
+    TURNS_DRIVEN,
     SampleObservation,
     SpecCategory,
 )
@@ -50,14 +60,13 @@ from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
-_CASE_ID = "end-to-end-teach-then-accept"
+_CASE_ID = "end-to-end-cold-ask"
 _FAMILY = "end-to-end"
 
 _BEHAVIOUR = (
-    "In a job taught in chat, when the user asks for a watch, walks Penny through it once "
-    "and accepts her offer with terms, Penny stands up a job on those terms whose cycles "
-    "keep the reading she was taught, stay quiet while the page holds, and replace the "
-    "reading and tell the user when it moves."
+    "In a cold ask for a price watch, when the user gives the page, the cadence, the end "
+    "and the tell-me in one turn, Penny stands up a job on those terms, whose cycles stay "
+    "quiet while the page holds and tell the user the new price when it moves."
 )
 
 # ── The page the demonstration reads, and the two readings its cycles see ────
@@ -134,37 +143,49 @@ _WORLD = World(name=_CASE_ID, pages=(_BASELINE_PAGE,), keeps=(), excludes=())
 _CADENCE_SECONDS = 3600
 _ASKED_END = until_tonight_at(22)
 
-# ── The five scripts: one cold ask, one walkthrough, one acceptance — five wordings ──
+# ── The five scripts: one cold ask carrying ALL the terms, then two FOLLOW-UPS ──
 #
-# What varies is how a person says each of the three turns: which verb opens the ask, how the
-# walkthrough names the three actions, which word the acceptance opens with.  What does NOT
-# vary is the url (named in both the ask and the walkthrough), the walkthrough's three actions
-# against that one page, and the acceptance's cadence, end and telling clause — every wording
-# carries all of them, because the claims below hinge on them.
+# Turn 1 is the whole natural ask (#2494): the page, the cadence, the end and "tell me" all
+# ride together, so a Penny who acts on it alone needs nothing further.  Turns 2 and 3 are
+# unchanged from the old flow's walkthrough and acceptance — a Penny who asks to be taught
+# first still gets them, driven only while no job exists yet; the acceptance RESTATES the
+# terms, the way an acceptance answering an offer naturally would.
+#
+# What varies is how a person says each turn: which verb opens the cold ask, how the
+# walkthrough names its three actions, which word the acceptance opens with.  What does NOT
+# vary is the url (named in the cold ask and the walkthrough), the cold ask's own cadence,
+# end and telling clause, the walkthrough's three actions against that one page, and the
+# acceptance's cadence, end and telling clause — every wording carries all of them, because
+# the claims below hinge on them.
 _SCRIPTS: tuple[tuple[str, str, str], ...] = (
     (
-        f"can you watch this for me and let me know when the price changes? {_URL}",
+        f"can you watch this for me, checking it every hour until 10pm tonight, and let me "
+        f"know when the price changes? {_URL}",
         f"sure — open {_URL}, find the current price, and remember it",
         "yes please — check it every hour until 10pm tonight and let me know if the price changes",
     ),
     (
-        f"could you keep an eye on this listing and tell me if the price moves? {_URL}",
+        f"could you keep an eye on this listing every hour until 10pm tonight and message me "
+        f"if the price moves? {_URL}",
         f"ok — head to {_URL}, see what the current price is, and keep it",
         "sounds good — do that every hour until 10pm tonight and message me if it changes",
     ),
     (
-        f"i'd like you to watch this page for price changes and tell me when it happens: {_URL}",
+        f"i'd like you to watch this page for price changes, checking it hourly until 10pm "
+        f"tonight, and let me know when it happens: {_URL}",
         f"yep — go to {_URL}, check the current price, and save it",
         "great, go ahead — check it hourly until 10pm tonight and let me know when the price "
         "changes",
     ),
     (
-        f"track this for me and let me know when the price changes, please — {_URL}",
+        f"track this for me every hour until 10pm tonight and tell me if the price moves, "
+        f"please — {_URL}",
         f"alright — visit {_URL}, note the current price, and hang on to it",
         "yeah do that — every hour until 10pm tonight, and tell me if it moves",
     ),
     (
-        f"can you monitor this listing's price and give me a heads up when it changes? {_URL}",
+        f"can you monitor this listing's price every hour until 10pm tonight and message me "
+        f"the moment it changes? {_URL}",
         f"sure thing — read {_URL}, pull the current price off it, and remember that",
         "perfect — run that every hour until 10pm tonight and message me the moment it changes",
     ),
@@ -176,18 +197,18 @@ _TELLING_CLAUSES = ("let me know", "message", "tell me")
 
 
 def _assert_every_script_carries_the_facts() -> None:
-    """Every one of the five scripts' three turns carries the facts the claims below read —
-    the url in the ask and the walkthrough, and the acceptance's cadence, end and telling
-    clause — so a dropped fact fails in this assertion rather than as a puzzling score after a
+    """Every one of the five scripts' cold ask carries ALL the facts the claims below read —
+    the url, the cadence, the end and a telling clause — and the walkthrough still names the
+    url, so a dropped fact fails in this assertion rather than as a puzzling score after a
     paid run."""
-    for ask, walkthrough, acceptance in _SCRIPTS:
-        assert _URL in ask, f"{_CASE_ID}: this ask names no page — {ask!r}"
-        assert _URL in walkthrough, f"{_CASE_ID}: this walkthrough names no page — {walkthrough!r}"
-        missing = [token for token in (_CADENCE_TOKEN, _END_TOKEN) if token not in acceptance]
-        assert not missing, f"{_CASE_ID}: this acceptance gives none of {missing} — {acceptance!r}"
-        assert any(clause in acceptance for clause in _TELLING_CLAUSES), (
-            f"{_CASE_ID}: this acceptance never asks to be told — {acceptance!r}"
+    for ask, walkthrough, _acceptance in _SCRIPTS:
+        assert _URL in ask, f"{_CASE_ID}: this cold ask names no page — {ask!r}"
+        missing = [token for token in (_CADENCE_TOKEN, _END_TOKEN) if token not in ask]
+        assert not missing, f"{_CASE_ID}: this cold ask gives none of {missing} — {ask!r}"
+        assert any(clause in ask for clause in _TELLING_CLAUSES), (
+            f"{_CASE_ID}: this cold ask never asks to be told — {ask!r}"
         )
+        assert _URL in walkthrough, f"{_CASE_ID}: this walkthrough names no page — {walkthrough!r}"
 
 
 _assert_every_script_carries_the_facts()
@@ -212,11 +233,6 @@ _ARMS = tuple(
 
 
 # ── The claims ───────────────────────────────────────────────────────────────
-
-
-def _store_holds_the_first_reading(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 0)
-    return _BASELINE_AMOUNT in held, f"expected {_BASELINE_AMOUNT}; held {held!r}"
 
 
 def _told_the_price_by_the_first_cycle(sample: SampleObservation, _world: World) -> Answer:
@@ -244,11 +260,6 @@ def _told_the_price_by_the_first_cycle(sample: SampleObservation, _world: World)
     )
 
 
-def _store_still_holds_the_first_reading(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 1)
-    return _BASELINE_AMOUNT in held, f"expected {_BASELINE_AMOUNT}; held {held!r}"
-
-
 def _nothing_sent_on_the_second_cycle(sample: SampleObservation, _world: World) -> Answer:
     """Nothing was sent on the SECOND cycle, while the page held — with the demonstration's
     own write already in the store, both the first and second cycles are looks at a value
@@ -263,26 +274,37 @@ def _nothing_sent_on_the_second_cycle(sample: SampleObservation, _world: World) 
     return ran and not sent, f"cycle ran: {ran}; sent on it: {sent}"
 
 
-def _store_holds_the_moved_reading_only(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 2)
-    ok = _MOVED_AMOUNT in held and _BASELINE_AMOUNT not in held
-    return ok, f"expected {_MOVED_AMOUNT} and not {_BASELINE_AMOUNT}; held {held!r}"
-
-
 def _told_once_more_when_it_moved(sample: SampleObservation, _world: World) -> Answer:
     sent = sent_at(sample.cycles, 2)
     return len(sent) == 1, f"{len(sent)} messages sent on the moved cycle: {sent}"
 
 
-_MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
+def _told_the_new_price_when_it_moved(sample: SampleObservation, _world: World) -> Answer:
+    """When the price moved, the user was told the NEW price — the message sent on the third
+    cycle carries the moved amount the page now posts.  Read off the cycle's own sends, so a
+    cycle that ran and sent nothing, or sent the old reading, fails here."""
+    sent = sent_at(sample.cycles, 2)
+    told = [message for message in sent if _MOVED_AMOUNT in message]
+    return bool(told), f"sent on the moved cycle: {sent}; carrying {_MOVED_AMOUNT}: {told}"
+
+
+_MEASURED = (
+    END_TO_END_WALK,
+    TOOL_SEQUENCE,
+    ENTRIES_STORED,
+    JOB_TERMS,
+    REPLY_SPREAD,
+    TURNS_DRIVEN,
+)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
+async def test_a_cold_ask_for_a_price_watch_is_run_through_its_own_cycles(
     end_to_end_eval: EndToEndEval, model: str
 ) -> None:
-    """A cold ask, a walkthrough and an acceptance with terms — all driven for real — then the
-    job those turns created runs for real across a page that holds, then moves."""
+    """A cold ask carrying the page, the cadence, the end and the tell-me in one turn — with
+    a walkthrough and an acceptance driven only while no job exists yet — then the job the
+    script created runs for real across a page that holds, then moves."""
     cohort = await end_to_end_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
@@ -302,21 +324,12 @@ async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
     cohort.assert_a_new_job_notifies()
     cohort.assert_a_new_job_ends_when_asked(_ASKED_END)
 
-    # STORE — the three cycles, each read as what the created job(s) held and sent at that
-    # position, union over however many jobs the script created.
-    cohort.claim(
-        "state: after the first cycle the store holds the page's price",
-        _store_holds_the_first_reading,
-        SpecCategory.STORE,
-    )
+    # SENT — the three cycles, each read as what reached the user at that position, union
+    # over however many jobs the script created.  What a cycle left in the store is hers,
+    # measured as variance (``ENTRIES_STORED``), never claimed (#2490).
     cohort.claim(
         "state: by the end of the first cycle the user has been told the page's price",
         _told_the_price_by_the_first_cycle,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: after the second cycle the store still holds that price",
-        _store_still_holds_the_first_reading,
         SpecCategory.STORE,
     )
     cohort.claim(
@@ -325,18 +338,17 @@ async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: after the third cycle the store holds the new price, not the old",
-        _store_holds_the_moved_reading_only,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
         "state: the user was told once more when the price moved",
         _told_once_more_when_it_moved,
         SpecCategory.STORE,
     )
+    cohort.claim(
+        "state: when the price moved, the user was told the new price",
+        _told_the_new_price_when_it_moved,
+        SpecCategory.STORE,
+    )
 
     # PROVENANCE
-    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
