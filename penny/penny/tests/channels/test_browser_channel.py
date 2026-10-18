@@ -20,10 +20,12 @@ from penny.constants import ChannelType, PageReading, PennyConstants, Permission
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
+from penny.llm.call_link import CallLink
 from penny.tests.conftest import require_memory, wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.browse import BrowseTool
+from penny.tools.collection_instantiation import describe_schedule
 from penny.tools.models import ToolResult
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
@@ -214,7 +216,9 @@ class TestBrowseTool:
             )
         )
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert "Page content." in result.message
@@ -243,7 +247,9 @@ class TestBrowseTool:
             author="penny",
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
-        result = await tool.execute(queries=["https://ex.com/r"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://ex.com/r"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert not hasattr(result, "image_base64")
@@ -288,7 +294,9 @@ class TestBrowseTool:
         request_fn = AsyncMock(return_value=(kagi_content, None, PageReading.ARTICLE))
         tool = self._make_tool(request_fn)
         result = await tool.execute(
-            queries=["https://kagi.com/search?q=test"], extract="the page content"
+            CallLink.new_top(),
+            queries=["https://kagi.com/search?q=test"],
+            extract="the page content",
         )
 
         assert isinstance(result, ToolResult)
@@ -320,7 +328,9 @@ class TestBrowseTool:
             author="penny",
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert _all_media(db) == []
@@ -334,7 +344,9 @@ class TestBrowseTool:
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
         request_fn = AsyncMock(side_effect=RuntimeError("extraction failed after 10 retries"))
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         # The only query errored, so the call did nothing: success=False makes that
@@ -364,7 +376,9 @@ class TestBrowseTool:
 
         tool = self._make_tool(request_fn)
         result = await tool.execute(
-            queries=["https://good.com", "https://bad.com"], extract="the page content"
+            CallLink.new_top(),
+            queries=["https://good.com", "https://bad.com"],
+            extract="the page content",
         )
 
         assert result.success is True
@@ -382,6 +396,7 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn)  # max_calls=3
 
         result = await tool.execute(
+            CallLink.new_top(),
             queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
             extract="the page content",
         )
@@ -403,7 +418,9 @@ class TestBrowseTool:
             return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
         )
         tool = self._make_tool(request_fn, permission_manager=mock_perm)
-        await tool.execute(queries=["https://example.com"], extract="the page content")
+        await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         mock_perm.check_domain.assert_called_once_with("https://example.com")
         request_fn.assert_called_once()
@@ -419,7 +436,9 @@ class TestBrowseTool:
         request_fn = AsyncMock()
         tool = self._make_tool(request_fn, permission_manager=mock_perm)
 
-        result = await tool.execute(queries=["https://blocked.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://blocked.com"], extract="the page content"
+        )
 
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.message
         assert "blocked" in result.message
@@ -437,7 +456,9 @@ class TestBrowseTool:
             return ("", None, PageReading.ARTICLE)
 
         tool = self._make_tool(hanging_request_fn)
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
@@ -475,7 +496,9 @@ class TestBrowseToolMediaCapture:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
 
         result = await tool.execute(
-            queries=["https://a.com", "https://b.com"], extract="the page content"
+            CallLink.new_top(),
+            queries=["https://a.com", "https://b.com"],
+            extract="the page content",
         )
         assert isinstance(result, ToolResult)
         rows = sorted(_all_media(db), key=lambda r: r.source_url or "")
@@ -1327,6 +1350,45 @@ class TestBrowserPushBroadcasts:
         channel._on_run_outcome_set("run-1", "worked", "wrote 2 entries")
         channel._on_prompt_logged({"run_id": "run-1"})
 
+    @pytest.mark.asyncio
+    async def test_live_step_markers_reach_every_connected_addon(self, db):
+        """call_started/tool_started/tool_finished (#2439) broadcast through the
+        SAME chokepoint every other push does — a connected addon gets all
+        three, going through `LlmClient.chat()`/the tool dispatcher exactly as
+        production fires them, not a hand-built payload."""
+        channel = self._channel(db)
+        live = _MockWs()
+        self._connect(channel, "firefox-live", live)
+
+        before = asyncio.all_tasks()
+        db.messages.publish_call_started(
+            run_id="run-1",
+            parent_run_id=None,
+            parent_tool_call_id=None,
+            agent_name="chat",
+            prompt_type="idle",
+            model="test-model",
+            run_target=None,
+        )
+        db.messages.publish_tool_started(
+            run_id="run-1", tool_call_id="call-1", tool_name="search", status="Searching…"
+        )
+        db.messages.publish_tool_finished(
+            run_id="run-1",
+            tool_call_id="call-1",
+            tool_name="search",
+            status="Searching…",
+            success=True,
+        )
+        await self._settle(before)
+
+        assert [m["type"] for m in live.sent] == ["call_started", "tool_started", "tool_finished"]
+        assert live.sent[0]["run_id"] == "run-1"
+        assert live.sent[0]["agent_name"] == "chat"
+        assert live.sent[0]["model"] == "test-model"
+        assert live.sent[1]["tool_call_id"] == live.sent[2]["tool_call_id"] == "call-1"
+        assert live.sent[2]["success"] is True
+
 
 class TestBrowserPermissionDelegation:
     """BrowserChannel delegates permission checks to PermissionManager."""
@@ -1696,9 +1758,11 @@ class TestBrowserPromptLogHandlers:
         )
 
         response = await self._request_prompt_logs(channel)
-        # Each draw mints its OWN run_id for its own ledger attribution, so it
-        # also surfaces as its own (childless) run in the same page — pick "run1"
-        # out by id rather than assuming it's newest.
+        # Each draw mints its OWN run_id for its own ledger attribution — but it
+        # is a CHILD, never a top-level run in its own right (#2435): neither
+        # "draw-1" nor "draw-2" appears as its own entry in the page.
+        run_ids = {r["run_id"] for r in response["runs"]}
+        assert run_ids == {"run1"}
         run = next(r for r in response["runs"] if r["run_id"] == "run1")
 
         # The run's own prompt: made a tool call, carries no parent linkage.
@@ -1719,6 +1783,183 @@ class TestBrowserPromptLogHandlers:
         assert unanchored["parent_run_id"] == "run1"
         assert unanchored["parent_tool_call_id"] is None
         assert unanchored["made_tool_call"] is False  # a plain text reply, no tool call
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_started_at_is_the_first_calls_true_start(self, tmp_path):
+        """``started_at`` is the run's REAL start — the first call's own
+        ``timestamp - duration_ms`` — not the raw logged timestamp, which
+        ``PromptLog.timestamp`` stamps when the call ENDS (#2438)."""
+        channel, db = self._channel(tmp_path)
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "hi"}}]},
+            agent_name="chat",
+            run_id="run1",
+            duration_ms=5_000,
+        )
+        with Session(db.engine) as session:
+            logged_at = (
+                session.exec(select(PromptLog).where(PromptLog.run_id == "run1")).one().timestamp
+            )
+
+        response = await self._request_prompt_logs(channel)
+        run = next(r for r in response["runs"] if r["run_id"] == "run1")
+        started_at = datetime.fromisoformat(run["started_at"])
+        assert started_at == logged_at - timedelta(milliseconds=5_000)
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_wall_time_spans_a_long_running_child_draw(self, tmp_path):
+        """The run's wall time reaches to the LATEST end across its own
+        prompts AND its child draws (#2438) — a round whose only own call was
+        quick but whose browse-extract draw read pages for minutes shows that
+        whole span, not just the quick call's own duration.  ``total_duration_ms``
+        ("model time") stays the run's own call only, unaffected by the draw —
+        the two numbers must read differently, on purpose."""
+        channel, db = self._channel(tmp_path)
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "b0",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "browse",
+                                        "arguments": json.dumps(
+                                            {"queries": ["https://example.test"], "extract": "x"}
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            agent_name="chat",
+            run_id="run1",
+            duration_ms=10,
+        )
+        with Session(db.engine) as session:
+            top = session.exec(select(PromptLog).where(PromptLog.run_id == "run1")).one()
+            draw_end = top.timestamp + timedelta(seconds=233)
+
+        # The draw dispatched on "b0"'s behalf — its own duration is small
+        # relative to how long after the run's own call it actually finished.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "extracted"}}]},
+            agent_name="browse-extract",
+            run_id="draw-1",
+            parent_run_id="run1",
+            parent_tool_call_id="b0",
+            duration_ms=1_000,
+        )
+        with Session(db.engine) as session:
+            draw_row = session.exec(select(PromptLog).where(PromptLog.run_id == "draw-1")).one()
+            draw_row.timestamp = draw_end
+            session.add(draw_row)
+            session.commit()
+
+        response = await self._request_prompt_logs(channel)
+        run = next(r for r in response["runs"] if r["run_id"] == "run1")
+        assert run["total_duration_ms"] == 10  # model time: the run's own call only
+        assert run["ended_at"] == draw_end.isoformat()
+        assert run["wall_duration_ms"] >= 233_000  # wall time: reaches the draw's own end
+        assert run["wall_duration_ms"] > run["total_duration_ms"]
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_carry_grandchild_draws(self, tmp_path):
+        """A draw made on behalf of ANOTHER draw (a micro-context nested inside a
+        micro-context, #2435) is still a descendant of the top-level run — found
+        by walking ``parent_run_id`` outward level by level, not just one hop —
+        and comes back flattened into that top-level run's own ``child_draws``,
+        each entry still carrying its OWN ``run_id``/``parent_run_id`` so the
+        addon can rebuild the full tree, to any depth, from those ids alone."""
+        channel, db = self._channel(tmp_path)
+        self._log_prompt(db, "chat", "run1")
+        # A direct child of run1 — e.g. browse-extract.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "page summary"}}]},
+            agent_name="browse-extract",
+            run_id="draw-child",
+            parent_run_id="run1",
+        )
+        # A GRANDCHILD — some future micro-context nested inside draw-child,
+        # named something this code has never heard of on purpose.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "nested detail"}}]},
+            agent_name="some-future-microcontext",
+            run_id="draw-grandchild",
+            parent_run_id="draw-child",
+        )
+
+        response = await self._request_prompt_logs(channel)
+        run = next(r for r in response["runs"] if r["run_id"] == "run1")
+        by_run_id = {d["run_id"]: d for d in run["child_draws"]}
+        assert set(by_run_id) == {"draw-child", "draw-grandchild"}
+        assert by_run_id["draw-grandchild"]["parent_run_id"] == "draw-child"
+        assert by_run_id["draw-grandchild"]["agent_name"] == "some-future-microcontext"
+        # Neither draw is ALSO listed as its own top-level run.
+        assert {r["run_id"] for r in response["runs"]} == {"run1"}
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_order_by_latest_activity_including_child_draws(self, tmp_path):
+        """A run's position in the page is its LATEST activity — its own prompts
+        OR a child draw made on its behalf, whichever is newer (#2435).  "old-run"'s
+        own last prompt is the oldest row in the whole table, but a draw lands on
+        its behalf after "new-run"'s own (newer) prompt — so old-run sorts first,
+        matching what the live push's reorder-on-update promises on screen."""
+        channel, db = self._channel(tmp_path)
+        self._log_prompt(db, "chat", "old-run")
+        self._log_prompt(db, "chat", "new-run")
+        # A draw on old-run's behalf, landing after both of the above.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "idle"}}]},
+            agent_name="state-classifier",
+            run_id="draw-on-old-run",
+            parent_run_id="old-run",
+        )
+
+        response = await self._request_prompt_logs(channel)
+        assert [r["run_id"] for r in response["runs"]] == ["old-run", "new-run"]
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_search_excludes_child_draw_runs(self, tmp_path):
+        """The search path (FTS) is the top-level-only rule's other code path —
+        a draw's own run_id never qualifies as a search hit in its own right,
+        even when its own content matches the query."""
+        channel, db = self._channel(tmp_path)
+        db.messages.log_prompt(
+            model="m",
+            messages=[{"role": "user", "content": "q"}],
+            response={"choices": [{"message": {"content": "basketball talk"}}]},
+            agent_name="chat",
+            run_id="run1",
+            duration_ms=1,
+        )
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "basketball draw"}}]},
+            agent_name="state-classifier",
+            run_id="draw-1",
+            parent_run_id="run1",
+        )
+
+        response = await self._request_prompt_logs(channel, {"query": "basketball"})
+        assert [r["run_id"] for r in response["runs"]] == ["run1"]
 
     @pytest.mark.asyncio
     async def test_prompt_logs_flagged_only(self, tmp_path):
@@ -1848,8 +2089,8 @@ class TestBrowserPromptLogHandlers:
         """_on_run_outcome_set callback fires with the structured outcome when set."""
         _, db = self._channel(tmp_path)
         received: list[tuple[str, str, str]] = []
-        db.messages._on_run_outcome_set = lambda run_id, outcome, reason: received.append(
-            (run_id, outcome, reason)
+        db.messages.subscribe_run_outcome_set(
+            lambda run_id, outcome, reason: received.append((run_id, outcome, reason))
         )
 
         self._log_prompt(db, "collector", "run1")
@@ -1859,10 +2100,16 @@ class TestBrowserPromptLogHandlers:
         assert received[0] == ("run1", "worked", "wrote 2 new games")
 
     def test_on_prompt_logged_callback(self, tmp_path):
-        """_on_prompt_logged callback fires with prompt data for prompts with run_id."""
+        """_on_prompt_logged callback fires with prompt data for prompts with run_id.
+
+        Two subscribers (#2441 — e.g. the browser extension AND an iOS channel, both
+        connected at once) both receive the same push rather than one overwriting
+        the other's slot."""
         _, db = self._channel(tmp_path)
         received: list[dict] = []
-        db.messages._on_prompt_logged = lambda data: received.append(data)
+        received_second: list[dict] = []
+        db.messages.subscribe_prompt_logged(lambda data: received.append(data))
+        db.messages.subscribe_prompt_logged(lambda data: received_second.append(data))
 
         # Prompt without run_id — no callback
         db.messages.log_prompt(
@@ -1872,8 +2119,9 @@ class TestBrowserPromptLogHandlers:
             agent_name="chat",
         )
         assert len(received) == 0
+        assert len(received_second) == 0
 
-        # Prompt with run_id — callback fires
+        # Prompt with run_id — callback fires for every subscriber
         db.messages.log_prompt(
             model="test",
             messages=[{"role": "user", "content": "hi"}],
@@ -1886,6 +2134,8 @@ class TestBrowserPromptLogHandlers:
         assert received[0]["run_id"] == "run1"
         assert received[0]["input_tokens"] == 50
         assert received[0]["output_tokens"] == 20
+        assert len(received_second) == 1
+        assert received_second[0]["run_id"] == "run1"
         # No tool call in that response, and no parent linkage — an ordinary
         # top-level call (#2434).
         assert received[0]["made_tool_call"] is False
@@ -1985,9 +2235,17 @@ class TestBrowserMemoryHandlers:
         assert by_name["board-games"]["entry_count"] == 1
         assert by_name["board-games"]["extraction_prompt"] == "extract games"
         assert by_name["board-games"]["schedule"] == "FREQ=MINUTELY;INTERVAL=5"
+        # The plain-words reading (#2428) the addon's schedule picker shows under its
+        # control (#2442) — no profile seeded in this DB, so timezone_name is None.
+        board_games_row = db.memories.get("board-games")
+        assert board_games_row is not None
+        assert by_name["board-games"]["schedule_description"] == describe_schedule(
+            board_games_row, None
+        )
         assert by_name["collector-runs"]["type"] == "log"
         assert by_name["collector-runs"]["entry_count"] == 1
         assert by_name["collector-runs"]["extraction_prompt"] is None
+        assert by_name["collector-runs"]["schedule_description"] is None
 
     @pytest.mark.asyncio
     async def test_memories_request_query_matches_name_or_entry_content(self, tmp_path):
@@ -2206,7 +2464,7 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection("board-games", "games")
 
         received: list[str | None] = []
-        db.memories._on_memory_changed = lambda name: received.append(name)
+        db.memories.subscribe_memory_changed(lambda name: received.append(name))
 
         require_memory(db, "board-games").write(
             [EntryInput(key="catan", content="A classic")],
@@ -2221,7 +2479,7 @@ class TestBrowserMemoryHandlers:
         _, db = self._channel(tmp_path)
         db.memories.create_log("notes", "scratch log")
         received: list[str | None] = []
-        db.memories._on_memory_changed = lambda name: received.append(name)
+        db.memories.subscribe_memory_changed(lambda name: received.append(name))
 
         require_memory(db, "notes").append([LogEntryInput(content="cycle x")], author="user")
 
@@ -2383,6 +2641,7 @@ class TestBrowserMemoryHandlers:
         channel, db = self._channel(tmp_path)
         asyncio.run(
             channel._handle_memory_create(
+                cast(Any, _MockWs()),
                 {
                     "type": "memory_create",
                     "name": "board-games",
@@ -2390,7 +2649,7 @@ class TestBrowserMemoryHandlers:
                     "published": True,
                     "extraction_prompt": "extract games",
                     "schedule": "FREQ=MINUTELY;INTERVAL=10",
-                }
+                },
             )
         )
         memory = db.memories.get("board-games")
@@ -2400,6 +2659,51 @@ class TestBrowserMemoryHandlers:
         assert memory.extraction_prompt == "extract games"
         assert memory.schedule == "FREQ=MINUTELY;INTERVAL=10"
 
+    def test_memory_create_lifts_count_into_max_runs(self, tmp_path):
+        """A custom schedule's COUNT= is lifted into max_runs on create (#1857's
+        atomic rule+quota pairing), not left orphaned behind a schedule text
+        that promises a run limit the row doesn't enforce (#2442)."""
+        channel, db = self._channel(tmp_path)
+        asyncio.run(
+            channel._handle_memory_create(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_create",
+                    "name": "board-games",
+                    "description": "board games",
+                    "schedule": "FREQ=DAILY;BYHOUR=8;COUNT=3",
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule == "FREQ=DAILY;BYHOUR=8;COUNT=3"
+        assert memory.max_runs == 3
+
+    def test_memory_create_rejects_unreadable_schedule_and_reports_it(self, tmp_path):
+        """An unparseable custom schedule is never silently stored — the picker's
+        raw-rule box has no client-side grammar check, so the rejection must
+        reach the addon (#2442)."""
+        channel, db = self._channel(tmp_path)
+        ws = _MockWs()
+        asyncio.run(
+            channel._handle_memory_create(
+                cast(Any, ws),
+                {
+                    "type": "memory_create",
+                    "name": "board-games",
+                    "description": "board games",
+                    "schedule": "not a schedule",
+                },
+            )
+        )
+        assert db.memories.get("board-games") is None  # nothing persisted
+        assert len(ws.sent) == 1
+        assert ws.sent[0]["type"] == "memory_save_error"
+        assert ws.sent[0]["action"] == "create"
+        assert ws.sent[0]["name"] == "board-games"
+        assert "not a schedule" in ws.sent[0]["message"]
+
     def test_memory_create_silently_drops_duplicate_name(self, tmp_path):
         """A duplicate name is logged and dropped — no crash."""
 
@@ -2407,11 +2711,12 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection("board-games", "first")
         asyncio.run(
             channel._handle_memory_create(
+                cast(Any, _MockWs()),
                 {
                     "type": "memory_create",
                     "name": "board-games",
                     "description": "second",
-                }
+                },
             )
         )
         memory = db.memories.get("board-games")
@@ -2419,7 +2724,10 @@ class TestBrowserMemoryHandlers:
         assert memory.description == "first"  # original wins, no overwrite
 
     def test_memory_update_changes_only_supplied_fields(self, tmp_path):
-        """Fields the addon doesn't send stay untouched."""
+        """Fields the addon doesn't send stay untouched — except ``schedule``,
+        which the browser form always resends in full, so it is always applied
+        as a replace (see ``test_memory_update_clears_schedule_when_none_sent``
+        for the picker's "No schedule" case this makes possible, #2442)."""
 
         channel, db = self._channel(tmp_path)
         db.memories.create_collection(
@@ -2430,6 +2738,7 @@ class TestBrowserMemoryHandlers:
         )
         asyncio.run(
             channel._handle_memory_update(
+                cast(Any, _MockWs()),
                 {
                     "type": "memory_update",
                     "name": "board-games",
@@ -2439,8 +2748,8 @@ class TestBrowserMemoryHandlers:
                     "intent": "track only co-op games now",
                     "published": True,  # flip notify-on-new; other unsupplied fields stay put
                     "extraction_prompt": None,
-                    "schedule": None,
-                }
+                    "schedule": "FREQ=MINUTELY;INTERVAL=5",
+                },
             )
         )
         memory = db.memories.get("board-games")
@@ -2449,6 +2758,141 @@ class TestBrowserMemoryHandlers:
         assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "old prompt"
         assert memory.schedule == "FREQ=MINUTELY;INTERVAL=5"
+
+    def test_memory_update_clears_schedule_when_none_sent(self, tmp_path):
+        """The picker's "No schedule" preset sends ``schedule: None`` to mean
+        exactly that — cleared, not "leave unchanged" — since the addon's form
+        always resends its full current picker state (#2442)."""
+        channel, db = self._channel(tmp_path)
+        db.memories.create_collection(
+            "board-games",
+            "x",
+            schedule="FREQ=DAILY;BYHOUR=8;COUNT=3",
+        )
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {"type": "memory_update", "name": "board-games", "schedule": None},
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule is None
+        assert memory.max_runs is None  # the lifted COUNT= goes with it, not orphaned
+
+    def test_memory_update_resending_the_same_rule_keeps_an_independent_expiry(self, tmp_path):
+        """An ``expires_at`` set on its own — not lifted from the rule's own
+        ``UNTIL=`` — survives an edit that resends the SAME rule alongside an
+        unrelated field (a description change).  The addon's form always
+        resends its current picker state, so resending the unchanged rule must
+        read as "the user left the schedule alone", not as a replace — an
+        unconditional ``replace_schedule=True`` wiped this end condition the
+        moment any other field was edited (#2457 review).  A genuinely
+        DIFFERENT rule, however, still replaces the end conditions atomically,
+        same as before — and a rule stated in a DIFFERENT PART ORDER (a preset
+        regenerates ``FREQ=DAILY;BYHOUR=9;BYMINUTE=0``; a rule written by chat
+        for the identical cadence can read ``FREQ=DAILY;BYMINUTE=0;BYHOUR=9``)
+        is still the SAME rule, not a change (second review round)."""
+        channel, db = self._channel(tmp_path)
+        expiry = datetime(2026, 12, 31, tzinfo=UTC)
+        db.memories.create_collection(
+            "board-games",
+            "old description",
+            schedule="FREQ=DAILY;BYHOUR=8",
+            expires_at=expiry,
+        )
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "description": "new description",
+                    "schedule": "FREQ=DAILY;BYHOUR=8",  # unchanged
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.description == "new description"
+        assert memory.schedule == "FREQ=DAILY;BYHOUR=8"
+        # SQLite hands datetimes back naive; they are stored UTC (`stored_as_utc`).
+        assert memory.expires_at is not None
+        assert memory.expires_at.replace(tzinfo=UTC) == expiry  # the independent expiry survives
+
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "schedule": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9",  # a different rule
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule == "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9"
+        # The new rule carries no end condition of its own, and a real schedule
+        # change replaces the axis atomically — the old rule's independent expiry
+        # does not carry over onto a different rule.
+        assert memory.expires_at is None
+
+        # Now store the SAME cadence written in a different part order (as chat
+        # would write it) with its own independent expiry, then resend it in the
+        # picker's own regenerated order — the rule hasn't actually changed, so
+        # the expiry must survive, and the stored text is left exactly as it was.
+        second_expiry = datetime(2027, 6, 1, tzinfo=UTC)
+        db.memories.update_collection_metadata(
+            "board-games",
+            schedule="FREQ=DAILY;BYMINUTE=0;BYHOUR=9",
+            expires_at=second_expiry,
+            replace_schedule=True,
+        )
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "description": "reordered description",
+                    "schedule": "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",  # same rule, preset order
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.description == "reordered description"
+        # Left exactly as stored — "unchanged" means untouched, not re-written
+        # into the resent order.
+        assert memory.schedule == "FREQ=DAILY;BYMINUTE=0;BYHOUR=9"
+        assert memory.expires_at is not None
+        assert memory.expires_at.replace(tzinfo=UTC) == second_expiry
+
+    def test_memory_update_rejects_unreadable_schedule_and_reports_it(self, tmp_path):
+        """An unparseable custom schedule on an edit is rejected and reported,
+        and the collection's existing schedule is left exactly as it was."""
+        channel, db = self._channel(tmp_path)
+        db.memories.create_collection("board-games", "x", schedule="FREQ=MINUTELY;INTERVAL=5")
+        ws = _MockWs()
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, ws),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "schedule": "not a schedule",
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule == "FREQ=MINUTELY;INTERVAL=5"  # untouched by the rejected edit
+        assert len(ws.sent) == 1
+        assert ws.sent[0]["type"] == "memory_save_error"
+        assert ws.sent[0]["action"] == "update"
+        assert ws.sent[0]["name"] == "board-games"
+        assert "not a schedule" in ws.sent[0]["message"]
 
     def test_memory_archive_marks_archived(self, tmp_path):
 
@@ -2533,3 +2977,79 @@ class TestBrowserMemoryHandlers:
             {"type": "entry_delete", "memory": "board-games", "key": "catan"}
         )
         assert require_memory(db, "board-games").get("catan") == []
+
+
+class TestBrowserRunDetailHandlers:
+    """run_detail_request handler (#2443)."""
+
+    def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
+        db = migrated_db(str(tmp_path / "test.db"))
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        return channel, db
+
+    def _log_prompt(
+        self, db: Database, agent_name: str, run_id: str, run_target: str | None = None
+    ) -> None:
+        db.messages.log_prompt(
+            model="test-model",
+            messages=[{"role": "user", "content": "test"}],
+            response={"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+            agent_name=agent_name,
+            run_id=run_id,
+            run_target=run_target,
+            duration_ms=100,
+        )
+
+    def _log_child_draw(self, db: Database, agent_name: str, parent_run_id: str) -> None:
+        """A micro-context call made ON BEHALF of ``parent_run_id`` (#2434) —
+        mints its own ``run_id``, distinct from the run it was made for."""
+        db.messages.log_prompt(
+            model="test-model",
+            messages=[{"role": "user", "content": "child draw"}],
+            response={"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2}},
+            agent_name=agent_name,
+            run_id="child-draw-run",
+            parent_run_id=parent_run_id,
+            duration_ms=10,
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_detail_request_returns_the_serialized_run(self, tmp_path):
+        """The same full run → prompts shape the prompts tab's list carries,
+        fetched directly by id (e.g. a skill's source_run_id) — including any
+        child draws (#2434) made on the run's behalf."""
+        channel, db = self._channel(tmp_path)
+        self._log_prompt(db, "chat", "run-teach")
+        self._log_prompt(db, "chat", "run-teach")
+        self._log_prompt(db, "chat", "some-other-run")
+        self._log_child_draw(db, "browse_extract", "run-teach")
+
+        ws = _MockWs()
+        data = {"type": "run_detail_request", "run_id": "run-teach"}
+        await channel._handle_run_detail_request(ws, data)  # ty: ignore[invalid-argument-type]
+
+        resp = ws.sent[0]
+        assert resp["type"] == "run_detail_response"
+        assert resp["run_id"] == "run-teach"
+        assert resp["run"] is not None
+        assert resp["run"]["run_id"] == "run-teach"
+        assert resp["run"]["prompt_count"] == 2
+        [child_draw] = resp["run"]["child_draws"]
+        assert child_draw["agent_name"] == "browse_extract"
+        assert child_draw["parent_run_id"] == "run-teach"
+
+    @pytest.mark.asyncio
+    async def test_run_detail_request_unknown_run_id_answers_with_null_run(self, tmp_path):
+        """A miss is answered, not dropped (#2443): the run_id is echoed with a
+        null run, rather than the request going unanswered."""
+        channel, db = self._channel(tmp_path)
+
+        ws = _MockWs()
+        data = {"type": "run_detail_request", "run_id": "no-such-run"}
+        await channel._handle_run_detail_request(ws, data)  # ty: ignore[invalid-argument-type]
+
+        assert len(ws.sent) == 1
+        resp = ws.sent[0]
+        assert resp["type"] == "run_detail_response"
+        assert resp["run_id"] == "no-such-run"
+        assert resp["run"] is None

@@ -279,6 +279,36 @@ function connect(): void {
         outcome: data.outcome,
         reason: data.reason,
       });
+    } else if (data.type === WsIn.CallStarted) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.CallStarted,
+        run_id: data.run_id,
+        parent_run_id: data.parent_run_id,
+        parent_tool_call_id: data.parent_tool_call_id,
+        agent_name: data.agent_name,
+        prompt_type: data.prompt_type,
+        model: data.model,
+        run_target: data.run_target,
+        started_at: data.started_at,
+      });
+    } else if (data.type === WsIn.ToolStarted) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.ToolStarted,
+        run_id: data.run_id,
+        tool_call_id: data.tool_call_id,
+        tool_name: data.tool_name,
+        status: data.status,
+        started_at: data.started_at,
+      });
+    } else if (data.type === WsIn.ToolFinished) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.ToolFinished,
+        run_id: data.run_id,
+        tool_call_id: data.tool_call_id,
+        tool_name: data.tool_name,
+        status: data.status,
+        success: data.success,
+      });
     } else if (data.type === WsIn.MemoriesResponse) {
       broadcastToSidebar({
         type: RuntimeMessageType.MemoriesResponse,
@@ -313,6 +343,13 @@ function connect(): void {
         type: RuntimeMessageType.CollectionTriggerResult,
         name: data.name,
         success: data.success,
+        message: data.message,
+      });
+    } else if (data.type === WsIn.MemorySaveError) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.MemorySaveError,
+        action: data.action,
+        name: data.name,
         message: data.message,
       });
     }
@@ -457,48 +494,36 @@ function triggerCollection(name: string): void {
 function sendMemoryCreate(message: {
   name: string;
   description: string;
-  intent: string;
-  inclusion: string;
-  recall: string;
   published?: boolean;
   extraction_prompt?: string | null;
-  collector_interval_seconds?: number | null;
+  schedule?: string | null;
 }): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({
     type: WsOutgoingType.MemoryCreate,
     name: message.name,
     description: message.description,
-    intent: message.intent,
-    inclusion: message.inclusion,
-    recall: message.recall,
     published: message.published ?? false,
     extraction_prompt: message.extraction_prompt ?? null,
-    collector_interval_seconds: message.collector_interval_seconds ?? null,
+    schedule: message.schedule ?? null,
   }));
 }
 
 function sendMemoryUpdate(message: {
   name: string;
   description?: string | null;
-  intent?: string | null;
-  inclusion?: string | null;
-  recall?: string | null;
   published?: boolean | null;
   extraction_prompt?: string | null;
-  collector_interval_seconds?: number | null;
+  schedule?: string | null;
 }): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({
     type: WsOutgoingType.MemoryUpdate,
     name: message.name,
     description: message.description ?? null,
-    intent: message.intent ?? null,
-    inclusion: message.inclusion ?? null,
-    recall: message.recall ?? null,
     published: message.published ?? null,
     extraction_prompt: message.extraction_prompt ?? null,
-    collector_interval_seconds: message.collector_interval_seconds ?? null,
+    schedule: message.schedule ?? null,
   }));
 }
 

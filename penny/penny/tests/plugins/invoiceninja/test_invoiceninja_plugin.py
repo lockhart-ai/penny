@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from penny.llm.call_link import CallLink
 from penny.plugins.invoiceninja import InvoiceNinjaPlugin
 from penny.plugins.invoiceninja.client import InvoiceNinjaClient
 from penny.plugins.invoiceninja.tools import (
@@ -369,7 +370,7 @@ async def test_verify_auth_tool_reports_a_raised_check():
     client = MagicMock()
     client.verify_auth = AsyncMock(side_effect=_http_401())
 
-    result = await VerifyAuthTool(client).execute()
+    result = await VerifyAuthTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == VERIFY_AUTH_FAILED.format(e=_http_401())
@@ -380,7 +381,7 @@ async def test_list_invoices_tool_reports_a_raised_listing():
     client = MagicMock()
     client.list_invoices = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await ListInvoicesTool(client).execute()
+    result = await ListInvoicesTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == LIST_INVOICES_FAILED.format(e="connection refused")
@@ -392,7 +393,7 @@ async def test_create_expense_tool_reports_a_raised_create():
     client.create_expense = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     result = await CreateExpenseTool(client).execute(
-        amount=45.0, date="2026-07-22", vendor_id="ven1", category_id="cat1"
+        CallLink.new_top(), amount=45.0, date="2026-07-22", vendor_id="ven1", category_id="cat1"
     )
 
     assert result.success is False
@@ -404,7 +405,7 @@ async def test_list_expenses_tool_reports_a_raised_listing():
     client = MagicMock()
     client.list_expenses = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await ListExpensesTool(client).execute()
+    result = await ListExpensesTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == LIST_EXPENSES_FAILED.format(e="connection refused")
@@ -415,7 +416,7 @@ async def test_get_expense_tool_reports_a_raised_fetch():
     client = MagicMock()
     client.get_expense = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await GetExpenseTool(client).execute(expense_id="exp1")
+    result = await GetExpenseTool(client).execute(CallLink.new_top(), expense_id="exp1")
 
     assert result.success is False
     assert result.message == GET_EXPENSE_FAILED.format(e="connection refused")
@@ -426,7 +427,9 @@ async def test_update_expense_tool_reports_a_raised_update():
     client = MagicMock()
     client.update_expense = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await UpdateExpenseTool(client).execute(expense_id="exp1", amount=50.0)
+    result = await UpdateExpenseTool(client).execute(
+        CallLink.new_top(), expense_id="exp1", amount=50.0
+    )
 
     assert result.success is False
     assert result.message == UPDATE_EXPENSE_FAILED.format(e="connection refused")
@@ -437,7 +440,7 @@ async def test_create_expense_category_tool_reports_a_raised_create():
     client = MagicMock()
     client.create_expense_category = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await CreateExpenseCategoryTool(client).execute(name="Travel")
+    result = await CreateExpenseCategoryTool(client).execute(CallLink.new_top(), name="Travel")
 
     assert result.success is False
     assert result.message == CREATE_EXPENSE_CATEGORY_FAILED.format(e="connection refused")
@@ -448,7 +451,7 @@ async def test_list_expense_categories_tool_reports_a_raised_listing():
     client = MagicMock()
     client.list_expense_categories = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await ListExpenseCategoriesTool(client).execute()
+    result = await ListExpenseCategoriesTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == LIST_EXPENSE_CATEGORIES_FAILED.format(e="connection refused")
@@ -459,7 +462,7 @@ async def test_get_expense_category_tool_reports_a_raised_fetch():
     client = MagicMock()
     client.get_expense_category = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await GetExpenseCategoryTool(client).execute(category_id="cat1")
+    result = await GetExpenseCategoryTool(client).execute(CallLink.new_top(), category_id="cat1")
 
     assert result.success is False
     assert result.message == GET_EXPENSE_CATEGORY_FAILED.format(e="connection refused")

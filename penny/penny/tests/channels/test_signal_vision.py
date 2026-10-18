@@ -2,6 +2,7 @@
 
 import pytest
 
+from penny.llm.call_link import CallLink
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import TEST_SENDER, wait_until
@@ -176,7 +177,7 @@ async def test_caption_image_raises_when_vision_client_missing(
     async with running_penny(test_config) as penny:
         penny.chat_agent._vision_model_client = None
         with pytest.raises(RuntimeError, match="vision model client"):
-            await penny.chat_agent.caption_image("ZmFrZS1pbWFnZS1iYXNlNjQ=")
+            await penny.chat_agent.caption_image("ZmFrZS1pbWFnZS1iYXNlNjQ=", CallLink.new_top())
 
 
 @pytest.mark.asyncio

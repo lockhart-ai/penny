@@ -2,10 +2,10 @@
 
 import logging
 import os
-import uuid
 
 from penny.database.database import Database
 from penny.datetime_utils import current_datetime_line
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmError
 from penny.responses import PennyResponse
@@ -70,7 +70,7 @@ async def get_restart_message(db: Database, ollama_client: LlmClient, commit_mes
             prompt,
             agent_name="startup",
             prompt_type="startup_announcement",
-            run_id=uuid.uuid4().hex,
+            call_link=CallLink.new_top(),
         )
         announcement = response.content.strip()
 

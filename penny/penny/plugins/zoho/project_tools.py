@@ -9,6 +9,7 @@ import httpx
 from pydantic import Field
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
 from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
 
@@ -120,7 +121,7 @@ class ListProjectsTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List all projects."""
         try:
             projects = await self._client.get_projects()
@@ -170,7 +171,7 @@ class GetProjectDetailsTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Get project details."""
         args = GetProjectArgs(**kwargs)
 
@@ -237,7 +238,7 @@ class CreateProjectTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create a new project."""
         args = CreateProjectArgs(**kwargs)
 
@@ -288,7 +289,7 @@ class ListTaskListsTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List task lists in a project."""
         args = GetProjectArgs(**kwargs)
 
@@ -343,7 +344,7 @@ class CreateTaskListTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create a task list."""
         args = CreateTaskListArgs(**kwargs)
 
@@ -398,7 +399,7 @@ class ListTasksTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List tasks in a project."""
         args = ListTasksArgs(**kwargs)
 
@@ -485,7 +486,7 @@ class CreateTaskTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create a task."""
         args = CreateTaskArgs(**kwargs)
 
@@ -590,7 +591,7 @@ class UpdateTaskTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Update a task."""
         args = UpdateTaskArgs(**kwargs)
 

@@ -28,6 +28,7 @@ from penny.database.memory import (
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
@@ -253,6 +254,7 @@ class TestMinimalSurfaceCensus:
         what the model reads: the refusal has to NAME the unknown parameter and list the
         ones that exist, or it is a dead end rather than a correction."""
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
+            CallLink.new_top(),
             collection="board-games",
             extraction_prompt="1. extract_text(url)\n2. done()",
         )
@@ -520,6 +522,7 @@ class TestScheduleRoundTrip:
     @pytest.mark.asyncio
     async def test_schedule_clause_round_trips(self, db, schedule, clause):
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
             name="round-trip",
             description="round trip",
             prompt="Check Cinder Peak's elevation above sea level and save it.",
@@ -562,6 +565,7 @@ class TestScheduleRoundTrip:
             date_of_birth="1990-01-01",
         )
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
             name="morning-briefing",
             description="a morning briefing",
             prompt="Check Cinder Peak's elevation above sea level and save it.",
@@ -666,7 +670,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_log_persists(self, db):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            log="user-messages", description="inbound"
+            CallLink.new_top(), log="user-messages", description="inbound"
         )
         memories = {m.name: m for m in db.memories.list_all()}
         assert memories["user-messages"].type == "log"
@@ -674,10 +678,10 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_log_duplicate_returns_user_friendly_message(self, db):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            log="events", description="first"
+            CallLink.new_top(), log="events", description="first"
         )
         result = await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            log="events", description="second"
+            CallLink.new_top(), log="events", description="second"
         )
         assert "already exists" in result.message
         assert "events" in result.message
@@ -698,6 +702,7 @@ class TestCreateAndList:
             schedule="FREQ=HOURLY",
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
+            CallLink.new_top(),
             name="notes",
             description="   ",
             notify=True,
@@ -731,6 +736,7 @@ class TestCreateAndList:
             schedule="FREQ=HOURLY",
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
+            CallLink.new_top(),
             name="notes",
             intent="a rewritten goal the model tried to set",
         )
@@ -745,6 +751,7 @@ class TestCreateAndList:
         result NAMES the degraded routing anchor and leaves it NULL for the startup
         backfill to re-heal (#1468) — a visible degradation, not a silent success."""
         result = await CollectionCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
+            CallLink.new_top(),
             name="notes",
             description="a running list of notes",
             prompt="Check Cinder Peak's elevation above sea level and save it.",
@@ -762,7 +769,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_log_create_surfaces_description_embed_degradation(self, db):
         result = await LogCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
-            log="events", description="event stream"
+            CallLink.new_top(), log="events", description="event stream"
         )
         assert "Created log" in result.message
         assert "transient embedding error" in result.message
@@ -784,7 +791,7 @@ class TestCreateAndList:
         assert db.memories.get("notes").description_embedding is not None  # a good anchor first
 
         result = await CollectionUpdateTool(db, cast(Any, _FailingEmbedClient())).execute(
-            name="notes", description="a completely different subject"
+            CallLink.new_top(), name="notes", description="a completely different subject"
         )
         assert "Updated" in result.message
         assert "transient embedding error" in result.message
@@ -796,6 +803,8 @@ class TestCreateAndList:
 # ── Inert collections (#1629, #2455 naive baseline) ──────────────────────────
 
 # The prompt-less creation echo — storage only, no job, and the honest next step.
+
+
 _INERT_ECHO_LITERAL = (
     "Set up collection 'deals-watch' — storage only, no job yet:\n"
     "  description: track the trail-runner shoe deals\n"
@@ -817,7 +826,7 @@ class TestInertCollections:
         extraction_prompt, cadence, or notify — and the echo is honest about being
         inert (whole render)."""
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", description="track the trail-runner shoe deals"
+            CallLink.new_top(), name="deals-watch", description="track the trail-runner shoe deals"
         )
         assert result.success and result.mutated
         assert result.message == _INERT_ECHO_LITERAL
@@ -833,9 +842,9 @@ class TestInertCollections:
         """An inert collection reads back through ``memory_get``, marked as
         storage with no routine — not hidden for lacking a prompt (#1629)."""
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", description="track the trail-runner shoe deals"
+            CallLink.new_top(), name="deals-watch", description="track the trail-runner shoe deals"
         )
-        result = await MemoryMetadataTool(db).execute(memory="deals-watch")
+        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="deals-watch")
         assert "prompt: none" in result.message
         assert "description: track the trail-runner shoe deals" in result.message
 
@@ -844,6 +853,7 @@ class TestInertCollections:
         """A schedule / notify / expiry on a skill-less create has no job to attach to —
         refused naming the two-step fix (whole render), nothing created."""
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
             name="deals-watch",
             description="track the trail-runner shoe deals",
             schedule="FREQ=HOURLY",
@@ -864,7 +874,9 @@ class TestInertCollections:
             description="track the trail-runner shoe deals",
         )
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            collection="deals-watch", description="track the trail-runner shoe deals"
+            CallLink.new_top(),
+            collection="deals-watch",
+            description="track the trail-runner shoe deals",
         )
         assert result.success and result.mutated
         assert db.memories.get("deals-watch") is None
@@ -897,6 +909,7 @@ class TestBlankOptionalArgsAreRefused:
         """The observed case, whole render: the drop is named, the remedy is both halves
         (omit it, or pass the accepted form), and no collection is created."""
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
+            CallLink.new_top(),
             collection="deals-watch",
             description="track the trail-runner shoe deals",
             prompt="Read the trail-runner shoe deals page and note what's on sale.",
@@ -949,7 +962,7 @@ class TestBlankOptionalArgsAreRefused:
             "schedule": SCHEDULE_PARAM_DESCRIPTION,
         }
         for field, form in OPTIONAL_ARG_FORMS.items():
-            result = await tool.run(collection="deals-watch", **{field: "   "})
+            result = await tool.run(CallLink.new_top(), collection="deals-watch", **{field: "   "})
             assert result.success is False
             descriptor = (
                 f"{field} (string: {descriptors[field]})"
@@ -970,7 +983,7 @@ class TestBlankOptionalArgsAreRefused:
         blank can never quietly leave an existing job's field alone either."""
         _seed_collection(db, name="deals-watch", description="track the shoe deals")
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
-            collection="deals-watch", schedule=""
+            CallLink.new_top(), collection="deals-watch", schedule=""
         )
         assert result.success is False
         assert result.message == (
@@ -999,14 +1012,18 @@ class TestBlankOptionalArgsAreRefused:
         )
 
         created = await CollectionSetTool(create_db, cast(Any, MockLlmClient())).run(
-            collection="deals-watch", description="track the trail-runner shoe deals"
+            CallLink.new_top(),
+            collection="deals-watch",
+            description="track the trail-runner shoe deals",
         )
         assert created.success and created.mutated
         assert created.message == _INERT_ECHO_LITERAL
 
         _seed_collection(update_db, name="deals-watch", description="track the shoe deals")
         updated = await CollectionSetTool(update_db, cast(Any, MockLlmClient())).run(
-            collection="deals-watch", description="track the trail-runner shoe deals"
+            CallLink.new_top(),
+            collection="deals-watch",
+            description="track the trail-runner shoe deals",
         )
         assert updated.success
         row = update_db.memories.get("deals-watch")
@@ -1035,6 +1052,7 @@ class TestCollectionUpdateScheduleAtApply:
         result = await CollectionUpdateTool(
             db, cast(Any, MockLlmClient()), run_id="run-adopt"
         ).execute(
+            CallLink.new_top(),
             name="legacy",
             prompt="Check Cinder Peak's elevation above sea level and save it.",
             schedule="FREQ=HOURLY;INTERVAL=2",
@@ -1055,7 +1073,9 @@ class TestCollectionUpdateScheduleAtApply:
         _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
         # Switch to a bounded one-shot: the quota comes with the rule.
         once = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="watch", schedule="DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1"
+            CallLink.new_top(),
+            name="watch",
+            schedule="DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1",
         )
         assert once.success
         row = db.memories.get("watch")
@@ -1063,7 +1083,7 @@ class TestCollectionUpdateScheduleAtApply:
         assert row.max_runs == 1
         # Switch back to an unbounded recurring rule — the quota must clear with it.
         back = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="watch", schedule="FREQ=MINUTELY;INTERVAL=30"
+            CallLink.new_top(), name="watch", schedule="FREQ=MINUTELY;INTERVAL=30"
         )
         assert back.success
         row = db.memories.get("watch")
@@ -1077,7 +1097,7 @@ class TestCollectionUpdateScheduleAtApply:
         conflict with."""
         _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="watch", expires_at="2026-09-01T09:00:00Z"
+            CallLink.new_top(), name="watch", expires_at="2026-09-01T09:00:00Z"
         )
         assert result.success
         stored = db.memories.get("watch").expires_at
@@ -1101,7 +1121,7 @@ class TestCollectionUpdateScheduleAtApply:
             "watch", expires_at=datetime(2099, 12, 31, tzinfo=UTC)
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient()), run_id="run-x").execute(
-            name="watch", expires_at="2099-12-31T00:00:00Z"
+            CallLink.new_top(), name="watch", expires_at="2099-12-31T00:00:00Z"
         )
         assert result.success
         assert db.memories.get("watch").expires_at is None
@@ -1131,9 +1151,10 @@ class TestCollectionUpdateScheduleAtApply:
         won't-run.  Whole render, so the honest schedule line and the tail note are both
         pinned."""
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", description="track the trail-runner shoe deals"
+            CallLink.new_top(), name="deals-watch", description="track the trail-runner shoe deals"
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
             name="deals-watch",
             prompt="Check Cinder Peak's elevation above sea level and save it.",
         )
@@ -1157,10 +1178,10 @@ class TestCollectionUpdateScheduleAtApply:
         collection with no schedule echoes ``schedule: none`` — never a half-formed
         clause.  Whole render off an inert collection (the natural schedule-less case)."""
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", description="track the trail-runner shoe deals"
+            CallLink.new_top(), name="deals-watch", description="track the trail-runner shoe deals"
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", description="track the road-runner shoe deals"
+            CallLink.new_top(), name="deals-watch", description="track the road-runner shoe deals"
         )
         assert result.success
         assert result.message == (
@@ -1185,6 +1206,7 @@ class TestCollectionWritesAndReads:
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.execute(
+            CallLink.new_top(),
             collection="likes",
             entries=[
                 {"key": "dark roast", "content": "loves dark roast"},
@@ -1193,7 +1215,7 @@ class TestCollectionWritesAndReads:
         )
         assert "Wrote 2 entries to 'likes'" in result.message
         assert result.mutated is True
-        latest = await CollectionListTool(db).execute(collection="likes")
+        latest = await CollectionListTool(db).execute(CallLink.new_top(), collection="likes")
         assert "dark roast" in latest.message
         assert "cold brew" in latest.message
         # Each rendered entry carries an absolute UTC timestamp so the model can
@@ -1209,24 +1231,27 @@ class TestCollectionWritesAndReads:
         actionable refusals."""
         tool = CollectionSetTool(db, _make_llm_client(mock_llm), run_id="run-set")
         # Birth needs a description.
-        result = await tool.execute(collection="trip-plans")
+        result = await tool.execute(CallLink.new_top(), collection="trip-plans")
         assert result.success is False and "needs a `description`" in result.message
         # extraction_prompt is not a model argument AT ALL (#1570): unknown-parameter
         # rejection through the arg envelope, on the set tool like everywhere else.
         result = await tool.run(
+            CallLink.new_top(),
             collection="trip-plans",
             description="trip planning notes",
             extraction_prompt="1. x" * 10,
         )
         assert result.success is False and "extraction_prompt" in result.message
         # Create path: inert storage, provenance stamped.
-        result = await tool.execute(collection="trip-plans", description="trip planning notes")
+        result = await tool.execute(
+            CallLink.new_top(), collection="trip-plans", description="trip planning notes"
+        )
         assert result.success is True
         row = db.memories.get("trip-plans")
         assert row is not None and row.created_by_run_id == "run-set"
         assert row.extraction_prompt is None and row.notify is False
         # Update path: same verb, only the set field changes.
-        result = await tool.execute(collection="trip-plans", notify=True)
+        result = await tool.execute(CallLink.new_top(), collection="trip-plans", notify=True)
         assert result.success is True
         row = db.memories.get("trip-plans")
         assert row.notify is True and row.description == "trip planning notes"
@@ -1245,7 +1270,9 @@ class TestCollectionWritesAndReads:
         )
         # Typo (char leg): 'gear-ntoes' → 'gear-notes'.
         result = await write.execute(
-            collection="gear-ntoes", entries=[{"key": "tent", "content": "3kg tent"}]
+            CallLink.new_top(),
+            collection="gear-ntoes",
+            entries=[{"key": "tent", "content": "3kg tent"}],
         )
         assert result.mutated is True
         assert result.message.startswith(
@@ -1253,16 +1280,25 @@ class TestCollectionWritesAndReads:
             "name in a different spelling, so this write went there.\n"
         )
         assert db.memories.get("gear-ntoes") is None
-        assert "tent" in (await CollectionListTool(db).execute(collection="gear-notes")).message
+        assert (
+            "tent"
+            in (
+                await CollectionListTool(db).execute(CallLink.new_top(), collection="gear-notes")
+            ).message
+        )
         # Same-intent extension (TCR leg): 'gear' ⊂ 'gear-notes'.
         result = await write.execute(
-            collection="gear", entries=[{"key": "stove", "content": "canister stove"}]
+            CallLink.new_top(),
+            collection="gear",
+            entries=[{"key": "stove", "content": "canister stove"}],
         )
         assert result.mutated is True and "'gear-notes'" in result.message
         assert db.memories.get("gear") is None
         # Nothing close → auto-create, narrated, provenance stamped.
         result = await write.execute(
-            collection="trail-recipes", entries=[{"key": "oats", "content": "overnight oats"}]
+            CallLink.new_top(),
+            collection="trail-recipes",
+            entries=[{"key": "oats", "content": "overnight oats"}],
         )
         assert result.mutated is True
         assert result.message.startswith(
@@ -1279,7 +1315,7 @@ class TestCollectionWritesAndReads:
             db, _make_llm_client(mock_llm), author="collector", scope="gear-notes"
         )
         result = await scoped.execute(
-            collection="something-else", entries=[{"key": "x", "content": "y"}]
+            CallLink.new_top(), collection="something-else", entries=[{"key": "x", "content": "y"}]
         )
         assert result.success is False
         assert db.memories.get("something-else") is None
@@ -1290,7 +1326,7 @@ class TestCollectionWritesAndReads:
         arg-validation envelope — not Pydantic's bare "List should have at least 1
         item" (the house wording-unification pass)."""
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        result = await write.run(collection="likes", entries=[])
+        result = await write.run(CallLink.new_top(), collection="likes", entries=[])
         assert result.success is False
         assert "at least one entry" in result.message
         assert "List should have at least 1 item" not in result.message
@@ -1302,6 +1338,7 @@ class TestCollectionWritesAndReads:
         mis-rendered as the whole ``entries`` field (#1416)."""
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.run(
+            CallLink.new_top(),
             collection="likes",
             entries=[{"key": "k", "content": "v", "contnt": "typo"}],
         )
@@ -1354,9 +1391,12 @@ class TestCollectionWritesAndReads:
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
         )
         result = await write.execute(
+            CallLink.new_top(),
             collection="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
@@ -1393,9 +1433,12 @@ class TestCollectionWritesAndReads:
         # A collector binds its writes to one collection via ``scope``.
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="likes")
         await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
         )
         all_duplicates = await write.execute(
+            CallLink.new_top(),
             collection="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
@@ -1416,7 +1459,9 @@ class TestCollectionWritesAndReads:
         # returns normally (stop is None) and the cycle goes on to its close, where
         # the quiet cycle is the model's recorded decision.
         same_key = await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
         )
         assert "Unchanged: 'dark roast' already holds the same value" in same_key.message
         assert same_key.mutated is False
@@ -1426,6 +1471,7 @@ class TestCollectionWritesAndReads:
         # The colliding half carries a DIFFERENT value (#1919) — a same-value collision
         # is the no-news branch below and prescribes no call at all.
         partial = await write.execute(
+            CallLink.new_top(),
             collection="likes",
             entries=[
                 {"key": "cold brew", "content": "a brand new distinct entry"},
@@ -1446,6 +1492,7 @@ class TestCollectionWritesAndReads:
         # now exists (written above), so both entries collide on distinct keys — each
         # with its own fresher value, so both take the recoverable branch.
         multi = await write.execute(
+            CallLink.new_top(),
             collection="likes",
             entries=[
                 {"key": "dark roast blend", "content": "roasted longer this season"},
@@ -1467,6 +1514,7 @@ class TestCollectionWritesAndReads:
         # is already stored.  The mock embeds bag-of-words, so re-writing 'first body'
         # verbatim under a fresh key matches on content while the key does not.
         same_value = await write.execute(
+            CallLink.new_top(),
             collection="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
         )
@@ -1498,9 +1546,12 @@ class TestCollectionWritesAndReads:
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
         )
         already = await write.execute(
+            CallLink.new_top(),
             collection="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
         )
@@ -1522,10 +1573,14 @@ class TestCollectionWritesAndReads:
         # No scope → chat surface.
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
         )
         unchanged = await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
         )
         assert "Unchanged: 'dark roast' already holds the same value" in unchanged.message
         assert unchanged.stop is None
@@ -1548,9 +1603,11 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="watch")
-        await write.execute(collection="watch", entries=[{"key": "price", "content": "$42"}])
+        await write.execute(
+            CallLink.new_top(), collection="watch", entries=[{"key": "price", "content": "$42"}]
+        )
         changed = await write.execute(
-            collection="watch", entries=[{"key": "price", "content": "$40"}]
+            CallLink.new_top(), collection="watch", entries=[{"key": "price", "content": "$40"}]
         )
         assert changed.message == (
             "Changed: 'price' — the stored baseline was refreshed to the new value (entry)."
@@ -1563,9 +1620,11 @@ class TestCollectionWritesAndReads:
         assert refreshed[0].content == "$40"
         # The gate is shared: a chat-surface write auto-refreshes identically, never STOPs.
         chat_write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
-        await chat_write.execute(collection="watch", entries=[{"key": "note", "content": "v1"}])
+        await chat_write.execute(
+            CallLink.new_top(), collection="watch", entries=[{"key": "note", "content": "v1"}]
+        )
         chat_changed = await chat_write.execute(
-            collection="watch", entries=[{"key": "note", "content": "v2"}]
+            CallLink.new_top(), collection="watch", entries=[{"key": "note", "content": "v2"}]
         )
         assert chat_changed.message == (
             "Changed: 'note' — the stored baseline was refreshed to the new value (entry)."
@@ -1699,7 +1758,9 @@ class TestEmbedFailureRefusesWrite:
         await self._make_relevant_collection(db)
         write = CollectionWriteTool(db, cast(Any, _FailingEmbedClient()), author="test")
         result = await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "loves dark roast"}],
         )
         # Fail-hard: actionable failure naming the transient cause and binding the
         # retry, and no work reported (so the collector throttle sees no-op).
@@ -1724,7 +1785,9 @@ class TestEmbedFailureRefusesWrite:
             db, cast(Any, _KeyOnlyFailingEmbedClient("dark roast")), author="test"
         )
         result = await write.execute(
-            collection="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "loves dark roast"}],
         )
         assert result.success is False
         assert result.mutated is False
@@ -1735,9 +1798,13 @@ class TestEmbedFailureRefusesWrite:
 
     @pytest.mark.asyncio
     async def test_log_append_refuses_when_embedding_fails(self, db):
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, cast(Any, _FailingEmbedClient()), author="test")
-        result = await append.execute(log="events", content="something happened")
+        result = await append.execute(
+            CallLink.new_top(), log="events", content="something happened"
+        )
         assert result.success is False
         assert result.mutated is False
         assert "transient embedding error" in result.message
@@ -1758,16 +1825,27 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            collection="likes", entries=[{"key": "k", "content": "hello"}]
+            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "hello"}]
         )
-        assert "hello" in (await CollectionGetTool(db).execute(collection="likes", key="k")).message
-        missing = await CollectionGetTool(db).execute(collection="likes", key="absent")
+        assert (
+            "hello"
+            in (
+                await CollectionGetTool(db).execute(CallLink.new_top(), collection="likes", key="k")
+            ).message
+        )
+        missing = await CollectionGetTool(db).execute(
+            CallLink.new_top(), collection="likes", key="absent"
+        )
         assert "not found" in missing.message
         # A key one typo away from a stored one is named in the miss, so the retry is a copy.
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            collection="likes", entries=[{"key": "sea kayaking", "content": "weekends"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "sea kayaking", "content": "weekends"}],
         )
-        near = await CollectionGetTool(db).execute(collection="likes", key="sea kayakng")
+        near = await CollectionGetTool(db).execute(
+            CallLink.new_top(), collection="likes", key="sea kayakng"
+        )
         assert "did you mean key 'sea kayaking'?" in near.message
         # The proven-win read guidance (collection_keys / find by meaning), AND the
         # rejection now closes the residual write-vs-update decision: once the model
@@ -1784,7 +1862,9 @@ class TestEmbedFailureRefusesWrite:
         # display form) is never silently resolved — it's rejected with a teaching
         # error that names the mistake, the current key='...' render, and the bare
         # key ready to reuse.
-        bracketed = await CollectionGetTool(db).execute(collection="likes", key="[k]")
+        bracketed = await CollectionGetTool(db).execute(
+            CallLink.new_top(), collection="likes", key="[k]"
+        )
         assert bracketed.success is False
         assert bracketed.message == (
             "Key '[k]' not found in 'likes'. The enclosing [brackets] are not part "
@@ -1793,14 +1873,20 @@ class TestEmbedFailureRefusesWrite:
         )
         # A bracket-wrapped key whose bare form doesn't exist either gets the
         # ordinary not-found error, not the bracket teaching rejection.
-        double_miss = await CollectionGetTool(db).execute(collection="likes", key="[absent]")
+        double_miss = await CollectionGetTool(db).execute(
+            CallLink.new_top(), collection="likes", key="[absent]"
+        )
         assert "Key '[absent]' not found" in double_miss.message
         assert "Retry with" not in double_miss.message
         # A key that genuinely contains brackets exact-matches with no rejection.
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            collection="likes", entries=[{"key": "[lit]", "content": "bracket literal body"}]
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "[lit]", "content": "bracket literal body"}],
         )
-        literal = await CollectionGetTool(db).execute(collection="likes", key="[lit]")
+        literal = await CollectionGetTool(db).execute(
+            CallLink.new_top(), collection="likes", key="[lit]"
+        )
         assert literal.success is True
         assert "bracket literal body" in literal.message
 
@@ -1814,9 +1900,13 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(collection="likes", entries=[{"key": "first", "content": "1"}])
-        await write.execute(collection="likes", entries=[{"key": "second", "content": "2"}])
-        listing = await CollectionKeysTool(db).execute(collection="likes")
+        await write.execute(
+            CallLink.new_top(), collection="likes", entries=[{"key": "first", "content": "1"}]
+        )
+        await write.execute(
+            CallLink.new_top(), collection="likes", entries=[{"key": "second", "content": "2"}]
+        )
+        listing = await CollectionKeysTool(db).execute(CallLink.new_top(), collection="likes")
         assert listing.message == "- first\n- second"
 
     @pytest.mark.asyncio
@@ -1830,7 +1920,7 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        listing = await CollectionKeysTool(db).execute(collection="likes")
+        listing = await CollectionKeysTool(db).execute(CallLink.new_top(), collection="likes")
         assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
 
     @pytest.mark.asyncio
@@ -1843,8 +1933,12 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(collection="likes", entries=[{"key": "a", "content": "1"}])
-        rendered = await CollectionSampleTool(db).execute(collection="likes", k=5)
+        await write.execute(
+            CallLink.new_top(), collection="likes", entries=[{"key": "a", "content": "1"}]
+        )
+        rendered = await CollectionSampleTool(db).execute(
+            CallLink.new_top(), collection="likes", k=5
+        )
         assert "key='a' 1" in rendered.message
 
 
@@ -1862,14 +1956,20 @@ class TestCollectionMutations:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(collection="likes", entries=[{"key": "k", "content": "old"}])
-        result = await write.execute(collection="likes", entries=[{"key": "k", "content": "new"}])
+        await write.execute(
+            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "old"}]
+        )
+        result = await write.execute(
+            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "new"}]
+        )
         assert "Changed: 'k' — the stored baseline was refreshed to the new value" in result.message
         assert db.memory("likes").get("k")[0].content == "new"
         # A bracket-wrapped key (display form copied from an entry list) on the
         # delete path is rejected with a teaching error naming the bare key —
         # never absorbed; the entry is untouched.
-        rejected_delete = await CollectionRemoveTool(db).execute(collection="likes", key="[k]")
+        rejected_delete = await CollectionRemoveTool(db).execute(
+            CallLink.new_top(), collection="likes", key="[k]"
+        )
         assert rejected_delete.success is False
         assert "Retry with key='k'" in rejected_delete.message
         assert db.memory("likes").get("k")[0].content == "new"
@@ -1885,11 +1985,15 @@ class TestCollectionMutations:
         )
         assert (
             "Archived 'likes'"
-            in (await CollectionArchiveTool(db).execute(collection="likes")).message
+            in (
+                await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="likes")
+            ).message
         )
         assert (
             "Unarchived 'likes'"
-            in (await CollectionUnarchiveTool(db).execute(collection="likes")).message
+            in (
+                await CollectionUnarchiveTool(db).execute(CallLink.new_top(), collection="likes")
+            ).message
         )
 
 
@@ -1905,7 +2009,7 @@ class TestDidYouMeanSuggestions:
         leads the not-found render with the nearest existing name — the string
         (typo) leg, universal because it needs no embedding client."""
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
-        result = await CollectionListTool(db).execute(collection="aurora-deone")
+        result = await CollectionListTool(db).execute(CallLink.new_top(), collection="aurora-deone")
         assert result.success is False
         assert result.message == (
             "Memory 'aurora-deone' not found — did you mean 'aurora-deck-2'? Check the "
@@ -1921,7 +2025,7 @@ class TestDidYouMeanSuggestions:
         """A miss with nothing close renders EXACTLY today's message — no empty
         'did you mean' artifact, no changed punctuation."""
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
-        result = await CollectionListTool(db).execute(collection="xyzzy")
+        result = await CollectionListTool(db).execute(CallLink.new_top(), collection="xyzzy")
         assert result.success is False
         assert result.message == (
             "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
@@ -1938,7 +2042,9 @@ class TestDidYouMeanSuggestions:
         closest to the missed name, clearing the reused dedup threshold."""
         _seed_collection(db, name="garage", description="tracking oil changes and tire rotations")
         tool = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        result = await tool.execute(log="oil changes and tire rotations", content="my car")
+        result = await tool.execute(
+            CallLink.new_top(), log="oil changes and tire rotations", content="my car"
+        )
         assert result.success is False
         assert result.message == (
             "Memory 'oil changes and tire rotations' not found — did you mean 'garage'? "
@@ -1956,9 +2062,13 @@ class TestDidYouMeanSuggestions:
         _seed_collection(db, name="notes")
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
-            collection="notes", entries=[{"key": "quarterly-report", "content": "x"}]
+            CallLink.new_top(),
+            collection="notes",
+            entries=[{"key": "quarterly-report", "content": "x"}],
         )
-        result = await CollectionRemoveTool(db).execute(collection="notes", key="quarterly-reprot")
+        result = await CollectionRemoveTool(db).execute(
+            CallLink.new_top(), collection="notes", key="quarterly-reprot"
+        )
         assert result.mutated is False
         assert result.message == (
             "No entry with key 'quarterly-reprot' in 'notes' — did you mean key "
@@ -1966,7 +2076,9 @@ class TestDidYouMeanSuggestions:
             "collection_keys('notes') to find it."
         )
         # No close key → byte-identical to today's message.
-        far = await CollectionRemoveTool(db).execute(collection="notes", key="zzzzz")
+        far = await CollectionRemoveTool(db).execute(
+            CallLink.new_top(), collection="notes", key="zzzzz"
+        )
         assert far.message == (
             "No entry with key 'zzzzz' in 'notes' — nothing to delete. "
             "List the current keys with collection_keys('notes') to find it."
@@ -1979,12 +2091,14 @@ class TestLogTools:
         """``log_get`` returns one stored entry whole, by the id a log read shows
         beside it — the browse-results fetch-handle path, and any log the user
         created."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(log="events", content="first entry")
-        await append.execute(log="events", content="second entry")
+        await append.execute(CallLink.new_top(), log="events", content="first entry")
+        await append.execute(CallLink.new_top(), log="events", content="second entry")
         entry = db.memories.memory("events").read_all()[1]
-        result = await LogGetTool(db).execute(log="events", id=entry.id)
+        result = await LogGetTool(db).execute(CallLink.new_top(), log="events", id=entry.id)
         assert result.success is True
         assert result.message == (
             f"1 entry from `events`:\n1. [{format_log_timestamp(entry.created_at)}] second entry"
@@ -1995,16 +2109,20 @@ class TestLogTools:
         """The id ``log_get`` consumes is the one a log read of a REAL stored log
         renders beside each entry (``format_entries(show_ids=True)``) — display
         form == invocation form, one copy away."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(log="events", content="hello")
+        await append.execute(CallLink.new_top(), log="events", content="hello")
         entry = db.memories.memory("events").read_all()[0]
-        rendered = await LogReadTool(db, "chat", scope=None).execute(log="events")
+        rendered = await LogReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), log="events"
+        )
         assert rendered.message == (
             f"1 entry from `events` (oldest first):\n"
             f"1. [{format_log_timestamp(entry.created_at)}] id={entry.id} hello"
         )
-        result = await LogGetTool(db).execute(log="events", id=entry.id)
+        result = await LogGetTool(db).execute(CallLink.new_top(), log="events", id=entry.id)
         assert "hello" in result.message
 
     @pytest.mark.asyncio
@@ -2017,20 +2135,20 @@ class TestLogTools:
         db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
         db.memories.create_log(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG, "audit")
         tool = LogGetTool(db)
-        collection = await tool.execute(log="notes", id=1)
+        collection = await tool.execute(CallLink.new_top(), log="notes", id=1)
         assert collection.success is False
         assert collection.message == (
             "'notes' is a collection, not a log: its entries are read by key, not by id."
         )
         user_log = PennyConstants.MEMORY_USER_MESSAGES_LOG
-        messages = await tool.execute(log=user_log, id=1)
+        messages = await tool.execute(CallLink.new_top(), log=user_log, id=1)
         assert messages.success is False
         assert messages.message == (
             f"'{user_log}' holds messages, and a message is not read by id. "
             f"Read them with log_read('{user_log}')."
         )
         run_log = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
-        runs = await tool.execute(log=run_log, id=1)
+        runs = await tool.execute(CallLink.new_top(), log=run_log, id=1)
         assert runs.success is False
         assert runs.message == (
             f"'{run_log}' holds run records, and a run is read by the `run <id>` shown "
@@ -2041,8 +2159,10 @@ class TestLogTools:
     async def test_log_get_unknown_id_names_the_log_read(self, db, mock_llm):
         """An id the log holds no entry for is refused with the read that shows
         the ids that DO exist."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
-        result = await LogGetTool(db).execute(log="events", id=99)
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
+        result = await LogGetTool(db).execute(CallLink.new_top(), log="events", id=99)
         assert result.success is False
         assert result.message == (
             "No entry 99 in 'events'. Read it with log_read('events') to see its "
@@ -2053,7 +2173,7 @@ class TestLogTools:
     async def test_log_get_unknown_log_gets_the_did_you_mean_refusal(self, db, mock_llm):
         """An unknown log name raises ``MemoryNotFoundError``, which the base turns
         into the standard not-found message — no separate refusal here."""
-        result = await LogGetTool(db).execute(log="evnts", id=1)
+        result = await LogGetTool(db).execute(CallLink.new_top(), log="evnts", id=1)
         assert result.success is False
         assert "Memory 'evnts' not found" in result.message
 
@@ -2061,9 +2181,11 @@ class TestLogTools:
     async def test_format_entries_show_ids_stays_off_other_renders(self, db, mock_llm):
         """``show_ids`` renders the id only where it is passed: a message facade's
         read (and every other entry render) stays byte-identical to before."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            log="events", content="hello"
+            CallLink.new_top(), log="events", content="hello"
         )
         entry = db.memories.memory("events").read_all()[0]
         plain = format_entries([entry], source="events", ordering="oldest first")
@@ -2075,11 +2197,13 @@ class TestLogTools:
     async def test_collection_list_refuses_a_log(self, db, mock_llm):
         """Collection reads error on a log instead of silently bypassing the
         cursored log_read/log_get interface (the read_latest-on-a-log footgun)."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
-        await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            log="events", content="first"
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
         )
-        rendered = await CollectionListTool(db).execute(collection="events")
+        await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
+            CallLink.new_top(), log="events", content="first"
+        )
+        rendered = await CollectionListTool(db).execute(CallLink.new_top(), collection="events")
         assert "Refused" in rendered.message
         assert "log_read" in rendered.message
 
@@ -2096,29 +2220,33 @@ class TestLogTools:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            collection="notes", entries=[{"key": "a", "content": "first"}]
+            CallLink.new_top(), collection="notes", entries=[{"key": "a", "content": "first"}]
         )
-        rejected = await CollectionListTool(db).run(collection="notes", k=0)
+        rejected = await CollectionListTool(db).run(CallLink.new_top(), collection="notes", k=0)
         assert rejected.success is False
         assert "at least 1" in rejected.message
         assert "Omit k" in rejected.message
         # A valid read still returns the entry (the guard only rejects k < 1).
-        ok = await CollectionListTool(db).run(collection="notes")
+        ok = await CollectionListTool(db).run(CallLink.new_top(), collection="notes")
         assert "first" in ok.message
 
     @pytest.mark.asyncio
     async def test_log_read_window_mode(self, db, mock_llm):
         """A non-collector caller (scope=None) gets window-mode log_read: recent
         entries within the fixed look-back window — no cursor, no count arg."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(log="events", content="hello")
-        rendered = await LogReadTool(db, "chat", scope=None).execute(log="events")
+        await append.execute(CallLink.new_top(), log="events", content="hello")
+        rendered = await LogReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), log="events"
+        )
         assert "hello" in rendered.message
         # A blank append is refused (blank-only — a bare URL is still a valid log
         # entry), so nothing degenerate joins the stream.  The non-blank rule lives
         # on LogAppendArgs.content, so the refusal comes from the Tool.run gate.
-        blank = await append.run(log="events", content="   ")
+        blank = await append.run(CallLink.new_top(), log="events", content="   ")
         assert blank.success is False
         assert "blank" in blank.message
 
@@ -2128,7 +2256,7 @@ class TestLogTools:
         worked run as a record (``[target] summary`` + its tool trace) — no
         stored entries, no keys, no get.  This is the quality collector's review."""
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            log="collector-runs", description="audit"
+            CallLink.new_top(), log="collector-runs", description="audit"
         )
         response = {
             "choices": [
@@ -2160,7 +2288,9 @@ class TestLogTools:
         )
         db.messages.set_run_outcome("run-42", "worked", "sent an update about a grinder")
 
-        rendered = await LogReadTool(db, "quality", scope="quality").execute(log="collector-runs")
+        rendered = await LogReadTool(db, "quality", scope="quality").execute(
+            CallLink.new_top(), log="collector-runs"
+        )
 
         # collector-runs reads through the uniform log formatter now (it's a log
         # facade like any other) — framed as a fetched batch, runs as records.
@@ -2254,14 +2384,14 @@ class TestLogTools:
         assert "espresso-gear" in tool.description
         assert "chat" in tool.description
 
-        collector = await tool.run(source="espresso-gear")
+        collector = await tool.run(CallLink.new_top(), source="espresso-gear")
         assert "[espresso-gear]" in collector.message
         assert "collection_write(collection='espresso-gear'" in collector.message
         # Argless done() → the conclusion is the run's STRUCTURAL outcome (#1569),
         # never a model summary.
         assert "done: worked" in collector.message
 
-        chat = await tool.run(source="chat")
+        chat = await tool.run(CallLink.new_top(), source="chat")
         assert "user: find me a grinder" in chat.message
         assert "browse(['espresso grinder'])" in chat.message
         assert "penny: Here's a good grinder." in chat.message
@@ -2272,7 +2402,7 @@ class TestLogTools:
         # An unknown/typo'd source resolves to a failed, actionable refusal that
         # names the offending value — not a silent empty batch that reads as "this
         # collector has no runs".
-        unknown = await tool.run(source="esspreso-gear")
+        unknown = await tool.run(CallLink.new_top(), source="esspreso-gear")
         assert unknown.success is False
         assert "esspreso-gear" in unknown.message
 
@@ -2337,7 +2467,7 @@ class TestLogTools:
         await self._create_collection(db, "ai-news")
         self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
 
-        result = await GetEventTool(db).run(run="run news-1")
+        result = await GetEventTool(db).run(CallLink.new_top(), run="run news-1")
 
         # Whole-render: the tool returns the canonical projection byte-for-byte.
         expected = render_run_calls(db.messages.get_run_prompts("news-1"))
@@ -2396,7 +2526,7 @@ class TestLogTools:
             duration_ms=300_000,
         )
 
-        result = await GetEventTool(db).run(run="run news-1")
+        result = await GetEventTool(db).run(CallLink.new_top(), run="run news-1")
 
         lines = result.message.splitlines()
         browse_index = next(i for i, line in enumerate(lines) if "browse(" in line)
@@ -2410,8 +2540,8 @@ class TestLogTools:
         await self._create_collection(db, "ai-news")
         self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
 
-        bare = await GetEventTool(db).run(run="run news-1")
-        framed = await GetEventTool(db).run(run="(run news-1)")
+        bare = await GetEventTool(db).run(CallLink.new_top(), run="run news-1")
+        framed = await GetEventTool(db).run(CallLink.new_top(), run="(run news-1)")
         assert framed.message == bare.message
         assert framed.success is True
 
@@ -2420,7 +2550,7 @@ class TestLogTools:
         """An id with no recognised type tag is refused, not silently emptied — the
         message names what IS addressable and the guess-free fallbacks (find +
         the activity block), never a bare 'not found' (#1580)."""
-        result = await GetEventTool(db).run(run="news-1")
+        result = await GetEventTool(db).run(CallLink.new_top(), run="news-1")
         assert result.success is False
         assert "news-1" in result.message
         assert "find(query=" in result.message
@@ -2430,7 +2560,7 @@ class TestLogTools:
         """A well-formed run token that matched no recorded run gets a failed,
         actionable refusal naming the id + where valid ids are listed — never an
         empty read that reads as a clean, call-less run (#1580)."""
-        result = await GetEventTool(db).run(run="run does-not-exist")
+        result = await GetEventTool(db).run(CallLink.new_top(), run="run does-not-exist")
         assert result.success is False
         assert "does-not-exist" in result.message
         assert "run_list" in result.message
@@ -2445,7 +2575,7 @@ class TestLogTools:
         # The reserved-target check is a pure constant lookup, so it lives on
         # LogAppendArgs.memory and the refusal comes from the Tool.run gate.
         for system_log in PennyConstants.SYSTEM_LOGS:
-            result = await append.run(log=system_log, content="forged turn")
+            result = await append.run(CallLink.new_top(), log=system_log, content="forged turn")
             assert result.success is False
             assert system_log in result.message
             assert "system log" in result.message  # what went wrong + how to fix
@@ -2454,10 +2584,12 @@ class TestLogTools:
 
     @pytest.mark.asyncio
     async def test_log_similar_with_client(self, db, mock_llm):
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         client = _make_llm_client(mock_llm)
         await LogAppendTool(db, client, author="test").execute(
-            log="events", content="coffee is great"
+            CallLink.new_top(), log="events", content="coffee is great"
         )
         # Anchor shares words with the entry so the bag-of-words mock embedding gives
         # meaningful cosine and the entry ranks in `Memory.read_similar` — the store
@@ -2471,13 +2603,15 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_read_next_returns_all_entries_when_no_cursor(self, db, mock_llm):
         """Without a stored cursor, read_next returns every entry in the log."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(log="events", content="first")
-        await append.execute(log="events", content="second")
+        await append.execute(CallLink.new_top(), log="events", content="first")
+        await append.execute(CallLink.new_top(), log="events", content="second")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await read_next.execute(log="events")
+        rendered = await read_next.execute(CallLink.new_top(), log="events")
 
         assert "first" in rendered.message
         assert "second" in rendered.message
@@ -2485,18 +2619,20 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_commit_pending_advances_cursor_to_max_seen(self, db, mock_llm):
         """commit_pending writes the highest timestamp seen during the run."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(log="events", content="first")
-        await append.execute(log="events", content="second")
+        await append.execute(CallLink.new_top(), log="events", content="first")
+        await append.execute(CallLink.new_top(), log="events", content="second")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(log="events")
+        await read_next.execute(CallLink.new_top(), log="events")
         read_next.commit_pending()
 
         # A new instance after commit should see no entries (cursor caught up).
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(log="events")
+        rendered = await fresh.execute(CallLink.new_top(), log="events")
         # Empty read names the source and marks it as absence, not an error.
         assert (
             rendered.message
@@ -2506,17 +2642,19 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_discard_pending_leaves_cursor_unchanged(self, db, mock_llm):
         """discard_pending drops the in-memory state without touching the DB cursor."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(log="events", content="first")
+        await append.execute(CallLink.new_top(), log="events", content="first")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(log="events")
+        await read_next.execute(CallLink.new_top(), log="events")
         read_next.discard_pending()
 
         # Cursor still at None; a new read sees the same entries.
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(log="events")
+        rendered = await fresh.execute(CallLink.new_top(), log="events")
         assert "first" in rendered.message
 
     @pytest.mark.asyncio
@@ -2530,15 +2668,17 @@ class TestLogTools:
         """
         from penny.constants import PennyConstants
 
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         # Append more entries than the bound to confirm trimming
         n_entries = PennyConstants.LOG_READ_LIMIT + 5
         for i in range(n_entries):
-            await append.execute(log="events", content=f"entry-{i:02d}")
+            await append.execute(CallLink.new_top(), log="events", content=f"entry-{i:02d}")
 
         read_next = LogReadTool(db, agent_name="brand-new-collector", scope="brand-new-collector")
-        rendered = await read_next.execute(log="events")
+        rendered = await read_next.execute(CallLink.new_top(), log="events")
 
         # Exactly the latest N entries — entry-(n-N) through entry-(n-1)
         # should appear; older entries should not.
@@ -2553,20 +2693,22 @@ class TestLogTools:
         """After a bounded first cycle commits, the next cycle picks up
         incrementally — even entries that the first cycle's bound excluded
         stay excluded (since they're older than the cursor)."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         for i in range(15):
-            await append.execute(log="events", content=f"old-{i:02d}")
+            await append.execute(CallLink.new_top(), log="events", content=f"old-{i:02d}")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(log="events")
+        await read_next.execute(CallLink.new_top(), log="events")
         read_next.commit_pending()
 
         # New entries arrive
-        await append.execute(log="events", content="new-after-cursor")
+        await append.execute(CallLink.new_top(), log="events", content="new-after-cursor")
 
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(log="events")
+        rendered = await fresh.execute(CallLink.new_top(), log="events")
         assert "new-after-cursor" in rendered.message
         # Old entries excluded by the bound stay excluded
         assert "old-00" not in rendered.message
@@ -2579,21 +2721,23 @@ class TestLogTools:
         from penny.constants import PennyConstants
 
         limit = PennyConstants.LOG_READ_LIMIT
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
 
         # Establish a cursor, then pile up a backlog bigger than one batch.
-        await append.execute(log="events", content="seed")
+        await append.execute(CallLink.new_top(), log="events", content="seed")
         seed_read = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await seed_read.execute(log="events")
+        await seed_read.execute(CallLink.new_top(), log="events")
         seed_read.commit_pending()
 
         backlog = limit + 3
         for i in range(backlog):
-            await append.execute(log="events", content=f"backlog-{i:02d}")
+            await append.execute(CallLink.new_top(), log="events", content=f"backlog-{i:02d}")
 
         first = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered_first = await first.execute(log="events")
+        rendered_first = await first.execute(CallLink.new_top(), log="events")
         first.commit_pending()
         # Exactly one batch — the oldest N of the backlog, not all of it.
         assert rendered_first.message.count("backlog-") == limit
@@ -2602,24 +2746,26 @@ class TestLogTools:
 
         # The next read picks up the remainder since the advanced cursor.
         second = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered_second = await second.execute(log="events")
+        rendered_second = await second.execute(CallLink.new_top(), log="events")
         assert f"backlog-{backlog - 1:02d}" in rendered_second.message
 
     @pytest.mark.asyncio
     async def test_per_agent_cursors_are_independent(self, db, mock_llm):
         """Two agents reading the same log have independent cursor state."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            log="events", content="hello"
+            CallLink.new_top(), log="events", content="hello"
         )
 
         agent_a = LogReadTool(db, agent_name="a", scope="a")
-        await agent_a.execute(log="events")
+        await agent_a.execute(CallLink.new_top(), log="events")
         agent_a.commit_pending()
 
         # Agent B has its own cursor and still sees the entry.
         agent_b = LogReadTool(db, agent_name="b", scope="b")
-        rendered = await agent_b.execute(log="events")
+        rendered = await agent_b.execute(CallLink.new_top(), log="events")
         assert "hello" in rendered.message
 
 
@@ -2667,7 +2813,7 @@ class TestEmissionProvenanceRender:
         mechanism-stamped line carries the inline marker."""
         self._seed(db)
         result = await LogReadTool(db, agent_name="reader", scope="reader").execute(
-            log=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
+            CallLink.new_top(), log=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
         )
         assert result.message == (
             "2 entries from `penny-messages` (oldest first):\n"
@@ -2706,6 +2852,7 @@ class TestMemoryNameNormalization:
         # Non-breaking hyphen U+2011 in the collection name — model output
         # observed in the wild.
         result = await write.execute(
+            CallLink.new_top(),
             collection="board‑games",
             entries=[{"key": "k", "content": "v"}],
         )
@@ -2725,7 +2872,7 @@ class TestAuthorAttribution:
         )
         await CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="preference-extractor"
-        ).execute(collection="likes", entries=[{"key": "k", "content": "v"}])
+        ).execute(CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "v"}])
 
         rows = db.memory("likes").get("k")
         assert rows[0].author == "preference-extractor"
@@ -2817,7 +2964,9 @@ class TestScopedFactory:
         write = CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
         )
-        result = await write.execute(collection="dislikes", entries=[{"key": "k", "content": "v"}])
+        result = await write.execute(
+            CallLink.new_top(), collection="dislikes", entries=[{"key": "k", "content": "v"}]
+        )
 
         assert (
             result.message == "Refused: this collector can only write to 'likes', not 'dislikes'."
@@ -2838,7 +2987,9 @@ class TestScopedFactory:
         write = CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
         )
-        result = await write.execute(collection="likes", entries=[{"key": "k", "content": "v"}])
+        result = await write.execute(
+            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "v"}]
+        )
 
         assert "Wrote 1 entry" in result.message
         assert db.memory("likes").get("k")[0].content == "v"
@@ -2846,7 +2997,7 @@ class TestScopedFactory:
     @pytest.mark.asyncio
     async def test_scoped_delete_rejects_other_collection(self, db):
         delete = CollectionRemoveTool(db, scope="likes")
-        result = await delete.execute(collection="dislikes", key="k")
+        result = await delete.execute(CallLink.new_top(), collection="dislikes", key="k")
         assert "Refused" in result.message
 
 
@@ -2864,6 +3015,7 @@ class TestRegistryProvenanceAndLifecycle:
         return await CollectionCreateTool(
             db, cast(Any, MockLlmClient()), created_by_run_id=created_by_run_id
         ).execute(
+            CallLink.new_top(),
             name=name,
             description=f"the user's goal for {name}",
             prompt="Browse for fresh items on the topic and save the newest ones.",
@@ -2902,7 +3054,7 @@ class TestRegistryProvenanceAndLifecycle:
         message_id = self._spawn(
             db, "run-audiobooks-01", "keep a running list of good sci-fi audiobooks"
         )
-        result = await MemoryMetadataTool(db).execute(memory="audiobooks")
+        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="audiobooks")
         # One exact-name call answers the whole lifecycle question.
         assert "status: active" in result.message
         assert "expires: never" in result.message
@@ -2920,8 +3072,8 @@ class TestRegistryProvenanceAndLifecycle:
         await self._create(db, "kickstarters", created_by_run_id="run-ks-01")
         message_id = self._spawn(db, "run-ks-01", "watch for new board game kickstarters")
         # Archiving must change status, never reachability by name.
-        await CollectionArchiveTool(db).execute(collection="kickstarters")
-        result = await MemoryMetadataTool(db).execute(memory="kickstarters")
+        await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="kickstarters")
+        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="kickstarters")
 
         assert "status: archived" in result.message
         # Provenance (message + ask excerpt) renders on the created line.
@@ -2937,7 +3089,7 @@ class TestRegistryProvenanceAndLifecycle:
         )
         await self._create(db, "keyboards", created_by_run_id="run-kb-01")
         self._spawn(db, "run-kb-01", long_ask)
-        result = await MemoryMetadataTool(db).execute(memory="keyboards")
+        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="keyboards")
         # The ask is truncated to the first ~80 chars with an ellipsis marker, so
         # a verbose request doesn't blow up the rendered line.
         assert long_ask[:40] in result.message
@@ -2954,7 +3106,7 @@ class TestRegistryProvenanceAndLifecycle:
             schedule="FREQ=HOURLY",
             expires_at=expiry,
         )
-        result = await MemoryMetadataTool(db).execute(memory="holiday-watch")
+        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="holiday-watch")
         # A set end condition renders on the user's own clock (#2206/#2251 — UTC here,
         # since no profile is seeded), not "never".
         assert "expires: Friday, December 25, 2026 at 09:00 AM UTC" in result.message
@@ -2979,8 +3131,8 @@ class TestRegistryProvenanceAndLifecycle:
             schedule="FREQ=HOURLY",
         )
         tool = MemoryMetadataTool(db)
-        one_off = await tool.execute(memory="one-off")
-        plain = await tool.execute(memory="plain")
+        one_off = await tool.execute(CallLink.new_top(), memory="one-off")
+        plain = await tool.execute(CallLink.new_top(), memory="plain")
         assert (
             "schedule: once, at Friday, December 25, 2026 at 09:00 AM UTC, then it "
             "retires (rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`)"
@@ -3041,6 +3193,7 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
     door skips the same-job check (#1775), so these tests can stand up several
     deliberately-similar collections."""
     await CollectionCreateTool(db, client).execute(
+        CallLink.new_top(),
         name=name,
         description=description,
         prompt="Browse for items and note what's found.",
@@ -3075,8 +3228,9 @@ class TestFind:
         an active collection, an archived collection, and a log."""
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
-        await CollectionArchiveTool(db).execute(collection="aurora-archive")
+        await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="aurora-archive")
         await LogCreateTool(db, client).execute(
+            CallLink.new_top(),
             log="aurora-log",
             description="aurora echo foxtrot",
         )
@@ -3087,7 +3241,9 @@ class TestFind:
         live/archived state, AND the deterministic addressing — best-first."""
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.success
         assert result.message == self._KITCHEN_SINK
 
@@ -3099,7 +3255,9 @@ class TestFind:
         ``execute``, so the arg-validation envelope names the offending field."""
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
-        result = await FindTool(db, client).run(query="aurora beacon cascade", type="skill")
+        result = await FindTool(db, client).run(
+            CallLink.new_top(), query="aurora beacon cascade", type="skill"
+        )
         assert result.success is False
         assert "unknown parameter 'type'" in result.message
         assert "valid parameters: query" in result.message
@@ -3108,7 +3266,9 @@ class TestFind:
     async def test_single_confident_match(self, db, mock_llm):
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "solo-watch", "aurora beacon cascade")
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
@@ -3124,7 +3284,9 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "watch-primary", "aurora beacon cascade")
         await _create_collection(db, client, "watch-secondary", "aurora beacon delta")
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
@@ -3145,7 +3307,7 @@ class TestFind:
         state at the top of the prompt (#2288) — not an error, no dead end."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        result = await FindTool(db, client).execute(query="orbit nebula")
+        result = await FindTool(db, client).execute(CallLink.new_top(), query="orbit nebula")
         assert result.success
         assert result.message == (
             'Nothing of yours matched "orbit nebula" — the state at the top of this '
@@ -3156,7 +3318,9 @@ class TestFind:
     async def test_transient_embed_failure_is_actionable(self, db):
         """A transient query-embed failure returns an actionable retry, not a silent
         empty — the miss is named, the fix bound."""
-        result = await FindTool(db, cast(Any, _FailingEmbedClient())).execute(query="anything")
+        result = await FindTool(db, cast(Any, _FailingEmbedClient())).execute(
+            CallLink.new_top(), query="anything"
+        )
         assert result.success is False
         assert "Couldn't embed your query" in result.message
         assert "find(query=" in result.message
@@ -3171,10 +3335,13 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
         await CollectionWriteTool(db, client, author="test").execute(
+            CallLink.new_top(),
             collection="knowledge-notes",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
         )
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.success
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
@@ -3190,10 +3357,13 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await CollectionWriteTool(db, client, author="test").execute(
+            CallLink.new_top(),
             collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
@@ -3212,12 +3382,14 @@ class TestFind:
         that reads it back by that id — a log has no key to re-read by (#1640).
         The log's OWN description is orthogonal, so only the entry surfaces."""
         client = _axis_client(mock_llm)
-        await LogCreateTool(db, client).execute(log="aurora-log", description="orbit nebula")
+        await LogCreateTool(db, client).execute(
+            CallLink.new_top(), log="aurora-log", description="orbit nebula"
+        )
         await LogAppendTool(db, client, author="test").execute(
-            log="aurora-log", content="aurora echo foxtrot"
+            CallLink.new_top(), log="aurora-log", content="aurora echo foxtrot"
         )
         entry_id = db.memories.memory("aurora-log").read_all()[0].id
-        result = await FindTool(db, client).execute(query="aurora echo foxtrot")
+        result = await FindTool(db, client).execute(CallLink.new_top(), query="aurora echo foxtrot")
         assert result.success
         assert result.message == (
             'Found 1 thing matching "aurora echo foxtrot":\n'
@@ -3261,7 +3433,9 @@ class TestFind:
             db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG).read_all()[0].created_at
         )
 
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.success
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
@@ -3296,7 +3470,9 @@ class TestFind:
                 embedding=serialize_embedding(_axis_vec("aurora beacon cascade")),
             )
 
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.success
         assert result.message.startswith(
             'Found 1 thing matching "aurora beacon cascade":\n'
@@ -3327,7 +3503,9 @@ class TestFind:
             db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG).read_all()[0].created_at
         )
 
-        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
         assert result.success
         assert result.message == (
             'Nothing stored matched "aurora beacon cascade" — the state at the top of '
@@ -3345,13 +3523,14 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await CollectionWriteTool(db, client, author="test").execute(
+            CallLink.new_top(),
             collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta echo foxtrot"}],
         )
         # Would also match the unscoped search — proves the scope actually narrows.
         await _create_collection(db, client, "aurora-notes", "aurora beacon cascade")
         result = await FindTool(db, client).execute(
-            query="aurora beacon cascade", memory="aurora-watch"
+            CallLink.new_top(), query="aurora beacon cascade", memory="aurora-watch"
         )
         assert result.success
         assert "from `aurora-watch` (closest to the query first)" in result.message
@@ -3373,7 +3552,9 @@ class TestFind:
             embedding=serialize_embedding(_axis_vec("aurora beacon cascade delta")),
         )
         result = await FindTool(db, client).execute(
-            query="aurora beacon cascade", memory=PennyConstants.MEMORY_USER_MESSAGES_LOG
+            CallLink.new_top(),
+            query="aurora beacon cascade",
+            memory=PennyConstants.MEMORY_USER_MESSAGES_LOG,
         )
         assert result.success
         assert "user-messages" in result.message
@@ -3387,12 +3568,13 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
         await CollectionWriteTool(db, client, author="test").execute(
+            CallLink.new_top(),
             collection="aurora-archive",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
-        await CollectionArchiveTool(db).execute(collection="aurora-archive")
+        await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="aurora-archive")
         result = await FindTool(db, client).execute(
-            query="aurora beacon cascade", memory="aurora-archive"
+            CallLink.new_top(), query="aurora beacon cascade", memory="aurora-archive"
         )
         assert result.success
         assert "cascade gamma" in result.message
@@ -3405,7 +3587,7 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "garage", "aurora beacon cascade")
         result = await FindTool(db, client).execute(
-            query="anything", memory="aurora beacon cascade"
+            CallLink.new_top(), query="anything", memory="aurora beacon cascade"
         )
         assert result.success is False
         assert "did you mean 'garage'?" in result.message

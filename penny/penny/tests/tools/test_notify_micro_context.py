@@ -18,6 +18,9 @@ from typing import Any, cast
 import pytest
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
+from penny.llm.models import LlmMessage, LlmResponse
+from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
     MESSAGE_TAG,
     NOTIFY_SYSTEM_PROMPT,
@@ -30,6 +33,10 @@ _DOCUMENT = "The `tide-times` job just ran on its own.\n\n## What it wrote\n- 06
 class _Model:
     """A model client that replies with each canned draw in turn, recording the calls."""
 
+    # Mirrors ``LlmClient.runtime`` (#2476): the draw reads its kind's token budget
+    # off it; ``None`` sends none, the same default-only fallback a test client gets.
+    runtime = None
+
     def __init__(self, *draws: str) -> None:
         self._draws = list(draws)
         self.calls: list[dict] = []
@@ -37,13 +44,13 @@ class _Model:
     async def chat(self, messages: list[dict], **kwargs: Any):
         self.calls.append({"messages": messages, **kwargs})
         text = self._draws[min(len(self.calls) - 1, len(self._draws) - 1)]
-        return type("Response", (), {"content": text})()
+        return type("Response", (), {"content": text, "finish_reason": None})()
 
 
 async def _compose(*draws: str) -> tuple[str | None, _Model]:
     model = _Model(*draws)
     drawn = await MicroContext(cast(Any, model)).compose_notification(
-        _DOCUMENT, run_target="tide-times"
+        _DOCUMENT, call_link=CallLink.new_top(), run_target="tide-times"
     )
     return drawn, model
 
@@ -111,6 +118,28 @@ async def test_the_document_is_the_whole_user_turn_and_the_draw_is_attributed():
     assert model.calls[0]["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
     assert model.calls[0]["prompt_type"] == PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE
     assert model.calls[0]["run_target"] == "tide-times"
+
+
+@pytest.mark.asyncio
+async def test_the_draw_links_back_to_the_cycle_from_its_explicit_link():
+    """The notifier's draw links back to the collector cycle it closes via the
+    EXPLICIT ``call_link`` the cycle hands down (#2458, no ambient state) —
+    ``compose_notification`` takes no bare ``parent_run_id`` parameter; the
+    linkage is whatever link ``agents/collector.py::_execute_cycle`` minted,
+    which stays available across the notifier precisely because it is passed
+    as a value, not an ambient scope that could close early."""
+    mock = MockLlmClient()
+    mock.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(role="assistant", content=f"{MESSAGE_TAG} Hey! 06:12 now.")
+        )
+    )
+    drawn = await MicroContext(cast(Any, mock)).compose_notification(
+        _DOCUMENT, call_link=CallLink.top("cycle-run-1"), run_target="tide-times"
+    )
+    assert drawn == "Hey! 06:12 now."
+    assert len(mock.requests) == 1
+    assert mock.requests[0]["parent_run_id"] == "cycle-run-1"
 
 
 @pytest.mark.asyncio

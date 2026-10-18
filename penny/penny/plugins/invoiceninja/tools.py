@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from pydantic import Field
 
+from penny.llm.call_link import CallLink
 from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
 
@@ -76,7 +77,7 @@ class VerifyAuthTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Verify auth."""
         try:
             await self._client.verify_auth()
@@ -116,7 +117,7 @@ class ListInvoicesTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List invoices."""
         args = ListInvoicesArgs(**kwargs)
         try:
@@ -179,7 +180,7 @@ class CreateExpenseTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create an expense."""
         args = CreateExpenseArgs(**kwargs)
         try:
@@ -242,7 +243,7 @@ class ListExpensesTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List expenses."""
         args = ListExpensesArgs(**kwargs)
         try:
@@ -286,7 +287,7 @@ class GetExpenseTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Get an expense."""
         args = GetExpenseArgs(**kwargs)
         try:
@@ -342,7 +343,7 @@ class UpdateExpenseTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Update an expense."""
         args = UpdateExpenseArgs(**kwargs)
         try:
@@ -388,7 +389,7 @@ class CreateExpenseCategoryTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create an expense category."""
         args = CreateExpenseCategoryArgs(**kwargs)
         try:
@@ -430,7 +431,7 @@ class ListExpenseCategoriesTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List expense categories."""
         args = ListExpenseCategoriesArgs(**kwargs)
         try:
@@ -474,7 +475,7 @@ class GetExpenseCategoryTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Get an expense category."""
         args = GetExpenseCategoryArgs(**kwargs)
         try:

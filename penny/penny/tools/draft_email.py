@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from penny.llm.call_link import CallLink
 from penny.plugins.zoho.mail_client import ZohoClient
 from penny.tools.base import Tool
 from penny.tools.models import DraftEmailArgs, ToolResult
@@ -73,7 +74,7 @@ class DraftEmailTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Save an email draft and return confirmation."""
         args = DraftEmailArgs(**kwargs)
         to_addresses = args.to

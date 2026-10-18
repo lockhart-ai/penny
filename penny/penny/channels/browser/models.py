@@ -34,6 +34,7 @@ BROWSER_MSG_TYPE_ENTRY_DELETE = "entry_delete"
 BROWSER_MSG_TYPE_COLLECTION_TRIGGER = "collection_trigger"
 BROWSER_MSG_TYPE_CURSOR_SET = "cursor_set"
 BROWSER_MSG_TYPE_CURSOR_CLEAR = "cursor_clear"
+BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST = "run_detail_request"
 
 # Outgoing message types (server → browser)
 BROWSER_RESP_TYPE_MESSAGE = "message"
@@ -51,7 +52,12 @@ BROWSER_RESP_TYPE_MEMORIES = "memories_response"
 BROWSER_RESP_TYPE_MEMORY_DETAIL = "memory_detail_response"
 BROWSER_RESP_TYPE_MEMORY_PAGE = "memory_page_response"
 BROWSER_RESP_TYPE_MEMORY_CHANGED = "memory_changed"
+BROWSER_RESP_TYPE_RUN_DETAIL = "run_detail_response"
 BROWSER_RESP_TYPE_COLLECTION_TRIGGER_RESULT = "collection_trigger_result"
+BROWSER_RESP_TYPE_MEMORY_SAVE_ERROR = "memory_save_error"
+BROWSER_RESP_TYPE_CALL_STARTED = "call_started"
+BROWSER_RESP_TYPE_TOOL_STARTED = "tool_started"
+BROWSER_RESP_TYPE_TOOL_FINISHED = "tool_finished"
 
 # Sections of a memory's detail view that paginate independently.
 MEMORY_SECTION_ENTRIES = "entries"
@@ -197,6 +203,44 @@ class BrowserRunOutcomeUpdate(BaseModel):
     reason: str
 
 
+class BrowserCallStarted(BaseModel):
+    """Push notification: a model call is about to be made (#2439) — no
+    ``promptlog`` row exists for it yet.  ``started_at`` is already an ISO
+    string (``MessageStore``'s own clock, serialized at the channel boundary)."""
+
+    type: str = BROWSER_RESP_TYPE_CALL_STARTED
+    run_id: str
+    parent_run_id: str | None
+    parent_tool_call_id: str | None
+    agent_name: str | None
+    prompt_type: str | None
+    model: str
+    run_target: str | None
+    started_at: str
+
+
+class BrowserToolStarted(BaseModel):
+    """Push notification: a dispatched tool call is about to run (#2439)."""
+
+    type: str = BROWSER_RESP_TYPE_TOOL_STARTED
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    started_at: str
+
+
+class BrowserToolFinished(BaseModel):
+    """Push notification: a dispatched tool call just finished (#2439)."""
+
+    type: str = BROWSER_RESP_TYPE_TOOL_FINISHED
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    success: bool
+
+
 class BrowserMemoryDetailRequest(BaseModel):
     """A request to load metadata + the first page of each section for a
     single memory."""
@@ -239,6 +283,11 @@ class MemoryRecord(BaseModel):
     # still reading that key sees it absent, and updating the client surface is its own
     # change (the #1583/#1631 precedent).
     schedule: str | None
+    # The schedule in plain words, with its exact rule alongside in a code span
+    # (``describe_schedule``, #2428) — ``None`` alongside a ``None`` schedule.  Sent so
+    # the addon's schedule picker (#2442) never has to re-derive the model's own wording
+    # in TypeScript.
+    schedule_description: str | None
     last_collected_at: str | None
     entry_count: int
 
@@ -321,6 +370,18 @@ class BrowserCollectionTriggerResult(BaseModel):
     message: str
 
 
+class BrowserMemorySaveError(BaseModel):
+    """A ``memory_create``/``memory_update`` whose ``schedule`` failed validation,
+    sent back to the requesting connection (#2442).  The picker's custom RRULE box has
+    no client-side grammar check, so a rejected schedule must say why rather than
+    silently not saving."""
+
+    type: str = BROWSER_RESP_TYPE_MEMORY_SAVE_ERROR
+    action: Literal["create", "update"]
+    name: str
+    message: str
+
+
 class BrowserMemoryChanged(BaseModel):
     """Push notification: a memory was mutated.  ``name`` is the affected
     memory, or ``None`` for fan-out events not scoped to one memory."""
@@ -366,7 +427,11 @@ class BrowserMemoryUpdate(BaseModel):
     # maps to the ``memory.notify`` column server-side (#1557).
     published: bool | None = None
     extraction_prompt: str | None = None
-    # One RRULE (#1857); None = leave the schedule unchanged.
+    # One RRULE (#1857), or None for no schedule.  The addon's form always resends its
+    # full current picker state, so the handler applies this as a full replace (clearing
+    # any previous schedule/end-conditions when None) rather than a partial "leave
+    # unchanged" poke (#2442) — unlike the chat tool's ``collection_configure``, which
+    # does treat an omitted schedule as untouched.
     schedule: str | None = None
 
 
@@ -422,3 +487,25 @@ class BrowserEntryDelete(BaseModel):
     type: str
     memory: str
     key: str
+
+
+class BrowserRunDetailRequest(BaseModel):
+    """A request for one run, fully serialized, by its ``run_id`` — e.g. the
+    Skills tab opening the run a skill's ``source_run_id`` points at."""
+
+    type: str
+    run_id: str
+
+
+class BrowserRunDetailResponse(BaseModel):
+    """One run, fully serialized (run → prompts), by its ``run_id`` — the SAME
+    shape the prompts tab's own list already carries each run in.
+
+    ``run_id`` echoes the request so a miss is still answered (#2443): ``run`` is
+    ``None`` when no prompt in the ledger carries that id (a stale or malformed
+    one), rather than the request going unanswered."""
+
+    type: str = BROWSER_RESP_TYPE_RUN_DETAIL
+    request_id: str | None = None
+    run_id: str
+    run: dict | None = None

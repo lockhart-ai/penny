@@ -7,7 +7,6 @@ Context is injected automatically via the Agent base class.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +16,7 @@ from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.datetime_utils import current_datetime_line
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
 from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply, is_empty_draw
@@ -26,12 +26,9 @@ from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import render_nothing_landed, render_writes_landed
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.validation import ConditionKey
-from penny.validation.outcomes import LoopContext
-from penny.validation.response_validators import WritesLandedValidator
 
 if TYPE_CHECKING:
     from penny.llm.image_client import OllamaImageClient
-    from penny.llm.models import LlmResponse
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +54,13 @@ class ChatAgent(Agent):
 
     name: str = "chat"
     system_prompt = Prompt.CONVERSATION_PROMPT
-    # Chat's run-shape chain (base Agent's is empty).  A new chat shape guard is one
-    # more entry here — never a branch in the loop.
-    #  - WritesLandedValidator: on a run that wrote entries or tried to (#1946/#2185), what
-    #    actually landed — the ledger's answer, against which a turn's own count of its
-    #    writes is a count of what it attempted.  Handed over as state the reply is drawn
-    #    after, not as a message.
-    run_shape_validators = [
-        WritesLandedValidator(),
-    ]
+    # Chat's run-shape chain (base Agent's is empty).  Empty here too (#2455 naive
+    # baseline / #2473): what a run wrote and what it configured are both delivered
+    # earlier, straight onto the tool result the moment their call lands (see
+    # ``after_tool_step`` below), so there is nothing left for a text-branch
+    # validator to narrate.  A new chat shape guard is one more entry here — never a
+    # branch in the loop.
+    run_shape_validators = []
 
     # Chat's invalid draws are the ones that are not a REPLY (#1839/#1937): a plain
     # conversational reply IS chat's valid terminal state, so nothing about ordinary
@@ -161,26 +156,61 @@ class ChatAgent(Agent):
             self._current_message or "", current_datetime_line(self.db)
         )
 
-    # ── Writes-landed narration ──────────────────────────────────────────
+    # ── Writes-landed narration, delivered with the tool step (#2473) ─────
 
-    async def _prepare_text_shape(
-        self, response: LlmResponse, ctx: LoopContext, run_id: str
-    ) -> LoopContext:
-        """When the chat run emits final text, check whether this run has a writes
-        record to narrate and hand it to the chat chain's narration validator.
+    async def after_tool_step(
+        self,
+        step_records: list[ToolCallRecord],
+        records: list[ToolCallRecord],
+        messages: list[dict],
+        run_id: str,
+    ) -> None:
+        """Append what this run has WRITTEN so far to the end of the step's own tool
+        result — before any draft of the reply exists (#2455 naive baseline drops this
+        chain's other former member, the applied-configuration frame, #1869 — it reads
+        the round framing this branch no longer has).
 
-        Computed once per run and then nothing left to hand out — a plain chat turn
-        (no skill/round machinery left to narrate, #2455 naive baseline) has at most
-        this one record."""
-        if run_id == self._extraction_run_id:
-            return ctx
-        self._extraction_run_id = run_id
-        frame = self._writes_landed_frame(ctx, run_id)
-        if frame is None:
-            return ctx
-        return ctx.model_copy(update={"writes_landed_frame": frame})
+        The record exists the moment its tool call lands (it is a read of the
+        store, not of the run's own memory of itself), so recomputing them and
+        appending whichever are non-``None`` here means the model's first reply is
+        drawn with them already in view.  There is no draft to discard and no second
+        draw: the old mechanism dropped a reply written before the record and redrew
+        with it spliced into the system prompt, which is the two-reply regression this
+        ticket closes (#2473).
 
-    def _writes_landed_frame(self, ctx: LoopContext, run_id: str) -> str | None:
+        Recomputed only on a step whose OWN calls could plausibly have changed the
+        record (a store-asking write) — ``_may_change_a_record`` gates it on
+        ``step_records`` alone, so a step that only read or browsed costs no extra
+        ledger query: the record can't change from a read.
+
+        Appended to the TOOL result, never edited into the system prompt: the system
+        prompt is this run's prefix, and editing it mid-run would invalidate a local
+        build's prefix cache on every later step.  A later step's addendum states the
+        record AS OF NOW — the whole picture, not a delta — so a run with two writes
+        never leaves an earlier message understating what has landed."""
+        if not self._may_change_a_record(step_records):
+            return
+        addendum = self._writes_landed_frame(records, run_id)
+        if addendum:
+            self._append_to_last_tool_result(messages, addendum)
+
+    @staticmethod
+    def _may_change_a_record(step_records: list[ToolCallRecord]) -> bool:
+        """Whether this step's OWN calls could have moved the writes record — the
+        same tool mark the record is read off (``Tool.asks_to_store``), so a step
+        that only read or browsed is never worth a ledger query: the record can't
+        change from a read."""
+        return any(Tool.asks_to_store(record.tool) for record in step_records)
+
+    @staticmethod
+    def _append_to_last_tool_result(messages: list[dict], addendum: str) -> None:
+        """Append ``addendum`` to the content of the LAST message in ``messages`` — the
+        step's own tool result, since this is only ever called right after a tool step's
+        results have been absorbed into it (#2473)."""
+        last = messages[-1]
+        messages[-1] = {**last, "content": f"{last['content']}\n\n{addendum}"}
+
+    def _writes_landed_frame(self, records: list[ToolCallRecord], run_id: str) -> str | None:
         """The record of what this run SAVED, rendered for the reply to be written after
         (#1946/#2185) — ``None`` when the run neither saved anything nor tried to.
 
@@ -196,16 +226,16 @@ class ChatAgent(Agent):
         and deciding it SHOULD have tried would mean reading the ask's words.  Nothing in
         the path names a tool, so a plugin's verb is covered by declaring the mark."""
         landed = render_writes_landed(self.db.memories.entries_written_by_run(run_id))
-        record = landed or render_nothing_landed(self._store_attempts(ctx))
+        record = landed or render_nothing_landed(self._store_attempts(records))
         if record is None:
             return None
         return Prompt.WRITES_LANDED_RECORD.format(record=record)
 
     @staticmethod
-    def _store_attempts(ctx: LoopContext) -> list[ToolCallRecord]:
+    def _store_attempts(records: list[ToolCallRecord]) -> list[ToolCallRecord]:
         """This run's calls that asked the store to keep an entry, in the order made —
         read off each call's own tool's declared mark, never off its name."""
-        return [record for record in ctx.records if Tool.asks_to_store(record.tool)]
+        return [record for record in records if Tool.asks_to_store(record.tool)]
 
     # ── Message handling ───────────────────────────────────────────────
 
@@ -213,10 +243,11 @@ class ChatAgent(Agent):
         self,
         content: str,
         sender: str,
+        *,
+        call_link: CallLink,
         images: list[str] | None = None,
         page_context: PageContext | None = None,
         quoted_text: str | None = None,
-        run_id: str | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> ControllerResponse:
@@ -224,12 +255,11 @@ class ChatAgent(Agent):
 
         Builds context, processes images, runs agentic loop.
 
-        ``run_id`` is the turn's run id, minted by the channel so the same id
-        both stamps every promptlog row and is recorded on any collection the
-        turn creates (``created_by_run_id``, #1566) — the channel later links the
-        spawning message to that run.  Passed as an explicit parameter down the
-        call chain, never held as ambient state; when a direct caller omits it,
-        one is minted here.
+        ``call_link`` (#2458) is REQUIRED — a top-level run starter in its own right,
+        built by the channel (``CallLink.top(run_id)``) before this turn is even
+        dispatched, with no ambient state and no fallback.  ``run_id`` (for DB/
+        mutation purposes — stamped on every promptlog row, recorded on any
+        collection the turn creates via ``created_by_run_id``, #1566) is read off it.
 
         There is no conversation machine (#2455 naive baseline): every turn runs the
         same ``Prompt.CONVERSATION_PROMPT`` — there is no second state to pick an
@@ -237,9 +267,9 @@ class ChatAgent(Agent):
         """
         self._current_user = sender
         self._pending_page_context = page_context
-        run_id = run_id or uuid.uuid4().hex
+        run_id = call_link.run_id
         try:
-            content, has_images = await self._process_images(content, images)
+            content, has_images = await self._process_images(content, images, call_link)
             self._current_message = content
             history = self.get_history(sender, quoted_text=quoted_text)
 
@@ -253,8 +283,8 @@ class ChatAgent(Agent):
                     prompt=content,
                     history=history,
                     max_steps=PennyConstants.VISION_MAX_STEPS,
+                    call_link=call_link,
                     system_prompt=system_prompt,
-                    run_id=run_id,
                     on_progress=on_progress,
                     progress_scope="foreground",
                     prompt_type=ChatPromptType.VISION_MESSAGE,
@@ -266,9 +296,9 @@ class ChatAgent(Agent):
             return await self.run(
                 prompt=content,
                 max_steps=self.get_max_steps(),
+                call_link=call_link,
                 history=history,
                 system_prompt=system_prompt,
-                run_id=run_id,
                 on_tool_start=on_tool_start,
                 on_progress=on_progress,
                 progress_scope="foreground",
@@ -433,13 +463,20 @@ class ChatAgent(Agent):
 
     # ── Vision ────────────────────────────────────────────────────────────
 
-    async def caption_image(self, image_b64: str) -> str:
+    async def caption_image(self, image_b64: str, call_link: CallLink) -> str:
         """Caption an image using the vision model.
 
         The channel layer rejects image messages before they reach this
         method when ``LLM_VISION_MODEL`` is unset, so the client is
         guaranteed to exist by the time we get here. Guard explicitly so
         the type narrows without an assert.
+
+        ``call_link`` (#2458) is REQUIRED — the caller's own turn link when
+        called from inside a turn (``_process_images``, its only production
+        caller); a direct caller with no turn in progress supplies its own
+        (``CallLink.new_top()``). This caption is its own ledger-visible run —
+        ``call_link.child()`` mints its own run id, linking back to whatever
+        ``call_link`` names as parent.
         """
         if self._vision_model_client is None:
             raise RuntimeError(
@@ -453,18 +490,20 @@ class ChatAgent(Agent):
             messages=messages,
             agent_name=self.name,
             prompt_type=ChatPromptType.VISION_CAPTION,
-            run_id=uuid.uuid4().hex,
+            call_link=call_link.child(),
         )
         return response.content.strip()
 
     # ── Image processing ──────────────────────────────────────────────────
 
-    async def _process_images(self, content: str, images: list[str] | None) -> tuple[str, bool]:
+    async def _process_images(
+        self, content: str, images: list[str] | None, call_link: CallLink
+    ) -> tuple[str, bool]:
         """Caption images with vision model and build combined text prompt."""
         if not images:
             return content, False
 
-        captions = [await self.caption_image(img) for img in images]
+        captions = [await self.caption_image(img, call_link) for img in images]
         caption = ", ".join(captions)
         if content:
             content = Prompt.VISION_IMAGE_CONTEXT.format(user_text=content, caption=caption)

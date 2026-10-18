@@ -464,6 +464,8 @@ class PennyConstants:
     # Provider-specific endpoint some OpenAI-compatible backends (e.g. openrouter)
     # use to list embedding-capable models that ``/v1/models`` omits.
     LLM_EMBEDDING_MODELS_ENDPOINT = "/v1/embeddings/models"
+    # The finish_reason a provider returns when a token cap cut the draw.
+    FINISH_REASON_LENGTH = "length"
     MAX_SEARCH_LINKS = 10
     BROWSE_SEARCH_HEADER = "## browse search: "
     BROWSE_PAGE_HEADER = "## browse: "
@@ -640,6 +642,12 @@ class PennyConstants:
     # marker the ``run_list`` tool uses to find conversational runs (a turn's
     # user message → the tool calls it drove).  Mirrors ``ChatAgent.name``.
     CHAT_AGENT_NAME = "chat"
+    # The ledger identity of the one background Collector dispatcher (every
+    # collection cycle, whichever target it's bound to).  ``Collector.name`` reads
+    # this constant rather than repeating the literal, so the two call-kind names
+    # that gate a token budget (#2474) are both declared here, not split between
+    # this module and ``agents/collector.py``.
+    COLLECTOR_AGENT_NAME = "collector"
     # The cycle-terminator tool's name.  Only the collector shapes carry it; the
     # chat agent has no ``done`` tool, so failure envelopes that suggest calling
     # it gate that suggestion on the tool actually being registered.

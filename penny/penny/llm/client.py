@@ -11,12 +11,16 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import openai
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
+
+if TYPE_CHECKING:
+    from penny.config_params import RuntimeParams
 from penny.llm.models import (
     FAULT_LOG_FIELD,
     PROVIDER_LOG_FIELD,
@@ -59,6 +63,16 @@ _DEFAULT_API_KEY = "not-needed"
 # (verified against Ollama's OpenAI-compatible endpoint), so the local path is unchanged
 # and the remote path stops silently differing from it.
 REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
+
+# The per-call override that turns reasoning OFF for one draw (#2474's probes,
+# against local Ollama's gemma4:26b-mlx and OpenRouter's gemma pinned to Cloudflare).
+# Two fields, because no single one disabled it on BOTH: on Ollama, ``reasoning:
+# {enabled: false}`` alone was silently ignored (the model still reasoned in full);
+# ``reasoning_effort: "none"`` alone worked on Ollama AND on OpenRouter, where
+# ``reasoning: {enabled: false}`` alone also worked. Sending both is what makes one
+# body portable without asking the caller which backend is live; no production
+# caller passes this yet — see ``LlmClient.chat``'s ``thinking_enabled`` parameter.
+THINKING_OFF_BODY = {"reasoning": {"enabled": False}, "reasoning_effort": "none"}
 
 # Ask for embedding vectors as plain floats rather than the SDK's base64 default.
 # Not every backend accepts base64: Google AI Studio refuses it outright ("embeddings do
@@ -203,6 +217,7 @@ class LlmClient:
         api_key: str = _DEFAULT_API_KEY,
         timeout: float | None = None,
         provider_pin: ProviderPin | None = None,
+        runtime: RuntimeParams | None = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.model = model
@@ -211,6 +226,16 @@ class LlmClient:
         self.retry_delay = retry_delay
         self.api_key = api_key
         self.provider_pin = provider_pin
+        # The deployment's ONE ``RuntimeParams`` (#2474) — not a fresh instance built
+        # from ``db`` alone, which would carry the DB tier but never the env tier (the
+        # env overrides are collected once, in ``Config.load()``, into this exact
+        # object).  A micro-context customer (``tools/micro_context.py``) reads its own
+        # call kind's token budget off ``self._model_client.runtime`` rather than
+        # building its own, so all eight budgets resolve DB → env → default alike —
+        # the same chain ``agents/base.py`` already gets through ``self.config.runtime``.
+        # ``None`` only where a caller builds a client with no runtime at all (a test, a
+        # one-off script); the resolver then falls back to a default-only lookup.
+        self.runtime = runtime
 
         client_kwargs: dict[str, Any] = {
             "base_url": f"{self.api_url}/v1",
@@ -267,12 +292,13 @@ class LlmClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         format: dict | str | None = None,
+        *,
+        call_link: CallLink,
         agent_name: str | None = None,
         prompt_type: str | None = None,
-        run_id: str | None = None,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
+        token_budget: int | None = None,
+        thinking_enabled: bool = True,
     ) -> LlmResponse:
         """Generate a chat completion with optional tool calling.
 
@@ -285,16 +311,42 @@ class LlmClient:
         retried twice before answering reports its real cost, which is what the eval
         harness's token-cost accounting reads.
 
-        ``parent_run_id`` / ``parent_tool_call_id`` link a draw made INSIDE a tool
-        (a micro-context, which mints its own ``run_id`` for its own ledger
-        attribution) back to the chat/collector run — and, for a draw made from
-        inside a dispatched tool call, that call's own id — it was made on behalf
-        of, so that run's own record can list it.
+        ``call_link`` (#2458) is REQUIRED — no ambient state, no ``X or <mint>``
+        fallback here (the code owner's ruling: the type checker is the
+        enforcement). It names this call's own ``run_id`` and, for a draw made on
+        behalf of an enclosing run (a micro-context, which mints its own ``run_id``
+        via :meth:`~penny.llm.call_link.CallLink.child` for its own ledger
+        attribution) or from inside a dispatched tool call, that run's/call's id —
+        read straight off the link, never re-derived here.
+
+        ``token_budget`` (#2474) is the caller's own cap for this call KIND — read off
+        ``penny.config_params.token_budget_for`` by every production call site, never
+        hardcoded here — sent under both ``max_tokens`` and ``max_completion_tokens``
+        (see ``_build_chat_kwargs``) so a draw that runs long is cut rather than left
+        to a wall-clock timeout, which on a slow local model turns 9 minutes of
+        deliberation into a dropped connection with no record of why. ``None`` sends
+        no cap at all (today's behaviour). What a CUT draw does next — reacting to
+        ``finish_reason="length"`` on the returned response — is the follow-up
+        issues' (#2475/#2476); this only sends the cap and reads it back.
+
+        ``thinking_enabled`` (#2474) is the per-call reasoning switch the probes on
+        this ticket found: unlike the always-on default (``REASONING_ENABLED_BODY``),
+        a caller can ask for one draw with thinking off.  No production caller passes
+        it yet — it exists for the follow-up issues that give a capped call a second,
+        reasoning-off attempt to answer with what it has.
         """
+        resolved_run_id = call_link.run_id
+        parent_run_id = call_link.parent_run_id
+        parent_tool_call_id = call_link.parent_tool_call_id
+        self._publish_call_started(
+            resolved_run_id, parent_run_id, parent_tool_call_id, agent_name, prompt_type, run_target
+        )
         start = time.time()
         messages_snapshot = list(messages)
         try:
-            response, raw = await self._chat_attempts(messages, tools, format)
+            response, raw = await self._chat_attempts(
+                messages, tools, format, token_budget, thinking_enabled
+            )
         except asyncio.CancelledError:
             self._log_call(
                 messages_snapshot,
@@ -304,7 +356,7 @@ class LlmClient:
                 self._elapsed_ms(start),
                 agent_name,
                 prompt_type,
-                run_id,
+                resolved_run_id,
                 run_target,
                 parent_run_id,
                 parent_tool_call_id,
@@ -323,7 +375,7 @@ class LlmClient:
                 self._elapsed_ms(start),
                 agent_name,
                 prompt_type,
-                run_id,
+                resolved_run_id,
                 run_target,
                 parent_run_id,
                 parent_tool_call_id,
@@ -342,7 +394,7 @@ class LlmClient:
             self._elapsed_ms(start),
             agent_name,
             prompt_type,
-            run_id,
+            resolved_run_id,
             run_target,
             parent_run_id,
             parent_tool_call_id,
@@ -360,6 +412,8 @@ class LlmClient:
         messages: list[dict],
         tools: list[dict] | None,
         format: dict | str | None,
+        token_budget: int | None = None,
+        thinking_enabled: bool = True,
     ) -> tuple[LlmResponse, openai.types.chat.ChatCompletion]:
         """The retry loop over individual network attempts.
 
@@ -378,7 +432,9 @@ class LlmClient:
                 logger.debug("Sending chat request (attempt %d/%d)", attempt + 1, self.max_retries)
 
                 translated_messages = self._translate_messages(messages)
-                kwargs = self._build_chat_kwargs(translated_messages, tools, format)
+                kwargs = self._build_chat_kwargs(
+                    translated_messages, tools, format, token_budget, thinking_enabled
+                )
                 raw = await self.client.chat.completions.create(**kwargs)
 
                 # Checked BEFORE parsing, and treated as a retryable fault rather than
@@ -455,9 +511,10 @@ class LlmClient:
         prompt: str,
         tools: list[dict] | None = None,
         format: dict | str | None = None,
+        *,
+        call_link: CallLink,
         agent_name: str | None = None,
         prompt_type: str | None = None,
-        run_id: str | None = None,
     ) -> LlmResponse:
         """Generate a completion for a prompt (converts to chat format internally)."""
         messages = [{"role": "user", "content": prompt}]
@@ -465,9 +522,9 @@ class LlmClient:
             messages,
             tools,
             format,
+            call_link=call_link,
             agent_name=agent_name,
             prompt_type=prompt_type,
-            run_id=run_id,
         )
 
     # ── Embeddings ───────────────────────────────────────────────────────
@@ -609,14 +666,22 @@ class LlmClient:
         messages: list[dict],
         tools: list[dict] | None,
         format: dict | str | None,
+        token_budget: int | None = None,
+        thinking_enabled: bool = True,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
         # Both vendor fields ride the same passthrough.  The provider pin is added only
         # when one was CONFIGURED, so a client without one sends the body it always sent —
-        # and a direct endpoint that has never heard of the field ignores it.
-        extra_body = dict(REASONING_ENABLED_BODY)
+        # and a direct endpoint that has never heard of the field ignores it.  Annotated
+        # ``dict[str, Any]`` rather than left inferred: ``REASONING_ENABLED_BODY``'s own
+        # narrow shape (one key, one bool-valued nested dict) would otherwise make ty
+        # reject ``.update(THINKING_OFF_BODY)`` below, whose two keys carry different
+        # value shapes (a nested dict AND a bare string).
+        extra_body: dict[str, Any] = dict(REASONING_ENABLED_BODY)
         if self.provider_pin is not None:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
+        if not thinking_enabled:
+            extra_body.update(THINKING_OFF_BODY)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -624,6 +689,17 @@ class LlmClient:
             # provides. Reasoning comes back where ``_parse_response`` already reads it.
             "extra_body": extra_body,
         }
+        if token_budget is not None:
+            # Sent under BOTH names (#2474's probes, against local Ollama's
+            # gemma4:26b-mlx and OpenRouter's gemma pinned to Cloudflare): local
+            # Ollama's OpenAI-compatible endpoint silently ignores
+            # ``max_completion_tokens`` — the modern OpenAI field — and only honours
+            # the deprecated ``max_tokens``, while OpenRouter honours
+            # ``max_completion_tokens`` (confirmed; ``max_tokens`` alone untested
+            # there, so both ride together rather than risk it).  One body that cuts
+            # the draw on both, with no backend-specific branch here.
+            kwargs["max_tokens"] = token_budget
+            kwargs["max_completion_tokens"] = token_budget
         if tools:
             kwargs["tools"] = self._translate_tools(tools)
         if format is not None:
@@ -705,6 +781,7 @@ class LlmClient:
             thinking=thinking,
             model=raw.model,
             provider=_provider_of(raw),
+            finish_reason=choice.finish_reason,
         )
 
     @staticmethod
@@ -794,6 +871,33 @@ class LlmClient:
         if thinking:
             logger.debug("Model thinking: %s", thinking[:200])
         logger.debug("Response content: %s", response.content)
+
+    def _publish_call_started(
+        self,
+        run_id: str,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        agent_name: str | None,
+        prompt_type: str | None,
+        run_target: str | None,
+    ) -> None:
+        """Announce this call is about to be made (#2439), before the network
+        request — a live Prompts tab's only signal that anything is happening
+        until the call's own ``promptlog`` row eventually lands.  Every reroll
+        attempt and every validator retry is its own real call here, so this
+        fires once per actual request, matching 1:1 with the row ``_log_call``
+        will write for it however it ends."""
+        if not self.db:
+            return
+        self.db.messages.publish_call_started(
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+            agent_name=agent_name,
+            prompt_type=prompt_type,
+            model=self.model,
+            run_target=run_target,
+        )
 
     def _log_call(
         self,

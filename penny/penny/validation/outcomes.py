@@ -77,19 +77,6 @@ class NudgeContinue(BaseModel):
     message: str
 
 
-class RedrawWithRecord(BaseModel):
-    """Discard the draft, add ``record`` to the end of the system prompt, and draw the
-    reply again on an otherwise unchanged conversation — e.g. a chat run that tried to
-    keep something, whose reply is written after the store's own answer about it (#2185).
-
-    The record joins what the model reads as its OWN situation rather than arriving as a
-    message: nothing in the conversation reads as a correction of the draft, because the
-    draft is not in it.  Like ``NudgeContinue``, only ever applied to a VALID draw."""
-
-    model_config = ConfigDict(frozen=True)
-    record: str
-
-
 class Stop(BaseModel):
     """End the loop now, returning ``response`` — e.g. every tool call so far has
     failed, so there's no point continuing."""
@@ -99,9 +86,7 @@ class Stop(BaseModel):
 
 
 # The closed set of things the loop can be told to do about a model response.
-ValidationOutcome = (
-    Proceed | Retry | Repair | RejectToolCall | NudgeContinue | RedrawWithRecord | Stop
-)
+ValidationOutcome = Proceed | Retry | Repair | RejectToolCall | NudgeContinue | Stop
 
 
 class LoopContext(BaseModel):
@@ -125,14 +110,12 @@ class LoopContext(BaseModel):
     # Reasons already retried this model call — a validator keyed on one of these
     # must not ask to retry it again (the loop also enforces this).
     retried: set[ConditionKey] = Field(default_factory=set)
-    # The rendered record of what this run SAVED (#1946/#2185), stamped onto the
-    # text-branch ctx by ``ChatAgent._prepare_text_shape`` so the chat
-    # ``WritesLandedValidator`` can have the reply drawn after it.  It exists because a
-    # run's own account of its writes counts what it ATTEMPTED (a discarded draw and a
-    # refused write both feel like writes from inside the turn) while the ledger counts
-    # what LANDED.  ``None`` on every run that neither wrote a keyed entry nor tried to,
-    # which is most turns.
-    writes_landed_frame: str | None = None
+    # Neither a writes-landed frame nor a skill-narration frame is stamped here
+    # anymore (#2455 naive baseline / #2473): what a chat run wrote is delivered
+    # straight onto the tool result the moment its call lands (see
+    # ``ChatAgent.after_tool_step``), and there is no skill machinery left to
+    # narrate — so no run-shape validator needs a field on this ctx to redraw
+    # from.
 
 
 @runtime_checkable
@@ -156,7 +139,7 @@ def run_validators(
 
     ``Repair`` threads its transformed response into the rest of the chain and
     continues; ``Proceed`` passes; the first ``Retry`` / ``RejectToolCall`` /
-    ``NudgeContinue`` / ``RedrawWithRecord`` / ``Stop`` short-circuits and is returned.
+    ``NudgeContinue`` / ``Stop`` short-circuits and is returned.
     When the chain completes with no objection, returns ``Proceed`` carrying the
     (possibly-repaired) response."""
     working = response
@@ -166,9 +149,7 @@ def run_validators(
                 working = repaired
             case Proceed():
                 pass
-            case (
-                Retry() | RejectToolCall() | NudgeContinue() | RedrawWithRecord() | Stop()
-            ) as terminal:
+            case (Retry() | RejectToolCall() | NudgeContinue() | Stop()) as terminal:
                 return terminal
             case unreachable:
                 assert_never(unreachable)

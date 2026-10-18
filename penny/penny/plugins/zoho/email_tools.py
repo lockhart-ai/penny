@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from pydantic import BaseModel, Field
 
+from penny.llm.call_link import CallLink
 from penny.plugins.zoho.rule_models import (
     EmailRuleAction,
     EmailRuleCondition,
@@ -118,7 +119,7 @@ class MoveEmailsTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Move emails to a folder."""
         args = MoveEmailsArgs(**kwargs)
 
@@ -190,7 +191,7 @@ class CreateFolderTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create a folder."""
         args = CreateFolderArgs(**kwargs)
 
@@ -247,7 +248,7 @@ class ApplyLabelTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Apply a label to emails."""
         args = ApplyLabelArgs(**kwargs)
 
@@ -315,7 +316,7 @@ class ListLabelsTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List all labels."""
         try:
             labels = await self._client.get_labels()
@@ -401,7 +402,7 @@ class CreateEmailRuleTool(Tool):
         self._db = db
         self._provider = provider
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create an email rule."""
         args = CreateEmailRuleArgs(**kwargs)
 
@@ -446,7 +447,7 @@ class ListEmailRulesTool(Tool):
         self._db = db
         self._provider = provider
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List all email rules."""
         rules = self._db.email_rules.list_active(self._provider)
 

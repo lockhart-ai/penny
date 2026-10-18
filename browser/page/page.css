@@ -808,6 +808,25 @@ h1 {
   text-align: center;
 }
 
+/* A draw nested under the round that made it (#2435) — a tool step, or the
+   run itself when it carries no anchor.  `.prompt-draw-children` nests again
+   for a draw made on behalf of ANOTHER draw, to any depth: each level simply
+   stacks another indent + rule, with no depth-specific rule needed. */
+.prompt-draw {
+  background: var(--bg-tertiary);
+}
+
+.prompt-draw .prompt-step {
+  min-width: auto;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.prompt-draw-children {
+  margin-left: 20px;
+  border-left: 2px solid var(--border);
+}
+
 .prompt-type {
   font-size: 12px;
   color: var(--text-muted);
@@ -825,6 +844,44 @@ h1 {
 .prompt-tools {
   font-size: 11px;
   color: var(--accent);
+}
+
+/* A call that did not simply complete (#2436) — one generic style for any
+   non-"completed" outcome, since the label itself is derived from whatever
+   value Penny's runtime stamped rather than a fixed set this file enumerates. */
+.prompt-outcome {
+  font-size: 10px;
+  font-weight: 600;
+  color: #dc3545;
+  background: rgba(220, 53, 69, 0.1);
+  border-radius: 10px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* This call's own start time (#2438) — a step row's finer-grained companion
+   to the run header's date. */
+.prompt-start {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* A live step marker (#2439) — a model call or tool call pushed as running,
+   ahead of any logged record.  Never expandable (no detail exists yet), so
+   its header keeps the default cursor rather than `.prompt-header`'s pointer. */
+.prompt-running {
+  background: var(--bg-tertiary);
+  opacity: 0.85;
+}
+
+.prompt-running .prompt-header {
+  cursor: default;
+}
+
+.prompt-running .prompt-tools {
+  color: var(--text-muted);
 }
 
 /* --- Prompt detail sections --- */
@@ -1706,6 +1763,35 @@ h1 {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+.schedule-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.schedule-picker-sub {
+  display: flex;
+  gap: 8px;
+}
+
+.schedule-picker-sub > select,
+.schedule-picker-sub > input {
+  flex: 1;
+}
+
+.schedule-picker-sub > textarea {
+  flex: 1;
+  width: 100%;
+}
+
+.schedule-picker-caption {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  min-height: 1em;
 }
 
 .memory-form-actions {

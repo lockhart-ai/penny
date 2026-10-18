@@ -51,14 +51,15 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
+from penny.llm.call_link import CallLink
 from penny.llm.refusal import is_refusal
 from penny.text_validity import (
     half_formed_send_reason,
@@ -1026,9 +1027,8 @@ class MicroContext:
         content: str,
         instruction: str,
         *,
+        call_link: CallLink,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
         reading: PageReading = PageReading.ARTICLE,
     ) -> MicroContextResult:
         """Extract ``instruction`` from ``content`` in one scoped model call.
@@ -1042,10 +1042,12 @@ class MicroContext:
         unchanged context for the whole budget, then the extraction fails honestly.  A
         blank draw takes the same path (a blank payload is not a payload).
 
-        ``parent_run_id`` / ``parent_tool_call_id`` (#2355 part A) link this draw back
-        to the chat/collector run — and, since this is the one customer invoked from
-        INSIDE a dispatched tool call, that call's own id — it was made on behalf of,
-        so that run's own record can list it.
+        ``call_link`` (#2458) is this draw's own linkage — REQUIRED, no default.
+        Since this is the one customer invoked from INSIDE a dispatched tool call,
+        it carries that call's id; ``_draw_clean`` derives this draw's OWN child
+        link from it (:meth:`~penny.llm.call_link.CallLink.child`), so the run this
+        extraction makes is attributed back to the enclosing run and tool call with
+        no ambient read anywhere.
 
         ``reading`` (#2388) is the structural mark the extension set when it read the
         page — on :attr:`PageReading.LINK_LIST` the user turn carries one note, BEFORE
@@ -1058,9 +1060,8 @@ class MicroContext:
             content,
             instruction,
             run_target,
+            call_link=call_link,
             shape=EXTRACT_SHAPE,
-            parent_run_id=parent_run_id,
-            parent_tool_call_id=parent_tool_call_id,
             reading_note=reading_note,
         )
         if isinstance(drawn, DrawFailure):
@@ -1071,8 +1072,8 @@ class MicroContext:
         self,
         content: str,
         *,
+        call_link: CallLink,
         run_target: str | None = None,
-        parent_run_id: str | None = None,
     ) -> str | None:
         """Write the one message a finished collector cycle sends the user (#1911) — the
         SIXTH customer of this machinery, and the first that closes a background cycle
@@ -1094,13 +1095,13 @@ class MicroContext:
             content,
             "",
             run_target,
+            call_link=call_link,
             shape=NOTIFY_SHAPE,
             accepts=_is_sendable,
             system_prompt=NOTIFY_SYSTEM_PROMPT,
             agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
             prompt_type=PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
-            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -1112,14 +1113,13 @@ class MicroContext:
         instruction: str,
         run_target: str | None,
         *,
+        call_link: CallLink,
         shape: MicroContextShape,
         accepts: Callable[[ParsedDraw], bool] = _accept_any,
         system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
         reading_note: str = "",
     ) -> ParsedDraw | DrawFailure:
         """The ONE validate step every customer rides (#1814): a poison-screened
@@ -1139,23 +1139,23 @@ class MicroContext:
         budget, not a thing to reach one draw sooner.
 
         Only the shape (and the prompt + attribution) differs per customer, so no
-        customer owns a reroll loop or partitions a string of its own.  ``parent_run_id``
-        / ``parent_tool_call_id`` (#2355 part A) are passed straight through to every
-        attempt, unchanged across rerolls — they name the run (and, for a tool-nested
-        draw, the call) this WHOLE draw is being made for, not any one attempt.
-        ``reading_note`` (#2388) rides the same way — only ``extract`` ever supplies a
-        non-empty one; every other customer's ``_BARE_CONTENT_TEMPLATE`` ignores it."""
+        customer owns a reroll loop or partitions a string of its own.  ``call_link``
+        (#2458) is passed straight through to ``_draw_clean``, which derives ONE
+        child link for the whole draw before the reroll loop starts — every attempt
+        of one draw still names the same run (and, for a tool-nested draw, the same
+        call) it was made for, never re-derived per attempt.  ``reading_note``
+        (#2388) rides the same way — only ``extract`` ever supplies a non-empty one;
+        every other customer's ``_BARE_CONTENT_TEMPLATE`` ignores it."""
         for _ in range(self._reroll_attempts):
             draw = await self._draw_clean(
                 content,
                 instruction,
                 run_target,
+                call_link=call_link,
                 system_prompt=system_prompt,
                 agent_name=agent_name,
                 prompt_type=prompt_type,
                 user_template=user_template,
-                parent_run_id=parent_run_id,
-                parent_tool_call_id=parent_tool_call_id,
                 reading_note=reading_note,
             )
             if draw is None:
@@ -1179,12 +1179,11 @@ class MicroContext:
         instruction: str,
         run_target: str | None,
         *,
+        call_link: CallLink,
         system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
-        parent_run_id: str | None = None,
-        parent_tool_call_id: str | None = None,
         reading_note: str = "",
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
@@ -1193,19 +1192,60 @@ class MicroContext:
 
         The ``system_prompt`` + ledger attribution are parameters (defaulting to the
         browse-extract contract) so a second output contract — run-end skill naming
-        (#1665) — rides the SAME poison/reroll loop without duplicating it."""
+        (#1665) — rides the SAME poison/reroll loop without duplicating it.
+
+        Derives its OWN draw link via ``call_link.child()`` (#2458) ONCE, before the
+        reroll loop — the whole point being that a micro-context's call is its own
+        ledger-visible run, never folded into the run it was made for, while every
+        reroll attempt of this ONE draw still logs under the SAME child run id.
+        ``child()`` is what keeps nesting correct at any depth: it converts
+        ``call_link``'s own POSITION (the tool call it is presently inside, if any)
+        into this draw's logged ``parent_tool_call_id``, so a draw made from inside
+        a dispatched tool call links to that call, while a draw made from inside
+        ANOTHER draw (never itself positioned inside a tool call) correctly gets
+        ``parent_tool_call_id=None``.
+
+        Every call carries its kind's own token budget (#2476), resolved off the
+        shared client's ``runtime`` by ``agent_name`` — a client built with no
+        runtime at all (a test, a one-off script) falls back to a default-only
+        lookup, the same chain every other runtime param reads.  A draw the cap cut
+        (``finish_reason="length"``) gets ONE more call on the same messages with
+        thinking disabled — the budget spent its reasoning tokens, so the last
+        draw is asked to answer with what it has — and that response takes the cut
+        one's place; the poison screen and the parse then read it like any other
+        draw.  At most once per draw: a retry that is itself cut is used as-is, an
+        honest escape rather than an unbounded loop."""
         messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
-        run_id = uuid.uuid4().hex
+        draw_link = call_link.child()
+        runtime = self._model_client.runtime
+        token_budget = token_budget_for(
+            runtime if runtime is not None else RuntimeParams(), agent_name
+        )
+        retried_cut = False
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
                 messages=messages,
                 agent_name=agent_name,
                 prompt_type=prompt_type,
-                run_id=run_id,
+                call_link=draw_link,
                 run_target=run_target,
-                parent_run_id=parent_run_id,
-                parent_tool_call_id=parent_tool_call_id,
+                token_budget=token_budget,
             )
+            if response.finish_reason == PennyConstants.FINISH_REASON_LENGTH and not retried_cut:
+                retried_cut = True
+                logger.warning(
+                    "%s draw was cut at its token budget — one more draw with thinking off",
+                    agent_name,
+                )
+                response = await self._model_client.chat(
+                    messages=messages,
+                    agent_name=agent_name,
+                    prompt_type=prompt_type,
+                    call_link=draw_link,
+                    run_target=run_target,
+                    token_budget=token_budget,
+                    thinking_enabled=False,
+                )
             text = response.content or ""
             if not self._is_poison(text):
                 return text

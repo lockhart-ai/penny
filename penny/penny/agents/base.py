@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, assert_never
 
 from penny.agents.models import (
+    BUDGET_EXCEEDED,
     REROLL_EXHAUSTED,
     ChatMessage,
     ControllerResponse,
@@ -23,10 +24,12 @@ from penny.agents.models import (
     account_of,
 )
 from penny.config import Config
+from penny.config_params import token_budget_for
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -47,7 +50,6 @@ from penny.validation import (
     LoopContext,
     NudgeContinue,
     Proceed,
-    RedrawWithRecord,
     RejectToolCall,
     Repair,
     ResponseValidator,
@@ -168,6 +170,22 @@ def _rerolls_exhausted(conditions: list[ConditionKey]) -> ModelCallAbortedError:
     error = ModelCallError(
         error_class=REROLL_EXHAUSTED,
         message=f"{len(conditions)} unusable draws: {', '.join(conditions)}",
+    )
+    return ModelCallAbortedError(error)
+
+
+def _budget_exceeded() -> ModelCallAbortedError:
+    """A draw came back cut by its own token budget (#2475):
+    ``LlmResponse.finish_reason == FINISH_REASON_LENGTH``, with no tool call and no
+    usable content — the whole budget went to thinking before the model reached an
+    answer (confirmed identically on both probed backends, #2474).  Raised immediately
+    rather than handed to the discard-and-reroll machinery: re-rolling on the SAME
+    budget and the same thinking-enabled setting would almost certainly cut the next
+    draw too, so this skips straight to ``_aborted_response``'s thinking-off last draw
+    instead of spending the reroll budget proving that."""
+    error = ModelCallError(
+        error_class=BUDGET_EXCEEDED,
+        message="the draw ran past its token budget before reaching an answer",
     )
     return ModelCallAbortedError(error)
 
@@ -304,14 +322,21 @@ class Agent:
         (memory + browse), and the framework resolves the primary recipient itself
         when a finished cycle has something to say.  No per-agent user binding is
         plumbed through here.
+
+        This is the base, generic background-cycle entry — a top-level run starter
+        (#2458), so it mints the top ``CallLink`` here.  ``Collector`` (the only
+        live ``BackgroundAgent``) overrides ``execute`` with its own
+        ``_execute_cycle``, which mints its own link around the notifier too; this
+        one stays a defensive starter for any future subclass that doesn't.
         """
         run_id = uuid.uuid4().hex
+        call_link = CallLink.top(run_id)
         progress: ProgressCallback | None = None
         cleanup: Callable[[], Awaitable[None]] | None = None
         if self._progress_factory is not None:
             progress, cleanup = self._progress_factory()
         try:
-            result = await self._run_cycle(run_id, on_progress=progress)
+            result = await self._run_cycle(run_id, call_link, on_progress=progress)
             self.settle_reads(result.reads, self._consumed_input(result.success, result.response))
             return result.success
         finally:
@@ -319,7 +344,7 @@ class Agent:
                 await cleanup()
 
     async def _run_cycle(
-        self, run_id: str, on_progress: ProgressCallback | None = None
+        self, run_id: str, call_link: CallLink, on_progress: ProgressCallback | None = None
     ) -> CycleResult:
         """Generic agentic shell: install tools, run the loop, hand the reads back.
 
@@ -337,9 +362,10 @@ class Agent:
         ``run_id`` is supplied by the caller — the same UUID stamps every
         promptlog row this cycle produces, threads to the tool surface as the
         writing run (so this cycle's entry writes cite it, #1560), and is what
-        subclass cleanup passes back to ``set_run_outcome``.  Returning the
-        response alongside ``success`` keeps the call chain explicit; no
-        per-cycle state lives on ``self``.
+        subclass cleanup passes back to ``set_run_outcome``.  ``call_link``
+        (#2458) is ``CallLink.top(run_id)`` — the same identity, for the model
+        calls this cycle makes.  Returning the response alongside ``success``
+        keeps the call chain explicit; no per-cycle state lives on ``self``.
         """
         tools = self.get_tools(run_id=run_id)
         cursor_tools = tuple(t for t in tools if isinstance(t, CursorReadTool))
@@ -351,8 +377,8 @@ class Agent:
         response = await self.run(
             prompt="",
             max_steps=self.get_max_steps(),
+            call_link=call_link,
             system_prompt=system_prompt,
-            run_id=run_id,
             prompt_type=self.name,
             on_progress=on_progress,
             progress_scope="background",
@@ -434,17 +460,23 @@ class Agent:
         self,
         prompt: str,
         max_steps: int,
+        *,
+        call_link: CallLink,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
-        run_id: str | None = None,
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
     ) -> ControllerResponse:
-        """Run the agentic loop — prompt in, response out."""
-        if run_id is None:
-            run_id = uuid.uuid4().hex
+        """Run the agentic loop — prompt in, response out.
+
+        ``call_link`` (#2458) is REQUIRED — a top-level run starter builds its own
+        top link (``CallLink.top(run_id)``) and passes it in; there is no default
+        and no fallback, so every caller must supply one.  ``run_id`` (for DB/
+        progress purposes, distinct from the model-call linkage) is read off it.
+        """
+        run_id = call_link.run_id
         self._tool_result_text = []
         messages = self._build_messages(prompt, history, system_prompt)
         tools = self._tool_registry.get_ollama_tools()
@@ -455,6 +487,7 @@ class Agent:
             on_tool_start,
             on_progress,
             run_id,
+            call_link,
             prompt_type,
             progress_scope,
         )
@@ -466,15 +499,15 @@ class Agent:
         messages: list[dict],
         tools: list[dict],
         steps: int,
-        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
-        on_progress: ProgressCallback | None = None,
-        run_id: str | None = None,
-        prompt_type: str | None = None,
-        progress_scope: str = "foreground",
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
+        on_progress: ProgressCallback | None,
+        run_id: str,
+        call_link: CallLink,
+        prompt_type: str | None,
+        progress_scope: str,
     ) -> ControllerResponse:
         """Run the loop while guaranteeing a terminal progress event and a complete
         run record (the trailing turns no model call carried, #1778)."""
-        run_id = run_id or uuid.uuid4().hex
         outcome = "error"
         logged = _LoggedBoundary()
         await self._notify_progress(
@@ -488,6 +521,7 @@ class Agent:
                 on_tool_start,
                 on_progress,
                 run_id,
+                call_link,
                 prompt_type,
                 progress_scope,
                 logged,
@@ -542,6 +576,7 @@ class Agent:
         records: list[ToolCallRecord],
         messages: list[dict],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary,
     ) -> ControllerResponse:
@@ -550,35 +585,56 @@ class Agent:
         The abort's structural facts (#1909) travel with the response either way, so
         every downstream outcome classification reads them, never ``answer``'s text.
 
-        Two causes share this path (#2370), and only one still draws again:
+        Three causes share this path (#2370/#2475), and two of them still draw again:
           * ``error_class`` is an ``LlmError`` subclass name — the runner itself could
             not be reached.  Answering ``AGENT_MODEL_ERROR`` immediately, with no
             further draw, is deliberate: a connection already timing out would just be
             asked to time out a second time.
           * ``error_class`` is ``REROLL_EXHAUSTED`` — the model answered repeatedly,
             but every draw was discarded as unusable.  It is still reachable, so this
-            is handed to the shared last-draw-or-account building block instead of the
-            canned line.
+            is handed to the shared last-draw-or-account building block, thinking left
+            ON (the draws that led here said nothing about thinking being the problem).
+          * ``error_class`` is ``BUDGET_EXCEEDED`` — a single draw ran past its own
+            token cap (#2475).  Re-drawing with thinking still on would spend the same
+            budget on reasoning and cut again, so this last draw turns thinking OFF —
+            the same per-kind budget is sent again (``_invoke_model`` resolves it from
+            ``self.name`` on every call), which is fine now that none of it goes to
+            reasoning.  It also sets ``live_draw=True`` — a SEPARATE signal from
+            ``thinking_enabled`` (#2475's review): ``thinking_enabled`` means only
+            whether this draw reasons, and ``live_draw`` is the one explicit flag
+            ``BackgroundAgent`` reads to decide whether to draw live at all, so a
+            future caller turning thinking off for an unrelated reason can never
+            silently make a collector narrate.
         """
         abort = RunAbort(step=step, after_tool=self._last_successful_tool(records), error=error)
-        if error.error_class != REROLL_EXHAUSTED:
+        if error.error_class not in (REROLL_EXHAUSTED, BUDGET_EXCEEDED):
             # No draw follows — nothing will reach ``_narrate_or_account``'s own
             # stamp, so this is the one place that chokepoint can't cover and the
             # hook is called directly.
             if run_id is not None:
                 self._record_turn_failure(run_id, abort.render())
             return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR, abort=abort)
-        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
-            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
-        )
+        if error.error_class == BUDGET_EXCEEDED:
+            facts = PennyResponse.FACTS_BUDGET_EXCEEDED
+            thinking_enabled = False
+            live_draw = True
+        else:
+            facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+                attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+            )
+            thinking_enabled = True
+            live_draw = False
         result = await self._narrate_or_account(
             self._with_facts_turn(messages, facts),
             facts,
             records,
             run_id,
+            call_link,
             prompt_type,
             logged,
             reason=abort.render(),
+            thinking_enabled=thinking_enabled,
+            live_draw=live_draw,
         )
         return result.model_copy(update={"abort": abort})
 
@@ -594,11 +650,12 @@ class Agent:
         messages: list[dict],
         tools: list[dict],
         steps: int,
-        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
-        on_progress: ProgressCallback | None = None,
-        run_id: str | None = None,
-        prompt_type: str | None = None,
-        progress_scope: str = "foreground",
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
+        on_progress: ProgressCallback | None,
+        run_id: str,
+        call_link: CallLink,
+        prompt_type: str | None,
+        progress_scope: str,
         logged: _LoggedBoundary | None = None,
     ) -> ControllerResponse:
         """Execute the step loop: call model, process tool calls, or return final answer.
@@ -607,7 +664,6 @@ class Agent:
         model call has just carried, so whatever sits beyond it when the loop leaves
         (by return OR by exception) is the tail the caller stamps onto the record."""
         logged = logged if logged is not None else _LoggedBoundary()
-        run_id = run_id or uuid.uuid4().hex
         source_urls: list[str] = []
         called_tools: set[tuple[str, ...]] = set()
         tool_call_records: list[ToolCallRecord] = []
@@ -627,7 +683,7 @@ class Agent:
 
             try:
                 response = await self._call_model_validated(
-                    messages, step_tools, run_id, prompt_type
+                    messages, step_tools, call_link, prompt_type
                 )
             except ModelCallAbortedError as aborted:
                 # A call that came back with nothing still carried every turn so far, so
@@ -640,6 +696,7 @@ class Agent:
                     tool_call_records,
                     messages,
                     run_id,
+                    call_link,
                     prompt_type,
                     logged,
                 )
@@ -658,22 +715,31 @@ class Agent:
                     on_tool_start,
                     on_progress,
                     run_id,
+                    call_link,
                     progress_scope,
                     step + 1,
                     steps,
                 )
                 self._absorb_tool_step_result(result, messages, tool_call_records, source_urls)
                 await self.after_step(result.records, result.messages, messages)
+                await self.after_tool_step(result.records, tool_call_records, messages, run_id)
                 if self.should_stop_loop(tool_call_records):
                     logger.info("Loop stop requested after step %d/%d", step + 1, steps)
                     return ControllerResponse(answer="", tool_calls=tool_call_records)
                 continue
 
-            if await self._nudge_text_step(response, messages, ctx, run_id):
+            if await self._nudge_text_step(response, messages, ctx, run_id, call_link):
                 continue
 
             return await self._build_final_response(
-                response, source_urls, tool_call_records, messages, run_id, prompt_type, logged
+                response,
+                source_urls,
+                tool_call_records,
+                messages,
+                run_id,
+                call_link,
+                prompt_type,
+                logged,
             )
 
         logger.warning("Max steps reached without final answer")
@@ -683,6 +749,7 @@ class Agent:
             facts,
             tool_call_records,
             run_id,
+            call_link,
             prompt_type,
             logged,
             reason="the step limit was reached before an answer was written",
@@ -731,7 +798,7 @@ class Agent:
                 return True
             case Proceed():
                 return False
-            case Retry() | Repair() | NudgeContinue() | RedrawWithRecord() | Stop():
+            case Retry() | Repair() | NudgeContinue() | Stop():
                 raise AssertionError(
                     "run-shape validators produced an unexpected disposition on a "
                     "tool-call response"
@@ -739,8 +806,32 @@ class Agent:
             case unreachable:
                 assert_never(unreachable)
 
+    async def after_tool_step(
+        self,
+        step_records: list[ToolCallRecord],
+        records: list[ToolCallRecord],
+        messages: list[dict],
+        run_id: str,
+    ) -> None:
+        """Template hook: called once a tool step's results are already absorbed into
+        ``messages`` (after ``_absorb_tool_step_result`` / ``after_step``), before the
+        next model call.  A no-op on the base ``Agent`` — a background cycle's own
+        account IS its reply (#1569), so there is nothing here for it to narrate.
+
+        ``step_records`` is this STEP's own new records (what just ran); ``records`` is
+        the run's WHOLE accumulated history including them — a subclass that gates on
+        what just happened reads the first, a subclass that renders a cumulative record
+        reads the second.
+
+        ``ChatAgent`` overrides this to append what the run has WRITTEN and
+        CONFIGURED so far to the end of the step's own tool result (#2473): both
+        records exist the moment their tool call lands, so handing them over HERE —
+        rather than waiting for the text branch and discarding whatever got drafted
+        in between — means the model's first reply is drawn with them already in
+        view, and there is never a second one to throw away."""
+
     async def _prepare_text_shape(
-        self, response: LlmResponse, ctx: LoopContext, run_id: str
+        self, response: LlmResponse, ctx: LoopContext, run_id: str, call_link: CallLink
     ) -> LoopContext:
         """Template hook: enrich the loop context before the text-branch run-shape
         validators run.  The base is a no-op; the ``ChatAgent`` overrides it to stamp
@@ -750,26 +841,30 @@ class Agent:
         return ctx
 
     async def _nudge_text_step(
-        self, response: LlmResponse, messages: list[dict], ctx: LoopContext, run_id: str
+        self,
+        response: LlmResponse,
+        messages: list[dict],
+        ctx: LoopContext,
+        run_id: str,
+        call_link: CallLink,
     ) -> bool:
-        """Run the run-shape chain over a text-only response; apply a
-        ``RedrawWithRecord`` (a chat run whose reply is written after what it saved).
+        """Run the run-shape chain over a text-only response.  Chat's own chain is
+        empty (#2455 naive baseline / #2473): what a run wrote and what it configured
+        are both delivered earlier, straight onto the tool result the moment their
+        call lands (see ``ChatAgent.after_tool_step``), so this hook has nothing left
+        to stamp or narrate — the base no-op applies.
 
         Every text draw reaching here is a VALID one for this agent's shape — an
         invalid one was discarded and re-rolled before the loop ever saw it (#1839) —
         so a nudge appended here only ever continues a legitimate turn.
 
-        Returns True when the loop should ``continue`` (response + nudge appended, or the
-        draft dropped and the record added to the system prompt), False to treat the text
-        as the final answer."""
-        ctx = await self._prepare_text_shape(response, ctx, run_id)
+        Returns True when the loop should ``continue`` (response + nudge appended),
+        False to treat the text as the final answer."""
+        ctx = await self._prepare_text_shape(response, ctx, run_id, call_link)
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
                 messages.append(response.message.to_input_message())
                 messages.append({"role": MessageRole.USER, "content": message})
-                return True
-            case RedrawWithRecord(record=record):
-                self._add_to_system_prompt(messages, record)
                 return True
             case Proceed():
                 return False
@@ -779,17 +874,6 @@ class Agent:
                 )
             case unreachable:
                 assert_never(unreachable)
-
-    @staticmethod
-    def _add_to_system_prompt(messages: list[dict], section: str) -> None:
-        """Append ``section`` to the end of the system prompt — the model's view of its
-        own situation, whose tail is the self-state — so the next draw reads it as state
-        rather than as something said to it.  ``_build_messages`` always opens the
-        conversation with the system message; one that does not is a programming error."""
-        system = messages[0]
-        if system.get("role") != MessageRole.SYSTEM:
-            raise AssertionError("the conversation does not open with its system prompt")
-        messages[0] = {**system, "content": f"{system['content']}\n\n{section}"}
 
     @staticmethod
     def _frame_injected_result(tool_name: str, narration: str, body: str) -> str:
@@ -876,8 +960,8 @@ class Agent:
         self,
         messages: list[dict],
         tools: list[dict],
-        run_id: str | None = None,
-        prompt_type: str | None = None,
+        call_link: CallLink,
+        prompt_type: str | None,
     ) -> LlmResponse:
         """Call the model, driving the response-validation chain on each output.
 
@@ -900,7 +984,9 @@ class Agent:
         max_retries = PennyConstants.RESPONSE_VALIDATION_RETRIES
         effective_tools = tools if tools else None
         retried: set[ConditionKey] = set()
-        response = await self._invoke_nondegenerate(messages, effective_tools, run_id, prompt_type)
+        response = await self._invoke_nondegenerate(
+            messages, effective_tools, call_link, prompt_type
+        )
 
         for attempt in range(max_retries):
             if response.has_tool_calls and effective_tools is not None:
@@ -925,9 +1011,9 @@ class Agent:
                         # the form the chain validated.
                         return self._without_unoffered_calls(response, effective_tools)
                     response = await self._invoke_nondegenerate(
-                        messages, effective_tools, run_id, prompt_type
+                        messages, effective_tools, call_link, prompt_type
                     )
-                case Repair() | RejectToolCall() | NudgeContinue() | RedrawWithRecord() | Stop():
+                case Repair() | RejectToolCall() | NudgeContinue() | Stop():
                     raise AssertionError("response validators produced an unexpected disposition")
                 case unreachable:
                     assert_never(unreachable)
@@ -970,8 +1056,10 @@ class Agent:
         self,
         messages: list[dict],
         effective_tools: list[dict] | None,
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
+        *,
+        thinking_enabled: bool = True,
     ) -> LlmResponse:
         """Call the LLM, raising ``ModelCallAbortedError`` on connection/response errors.
 
@@ -988,6 +1076,14 @@ class Agent:
         or temporarily busy) and are already retried by the LLM client before
         this method is called.  Other LlmErrors (connection refused, server error,
         model not found) are logged at ERROR.
+
+        This is the ONE call this agent makes to the model, whatever draw it's for — a
+        loop step or the last tools-off narration — so it is also the one place the
+        per-call-kind token budget (#2474/#2475) is resolved and sent: every draw this
+        agent makes carries ``token_budget_for(self.config.runtime, self.name)``, never
+        just the ones the loop steps through.  ``thinking_enabled`` defaults True (the
+        ordinary draw); the one caller that turns it off is the last draw answering a
+        budget-cut step (``_aborted_response`` / ``_narrate_or_account``).
         """
         try:
             return await self._model_client.chat(
@@ -995,11 +1091,13 @@ class Agent:
                 tools=effective_tools,
                 agent_name=self.name,
                 prompt_type=prompt_type,
-                run_id=run_id,
+                call_link=call_link,
                 # The bound collection (collectors) / None (chat) is
                 # known from the first prompt — stamp it on every row so the run
                 # is identifiable at write time, not retroactively at cycle end.
                 run_target=self._memory_scope(),
+                token_budget=token_budget_for(self.config.runtime, self.name),
+                thinking_enabled=thinking_enabled,
             )
         except LlmToolParseError:
             raise
@@ -1014,7 +1112,7 @@ class Agent:
         self,
         messages: list[dict],
         effective_tools: list[dict] | None,
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
     ) -> LlmResponse:
         """Call the model, discarding an UNUSABLE draw and re-rolling on the
@@ -1044,12 +1142,22 @@ class Agent:
         does the raised error: the conditions are collected in draw order, since a run
         killed by three parse failures and one killed by three collapses are different
         problems (#1909).
+
+        A draw cut by its own token budget (#2475) is caught FIRST, before any of the
+        above — ``finish_reason == FINISH_REASON_LENGTH`` is a transport fact, true
+        whatever the draw's shape, and re-rolling it on the unchanged budget and
+        thinking settings would almost certainly cut the next one too.  So it never
+        enters this discard-and-reroll loop at all: it raises straight away, routing to
+        ``_aborted_response``'s thinking-off last draw instead of spending this budget
+        proving the same cap cuts again.
         """
         attempts = PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         discarded: list[ConditionKey] = []
         for attempt in range(attempts):
             try:
-                response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+                response = await self._invoke_model(
+                    messages, effective_tools, call_link, prompt_type
+                )
             except LlmToolParseError as error:
                 # The backend refused to parse the draw as a tool call, so there is no
                 # response to inspect — the draw is unusable by the same rule, and a
@@ -1058,6 +1166,15 @@ class Agent:
                 self._log_reroll(ConditionKey.TOOL_PARSE_ERROR, attempt, attempts)
                 discarded.append(ConditionKey.TOOL_PARSE_ERROR)
                 continue
+            if (
+                response.finish_reason == PennyConstants.FINISH_REASON_LENGTH
+                and not response.has_tool_calls
+            ):
+                logger.warning(
+                    "Model draw cut by its own token budget (finish_reason=length) — "
+                    "ending the run for the thinking-off last draw rather than re-rolling"
+                )
+                raise _budget_exceeded()
             condition = self._unusable_output_condition(response)
             if condition is None:
                 return response
@@ -1123,6 +1240,32 @@ class Agent:
                 return condition
         return None
 
+    def _narration_unusable(self, response: LlmResponse) -> ConditionKey | None:
+        """Whether a tools-off NARRATION draw's own content is unusable (#2475) — the
+        transport artifacts every draw is checked for (a leaked tool-call envelope, a
+        punctuation collapse), plus this agent's shape check for an ordinary call-less
+        draw.  Distinct from ``_unusable_output_condition``: this draw never offers
+        tools to call, so there is no tool-call branch to walk.
+
+        ``BackgroundAgent`` overrides the shape half alone: its
+        ``invalid_draw_conditions`` (``DONE_JSON_BAIL``, ``TEXT_INSTEAD_OF_TOOL``)
+        describe the ORDINARY tool-calling loop, where a call-less draw is invalid by
+        definition — never true of this draw, which was never offered a tool to call
+        in the first place.  The base behaviour (chat's own shape check still applies)
+        is what every pre-#2475 narration draw already got."""
+        content = response.message.content or ""
+        return self._narration_transport_artifact(content) or self._invalid_draw_condition(content)
+
+    @staticmethod
+    def _narration_transport_artifact(content: str) -> ConditionKey | None:
+        """The transport-artifact condition a narration draw's text matches, or
+        ``None`` — shared by ``_narration_unusable``'s base behaviour and
+        ``BackgroundAgent``'s override, which skips the shape check but never this
+        one."""
+        if has_leaked_harmony_envelope(content) or is_degenerate_run(content):
+            return ConditionKey.DEGENERATE_OUTPUT
+        return None
+
     def _is_degenerate_tool_call_name(self, name: str) -> bool:
         """A tool-call name that is UNREGISTERED and collapse-shaped is poison.
 
@@ -1143,6 +1286,7 @@ class Agent:
         tool_call_records: list[ToolCallRecord],
         messages: list[dict],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary,
     ) -> ControllerResponse:
@@ -1156,7 +1300,7 @@ class Agent:
                 len(tool_call_records),
             )
             return await self._empty_content_fallback(
-                tool_call_records, messages, run_id, prompt_type, logged
+                tool_call_records, messages, run_id, call_link, prompt_type, logged
             )
 
         thinking = response.thinking or response.message.thinking
@@ -1173,7 +1317,7 @@ class Agent:
         if not content:
             logger.error("Model returned empty content after stripping think tags!")
             return await self._empty_content_fallback(
-                tool_call_records, messages, run_id, prompt_type, logged
+                tool_call_records, messages, run_id, call_link, prompt_type, logged
             )
 
         content = clean_malformed_urls(content)
@@ -1193,6 +1337,7 @@ class Agent:
         tool_call_records: list[ToolCallRecord],
         messages: list[dict],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary,
     ) -> ControllerResponse:
@@ -1220,6 +1365,7 @@ class Agent:
             facts,
             tool_call_records,
             run_id,
+            call_link,
             prompt_type,
             logged,
             reason="the model's final answer came back empty",
@@ -1260,10 +1406,13 @@ class Agent:
         facts: str,
         tool_call_records: list[ToolCallRecord],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None = None,
         *,
         reason: str,
+        thinking_enabled: bool = True,
+        live_draw: bool = False,
     ) -> ControllerResponse:
         """One last draw, tools off, over ``messages`` — which already ends in a user
         turn stating ``facts``, a plain statement of this run's own state, never an
@@ -1278,11 +1427,19 @@ class Agent:
             instead (``account_of``), never an apology.
 
         ``_draw_narration`` is the one step a subclass overrides (template method):
-        Collector overrides it to return ``None`` without drawing at all (#2370) — a
-        collector cycle has no user reply to write, and its own
-        ``invalid_draw_conditions`` would reject free text anyway — so this always
-        resolves to the deterministic account for it, with no extra live call spent on
-        a background cycle.
+        ``BackgroundAgent`` overrides it to return ``None`` without drawing at all
+        (#2370) for every ORDINARY background terminal shape — a collector cycle has
+        no user reply to write, and its own ``invalid_draw_conditions`` would reject
+        free text anyway — so this always resolves to the deterministic account for
+        those.  The one exception (#2475) is the budget-cut cause: ``live_draw=True``
+        comes in only from ``_aborted_response``'s ``BUDGET_EXCEEDED`` branch, and
+        ``BackgroundAgent`` reads exactly that flag to draw live anyway, per the code
+        owner's ruling that every call kind still ends in a model summary when the
+        model can be reached.  ``live_draw`` is deliberately its OWN flag, separate
+        from ``thinking_enabled`` (which means only whether the draw reasons) — a
+        future caller that turns thinking off for some other reason must not silently
+        make a background agent narrate too.  Never read off ``reason``'s wording,
+        which stays free text.
 
         ``logged`` is the caller's own run-in-progress boundary box (#1778), passed
         through untouched to ``_draw_narration`` — only a call site still inside
@@ -1306,7 +1463,14 @@ class Agent:
         BEFORE it, one step removed from the reply it is actually about.
         """
         try:
-            content = await self._draw_narration(messages, run_id, prompt_type, logged)
+            content = await self._draw_narration(
+                messages,
+                call_link,
+                prompt_type,
+                logged,
+                thinking_enabled=thinking_enabled,
+                live_draw=live_draw,
+            )
         except ModelCallAbortedError:
             if run_id is not None:
                 self._record_turn_failure(run_id, reason)
@@ -1324,9 +1488,12 @@ class Agent:
     async def _draw_narration(
         self,
         messages: list[dict],
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,
+        *,
+        thinking_enabled: bool = True,
+        live_draw: bool = False,
     ) -> str | None:
         """One tools-off draw over ``messages``, or ``None`` when it comes back
         unusable — empty, degenerate per ``_unusable_output_condition``, or a backend
@@ -1334,8 +1501,18 @@ class Agent:
         and fail to read its own output as one; the same "nothing usable" bucket as a
         degenerate draw, not a format nudge to retry).  Lets ``ModelCallAbortedError``
         propagate uncaught — a draw that cannot reach the model is the caller's to
-        answer, not this method's to swallow.  The user-facing default; Collector
-        overrides this to skip the draw (#2370).
+        answer, not this method's to swallow.  The user-facing default — it always
+        draws, so ``live_draw`` is irrelevant HERE; ``BackgroundAgent`` overrides this
+        to skip the draw for every ordinary terminal shape (#2370), reading straight
+        through to this base behaviour only when ``live_draw`` is True (#2475's
+        budget-cut narration — the one caller-supplied flag that says "draw anyway",
+        kept deliberately separate from ``thinking_enabled`` below).
+
+        ``thinking_enabled`` (#2475) means only whether this draw reasons, and rides
+        straight to ``_invoke_model`` — False only for the budget-cut narration draw,
+        so it doesn't just cut again on the same cap.  ``_invoke_model`` resolves this
+        agent's own per-kind token budget on every call regardless, which is still the
+        right size here: with thinking off, none of it goes to reasoning.
 
         A draw that logs a row already carries, in ITS OWN ``messages``, everything
         the caller's ``logged`` boundary (#1778) was tracking — so on success this
@@ -1344,13 +1521,15 @@ class Agent:
         what this row already has.  Left untouched on any path that logs no row
         (a caught parse failure, or the skip above) — the prior tail stays correct."""
         try:
-            response = await self._invoke_model(messages, None, run_id, prompt_type)
+            response = await self._invoke_model(
+                messages, None, call_link, prompt_type, thinking_enabled=thinking_enabled
+            )
         except LlmToolParseError:
             return None
         if logged is not None:
             logged.turns = len(messages)
         content = (response.content or "").strip()
-        if content and self._unusable_output_condition(response) is None:
+        if content and self._narration_unusable(response) is None:
             return content
         return None
 
@@ -1401,7 +1580,7 @@ class Agent:
             run_id=run_id,
             include_lifecycle=self._include_lifecycle_tools(),
         )
-        tools.append(self._build_browse_tool(author=self.name, run_id=run_id))
+        tools.append(self._build_browse_tool(author=self.name))
         # ``choose`` — the fair random picker — is on every agent surface, like
         # browse: chat dispatches it from the user's "pick one at random", and a
         # collector needs it at runtime so a demonstrated ``choose`` step captured
@@ -1429,13 +1608,13 @@ class Agent:
         """
         return True
 
-    def _build_browse_tool(self, author: str, run_id: str | None = None) -> BrowseTool:
+    def _build_browse_tool(self, author: str) -> BrowseTool:
         """Build a fresh BrowseTool from config, updating self._browse_tool.
 
-        ``run_id`` (#2355 part A) is this run's own id — threaded to the tool so
-        any extraction draw it makes links back to the run on whose behalf it was
-        made; constant for the whole run (this tool is rebuilt fresh each turn/
-        cycle, so there is nothing to race unlike the per-CALL tool_call_id)."""
+        Any extraction draw it makes links back to the enclosing run (and, when
+        dispatched as a tool call, that call) via the ``call_link`` the dispatcher
+        hands its ``execute`` at call time (#2458) — nothing is threaded through
+        the tool's own construction any more."""
         max_calls = int(self.config.runtime.MAX_QUERIES)
         search_url = str(self.config.runtime.SEARCH_URL)
         tool = BrowseTool(
@@ -1446,7 +1625,6 @@ class Agent:
             model_client=self._model_client,
             author=author,
             channel_outage_recovery=self.channel_outage_recovery,
-            run_id=run_id,
         )
         if self._browse_provider:
             tool.set_browse_provider(self._browse_provider)
@@ -1471,9 +1649,10 @@ class Agent:
         response,
         called_tools: set[tuple[str, ...]],
         prior_records: list[ToolCallRecord],
-        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
-        on_progress: ProgressCallback | None = None,
-        run_id: str = "",
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
+        on_progress: ProgressCallback | None,
+        run_id: str,
+        call_link: CallLink,
         progress_scope: str = "foreground",
         step: int | None = None,
         max_steps: int | None = None,
@@ -1508,8 +1687,8 @@ class Agent:
 
         results = await asyncio.gather(
             *[
-                self._execute_single_tool(name, args, reasoning)
-                for _, name, args, reasoning in pending
+                self._execute_single_tool(tool_call_id, name, args, reasoning, call_link)
+                for tool_call_id, name, args, reasoning in pending
             ]
         )
 
@@ -1702,9 +1881,11 @@ class Agent:
 
     async def _execute_single_tool(
         self,
+        tool_call_id: str,
         tool_name: str,
         arguments: dict,
         reasoning: str | None,
+        call_link: CallLink,
     ) -> tuple[ToolResult, ToolCallRecord, list[str]]:
         """Execute one tool call. Returns (result, record, source_urls).
 
@@ -1712,19 +1893,39 @@ class Agent:
         framing site (``_collect_tool_results``) can narrate the outcome and branch
         on ``result.success``.  ``record.failed`` is still computed here on the raw
         result, before any framing, so failure detection is unaffected.
+
+        Builds THIS dispatched call's own link (#2458) via
+        ``call_link.for_tool_call(tool_call_id)`` — before args are even validated —
+        so anything this one call makes, at any depth (a micro-context draw), links
+        back to this call's id with no ambient state anywhere.  The agent loop
+        dispatches a step's tool calls CONCURRENTLY (``asyncio.gather``), but each
+        gets its OWN link object here, so there is nothing to leak between them.
+
+        Publishes ``tool_started``/``tool_finished`` (#2439) bracketing the
+        executor call — ``(call_link.run_id, tool_call_id)`` is an exact identity
+        (unlike a model call's), so a live Prompts tab never has to guess which
+        running row a finish belongs to.  ``call_link.run_id`` is the run
+        DISPATCHING this call, not this call's own position — exactly what a
+        logged step of that run already carries, so the addon anchors a running
+        tool the same way it anchors any draw this tool call goes on to make.
         """
         logger.info("Executing tool: %s", tool_name)
         if reasoning:
             logger.debug("Tool reasoning: %s", reasoning[:200])
 
         record = ToolCallRecord(tool=tool_name, arguments=arguments, reasoning=reasoning)
-        tool_call = ToolCall(tool=tool_name, arguments=arguments)
+        tool_call = ToolCall(tool=tool_name, arguments=arguments, id=tool_call_id)
+        dispatched_link = call_link.for_tool_call(tool_call_id)
+        status = Tool.format_status(tool_name, arguments)
+        self.db.messages.publish_tool_started(
+            run_id=call_link.run_id, tool_call_id=tool_call_id, tool_name=tool_name, status=status
+        )
 
         # The executor always hands back a structured ToolResult — a tool's own
         # return, or a synthesised failed one for framework errors (not-found,
         # timeout, crash).  One branch, no string-prefix guessing; success and
         # mutated are authoritative.
-        result = await self._tool_executor.execute(tool_call)
+        result = await self._tool_executor.execute(tool_call, dispatched_link)
         record.failed = not result.success
         record.mutated = result.mutated
         record.result = result.message
@@ -1740,6 +1941,13 @@ class Agent:
             result.success,
             result.mutated,
             result.message[:200],
+        )
+        self.db.messages.publish_tool_finished(
+            run_id=call_link.run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            status=status,
+            success=result.success,
         )
         return result, record, result.source_urls
 
@@ -1969,18 +2177,47 @@ class BackgroundAgent(Agent):
     async def _draw_narration(
         self,
         messages: list[dict],
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,
+        *,
+        thinking_enabled: bool = True,
+        live_draw: bool = False,
     ) -> str | None:
-        """A background cycle has no user reply to write (#2370) — skip the draw
-        outright rather than spend a live call whose ``TEXT_INSTEAD_OF_TOOL`` would
-        reject it anyway.  ``_narrate_or_account`` reads this ``None`` as "unusable"
-        and falls straight to the deterministic account, so a cycle that runs out of
-        steps, say, still records ``ran_out_of_steps`` structurally with no extra call
-        spent on a background run.  ``logged`` is left untouched — no row is logged
-        here, so the run's existing tail boundary (#1778) stays correct."""
-        return None
+        """A background cycle has no user reply to write for its ORDINARY terminal
+        shapes (#2370) — skip the draw outright rather than spend a live call whose
+        ``TEXT_INSTEAD_OF_TOOL`` would reject it anyway.  ``_narrate_or_account`` reads
+        this ``None`` as "unusable" and falls straight to the deterministic account, so
+        a cycle that runs out of steps, say, still records ``ran_out_of_steps``
+        structurally with no extra call spent on a background run.  ``logged`` is left
+        untouched — no row is logged here, so the run's existing tail boundary (#1778)
+        stays correct.
+
+        A budget cut is the one shape this does NOT skip (#2475): the code owner's
+        ruling is that every call kind still ends in a live model summary when the
+        model can be reached, even a background one.  ``live_draw`` is the EXPLICIT
+        signal for that — a flag with no other meaning, set only by
+        ``_aborted_response``'s ``BUDGET_EXCEEDED`` branch — never ``thinking_enabled``
+        (which this reads too, but only to pass it on): a future caller that turns
+        thinking off for some unrelated reason must not silently make this draw live.
+        Never the free-text ``reason`` a caller stamps, either.  Falls through to the
+        base draw, itself over its own per-kind budget."""
+        if not live_draw:
+            return None
+        return await super()._draw_narration(
+            messages, call_link, prompt_type, logged, thinking_enabled=thinking_enabled
+        )
+
+    def _narration_unusable(self, response: LlmResponse) -> ConditionKey | None:
+        """A budget-cut narration draw (the only one a background agent ever makes,
+        #2475) is deliberately prose, even though this agent's ordinary
+        ``invalid_draw_conditions`` (``DONE_JSON_BAIL``, ``TEXT_INSTEAD_OF_TOOL``)
+        reject EVERY call-less draw — they describe the loop's ordinary steps, where
+        tools were offered and the model answered with text instead.  No tools were
+        offered for this draw, so that question doesn't apply; only the shared
+        transport-artifact check (a leaked tool-call envelope, a punctuation
+        collapse) still does."""
+        return self._narration_transport_artifact(response.message.content or "")
 
     channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
 

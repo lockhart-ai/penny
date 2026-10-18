@@ -51,6 +51,7 @@ from penny.llm.models import (
     LlmFault,
 )
 from penny.tests.eval.utils import artifacts as eval_artifacts
+from penny.tests.eval.utils.budget_hits import BudgetHits, render_budget_hits
 
 # Health is another per-worker JSONL record riding the convention the per-case results
 # already use (``artifacts.worker_filename`` / ``load_worker_lines``), so this names only
@@ -152,6 +153,10 @@ class RunHealth(BaseModel):
     calls: int = 0
     faults: dict[LlmFault, int] = Field(default_factory=dict)
     providers: dict[str, ProviderTally] = Field(default_factory=dict)
+    # Which call kinds a token budget cut off mid-draw (#2477) — read off each sample's own
+    # promptlog, never a fault: a cut draw is retried by the runtime itself, so this is a
+    # MEASURE of how tight each kind's budget is running, not a cause of this run's verdict.
+    budget_hits: BudgetHits = Field(default_factory=BudgetHits)
 
     def render(self) -> str:
         """The whole run-health block, in the order a reader needs it."""
@@ -163,6 +168,7 @@ class RunHealth(BaseModel):
                 *self._dead_case_lines(),
                 self._calls_line(),
                 *self._fault_lines(),
+                *self._budget_hit_lines(),
                 *self._provider_lines(),
                 self._verdict_line(),
             ]
@@ -219,6 +225,7 @@ class RunHealth(BaseModel):
             calls=self.calls + other.calls,
             faults=_add_counts(self.faults, other.faults),
             providers=providers,
+            budget_hits=self.budget_hits.merge(other.budget_hits),
         )
 
     # ── Block lines ──────────────────────────────────────────────────────
@@ -255,6 +262,12 @@ class RunHealth(BaseModel):
         if not self.faults:
             return []
         return [f"  {render_faults(self.faults)}"]
+
+    def _budget_hit_lines(self) -> list[str]:
+        """Hidden on a run nothing was cut on — the quiet case needs no line, same as faults."""
+        if not self.budget_hits.total_cuts:
+            return []
+        return [f"  {render_budget_hits(self.budget_hits)}"]
 
     def _provider_lines(self) -> list[str]:
         if not self.providers:
@@ -302,19 +315,26 @@ class FaultTally(logging.Handler):
             self.faults[fault] += 1
             tally.faults[fault] = tally.faults.get(fault, 0) + 1
 
-    def snapshot(self, cohorts: list[CohortRecord]) -> RunHealth:
-        """This process's health so far, beside the cohorts it ran."""
+    def snapshot(self, cohorts: list[CohortRecord], budget_hits: BudgetHits) -> RunHealth:
+        """This process's health so far, beside the cohorts it ran and the budget hits
+        its samples read off their own promptlog — not something this handler sees
+        itself, since those come off a response's raw JSON rather than an attempt log."""
         return RunHealth(
             cohorts=list(cohorts),
             calls=self.calls,
             faults=dict(self.faults),
             providers={name: tally.model_copy(deep=True) for name, tally in self.providers.items()},
+            budget_hits=budget_hits,
         )
 
 
 # ── Process-wide state: one tally + one cohort list per pytest process ───────
 _tally: FaultTally | None = None
 _cohorts: list[CohortRecord] = []
+# One process's running tally of every sample's own budget-hit reading (#2477), folded in
+# as each sample finishes — beside ``_cohorts``, for the same reason: the run's health is
+# settled once, from whatever this process accumulated over however many cases it ran.
+_budget_hits = BudgetHits()
 # The whole run's health, settled once at session finish and read again by the terminal
 # summary.  Two hooks, one answer: computing it twice risks the two disagreeing, and the
 # verdict that moved the exit status must be the verdict the block prints.
@@ -350,9 +370,15 @@ def record_cohort(case_id: str, *, intended: int, completed: int, retried_boots:
     )
 
 
+def record_budget_hits(hits: BudgetHits) -> None:
+    """Fold one sample's budget-hit reading into this process's running total."""
+    global _budget_hits
+    _budget_hits = _budget_hits.merge(hits)
+
+
 def process_health() -> RunHealth:
-    """What THIS process saw — its own cases and its own model calls."""
-    return begin_run().snapshot(_cohorts)
+    """What THIS process saw — its own cases, its own model calls, its own budget hits."""
+    return begin_run().snapshot(_cohorts, _budget_hits)
 
 
 def health_dir() -> Path | None:

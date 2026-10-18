@@ -48,8 +48,9 @@ from penny.constants import (
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MemoryRow
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmConnectionError, LlmResponse
+from penny.llm.models import LlmConnectionError, LlmMessage, LlmResponse
 from penny.notification import NOTIFICATION_NOTES, NOTIFIED_CYCLE_ENDS, NotificationOutcome
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
@@ -162,7 +163,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
         return tool
 
     alpha = _log_read_for("alpha")
-    alpha_result = await alpha.execute(log="chatter")
+    alpha_result = await alpha.execute(CallLink.new_top(), log="chatter")
     assert "hello there" in alpha_result.message
     # Framing: the read leads with a count + source header so the model reads
     # the body as fetched data, not a fresh instruction.
@@ -170,7 +171,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
     alpha.commit_pending()  # advance alpha's cursor past the entry
 
     beta = _log_read_for("beta")
-    assert "hello there" in (await beta.execute(log="chatter")).message, (
+    assert "hello there" in (await beta.execute(CallLink.new_top(), log="chatter")).message, (
         "beta starved by alpha's cursor — collections share one cursor"
     )
 
@@ -928,6 +929,7 @@ async def _configure_timetable_collection(db: Database) -> None:
     """A collection stood up the way chat stands one up — through the real front
     door with a plain prompt (#2455 naive baseline)."""
     result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+        CallLink.new_top(),
         collection="ferry-departures",
         description="the dawn sailing on the north pier timetable",
         prompt=(
@@ -1226,11 +1228,14 @@ def _run_reason(db: Database) -> str:
 
 
 def _notify_draws(db: Database) -> list[dict]:
-    """The notify micro-context's own runs, attributed under its own ledger identity."""
+    """The notify micro-context's own draws — each under its own ledger identity, and
+    listed inside the cycle's run as one of its ``child_draws`` (#2435), not as a
+    top-level run of its own."""
     return [
-        run
+        draw
         for run in db.messages.get_prompt_log_runs()
-        if run["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
+        for draw in run.get("child_draws", [])
+        if draw["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
     ]
 
 
@@ -1261,7 +1266,7 @@ async def test_a_done_closed_cycle_queues_exactly_one_notification(mock_llm, tes
     assert success is True
     # The two program calls and the close, then the ONE notify draw — nothing else.
     assert len(mock_llm.requests) == 4
-    assert len(_notify_draws(db)) == 1  # its own ledger identity, beside the cycle's run
+    assert len(_notify_draws(db)) == 1  # its own ledger identity, nested inside the cycle's run
     pending = db.send_queue.pending_items()
     assert [item.content for item in pending] == [_DRAWN_MESSAGE]
     assert pending[0].collection == "indie-metroidvanias"
@@ -2523,6 +2528,59 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     )
 
 
+@pytest.mark.asyncio
+async def test_a_budget_cut_draw_ends_in_one_live_thinking_off_summary(
+    mock_llm, test_config, tmp_path
+):
+    """A draw cut by its own token budget (#2475, ``finish_reason="length"``) is never
+    re-rolled on the same budget and thinking settings — it ends the cycle in ONE more
+    draw, tools and thinking both off, which still writes a live summary.  A collector
+    cycle ordinarily skips its last-draw narration entirely (#2370), but the code
+    owner's ruling is that every call kind still ends in a model summary when the
+    model can be reached — even a background one.  That summary lands on the run's own
+    ledger (the SAME ``promptlog`` row every draw already gets), never a new channel:
+    the structural stamp on the run stays the abort's own facts, exactly as an
+    unreachable-model abort stamps them (#1909); only the LIVE DRAW's own logged
+    content is new."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+
+    summary = "I ran past my thinking budget before I got to the first collection_list call."
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if count == 1:
+            return LlmResponse(
+                message=LlmMessage(role="assistant", content=""),
+                model=request.get("model", "test-model"),
+                finish_reason="length",
+            )
+        # The last draw: tools off (no tool_calls here even if offered) and —
+        # proven below — thinking off, over the SAME messages the cut draw saw.
+        return mock_llm._make_text_response(request, summary)
+
+    mock_llm.set_response_handler(handler)
+
+    await collector.run_for("indie-metroidvanias")
+
+    # Exactly one re-draw: the cut draw never entered the discard-and-reroll loop
+    # that every OTHER unusable shape goes through — it skipped straight to the
+    # last-draw chokepoint instead of spending that budget re-rolling on the same cap.
+    assert len(mock_llm.requests) == 2
+
+    runs = db.messages.get_prompt_log_runs()
+    assert len(runs) == 1
+    assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
+    assert runs[0]["run_reason"] == (
+        "model call failed at step 1: budget-exceeded: the draw ran past its "
+        "token budget before reaching an answer"
+    )
+
+    # The live draw's own text is what the run's ledger carries — read off the SAME
+    # promptlog row the structural stamp above sits on, not a second channel.
+    last_response = runs[0]["prompts"][-1]["response"]
+    assert last_response["choices"][0]["message"]["content"] == summary
+
+
 # ── The occurrence is spent by a CYCLE, not by a dispatch (#1935) ────────────
 
 # How far back a stamp has to be pushed for the daily rule below to come round again.
@@ -2805,7 +2863,7 @@ async def test_a_kept_occurrence_still_raises_the_addon_refresh(mock_llm, test_c
     collector, db = _make_collector(test_config, tmp_path)
     _seed_daily_briefing(db)
     refreshed: list[str | None] = []
-    db.memories._on_memory_changed = lambda name: refreshed.append(name)
+    db.memories.subscribe_memory_changed(lambda name: refreshed.append(name))
 
     def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
         raise LlmConnectionError("Connection refused")
@@ -2897,7 +2955,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
         extraction_prompt='Extract things.\n1. log_read(log="user-messages")',
     )
 
-    async def mock_run_cycle(run_id: str) -> CycleResult:
+    async def mock_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
         return CycleResult(
             success=True,
             response=ControllerResponse(
@@ -3005,7 +3063,7 @@ async def test_cycle_runs_under_lock(test_config, tmp_path):
 
     observed: dict = {}
 
-    async def fake_run_cycle(run_id: str) -> CycleResult:
+    async def fake_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
         target = collector._current_target
         assert target is not None
         observed["locked"] = collector._cycle_lock.locked()

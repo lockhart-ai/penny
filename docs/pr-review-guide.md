@@ -135,6 +135,10 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 - [ ] No `contextvars.ContextVar` for application logic (current user, current agent, current request, current author, etc.)
 - [ ] No module-level globals that get mutated to "share" state between call sites
 - [ ] No `get_current_X()` / `set_current_X()` function pairs that thread implicit state through the call chain
+- [ ] No exception for tracing or logging linkage: run ids, parent run ids, tool-call ids and request ids are passed, never read from ambient state, even when only a log row uses them
+- [ ] A cross-cutting value a function needs is a **required** parameter — no default, no `None` that quietly means "not linked" — so the type checker flags every call site that must supply it, including one added later by another agent
+- [ ] Related values travel together in one small immutable object (e.g. a run link holding the run id, parent run id and tool-call id); a callee derives its child from the one it was handed (`link.child(...)`), never "the current" one
+- [ ] "Make this a one-place change" is met by the type checker pointing at every site that must change, never by ambient state
 - [ ] If multiple call sites need the same value (author, user, request_id, tenant), pass it explicitly as a parameter — at construction time when stable for the instance's lifetime, or as a method argument when it varies per call
 - [ ] Template method override + explicit dependency injection is the project pattern. Each subclass exposes its identity as a class attribute (e.g., `Agent.name`); callers read it directly and pass it through to whatever needs it
 - [ ] Why: ambient state makes call graphs invisible, requires global setup/teardown in tests, leaks between concurrent async tasks, and breaks under refactor — anyone wiring a new caller silently inherits whatever the surrounding context happens to hold
