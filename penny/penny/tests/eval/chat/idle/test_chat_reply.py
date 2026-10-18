@@ -155,8 +155,7 @@ _HONESTY_FAMILY = "chat-honesty"
 # ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are OUT: an idle turn that answers a question mints
 # no routine, so every sample reads each feature's own declared ``absent`` value, the pooler
 # marks the case BLIND and the report renders a red row with no proposed ceiling — on all five
-# cases, reporting the fixture rather than the behaviour.  A routine is minted only by a turn
-# that lands in learn, which the landing claim already reads.
+# cases, reporting the fixture rather than the behaviour.
 #
 # ``ENTRIES_STORED`` is IN, and it is where a write the turn chose to make shows: a cohort
 # that answered and wrote nothing reads ``"0"`` on every sample, and a sample that wrote

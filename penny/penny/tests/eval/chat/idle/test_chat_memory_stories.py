@@ -374,8 +374,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
 # What every case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE``
 # and ``ROUTINE_NAME`` read the routines in the registry, and none of these turns teaches one —
 # so on a correct cohort they read the same empty registry on every sample and pool to a serene
-# 0.000 that is neither agreement nor blindness but a reading of the FIXTURE.  A sample that DID
-# mint a routine is caught where it matters: it left idle, which the landing claim reads.
+# 0.000 that is neither agreement nor blindness but a reading of the FIXTURE.
 #
 # ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no name list (#2112), so it is a
 # live measurement on every case here.  On the two recall cases a correct sample reads the

@@ -280,8 +280,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: SourceDownCase) -> Cohor
 # What this case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE`` and
 # ``ROUTINE_NAME`` read the routines in the registry, and this turn teaches none — so on a
 # correct cohort they read the same empty registry on every sample and pool to a serene 0.000
-# that is neither agreement nor blindness but a reading of the FIXTURE.  A sample that DID mint
-# a routine is caught where it matters: it left idle, which the landing claim reads.
+# that is neither agreement nor blindness but a reading of the FIXTURE.
 #
 # ``TOOL_SEQUENCE`` is where the ROUTE lives, and it is the live one here: how many times a
 # sample retried the address that will never answer, whether it went looking for another source,
