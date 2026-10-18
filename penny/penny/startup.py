@@ -7,7 +7,7 @@ from penny.database.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmError
+from penny.llm.models import LlmError, LlmMessage
 from penny.responses import PennyResponse
 
 logger = logging.getLogger(__name__)
@@ -66,11 +66,15 @@ async def get_restart_message(db: Database, ollama_client: LlmClient, commit_mes
     )
 
     try:
-        response = await ollama_client.generate(
-            prompt,
+        # Thinking off (#2628): a one-line transform, like the browse extractor and
+        # the notify composer — measured on local Ollama, thinking adds ~800-1900
+        # tokens and up to ~50s per announcement for nothing the sentence needs.
+        response = await ollama_client.chat(
+            [LlmMessage(role="user", content=prompt)],
             agent_name="startup",
             prompt_type="startup_announcement",
             call_link=CallLink.new_top(),
+            thinking_enabled=False,
         )
         announcement = response.content.strip()
 

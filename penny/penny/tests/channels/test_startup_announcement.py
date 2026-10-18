@@ -12,6 +12,7 @@ from sqlmodel import col, select
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.constants import ChannelType, PennyConstants
 from penny.database.models import PromptLog
+from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError
 from penny.penny import Penny
 from penny.preflight import CheckStatus, PreflightCheck, PreflightError
@@ -115,6 +116,21 @@ async def test_startup_announcement_with_commit(
     # Second run: configure restart message and verify announcement
     mock_llm.set_default_flow(final_response="i added a cool new feature! check it out")
 
+    # Capture what the REAL client is told about thinking on the startup draw
+    # (#2628): the announcement is a one-line transform, so it must write with
+    # thinking off, like the browse extractor and the notify composer. The
+    # mock_llm fixture's SDK-level patch sits BELOW LlmClient.chat and doesn't
+    # carry the flag, so the spy wraps the real class method instead.
+    real_chat = LlmClient.chat
+    startup_calls: dict = {}
+
+    async def spy_chat(self, messages, *args, **kwargs):
+        if any("Transform this git commit message" in m.content for m in messages):
+            startup_calls["thinking_enabled"] = kwargs.get("thinking_enabled", True)
+        return await real_chat(self, messages, *args, **kwargs)
+
+    monkeypatch.setattr(LlmClient, "chat", spy_chat)
+
     before = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
         PennyConstants.CURRENT_DATETIME_FORMAT
     )
@@ -158,6 +174,12 @@ async def test_startup_announcement_with_commit(
         with penny.db.get_session() as session:
             logged = _prompt_log_for(session, "Transform this git commit message")
             assert logged.run_id is not None
+
+        # The announcement is a one-line transform, so it writes with thinking
+        # off (#2628), like the browse extractor and the notify composer. Asserted
+        # on the real client's chat() (the mock_llm SDK patch sits below it and
+        # doesn't carry the flag): exactly one startup draw, thinking disabled.
+        assert startup_calls["thinking_enabled"] is False
 
 
 @pytest.mark.asyncio
