@@ -73,6 +73,7 @@ from penny.database.memory.types import (
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.database.mutation_store import EnumeratedDecision
+from penny.datetime_utils import format_duration_plain_words
 from penny.llm.models import strip_harmony_control_tokens
 from penny.text_validity import LEGACY_TOOL_RENAMES, degenerate_reason, half_formed_send_reason
 from penny.validation.conditions import ConditionKey, run_flag_conditions
@@ -1577,7 +1578,10 @@ def _draw_outcome_clause(draw: PromptLog) -> str:
     and (when raised/timed out) the exception's own class — the structural facts
     ``LlmClient.chat`` stamped on the row, never a narration."""
     outcome = draw.call_outcome or "completed"
-    duration = f" after {draw.duration_ms}ms" if draw.duration_ms is not None else ""
+    duration = ""
+    if draw.duration_ms is not None:
+        plain_words = format_duration_plain_words(draw.duration_ms)
+        duration = f" after {draw.duration_ms}ms ({plain_words})"
     error = f" ({draw.call_error_class})" if draw.call_error_class else ""
     return f"{outcome}{duration}{error}"
 

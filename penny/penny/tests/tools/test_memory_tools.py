@@ -2568,7 +2568,10 @@ class TestLogTools:
 
         lines = result.message.splitlines()
         browse_index = next(i for i, line in enumerate(lines) if "browse(" in line)
-        assert "model call: browse-extract — cancelled after 300000ms" in lines[browse_index + 1]
+        assert (
+            "model call: browse-extract — cancelled after 300000ms (5 minutes)"
+            in lines[browse_index + 1]
+        )
 
     @pytest.mark.asyncio
     async def test_run_get_tolerates_the_paren_framed_mutation_anchor(self, db):

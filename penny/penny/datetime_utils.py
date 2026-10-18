@@ -180,3 +180,40 @@ def user_timezone_name(db: Database) -> str | None:
         return None
     user_info = db.users.get_info(sender)
     return user_info.timezone if user_info is not None else None
+
+
+def format_duration_plain_words(milliseconds: int) -> str:
+    """Render a duration in milliseconds as human-readable plain words.
+
+    Returns a string like "45 seconds", "1 minute 30 seconds", "1 hour 5 minutes".
+    Rules:
+    - Under 60 seconds: whole seconds ("45 seconds", "1 second")
+    - Otherwise minutes, plus seconds if not whole ("5 minutes", "1 minute 30 seconds")
+    - For an hour or more: hours and minutes ("1 hour", "2 hours 15 minutes")
+    """
+    total_seconds = milliseconds // 1000
+
+    if total_seconds < 60:
+        unit = "second" if total_seconds == 1 else "seconds"
+        return f"{total_seconds} {unit}"
+
+    total_minutes = total_seconds // 60
+    remainder_seconds = total_seconds % 60
+
+    if total_minutes < 60:
+        minute_unit = "minute" if total_minutes == 1 else "minutes"
+        parts = [f"{total_minutes} {minute_unit}"]
+        if remainder_seconds:
+            second_unit = "second" if remainder_seconds == 1 else "seconds"
+            parts.append(f"{remainder_seconds} {second_unit}")
+        return " ".join(parts)
+
+    # One hour or more
+    total_hours = total_minutes // 60
+    remainder_minutes = total_minutes % 60
+    hour_unit = "hour" if total_hours == 1 else "hours"
+    parts = [f"{total_hours} {hour_unit}"]
+    if remainder_minutes:
+        minute_unit = "minute" if remainder_minutes == 1 else "minutes"
+        parts.append(f"{remainder_minutes} {minute_unit}")
+    return " ".join(parts)
