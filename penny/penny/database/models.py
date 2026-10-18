@@ -388,55 +388,6 @@ class MutationEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
 
 
-class Skill(SQLModel, table=True):
-    """A named, immutable skill — a certified-by-execution script of tool-call
-    steps distilled from ONE demonstrated run (#1590, stage ④ of #1562).
-
-    A skill is authored ONLY by the framework — there is no ``skill_create`` tool.
-    At the end of every qualifying chat run the run-end extractor
-    (``penny.skill_extraction``) snapshots that run's own ledger, copying its
-    succeeded, non-``done`` tool calls into ``steps`` (the ``LoggedToolCall`` shape as
-    JSON) and factoring each argument by provenance into declared ``parameters`` (JSON)
-    — a value from a prior step's result becomes a binding, every other string leaf a
-    required parameter (#1658/#1659), semantically named + described by the run-end
-    naming micro-context (#1668).  EVERY leaf goes through that one process whatever
-    tool it sits on (#1783); one whose value named a collection additionally carries the
-    attachment mark, so unless the labeller says the user chose it, instantiation binds
-    it to the collection the routine is attached to (the demonstrated name stays in
-    ``steps`` as the verbatim ledger copy but never renders).  #1591's ``collection_configure``
-    renders ``steps`` + bound params into the collection's numbered TEXT
-    ``extraction_prompt`` at creation.
-
-    **One row per name — no versioning.**  Collections carry the rendered text
-    snapshotted at creation, so a re-teach never retroactively changes an
-    instantiation; the version pin had no remaining job.  Re-demonstrating a routine
-    REPLACES the row (steps/parameters/provenance) by name — or, for a same-shape,
-    same-meaning routine, keeping the existing name — so ``name`` is the unique key.
-
-    ``description`` doubles as the resolution anchor (``description_embedding``,
-    populated at write) and is the run's triggering message.  ``source_run_id`` is
-    the demonstrated run.  ``author`` is the extracting agent.  There is no seed
-    library (migration 0084 ships the table empty), so the certified-by-execution
-    invariant holds universally — every stored step succeeded in its source run.
-    """
-
-    __tablename__ = "skill"
-
-    name: str = Field(primary_key=True)
-    steps: str  # JSON-serialized list[SkillStep]
-    parameters: str  # JSON-serialized list[SkillParameter]
-    intent: str
-    description: str
-    description_embedding: bytes | None = None
-    source_run_id: str | None = Field(default=None, index=True)
-    author: str = Field(index=True)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
-        sa_column_kwargs={"server_default": "1970-01-01 00:00:00"},
-    )
-
-
 class AgentCursor(SQLModel, table=True):
     """Per-agent read cursor into a log-shaped memory.
 

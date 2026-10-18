@@ -229,7 +229,7 @@ _ON_THE_MACHINES_CLOCK = {
     # How long the process has been up.
     "penny.py": 1,
     # The models' own defaults — the fallback for a row built outside a store.
-    "database/models.py": 24,
+    "database/models.py": 22,
     # When a migration was applied, in the runner's own bookkeeping table.
     "database/migrate.py": 1,
     # How long a model call took.
