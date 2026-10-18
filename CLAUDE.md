@@ -168,11 +168,11 @@ docs/                           — Design documents and review guides
                                   finding and reducing variance, reasoning about a fix
   eval-suite-history.md / migration-log.md — the eval-suite history and the DB migration log, moved out of `penny/CLAUDE.md`
   browser-extension-architecture.md — Browser extension architecture & design
-  archive/                      — Nine finished design/implementation plans, kept for history
+  archive/                      — Documentation that stopped describing Penny: retired designs, finished
+                                  plans, superseded formats, and era snapshots, kept as the project's
+                                  history and indexed as a dated timeline (`archive/README.md`)
   reference/                    — Per-area reference for `penny/penny/`, read before changing code in
                                   that area (the table in `penny/CLAUDE.md` maps paths to files)
-  benchmarking-embedding-models.md — Embedding model benchmark results
-  benchmarking-qwen35-vs-gpt-oss.md — qwen3.5 vs gpt-oss benchmark comparison
 data/                           — Runtime data (gitignored)
   penny/                        — Penny runtime data
     penny.db                    — Production database
