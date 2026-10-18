@@ -1,6 +1,8 @@
 /**
- * Nesting a child draw under the round that made it (#2435) — the pure parts.
- * No jsdom: these are plain data-in, data-out functions.
+ * The Prompts tab run-body list's pure parts (#2435, #2631) — the flat,
+ * time-ordered entries of a run, each draw's origin from ids, and the
+ * helpers around them.  No jsdom: these are plain data-in, data-out
+ * functions.
  */
 
 import { test } from "node:test";
@@ -11,11 +13,12 @@ import {
   attachmentIndex,
   byTimestamp,
   dedupeDraws,
-  directChildNodes,
+  drawOrigin,
   dropRunningCalls,
   dropRunningTools,
   expandedIdsAfterRebuild,
   fetchedRunIdsFrom,
+  flatRunEntries,
   isAnchored,
   isRunningCall,
   isRunningTool,
@@ -137,48 +140,74 @@ test("agentLabel never returns blank for a name with only separators", () => {
   assert.equal(agentLabel("---"), "---");
 });
 
-test("directChildNodes nests a direct, unanchored child under the run as a whole", () => {
+test("flatRunEntries lists a direct, unanchored draw under the run as a whole", () => {
   // Today's real production shape (#2458): a browse-extract draw carries only
   // parent_run_id — parent_tool_call_id is always null — so this is the
-  // common case, not an edge case: the draw nests directly under the run,
+  // common case, not an edge case: the draw joins the flat list directly,
   // with no step lookup needed at all.
   const ownRows = [withToolCall("b0")];
   const draw = prompt({ id: 2, run_id: "draw-1", parent_run_id: "run1", parent_tool_call_id: null });
 
-  const tree = directChildNodes("run1", ownRows, [draw]);
-  assert.equal(tree.length, 1);
-  assert.equal(tree[0].stepIndex, null);
-  assert.deepEqual(tree[0].children, []);
+  const entries = flatRunEntries("run1", ownRows, [draw]);
+  assert.deepEqual(entries.map((e) => e.entry.id), [1, 2]);
+  assert.equal(drawOrigin(draw, ownRows, [draw]).kind, "run");
 });
 
-test("directChildNodes falls back to nesting under the parent when the anchor never matches", () => {
+test("flatRunEntries orders every entry by when it STARTED, not when it logged", () => {
+  // A step logs at T+40 (took 40s, started T0); a draw started at T+10 only
+  // logs at T+50 — it sits between the steps in the list, by start time.
+  const step1 = withToolCall("a0");
+  step1.timestamp = "2026-01-01T00:00:40Z";
+  step1.duration_ms = 40_000;
+  const step2 = withToolCall("b0");
+  step2.id = 2;
+  step2.timestamp = "2026-01-01T00:01:00Z";
+  step2.duration_ms = 5_000;
+  const draw = prompt({
+    id: 9,
+    run_id: "draw-1",
+    parent_run_id: "run1",
+    parent_tool_call_id: "a0",
+    timestamp: "2026-01-01T00:00:50Z",
+    duration_ms: 40_000,
+  });
+
+  const entries = flatRunEntries("run1", [step1, step2], [draw]);
+  assert.deepEqual(entries.map((e) => e.entry.id), [1, 9, 2]);
+});
+
+test("drawOrigin falls back to from-run when the anchor never matches", () => {
   // A draw names a tool_call id, but none of the parent's own rows made it —
-  // still never dropped, still nests under the parent as a whole (point 3).
+  // still never dropped, still rendered under the run as a whole (point 3).
   const ownRows = [withToolCall("b0")];
   const draw = prompt({ id: 2, run_id: "draw-1", parent_run_id: "run1", parent_tool_call_id: "never-seen" });
-
-  const tree = directChildNodes("run1", ownRows, [draw]);
-  assert.equal(tree.length, 1);
-  assert.equal(tree[0].stepIndex, null);
+  assert.deepEqual(drawOrigin(draw, ownRows, [draw]), { kind: "run" });
 });
 
-test("directChildNodes attaches a grandchild under its own parent draw", () => {
+test("drawOrigin names the step whose tool call the draw is anchored to", () => {
+  const ownRows = [withToolCall("a0"), withToolCall("b0")];
+  const draw = prompt({ id: 2, run_id: "draw-1", parent_run_id: "run1", parent_tool_call_id: "b0" });
+  assert.deepEqual(drawOrigin(draw, ownRows, [draw]), { kind: "step", step: 2 });
+});
+
+test("drawOrigin names the parent draw when the draw's parent is another draw", () => {
   // run1's own step dispatched tool call "b0"; "draw-child" is anchored to it;
   // "draw-grandchild" is parented on draw-child itself — a micro-context
   // nested inside another, never named by this code (#2435).
   const ownRows = [withToolCall("b0")];
-  const child = prompt({ id: 2, run_id: "draw-child", parent_run_id: "run1", parent_tool_call_id: "b0" });
-  const grandchild = prompt({ id: 3, run_id: "draw-grandchild", parent_run_id: "draw-child" });
-  const allDraws = [child, grandchild];
-
-  const tree = directChildNodes("run1", ownRows, allDraws);
-  assert.equal(tree.length, 1);
-  assert.equal(tree[0].draw.id, 2);
-  assert.equal(tree[0].stepIndex, 0);
-  assert.equal(tree[0].children.length, 1);
-  assert.equal(tree[0].children[0].draw.id, 3);
-  assert.equal(tree[0].children[0].stepIndex, null);
-  assert.deepEqual(tree[0].children[0].children, []);
+  const child = prompt({
+    id: 2,
+    run_id: "browse-extract",
+    agent_name: "browse-extract",
+    parent_run_id: "run1",
+    parent_tool_call_id: "b0",
+  });
+  const grandchild = prompt({ id: 3, run_id: "draw-grandchild", parent_run_id: "browse-extract" });
+  assert.deepEqual(drawOrigin(grandchild, ownRows, [child, grandchild]), {
+    kind: "draw",
+    label: "Browse extract",
+  });
+  assert.deepEqual(drawOrigin(child, ownRows, [child, grandchild]), { kind: "step", step: 1 });
 });
 
 test("expandedIdsAfterRebuild keeps every previously-expanded id still present", () => {
@@ -196,9 +225,10 @@ test("expandedIdsAfterRebuild is empty when nothing was expanded", () => {
   assert.equal(kept.size, 0);
 });
 
-test("directChildNodes nests a retry's children only under its first attempt", () => {
-  // Two rows share run_id "draw-1" (a poison-reroll retry) — both render as
-  // siblings, but the grandchild (parented on "draw-1") attaches only once.
+test("flatRunEntries renders a retry's rows once each and carries its descendant", () => {
+  // Two rows share run_id "draw-1" (a poison-reroll retry) — both render,
+  // ordered by when they started, and the grandchild (parented on "draw-1")
+  // renders exactly once in the same flat list.
   const attempt1 = prompt({ id: 2, run_id: "draw-1", parent_run_id: "run1" });
   const attempt2 = prompt({
     id: 3,
@@ -209,11 +239,26 @@ test("directChildNodes nests a retry's children only under its first attempt", (
   const grandchild = prompt({ id: 4, run_id: "draw-2", parent_run_id: "draw-1" });
   const allDraws = [attempt1, attempt2, grandchild];
 
-  const tree = directChildNodes("run1", [], allDraws);
-  assert.equal(tree.length, 2);
-  assert.equal(tree[0].children.length, 1);
-  assert.equal(tree[0].children[0].draw.id, 4);
-  assert.deepEqual(tree[1].children, []);
+  const entries = flatRunEntries("run1", [], allDraws);
+  // attempt1 and the grandchild both start at T0 (attempt2 starts 1s later) —
+  // each renders once, in start order.
+  assert.deepEqual(entries.map((e) => e.entry.id), [2, 4, 3]);
+});
+
+test("flatRunEntries is idempotent across rebuilds, carrying every logged id", () => {
+  // A live rebuild recomputes the list from the same arrays — the same
+  // entries come back in the same order, with the same promptlog ids, which
+  // is what keeps an open row open across the wipe (#2631).
+  const ownRows = [withToolCall("b0")];
+  const draw = prompt({ id: 2, run_id: "draw-1", parent_run_id: "run1" });
+  const calls = [runningCall({ runId: "draw-a", parentRunId: "run1" })];
+  const tools = [runningTool({ runId: "run1" })];
+
+  const first = flatRunEntries("run1", ownRows, [draw], calls, tools);
+  const second = flatRunEntries("run1", ownRows, [draw], calls, tools);
+  const key = (list) => list.map((e) => e.startedAt + (e.entry.id ?? e.entry.runId)).join(",");
+  assert.equal(key(first), key(second));
+  assert.deepEqual(first.map((e) => e.entry.id).filter((id) => id !== undefined), [1, 2]);
 });
 
 // --- Run timing (#2438): started_at is the first call's true start, wall
@@ -276,33 +321,33 @@ function runningTool(overrides = {}) {
   };
 }
 
-test("directChildNodes finds a running call parented on the container, anchored by its tool call", () => {
+test("flatRunEntries includes a running call parented on the run, wherever it started", () => {
   const steps = [withToolCall("b0")];
-  const tree = directChildNodes("run1", steps, [], [runningCall({ parentToolCallId: "b0" })]);
-  assert.equal(tree.length, 1);
-  assert.equal(isRunningCall(tree[0].draw), true);
-  assert.equal(tree[0].stepIndex, 0);
+  const entries = flatRunEntries("run1", steps, [], [runningCall({ parentToolCallId: "b0" })]);
+  assert.equal(entries.length, 2);
+  assert.equal(isRunningCall(entries[1].entry), true);
+  assert.equal(entries[1].entry.runId, "draw1");
 });
 
-test("directChildNodes is unanchored (renders under the run as a whole) for a running call with no tool call parent", () => {
-  const tree = directChildNodes("run1", [withToolCall("b0")], [], [runningCall({ parentToolCallId: null })]);
-  assert.equal(tree[0].stepIndex, null);
+test("flatRunEntries includes the run's OWN next running call (parentRunId null)", () => {
+  const entries = flatRunEntries("run1", [], [], [runningCall({ runId: "run1", parentRunId: null })]);
+  assert.equal(entries.length, 1);
+  assert.equal(isRunningCall(entries[0].entry), true);
 });
 
-test("directChildNodes ignores a running call parented on a DIFFERENT run", () => {
-  const tree = directChildNodes("run1", [], [], [runningCall({ parentRunId: "some-other-run" })]);
-  assert.deepEqual(tree, []);
+test("flatRunEntries ignores a running call parented on a DIFFERENT run", () => {
+  const entries = flatRunEntries("run1", [], [], [runningCall({ parentRunId: "some-other-run" })]);
+  assert.deepEqual(entries, []);
 });
 
-test("directChildNodes anchors a running tool call to the step that dispatched it", () => {
+test("flatRunEntries includes a running tool call dispatched by one of the run's steps", () => {
   const steps = [withToolCall("a0"), withToolCall("b0")];
-  const tree = directChildNodes("run1", steps, [], [], [runningTool({ toolCallId: "b0" })]);
-  assert.equal(tree.length, 1);
-  assert.equal(isRunningTool(tree[0].draw), true);
-  assert.equal(tree[0].stepIndex, 1);
+  const entries = flatRunEntries("run1", steps, [], [], [runningTool({ toolCallId: "b0" })]);
+  assert.equal(entries.length, 3); // two logged steps + the running tool
+  assert.equal(isRunningTool(entries[2].entry), true);
 });
 
-test("directChildNodes nests a running call under a tool call, and a SECOND running call under that one — any depth (#2439)", () => {
+test("flatRunEntries reaches a running call under a tool call, and a SECOND under that one — any depth (#2439)", () => {
   // The code owner's motivating shape: a tool call (dispatched by run1's own
   // step 0) is still running a browse-extract draw (A), which is itself
   // still in flight when a FURTHER draw (B) starts, parented on A rather
@@ -315,34 +360,43 @@ test("directChildNodes nests a running call under a tool call, and a SECOND runn
     parentToolCallId: null,
     startedAt: "2026-01-01T00:00:01.000Z",
   });
-  const tree = directChildNodes("run1", steps, [], [drawA, drawB]);
+  const entries = flatRunEntries("run1", steps, [], [drawA, drawB]);
 
-  assert.equal(tree.length, 1);
-  assert.equal(tree[0].draw.runId, "draw-a");
-  assert.equal(tree[0].stepIndex, 0); // anchored to run1's own step that dispatched b0
-
-  assert.equal(tree[0].children.length, 1);
-  assert.equal(tree[0].children[0].draw.runId, "draw-b");
-  assert.equal(tree[0].children[0].stepIndex, null); // A has no rows of its own yet to anchor to
-  assert.deepEqual(tree[0].children[0].children, []);
+  assert.equal(entries.length, 3); // the logged step + both running calls
+  assert.deepEqual(entries.slice(1).map((e) => e.entry.runId), ["draw-a", "draw-b"]); // by startedAt
+  assert.equal(isRunningCall(entries[1].entry), true);
+  assert.equal(isRunningCall(entries[2].entry), true);
 });
 
 test("a running draw nested two levels deep resolves to a LOGGED draw in the same position once its record arrives", () => {
   // Same shape as above, but B's own promptlog row has now landed — it is
   // no longer in runningCalls at all (page.ts drops it by run_id on
-  // arrival), and the tree must still nest it exactly where it rendered
-  // while running: under A, unanchored.
+  // arrival), and the flat list must still carry it exactly where it
+  // rendered while running.
   const steps = [withToolCall("b0")];
-  const drawA = runningCall({ runId: "draw-a", parentRunId: "run1", parentToolCallId: "b0" });
-  const loggedB = prompt({ id: 7, run_id: "draw-b", parent_run_id: "draw-a", parent_tool_call_id: null });
-  const tree = directChildNodes("run1", steps, [loggedB], [drawA]);
+  const drawA = runningCall({
+    runId: "draw-a",
+    parentRunId: "run1",
+    parentToolCallId: "b0",
+    startedAt: "2026-01-01T00:00:02.000Z",
+  });
+  const loggedB = prompt({
+    id: 7,
+    run_id: "draw-b",
+    parent_run_id: "draw-a",
+    parent_tool_call_id: null,
+    timestamp: "2026-01-01T00:00:05.000Z",
+  });
+  const entries = flatRunEntries("run1", steps, [loggedB], [drawA]);
 
-  assert.equal(tree.length, 1);
-  assert.equal(tree[0].draw.runId, "draw-a");
-  assert.equal(tree[0].children.length, 1);
-  assert.equal(tree[0].children[0].draw.id, 7); // now the real PromptLogEntry, not a RunningCall
-  assert.equal(isRunningCall(tree[0].children[0].draw), false);
-  assert.equal(tree[0].children[0].stepIndex, null);
+  assert.equal(entries.length, 3); // the logged step + draw-a (running) + B (logged)
+  assert.equal(isRunningCall(entries[1].entry), true);
+  assert.equal(isRunningCall(entries[2].entry), false);
+  assert.equal(entries[2].entry.id, 7); // now the real PromptLogEntry, not a RunningCall
+  // Its parent (draw-a) is still running — no logged draw names it yet, so
+  // the origin reads "from run" for this moment; the moment draw-a logs, its
+  // rebuild derives the draw-parent tag from ids instead.
+  assert.deepEqual(drawOrigin(loggedB, steps, [loggedB]), { kind: "run" });
 });
 
 test("runningRunIdClosure is just the root when nothing nests under it", () => {

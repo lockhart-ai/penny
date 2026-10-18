@@ -1,8 +1,9 @@
 /**
- * Nesting a child draw under the round that made it (#2435) — the pure parts:
- * which step a draw anchors to, time ordering, and moving a run to the front
- * of the list on an update.  No DOM here, so these are unit-testable without
- * jsdom; `page.ts` is the only caller.
+ * The pure parts of the Prompts tab's run-body list (#2435, #2631): which
+ * step a draw anchors to, the run's entries as ONE flat, time-ordered list,
+ * where a draw came from (its origin tag, derived purely from ids), and
+ * moving a run to the front of the list on an update.  No DOM here, so these
+ * are unit-testable without jsdom; `page.ts` is the only caller.
  */
 
 import type { PromptLogEntry } from "../protocol.js";
@@ -161,19 +162,19 @@ export interface RunningCall {
   startedAt: string;
 }
 
-/** A dispatched tool call pushed as running, or just finished —
- * `finishedSuccess` is `undefined` while still running. */
+/** A dispatched tool call pushed as running — dropped outright the moment
+ * `tool_finished` arrives (#2631): no checkmark row is ever rendered, since
+ * a finished tool is already shown by the step that called it. */
 export interface RunningTool {
   runId: string;
   toolCallId: string;
   toolName: string;
   status: string;
   startedAt: string;
-  finishedSuccess?: boolean;
 }
 
 /** `entry` is a running call, never a logged row or a running tool — the
- * discriminant `directChildNodes` and page.ts both read instead of sniffing
+ * discriminant `flatRunEntries` and page.ts both read instead of sniffing
  * structurally at each call site.  A running call carries `runId` (a real
  * `PromptLogEntry` carries `run_id`, and a running tool carries `toolCallId`,
  * never `runId`), so this is unambiguous. */
@@ -184,20 +185,6 @@ export function isRunningCall(entry: DrawTreeEntry): entry is RunningCall {
 /** `entry` is a running tool call — see `isRunningCall`. */
 export function isRunningTool(entry: DrawTreeEntry): entry is RunningTool {
   return "toolCallId" in entry;
-}
-
-function entryTimestamp(entry: DrawTreeEntry): string {
-  return isRunningCall(entry) || isRunningTool(entry) ? entry.startedAt : entry.timestamp;
-}
-
-/** The run_id a child of `entry` would be parented on, or `null` for a
- * running tool — a tool call never mints a run_id of its own, so nothing
- * chains through it as a PARENT in the run_id sense (it still anchors
- * children visually, by `parent_tool_call_id`, exactly like a draw does —
- * see `directChildNodes`). */
-function entryOwnRunId(entry: DrawTreeEntry): string | null {
-  if (isRunningTool(entry)) return null;
-  return isRunningCall(entry) ? entry.runId : entry.run_id;
 }
 
 /** `rootRunId` plus every running call's `runId` transitively parented under
@@ -247,92 +234,100 @@ export function fetchedRunIdsFrom(runs: { run_id: string; child_draws?: PromptLo
   return ids;
 }
 
-/** One entry a `DrawTreeNode` can carry: a logged draw, a running call
- * pushed ahead of its promptlog row, or a running tool call (#2439).  Live
- * step markers are fed into the SAME tree build a logged draw always went
- * through, rather than a parallel one-level path — so a running entry nests
- * at any depth exactly like a logged one would, including when its own
- * parent is itself still running. */
+/** One entry of a run's body list: a logged draw, a running call pushed
+ * ahead of its promptlog row, or a running tool call (#2439).  Live step
+ * markers are fed into the SAME flat build a logged draw goes through,
+ * rather than a parallel one-level path — so a running entry takes its place
+ * in time exactly like a logged one, including when its own parent is itself
+ * still running. */
 export type DrawTreeEntry = PromptLogEntry | RunningCall | RunningTool;
 
-/** One node of the tree, nested to any depth (#2435, extended to running
- * entries by #2439): the step of the PARENT's own rows it anchors to (by
- * index into whatever `ownRows` the caller resolved for that parent — `null`
- * for "directly under the parent as a whole", whether the entry carries no
- * anchor at all or its anchor never matched a row), and its own children,
- * built the same way, recursively. */
-export interface DrawTreeNode {
-  draw: DrawTreeEntry;
-  stepIndex: number | null;
-  children: DrawTreeNode[];
+/** One member of `flatRunEntries`' result: the entry plus its sort key —
+ * when it STARTED (`timestamp - duration_ms` for a logged row, `startedAt`
+ * for a running entry), not when it logged. */
+export interface FlatEntry {
+  entry: DrawTreeEntry;
+  startedAt: string;
 }
 
-/** Every draw, running call, or running tool call directly parented on
- * `containerRunId` — by `parent_run_id`/`parentRunId`/`runId`, never by agent
- * name — each carrying the step of `containerOwnRows` it anchors to and its
- * own children, built recursively from `allDraws` (the full flat descendant
- * list a host run carries, any depth) PLUS whatever `runningCalls`/
- * `runningTools` currently apply.  `runningCalls`/`runningTools` default to
- * empty, so every existing caller that only ever dealt in logged draws is
- * unaffected.
+/** A run's body list as ONE flat, time-ordered sequence (#2631): the run's
+ * own prompts, every logged draw in `allDraws` (the full flat descendant
+ * list the host carries, any depth — each renders once, in time order), and
+ * every live running entry whose parent chain roots at the host run, sorted
+ * ascending by when each entry started.
  *
- * A run_id that logged more than one row (a poison-reroll retry) OR has a
- * logged row plus a still-running NEXT attempt contributes one tree node per
- * entry — each renders, ordered by when it started — but only the FIRST
- * carries its children forward; a retry's own node (logged or running) is
- * always a leaf, so a child already reachable through the first attempt is
- * never attached twice.
+ * The running entries are admitted by a small fixpoint over ids, standing in
+ * for `directChildNodes`' former recursion: start from the ids that can name
+ * a parent here (the run itself, every logged draw's run_id), then
+ * repeatedly admit a running call whose `parentRunId` is already in the set
+ * — the run's OWN next call (`parentRunId === null`, `runId` = the host) and
+ * calls nested under logged draws or under other running calls, any depth —
+ * and a running tool whose `runId` is in the set (a tool of the run's own
+ * steps, of a logged draw, or of a still-running nested call).  A run_id
+ * that logged more than one row (a poison-reroll retry) contributes one
+ * entry per row — each renders, ordered by when it started.
  *
- * A running call's own run_id is exactly as valid a PARENT id as a logged
- * draw's: a running call nested under another running call recurses the
- * same way, with its container's `ownRows` simply empty (nothing of its own
- * has logged yet) — `attachmentIndex` already returns `null` against an
- * empty list, so such a child renders unanchored, directly under its
- * (also-running) parent, with no special case needed.
- *
- * A running TOOL call is never itself a parent in this sense (a tool call
- * mints no run_id — see `entryOwnRunId`), but it anchors into the SAME step
- * position a draw it goes on to make would, via its own `toolCallId` doubling
- * as the anchor key. */
-export function directChildNodes(
-  containerRunId: string,
-  containerOwnRows: PromptLogEntry[],
+ * The list is recomputed fresh from the caller's arrays at every render, so
+ * it is idempotent across rebuilds: the same inputs always produce the same
+ * entries, and a live rebuild carries every logged row's promptlog id across
+ * unchanged (what `capturePanelState`/`restorePanelState` key on). */
+export function flatRunEntries(
+  hostRunId: string,
+  ownRows: PromptLogEntry[],
   allDraws: PromptLogEntry[],
   runningCalls: RunningCall[] = [],
   runningTools: RunningTool[] = [],
-): DrawTreeNode[] {
-  const directDraws: DrawTreeEntry[] = allDraws.filter(
-    (draw) => draw.parent_run_id === containerRunId,
-  );
-  const directCalls: DrawTreeEntry[] = runningCalls.filter(
-    (call) => call.parentRunId === containerRunId,
-  );
-  const directTools: DrawTreeEntry[] = runningTools.filter((tool) => tool.runId === containerRunId);
-  const direct = [...directDraws, ...directCalls, ...directTools].sort((a, b) =>
-    entryTimestamp(a).localeCompare(entryTimestamp(b)),
-  );
-
-  const seenRunIds = new Set<string>();
-  return direct.map((entry) => {
-    const parentToolCallId = isRunningTool(entry)
-      ? entry.toolCallId // a tool anchors by its OWN id — it IS the tool call
-      : isRunningCall(entry)
-        ? entry.parentToolCallId
-        : entry.parent_tool_call_id;
-    const ownRunId = entryOwnRunId(entry);
-    let children: DrawTreeNode[] = [];
-    if (ownRunId !== null) {
-      const isFirstOfItsRunId = !seenRunIds.has(ownRunId);
-      seenRunIds.add(ownRunId);
-      if (isFirstOfItsRunId) {
-        const ownRows = allDraws.filter((candidate) => candidate.run_id === ownRunId);
-        children = directChildNodes(ownRunId, ownRows, allDraws, runningCalls, runningTools);
+): FlatEntry[] {
+  const parentIds = new Set<string>([hostRunId, ...allDraws.map((draw) => draw.run_id)]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const call of runningCalls) {
+      if (call.parentRunId !== null && parentIds.has(call.parentRunId) && !parentIds.has(call.runId)) {
+        parentIds.add(call.runId);
+        added = true;
       }
     }
-    return {
-      draw: entry,
-      stepIndex: attachmentIndex(containerOwnRows, parentToolCallId),
-      children,
-    };
-  });
+  }
+  const logged: FlatEntry[] = [...ownRows, ...allDraws].map((entry) => ({
+    entry,
+    startedAt: rowStartedAt(entry),
+  }));
+  const running: FlatEntry[] = [
+    ...runningCalls.filter(
+      (call) =>
+        (call.parentRunId === null ? call.runId === hostRunId : parentIds.has(call.parentRunId)),
+    ),
+    ...runningTools.filter((tool) => parentIds.has(tool.runId)),
+  ].map((entry) => ({ entry, startedAt: entry.startedAt }));
+  return [...logged, ...running].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
+
+/** Where a draw came from, derived purely from ids (#2631) — never from a
+ * draw's name.  `step`: anchored to one of the host run's own steps by
+ * `parent_tool_call_id`; `draw`: parented on another logged draw (its own
+ * tag names that draw); `run`: everything else (no anchor at all — the
+ * state-classifier/notifier shape — or an anchor that never matched a step,
+ * the same structural fallback that renders the draw under the run). */
+export type EntryOrigin =
+  | { kind: "step"; step: number }
+  | { kind: "draw"; label: string }
+  | { kind: "run" };
+
+/** `draw`'s origin among `hostRunId`'s own rows (`ownRows`) and its flat
+ * descendant list (`allDraws`).  A draw anchored into a step is `step`; the
+ * anchor lookup runs against the HOST's own rows, which is also correct for
+ * a draw nested inside another draw — its anchor belongs to its parent
+ * draw's rows, so it never matches a host step here and falls through to
+ * the parent-draw rule below. */
+export function drawOrigin(
+  draw: PromptLogEntry,
+  ownRows: PromptLogEntry[],
+  allDraws: PromptLogEntry[],
+): EntryOrigin {
+  const stepIndex = attachmentIndex(ownRows, draw.parent_tool_call_id);
+  if (stepIndex !== null) return { kind: "step", step: stepIndex + 1 };
+  const parent = allDraws.find((candidate) => candidate.run_id === draw.parent_run_id);
+  if (parent) return { kind: "draw", label: agentLabel(parent.agent_name) };
+  return { kind: "run" };
 }

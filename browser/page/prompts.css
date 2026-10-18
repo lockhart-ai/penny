@@ -385,33 +385,19 @@
 }
 
 /* ============================================================
-   Run body — rail-and-indent timeline (steps + nested draws, #2567)
+   Run body — ONE flat entry list (#2631): the run's own prompts, its draws
+   at any depth, and its live running entries, in time order at one indent
+   on the rail.  No nested tinted boxes, no "✓ Using …" rows.
    ============================================================ */
 
-.steps {
+.entries {
   display: flex;
   flex-direction: column;
 }
 
-.step-row,
-.draw-row {
+.entry-row {
   display: flex;
-}
-
-.step-row {
   gap: 11px;
-}
-
-.draw-row {
-  gap: 10px;
-}
-
-.step-row .rail {
-  width: 16px;
-}
-
-.draw-row .rail {
-  width: 14px;
 }
 
 .rail {
@@ -419,25 +405,17 @@
   flex-direction: column;
   align-items: center;
   flex-shrink: 0;
+  width: 16px;
 }
 
 .rail .dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 13px;
   border-radius: 50%;
   background: var(--text-faint);
   flex-shrink: 0;
   position: relative;
-}
-
-.step-row .rail .dot {
-  width: 7px;
-  height: 7px;
-  margin-top: 13px;
-}
-
-.draw-row .rail .dot {
-  width: 6px;
-  height: 6px;
-  margin-top: 11px;
 }
 
 .rail .dot.live {
@@ -465,18 +443,11 @@
   min-height: 6px;
 }
 
-.steps > .step-row:last-child .rail .line,
-.draws > .draw-row:last-child .rail .line {
+.entries > .entry-row:last-child .rail .line {
   background: transparent;
 }
 
-/* The content column beside a row's rail — the toggleable `.prompt` card
- * plus (always, #2567 condition 1) its own `.draws` box, never gated by
- * the card's own expanded state. */
-.step-col {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.entry-row .prompt {
   flex: 1;
   min-width: 0;
 }
@@ -641,17 +612,21 @@
   font-weight: 600;
 }
 
-.draw-tag {
+/* Where a draw came from (#2631) — `from step N` / `from <parent draw>` /
+ * `from run`, derived purely from ids; small, quiet, grey, beside the name. */
+.origin-tag {
   font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--c-sys);
-  border: 1px solid rgba(13, 143, 130, .3);
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--text-faint);
+  background: var(--panel-alt);
+  border: 1px solid var(--border-soft);
   border-radius: 4px;
-  padding: 0 4px;
-  line-height: 14px;
-  height: 14px;
+  padding: 0 5px;
+  line-height: 15px;
+  height: 15px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .step-badge {
@@ -680,8 +655,8 @@
   flex-shrink: 0;
 }
 
-/* Column 1 — steps: the numbered chip on a top-level step row; empty for
- * draws and running rows, keeping the columns aligned across all rows. */
+/* Column 1 — steps: the model call's number (1…N, #2631); empty for draws
+ * and running rows, keeping the columns aligned across all rows. */
 .cell-steps {
   display: flex;
   align-items: center;
@@ -742,26 +717,11 @@
   justify-content: flex-end;
 }
 
-/* --- Draws — always visible, nested under the step or draw that made them
- * (#2567 condition 1); never gated by `.prompt`'s own `.expanded` state. --- */
-
-/* The tinted nesting box keeps its left indent (border + 8px) and tint but
- * adds no right inset (#2605): its right edge — and everything inside it —
- * stays on the shared right edge, at any nesting depth. */
-.draws {
-  display: flex;
-  flex-direction: column;
-  margin-top: 2px;
-  background: var(--panel-alt);
-  border-left: 2px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 3px 0 3px 8px;
-}
-
 /* ============================================================
    Turn / prompt detail (thinking, messages, tool call, response) — gated
-   by `.prompt`'s own `.expanded` state, unlike the always-visible draws
-   above. Each role gets a faint tint so the boxes read as distinct.
+   by `.prompt`'s own `.expanded` state. Each role gets a faint tint so the
+   boxes read as distinct. The indent is flush with the list (#2631): rail
+   (16px) + gap (11px), no extra nesting level.
    ============================================================ */
 
 .prompt-detail {
@@ -776,7 +736,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 2px 0 9px 25px;
+  margin: 2px 0 9px 27px;
 }
 
 .prompt-section {

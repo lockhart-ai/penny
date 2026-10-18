@@ -1,7 +1,8 @@
-/** Prompts tab — the prompt-log browser: runs, live step markers, nested
- * draws, run records.  Split out of page.ts (#2565); restyled to the
- * approved mockup (#2567) — the DOM-building functions below changed shape,
- * every message-handling / pending-draw / timing function is untouched. */
+/** Prompts tab — the prompt-log browser: runs, live step markers, the flat
+ * entry list, run records.  Split out of page.ts (#2565); restyled to the
+ * approved mockup (#2567), and since #2631 an expanded run's body is ONE
+ * flat, time-ordered list of its entries (steps, draws at any depth, running
+ * entries) instead of nested boxes. */
 
 import {
   type PromptLogEntry,
@@ -21,12 +22,12 @@ import {
   attachmentIndex,
   dedupeDraws,
   type DrawTreeEntry,
-  type DrawTreeNode,
-  directChildNodes,
+  drawOrigin,
   dropRunningCalls,
   dropRunningTools,
   expandedIdsAfterRebuild,
   fetchedRunIdsFrom,
+  flatRunEntries,
   isAnchored,
   isRunningCall,
   isRunningTool,
@@ -79,16 +80,18 @@ const pendingDrawsByStep = new Map<string, Map<string, PromptLogEntry[]>>();
 
 // Live step markers (#2439) — running calls and tool calls, pushed ahead of
 // any promptlog row.  Flat arrays, not attached into any run's own state the
-// way a draw is: `directChildNodes` (draw_nesting.ts) is fed these two arrays
-// alongside the logged draws, and recomputes the WHOLE tree fresh at every
-// render — any depth, a running call nested under another running call
+// way a draw is: `flatRunEntries` (draw_nesting.ts) is fed these two arrays
+// alongside the logged rows, and recomputes the WHOLE flat entry list fresh
+// at every render — any depth, a running call under another running call
 // included — so there is nothing to hold-and-drain here — a running call
 // whose host isn't on screen yet simply isn't rendered until the host's own
 // render (for any reason) picks it up.  Resolved three ways, never left
 // spinning: the real record arrives (its own run_id is dropped), the run's
 // OWN outcome arrives (the whole closure under it is dropped — an abandoned
 // nested draw included), or a fetch brings the run in (dropped by
-// `fetchedRunIdsFrom`, same as a reconnect).
+// `fetchedRunIdsFrom`, same as a reconnect).  A running TOOL is dropped the
+// moment `tool_finished` arrives (#2631) — no checkmark row is ever
+// rendered; the finished tool is shown by the step that called it.
 let runningCalls: RunningCall[] = [];
 let runningTools: RunningTool[] = [];
 let tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -215,11 +218,16 @@ export function requestPromptLogs(offset: number): void {
 // rides along with whatever its host run's filter status already resolved,
 // so it's never checked against the filter itself.
 export function handlePromptUpdate(prompt: PromptLogEntry): void {
-  // This call's own running placeholder (#2439), if any, is superseded by
+  // Any running placeholder (#2439) for this row's own run is superseded by
   // the real record that just arrived — drop it before rendering so the two
-  // are never shown at once.
-  const hadRunningCall = runningCalls.some((call) => call.runId === prompt.run_id);
-  if (hadRunningCall) runningCalls = dropRunningCalls(runningCalls, new Set([prompt.run_id]));
+  // are never shown at once.  The finished entry (this logged row) replaces
+  // the running one; a finished TOOL needs no separate drop moment either:
+  // its own run's steps are sequential, so when any row of that run logs,
+  // every dispatched tool has already finished and the row that called it is
+  // the record (#2631).
+  const resolvedIds = new Set([prompt.run_id]);
+  runningCalls = dropRunningCalls(runningCalls, resolvedIds);
+  runningTools = dropRunningTools(runningTools, resolvedIds);
 
   if (prompt.parent_run_id !== null) {
     attachDraw(prompt);
@@ -230,9 +238,6 @@ export function handlePromptUpdate(prompt: PromptLogEntry): void {
   const existingRun = allRuns.find((r) => r.run_id === prompt.run_id);
   if (existingRun) {
     updateExistingRun(existingRun, prompt);
-    // updateExistingRun appends incrementally; a resolved running placeholder
-    // needs the full rebuild to actually disappear from the DOM.
-    if (hadRunningCall) rerenderHostBody(existingRun);
   } else {
     insertNewRun(prompt);
   }
@@ -266,13 +271,14 @@ function updateExistingRun(run: PromptLogRun, prompt: PromptLogEntry): void {
     runsContainer.prepend(row);
     const summary = row.querySelector(".run-summary")!;
     summary.replaceChild(createRunHeader(run), summary.querySelector(".run-header")!);
-    const steps = row.querySelector(".steps")!;
-    // A brand-new own step has nothing anchored to it yet — anything that
-    // will be is drained in by `attachDraw`, which triggers its own full
-    // `rerenderHostBody` once it arrives.
-    steps.appendChild(createStepRow(prompt, run.prompts.length, []));
     markRunActive(run.run_id, row);
   }
+  // The body always rebuilds in full (#2631): the flat list is sorted by
+  // start time, so a new row can land anywhere in it.  The rebuild carries
+  // the code owner's open rows and the page scroll across (capture/restore),
+  // and the shared ticking interval survives it — it re-queries the running
+  // rows it drives on every tick.
+  rerenderHostBody(run);
   drainWaitingOn(prompt);
 }
 
@@ -314,7 +320,7 @@ function insertNewRun(prompt: PromptLogEntry): void {
 // `child_draws`, exactly like a fetched run does — so `findContainer` below
 // can locate ANY draw, at any depth, by searching every host's own list for a
 // matching run_id, with the tree itself built (for rendering) by
-// `directChildNodes` from `draw_nesting.ts`.
+// `flatRunEntries` from `draw_nesting.ts`.
 
 /** The host run and "own rows" (the rows sharing `runId`) for whatever
  * `runId` names — the host itself (its own top-level prompts) or one of its
@@ -459,7 +465,7 @@ function drainWaitingOn(arrived: PromptLogEntry): void {
 // --- Live step markers (#2439) ---
 //
 // Unlike a draw, a running call/tool is never "attached" into any host's own
-// state (`directChildNodes` in draw_nesting.ts recomputes the match fresh,
+// state (`flatRunEntries` in draw_nesting.ts recomputes the match fresh,
 // at any depth, every render) — so there is no per-entry hold-and-drain map
 // the way `pendingDrawsByParentRun` is for a draw. The one thing a render
 // still needs on arrival is WHICH top-level host to rerender, which is what
@@ -523,14 +529,13 @@ export function handleToolStarted(msg: RuntimeToolStarted): void {
   if (container) rerenderHostBody(container.host);
 }
 
-/** A dispatched tool call just finished (#2439) — flips its row from a
- * spinner to a checkmark/x in place; it is dropped later, alongside
- * everything else, by whichever resolution path clears its run_id. */
+/** A dispatched tool call just finished (#2631) — its running entry is
+ * removed outright rather than flipping to a checkmark: a finished tool is
+ * already shown by the step that called it, which is on screen the moment
+ * this row was dispatched (dispatch only follows a logged response). */
 export function handleToolFinished(msg: RuntimeToolFinished): void {
-  runningTools = runningTools.map((tool) =>
-    tool.runId === msg.run_id && tool.toolCallId === msg.tool_call_id
-      ? { ...tool, finishedSuccess: msg.success }
-      : tool,
+  runningTools = runningTools.filter(
+    (tool) => !(tool.runId === msg.run_id && tool.toolCallId === msg.tool_call_id),
   );
   const container = findContainer(msg.run_id);
   if (container) rerenderHostBody(container.host);
@@ -594,10 +599,10 @@ function rerenderHostBody(host: PromptLogRun): void {
   if (!panel) return;
   const snapshot = capturePanelState(panel as HTMLElement);
   panel.innerHTML = "";
-  const steps = document.createElement("div");
-  steps.className = "steps";
-  panel.appendChild(steps);
-  appendPromptsAndDraws(steps, host.prompts, host.run_id, host.child_draws ?? []);
+  const entries = document.createElement("div");
+  entries.className = "entries";
+  panel.appendChild(entries);
+  appendEntries(entries, host);
   restorePanelState(panel as HTMLElement, snapshot);
 }
 
@@ -615,7 +620,7 @@ interface PanelSnapshot {
  * he's watching mid-run or jumps the page out from under him.  Keyed by
  * `.prompt[data-prompt-id]`/`.prompt.expanded` (#2567 condition 3) — the
  * same card class and dataset the restyle kept unchanged for exactly this;
- * only what wraps a card (the rail, the always-visible draws box) changed
+ * only what wraps a card (the rail) changed
  * shape around it. */
 function capturePanelState(panel: HTMLElement): PanelSnapshot {
   const expandedIds = new Set<number>();
@@ -974,10 +979,10 @@ function createRunBody(run: PromptLogRun): HTMLElement {
 
   const prompts = document.createElement("div");
   prompts.className = "run-view run-view-prompts active";
-  const steps = document.createElement("div");
-  steps.className = "steps";
-  prompts.appendChild(steps);
-  appendPromptsAndDraws(steps, run.prompts, run.run_id, run.child_draws ?? []);
+  const entries = document.createElement("div");
+  entries.className = "entries";
+  prompts.appendChild(entries);
+  appendEntries(entries, run);
 
   // The record is only meaningful once the run is tagged (a completed collector
   // run); a live / chat run has no Penny-facing record, so it shows prompts only.
@@ -994,51 +999,25 @@ function createRunBody(run: PromptLogRun): HTMLElement {
 }
 
 // ============================================================
-// Step / draw timeline (#2567) — every top-level prompt, interleaved with
-// the draws made on this run's behalf — to ANY depth (#2435), nested
-// recursively under whichever step (or the run as a whole) each one
-// anchors to. `ownRunId`/`ownRows` generalize the same shape
-// `rerenderHostBody` reuses for a live update.
+// The run body's flat entry list (#2631) — every entry of the run: its own
+// prompts, the draws made on its behalf at ANY depth (#2435), and its live
+// running entries (#2439), all in ONE time-ordered list at one indent on
+// the rail.  `flatRunEntries` (draw_nesting.ts) builds the list; the
+// create*Card functions below render each kind of entry.
 // ============================================================
 
-function appendPromptsAndDraws(
-  target: HTMLElement,
-  ownRows: PromptLogEntry[],
-  ownRunId: string,
-  allDraws: PromptLogEntry[],
-): void {
-  // Live step markers (#2439) feed into the SAME tree build a logged draw
-  // always went through — never a parallel one-level path — so a running
-  // call or tool nests at any depth exactly like a logged draw would,
-  // including one whose own parent is itself still running.
-  const nodes = directChildNodes(ownRunId, ownRows, allDraws, runningCalls, runningTools);
-  const byStep = new Map<number, DrawTreeNode[]>();
-  const unanchored: DrawTreeNode[] = [];
-  for (const node of nodes) {
-    if (node.stepIndex === null) {
-      unanchored.push(node);
-      continue;
-    }
-    if (!byStep.has(node.stepIndex)) byStep.set(node.stepIndex, []);
-    byStep.get(node.stepIndex)!.push(node);
+function appendEntries(target: HTMLElement, run: PromptLogRun): void {
+  const entries = flatRunEntries(
+    run.run_id,
+    run.prompts,
+    run.child_draws ?? [],
+    runningCalls,
+    runningTools,
+  );
+  for (const { entry } of entries) {
+    target.appendChild(createEntryRow(entry, run));
   }
-
-  // This run's OWN next call in flight is not a "child" in the tree sense
-  // (nothing is parented ON it yet) — it's the run's own next row, rendered
-  // separately, after its known steps, since it has no step of its own yet.
-  const ownRunningCall = runningCalls.find((call) => call.runId === ownRunId);
-
-  for (let i = 0; i < ownRows.length; i++) {
-    target.appendChild(createStepRow(ownRows[i], i + 1, byStep.get(i) ?? []));
-  }
-  // Unanchored draws (no parent_tool_call_id) run on the round's behalf
-  // rather than from inside a tool call — the state classifier / notifier /
-  // skill-extractor shape — so they render as their own flat row, never
-  // nested in a step's draws box, purely by that structural signal (never
-  // by name).
-  for (const node of unanchored) target.appendChild(createUnanchoredRow(node));
-  if (ownRunningCall) target.appendChild(createOwnRunningCallRow(ownRunningCall));
-  if (nodes.length > 0 || ownRunningCall) startTicking();
+  if (entries.some(({ entry }) => isRunningCall(entry) || isRunningTool(entry))) startTicking();
 }
 
 /** Whether `entry` reads as failed/erred on the rail (#2567) — a running
@@ -1049,23 +1028,15 @@ function railDotClass(entry: DrawTreeEntry): "" | "live" | "err" {
   return callOutcomeLabel((entry as PromptLogEntry).call_outcome) ? "err" : "";
 }
 
-// Wraps a row's own card (`.prompt`, built by one of the create*Card
-// functions below) plus — ALWAYS, never gated by the card's own `.expanded`
-// state (#2567 condition 1: a running extract under a collapsed step must
-// stay visible) — a nested `.draws` box for its children, into one rail row.
-// `kind` only changes the rail's size: "step-row" for a run's own top-level
-// timeline entry, "draw-row" for anything nested inside a step's draws box.
-function wrapRailRow(
-  kind: "step-row" | "draw-row",
-  dot: "" | "live" | "err",
-  card: HTMLElement,
-  children: DrawTreeNode[],
-): HTMLElement {
+// One rail row: the dot (live pulse while running, red on a failed outcome)
+// + line, then the entry's own card — every kind at the same single indent.
+function createEntryRow(entry: DrawTreeEntry, run: PromptLogRun): HTMLElement {
   const row = document.createElement("div");
-  row.className = kind;
+  row.className = "entry-row";
 
   const rail = document.createElement("div");
   rail.className = "rail";
+  const dot = railDotClass(entry);
   const dotEl = document.createElement("span");
   dotEl.className = dot ? `dot ${dot}` : "dot";
   rail.appendChild(dotEl);
@@ -1074,59 +1045,23 @@ function wrapRailRow(
   rail.appendChild(line);
   row.appendChild(rail);
 
-  const col = document.createElement("div");
-  col.className = "step-col";
-  col.appendChild(card);
-  if (children.length > 0) col.appendChild(createDrawsBox(children));
-  row.appendChild(col);
+  const card = isRunningTool(entry)
+    ? createRunningToolCard(entry)
+    : isRunningCall(entry)
+      ? createRunningCallCard(entry, entry.parentRunId === null ? run.prompts.length + 1 : undefined)
+      : entry.parent_run_id !== null
+        ? createDrawCard(entry, run)
+        : createPromptCard(entry, run.prompts.indexOf(entry) + 1);
+  row.appendChild(card);
 
   return row;
-}
-
-// Always visible — never collapsed with the step/draw card beside it.
-function createDrawsBox(children: DrawTreeNode[]): HTMLElement {
-  const box = document.createElement("div");
-  box.className = "draws";
-  for (const node of children) box.appendChild(createDrawNodeRow(node));
-  return box;
-}
-
-function createDrawNodeRow(node: DrawTreeNode): HTMLElement {
-  const dot = railDotClass(node.draw);
-  const card = isRunningTool(node.draw)
-    ? createRunningToolCard(node.draw)
-    : isRunningCall(node.draw)
-      ? createRunningCallCard(node.draw, false)
-      : createDrawCard(node.draw, false);
-  return wrapRailRow("draw-row", dot, card, node.children);
-}
-
-function createStepRow(prompt: PromptLogEntry, step: number, children: DrawTreeNode[]): HTMLElement {
-  const dot = callOutcomeLabel(prompt.call_outcome) ? "err" : "";
-  return wrapRailRow("step-row", dot, createPromptCard(prompt, step), children);
-}
-
-// A draw/running entry with no step anchor — rendered flat, at the same
-// rail size as an own step (#2567), never inside a `.draws` box.
-function createUnanchoredRow(node: DrawTreeNode): HTMLElement {
-  const dot = railDotClass(node.draw);
-  const card = isRunningTool(node.draw)
-    ? createRunningToolCard(node.draw)
-    : isRunningCall(node.draw)
-      ? createRunningCallCard(node.draw, false)
-      : createDrawCard(node.draw, true);
-  return wrapRailRow("step-row", dot, card, node.children);
-}
-
-function createOwnRunningCallRow(call: RunningCall): HTMLElement {
-  return wrapRailRow("step-row", "live", createRunningCallCard(call, true), []);
 }
 
 // --- Cards: the toggleable `.prompt` unit (#2567 condition 3) ---
 //
 // Keeps the existing class name, `data-prompt-id`, and `.expanded` toggle
 // mechanism unchanged — only its internal row-left/row-right layout and
-// what surrounds it (the rail, the always-visible draws box) changed shape.
+// what surrounds it (the rail) changed shape.
 // `capturePanelState`/`restorePanelState` above read `.prompt[data-prompt-
 // id]`/`.prompt.expanded` exactly as before a live rebuild.
 
@@ -1192,9 +1127,10 @@ function createStepRowLeft(prompt: PromptLogEntry): HTMLElement {
   if (snippet) name.title = snippet;
   left.appendChild(name);
 
-  // The STEP chip lives in the shared right grid's steps column now (#2610)
-  // — the run header's step count sits on that same vertical line — so the
-  // left badge carries only an outcome chip, and only when there is one.
+  // The step NUMBER lives in the shared right grid's steps column now
+  // (#2610, #2631) — the run header's step count sits on that same vertical
+  // line — so the left badge carries only an outcome chip, and only when
+  // there is one.
   const outcomeLabel = callOutcomeLabel(prompt.call_outcome);
   if (outcomeLabel) {
     const badge = document.createElement("span");
@@ -1209,8 +1145,9 @@ function createStepRowLeft(prompt: PromptLogEntry): HTMLElement {
 // The shared right grid (#2610) — same tracks as the run header's
 // .run-right, so every row's steps / ↓ / ↑ / tok/s / time / duration / copy
 // columns land on the run header's vertical lines. `step` is given only for
-// a top-level step row: its numbered chip fills the steps column; draws and
-// running rows leave that column empty.
+// a model-call entry: its number fills the steps column; draws and running
+// rows leave that column empty (except the run's own next running call,
+// which shows the number it will take).
 function createPromptRowRight(prompt: PromptLogEntry, step?: number): HTMLElement {
   const right = document.createElement("span");
   right.className = "row-right";
@@ -1221,7 +1158,8 @@ function createPromptRowRight(prompt: PromptLogEntry, step?: number): HTMLElemen
   if (step !== undefined) {
     const chip = document.createElement("span");
     chip.className = "step-badge";
-    chip.textContent = `STEP ${step}`;
+    chip.textContent = String(step);
+    chip.title = `Model call ${step}`;
     stepsCell.appendChild(chip);
   }
   groupA.appendChild(stepsCell);
@@ -1280,14 +1218,16 @@ function createPromptCard(prompt: PromptLogEntry, step: number): HTMLElement {
   return buildPromptShell(prompt, createStepRowLeft(prompt), createPromptRowRight(prompt, step));
 }
 
-// A draw's own row-left — the same prompt-detail renderer every top-level
-// step uses, labelled with its OWN agent identity (never a numbered step: a
-// draw has no fixed position among its siblings worth counting) rather than
-// a name looked up from a closed list, so a micro-context this code has
-// never heard of still reads as something (#2435). `unanchored` draws
-// (structurally: no parent_tool_call_id, #2567) get the teal/italic
-// system-draw treatment + a "draw" tag, same structural signal as above.
-function createDrawRowLeft(draw: PromptLogEntry, unanchored: boolean): HTMLElement {
+// A draw's own row-left — labelled with its OWN agent identity (never a
+// numbered step: a draw has no fixed position among its siblings worth
+// counting) rather than a name looked up from a closed list, so a
+// micro-context this code has never heard of still reads as something
+// (#2435).  Beside the name sits its ORIGIN TAG (#2631) — `from step N` /
+// `from <parent draw>` / `from run`, derived purely from ids by
+// `drawOrigin`; the teal/italic system-draw treatment goes with the
+// run-level origin, a structural signal (never a name).
+function createDrawRowLeft(draw: PromptLogEntry, run: PromptLogRun): HTMLElement {
+  const origin = drawOrigin(draw, run.prompts, run.child_draws ?? []);
   const left = document.createElement("span");
   left.className = "row-left";
   left.appendChild(createRowChev(true));
@@ -1298,16 +1238,15 @@ function createDrawRowLeft(draw: PromptLogEntry, unanchored: boolean): HTMLEleme
   wrap.className = "row-name-wrap";
   const label = agentLabel(draw.agent_name);
   const name = document.createElement("span");
-  name.className = unanchored ? "draw-name sys-name" : "draw-name";
+  name.className = origin.kind === "run" ? "draw-name sys-name" : "draw-name";
   name.textContent = label;
   name.title = label;
   wrap.appendChild(name);
-  if (unanchored) {
-    const tag = document.createElement("span");
-    tag.className = "draw-tag";
-    tag.textContent = "draw";
-    wrap.appendChild(tag);
-  }
+  const tag = document.createElement("span");
+  tag.className = "origin-tag";
+  tag.textContent =
+    origin.kind === "step" ? `from step ${origin.step}` : origin.kind === "draw" ? `from ${origin.label}` : "from run";
+  wrap.appendChild(tag);
   const result = document.createElement("span");
   result.className = "draw-result";
   const resultText = extractLastTurnSnippet(draw) || failed || "";
@@ -1326,8 +1265,8 @@ function createDrawRowLeft(draw: PromptLogEntry, unanchored: boolean): HTMLEleme
   return left;
 }
 
-function createDrawCard(draw: PromptLogEntry, unanchored: boolean): HTMLElement {
-  return buildPromptShell(draw, createDrawRowLeft(draw, unanchored), createPromptRowRight(draw));
+function createDrawCard(draw: PromptLogEntry, run: PromptLogRun): HTMLElement {
+  return buildPromptShell(draw, createDrawRowLeft(draw, run), createPromptRowRight(draw));
 }
 
 // --- Live step markers (#2439) — never toggleable (no detail exists yet),
@@ -1350,18 +1289,27 @@ function createRunningElapsed(startedAt: string): HTMLElement {
 }
 
 // No cost data exists yet for a running row — blank metric cells (never a
-// guessed or zeroed value) and, while still running, a ticking elapsed
-// time (`.running-elapsed`, read by the one shared interval `startTicking`
-// drives — never a per-row timer); `null` once it's resolved but not yet
-// replaced by the real logged row (a tool's checkmark moment).
-function createRunningRowRight(elapsedStartedAt: string | null): HTMLElement {
+// guessed or zeroed value) and a ticking elapsed time (`.running-elapsed`,
+// read by the one shared interval `startTicking` drives — never a per-row
+// timer).  `step`, when given, fills the steps column with the number this
+// entry will take once it logs (the run's own next model call).
+function createRunningRowRight(elapsedStartedAt: string, step?: number): HTMLElement {
   const right = document.createElement("span");
   right.className = "row-right";
 
   // Placeholder cells for the shared grid (#2610) — nothing to show in
-  // steps / ↓ / ↑ / tok/s / start time while the call is still running.
+  // ↓ / ↑ / tok/s / start time while the call is still running.
   const groupA = createMetricGroup("a");
-  groupA.appendChild(document.createElement("span")).className = "cell-steps";
+  const stepsCell = document.createElement("span");
+  stepsCell.className = "cell-steps";
+  if (step !== undefined) {
+    const chip = document.createElement("span");
+    chip.className = "step-badge";
+    chip.textContent = String(step);
+    chip.title = `Model call ${step}, running`;
+    stepsCell.appendChild(chip);
+  }
+  groupA.appendChild(stepsCell);
   groupA.appendChild(document.createElement("span")).className = "cell-down";
   groupA.appendChild(document.createElement("span")).className = "cell-up";
   groupA.appendChild(document.createElement("span")).className = "cell-toks";
@@ -1373,13 +1321,11 @@ function createRunningRowRight(elapsedStartedAt: string | null): HTMLElement {
   // The elapsed timer ticks in the duration column — the slot the resolved
   // row's own duration will occupy.
   const dur = document.createElement("span");
-  dur.className = elapsedStartedAt ? "cell-dur live-text" : "cell-dur";
-  if (elapsedStartedAt) {
-    const spinner = document.createElement("i");
-    spinner.className = "fa-solid fa-spinner fa-spin";
-    dur.appendChild(spinner);
-    dur.appendChild(createRunningElapsed(elapsedStartedAt));
-  }
+  dur.className = "cell-dur live-text";
+  const spinner = document.createElement("i");
+  spinner.className = "fa-solid fa-spinner fa-spin";
+  dur.appendChild(spinner);
+  dur.appendChild(createRunningElapsed(elapsedStartedAt));
   groupB.appendChild(dur);
 
   const copyCell = document.createElement("span");
@@ -1393,23 +1339,24 @@ function createRunningRowRight(elapsedStartedAt: string | null): HTMLElement {
   return right;
 }
 
-// A running model call's own row. `plain` is true only for the run's OWN
-// next step (rendered as "Chat · thinking…" directly in the timeline);
-// nested under a step/draw as a child, the same text splits across the
+// A running model call's own row. The run's OWN next call (`parentRunId ===
+// null`, `step` given) renders as "Chat · thinking…" with its upcoming
+// number; a call nested under a step/draw renders the same text across the
 // draw-name-wrap shape instead — no status text is invented either way,
 // just `agentLabel(agentName) — model`, exactly as before (#2567).
-function createRunningCallCard(call: RunningCall, plain: boolean): HTMLElement {
+function createRunningCallCard(call: RunningCall, step?: number): HTMLElement {
   const row = document.createElement("div");
   row.className = "prompt prompt-running";
   const header = document.createElement("div");
   header.className = "prompt-header";
-  header.appendChild(createRunningCallRowLeft(call, plain));
-  header.appendChild(createRunningRowRight(call.startedAt));
+  header.appendChild(createRunningCallRowLeft(call));
+  header.appendChild(createRunningRowRight(call.startedAt, step));
   row.appendChild(header);
   return row;
 }
 
-function createRunningCallRowLeft(call: RunningCall, plain: boolean): HTMLElement {
+function createRunningCallRowLeft(call: RunningCall): HTMLElement {
+  const plain = call.parentRunId === null;
   const left = document.createElement("span");
   left.className = "row-left";
   left.appendChild(createRowChev(false));
@@ -1437,35 +1384,29 @@ function createRunningCallRowLeft(call: RunningCall, plain: boolean): HTMLElemen
   return left;
 }
 
-// A running (or just-finished) tool call's own row — spinner while running,
-// a checkmark/x once `tool_finished` arrives (`finishedSuccess` set); the
-// elapsed timer stops ticking the moment it resolves rather than freezing a
-// stale number, by simply not being rendered once `finishedSuccess` is set.
+// A running tool call's own row — spinner and ticking elapsed time until
+// `tool_finished` removes it (#2631); no checkmark state exists, since a
+// finished tool is shown by the step that called it.
 function createRunningToolCard(tool: RunningTool): HTMLElement {
-  const pending = tool.finishedSuccess === undefined;
   const row = document.createElement("div");
-  row.className = "prompt prompt-running prompt-draw";
+  row.className = "prompt prompt-running";
   const header = document.createElement("div");
   header.className = "prompt-header";
-  header.appendChild(createRunningToolRowLeft(tool, pending));
-  header.appendChild(createRunningRowRight(pending ? tool.startedAt : null));
+  header.appendChild(createRunningToolRowLeft(tool));
+  header.appendChild(createRunningRowRight(tool.startedAt));
   row.appendChild(header);
   return row;
 }
 
-function createRunningToolRowLeft(tool: RunningTool, pending: boolean): HTMLElement {
+function createRunningToolRowLeft(tool: RunningTool): HTMLElement {
   const left = document.createElement("span");
   left.className = "row-left";
   left.appendChild(createRowChev(false));
-  left.appendChild(
-    pending
-      ? createRowIcon("fa-spinner", "ic-model", true)
-      : createRowIcon(tool.finishedSuccess ? "fa-check" : "fa-xmark", tool.finishedSuccess ? "ic-draw" : "ic-err"),
-  );
+  left.appendChild(createRowIcon("fa-spinner", "ic-model", true));
   const wrap = document.createElement("span");
   wrap.className = "row-name-wrap";
   const result = document.createElement("span");
-  result.className = pending ? "draw-result live" : "draw-result";
+  result.className = "draw-result live";
   result.textContent = tool.status;
   result.title = tool.status;
   wrap.appendChild(result);
