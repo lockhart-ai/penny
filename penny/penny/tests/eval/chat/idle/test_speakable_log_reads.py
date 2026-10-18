@@ -99,12 +99,12 @@ from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.chat.idle.test_standing_collection import StandingJob, seed_standing_jobs
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
-    ChatEval,
     Preparer,
     Seeder,
     collection_entries,
     seeded_run_id,
 )
+from penny.tests.eval.drivers.chat import ChatEval
 from penny.tests.eval.end_to_end.world import _seeded_response, _wire_tool_call, seed_job_cycle
 from penny.tests.eval.utils.assertions import Answer, Cohort
 from penny.tests.eval.utils.catalogue import Area

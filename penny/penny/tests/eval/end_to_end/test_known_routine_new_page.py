@@ -54,7 +54,8 @@ import pytest
 
 from penny.database import Database
 from penny.database.memory import MemoryType
-from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
+from penny.tests.eval.conftest import EVAL_MODELS
+from penny.tests.eval.drivers.end_to_end import EndToEndArm, EndToEndEval
 from penny.tests.eval.end_to_end.world import END_TO_END_WALK, seed_known_routine, sent_at
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area

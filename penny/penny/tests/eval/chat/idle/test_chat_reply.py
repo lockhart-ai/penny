@@ -125,10 +125,10 @@ from penny.database.memory import MemoryType
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
-    ChatEval,
     Preparer,
     collection_entries,
 )
+from penny.tests.eval.drivers.chat import ChatEval
 from penny.tests.eval.extractor.test_browse_extract_fields import (
     _FRONT_PAGE_URL,
     _FRONT_PAGE_WITH_RUNON_LABEL,

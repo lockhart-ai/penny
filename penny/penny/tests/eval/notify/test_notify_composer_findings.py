@@ -29,7 +29,8 @@ from __future__ import annotations
 import pytest
 
 from penny.notification import NotificationInput, WrittenEntry
-from penny.tests.eval.conftest import EVAL_MODELS, NotifyComposerEval
+from penny.tests.eval.conftest import EVAL_MODELS
+from penny.tests.eval.drivers.notify_composer import NotifyComposerEval
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import REPLY_SPREAD
 from penny.tests.eval.utils.worlds import World

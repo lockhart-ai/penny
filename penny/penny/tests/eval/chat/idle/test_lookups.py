@@ -24,7 +24,8 @@ from collections.abc import Callable
 import pytest
 
 from penny.penny import Penny
-from penny.tests.eval.conftest import EVAL_MODELS, ChatEval
+from penny.tests.eval.conftest import EVAL_MODELS
+from penny.tests.eval.drivers.chat import ChatEval
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (

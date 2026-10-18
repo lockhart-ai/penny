@@ -57,11 +57,10 @@ from penny.database import Database
 from penny.prompts import Prompt
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
-    CollectorCyclesEval,
-    CycleArm,
     Seeder,
     collection_entries,
 )
+from penny.tests.eval.drivers.collector_cycles import CollectorCyclesEval, CycleArm
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (

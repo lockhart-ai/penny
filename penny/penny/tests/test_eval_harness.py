@@ -151,7 +151,6 @@ from penny.tests.eval.collector.test_watch_cycles import (
 )
 from penny.tests.eval.conftest import (
     _ACTOR,
-    CYCLE_DEAD,
     MUTATION_HISTORY_WINDOW,
     NO_CHAT_DRAW,
     NO_CYCLE,
@@ -161,26 +160,17 @@ from penny.tests.eval.conftest import (
     PENNY_LOGGER,
     UNSTATED,
     Check,
-    CycleCall,
-    CycleObservation,
     SampleResult,
     _case_prompts,
     _chat_tool_sequence,
     _cycle_descriptions,
-    _cycle_shape,
-    _cycles_exclusion,
-    _cycles_ran_check,
     _draw_exclusion,
     _drive_turns,
-    _DrivenCycles,
     _exclusion,
     _flush_sample_blocks,
     _held_entries,
     _last_scripted_turn_at,
     _mechanism_records,
-    _no_job_created_yet,
-    _observe_end_to_end,
-    _observe_extraction,
     _observe_sample,
     _PendingCase,
     _Perf,
@@ -195,10 +185,8 @@ from penny.tests.eval.conftest import (
     _stored_entries,
     _turn_kind,
     _turns_to_events,
-    _write_classifier_report,
     _write_sample_report,
     collection_entries,
-    cycle_script,
     draw_rerolled,
     env_seconds,
     eval_penny,
@@ -227,6 +215,18 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.conftest import (
     collection_names as memory_names_now,
 )
+from penny.tests.eval.drivers.collector_cycles import (
+    CYCLE_DEAD,
+    CycleCall,
+    CycleObservation,
+    _cycle_shape,
+    _cycles_exclusion,
+    _cycles_ran_check,
+    _DrivenCycles,
+    cycle_script,
+)
+from penny.tests.eval.drivers.end_to_end import _no_job_created_yet, _observe_end_to_end
+from penny.tests.eval.drivers.extractor import _observe_extraction, _write_classifier_report
 from penny.tests.eval.end_to_end.world import seed_known_routine
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.utils import cohort as eval_cohort

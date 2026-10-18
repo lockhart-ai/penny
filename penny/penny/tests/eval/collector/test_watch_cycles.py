@@ -73,11 +73,10 @@ from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
-    CollectorCyclesEval,
-    CycleArm,
     collection_entries,
     seeded_run_id,
 )
+from penny.tests.eval.drivers.collector_cycles import CollectorCyclesEval, CycleArm
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (

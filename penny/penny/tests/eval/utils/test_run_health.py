@@ -36,6 +36,7 @@ from penny.llm.models import (
 )
 from penny.tests import conftest as root_conftest
 from penny.tests.eval import conftest as eval_conftest
+from penny.tests.eval.drivers.collector_cycles import CycleArm, _cycles_exclusion
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import worker_filename
@@ -295,7 +296,7 @@ class TestAProviderRefusalIsExcludedAsItsOwnFault:
         row = db.messages.recent_prompts(1)[0]
         assert (row.call_outcome, row.call_error_fault) == (CallOutcome.RAISED.value, fault.value)
         assert eval_conftest._exclusion(db, self._APOLOGY) == eval_conftest.PROVIDER_REFUSED
-        assert eval_conftest._cycles_exclusion(db, "") == eval_conftest.PROVIDER_REFUSED
+        assert _cycles_exclusion(db, "") == eval_conftest.PROVIDER_REFUSED
 
     @pytest.mark.asyncio
     async def test_a_400_is_pennys_own_doing_and_stays_scored(self, db, monkeypatch) -> None:
@@ -310,7 +311,7 @@ class TestAProviderRefusalIsExcludedAsItsOwnFault:
         row = db.messages.recent_prompts(1)[0]
         assert row.call_error_fault == LlmFault.CLIENT_ERROR.value
         assert eval_conftest._exclusion(db, self._APOLOGY) is None
-        assert eval_conftest._cycles_exclusion(db, "wrote") is None
+        assert _cycles_exclusion(db, "wrote") is None
 
     @pytest.mark.asyncio
     async def test_a_dropped_connection_stays_scored_too(self, db, monkeypatch) -> None:
@@ -927,7 +928,7 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
     ) -> dict[str, Callable[..., Awaitable[object]]]:
         """Each driver, already handed something it could drive — so what a test leaves out is
         the only thing a refusal can be about."""
-        arm = eval_conftest.CycleArm(
+        arm = CycleArm(
             text=_INSTRUCTION, seed=lambda db: None, pages=[], world=eval_conftest._NO_WORLD
         )
         return {

@@ -74,6 +74,8 @@ import pytest
 from penny.constants import PageReading
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
+)
+from penny.tests.eval.drivers.extractor import (
     EXTRACT_MISSING,
     EXTRACT_OUTCOME,
     EXTRACT_REASON,
