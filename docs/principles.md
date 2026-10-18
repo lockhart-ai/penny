@@ -123,13 +123,23 @@ Quotes are the code owner's own words.
      tool boundary. The tool validates its output and returns it as part of its honest
      reply. The micro-context serves the tool and never steers the model. Browse-extract is
      the pattern; it also keeps untrusted page content out of the main context.
-   - Every decision a micro-context makes is a pick from a declared set, with an honest escape
-     outcome.
-   - The output is validated against its declared shape.
+   - When Python reads a micro-context's decision, it is a pick from a declared set, with an
+     honest escape outcome.
+   - That output is validated against its declared shape.
    - An invalid draw is discarded and re-drawn from the same state, never argued with inside
      the conversation.
    - A hallucinated shape is rejected with a message that teaches the fix, never absorbed by
      loosening the parser.
+   - Output that goes back to the model as text, such as what a page carries or a message in
+     Penny's voice, has no declared shape: it is plain text that says what it found and names
+     plainly what it could not. A strict tagged shape on a fast draw can fail on form while
+     the content is right.
+   - A micro-context is also how a step gets fast. *"there are times when we want thinking on
+     for reasoning about tool calls and decisions and emission formatting. there are times
+     when we want thinking off for speed and focus and simplicity."* Narrowing a task to one
+     fuzzy job lets it run with thinking off. The agent loop, which chooses tools and decides,
+     keeps thinking. A micro-context that reads, extracts or phrases runs without it, and on
+     local hardware that is the difference between seconds and minutes.
 
 8. **Degrade visibly, never silently.**
    - An unmet prerequisite, a failed capability or a degraded mode shows as an actionable
