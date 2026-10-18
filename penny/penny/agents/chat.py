@@ -49,11 +49,9 @@ class ChatAgent(Agent):
 
     The system prompt is identity + the user's standing rules + (page hint) +
     instructions + the self-state header — the rules render in the instruction
-    part, right after her voice, because among the header's data sections they
-    read as one more line of state and the static voice guidance won every
-    measured sample (#2633 finding).  Every turn — image or not — runs the
-    standard agentic loop; an image rides the turn's own user message (#2635)
-    for the chat model to read.
+    part, right after her voice, where she reads instructions rather than state.
+    Every turn — image or not — runs the standard agentic loop; an image rides
+    the turn's own user message (#2635) for the chat model to read.
     """
 
     name: str = "chat"
@@ -387,13 +385,11 @@ class ChatAgent(Agent):
         header (#1555).
 
         The chat prompt opens with Penny's persona/voice, then the user's standing
-        rules — in the instruction part, right after the voice sections, because
-        among the self-state header's data sections a rule read as one more line
-        of state and her static voice guidance won every measured sample (#2633
-        finding).  It closes with a deterministic **self-state header** — the
-        dynamic tail — rendering her own operational situation (active mechanisms ·
-        recent activity · the store map · durable user facts) purely from the
-        registry (#1566) + ledger (#1560), never a relevance guess.
+        rules — in the instruction part, right after the voice sections, where she
+        reads instructions.  It closes with a deterministic **self-state header** —
+        the dynamic tail — rendering her own operational situation (active
+        mechanisms · recent activity · the store map · durable user facts) purely
+        from the registry (#1566) + ledger (#1560), never a relevance guess.
 
         The ambient inversion (#1555): the chat prompt no longer injects
         **speculative user-content recall** at all.  User content is fetched on

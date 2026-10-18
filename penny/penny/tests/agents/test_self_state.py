@@ -1098,8 +1098,7 @@ async def test_full_chat_system_prompt_composition(db):
     """The whole chat system prompt: Identity + the standing rules (the instruction
     part, right after the voice) + Instructions + self-state header (the dynamic
     tail), with the speculative recall / profile / inventory gone.  The rules render
-    here, not in the header below — among the header's data sections they read as
-    one more line of state (#2633 finding)."""
+    here, not in the header below — where she reads instructions rather than state."""
     _seed_kitchen_sink(db)
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db

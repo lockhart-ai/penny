@@ -52,11 +52,9 @@ asked Penny to always or never do — renders in full wherever she acts, oldest 
 each entry as ``- <key>: <content> (added <date>)``, from ONE shared render
 (``render_standing_rules``; collector cycle and notify composer show the whole
 section).  Only this collection renders this way: another collection's content never
-enters the prompt as standing instructions.  In the chat prompt the section does not
-live here: measured on gemma (run-20261018T205834Z-17233), a rule among these data
-sections read as one more line of state and the static voice guidance won every
-sample, so the chat rules render in the instruction part instead
-(``standing_rules_instruction``) and this header carries the empty-collection anchor
+enters the prompt as standing instructions.  In the chat prompt the rules render in
+the instruction part instead (``standing_rules_instruction``), where she reads
+instructions rather than state, and this header carries the empty-collection anchor
 alone — one line naming ``rules`` so the first rule's write is one guess-free call
 away before any rule exists.
 
@@ -568,11 +566,9 @@ class SelfStateHeader:
     def _standing_rules_section(self) -> str:
         """The standing rules' empty-collection anchor, and nothing else.  With a
         rule standing, the rules render in the chat prompt's instruction part
-        (``standing_rules_instruction``, one shared render) — inside these data
-        sections a rule read as one more line of state, and the static voice
-        guidance's own sign-off/emoji lines won every measured sample (#2633
-        finding).  With none, the anchor line stays so ``rules`` is named somewhere
-        she reads before the first rule exists."""
+        (``standing_rules_instruction``, one shared render), where she reads
+        instructions rather than state.  With none, the anchor line stays so
+        ``rules`` is named somewhere she reads before the first rule exists."""
         if standing_rules_entries(self.db):
             return ""
         return f"{self.STANDING_RULES_HEADER}\n{self.EMPTY_STANDING_RULES}"
@@ -625,21 +621,16 @@ def standing_rules_section(db: Database) -> str:
     surfaces that read the rules as a DATA section share (#2633): every collector
     cycle's system prompt and the notify composer's document.  Written once so they
     can never disagree about what a rule says.  The chat prompt renders the rules in
-    its instruction part instead (``standing_rules_instruction``) — inside the
-    current-state header's data sections a rule read as one more line of state."""
+    its instruction part instead (``standing_rules_instruction``), where she reads
+    instructions rather than state."""
     return f"{SelfStateHeader.STANDING_RULES_HEADER}\n{render_standing_rules(db)}"
 
 
 # The one line that frames the rules where the chat agent reads INSTRUCTIONS.  Stated
-# in plain words, no imperative, and naming the two conflicts the measured samples
-# showed (run-20261018T205834Z-17233: a rule among the data sections read as one more
-# line of state and her static voice guidance won; after the move to the instruction
-# part, the voice line "Finish every message with an emoji" still won the FINAL
-# characters — 4 of 15 samples appended the emoji after the rule's sign-off, reading
-# the two as compatible): the rules govern the whole message, its last characters
-# included, and the user's own ask wins over Penny's default style wherever that
-# style is stated in the prompt.  Named as the general case — where a rule reaches in
-# the message — never by any one rule's words.
+# in plain words, no imperative: the rules govern the whole message, its last
+# characters included, and the user's own ask wins over Penny's default style
+# wherever that style is stated in the prompt — named as the general case, never by
+# any one rule's words.
 STANDING_RULES_FRAMING = (
     "The user's standing rules: follow each one in everything you send, to the very "
     "end of the message. Where a rule asks for something different from the style "
@@ -650,8 +641,7 @@ STANDING_RULES_FRAMING = (
 def standing_rules_instruction(db: Database) -> str | None:
     """The standing rules presented where the chat agent reads instructions — the
     framing line above the shared rules render, as a ``### Standing rules`` section
-    of the chat prompt between her identity and her instructions (#2633 finding:
-    inside the current-state header the rule read as state, not as an ask).
+    of the chat prompt between her identity and her instructions.
 
     Carries the SAME section title as the collector/composer data section, so a rule
     is sourced the same wherever it renders (the eval harness's provenance split
