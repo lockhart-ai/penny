@@ -15,10 +15,9 @@ once, with where it is enforced made explicit:
   derived structurally from the persisted ``promptlog`` rows.
 
 A condition can be both (``HALF_FORMED_SEND`` is gated live *and* flagged
-post-hoc; ``NO_WORK_DONE`` is refused live as a premature ``done()`` *and*
-flagged post-hoc as a bail) — that overlap is the point: the user, Penny, and a
-maintainer see *one* coherent set of behaviours, not a guard that means one thing
-in the loop and a different thing in the run log.
+post-hoc) — that overlap is the point: the user, Penny, and a maintainer see
+*one* coherent set of behaviours, not a guard that means one thing in the loop
+and a different thing in the run log.
 
 This module is a dependency-light leaf — only ``constants`` + pydantic, like
 ``text_validity`` — so the agentic loop, the database run-health classifier, and
@@ -57,8 +56,8 @@ class ConditionKey(StrEnum):
     TOOL_CALL_LEAK = "tool_call_leak"
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     HALF_FORMED_SEND = "half_formed_send"
-    NO_WORK_DONE = "no_work_done"
     # ── Run-level: only emergent across a whole run ──────────────────────────
+    NO_WORK_DONE = "no_work_done"
     NO_WRITES = "no_writes"
     INCOMPLETE = "incomplete"
     TOOL_FAILURES = "tool_failures"
@@ -180,11 +179,10 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
         "Final text was a bare JSON call fragment, not a reply",
         live=True,
     ),
-    # ── Caught live AND flagged post-hoc ─────────────────────────────────────
+    # ── Run-level: only emergent across a whole run ──────────────────────────
     _condition(
         ConditionKey.NO_WORK_DONE,
         "Run did no real work before terminating",
-        live=True,
         run_flag=True,
         collector_only=True,
         marker="NO WORK DONE",
@@ -220,6 +218,7 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
         marker="TOOL FAILURES",
         detail="a tool call returned an error and the run kept going",
     ),
+    # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     _condition(
         ConditionKey.HALF_FORMED_SEND,
         "A message was sent with no real content",

@@ -31,9 +31,8 @@ A condition can be both `live` and `run_flag`. That overlap is the point:
 | `xml`, `refusal`, `hallucinated_urls` | ✓ | | response-validator chain |
 | `call_as_text`, `call_fragment_reply`, `empty`, `tool_parse_error` | ✓ | | discard-and-reroll (chat's invalid draws, #1839/#1937) |
 | `done_json_bail`, `text_instead_of_tool` | ✓ | | discard-and-reroll (the collector's invalid draws, #1839) |
-| `no_work_done` | ✓ | ✓ | live: premature-`done()` reject · post-hoc: bail flag |
 | `half_formed_send` | ✓ | ✓ | live: notify-compose `_is_sendable` reroll gate · post-hoc: degenerate-send flag |
-| `incomplete`, `tool_failures` | | ✓ | post-hoc classifier only |
+| `no_work_done`, `incomplete`, `tool_failures` | | ✓ | post-hoc classifier only |
 
 `conditions.py` is a dependency-light leaf (only `constants` + pydantic, like
 `text_validity`), so the loop, the run-health classifier, and the addon-serving
@@ -80,7 +79,6 @@ Live (today in `agents/base.py`, moving into validators):
 | strip tool calls when no tools available | — | `Repair` |
 | `_clean_malformed_urls` / source-URL append | — | `Repair` |
 | `handle_text_step` (collector) | `text_instead_of_tool` | `NudgeContinue` |
-| `handle_premature_terminator` (collector) | `no_work_done` | `RejectToolCall` |
 
 (`_abort_if_all_tools_failed` — the all-failed early exit, the one `Stop` this table
 listed — was **removed** by #1776: it couldn't tell a stuck run from a converging one,
