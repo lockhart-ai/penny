@@ -260,7 +260,7 @@ class TestTokenBudgetAndFinishReason:
 
         sent.clear()
         await client.chat(
-            [{"role": "user", "content": "hi"}],
+            [LlmMessage(role="user", content="hi")],
             call_link=CallLink.new_top(),
         )
 
