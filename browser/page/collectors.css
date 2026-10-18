@@ -695,18 +695,23 @@ textarea.collector-field-input {
 /* --- Search rows (Prompts tab's own markup still uses this legacy shape;
    the Collectors toolbar above uses the shared `.search` instead — see the
    `.search .search-clear` override below) --- */
+/* No horizontal padding: the input spans the row's full width, so its left
+   and right edges sit on the same lines as the agent-tabs filter bar above
+   and the run cards below. The magnifier is absolutely placed inside the
+   input's left edge (pointer-events none so clicks reach the input), with
+   the input's left padding making room — mirroring the clear button's
+   absolute placement on the right (#2611). */
 .search-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 4px;
+  padding: 8px 0;
   color: var(--text-muted);
   position: relative;
 }
 .search-row input {
   flex: 1;
   box-sizing: border-box;
-  padding: 6px 10px;
+  padding: 6px 32px 6px 30px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-primary);
@@ -714,6 +719,13 @@ textarea.collector-field-input {
   font-family: inherit;
   font-size: 13px;
   outline: none;
+}
+.search-row > .fa-magnifying-glass {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 .search-row input:focus {
   border-color: var(--c-model);
