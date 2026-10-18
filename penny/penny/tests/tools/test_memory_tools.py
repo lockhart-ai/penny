@@ -55,6 +55,7 @@ from penny.tools.memory_args import (
 from penny.tools.memory_tools import (
     _INERT_JOB_ARGS_REFUSAL,
     _NO_SCHEDULE_NOTE,
+    _RULES_GUARD_REFUSAL,
     _SAME_JOB_UPDATED,
     EXPIRES_AT_PARAM_DESCRIPTION,
     SCHEDULE_PARAM_DESCRIPTION,
@@ -179,8 +180,8 @@ def _seed_collection(
     *,
     name: str,
     description: str = "x",
-    extraction_prompt: str = "test fixture extraction prompt",
-    schedule: str = "FREQ=HOURLY",
+    extraction_prompt: str | None = "test fixture extraction prompt",
+    schedule: str | None = "FREQ=HOURLY",
     notify: bool = False,
     archived: bool = False,
 ) -> MemoryRow:
@@ -3040,6 +3041,75 @@ class TestScopedFactory:
         delete = CollectionRemoveTool(db, scope="likes")
         result = await delete.execute(CallLink.new_top(), collection="dislikes", key="k")
         assert "Refused" in result.message
+
+    @pytest.mark.asyncio
+    async def test_scoped_write_to_rules_is_refused(self, db, mock_llm):
+        """`rules` renders in full in every prompt as standing instructions, so a
+        job cycle must not be able to write itself into every prompt (#2633): a
+        collector-scoped write targeting it is refused with the honest answer and
+        nothing lands."""
+        _seed_collection(
+            db,
+            name=PennyConstants.MEMORY_RULES_COLLECTION,
+            description="Standing instructions the user has given",
+            extraction_prompt=None,
+            schedule=None,
+        )
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
+        )
+        result = await write.execute(
+            CallLink.new_top(), collection="rules", entries=[{"key": "k", "content": "v"}]
+        )
+        assert result.message == _RULES_GUARD_REFUSAL
+        assert not result.success
+        assert db.memory("rules").get("k") == []
+
+    @pytest.mark.asyncio
+    async def test_scoped_remove_from_rules_is_refused(self, db, mock_llm):
+        """The same guard on the remove path — a job cycle cannot take a standing
+        rule out either."""
+        _seed_collection(
+            db,
+            name=PennyConstants.MEMORY_RULES_COLLECTION,
+            description="Standing instructions the user has given",
+            extraction_prompt=None,
+            schedule=None,
+        )
+        seed = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
+        await seed.execute(
+            CallLink.new_top(),
+            collection=PennyConstants.MEMORY_RULES_COLLECTION,
+            entries=[{"key": "always-x", "content": "always do x"}],
+        )
+        delete = CollectionRemoveTool(db, scope="likes")
+        result = await delete.execute(
+            CallLink.new_top(), collection=PennyConstants.MEMORY_RULES_COLLECTION, key="always-x"
+        )
+        assert result.message == _RULES_GUARD_REFUSAL
+        assert not result.success
+        assert db.memory(PennyConstants.MEMORY_RULES_COLLECTION).get("always-x") != []
+
+    @pytest.mark.asyncio
+    async def test_chat_turn_write_to_rules_still_lands(self, db, mock_llm):
+        """The chat agent's own writes (scope=None) are the one path rules are
+        kept by — unchanged by the guard."""
+        _seed_collection(
+            db,
+            name=PennyConstants.MEMORY_RULES_COLLECTION,
+            description="Standing instructions the user has given",
+            extraction_prompt=None,
+            schedule=None,
+        )
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
+        result = await write.execute(
+            CallLink.new_top(),
+            collection=PennyConstants.MEMORY_RULES_COLLECTION,
+            entries=[{"key": "always-x", "content": "always do x"}],
+        )
+        assert result.success
+        assert "Wrote 1 entry" in result.message
+        assert db.memory(PennyConstants.MEMORY_RULES_COLLECTION).get("always-x") != []
 
 
 class TestRegistryProvenanceAndLifecycle:

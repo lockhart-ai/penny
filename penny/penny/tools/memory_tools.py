@@ -1160,6 +1160,31 @@ class CollectionKeysTool(MemoryTool):
 
 _SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{collection}'."
 
+# The standing-rules guard (#2633): the `rules` collection renders in full in every
+# prompt as standing instructions, so a page (or any job input) that says "always do
+# X" must not be able to write itself into every prompt through a job cycle.  Only
+# the user's own chat turn changes it.  Keyed to the STRUCTURAL mark of a collector
+# context — the non-None `_scope` binding every entry-mutating tool already carries —
+# never to a tool-name list, so any future entry-mutating tool built with a scope
+# inherits the guard.  Refuses before the scope refusal, so the honest, actionable
+# answer is what the model reads rather than the generic one.
+_RULES_GUARD_REFUSAL = (
+    "`rules` holds only standing instructions the user gives you in chat, so a job "
+    "can't change it. If this job found something the user might want as a rule, say "
+    "so in its notification and let them decide."
+)
+
+
+def _rules_guard(scope: str | None, collection: str) -> ToolResult | None:
+    """The standing-rules refusal on a collector-scoped call targeting `rules`.
+
+    ``None`` when the call is a chat turn's (``scope=None`` — its writes to `rules`
+    are the one path rules are kept by) or targets any other collection."""
+    if scope is None or collection != PennyConstants.MEMORY_RULES_COLLECTION:
+        return None
+    return ToolResult(message=_RULES_GUARD_REFUSAL, success=False)
+
+
 # Write-target materialization (#1570): a chat write never dies on a name miss.
 # A near-certain name variant REDIRECTS (narrated, never silent); nothing close
 # AUTO-CREATES the collection (narrated).  The middle band keeps the
@@ -1398,6 +1423,8 @@ class CollectionWriteTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionWriteArgs(**kwargs)
+        if (guard := _rules_guard(self._scope, args.collection)) is not None:
+            return guard
         if self._scope is not None and args.collection != self._scope:
             return ToolResult(
                 message=_SCOPE_REFUSAL_MESSAGE.format(
@@ -2109,6 +2136,8 @@ class CollectionRemoveTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionRemoveArgs(**kwargs)
+        if (guard := _rules_guard(self._scope, args.collection)) is not None:
+            return guard
         if self._scope is not None and args.collection != self._scope:
             return ToolResult(
                 message=_SCOPE_REFUSAL_MESSAGE.format(
