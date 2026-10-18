@@ -514,7 +514,8 @@
   outline: none;
 }
 .search-row input:focus {
-  border-color: var(--text-secondary);
+  border-color: var(--c-model);
+  box-shadow: 0 0 0 3px var(--c-model-soft);
 }
 
 /* --- Read-cursor controls in a collection's detail view --- */

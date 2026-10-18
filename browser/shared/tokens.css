@@ -1,0 +1,85 @@
+/* Design tokens — shared by the full page (browser/page/) and the sidebar
+ * (browser/sidebar/, #2570). Source of truth: the approved mockup
+ * `.claude/designs/type-inter.html` ("mockup D" restyled in Inter) — the
+ * :root block below is copied from it verbatim (#2566).
+ *
+ * Light theme only, for now: exactly one :root block, no
+ * `prefers-color-scheme` switch. A dark theme later becomes a second
+ * block (e.g. behind `[data-theme="dark"]`) — nothing here should need to
+ * change shape for that, since every component reads colors through these
+ * variables and never hard-codes one.
+ */
+
+/* ============================================================
+   Typeface — Inter (vendored woff2, latin, static weights
+   400/500/600/700). No network at runtime: see browser/fonts/
+   (sourced from @fontsource/inter 5.3.0; OFL.txt ships beside the files).
+   ============================================================ */
+@font-face{ font-family:"Inter"; src:url("../fonts/inter-400.woff2") format("woff2"); font-weight:400; font-style:normal; font-display:swap; }
+@font-face{ font-family:"Inter"; src:url("../fonts/inter-500.woff2") format("woff2"); font-weight:500; font-style:normal; font-display:swap; }
+@font-face{ font-family:"Inter"; src:url("../fonts/inter-600.woff2") format("woff2"); font-weight:600; font-style:normal; font-display:swap; }
+@font-face{ font-family:"Inter"; src:url("../fonts/inter-700.woff2") format("woff2"); font-weight:700; font-style:normal; font-display:swap; }
+
+:root{
+  /* grey scale only — no pure white *surface* anywhere (white text on a
+     solid-filled accent button, e.g. Domains' add button, is fine — this
+     rule is about panels/backgrounds). Darkest (page) to lightest (the
+     most raised surface: header strip, inputs, pills). */
+  --bg:            #e4e6ea;   /* page */
+  --bg-raised:     #eef0f3;   /* a step up from the page, a step down from the header */
+  --panel:         #f6f7f9;   /* header / panel surface — lightest grey, never white */
+  --panel-alt:     #e8eaee;   /* badges, copy buttons, pills, inputs — a step below panel */
+  --row-hover:     #e2e4e9;
+  --border:        #c7cbd2;
+  --border-soft:   #dadee3;
+
+  --text:          #1b1f27;
+  --text-dim:      #5b6472;
+  --text-faint:    #8a93a1;
+
+  --c-model:       #6d46b8;   /* chat / model-reasoning / "live" accent — THE primary/checkbox violet */
+  --c-model-soft:  rgba(109,70,184,.10);
+  --c-tool:        #1f6fd6;   /* tool calls / collector agent / model-time number */
+  --c-tool-soft:   rgba(31,111,214,.10);
+  --c-draw:        #a8690f;   /* page-extract draws */
+  --c-draw-soft:   rgba(168,105,15,.10);
+  --c-sys:         #0d8f82;   /* classifier / system draws */
+  --c-sys-soft:    rgba(13,143,130,.10);
+
+  --ok:            #1a7f37;
+  --ok-soft:       rgba(26,127,55,.09);
+  --err:           #cf222e;
+  --err-soft:      rgba(207,34,46,.09);
+  --warn:          #9a6700;
+  --warn-soft:     rgba(154,103,0,.09);
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+
+  --radius: 7px;
+  --radius-sm: 5px;
+  --shadow-card: 0 1px 2px rgba(16,19,26,.07), 0 2px 8px -3px rgba(16,19,26,.10);
+
+  /* ------------------------------------------------------------
+     Legacy aliases — every variable name today's tab stylesheets
+     (prompts.css, domains.css, config.css, collectors.css) already
+     consume, repointed at the tokens above. This repaints every tab
+     that isn't restyled yet (each has its own issue) without touching
+     its CSS — see #2566.
+     ------------------------------------------------------------ */
+  --bg-primary:        var(--panel);
+  --bg-secondary:       var(--bg-raised);
+  --bg-tertiary:        var(--panel-alt);
+  --text-primary:       var(--text);
+  --text-secondary:     var(--text-dim);
+  --text-muted:         var(--text-faint);
+  --accent:             var(--c-model);
+  --accent-hover:       #5a3a98;
+  --accent-text:        #ffffff; /* text on a solid accent fill, e.g. Domains' add button */
+  --card-shadow:        var(--shadow-card);
+  --card-shadow-hover:  0 2px 4px rgba(16,19,26,.12), 0 8px 20px -4px rgba(16,19,26,.22);
+  --status-ok-bg:       var(--ok-soft);
+  --status-ok-text:     var(--ok);
+  --status-err-bg:      var(--err-soft);
+  --status-err-text:    var(--err);
+}

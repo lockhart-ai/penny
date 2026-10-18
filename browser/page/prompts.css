@@ -147,9 +147,12 @@
   margin-left: auto;
 }
 
+/* Deliberately NOT red — a filter toggle isn't a failure state, and red is
+ * reserved for failed/timed-out outcomes elsewhere (matches the shared
+ * .flag-toggle.active treatment in shared/components.css — #2566). */
 .sub-tab.flagged-toggle.active {
-  color: #dc3545;
-  border-color: #dc3545;
+  color: var(--c-model);
+  background: var(--c-model-soft);
 }
 
 /* --- Copy-to-clipboard buttons (run / prompt / turn JSON) --- */

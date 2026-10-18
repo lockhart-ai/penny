@@ -1,0 +1,201 @@
+/* Shared components — built on shared/tokens.css, usable by both the full
+ * page (browser/page/) and the sidebar (browser/sidebar/, #2570). Class
+ * names and rules are taken verbatim from the approved mockups
+ * (`.claude/designs/type-inter.html`, `config.html`, `domains.html`,
+ * `collector-new.html`) so a tab's own restyle can adopt them directly
+ * instead of re-deriving the look (#2566).
+ *
+ * Not every class here is wired into today's markup yet — that's the
+ * point: each tab's own restyle issue (Prompts, Collectors, Domains,
+ * Config) and the sidebar restyle (#2570) build their new markup on these
+ * primitives rather than duplicating them.
+ */
+
+/* ============================================================
+   Reset + base typography
+   ============================================================ */
+*{ margin:0; padding:0; box-sizing:border-box; }
+
+html,body{
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+svg.icon{ width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -0.125em; flex-shrink:0; }
+
+@keyframes spin{ to{ transform: rotate(360deg); } }
+@keyframes pulse{
+  0%{ box-shadow: 0 0 0 0 var(--c-model-soft); }
+  70%{ box-shadow: 0 0 0 7px rgba(109,70,184,0); }
+  100%{ box-shadow: 0 0 0 0 rgba(109,70,184,0); }
+}
+@keyframes pulse2{
+  0%,100%{ transform: scale(1); opacity: 1; }
+  50%{ transform: scale(1.5); opacity: .4; }
+}
+.spin{ animation: spin .9s linear infinite; transform-origin: 50% 50%; }
+.live-pulse{
+  display:inline-flex; width:6px; height:6px; border-radius:50%;
+  background: var(--c-model);
+  box-shadow: 0 0 0 0 rgba(109,70,184,.55);
+  animation: pulse 1.6s ease-out infinite;
+}
+
+/* ============================================================
+   Top-level tab bar — #tabs (the page shell) wraps these
+   ============================================================ */
+.tab{
+  display:flex; align-items:center; gap:6px;
+  padding: 7px 13px;
+  border: none; background: none;
+  color: var(--text-dim);
+  font: inherit; font-size: 12.5px; font-weight: 500; letter-spacing: -.05px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+}
+.tab:hover{ color: var(--text); background: var(--panel-alt); }
+.tab.active{ color: var(--text); border-bottom-color: var(--c-model); }
+.tab:focus-visible{
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
+}
+
+/* ============================================================
+   Toolbar / filter bar — segmented buttons, a flag toggle, search
+   ============================================================ */
+.toolbar{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+}
+
+.seg{
+  display:flex; background: var(--panel); border:1px solid var(--border); border-radius: 7px; padding: 2px;
+}
+.seg button{
+  display:flex; align-items:center; gap:6px;
+  border:none; background:none; color: var(--text-dim);
+  font: inherit; font-size: 12px; font-weight: 500; letter-spacing: -.05px;
+  padding: 5px 11px; border-radius: 5px; cursor: pointer;
+}
+.seg button:hover{ color: var(--text); background: var(--row-hover); }
+.seg button.active{ background: var(--panel-alt); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.seg button:focus-visible{
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
+}
+
+.flag-toggle{
+  display:flex; align-items:center; gap:6px;
+  border:1px solid var(--border); background: var(--panel);
+  color: var(--text-dim); font: inherit; font-size:12px; font-weight:500; letter-spacing: -.05px;
+  padding: 6px 12px; border-radius: 7px; cursor:pointer;
+}
+.flag-toggle:hover{ color:var(--text); border-color: var(--c-model); }
+/* deliberately NOT red — a filter toggle isn't a failure state, and red is
+   reserved for failed/timed-out outcomes elsewhere */
+.flag-toggle.active{ color: var(--c-model); border-color: rgba(109,70,184,.4); background: var(--c-model-soft); }
+.flag-toggle:focus-visible{
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
+}
+
+.search{
+  display:flex; align-items:center; gap:8px;
+  flex: 1 1 260px; min-width: 160px;
+  border:1px solid var(--border); background: var(--panel);
+  border-radius: 7px; padding: 6px 10px;
+  color: var(--text-faint);
+}
+.search input{
+  flex:1; border:none; background:none; outline:none; color: var(--text);
+  font: inherit; font-size: 12.5px;
+}
+.search input::placeholder{ color: var(--text-faint); }
+.search .clear{ cursor:pointer; flex-shrink:0; }
+.search .clear:hover{ color: var(--text); }
+.search:focus-within{ border-color: var(--c-model); box-shadow: 0 0 0 3px var(--c-model-soft); }
+
+/* ============================================================
+   Chips — health/status flags. Collapse to a plain dot at narrow
+   widths (full label stays reachable via `title`).
+   ============================================================ */
+.chip{
+  display:inline-flex; align-items:center; gap:5px;
+  font-size: 10.5px; font-weight: 700; letter-spacing:.3px; text-transform:uppercase;
+  padding: 3px 8px; border-radius: 10px; white-space:nowrap;
+}
+.chip--ok{ color: var(--ok); background: var(--ok-soft); }
+.chip--err{ color: var(--err); background: var(--err-soft); cursor: help; }
+.chip--warn{ color: var(--warn); background: var(--warn-soft); }
+
+@media (max-width: 460px){
+  .chip.chip-dot{
+    flex-shrink:0; width:9px; height:9px; min-width:9px; padding:0;
+    border-radius:50%; font-size:0; line-height:0; overflow:hidden; gap:0;
+  }
+  .chip-dot.chip--warn{ background: var(--warn); }
+  .chip-dot.chip--err{ background: var(--err); }
+  .chip-dot.chip--ok{ background: var(--ok); }
+}
+
+/* ============================================================
+   Buttons — outlined; the primary variant is tinted violet
+   ============================================================ */
+.btn{
+  display:flex; align-items:center; gap:7px;
+  border:1px solid var(--border); background: var(--panel-alt);
+  color: var(--text-dim); font: inherit; font-size:12px; font-weight:500;
+  padding: 7px 16px; border-radius: 7px; cursor:pointer; white-space:nowrap;
+}
+.btn:hover{ color: var(--text); border-color: var(--text-faint); }
+.btn:focus-visible{ box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model); }
+.btn-primary{ border-color: rgba(109,70,184,.4); background: var(--c-model-soft); color: var(--c-model); }
+.btn-primary:hover{ background: rgba(109,70,184,.16); }
+
+/* ============================================================
+   Copy button
+   ============================================================ */
+.copy-btn{
+  display:flex; align-items:center; justify-content:center;
+  width: 24px; height: 24px; flex-shrink:0;
+  border: 1px solid var(--border); background: var(--panel-alt);
+  border-radius: 5px; color: var(--text-faint); cursor:pointer;
+}
+.copy-btn:hover{ color: var(--text); border-color: var(--text-faint); }
+.copy-btn:focus-visible{ box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model); }
+.copy-slot-empty{ display:block; width:24px; height:24px; }
+
+/* ============================================================
+   Metric cell — a right-aligned, tabular-nums icon+value pair.
+   A tab composes these into its own fixed-width grid (see e.g. the
+   Prompts/Collector-detail row-right columns in their own mockups);
+   this is just the cell itself.
+   ============================================================ */
+.metric{
+  display:flex; align-items:center; justify-content:flex-end; gap:4px;
+  min-width:0; overflow:hidden;
+  font-family: var(--mono); font-size:11px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums; white-space:nowrap;
+}
+.metric .v{ color: var(--text-dim); }
+.metric svg{ color: var(--text-faint); flex-shrink:0; }
+
+/* ============================================================
+   Checkboxes + toggle switch — violet is the one checkbox colour
+   ============================================================ */
+input[type="checkbox"]{ accent-color: var(--c-model); }
+
+.toggle{
+  position:relative; width:36px; height:21px; border-radius:11px;
+  background: var(--panel-alt); border:1px solid var(--border); cursor:pointer; flex-shrink:0;
+}
+.toggle .knob{
+  position:absolute; top:1px; left:1px; width:17px; height:17px; border-radius:50%;
+  background: var(--panel); border:1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(16,19,26,.15);
+  transition: transform .15s ease;
+}
+.toggle.on{ background: var(--c-model); border-color: rgba(109,70,184,.55); }
+.toggle.on .knob{ transform: translateX(15px); border-color: rgba(109,70,184,.5); }

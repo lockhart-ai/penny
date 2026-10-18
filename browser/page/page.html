@@ -5,6 +5,13 @@
   <title>Penny</title>
   <link rel="icon" href="../icons/icon-48.png">
   <link rel="stylesheet" href="../node_modules/@fortawesome/fontawesome-free/css/all.min.css">
+  <!-- shared/tokens.css + shared/components.css (#2566) own the design tokens,
+       the reset/base typography, and the new shared components (tab bar,
+       segmented buttons, chips, buttons, copy button, checkboxes, ...) —
+       usable by both this page and the sidebar (#2570). Linked first so the
+       page-specific stylesheets below can rely on them. -->
+  <link rel="stylesheet" href="../shared/tokens.css">
+  <link rel="stylesheet" href="../shared/components.css">
   <!-- Split from page.css (#2565): the link order below reproduces the old
        file's rule order exactly, so the cascade is unchanged. -->
   <link rel="stylesheet" href="base.css">
@@ -15,14 +22,25 @@
   <script type="module" src="../dist/page/page.js"></script>
 </head>
 <body>
+<!-- Icon sprite for the top-level tab bar (#2566) — inline SVG, no external
+     deps. Symbol ids/paths are taken verbatim from the approved mockups
+     (.claude/designs/config.html etc.). -->
+<svg style="display:none">
+  <defs>
+    <symbol id="i-layer" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M4.5 7.5h15M4.5 16.5h15"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+  </defs>
+</svg>
 <div id="app">
   <div id="header">
     <h1><img src="../penny.svg" alt="Penny" id="header-icon"> Penny</h1>
     <div id="tabs">
-      <button class="tab active" data-tab="prompts"><i class="fa-solid fa-scroll"></i> Prompts</button>
-      <button class="tab" data-tab="memories"><i class="fa-solid fa-database"></i> Memories</button>
-      <button class="tab" data-tab="domains"><i class="fa-solid fa-globe"></i> Domains</button>
-      <button class="tab" data-tab="config"><i class="fa-solid fa-sliders"></i> Config</button>
+      <button class="tab active" data-tab="prompts"><svg class="icon"><use href="#i-layer"/></svg> Prompts</button>
+      <button class="tab" data-tab="memories"><svg class="icon"><use href="#i-db"/></svg> Collectors</button>
+      <button class="tab" data-tab="domains"><svg class="icon"><use href="#i-globe"/></svg> Domains</button>
+      <button class="tab" data-tab="config"><svg class="icon"><use href="#i-sliders"/></svg> Config</button>
     </div>
   </div>
 
