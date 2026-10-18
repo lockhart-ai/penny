@@ -572,13 +572,18 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
 def suggest_tool_name(requested: str, available: Collection[str]) -> str | None:
     """The tool ``requested`` most likely meant, or ``None`` when nothing is close.
 
-    Two legs, MEANING first then spelling (#1944).  A name this project retired is
-    resolved through :data:`LEGACY_TOOL_RENAMES` to the tool that replaced it — a
-    historical fact no character comparison can recover — and only when that
-    replacement is on ``available``, so the suggestion always names something callable.
-    Everything else falls to the string leg (``difflib`` over the available names,
-    gated on ``PennyConstants.DID_YOU_MEAN_STRING_CUTOFF``), which is what catches an
-    ordinary typo and stays silent on a genuinely unrelated guess.
+    Three legs, MEANING first, then spelling, then containment (#2510).  A name this
+    project retired is resolved through :data:`LEGACY_TOOL_RENAMES` to the tool that
+    replaced it — a historical fact no character comparison can recover — and only
+    when that replacement is on ``available``, so the suggestion always names something
+    callable.  Next the string leg (``difflib`` over the available names, gated on
+    ``PennyConstants.DID_YOU_MEAN_STRING_CUTOFF``), which is what catches an ordinary
+    typo and stays silent on a genuinely unrelated guess.  Last, a containment leg: a
+    malformed emission (``functions.done``, ``browse(extract: the price``) often wraps
+    a real tool name inside namespacing or a stray argument fragment — split on
+    anything that isn't a letter, digit or underscore and, when exactly one available
+    name equals one of those tokens, suggest it; two or more matches suggest nothing,
+    since picking between them would be a guess.
 
     Shared by the two surfaces that answer an unknown tool name — the executor's live
     tool-not-found result and the stored-``extraction_prompt`` check below — so the two
@@ -590,7 +595,11 @@ def suggest_tool_name(requested: str, available: Collection[str]) -> str | None:
     close = difflib.get_close_matches(
         requested, available, n=1, cutoff=PennyConstants.DID_YOU_MEAN_STRING_CUTOFF
     )
-    return close[0] if close else None
+    if close:
+        return close[0]
+    tokens = set(_WORD_TOKEN_RE.findall(requested))
+    contained = [name for name in available if name in tokens]
+    return contained[0] if len(contained) == 1 else None
 
 
 def require_non_blank_description(value: str) -> str:
