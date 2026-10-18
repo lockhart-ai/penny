@@ -89,7 +89,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 ## 9. Rerun upstream
 
 - A change to **shared seeders, shared claims, shared prompts, or anything the model reads** = a **non-regression rerun of every touched suite, baselined**.
-- When a **producing** prompt changes (the framer), the suites whose fixtures transcribe its draws need, in order: a **fresh sampling run** → the **fixture re-sample** → the **composed rerun**.
+- When a **producing** prompt changes (the browse extractor), the suites whose fixtures transcribe its draws need, in order: a **fresh sampling run** → the **fixture re-sample** → the **composed rerun**.
 - **The final state before merge is one composed run of the beat on the finished tree.** A PR that adds or changes eval cases merges only with **a run on the suite's model posted at its final head**; a rebase that leaves the tree byte-identical to the measured head keeps the run valid, and the PR says so in a comment (`docs/agent-task-workflow.md` §12).
 
 ## 10. The loop itself

@@ -37,7 +37,7 @@ flowchart TD
 - **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via the `generate_image` chat tool (config-gated on `LLM_IMAGE_MODEL`)
 - **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for memory dedup and similarity recall — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
 - **Browser Extension**: Web search and page reading — all web access goes through the connected browser
-- **SQLite**: Logs all prompts and messages; stores the memory framework (collections, logs, skills) and conversation history
+- **SQLite**: Logs all prompts and messages; stores the memory framework (collections, logs) and conversation history
 
 ## Where to read before you change code
 
@@ -46,11 +46,10 @@ Before changing code under one of these paths, read its reference doc in full.
 | Area | Paths | Read first |
 |---|---|---|
 | Agents and the agent loop | `penny/agents/`, `penny/preflight.py` | `docs/reference/agents.md` |
-| The conversation machine, round framing, skills | `penny/conversation_machine.py`, `penny/round_framing.py`, `penny/skill_extraction.py`, `penny/skills.py` | `docs/reference/conversation-machine.md` |
 | Tools and micro-contexts | `penny/tools/` | `docs/reference/tools.md` |
-| The database and memory layer | `penny/database/`, `penny/clock.py`, `penny/skill_store.py` | `docs/reference/database.md` |
+| The database and memory layer | `penny/database/`, `penny/clock.py` | `docs/reference/database.md` |
 | Channels | `penny/channels/` | `docs/reference/channels.md` |
-| The scheduler and collector | `penny/scheduler/`, `penny/agents/collector.py`, `penny/notification.py`, `penny/program.py` | `docs/reference/scheduler-and-collector.md` |
+| The scheduler and collector | `penny/scheduler/`, `penny/agents/collector.py`, `penny/notification.py` | `docs/reference/scheduler-and-collector.md` |
 | Validation and text validity | `penny/validation/`, `penny/text_validity.py` | `docs/reference/validation.md` |
 | The eval harness and its reporting | `penny/tests/eval/` | `docs/reference/eval-harness.md` |
 | Commands | `penny/commands/` | covered in this file — see "Command System" |
@@ -72,15 +71,11 @@ penny/
   startup.py          — Startup announcement message generation (git commit info)
   preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on vision/image/browser/channel issues
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
-  conversation_machine.py — The conversation state machine (#1706): states, out-edges, the classifier draw, and framing/binding at entry
-  round_framing.py    — `RoundFramer`: frames a taught routine at round entry — names it, derives its container, binds its parameters
   notification.py     — Composes the one message a finished collector cycle sends (#1911) — bounded and ordered
-  program.py          — Reads a stored program's own calls (#1911), to scope a collector cycle's tool surface
-  skill_extraction.py — `SkillExtractor`: distils a skill from a LEARN chat turn's ledger at run end
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
     models.py         — ChatMessage, ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
-    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the ambient self-state prompt, run-end skill/config/writes narration
+    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the ambient self-state prompt, one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result
     self_state.py     — `SelfStateHeader`: renders Penny's operational self-state into the chat prompt's dynamic tail
     collector.py      — Collector: single dispatcher agent driving every per-collection extractor
   scheduler/
@@ -98,7 +93,7 @@ penny/
     base.py           — Tool ABC (`args_model` + `run()`) + ToolRegistry/ToolExecutor — arg validation, did-you-mean on a missing tool
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls/narration), ToolDefinition, and per-tool arg models
     browse.py         — BrowseTool: web search and page reading via the browser extension, with optional micro-context extraction (#1588)
-    micro_context.py  — MicroContext: single-shot extraction over bulk content, shared by the framer/binder/labeller/classifier/notifier
+    micro_context.py  — MicroContext: single-shot extraction over bulk content, shared by the browse extractor and the notify composer
     micro_context_shape.py — The declared tagged-line output grammar every micro-context customer's prompt and parser share (#1814)
     generate_image.py — GenerateImageTool: image generation via OllamaImageClient; stored to media, delivered deterministically by id to its own reply (ToolResult.media_id → ControllerResponse.generated_media_ids → send_response) (chat-only, gated on LLM_IMAGE_MODEL)
     content_cleaning.py — Post-processing for browse results (strips navigation, proxy images, boilerplate)
@@ -108,8 +103,7 @@ penny/
     list_folders.py   — ListFoldersTool (available mailboxes; Zoho only)
     draft_email.py    — DraftEmailTool (compose + stage draft; Zoho only). All five retired the /email + /zoho commands (epic #1445) — built per turn by ChatAgent's email_tools_builder; NL-dispatch contract: tests/eval/chat/idle/test_email_dispatch.py
     notifications.py  — NotificationsMuteTool / NotificationsUnmuteTool: chat-surface tools over the MuteState row (`db.users`); retired /mute + /unmute
-    skill_tools.py    — Model-facing renders of a taught skill beyond its recipe: the brief, the shape, the full render (#1804/#1943)
-    collection_instantiation.py — The `collection_create` front door's pure pieces: skill resolution, schedule/expiry parsing, renders (#1591)
+    collection_instantiation.py — The pure pieces behind `collection_configure`: schedule/expiry parsing and renders — no skill resolution, no parameters, no rendering seam (#1591)
     memory_args.py    — Pydantic arg models for the memory tool surface
     memory_tools.py   — Memory tool subclasses dispatching through `db.memory(name)`; `find`/`run_list`/`run_get`, `collection_configure`
   channels/
@@ -132,10 +126,8 @@ penny/
     send_queue_store.py — SendQueueStore: durable outbound queue — enqueue, `next_pending` (by origin lane), mark_sent (#1939)
     user_store.py     — UserStore: get_info, save_info, mute/unmute
     memory/           — The memory layer: `Memory`/`Collection`/`Log`, `MemoryStore`, the message-log/run-log facades, the undo journal
-    machine_store.py  — `MachineStore`: the conversation state machine's durable append-only transition log (#1706)
+    machine_store.py  — `MachineStore`: the conversation state machine's durable append-only transition log. There is no conversation machine any more, so this store is inert — nothing calls it
     mutation_store.py — `MutationStore`: the registry-mutation event ledger, with before/after field priors (#1946)
-  skills.py         — The skill substrate (#1590): step/parameter models, structural provenance, the runtime parameter join (#1907)
-  skill_store.py    — `SkillStore`: the versionless skill registry — upsert/get/delete/restore/resolve_by_meaning
     cursor_store.py   — CursorStore: per-agent read cursors into log-shaped memories
     media_store.py    — MediaStore: browsed images, matched to outgoing text by embedding at egress (generated images deliver by id to their own reply, then join this pool)
     models.py         — SQLModel tables (see Data Model section)
@@ -159,7 +151,7 @@ penny/
   validation/         — Model-I/O validation: the one behaviour taxonomy + the live disposition machinery
     conditions.py     — The behaviour taxonomy (keystone): ConditionKey + BehaviorCondition + CATALOG; one catalog of every condition we classify Penny's behaviour through (supersedes ValidationReason + RunHealthFlag). Dependency-light leaf
     outcomes.py       — ValidationOutcome disposition union (Proceed/Retry/Repair/RejectToolCall/NudgeContinue/Stop), ResponseValidator protocol, LoopContext, run_validators
-    response_validators.py — Concrete response validators: refusal/hallucinated-URL/narrate-from-the-record/writes-landed
+    response_validators.py — Concrete response validators: xml/refusal/hallucinated-URL; `run_shape_validators` is empty on every agent shape — there is no narrate-from-the-record or premature-done guard left to compose
   html_utils.py       — Shared HTML text extraction helpers
   text_validity.py    — Content-validity predicates: degeneracy, half-formed sends, did-you-mean, empty-draw — shared by the loop and the tools
   tests/
@@ -230,7 +222,7 @@ There are no conditional (config-gated) commands — email retired onto the chat
 
 ## Data Model
 
-All tables are SQLModel classes in `database/models.py` — the prompt/message logs, the memory/entry/mutation/transition tables, the skill registry, the send queue, media, and per-reader cursors. Read `docs/reference/database.md` before changing a table or a store's read/write shape.
+All tables are SQLModel classes in `database/models.py` — the prompt/message logs, the memory/entry/mutation tables, the send queue, media, and per-reader cursors, plus the unused `skill`/`state_transition` tables left over from the retired skill system and conversation machine. Read `docs/reference/database.md` before changing a table or a store's read/write shape.
 
 ## Message Flow
 
@@ -271,7 +263,6 @@ All tables are SQLModel classes in `database/models.py` — the prompt/message l
 - **Queued sends, not dropped** — moved to `docs/reference/scheduler-and-collector.md`.
 - **Invalid draws are rejected, not recovered (#1839)** — moved to `docs/reference/validation.md`.
 - **A coherent but WRONG tool call still gets an error tool response** — moved to `docs/reference/validation.md`.
-- **A learn turn that produced no skill FAILED (#1839)** — moved to `docs/reference/conversation-machine.md`.
 - **Degeneracy guard (discard-and-reroll)** — moved to `docs/reference/validation.md`.
 - **Leaked Harmony-envelope guard (discard-and-reroll)** — moved to `docs/reference/validation.md`.
 - **Two agent shapes**: ChatAgent (turn-driven, user-facing, full lifecycle + read tools) and Collector (single dispatcher across all collections, scoped read + entry-mutation surface — no lifecycle tools, #1556).  These are the only two run entry points: a chat turn and a collector cycle
@@ -391,42 +382,36 @@ tests/eval/
   utils/            — shared machinery, and nothing else: artifacts · checkpoint ·
                       cohort · report · assemble · comment_split · roster ·
                       endpoint_smoke · baseline · replay · run_health · assertions ·
-                      catalogue (the generated list of every case, by area) ·
+                      catalogue (the generated list of every case, by area — including the
+                      retired `conversation machine` area and machine edges, kept only for
+                      the handful of historical cases that still name one) ·
                       given (what a round was given, split into the content a number is
                       sourced by, the scaffolding around it, and the moments it was told) ·
                       stored_words (the one measured SHARE: of the words a turn stored, the
                       fraction that stand nowhere in that content — reported as a median and
                       a range, never claimed and never gated) ·
-                      worlds · fixtures · seeds · dispatch_world, the transition
-                      ledger + world the state cases are built on, the memory-story
-                      readers, and each of their own unit tests
-  classifier/       — the state classifier's own draw
-  framer/ binder/ labeller/ extractor/
-                    — one folder per skill microcontext
+                      worlds, fixtures, dispatch_world, lookup_world, memory_world, job_end,
+                      mailbox — the per-area world builders the cases seed from, and each
+                      of their own unit tests
+  extractor/        — the browse extractor's own draw
+  notify/           — the notify composer's own draw
   collector/        — the background agent: enactment, honesty
-  chat/             — the chat agent, split by the state the turn LANDS in
-    idle/ elicit/ learn/ request/ apply/
+  end_to_end/       — a running job plus an earlier conversation, read back whole
+  chat/             — the chat agent
+    idle/           — there is no conversation machine any more, so there is one state —
+                      idle — and one folder
 ```
 
-**Why the chat split is keyed to the LANDED state.** The chat system prompt is
-`CONVERSATION_HEAD + STATE_INSTRUCTIONS[state] + CONVERSATION_TAIL`
-(`conversation_prompt` in `conversation_machine.py`), where `state` is the turn's
-landed machine state — so the state a turn lands in IS the microcontext under test.
-A case that walks `elicit → idle` is scored on a turn composed from
-`Prompt.IDLE_INSTRUCTION`, which is why it lives under `chat/idle/`; the decision to
-leave elicit belonged to a different agent, and that agent's contract is
-`classifier/`. Within a state folder, a file is named for the entry path the cases
-take (`chat/apply/test_offer_accepted.py` is apply entered from learn).
+**There is no conversation machine any more**, so there is no state for a chat case to
+land in beyond `idle/`, and no classifier draw to give its own folder. A case about setting
+up, running, or reporting on a job is a `chat/idle/` case naming the move its turn makes.
 
-Where a case belongs is decidable from evidence, not taste: the `state_transition`
-rows in a run's per-sample DB (`data/eval-artifacts/<run>/<case>-N.db`) say which
-states a case walks, and `promptlog.agent_name` says which agents it drove. `N` is the
+Where a case belongs is decidable from evidence, not taste: `promptlog.agent_name` says
+which agents a run's per-sample DB (`data/eval-artifacts/<run>/<case>-N.db`) drove. `N` is the
 sample's own number — the one its report banner and its cohort name carry (`sample_number`),
 so a name the report renders opens that sample's own evidence and never a neighbour's.
 
-- Every case declares its **area** (and the machine **edge**, when it moves the conversation machine) — detail in `docs/reference/eval-harness.md`.
-
-- A REQUEST-state classifier case declares its `parked_round` (the routine and values an earlier turn already settled) — detail in `docs/reference/eval-harness.md`.
+- Every case declares its **area** — detail in `docs/reference/eval-harness.md`.
 
 Run the suite with `make eval-remote`, pinned to one provider at a time; `docs/reference/eval-harness.md` covers worker/sample tuning and the provider lock.
 
@@ -474,7 +459,7 @@ failed samples), not just the RESULT line — that's where the reason lives.
 
 **The eval runs the SHIPPED prompts, and a failure is often stale data — not model
 incapacity.** A fresh eval DB is built exactly like prod (`create_tables()` then
-`migrate()`), so the seeded skills / `extraction_prompt`s the model follows are the ones
+`migrate()`), so the seeded `extraction_prompt`s the model follows are the ones
 migrations ship — the eval tests them as deployed, not a hand-built copy. Two consequences:
 
 - *Make a migration the single source of truth for a seeded prompt.* Have the eval drive

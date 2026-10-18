@@ -6,15 +6,19 @@ Covers the live-model eval harness's running, reporting and posting mechanics be
 
 **Every case declares its area, and the list of cases is generated from them (#2214).** A
 case passes its driver `area=` — a member of the closed `Area` set in `utils/catalogue.py`
-(conversation machine · teaching a routine · memory · answering from the web · standing jobs ·
-notifications · background collectors · reading a page · chat tools) — and, when it moves the
-conversation machine along one edge, `edge=(from_state, to_state)`, validated against
-`OUT_EDGES`. A classifier case names the state it draws from and the state its claim says the
-draw lands in; a whole-turn case names the move its turn makes. The LAYER (classifier draw ·
-whole turn · micro-context · collector cycle) is not declared: each driver states its own.
+(teaching a routine · memory · answering from the web · standing jobs ·
+notifications · background collectors · reading a page · chat tools, plus the retired
+`conversation machine` value, below) — and, for a case that still declares one,
+`edge=(from_state, to_state)`, validated against `OUT_EDGES`. **There is no conversation
+machine any more** (#2455 naive baseline), so `ConversationState`/`OUT_EDGES`/`Layer.CLASSIFIER_DRAW`
+and the `conversation machine` area are all RETIRED — kept in `utils/catalogue.py`, frozen
+exactly as they last stood, only so the handful of historical cases/fixtures that already
+named an edge they walked have somewhere to validate it against; no current case declares
+either. A whole-turn case names the move its turn makes; the LAYER (whole turn ·
+micro-context · collector cycle) is not declared: each driver states its own.
 `docs/eval-catalogue.md` is the document generated from those declarations — each area's cases
 (id · behaviour sentence · first wording · edge), and one row per machine edge naming the cases
-that cover it at the classifier-draw and whole-turn layers. It is generated **on demand**
+that cover it. It is generated **on demand**
 (`make catalogue`) and gitignored — never committed (#2395), so a PR that adds, renames or
 re-declares a case edits no shared file. **`make check` re-collects the same declarations**
 and fails on a bad area, a bad edge, or a case sharing its id with another — there is no
@@ -24,27 +28,6 @@ committed file to go stale against. Collecting the cases calls no model and no e
 (`python -m penny.tests.eval.utils.catalogue write <path>` / `check` runs the suite that way in
 a child pytest, leaving `utils/` out — it holds no case). An eval test that reaches no driver
 fails that run rather than going unlisted.
-
-### An isolated draw is handed what production hands it — a REQUEST case declares its `parked_round` (#2084/#2099)
-
-**An isolated draw is handed what production hands it — a REQUEST case declares its
-`parked_round` (#2084/#2099).** `classifier_eval` builds each sample's snapshot through the
-production `build_snapshot`, but it passed no `round_binding`, so a case drawn from
-request saw a document with no `## The details this task is waiting on` section — the
-routine, what the user already gave, what is still missing — which production always
-renders there, since it reaches request only through the binder and records what that
-settled on the move. A case now names the routine and the values its earlier turns
-settled (`ParkedRound`); everything else is READ off the seeded registry row and built
-through production's own `round_framing.round_shortfall`, so the case restates nothing the
-routine already says. Refused loudly rather than absorbed: a `parked_round` on any other
-state, a routine the case's `seed_skills` do not register, a value under a name the routine
-does not declare, and a round with nothing left missing (which the binder would have FRAMED)
-each name what they broke — the first before any sample runs, the rest at the draw, since
-the registry row does not exist until the sample has seeded it. **The rule is a
-biconditional and the guard holds both halves of it**: a `parked_round` on any state but
-request is refused, and so is a REQUEST case that declares none, because a binding is
-present exactly while a round is parked in request — so the next REQUEST case cannot be
-written lean.
 
 ### Running the suite (`make eval-remote`)
 

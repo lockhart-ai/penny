@@ -325,17 +325,16 @@ thing a case can be built from.
 happened, then the `promptlog` rows of that run (`penny/penny/database/models.py`'s `PromptLog`):
 `agent_name` says which agent or micro-context made the call, `run_id` groups every call of one
 agentic-loop invocation, and `messages`/`thinking`/`response` carry exactly what the model was
-shown, thought, called, and got back. For a chat turn that moved the conversation machine, the
-`state_transition` rows (`StateTransition`) say what state it was in and what it moved to —
-`cause` is `classifier` when a model draw decided it (its `run_id` joins back into the promptlog)
-or `structural` when nothing decided it. **The live database is read only with the code owner's
+shown, thought, called, and got back. **There is no conversation machine any more**: a chat turn
+runs the same single instruction every time, so there is no state transition to read for it.
+**The live database is read only with the code owner's
 go-ahead** — diagnosis otherwise reads the runtime log and, once it exists, a run's own per-sample
 database, never the production DB without asking first.
 
 **Classify the failure**, because the classification decides what gets built:
 
 - **The model decided wrongly on what it was shown** → an eval case at the layer where that
-  decision was made (chat turn, classifier draw, a micro-context).
+  decision was made (chat turn, collector cycle, a micro-context).
 - **The model decided sensibly on a wrong or missing input** → still an eval case — the end state
   was wrong — but the fix will be to presentation, not to the model's reasoning.
 - **A deterministic defect below the model** (a parser, a gate, a bound) → a mock test in
@@ -453,11 +452,10 @@ coordinator fills in everything the docs already decide:
   <X>, Penny <Y>."* This is `behaviour=` on the driver call
   ([`docs/eval-case-design.md` §4](eval-case-design.md)) — not a label for the report, the
   sentence a reader checks the case against.
-- **Decide the layer** — a classifier draw, a whole turn, one micro-context, a collector cycle —
-  and the area, and the machine edge when the case moves one. The layer picks the driver
-  (`chat_eval`, `classifier_eval`, `collector_cycles_eval`, `extractor_eval`, `framer_eval`,
-  `labeller_eval`, `binder_eval` — `penny/penny/tests/eval/conftest.py`); it isn't declared
-  separately.
+- **Decide the layer** — a whole turn, one micro-context, a collector cycle — and the area. The
+  layer picks the driver (`chat_eval`, `collector_cycles_eval`, `end_to_end_eval`,
+  `extractor_eval`, `notify_composer_eval` — `penny/penny/tests/eval/conftest.py`); it isn't
+  declared separately.
 - **Where wordings come from depends on the layer.** For a chat case the five wordings are ways
   a user would actually say the ask. For a micro-context case the arm is **Penny's own text**,
   written upstream by the calling draw — the browse extractor's `extract` instruction, a
@@ -540,18 +538,17 @@ ground.
    world. Install either the way any page is installed, as a source on the `World`.
 5. **Seed anything that must already be true through the store's own write path, never a
    hand-inserted row.** A case passes a `seed` — a `Seeder` (`Callable[[Database], None]`,
-   `utils/seeds.py`) — that writes an entry through `memory.write(...)`, stands a job up
-   through `db.memories.create_collection(...)`, or lays a machine state down through the
-   transition ledger (`utils/transition_ledger.py`'s `_park`/`_log_classifier_draw`/
-   `_log_chat_step`, used by the builders in `utils/seeds.py` and `utils/transition_world.py`).
-   A hand-built row gives the runtime something to compare against that no real turn could
+   declared in `tests/eval/conftest.py`) — built by the per-area world modules (`utils/worlds.py`,
+   `dispatch_world.py`, `lookup_world.py`, `memory_world.py`) that write an entry through
+   `memory.write(...)` or stand a job up through `db.memories.create_collection(...)`. A
+   hand-built row gives the runtime something to compare against that no real turn could
    have produced.
 6. **Make the seed prove itself before the turn runs**, with a loud assertion of the world it
-   just built — `probe_seeded_world` in `chat/idle/test_chat_memory_stories.py`,
-   `_assert_the_watch_world` in `collector/test_watch_cycles.py`, `_assert_parked_in_elicit`
-   in `utils/seeds.py` are the pattern. A seed that has drifted from its own description fails
-   here, never as a puzzling score after a paid run. Read any time-dependent fact off the
-   sample's own `PinnedClock` (`utils/clock.py`) and `sample.timezone`, never off wall time.
+   just built — `probe_seeded_world` in `chat/idle/test_chat_memory_stories.py` and
+   `_assert_the_watch_world` in `collector/test_watch_cycles.py` are the pattern. A seed that
+   has drifted from its own description fails here, never as a puzzling score after a paid
+   run. Read any time-dependent fact off the sample's own `PinnedClock` (`utils/clock.py`)
+   and `sample.timezone`, never off wall time.
 7. **A behaviour's opposite direction is the same wordings over a different world.** Where
    the world the case needs for "fires" is not the world it needs for "does not fire" — e.g.
    a collection that already holds a matching entry versus one that holds nothing — that is
@@ -581,18 +578,16 @@ different, easier behaviour on that one arm and calls the result instability.
   wording — the phrasing-versus-scenario line,
   [`docs/eval-case-design.md` §6](eval-case-design.md).
 - **Where the wordings come from depends on the layer:**
-  - **Chat** (and the classifier): five ways a *user* would actually say the ask —
+  - **Chat**: five ways a *user* would actually say the ask —
     `ask=` plus `also_phrased=` on `chat_eval`.
-  - **A micro-context** (the browse extractor, a framer/binder/labeller call): the arm is
+  - **A micro-context** (the browse extractor): the arm is
     **Penny's own text**, written upstream by the calling draw — the `extract` argument of a
     browse call. Five wordings are five ways that calling draw might have worded the same
     request, sampled from real upstream phrasing, never invented for the case —
     `instruction=` plus `also_instructed=` on `extractor_eval`.
-  - **A collector**: there is no user turn, so the natural language is the `extract`
-    instruction the job's rendered program carries, reaching the model through the shipped
-    instantiation seam (`retarget_writes` → `bind_parameters` → `render_skill`), plus the
-    prose of the page that answers it. Never hand-author the program text directly — a
-    program the instantiation seam cannot emit measures a render, not a draw. `arms=` on
+  - **A collector**: there is no user turn, so the natural language is the `prompt` the job
+    was configured with — free text the model wrote directly via `collection_configure`, run
+    verbatim with no rendering seam — plus the prose of the page that answers it. `arms=` on
     `collector_cycles_eval` takes a `CycleArm` per wording, each carrying its own `seed`,
     `pages` and `world` — five wordings of one instruction, over five prose variants of one
     page, with the watched fact byte-identical across all five.
@@ -675,12 +670,12 @@ def _arm(case: WatchCase, reading: Reading) -> CycleArm:
     )
 ```
 
-Each arm's own `_seeder` stands the routine up through `db.skills.upsert` and
-`db.memories.create_collection`, under the key the rendered program writes to, then asserts
-the whole world (`_assert_the_watch_world`) before the cycle runs — including that this
-arm's wording really did reach the stored program as `extract={...}`. The page's watched
-line (`_DATUM`) is byte-identical across all five prose variants, which is what lets the
-case's claims name `499` rather than just "a plausible number."
+Each arm's own `_seeder` stands the job up through `db.memories.create_collection`, writing
+the wording straight into `extraction_prompt` — no skill, no rendering seam — under the key
+the instruction writes to, then asserts the whole world (`_assert_the_watch_world`) before
+the cycle runs — including that this arm's wording really did reach the stored prompt. The
+page's watched line (`_DATUM`) is byte-identical across all five prose variants, which is
+what lets the case's claims name `499` rather than just "a plausible number."
 
 ## 9 · Running
 

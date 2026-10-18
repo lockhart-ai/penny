@@ -161,8 +161,9 @@ A stored recipe with an invented `2 tbsp` used to read as sourced, because a rea
 *when* something happened: `2026-10-02`, `October 2` and `20:11` are sourced by a stamp that says
 so, and the day of a date sources no quantity. The line between a result's payload and its frame is
 the one `Tool.format_result` draws for every tool, so nothing here knows a tool's name. A figure
-only a system prompt states is not sourced: a job's terms reach content through the classifier's
-document, which lists every running job with its schedule, and through any read that returns them.
+only a system prompt states is not sourced: a job's terms reach content through the self-state
+header's Jobs section, which lists every running job with its schedule, and through any read
+that returns them.
 
 **A sample is hermetic** — its own database, its own conversation, its own pages — and every claim
 resolves against the world *that sample* was given. A model that ignores the page and emits a
@@ -273,9 +274,9 @@ asked for, and the wrong one on a page carrying none of it — the same value, c
 world and false against another. If a case cannot say which of its declared facts makes its
 expectation right, it is asserting a habit.
 
-**Do not claim what production already validates.** A span the binder checked with
-`_is_a_spoken_span`, a class the classifier validated against its own membership and re-rolled until
-it matched — a claim over either runs 15/15 by construction and measures the validator rather than
+**Do not claim what production already validates.** A value the browse extractor checked
+against its own tagged-line shape, or a draw the degeneracy guard re-rolled until it matched —
+a claim over either runs 15/15 by construction and measures the validator rather than
 the behaviour. Where an obvious-looking claim is missing for this reason, **say so in the case**, so
 a thin assertion set reads as *closed upstream* rather than as a checklist nobody ran.
 
@@ -534,23 +535,22 @@ condition does it.
 
 **Every case states the behaviour it checks**, in one sentence, in the fixed form
 **In \<the locus\>, when \<X\>, Penny \<does Y\>.** The locus names where the behaviour happens
-by its **shipped agent name** — `browse-extract`, `state-classifier`, `skill-framer`, the chat
-agent, a price-watch collector — never a label invented for the report. It is `behaviour=` on the
+by its **shipped agent name** — `browse-extract`, the chat agent, a price-watch collector —
+never a label invented for the report. It is `behaviour=` on the
 driver call, required, and it renders in the case's report header above every
 number: a case id says which fixture ran, and a rate means nothing until a reader knows what was
 being asked.
 
 **Every case declares its area, and the edge it covers when it covers one.** `area=` is a member
-of the closed `Area` set (`utils/catalogue.py`) — the part of Penny the case is about. `edge=` is a
-`(from, to)` pair of `ConversationState`, for a case that moves the conversation machine along one
-edge of `OUT_EDGES`: a classifier case names the state it draws from and the state its claim says
-the draw lands in, and a whole-turn case names the move its turn makes. A case about anything else
-leaves `edge` out. The **layer** — classifier draw, whole turn, micro-context, collector cycle — is
+of the closed `Area` set (`utils/catalogue.py`) — the part of Penny the case is about. **There is
+no conversation machine any more** (#2455 naive baseline), so `edge=` and the `conversation
+machine` area are RETIRED, kept in `utils/catalogue.py` only for the few historical cases/fixtures
+that already named an edge they walked; no current case declares either. A whole-turn case names
+the move its turn makes. The **layer** — whole turn, micro-context, collector cycle — is
 not declared: it is the driver the case uses.
 
 **`docs/eval-catalogue.md` is the list of every case**, generated from those declarations: each
-area's cases with their behaviour sentence and first wording, and which cases cover each machine
-edge at the classifier-draw and whole-turn layers. It's generated **on demand** (`make
+area's cases with their behaviour sentence and first wording. It's generated **on demand** (`make
 catalogue`) and never committed, so adding, renaming or re-declaring a case touches no shared
 file (#2395); `make check` re-collects the same declarations and fails on a bad area, a bad
 edge, or a case sharing its id with another — never on staleness, since nothing is committed to
@@ -558,8 +558,8 @@ compare against. Collecting the cases calls no model: with `EVAL_CATALOGUE` set,
 records its case and skips before a sample is stood up.
 
 **A driver refuses a case it cannot drive as a cohort**, with an error naming the case, before a
-sample runs: one with no `behaviour`, one with no `area` or with an `edge` the machine does not
-have, one that names nothing to drive (`ask` for chat and the classifier, `arms` for a collector,
+sample runs: one with no `behaviour`, one with no `area` or with an `edge` the retired machine
+does not have, one that names nothing to drive (`ask` for chat, `arms` for a collector,
 the instruction, utterance or turns for a microcontext), and one that leaves `min_pass_rate`
 unstated or states a floor. No driver takes a per-sample scorer: the body's claims against the
 returned cohort are the only way a case is graded.
