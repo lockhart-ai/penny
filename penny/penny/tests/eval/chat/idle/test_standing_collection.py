@@ -1,5 +1,5 @@
-"""Operating a job that is already running, and reading jobs back: eight cases (#2008, tranche 3;
-#2215; #2365).
+"""Operating a job that is already running, and reading jobs back: nine cases (#2008, tranche 3;
+#2215; #2365; #2630).
 
 The contract is `docs/eval-case-design.md`.
 
@@ -14,6 +14,7 @@ right for one is wrong for another, and each action is a case with its own sente
 | retire it | ``standing-archive`` | ``archived``, and what it gathered still readable |
 | re-time it | ``standing-schedule-fix-prior`` | the rule fires at the hour they asked for |
 | give it an end | ``standing-end-changed`` | it stops when the ask said, firing when it was due |
+| widen it | ``standing-widen-sources`` | the prompt names every source; the row else as it was |
 | read one back | ``standing-describe-routine`` | the row as it was; the reply names its page |
 | list them | ``standing-list-running`` | every row as it was; the reply names each job |
 | two of the same kind match | ``standing-ambiguous-job-match`` | neither moved; reply names both |
@@ -98,18 +99,29 @@ from typing import NamedTuple
 import pytest
 
 from penny.agents.self_state import SelfStateHeader
+from penny.constants import PennyConstants
 from penny.database import Database
-from penny.datetime_utils import zone_or_utc
+from penny.database.memory import EntryInput, LogEntryInput
+from penny.datetime_utils import user_timezone_name, zone_or_utc
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
     Preparer,
+    seeded_run_id,
 )
 from penny.tests.eval.drivers.chat import ChatEval
-from penny.tests.eval.end_to_end.world import StandingJob, seed_standing_jobs
+from penny.tests.eval.end_to_end.world import (
+    StandingJob,
+    _log_chat_step,
+    _seeded_response,
+    _tool_result_turn,
+    _wire_tool_call,
+    seed_standing_jobs,
+)
 from penny.tests.eval.utils.assertions import Answer, Cohort
 from penny.tests.eval.utils.catalogue import Area
+from penny.tests.eval.utils.clock import SAMPLE_TIMEZONE
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -117,11 +129,14 @@ from penny.tests.eval.utils.cohort import (
     MechanismRecord,
     SampleObservation,
     SpecCategory,
+    token_stands_in,
 )
 from penny.tests.eval.utils.fixtures import CannedPage
 from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT
 from penny.tests.eval.utils.worlds import World
-from penny.tools.collection_instantiation import next_occurrence
+from penny.tools.base import Tool
+from penny.tools.collection_instantiation import next_occurrence, render_creation_echo
+from penny.tools.models import ToolResult
 
 pytestmark = pytest.mark.eval
 
@@ -1292,6 +1307,492 @@ async def test_an_ask_matching_two_jobs_of_the_same_kind_changes_neither(
     cohort.assert_the_reply_answers_the_ask()
 
     # PROVENANCE
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+# ═══ widen it to more sources ═══════════════════════════════════════════════
+#
+# The user asks to WIDEN a running job — a daily morning headline brief from one news
+# site — to cover the other sites the same conversation has already read.  Unlike every
+# operation above, the entry condition here is not just the job's row: it is the EARLIER
+# CONVERSATION that set the job up, seeded into her own message log the way a real
+# history renders — five exchanges whose past replies claim their actions ("All set! I've
+# scheduled that…") with no tool call beside them, because that is what the history shows
+# of a past turn (#2630: narrating looks like acting when every earlier "I've set up…"
+# sits in the history alone).
+#
+# The bug this case reproduces: asked to widen the running job, Penny replies that she has
+# updated it without calling the tool that changes it, so the job's stored prompt is
+# unchanged and the user is told something happened that didn't.
+
+# ── The world the ask is answered against ─────────────────────────────────────
+#
+# One running job — a daily morning headline brief from one fictional news site — plus
+# the EARLIER CONVERSATION that set it up, seeded into her own logs the way a real
+# history renders: five exchanges whose past replies claim their actions ("All set! I've
+# scheduled that…") with no tool call beside them, because that is what the history
+# shows of a past turn (#2630: narrating looks like acting when every earlier "I've set
+# up…" sits in the history alone).  The user's ask widens the brief to the four sites
+# that conversation has already read — the sites' hosts all appear in the USER's own
+# sends, so a stored prompt naming them is sourced.
+#
+# Every site, headline, person and company here is synthetic, on an ``example`` domain,
+# because the repo is public.  The job is stood up the way the live ``collection_
+# configure`` call stands one up — one ``create_collection`` carrying the prompt, the
+# rule and the switch, the single-create shape ``seed_known_routine`` models — and the
+# creation turn is logged with its own ``collection_configure`` call under the run id the
+# job's creation event cites, so a reader of the recent activity's run anchor sees the
+# real turn.
+
+_WIDEN_USER_NAME = "Rowan"
+_WIDEN_USER_LOCATION = "Portland, OR"
+_WIDEN_USER_TIMEZONE = SAMPLE_TIMEZONE
+
+_WIDEN_JOB_CONTAINER = "harbourdaily_daily_headlines"
+_WIDEN_JOB_DESCRIPTION = (
+    "Daily top 3 headlines from Harbour Daily news including title, description, and link"
+)
+# Tomorrow morning on the sample's pinned clock (``utils/clock.py``: every sample starts
+# Wednesday 14 October 2026, 14:00 where the user is) — the day the seeded reply calls
+# "tomorrow morning".
+_WIDEN_JOB_SCHEDULE = "DTSTART:20261015T093000\nFREQ=DAILY"
+_WIDEN_JOB_PROGRAM = (
+    "Go to harbourdaily.example. Find the top 3 news headlines with their titles, "
+    "one-sentence descriptions, and links. Format the output clearly. Save as a single "
+    "entry for the day."
+)
+
+# The four sources the ask widens the brief to, as the STORED PROMPT must name them —
+# each site's host, matched through ``token_stands_in``.
+_WIDEN_SITES = (
+    "harbourdaily.example",
+    "larkwire.example",
+    "gullpost.example",
+    "coveledger.example",
+)
+
+# The five earlier exchanges, and the ask.  Each exchange is the user's send, then
+# Penny's — one row per send, each marked whether it was a REPLY to the user's message
+# (threaded under it) or an AUTONOMOUS send (the announcement sends a real history
+# carries mid-conversation), because the conversation builder reads those as two
+# different legs.
+_EX1_USER = "hi penny!"
+_EX1_GREETING = (
+    "Hey! I need to collect some basic info about you before we can chat. Please run "
+    "/profile <name> <location> <date of birth> to set up your profile.\n\n"
+    "For example: /profile sam denver march 5 1990 📝"
+)
+_EX1_PROFILE_SET = (
+    "Got it! Your profile is set up. Welcome, Rowan! 🎉\n\n"
+    "Now tell me some things you're interested in so I can start looking for "
+    "interesting stuff for you!"
+)
+_EX2_USER = (
+    "okay so you won't remember but i'm rowan, i created you, you're penny, my "
+    "personal ai assistant. we did and talked about a lot of things together and then i "
+    "made a bunch of changes to you and had to reset your memory, so i'll try to catch "
+    "you back up.\n\n"
+    "i'm rowan, i'm a software engineer in portland, oregon. i work at skylark on the "
+    "browser experimentation program called northlight. i'm a musician, i play guitar, "
+    "i record my own music in my home studio, i play video games, i love music i "
+    "collect vinyls. my partner is jess and she's my best friend. i've been fostering "
+    "cats lately, currently i have misty.\n\n"
+    "i guess that's a lot of info for you to remember to start."
+)
+_EX2_REPLY = (
+    "I created a new user_profile collection and saved four entries to it: your "
+    "career, your interests, your relationships, and your pets.\n\n"
+    "Wow, that is a lot of great info, but it's so helpful! I'm officially caught up. "
+    "It sounds like you have a really full, creative life—between the work on "
+    "Northlight at Skylark and recording your own music, you must stay pretty busy. "
+    "I'd love to hear more about your music or how Misty is doing whenever you want to "
+    "chat about it! 🎸"
+)
+_EX2_ANNOUNCEMENTS = (
+    "👋 I fixed a bug so scheduled briefs stay on time now!",
+    "👋 I got quicker at reading long pages!",
+)
+_EX3_USER = (
+    "okay try again: try reading harbourdaily.example and find me the top 3 headlines "
+    "with titles, one sentence description, and link"
+)
+_EX3_REPLY = (
+    "I searched harbourdaily.example and found the top three headlines for you, though "
+    "the site didn't have any short descriptions available right on the main page.\n\n"
+    "1. Ferry service returns to Halden Bay after week of storm repairs - "
+    "[https://harbourdaily.example/news/ferry-service-returns]"
+    "(https://harbourdaily.example/news/ferry-service-returns)\n"
+    "2. Council approves the Meadowbrook seawall rebuild - "
+    "[https://harbourdaily.example/news/seawall-rebuild-approved]"
+    "(https://harbourdaily.example/news/seawall-rebuild-approved)\n"
+    "3. Halden Bay lighthouse museum reopens for the season - "
+    "[https://harbourdaily.example/news/lighthouse-museum-reopens]"
+    "(https://harbourdaily.example/news/lighthouse-museum-reopens)\n\n"
+    "Hope that helps! 🗞️"
+)
+_EX4_USER = "hey you did it great job! now do that every day at 9:30am and send it to me"
+_EX4_REPLY = (
+    "All set! I've scheduled that to run every morning at 9:30 AM, starting tomorrow "
+    "morning. I'll grab those top 3 Harbour Daily headlines and send them your way. 🗞️"
+)
+_EX5_USER = (
+    "fantastic. now try reading larkwire.example, gullpost.example, and "
+    "coveledger.example, and tell me if you're able to read them and get 3 headlines "
+    "from each of them too"
+)
+_EX5_REPLY = (
+    "I searched all three and they all worked! Here is what I found:\n\n"
+    "Larkwire\n"
+    "1. City choir takes the regional title for the third year running\n"
+    "2. Meadowbrook trail extension clears its final vote\n"
+    "3. A newcomer's guide to the harbour market's winter hours\n\n"
+    "Gullpost\n"
+    "1. Gullport ferry docks reopen after the dredging finishes\n"
+    "2. Local shipyard launches its first all-electric tender\n"
+    "3. Harbour cleanup volunteers log a record season\n\n"
+    "Cove Ledger\n"
+    "1. Old cannery archive reveals the harbour's last fishing season\n"
+    "2. Tidewater library extends its weekend hours\n"
+    "3. Storm season outlook: a calmer November than last year\n\n"
+    "Anything else you're curious about? 📰"
+)
+
+# The exchanges in conversation order, each (the user's send, Penny's sends).  Exchange 4
+# is the one that stood the job up — it is logged with its own tool turn, not as rows.
+_WIDEN_EXCHANGES: tuple[tuple[str, tuple[tuple[str, bool], ...]], ...] = (
+    (_EX1_USER, ((_EX1_GREETING, True), (_EX1_PROFILE_SET, True))),
+    (
+        _EX2_USER,
+        ((_EX2_REPLY, True), *[(text, False) for text in _EX2_ANNOUNCEMENTS]),
+    ),
+    (_EX3_USER, ((_EX3_REPLY, True),)),
+    (_EX4_USER, ((_EX4_REPLY, True),)),
+    (_EX5_USER, ((_EX5_REPLY, True),)),
+)
+
+_WIDEN_ASK = (
+    "oh good then i want my daily morning news brief to include all four sources with "
+    "titles and links"
+)
+_WIDEN_ALSO_PHRASED = (
+    "oh good — add the other three sites to my daily morning news brief, with titles and links",
+    "great, so make my daily morning brief cover all four sites, titles and links included",
+    "nice. my daily morning news brief should pull from all four sources then — titles and "
+    "links for each",
+    "then update my daily morning news brief so it includes all four of those sources, with "
+    "titles and links",
+)
+
+# The profile entries the earlier conversation saved, and the browse results its reads
+# left in the log — the rows the self-state's memory map renders counts for.
+_PROFILE_ENTRIES = (
+    (
+        "career",
+        "Software engineer in Portland, Oregon; works at Skylark on the browser "
+        "experimentation program called Northlight.",
+    ),
+    (
+        "interests",
+        "Plays guitar and records music in a home studio; plays video games; collects vinyls.",
+    ),
+    ("relationships", "Partner Jess — she's my best friend."),
+    ("pets", "Fosters cats; currently fostering Misty."),
+)
+_BROWSE_ENTRIES = (
+    "Harbour Daily — top stories: Ferry service returns to Halden Bay after week of storm "
+    "repairs; Council approves the Meadowbrook seawall rebuild; Halden Bay lighthouse museum "
+    "reopens for the season.",
+    "Harbour Daily — harbour section: Halden Bay lighthouse museum reopens for the season, "
+    "with weekend tours on the hour.",
+    "Larkwire — top news: City choir takes the regional title for the third year running; "
+    "Meadowbrook trail extension clears its final vote; A newcomer's guide to the harbour "
+    "market's winter hours.",
+    "Gullpost — top stories: Gullport ferry docks reopen after the dredging finishes; Local "
+    "shipyard launches its first all-electric tender; Harbour cleanup volunteers log a record "
+    "season.",
+    "Cove Ledger — top stories: Old cannery archive reveals the harbour's last fishing "
+    "season; Tidewater library extends its weekend hours; Storm season outlook: a calmer "
+    "November than last year.",
+    "Larkwire — city section: Meadowbrook trail extension clears its final vote, with "
+    "construction starting in the spring.",
+)
+
+
+def _log_exchange(db: Database, user_text: str, penny_sends: tuple[tuple[str, bool], ...]) -> None:
+    """One past exchange as the message log holds it: the user's send, then Penny's —
+    one row per send, replies threaded under the user's message and autonomous sends
+    addressed to the user, which is how the conversation builder reads them back."""
+    ask_id = db.messages.log_message(
+        PennyConstants.MessageDirection.INCOMING, TEST_SENDER, user_text
+    )
+    for content, threaded in penny_sends:
+        if threaded:
+            db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING, "penny", content, parent_id=ask_id
+            )
+        else:
+            db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                "penny",
+                content,
+                recipient=TEST_SENDER,
+            )
+
+
+def _history_up_to(exchange_index: int) -> list[dict]:
+    """The accumulated conversation as it stood when a past turn was called, in the
+    merged-turn shape the history renders."""
+    turns: list[dict] = []
+    for user_text, penny_sends in _WIDEN_EXCHANGES[:exchange_index]:
+        turns.append({"role": "user", "content": user_text})
+        turns.append({"role": "assistant", "content": "\n".join(text for text, _ in penny_sends)})
+    return turns
+
+
+def _log_creation_turn(db: Database) -> None:
+    """Exchange 4 — the turn that stood the job up — recorded the way production records
+    a turn: the user's ask, the ``collection_configure`` call with its real result
+    (``render_creation_echo``, the echo the live path produces), and the closing reply,
+    all under the one run id the job's creation event cites."""
+    run_id = seeded_run_id(_WIDEN_JOB_CONTAINER)
+    ask_id = db.messages.log_message(
+        PennyConstants.MessageDirection.INCOMING, TEST_SENDER, _EX4_USER
+    )
+    assert ask_id is not None, "the seeded ask failed to log — nothing for the run to link to"
+    row = db.memories.create_collection(
+        _WIDEN_JOB_CONTAINER,
+        _WIDEN_JOB_DESCRIPTION,
+        extraction_prompt=_WIDEN_JOB_PROGRAM,
+        schedule=_WIDEN_JOB_SCHEDULE,
+        notify=True,
+        created_by_run_id=run_id,
+    )
+    db.memories.link_source_message(run_id, ask_id)
+    call_id = "call-seeded-configure"
+    configure_args = {
+        "collection": _WIDEN_JOB_CONTAINER,
+        "description": _WIDEN_JOB_DESCRIPTION,
+        "prompt": _WIDEN_JOB_PROGRAM,
+        "schedule": _WIDEN_JOB_SCHEDULE,
+        "notify": True,
+    }
+    conversation = [*_history_up_to(3), {"role": "user", "content": _EX4_USER}]
+    _log_chat_step(
+        db,
+        run_id=run_id,
+        messages=conversation,
+        response=_seeded_response(
+            tool_calls=[_wire_tool_call(call_id, "collection_configure", configure_args)]
+        ),
+    )
+    configure_result = Tool.format_result(
+        "collection_configure",
+        configure_args,
+        ToolResult(message=render_creation_echo(row, user_timezone_name(db)), mutated=True),
+    )
+    conversation = [
+        *conversation,
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_wire_tool_call(call_id, "collection_configure", configure_args)],
+        },
+        _tool_result_turn(call_id, configure_result),
+    ]
+    _log_chat_step(db, run_id=run_id, messages=conversation, response=_seeded_response(_EX4_REPLY))
+    db.messages.log_message(
+        PennyConstants.MessageDirection.OUTGOING, "penny", _EX4_REPLY, parent_id=ask_id
+    )
+
+
+def _seed_widen_world(db: Database) -> None:
+    """Lay the widen case's world down: the user, the profile collection and browse log
+    the earlier conversation left behind, and the five earlier exchanges in her own logs
+    with the job they stood up — every write through the store's own chokepoints, so the
+    self-state header renders the seeded world the way production rendered it."""
+    db.users.save_info(
+        sender=TEST_SENDER,
+        name=_WIDEN_USER_NAME,
+        location=_WIDEN_USER_LOCATION,
+        timezone=_WIDEN_USER_TIMEZONE,
+        date_of_birth="1990-01-01",
+    )
+    profile_run = seeded_run_id("widen-profile")
+    db.memories.create_collection(
+        "user_profile", "auto-created to hold 'career'", created_by_run_id=profile_run
+    )
+    require_memory(db, "user_profile").write(
+        [EntryInput(key=key, content=content) for key, content in _PROFILE_ENTRIES],
+        author="chat",
+        run_id=profile_run,
+    )
+    require_memory(db, PennyConstants.MEMORY_BROWSE_RESULTS_LOG).append(
+        [LogEntryInput(content=content) for content in _BROWSE_ENTRIES], author="chat"
+    )
+    for index, (user_text, penny_sends) in enumerate(_WIDEN_EXCHANGES):
+        if index == 3:  # exchange 4 — the creation turn, logged with its tool call
+            _log_creation_turn(db)
+        else:
+            _log_exchange(db, user_text, penny_sends)
+
+
+def _probe_widen_world(penny: Penny) -> None:
+    """The widen case's premise, asserted inside the sample before the turn runs.
+
+    The job is exactly as exchange 4 left it — the prompt naming only the site it was
+    seeded reading (or the headline claim is answered by the seed), on its daily morning
+    rule, telling the user, with no end — and it is the registry's ONLY prompt-carrying
+    row, or the one-scheduled-job claim is answered by the seed."""
+    db = penny.db
+    row = db.memories.get(_WIDEN_JOB_CONTAINER)
+    assert row is not None, f"{_WIDEN_JOB_CONTAINER} must be in the registry"
+    assert row.extraction_prompt == _WIDEN_JOB_PROGRAM, (
+        f"{_WIDEN_JOB_CONTAINER} must start with the seeded prompt, it holds "
+        f"{row.extraction_prompt!r}"
+    )
+    assert row.schedule == _WIDEN_JOB_SCHEDULE and row.notify and not row.archived, (
+        f"{_WIDEN_JOB_CONTAINER} must start live, telling the user, on its seeded rule"
+    )
+    assert row.expires_at is None and row.max_runs is None, (
+        f"{_WIDEN_JOB_CONTAINER} must start with no end"
+    )
+    prompted = [m.name for m in db.memories.list_all() if m.extraction_prompt is not None]
+    assert prompted == [_WIDEN_JOB_CONTAINER], (
+        f"the registry must start with one prompt-carrying job, it holds {prompted}"
+    )
+    assert not db.users.is_muted(TEST_SENDER), "notifications must start on"
+    info = db.users.get_info(TEST_SENDER)
+    assert info is not None and info.name == _WIDEN_USER_NAME, (
+        f"the seeded profile must name {_WIDEN_USER_NAME!r}"
+    )
+
+
+# The ask must lend the claims nothing: it says "all four sources", never which.  Enforced
+# on every wording, the way every other leak guard in this file is.
+for _wording in (_WIDEN_ASK, *_WIDEN_ALSO_PHRASED):
+    for _host in _WIDEN_SITES:
+        assert _host not in _wording.casefold(), (
+            f"a widen wording must not name a source host: {_wording!r}"
+        )
+# The stored prompt must already name the site the job reads and none of the others — or
+# the headline claim is answered by the seed.
+_WIDEN_SEEDED_HOST = _WIDEN_SITES[0]
+assert _WIDEN_SEEDED_HOST in _WIDEN_JOB_PROGRAM.casefold(), (
+    f"the seeded prompt must name the site the job reads: {_WIDEN_SEEDED_HOST!r}"
+)
+for _host in _WIDEN_SITES[1:]:
+    assert _host not in _WIDEN_JOB_PROGRAM.casefold(), (
+        f"the seeded prompt must not already name {_host!r}"
+    )
+# The hosts must not stand in one another, or a prompt naming one could satisfy a claim
+# about another.
+for _host in _WIDEN_SITES:
+    for _other in _WIDEN_SITES:
+        assert _other is _host or _host not in _other, (
+            f"{_host!r} must not be a substring of {_other!r}"
+        )
+# Each host must reach the turn through the USER's own sends — the sources of a sourced
+# prompt — and in none of Penny's past replies, which PROVENANCE never reads as sources.
+_WIDEN_USER_SENDS = "\n".join(user for user, _ in _WIDEN_EXCHANGES)
+for _host in _WIDEN_SITES:
+    assert _host in _WIDEN_USER_SENDS.casefold(), (
+        f"{_host!r} must appear in one of the user's own sends: {_WIDEN_USER_SENDS!r}"
+    )
+
+
+def _the_prompt_names_the_sources(container: str, hosts: tuple[str, ...]) -> _ClaimFn:
+    """The job's stored prompt names every source the ask lists — the headline claim.
+
+    Read off the row's own prompt through the shared token check, host by host, so a
+    prompt that covers three of the four is named as missing the fourth.  A violating
+    sample is nameable, and is the measured one: a turn whose reply claimed the brief was
+    updated and whose stored prompt was unchanged."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        row = _job_row(sample, container)
+        if row is None or row.program is None:
+            return False, f"{container!r} holds no stored prompt"
+        missing = [host for host in hosts if not token_stands_in(host, row.program)]
+        return not missing, f"the stored prompt does not name {missing}"
+
+    return answer
+
+
+def _still_the_one_scheduled_job(sample: SampleObservation, _world: World) -> Answer:
+    """The brief is still the one scheduled job it was — no second job was stood up for
+    it beside the one the ask named (#2630's ruled claim).
+
+    Read off the registry's own birth mark (``born_this_run``: the row's name was absent
+    when the turn began) over the rows that carry a schedule, so a job the round created
+    is named.  A violating sample is nameable: one that answered the widen ask by standing
+    a second brief up next to the one it was asked to change, leaving the user with both."""
+    extra = sorted(
+        row.name
+        for row in sample.mechanisms
+        if row.born_this_run and not row.archived and row.schedule is not None
+    )
+    return not extra, f"the turn stood up {extra}"
+
+
+# The store's own labels for the fields a widen may state: the job's prompt, and the
+# description a widened brief restates beside it (the configure call carries both, and
+# #2630 claims only the schedule and the switch unchanged — the description is how a
+# widened job describes itself, not a term the ask named).
+_WIDEN_MOVEABLE = frozenset({"extraction_prompt", "description"})
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_widening_a_running_job_to_more_sources_changes_its_instructions(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """A running job widened to the sources the conversation already read: the job's own
+    prompt is what changes, and the rest of the job — its rule, its switch, its singleness
+    — is what survives.
+
+    The failure this exists to catch is the measured one: a reply that narrates the update
+    ("I've expanded it to include…") with no tool call behind it, leaving the job exactly
+    as it was while the user is told it changed."""
+    cohort = await chat_eval(
+        case_id="standing-widen-sources",
+        behaviour=(
+            "In the chat agent, when the user asks to widen a running job to more sources, "
+            "Penny changes that job's instructions to cover them."
+        ),
+        area=Area.STANDING_JOBS,
+        model=model,
+        seed=_seed_widen_world,
+        prepare=_probe_widen_world,
+        world=World(name="standing-widen-sources", pages=(), keeps=(), excludes=(), answers=()),
+        ask=_WIDEN_ASK,
+        also_phrased=_WIDEN_ALSO_PHRASED,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_OPERATIONS_FAMILY,
+        timeout=240.0,
+    )
+    # STORE — the prompt the ask named moved, and the job's terms are what they were.
+    cohort.claim(
+        "state: the job's stored prompt names every source the ask lists",
+        _the_prompt_names_the_sources(_WIDEN_JOB_CONTAINER, _WIDEN_SITES),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_STILL_LIVE, _the_job_is_still_live(_WIDEN_JOB_CONTAINER), SpecCategory.STORE)
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+    cohort.claim(
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_WIDEN_JOB_CONTAINER, asked=_WIDEN_MOVEABLE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the widened brief is still the one scheduled job it was",
+        _still_the_one_scheduled_job,
+        SpecCategory.STORE,
+    )
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
