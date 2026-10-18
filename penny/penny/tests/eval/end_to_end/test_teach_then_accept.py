@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS
@@ -221,9 +222,17 @@ def _seed(db: Database) -> None:
 
     Checked against COLLECTIONS only, never the whole store — a fresh eval database is built
     exactly like production (``create_tables()`` then ``migrate()``), and migrations seed
-    system log memories (``penny-messages``, the browse-results log, …) into every database,
-    cold teach or not."""
-    collections = [row for row in db.memories.list_all() if row.type == MemoryType.COLLECTION]
+    system log memories (``penny-messages``, the browse-results log, …) and the empty
+    ``rules`` collection into every database, cold teach or not."""
+    collections = [
+        row
+        for row in db.memories.list_all()
+        if row.type == MemoryType.COLLECTION
+        # The seeded ``rules`` collection (#2633, migration 0119) is the same kind of
+        # permanent furniture the log markers are: on every migrated database, empty,
+        # and seeded by known key — not something a sample built.
+        and row.name != PennyConstants.MEMORY_RULES_COLLECTION
+    ]
     assert not collections, f"no collection may exist yet for a cold teach, found {collections}"
 
 
