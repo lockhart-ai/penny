@@ -13,6 +13,12 @@ Each channel implementation follows this structure:
 ```
 penny/channels/
 ├── base.py                 # Abstract MessageChannel interface
+├── manager.py              # Channel manager — routes messages to/from multiple channels via the device table
+├── permission_manager.py   # Permission manager — cross-channel domain permission coordination
+├── browser/                # Browser extension channel implementation
+│   ├── __init__.py
+│   ├── channel.py         # Browser extension channel — WebSocket server implementing MessageChannel
+│   └── models.py          # Pydantic models for browser extension WebSocket protocol
 ├── signal/                 # Signal implementation
 │   ├── __init__.py
 │   ├── channel.py         # SignalChannel class
