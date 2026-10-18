@@ -330,9 +330,10 @@ def _seed_kitchen_sink(db: Database) -> None:
             updated_at=_t(6),
         )
         _add_entries(session, "favorites", 2, when=_t(7))
-        # The seeded rules collection (#2633) holding two rules — the WITH-rules form
-        # of the standing-rules section, oldest first; every other literal in this
-        # file renders its empty form.
+        # The seeded rules collection (#2633) holding two rules — the WITH-rules form:
+        # the chat prompt's instruction section renders them (below), and the
+        # self-state header itself renders NO standing-rules section at all; every
+        # other literal in this file renders the header's empty anchor form.
         _add_collection(
             session,
             "rules",
@@ -1094,8 +1095,11 @@ def _seed_mutation_matrix(db: Database, *, detail_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_full_chat_system_prompt_composition(db):
-    """The whole chat system prompt: Identity + Instructions + self-state header
-    (the dynamic tail), with the speculative recall / profile / inventory gone."""
+    """The whole chat system prompt: Identity + the standing rules (the instruction
+    part, right after the voice) + Instructions + self-state header (the dynamic
+    tail), with the speculative recall / profile / inventory gone.  The rules render
+    here, not in the header below — among the header's data sections they read as
+    one more line of state (#2633 finding)."""
     _seed_kitchen_sink(db)
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
@@ -1103,6 +1107,7 @@ async def test_full_chat_system_prompt_composition(db):
     prompt = await agent._build_system_prompt(USER)
     expected = (
         f"## Identity\n{Prompt.PENNY_IDENTITY}\n\n"
+        f"{_STANDING_RULES_INSTRUCTION}\n\n"
         f"## Instructions\n{Prompt.CONVERSATION_PROMPT}\n\n"
         f"{_KITCHEN_SINK}"
     )
@@ -1110,6 +1115,16 @@ async def test_full_chat_system_prompt_composition(db):
 
 
 # ── Frozen render literals (filled from the captured actual) ──────────────
+
+_STANDING_RULES_INSTRUCTION = (
+    "### Standing rules\n"
+    "The user's standing rules: follow each one in everything you send, to the very "
+    "end of the message. Where a rule asks for something different from the style "
+    "guidance in this prompt, the rule is what they want.\n"
+    "\n"
+    "- page links: always include a link when you mention a page (added 2026-07-11 07:00 UTC)\n"
+    "- no metric units: never use metric units (added 2026-07-11 07:30 UTC)"
+)
 
 _KITCHEN_SINK = (
     "## Penny's current state\n"
@@ -1148,10 +1163,6 @@ _KITCHEN_SINK = (
     "- rules (collection, 2 entries) — Standing instructions the user has given: things "
     "to always or never do\n"
     "archived: `old-watch`\n"
-    "\n"
-    "### Standing rules\n"
-    "- page links: always include a link when you mention a page (added 2026-07-11 07:00 UTC)\n"
-    "- no metric units: never use metric units (added 2026-07-11 07:30 UTC)\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"

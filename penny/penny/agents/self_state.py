@@ -48,12 +48,17 @@ one guess-free tool call from the detail). Sections:
 - A pointers line naming the fetch tools for anything deeper.
 
 Standing rules (#2633): the seeded ``rules`` collection — the things the user has
-asked Penny to always or never do — renders in full here (``_standing_rules_section``,
-one shared render the collector cycle's prompt and the notify document also show),
-oldest first, each entry as ``- <key>: <content> (added <date>)``.  With none, the
-section shows one line naming the empty collection, so the ``rules`` anchor is on
-screen before the first rule is ever written.  Only this collection renders this
-way: another collection's content never enters the prompt as standing instructions.
+asked Penny to always or never do — renders in full wherever she acts, oldest first,
+each entry as ``- <key>: <content> (added <date>)``, from ONE shared render
+(``render_standing_rules``; collector cycle and notify composer show the whole
+section).  Only this collection renders this way: another collection's content never
+enters the prompt as standing instructions.  In the chat prompt the section does not
+live here: measured on gemma (run-20261018T205834Z-17233), a rule among these data
+sections read as one more line of state and the static voice guidance won every
+sample, so the chat rules render in the instruction part instead
+(``standing_rules_instruction``) and this header carries the empty-collection anchor
+alone — one line naming ``rules`` so the first rule's write is one guess-free call
+away before any rule exists.
 
 Autonomous-send (emission) rows join the recent-activity block (#1568): each
 delivered mechanism send renders one ``sent · <when> · <mechanism> — "<snippet>"``
@@ -186,7 +191,9 @@ class SelfStateHeader:
 
     def render(self) -> str:
         """The whole ``## Penny's current state`` block — a table of contents of
-        Penny's operational situation, each section a deterministic render."""
+        Penny's operational situation, each section a deterministic render.  A
+        section that has nothing to show renders nothing (``_standing_rules_section``
+        yields to the instruction part once a rule stands)."""
         sections = [
             self.HEADER,
             self._mechanisms_section(),
@@ -196,7 +203,7 @@ class SelfStateHeader:
             self._durable_core_section(),
             self.POINTERS,
         ]
-        return "\n\n".join(sections)
+        return "\n\n".join(section for section in sections if section)
 
     # ── Active mechanisms ────────────────────────────────────────────────────
 
@@ -559,10 +566,16 @@ class SelfStateHeader:
     # ── Durable user-fact core ───────────────────────────────────────────────
 
     def _standing_rules_section(self) -> str:
-        """The standing rules the user has given — the shared render one level down
-        (``standing_rules_section``), which the collector cycle's prompt and the notify
-        document show too (#2633)."""
-        return standing_rules_section(self.db)
+        """The standing rules' empty-collection anchor, and nothing else.  With a
+        rule standing, the rules render in the chat prompt's instruction part
+        (``standing_rules_instruction``, one shared render) — inside these data
+        sections a rule read as one more line of state, and the static voice
+        guidance's own sign-off/emoji lines won every measured sample (#2633
+        finding).  With none, the anchor line stays so ``rules`` is named somewhere
+        she reads before the first rule exists."""
+        if standing_rules_entries(self.db):
+            return ""
+        return f"{self.STANDING_RULES_HEADER}\n{self.EMPTY_STANDING_RULES}"
 
     def _durable_core_section(self) -> str:
         """The small, stable set of deterministic user facts — name, timezone,
@@ -582,6 +595,13 @@ class SelfStateHeader:
 # ── The shared standing-rules render (#2633) ──────────────────────────────────
 
 
+def standing_rules_entries(db: Database) -> list[MemoryRow]:
+    """Every entry in the ``rules`` collection — empty when the collection does not
+    exist (``db.memory`` returns ``None`` on a name nothing has created)."""
+    collection = db.memory(PennyConstants.MEMORY_RULES_COLLECTION)
+    return collection.read_all() if collection is not None else []
+
+
 def render_standing_rules(db: Database) -> str:
     """The standing rules' BODY: every entry in the ``rules`` collection in full,
     oldest first, each as ``- <key>: <content> (added <date>)`` — a verbatim render
@@ -591,8 +611,7 @@ def render_standing_rules(db: Database) -> str:
     instead, so the ``rules`` anchor is on screen in every state: the write that adds
     the first rule, and the read that answers "what are my standing rules", are both
     one guess-free call from this section wherever it appears."""
-    collection = db.memory(PennyConstants.MEMORY_RULES_COLLECTION)
-    entries = collection.read_all() if collection is not None else []
+    entries = standing_rules_entries(db)
     if not entries:
         return SelfStateHeader.EMPTY_STANDING_RULES
     return "\n".join(
@@ -602,8 +621,48 @@ def render_standing_rules(db: Database) -> str:
 
 
 def standing_rules_section(db: Database) -> str:
-    """The whole ``### Standing rules`` section — the ONE render the three model-facing
-    surfaces share (#2633): the chat self-state header (``SelfStateHeader.render``),
-    every collector cycle's system prompt, and the notify composer's document.  Written
-    once so the three can never disagree about what a rule says."""
+    """The whole ``### Standing rules`` section — the ONE render the model-facing
+    surfaces that read the rules as a DATA section share (#2633): every collector
+    cycle's system prompt and the notify composer's document.  Written once so they
+    can never disagree about what a rule says.  The chat prompt renders the rules in
+    its instruction part instead (``standing_rules_instruction``) — inside the
+    current-state header's data sections a rule read as one more line of state."""
     return f"{SelfStateHeader.STANDING_RULES_HEADER}\n{render_standing_rules(db)}"
+
+
+# The one line that frames the rules where the chat agent reads INSTRUCTIONS.  Stated
+# in plain words, no imperative, and naming the two conflicts the measured samples
+# showed (run-20261018T205834Z-17233: a rule among the data sections read as one more
+# line of state and her static voice guidance won; after the move to the instruction
+# part, the voice line "Finish every message with an emoji" still won the FINAL
+# characters — 4 of 15 samples appended the emoji after the rule's sign-off, reading
+# the two as compatible): the rules govern the whole message, its last characters
+# included, and the user's own ask wins over Penny's default style wherever that
+# style is stated in the prompt.  Named as the general case — where a rule reaches in
+# the message — never by any one rule's words.
+STANDING_RULES_FRAMING = (
+    "The user's standing rules: follow each one in everything you send, to the very "
+    "end of the message. Where a rule asks for something different from the style "
+    "guidance in this prompt, the rule is what they want."
+)
+
+
+def standing_rules_instruction(db: Database) -> str | None:
+    """The standing rules presented where the chat agent reads instructions — the
+    framing line above the shared rules render, as a ``### Standing rules`` section
+    of the chat prompt between her identity and her instructions (#2633 finding:
+    inside the current-state header the rule read as state, not as an ask).
+
+    Carries the SAME section title as the collector/composer data section, so a rule
+    is sourced the same wherever it renders (the eval harness's provenance split
+    reads the title, not the surface).  ``None`` when there are no rules — the
+    current-state header keeps the empty anchor naming ``rules`` in that state, and
+    an instruction section with nothing to follow would only blur the one rule that
+    later lands."""
+    if not standing_rules_entries(db):
+        return None
+    return (
+        f"{SelfStateHeader.STANDING_RULES_HEADER}\n"
+        f"{STANDING_RULES_FRAMING}\n"
+        f"\n{render_standing_rules(db)}"
+    )

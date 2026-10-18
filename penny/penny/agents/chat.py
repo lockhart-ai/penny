@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
-from penny.agents.self_state import SelfStateHeader
+from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, RunOutcome
 from penny.datetime_utils import current_datetime_line
@@ -47,9 +47,13 @@ class ChatAgent(Agent):
     - Chat turns → messages array as alternating user/assistant turns
       via ``_build_conversation`` and ``history=``.
 
-    The system prompt is identity + (page hint) + instructions + the self-state
-    header.  Every turn — image or not — runs the standard agentic loop; an
-    image rides the turn's own user message (#2635) for the chat model to read.
+    The system prompt is identity + the user's standing rules + (page hint) +
+    instructions + the self-state header — the rules render in the instruction
+    part, right after her voice, because among the header's data sections they
+    read as one more line of state and the static voice guidance won every
+    measured sample (#2633 finding).  Every turn — image or not — runs the
+    standard agentic loop; an image rides the turn's own user message (#2635)
+    for the chat model to read.
     """
 
     name: str = "chat"
@@ -379,13 +383,17 @@ class ChatAgent(Agent):
         user: str | None,
         instructions: str | None = None,
     ) -> str:
-        """Identity + (page hint) + instructions + self-state header (#1555).
+        """Identity + standing rules + (page hint) + instructions + self-state
+        header (#1555).
 
-        The chat prompt opens with Penny's persona/instructions and closes with a
-        deterministic **self-state header** — the dynamic tail — rendering her own
-        operational situation (active mechanisms · recent activity · the store map
-        · durable user facts) purely from the registry
-        (#1566) + ledger (#1560), never a relevance guess.
+        The chat prompt opens with Penny's persona/voice, then the user's standing
+        rules — in the instruction part, right after the voice sections, because
+        among the self-state header's data sections a rule read as one more line
+        of state and her static voice guidance won every measured sample (#2633
+        finding).  It closes with a deterministic **self-state header** — the
+        dynamic tail — rendering her own operational situation (active mechanisms ·
+        recent activity · the store map · durable user facts) purely from the
+        registry (#1566) + ledger (#1560), never a relevance guess.
 
         The ambient inversion (#1555): the chat prompt no longer injects
         **speculative user-content recall** at all.  User content is fetched on
@@ -398,6 +406,7 @@ class ChatAgent(Agent):
             section
             for section in [
                 self._identity_section(),
+                standing_rules_instruction(self.db),
                 self._context_block(self._page_hint_section()),
                 self._instructions_section(instructions),
                 SelfStateHeader(self.db, user).render(),
