@@ -19,7 +19,9 @@ pure, DB-free pieces of that flow so they are whole-render tested in isolation:
   ``describe_schedule``/``describe_schedule_field`` (#2425) are what every
   model-facing surface reads instead: plain words leading, with that same exact
   rule kept alongside in a code span, so a reply narrating a job's cadence has
-  words to copy rather than the raw RRULE;
+  words to copy rather than the raw RRULE.  A job's end is said ONE way, through
+  ``expires_at``: a schedule only says how often a job runs, so one stating its
+  own ``UNTIL=`` is refused outright (``_refuse_until``);
 * the **creation echo** (the prompt · schedule · notify · expiry), so the chat
   agent confirms back exactly what landed.
 
@@ -77,10 +79,12 @@ class Schedule(BaseModel):
     ``rule`` is the RRULE text as given, trimmed and with its lines held as real
     newlines — it is what gets stored and what every surface renders back, so display
     form == invocation form with the rule itself as the copyable anchor.  ``max_runs``
-    and ``expires_at`` are the ``COUNT=`` / ``UNTIL=`` parts lifted out of that same
-    text into the columns that already own those end conditions; the parts stay in the
-    stored rule too, so re-passing a rendered rule lifts the same values and
-    round-trips.
+    is the ``COUNT=`` part lifted out of that same text into the column that already
+    owns that end condition; the part stays in the stored rule too, so re-passing a
+    rendered rule lifts the same value and round-trips.  ``expires_at`` is never set
+    by a fresh parse (#2511 — a schedule's own ``UNTIL=`` is refused at the write
+    boundary, see ``_refuse_until``); it stays on the model only because
+    ``resolve_expiry`` reads it generically alongside a bare ``expires_at`` argument.
     """
 
     rule: str
@@ -105,13 +109,16 @@ SCHEDULE_EXAMPLES = (
 # grammar and shows it, so the model rewrites into RRULE rather than inventing a second
 # schedule language.  A BLANK schedule never reaches here — it is refused at the arg gate
 # with its own teaching rejection (#1776) — so this only ever answers garbled input.
+# UNTIL= is deliberately absent from the shapes this points at (#2511): a schedule only
+# ever says how often a job runs, never when it stops.
 _SCHEDULE_TEACHING = (
     "I couldn't read the schedule '{schedule}'. A schedule is one RRULE line — the "
     "calendar recurrence format — optionally preceded by a DTSTART line saying when it "
     "starts. Copy one of these shapes:\n"
     f"{SCHEDULE_EXAMPLES}\n"
-    "Use COUNT= to stop after that many runs, and UNTIL=20260901T000000Z to stop at "
-    "a time. "
+    "Use COUNT= to stop after that many runs. A schedule only says how often a job "
+    "runs — say when it stops with expires_at, in your own words or your own local "
+    "time (expires_at='sunday night'). "
     "Or leave the schedule out entirely for a storage-only collection."
 )
 
@@ -125,8 +132,8 @@ _SCHEDULE_DID_YOU_MEAN = (
 )
 
 # A schedule carrying more than one rule line: the grammar is ONE rule (plus an optional
-# DTSTART), because COUNT/UNTIL are lifted from that one rule into the collection's end
-# conditions and two rules would give two answers.
+# DTSTART), because COUNT is lifted from that one rule into the collection's end
+# condition and two rules would give two answers.
 _SCHEDULE_MULTIPLE_RULES = (
     "The schedule '{schedule}' has more than one rule line. A schedule is exactly one "
     "RRULE line, optionally preceded by one DTSTART line — combine what you want into a "
@@ -145,10 +152,6 @@ _LINE_ESCAPE = "\\n"
 # Any dtstart validates the grammar, so validation uses a fixed one rather than a clock
 # read — parsing the same text twice must give the same answer.
 _VALIDATION_DTSTART = datetime(2000, 1, 1, tzinfo=UTC)
-# How an UNTIL value is written.  A bare date is deliberately absent: the rule's
-# start is always timezone-aware here, and dateutil refuses a naive UNTIL against
-# one, so such a rule never reaches the lift at all.
-_UNTIL_FORMAT = "%Y%m%dT%H%M%SZ"
 # Wrappers a model puts around a value it is quoting rather than passing.
 _WRAPPING_CHARACTERS = "'\"`"
 
@@ -159,9 +162,11 @@ def parse_schedule(schedule: str) -> Schedule:
     One grammar: an RRULE line, optionally preceded by a ``DTSTART:`` line saying when
     the recurrence starts (default: the collection's ``created_at``, applied by the
     collector).  ``python-dateutil``'s ``rrulestr`` is the authority on whether the text
-    is a schedule — a well-known formalism, no bespoke parsing — and ``COUNT=`` /
-    ``UNTIL=`` are lifted out into ``max_runs`` / ``expires_at`` while staying in the
-    stored rule, so a rendered schedule copies straight back and round-trips.
+    is a schedule — a well-known formalism, no bespoke parsing — and ``COUNT=`` is
+    lifted out into ``max_runs`` while staying in the stored rule, so a rendered
+    schedule copies straight back and round-trips.  A rule stating its own ``UNTIL=``
+    is refused outright (:func:`_refuse_until`) — a job's end is said ONE way,
+    through the collection's ``expires_at``, never through the schedule.
 
     Text ``rrulestr`` refuses raises the teaching :class:`ScheduleError`, carrying the
     mechanically-repaired string verbatim when one exists so the retry is a copy.
@@ -171,11 +176,8 @@ def parse_schedule(schedule: str) -> Schedule:
     if rule_line is None or not _reads_as_schedule(text):
         raise ScheduleError(_teaching_for(_one_line(schedule.strip())))
     parts = _rule_parts(rule_line)
-    return Schedule(
-        rule=text,
-        max_runs=_lifted_count(parts, text),
-        expires_at=_lifted_until(parts, text),
-    )
+    _refuse_until(parts, text)
+    return Schedule(rule=text, max_runs=_lifted_count(parts, text))
 
 
 def _one_line(text: str) -> str:
@@ -297,21 +299,27 @@ def _lifted_count(parts: dict[str, str], text: str) -> int | None:
     return int(raw)
 
 
-def _lifted_until(parts: dict[str, str], text: str) -> datetime | None:
-    """``UNTIL=`` lifted into ``expires_at`` — the end condition the archive lifecycle
-    already owns.  RFC 5545 writes it as ``YYYYMMDDTHHMMSSZ`` (or a bare date)."""
-    raw = parts.get(_UNTIL_PART)
-    if raw is None:
-        return None
-    try:
-        return datetime.strptime(raw, _UNTIL_FORMAT).replace(tzinfo=UTC)
-    except ValueError:
-        pass
-    raise ScheduleError(
-        f"The schedule '{_one_line(text)}' has UNTIL={raw}, which isn't a time I can read "
-        "— write "
-        "it as a UTC stamp like UNTIL=20260901T000000Z."
-    )
+# A job's end is said ONE way: through expires_at, on the user's own words or clock.
+# RFC 5545 writes UNTIL in UTC, so a schedule stating its own end means converting a
+# spoken one to that zone by hand — refused outright here, at the write boundary only,
+# so nothing has to get that conversion right. A stored rule already carrying UNTIL=
+# still parses and fires on it unchanged on every READ path (``next_occurrence``,
+# ``describe_schedule``).
+_UNTIL_REFUSED = (
+    "The schedule '{schedule}' sets UNTIL={until} — a schedule only says how OFTEN a "
+    "job runs, never when it stops. Say when it stops with expires_at, in your own "
+    "words or your own local time, e.g. expires_at='sunday night' or "
+    "expires_at='2026-10-18T22:00:00'. Pass the schedule without UNTIL=:\n"
+    f"{SCHEDULE_EXAMPLES}"
+)
+
+
+def _refuse_until(parts: dict[str, str], text: str) -> None:
+    """Refuse a schedule stating its own ``UNTIL=`` — see the note above.  A no-op for
+    any other schedule, including one with no end condition at all."""
+    until = parts.get(_UNTIL_PART)
+    if until is not None:
+        raise ScheduleError(_UNTIL_REFUSED.format(schedule=_one_line(text), until=until))
 
 
 def next_occurrence(
