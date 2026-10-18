@@ -202,12 +202,10 @@ Causes found so far, each with the fix that worked:
   kind of read and write on it, and give each exactly one tool, named `target_verb`. A tool is
   removed only when an exact equivalent remains, so no kind of read or write is lost.
 - **Two words for one thing** in what the model reads — "collection" and "memory" for the same
-  concept, "skill" and "routine" for the same mechanism. The spread shows as samples splitting
+  concept. The spread shows as samples splitting
   cleanly along which word the prompt used nearest the decision. The fix is one word per thing
   everywhere the model reads; where the user's own word differs, say so once rather than
-  switching vocabulary mid-document. Measured: removing the only sentence tying "routines" to
-  skills took one wording to 4 of 6 passing, and restoring one bridging sentence brought it back
-  to 30 of 30.
+  switching vocabulary mid-document.
 - **An optional argument** the model fills in when it isn't relevant to the ask. Adding an
   optional parameter to a tool is an input change to every case that offers that tool, not a
   no-op — measure the cases that touch it, not just the one the parameter was added for.

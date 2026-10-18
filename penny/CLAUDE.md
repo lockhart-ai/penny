@@ -126,7 +126,6 @@ penny/
     send_queue_store.py — SendQueueStore: durable outbound queue — enqueue, `next_pending` (by origin lane), mark_sent (#1939)
     user_store.py     — UserStore: get_info, save_info, mute/unmute
     memory/           — The memory layer: `Memory`/`Collection`/`Log`, `MemoryStore`, the message-log/run-log facades, the undo journal
-    machine_store.py  — `MachineStore`: the conversation state machine's durable append-only transition log. There is no conversation machine any more, so this store is inert — nothing calls it
     mutation_store.py — `MutationStore`: the registry-mutation event ledger, with before/after field priors (#1946)
     cursor_store.py   — CursorStore: per-agent read cursors into log-shaped memories
     media_store.py    — MediaStore: browsed images, matched to outgoing text by embedding at egress (generated images deliver by id to their own reply, then join this pool)
@@ -218,11 +217,11 @@ There are no conditional (config-gated) commands — email retired onto the chat
 - `RuntimeParams` class provides attribute access: `config.runtime.IDLE_SECONDS`
 - Three-tier lookup chain: DB override → env override → ConfigParam.default
 - Config values are read on each use (not cached), so changes take effect immediately
-- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS, dedup thresholds), Email (body max length, search/list limits, request timeout), Token budgets (one `TOKEN_BUDGET_*` param per model-call kind — chat, collector, browse-extract, notify-composer, skill-binder, skill-framer, skill-namer, state-classifier — read by `token_budget_for(runtime, agent_name)` and sent as `LlmClient.chat()`'s `token_budget`, #2474)
+- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS, dedup thresholds), Email (body max length, search/list limits, request timeout), Token budgets (one `TOKEN_BUDGET_*` param per model-call kind — chat, collector, browse-extract, notify-composer — read by `token_budget_for(runtime, agent_name)` and sent as `LlmClient.chat()`'s `token_budget`, #2474)
 
 ## Data Model
 
-All tables are SQLModel classes in `database/models.py` — the prompt/message logs, the memory/entry/mutation tables, the send queue, media, and per-reader cursors, plus the unused `skill`/`state_transition` tables left over from the retired skill system and conversation machine. Read `docs/reference/database.md` before changing a table or a store's read/write shape.
+All tables are SQLModel classes in `database/models.py` — the prompt/message logs, the memory/entry/mutation tables, the send queue, media, and per-reader cursors. Read `docs/reference/database.md` before changing a table or a store's read/write shape.
 
 ## Message Flow
 
