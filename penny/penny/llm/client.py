@@ -252,40 +252,7 @@ class LlmClient:
 
         logger.info("Initialized LLM client: url=%s, model=%s", api_url, model)
 
-    async def _backoff(self, attempt: int) -> None:
-        """Wait before re-attempting a failed call, doubling with each attempt.
-
-        A remote endpoint's failures arrive in bursts — a provider draining a queue, a
-        node cycling — so a flat delay re-attempts three times into the same bad moment
-        and reports the burst as three separate failures.  Doubling spends the same first
-        wait and gives the last attempt a materially later one.
-        """
-        await asyncio.sleep(self.retry_delay * 2**attempt)
-
-    def _log_attempt(
-        self, attempt: int, *, fault: LlmFault | None, provider: str | None, detail: str
-    ) -> None:
-        """Record ONE chat attempt's outcome, with the fault class and provider as VALUES.
-
-        One record per attempt, at one chokepoint, because the alternative is what was
-        there before: a different sentence per failure branch, counted only by a human
-        grepping afterwards.  The message stays human; ``llm_fault`` and ``llm_provider``
-        ride alongside it as structured fields, so a tally reads them off the record and
-        never has to recognise a phrasing.  A success is DEBUG (it is not news), a fault
-        is WARNING (it is).
-        """
-        logger.log(
-            logging.DEBUG if fault is None else logging.WARNING,
-            "LLM chat attempt %d/%d: %s via %s%s",
-            attempt + 1,
-            self.max_retries,
-            fault.value if fault is not None else "ok",
-            provider or UNREPORTED_PROVIDER,
-            f" — {detail}" if detail else "",
-            extra={FAULT_LOG_FIELD: fault, PROVIDER_LOG_FIELD: provider},
-        )
-
-    # ── Chat ─────────────────────────────────────────────────────────────
+    # ── Summary ──────────────────────────────────────────────────────────
 
     async def chat(
         self,
@@ -334,12 +301,13 @@ class LlmClient:
         a caller can ask for one draw with thinking off.  No production caller passes
         it yet — it exists for the follow-up issues that give a capped call a second,
         reasoning-off attempt to answer with what it has.
+
+        Reads top to bottom as the call's own table of contents: resolve this
+        call's ids and announce it, run the retry loop, then log however it
+        ended.
         """
-        resolved_run_id = call_link.run_id
-        parent_run_id = call_link.parent_run_id
-        parent_tool_call_id = call_link.parent_tool_call_id
-        self._publish_call_started(
-            resolved_run_id, parent_run_id, parent_tool_call_id, agent_name, prompt_type, run_target
+        resolved_run_id, parent_run_id, parent_tool_call_id = self._start_call(
+            call_link, agent_name, prompt_type, run_target
         )
         start = time.time()
         messages_snapshot = list(messages)
@@ -348,12 +316,10 @@ class LlmClient:
                 messages, tools, format, token_budget, thinking_enabled
             )
         except asyncio.CancelledError:
-            self._log_call(
+            self._log_failed_call(
                 messages_snapshot,
-                None,
                 tools,
-                None,
-                self._elapsed_ms(start),
+                start,
                 agent_name,
                 prompt_type,
                 resolved_run_id,
@@ -367,12 +333,10 @@ class LlmClient:
             outcome = (
                 CallOutcome.TIMED_OUT if isinstance(error, LlmTimeoutError) else CallOutcome.RAISED
             )
-            self._log_call(
+            self._log_failed_call(
                 messages_snapshot,
-                None,
                 tools,
-                None,
-                self._elapsed_ms(start),
+                start,
                 agent_name,
                 prompt_type,
                 resolved_run_id,
@@ -384,6 +348,100 @@ class LlmClient:
             )
             raise
 
+        return self._log_successful_call(
+            response,
+            raw,
+            messages_snapshot,
+            tools,
+            start,
+            agent_name,
+            prompt_type,
+            resolved_run_id,
+            run_target,
+            parent_run_id,
+            parent_tool_call_id,
+        )
+
+    # ── Chat: call setup and logging ────────────────────────────────────
+
+    def _start_call(
+        self,
+        call_link: CallLink,
+        agent_name: str | None,
+        prompt_type: str | None,
+        run_target: str | None,
+    ) -> tuple[str, str | None, str | None]:
+        """Resolve this call's own run/parent ids off ``call_link`` (#2458 — no
+        ambient state, read straight off the link) and announce it (#2439),
+        before the network request — a live Prompts tab's only signal that
+        anything is happening until the call's own ``promptlog`` row eventually
+        lands.  Returns the ids ``chat()`` threads through its own logging.
+        """
+        resolved_run_id = call_link.run_id
+        parent_run_id = call_link.parent_run_id
+        parent_tool_call_id = call_link.parent_tool_call_id
+        self._publish_call_started(
+            resolved_run_id, parent_run_id, parent_tool_call_id, agent_name, prompt_type, run_target
+        )
+        return resolved_run_id, parent_run_id, parent_tool_call_id
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> int:
+        """Milliseconds since ``start`` (``time.time()`` at the top of ``chat()``)."""
+        return int((time.time() - start) * 1000)
+
+    def _log_failed_call(
+        self,
+        messages_snapshot: list[dict],
+        tools: list[dict] | None,
+        start: float,
+        agent_name: str | None,
+        prompt_type: str | None,
+        resolved_run_id: str,
+        run_target: str | None,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        outcome: CallOutcome,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        """Log this call's ONE ``promptlog`` row for a cancelled, timed-out, or
+        raised call (#2355 part A) — no response to persist, so ``raw``/``thinking``
+        go through as ``None``.
+        """
+        self._log_call(
+            messages_snapshot,
+            None,
+            tools,
+            None,
+            self._elapsed_ms(start),
+            agent_name,
+            prompt_type,
+            resolved_run_id,
+            run_target,
+            parent_run_id,
+            parent_tool_call_id,
+            outcome,
+            error=error,
+        )
+
+    def _log_successful_call(
+        self,
+        response: LlmResponse,
+        raw: openai.types.chat.ChatCompletion,
+        messages_snapshot: list[dict],
+        tools: list[dict] | None,
+        start: float,
+        agent_name: str | None,
+        prompt_type: str | None,
+        resolved_run_id: str,
+        run_target: str | None,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+    ) -> LlmResponse:
+        """Log the response and this call's ONE completed ``promptlog`` row
+        (#2355 part A), then hand the response back to ``chat()``'s caller.
+        """
         thinking = response.thinking or response.message.thinking
         self._log_response(response, thinking)
         self._log_call(
@@ -402,10 +460,40 @@ class LlmClient:
         )
         return response
 
-    @staticmethod
-    def _elapsed_ms(start: float) -> int:
-        """Milliseconds since ``start`` (``time.time()`` at the top of ``chat()``)."""
-        return int((time.time() - start) * 1000)
+    # ── Chat: the retry loop ─────────────────────────────────────────────
+
+    async def _backoff(self, attempt: int) -> None:
+        """Wait before re-attempting a failed call, doubling with each attempt.
+
+        A remote endpoint's failures arrive in bursts — a provider draining a queue, a
+        node cycling — so a flat delay re-attempts three times into the same bad moment
+        and reports the burst as three separate failures.  Doubling spends the same first
+        wait and gives the last attempt a materially later one.
+        """
+        await asyncio.sleep(self.retry_delay * 2**attempt)
+
+    def _log_attempt(
+        self, attempt: int, *, fault: LlmFault | None, provider: str | None, detail: str
+    ) -> None:
+        """Record ONE chat attempt's outcome, with the fault class and provider as VALUES.
+
+        One record per attempt, at one chokepoint, because the alternative is what was
+        there before: a different sentence per failure branch, counted only by a human
+        grepping afterwards.  The message stays human; ``llm_fault`` and ``llm_provider``
+        ride alongside it as structured fields, so a tally reads them off the record and
+        never has to recognise a phrasing.  A success is DEBUG (it is not news), a fault
+        is WARNING (it is).
+        """
+        logger.log(
+            logging.DEBUG if fault is None else logging.WARNING,
+            "LLM chat attempt %d/%d: %s via %s%s",
+            attempt + 1,
+            self.max_retries,
+            fault.value if fault is not None else "ok",
+            provider or UNREPORTED_PROVIDER,
+            f" — {detail}" if detail else "",
+            extra={FAULT_LOG_FIELD: fault, PROVIDER_LOG_FIELD: provider},
+        )
 
     async def _chat_attempts(
         self,
@@ -429,80 +517,124 @@ class LlmClient:
 
         for attempt in range(self.max_retries):
             try:
-                logger.debug("Sending chat request (attempt %d/%d)", attempt + 1, self.max_retries)
-
-                translated_messages = self._translate_messages(messages)
-                kwargs = self._build_chat_kwargs(
-                    translated_messages, tools, format, token_budget, thinking_enabled
+                result = await self._attempt_chat_request(
+                    messages, tools, format, token_budget, thinking_enabled, attempt
                 )
-                raw = await self.client.chat.completions.create(**kwargs)
-
-                # Checked BEFORE parsing, and treated as a retryable fault rather than
-                # raised: an LlmError raised from here would re-raise untried (see the
-                # first except clause), and a provider answering 200-with-no-completion
-                # is exactly the transient another attempt usually gets past.
-                if not raw.choices:
-                    last_error = LlmResponseError(
-                        _no_payload_detail(raw, "choices"), fault=LlmFault.NO_CHOICES
-                    )
-                    self._log_attempt(
-                        attempt,
-                        fault=LlmFault.NO_CHOICES,
-                        provider=_provider_of(raw),
-                        detail=str(last_error),
-                    )
-                    if attempt < self.max_retries - 1:
-                        await self._backoff(attempt)
-                    continue
-
-                response = self._parse_response(raw)
-                self._log_attempt(attempt, fault=None, provider=response.provider, detail="")
-                return response, raw
-
             except LlmError:
                 raise
             except openai.NotFoundError as error:
-                summary = _summarize_llm_error(error)
-                self._log_attempt(attempt, fault=LlmFault.NOT_FOUND, provider=None, detail=summary)
-                logger.error("LLM chat failed (model not found, no retry): %s", summary)
-                raise LlmNotFoundError(summary) from error
+                raise self._not_found_error(attempt, error) from error
             except openai.APITimeoutError as error:
-                last_error = LlmTimeoutError(str(error))
-                self._log_attempt(attempt, fault=LlmFault.TIMEOUT, provider=None, detail=str(error))
-                if attempt < self.max_retries - 1:
-                    await self._backoff(attempt)
+                last_error = await self._retry_after_timeout(attempt, error)
             except openai.APIConnectionError as error:
-                last_error = LlmConnectionError(str(error))
-                self._log_attempt(
-                    attempt, fault=LlmFault.CONNECTION, provider=None, detail=str(error)
-                )
-                if attempt < self.max_retries - 1:
-                    await self._backoff(attempt)
+                last_error = await self._retry_after_connection_error(attempt, error)
             except openai.OpenAIError as error:
-                summary = _summarize_llm_error(error)
-                # 500 "error parsing tool call" means the model produced plain text
-                # instead of a JSON tool call. Retrying with the same messages won't
-                # help — raise immediately so the agent can inject a format nudge.
-                if getattr(error, "status_code", None) == 500 and "error parsing tool call" in str(
-                    error
-                ):
-                    self._log_attempt(
-                        attempt, fault=LlmFault.TOOL_PARSE, provider=None, detail=summary
-                    )
-                    logger.warning(
-                        "Tool parse error — model returned plain text instead of JSON tool call"
-                    )
-                    raise LlmToolParseError(summary) from error
-                fault = fault_for_status(getattr(error, "status_code", None))
-                last_error = LlmResponseError(summary, fault=fault)
-                self._log_attempt(attempt, fault=fault, provider=None, detail=summary)
-                if attempt < self.max_retries - 1:
-                    await self._backoff(attempt)
+                last_error = await self._retry_after_openai_error(attempt, error)
+            else:
+                if isinstance(result, tuple):
+                    return result
+                last_error = await self._retry_after_no_choices(attempt, result)
 
         logger.error("LLM chat failed after %d attempts: %s", self.max_retries, last_error)
         if last_error is None:
             raise LlmResponseError("LLM chat exhausted retries without a recorded error")
         raise last_error
+
+    async def _attempt_chat_request(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None,
+        format: dict | str | None,
+        token_budget: int | None,
+        thinking_enabled: bool,
+        attempt: int,
+    ) -> tuple[LlmResponse, openai.types.chat.ChatCompletion] | openai.types.chat.ChatCompletion:
+        """Send and parse ONE chat request.
+
+        Returns the parsed response alongside the raw completion on success.
+        On a 200 that carried no completion, returns the bare raw completion
+        instead of raising — ``_retry_after_no_choices`` is what classifies that
+        as a retryable fault: an ``LlmError`` raised from here would re-raise
+        untried (the first ``except`` clause in ``_chat_attempts``), and a
+        provider answering 200-with-no-completion is exactly the transient
+        another attempt usually gets past.
+        """
+        logger.debug("Sending chat request (attempt %d/%d)", attempt + 1, self.max_retries)
+        translated_messages = self._translate_messages(messages)
+        kwargs = self._build_chat_kwargs(
+            translated_messages, tools, format, token_budget, thinking_enabled
+        )
+        raw = await self.client.chat.completions.create(**kwargs)
+        if not raw.choices:
+            return raw
+
+        response = self._parse_response(raw)
+        self._log_attempt(attempt, fault=None, provider=response.provider, detail="")
+        return response, raw
+
+    def _not_found_error(self, attempt: int, error: openai.NotFoundError) -> LlmNotFoundError:
+        """Log, then build the terminal error for a model that doesn't exist — never retried."""
+        summary = _summarize_llm_error(error)
+        self._log_attempt(attempt, fault=LlmFault.NOT_FOUND, provider=None, detail=summary)
+        logger.error("LLM chat failed (model not found, no retry): %s", summary)
+        return LlmNotFoundError(summary)
+
+    async def _retry_after_timeout(
+        self, attempt: int, error: openai.APITimeoutError
+    ) -> LlmTimeoutError:
+        """Log a request timeout, then back off before the next attempt, if one remains."""
+        last_error = LlmTimeoutError(str(error))
+        self._log_attempt(attempt, fault=LlmFault.TIMEOUT, provider=None, detail=str(error))
+        if attempt < self.max_retries - 1:
+            await self._backoff(attempt)
+        return last_error
+
+    async def _retry_after_connection_error(
+        self, attempt: int, error: openai.APIConnectionError
+    ) -> LlmConnectionError:
+        """Log a connection failure, then back off before the next attempt, if one remains."""
+        last_error = LlmConnectionError(str(error))
+        self._log_attempt(attempt, fault=LlmFault.CONNECTION, provider=None, detail=str(error))
+        if attempt < self.max_retries - 1:
+            await self._backoff(attempt)
+        return last_error
+
+    async def _retry_after_openai_error(
+        self, attempt: int, error: openai.OpenAIError
+    ) -> LlmResponseError:
+        """Classify a generic OpenAI error, raising immediately for an unretryable
+        tool-parse failure; otherwise log it and back off before the next
+        attempt, if one remains.
+        """
+        summary = _summarize_llm_error(error)
+        # 500 "error parsing tool call" means the model produced plain text
+        # instead of a JSON tool call. Retrying with the same messages won't
+        # help — raise immediately so the agent can inject a format nudge.
+        if getattr(error, "status_code", None) == 500 and "error parsing tool call" in str(error):
+            self._log_attempt(attempt, fault=LlmFault.TOOL_PARSE, provider=None, detail=summary)
+            logger.warning("Tool parse error — model returned plain text instead of JSON tool call")
+            raise LlmToolParseError(summary) from error
+        fault = fault_for_status(getattr(error, "status_code", None))
+        last_error = LlmResponseError(summary, fault=fault)
+        self._log_attempt(attempt, fault=fault, provider=None, detail=summary)
+        if attempt < self.max_retries - 1:
+            await self._backoff(attempt)
+        return last_error
+
+    async def _retry_after_no_choices(
+        self, attempt: int, raw: openai.types.chat.ChatCompletion
+    ) -> LlmResponseError:
+        """Log a 200 that carried no completion as a retryable fault — checked
+        BEFORE parsing rather than raised (see ``_attempt_chat_request``) —
+        then back off before the next attempt, if one remains.
+        """
+        last_error = LlmResponseError(_no_payload_detail(raw, "choices"), fault=LlmFault.NO_CHOICES)
+        self._log_attempt(
+            attempt, fault=LlmFault.NO_CHOICES, provider=_provider_of(raw), detail=str(last_error)
+        )
+        if attempt < self.max_retries - 1:
+            await self._backoff(attempt)
+        return last_error
 
     # ── Generate (chat wrapper) ──────────────────────────────────────────
 
