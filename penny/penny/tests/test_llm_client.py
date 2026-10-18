@@ -233,9 +233,12 @@ class TestTokenBudgetAndFinishReason:
 
     @pytest.mark.asyncio
     async def test_thinking_off_rides_the_same_passthrough(self, monkeypatch) -> None:
-        """``thinking_enabled=False`` sends the switch the probes found actually
-        suppresses reasoning — no production caller passes it yet; the follow-up
-        issues (#2475/#2476) are the first to."""
+        """``thinking_enabled=False`` sends ONLY ``reasoning_effort: "none"`` — no
+        ``reasoning`` key at all (#2607): on local Ollama a ``reasoning`` object's
+        PRESENCE keeps thinking on regardless of its ``enabled`` value, so the
+        always-on ``reasoning: {enabled: True}`` must never ride alongside the off
+        switch. An ordinary call is unchanged: the always-on key, no
+        ``reasoning_effort``."""
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -252,10 +255,17 @@ class TestTokenBudgetAndFinishReason:
             thinking_enabled=False,
         )
 
-        assert sent["extra_body"] == {
-            "reasoning": {"enabled": False},
-            "reasoning_effort": "none",
-        }
+        assert sent["extra_body"] == {"reasoning_effort": "none"}
+        assert "reasoning" not in sent["extra_body"]
+
+        sent.clear()
+        await client.chat(
+            [{"role": "user", "content": "hi"}],
+            call_link=CallLink.new_top(),
+        )
+
+        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        assert "reasoning_effort" not in sent["extra_body"]
         await client.close()
 
     @pytest.mark.asyncio

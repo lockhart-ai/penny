@@ -64,15 +64,19 @@ _DEFAULT_API_KEY = "not-needed"
 # and the remote path stops silently differing from it.
 REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
 
-# The per-call override that turns reasoning OFF for one draw (#2474's probes,
-# against local Ollama's gemma4:26b-mlx and OpenRouter's gemma pinned to Cloudflare).
-# Two fields, because no single one disabled it on BOTH: on Ollama, ``reasoning:
-# {enabled: false}`` alone was silently ignored (the model still reasoned in full);
-# ``reasoning_effort: "none"`` alone worked on Ollama AND on OpenRouter, where
-# ``reasoning: {enabled: false}`` alone also worked. Sending both is what makes one
-# body portable without asking the caller which backend is live; no production
-# caller passes this yet — see ``LlmClient.chat``'s ``thinking_enabled`` parameter.
-THINKING_OFF_BODY = {"reasoning": {"enabled": False}, "reasoning_effort": "none"}
+# The per-call override that turns reasoning OFF for one draw (#2474's probes, then
+# #2607's follow-up). Only ``reasoning_effort: "none"`` — no ``reasoning`` key at all.
+# #2474 found ``reasoning_effort: "none"`` alone disabled thinking on Ollama AND
+# OpenRouter, but shipped it alongside ``reasoning: {enabled: False}`` anyway, never
+# having probed the two fields TOGETHER. #2607's probe did: on local Ollama
+# (gemma4:26b-mlx), a ``reasoning`` object PRESENT AT ALL keeps thinking on, whatever
+# its ``enabled`` value — Ollama reads the key's presence, not its content, and that
+# read overrides ``reasoning_effort``. A production extractor draw hit this: the
+# thinking-off retry (#2476) sent both fields, thought for 31k characters, and was cut
+# at its token budget exactly like the draw it was retrying. So this body must omit
+# ``reasoning`` entirely, not set it to ``False`` — see ``_build_chat_kwargs``, which
+# drops the always-on key for this call rather than updating it.
+THINKING_OFF_BODY = {"reasoning_effort": "none"}
 
 # Ask for embedding vectors as plain floats rather than the SDK's base64 default.
 # Not every backend accepts base64: Google AI Studio refuses it outright ("embeddings do
@@ -822,18 +826,25 @@ class LlmClient:
         thinking_enabled: bool = True,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
-        # Both vendor fields ride the same passthrough.  The provider pin is added only
-        # when one was CONFIGURED, so a client without one sends the body it always sent —
-        # and a direct endpoint that has never heard of the field ignores it.  Annotated
-        # ``dict[str, Any]`` rather than left inferred: ``REASONING_ENABLED_BODY``'s own
-        # narrow shape (one key, one bool-valued nested dict) would otherwise make ty
-        # reject ``.update(THINKING_OFF_BODY)`` below, whose two keys carry different
-        # value shapes (a nested dict AND a bare string).
-        extra_body: dict[str, Any] = dict(REASONING_ENABLED_BODY)
+        # The provider pin rides the same passthrough, added only when one was
+        # CONFIGURED, so a client without one sends the body it always sent — and a
+        # direct endpoint that has never heard of the field ignores it.  Annotated
+        # ``dict[str, Any]`` rather than left inferred: the two bodies below carry
+        # different value shapes (a nested dict for ``REASONING_ENABLED_BODY``, a bare
+        # string for ``THINKING_OFF_BODY``), which a narrower inferred type would
+        # reject on whichever one is assigned second.
+        #
+        # ``thinking_enabled=False`` does not UPDATE the always-on body with
+        # ``THINKING_OFF_BODY`` — it starts from an empty body and sends only
+        # ``THINKING_OFF_BODY``.  On local Ollama a ``reasoning`` key's PRESENCE keeps
+        # thinking on regardless of its value (#2607), so the always-on ``reasoning:
+        # {enabled: True}`` must never ride alongside the off switch — not even as a
+        # stale key a naive ``.update()`` would leave in place from a prior merge.
+        extra_body: dict[str, Any] = (
+            dict(THINKING_OFF_BODY) if not thinking_enabled else dict(REASONING_ENABLED_BODY)
+        )
         if self.provider_pin is not None:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
-        if not thinking_enabled:
-            extra_body.update(THINKING_OFF_BODY)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
