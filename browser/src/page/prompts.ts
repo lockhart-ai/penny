@@ -39,7 +39,15 @@ import {
   runTimingWindow,
   toolCallIds,
 } from "./draw_nesting.js";
-import { formatPillDuration, formatRunTime, formatStepCount, formatTokens } from "./prompt_format.js";
+import {
+  earlierMessagesLabel,
+  earlierWindow,
+  formatPillDuration,
+  formatRunTime,
+  formatStepCount,
+  formatTokens,
+  type EarlierWindow,
+} from "./prompt_format.js";
 import { createSearchBanner, wireSearchClear } from "./shared.js";
 
 // --- Prompts state ---
@@ -608,14 +616,19 @@ function rerenderHostBody(host: PromptLogRun): void {
 
 interface PanelSnapshot {
   expandedIds: Set<number>;
+  // The promptlog ids whose earlier-conversation row (#2640) the code owner
+  // has expanded inside an open card — restored the same way `expandedIds`
+  // is, by the card's own `data-prompt-id`.
+  earlierIds: Set<number>;
   // The PAGE's own scroll, not the panel's: nothing under `.run-prompts`
   // scrolls internally (the page itself does, via the browser's native
   // document scroll) — capturing `panel.scrollTop` would always read 0.
   scrollY: number;
 }
 
-/** Every row the code owner currently has open to read (by promptlog id) and
- * the page's scroll position — what a live rebuild (`rerenderHostBody`) must
+/** Every row the code owner currently has open to read (by promptlog id) —
+ * and, per open row, whether its collapsed earlier row is expanded too — plus
+ * the page's scroll position. What a live rebuild (`rerenderHostBody`) must
  * carry across the wipe, so Penny making another call never collapses what
  * he's watching mid-run or jumps the page out from under him.  Keyed by
  * `.prompt[data-prompt-id]`/`.prompt.expanded` (#2567 condition 3) — the
@@ -628,7 +641,15 @@ function capturePanelState(panel: HTMLElement): PanelSnapshot {
     const id = Number(el.dataset.promptId);
     if (!Number.isNaN(id)) expandedIds.add(id);
   }
-  return { expandedIds, scrollY: window.scrollY };
+  const earlierIds = new Set<number>();
+  for (const el of Array.from(
+    panel.querySelectorAll<HTMLElement>(".prompt-section.earlier-messages.expanded"),
+  )) {
+    const card = el.closest<HTMLElement>(".prompt");
+    const id = card ? Number(card.dataset.promptId) : Number.NaN;
+    if (!Number.isNaN(id)) earlierIds.add(id);
+  }
+  return { expandedIds, earlierIds, scrollY: window.scrollY };
 }
 
 /** Re-opens whatever `snapshot` captured, scoped to rows the rebuilt panel
@@ -640,8 +661,13 @@ function restorePanelState(panel: HTMLElement, snapshot: PanelSnapshot): void {
     .map((el) => Number(el.dataset.promptId))
     .filter((id) => !Number.isNaN(id));
   const keep = expandedIdsAfterRebuild(snapshot.expandedIds, currentIds);
+  const earlierKeep = expandedIdsAfterRebuild(snapshot.earlierIds, currentIds);
   for (const el of rows) {
-    if (keep.has(Number(el.dataset.promptId))) el.classList.add("expanded");
+    const id = Number(el.dataset.promptId);
+    if (keep.has(id)) el.classList.add("expanded");
+    if (earlierKeep.has(id)) {
+      el.querySelector(".prompt-section.earlier-messages")?.classList.add("expanded");
+    }
   }
   window.scrollTo(window.scrollX, snapshot.scrollY);
 }
@@ -1014,10 +1040,22 @@ function appendEntries(target: HTMLElement, run: PromptLogRun): void {
     runningCalls,
     runningTools,
   );
+  const firstOwnMessages = runFirstOwnMessages(run);
   for (const { entry } of entries) {
-    target.appendChild(createEntryRow(entry, run));
+    target.appendChild(createEntryRow(entry, run, firstOwnMessages));
   }
   if (entries.some(({ entry }) => isRunningCall(entry) || isRunningTool(entry))) startTicking();
+}
+
+/** The run's FIRST own prompt's context (#2640) — the earliest own prompt by
+ * start time (`rowStartedAt`; draws never count), whose context minus its
+ * leading system message(s) and minus its final message defines what an
+ * opened entry's detail treats as "earlier". `null` only when the run has no
+ * own prompts on record (a running shell), which renders no own-prompt card. */
+function runFirstOwnMessages(run: PromptLogRun): Record<string, unknown>[] | null {
+  if (run.prompts.length === 0) return null;
+  const first = [...run.prompts].sort((a, b) => rowStartedAt(a).localeCompare(rowStartedAt(b)))[0];
+  return first.messages;
 }
 
 /** Whether `entry` reads as failed/erred on the rail (#2567) — a running
@@ -1030,7 +1068,13 @@ function railDotClass(entry: DrawTreeEntry): "" | "live" | "err" {
 
 // One rail row: the dot (live pulse while running, red on a failed outcome)
 // + line, then the entry's own card — every kind at the same single indent.
-function createEntryRow(entry: DrawTreeEntry, run: PromptLogRun): HTMLElement {
+// `firstOwnMessages` rides along for the logged own-prompt cards' earlier/
+// visible split (#2640); draws compute their own (none).
+function createEntryRow(
+  entry: DrawTreeEntry,
+  run: PromptLogRun,
+  firstOwnMessages: Record<string, unknown>[] | null,
+): HTMLElement {
   const row = document.createElement("div");
   row.className = "entry-row";
 
@@ -1051,7 +1095,7 @@ function createEntryRow(entry: DrawTreeEntry, run: PromptLogRun): HTMLElement {
       ? createRunningCallCard(entry, entry.parentRunId === null ? run.prompts.length + 1 : undefined)
       : entry.parent_run_id !== null
         ? createDrawCard(entry, run)
-        : createPromptCard(entry, run.prompts.indexOf(entry) + 1);
+        : createPromptCard(entry, run.prompts.indexOf(entry) + 1, firstOwnMessages ?? []);
   row.appendChild(card);
 
   return row;
@@ -1065,7 +1109,12 @@ function createEntryRow(entry: DrawTreeEntry, run: PromptLogRun): HTMLElement {
 // `capturePanelState`/`restorePanelState` above read `.prompt[data-prompt-
 // id]`/`.prompt.expanded` exactly as before a live rebuild.
 
-function buildPromptShell(prompt: PromptLogEntry, rowLeft: HTMLElement, rowRight: HTMLElement): HTMLElement {
+function buildPromptShell(
+  prompt: PromptLogEntry,
+  rowLeft: HTMLElement,
+  rowRight: HTMLElement,
+  split: EarlierWindow,
+): HTMLElement {
   const card = document.createElement("div");
   card.className = "prompt";
   card.dataset.promptId = String(prompt.id);
@@ -1076,7 +1125,7 @@ function buildPromptShell(prompt: PromptLogEntry, rowLeft: HTMLElement, rowRight
   header.appendChild(rowRight);
   card.appendChild(header);
 
-  card.appendChild(createPromptDetail(prompt));
+  card.appendChild(createPromptDetail(prompt, split));
 
   header.addEventListener("click", () => card.classList.toggle("expanded"));
   return card;
@@ -1214,8 +1263,17 @@ function createCellMetric(cls: string, iconClass: string, value: string, unit = 
   return cell;
 }
 
-function createPromptCard(prompt: PromptLogEntry, step: number): HTMLElement {
-  return buildPromptShell(prompt, createStepRowLeft(prompt), createPromptRowRight(prompt, step));
+function createPromptCard(
+  prompt: PromptLogEntry,
+  step: number,
+  firstOwnMessages: readonly Record<string, unknown>[],
+): HTMLElement {
+  return buildPromptShell(
+    prompt,
+    createStepRowLeft(prompt),
+    createPromptRowRight(prompt, step),
+    earlierWindow(firstOwnMessages, prompt.messages.length),
+  );
 }
 
 // A draw's own row-left — labelled with its OWN agent identity (never a
@@ -1266,7 +1324,15 @@ function createDrawRowLeft(draw: PromptLogEntry, run: PromptLogRun): HTMLElement
 }
 
 function createDrawCard(draw: PromptLogEntry, run: PromptLogRun): HTMLElement {
-  return buildPromptShell(draw, createDrawRowLeft(draw, run), createPromptRowRight(draw));
+  // A micro-context draw has its own short context and no earlier
+  // conversation (#2640) — `null` first-own gives everything visible, no
+  // collapsed row.
+  return buildPromptShell(
+    draw,
+    createDrawRowLeft(draw, run),
+    createPromptRowRight(draw),
+    earlierWindow(null, draw.messages.length),
+  );
 }
 
 // --- Live step markers (#2439) — never toggleable (no detail exists yet),
@@ -1539,7 +1605,7 @@ function createCopyButton(getText: () => string, title: string): HTMLButtonEleme
 
 const jsonOf = (value: unknown): string => JSON.stringify(value, null, 2);
 
-function createPromptDetail(prompt: PromptLogEntry): HTMLElement {
+function createPromptDetail(prompt: PromptLogEntry, split: EarlierWindow): HTMLElement {
   const detail = document.createElement("div");
   detail.className = "prompt-detail";
 
@@ -1564,14 +1630,19 @@ function createPromptDetail(prompt: PromptLogEntry): HTMLElement {
     );
   }
 
-  // Each turn (one message in this prompt's input) gets a copy button that
-  // copies just that turn's JSON, tagged with the promptlog id for lookup.
-  for (const message of prompt.messages) {
-    const role = String(message.role ?? "unknown");
-    const content = extractMessageContent(message);
-    turn.appendChild(
-      createPromptSection(role, content, () => jsonOf({ promptlog_id: prompt.id, turn: message })),
-    );
+  // The context, split structurally (#2640): the leading system message(s)
+  // first; then ONE collapsed row over the conversation from before this run
+  // (window.systemCount..visibleFrom), expanding in place; then the message
+  // that started this run and everything after it — the run's own loop.
+  for (const message of prompt.messages.slice(0, split.systemCount)) {
+    turn.appendChild(createMessageSection(message, prompt));
+  }
+  const earlier = prompt.messages.slice(split.systemCount, split.visibleFrom);
+  if (earlier.length > 0) {
+    turn.appendChild(createEarlierMessagesSection(earlier, prompt));
+  }
+  for (const message of prompt.messages.slice(split.visibleFrom)) {
+    turn.appendChild(createMessageSection(message, prompt));
   }
 
   if (prompt.thinking) {
@@ -1589,6 +1660,56 @@ function createPromptDetail(prompt: PromptLogEntry): HTMLElement {
   );
 
   return detail;
+}
+
+// One message row of the detail — the usual section, with its own copy of
+// just that message's JSON, tagged with the promptlog id for lookup.
+function createMessageSection(
+  message: Record<string, unknown>,
+  prompt: PromptLogEntry,
+): HTMLElement {
+  const role = String(message.role ?? "unknown");
+  const content = extractMessageContent(message);
+  return createPromptSection(role, content, () => jsonOf({ promptlog_id: prompt.id, turn: message }));
+}
+
+/** The one collapsed earlier-conversation row (#2640): reads "N earlier
+ * messages", expands in place to the usual message rows (each keeping its
+ * own copy button). The section-row look, quieter. Its open state survives
+ * live rebuilds via its host card's prompt id — `capturePanelState` reads
+ * `.prompt-section.earlier-messages.expanded`. */
+function createEarlierMessagesSection(
+  earlier: Record<string, unknown>[],
+  prompt: PromptLogEntry,
+): HTMLElement {
+  const section = document.createElement("div");
+  section.className = "prompt-section earlier-messages";
+
+  const labelEl = document.createElement("div");
+  labelEl.className = "prompt-section-label";
+  labelEl.dataset.role = "earlier";
+
+  const role = document.createElement("span");
+  role.className = "prompt-section-role";
+  role.innerHTML = '<i class="fa-solid fa-chevron-right section-toggle-icon"></i>';
+  labelEl.appendChild(role);
+
+  const count = document.createElement("span");
+  count.className = "prompt-section-preview";
+  count.textContent = earlierMessagesLabel(earlier.length);
+  labelEl.appendChild(count);
+
+  section.appendChild(labelEl);
+
+  const contentEl = document.createElement("div");
+  contentEl.className = "prompt-section-content";
+  for (const message of earlier) {
+    contentEl.appendChild(createMessageSection(message, prompt));
+  }
+  section.appendChild(contentEl);
+
+  labelEl.addEventListener("click", () => section.classList.toggle("expanded"));
+  return section;
 }
 
 function createPromptSection(

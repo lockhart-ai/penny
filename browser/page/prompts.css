@@ -873,6 +873,41 @@
   color: var(--text-faint);
 }
 
+/* --- The collapsed earlier-conversation row (#2640) --- */
+
+/* The section-row look, quieter: the same padding, flex and chevron as every
+ * other section label so it sits on the same lines, but sentence case at
+ * regular weight and size — a fold over old conversation, not a role. */
+.prompt-section.earlier-messages > .prompt-section-label {
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* The generic expanded rule above is a descendant selector, so an expanded
+ * earlier row would force every nested message section's content open with
+ * it — pin all contents closed here and re-open each on its own toggle. */
+.prompt-section.earlier-messages .prompt-section-content {
+  display: none;
+}
+
+/* The earlier row expanding shows ALL its message rows in place — the page
+ * scrolls, so the wrapper drops the usual 260px section scroll. */
+.prompt-section.earlier-messages.expanded > .prompt-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 9px 9px;
+  max-height: none;
+  overflow-y: visible;
+  white-space: normal;
+}
+
+.prompt-section.earlier-messages .prompt-section.expanded > .prompt-section-content {
+  display: block;
+}
+
 /* ============================================================
    Responsive metric tracks (#2610) — the columns NEVER disappear; as the
    window narrows the shared tracks, the gap and the wall/model pill's

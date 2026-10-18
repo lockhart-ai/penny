@@ -42,6 +42,59 @@ export function formatTokens(count: number): string {
   return String(count);
 }
 
+/** #2640 — where an opened Prompts entry's detail splits its message list:
+ * `systemCount` leading system messages always render as their own rows,
+ * `earlierCount` messages after them hide behind ONE collapsed row ("N
+ * earlier messages"), and everything from `visibleFrom` on — the message
+ * that started this run, then the run's own tool calls and results — stays
+ * visible. */
+export interface EarlierWindow {
+  systemCount: number;
+  earlierCount: number;
+  visibleFrom: number;
+}
+
+/** The window for an opened prompt of a run, defined STRUCTURALLY by the
+ * run's FIRST own prompt (earliest by start time, draws never count): its
+ * context minus the leading system message(s) and minus its final message —
+ * the one that started the run — is "earlier". Purely positional: never a
+ * message's role beyond that leading system run, never its wording.
+ *
+ * `firstOwnMessages` is that first prompt's context; `null` (a micro-context
+ * draw: its own short context, no earlier conversation) means everything
+ * visible and no collapsed row. `openedMessageCount` is the opened prompt's
+ * own context length, clamped against so a shorter context can never index
+ * past it — its final message always stays visible. An empty
+ * `firstOwnMessages` (a run with no first prompt on record) reads the same
+ * way: no earlier, no collapsed row. */
+export function earlierWindow(
+  firstOwnMessages: readonly Record<string, unknown>[] | null,
+  openedMessageCount: number,
+): EarlierWindow {
+  if (firstOwnMessages === null) {
+    return { systemCount: 0, earlierCount: 0, visibleFrom: 0 };
+  }
+  let systemLead = 0;
+  while (
+    systemLead < firstOwnMessages.length &&
+    String(firstOwnMessages[systemLead]?.role ?? "") === "system"
+  ) {
+    systemLead++;
+  }
+  const runStart = Math.max(0, firstOwnMessages.length - 1);
+  const systemCount = Math.min(systemLead, openedMessageCount);
+  const visibleFrom = Math.max(
+    systemCount,
+    Math.min(runStart, Math.max(0, openedMessageCount - 1)),
+  );
+  return { systemCount, earlierCount: Math.max(0, visibleFrom - systemCount), visibleFrom };
+}
+
+/** The collapsed earlier row's text (#2640): "3 earlier messages". */
+export function earlierMessagesLabel(count: number): string {
+  return count === 1 ? "1 earlier message" : `${count} earlier messages`;
+}
+
 function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
