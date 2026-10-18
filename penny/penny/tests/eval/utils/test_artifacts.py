@@ -618,7 +618,10 @@ def test_two_runs_produce_mechanically_diffable_jsonl(tmp_path: Path) -> None:
 
 
 def _only_record(report_dir: Path) -> dict:
-    lines = (report_dir / RESULTS_FILENAME).read_text().splitlines()
+    """Read the one case record a run wrote — under xdist, ``append_case`` names its file
+    after the worker (``PYTEST_XDIST_WORKER``, #2540), so this goes through the same
+    worker-glob reader a real run's assembler uses rather than the plain filename."""
+    lines = load_results_lines(report_dir)
     assert len(lines) == 1
     return json.loads(lines[0])
 
