@@ -77,23 +77,30 @@
     </div>
   </div>
 
-  <!-- Memories panel -->
+  <!-- Collectors panel (the old Memories view, restyled #2568) -->
   <div id="panel-memories" class="panel hidden">
-    <div id="memory-tabs">
-      <button class="sub-tab active" data-mtab="collections"><i class="fa-solid fa-database"></i> Collections</button>
-      <button class="sub-tab" data-mtab="logs"><i class="fa-solid fa-list"></i> Logs</button>
-      <button class="sub-tab" data-mtab="archived"><i class="fa-solid fa-box-archive"></i> Archived</button>
+    <div class="toolbar">
+      <button class="flag-toggle" id="collectors-archived-toggle" title="Also show archived collectors">
+        <i class="fa-solid fa-box-archive"></i> <span class="label">Show archived</span>
+      </button>
+      <button class="btn btn-primary" id="collectors-new-btn" title="Create a new collector">
+        <i class="fa-solid fa-plus"></i> <span class="label">New collector</span>
+      </button>
+      <div class="search">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="search" id="collectors-search" placeholder="Search name, prompt, or entries…">
+        <button type="button" class="search-clear" id="collectors-search-clear" aria-label="Clear search"><i class="fa-solid fa-xmark"></i></button>
+      </div>
     </div>
-    <div class="search-row">
-      <i class="fa-solid fa-magnifying-glass"></i>
-      <input type="search" id="memories-search" placeholder="Search name, intent, or entries…">
-      <button type="button" class="search-clear" id="memories-search-clear" aria-label="Clear search"><i class="fa-solid fa-xmark"></i></button>
+    <div id="collectors-loading" class="panel-loading">Loading collectors...</div>
+    <div id="collectors-list"></div>
+    <div id="collector-detail" class="hidden">
+      <div class="collector-crumb"><a id="collector-detail-back"><i class="fa-solid fa-chevron-left"></i> Collectors</a></div>
+      <div id="collector-detail-content"></div>
     </div>
-    <div id="memories-loading" class="panel-loading">Loading memories...</div>
-    <div id="memories-list"></div>
-    <div id="memory-detail" class="hidden">
-      <button id="memory-detail-back" class="memory-back-btn"><i class="fa-solid fa-chevron-left"></i> Back</button>
-      <div id="memory-detail-content"></div>
+    <div id="collector-new" class="hidden">
+      <div class="collector-crumb"><a id="collector-new-back"><i class="fa-solid fa-chevron-left"></i> Collectors</a></div>
+      <div id="collector-new-content"></div>
     </div>
   </div>
 

@@ -130,6 +130,11 @@ svg.icon{ width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-widt
 .chip--err{ color: var(--err); background: var(--err-soft); cursor: help; }
 .chip--warn{ color: var(--warn); background: var(--warn-soft); }
 
+/* A status that isn't ok/err/warn (e.g. "published") — violet, the model
+   accent, added for the Collectors list/detail (#2568); plausibly reusable
+   by another tab's own non-health status chip. */
+.chip--accent{ color: var(--c-model); background: var(--c-model-soft); border: 1px solid rgba(109,70,184,.3); }
+
 @media (max-width: 460px){
   .chip.chip-dot{
     flex-shrink:0; width:9px; height:9px; min-width:9px; padding:0;

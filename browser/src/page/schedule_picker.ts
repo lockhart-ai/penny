@@ -147,7 +147,7 @@ function presetCaption(preset: SchedulePreset, hour: number, minute: number, day
 
 function makeSelect(options: { value: string; label: string }[], selected: string): HTMLSelectElement {
   const select = document.createElement("select");
-  select.className = "memory-form-input";
+  select.className = "collector-field-input";
   for (const option of options) {
     const el = document.createElement("option");
     el.value = option.value;
@@ -156,6 +156,27 @@ function makeSelect(options: { value: string; label: string }[], selected: strin
     select.appendChild(el);
   }
   return select;
+}
+
+/** The preset choice as a segmented control (the shared `.seg`), one button
+ * per preset — the mockup's own shape, in place of a `<select>`. */
+function makePresetSeg(selected: SchedulePreset, onChange: (preset: SchedulePreset) => void): HTMLElement {
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  for (const option of PRESET_OPTIONS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = option.label;
+    button.classList.toggle("active", option.value === selected);
+    button.addEventListener("click", () => {
+      for (const sibling of Array.from(seg.querySelectorAll("button"))) {
+        sibling.classList.toggle("active", sibling === button);
+      }
+      onChange(option.value);
+    });
+    seg.appendChild(button);
+  }
+  return seg;
 }
 
 function timeValue(hour: number, minute: number): string {
@@ -191,15 +212,14 @@ export function createSchedulePicker(initial: {
 }): SchedulePickerHandle {
   const parsed = ruleToPreset(initial.schedule);
   const customDescription = initial.description;
+  let currentPreset: SchedulePreset = parsed.preset;
 
   const wrapper = document.createElement("div");
-  wrapper.className = "schedule-picker";
-
-  const presetSelect = makeSelect(PRESET_OPTIONS, parsed.preset);
+  wrapper.className = "collector-schedule-picker";
 
   const timeInput = document.createElement("input");
   timeInput.type = "time";
-  timeInput.className = "memory-form-input";
+  timeInput.className = "collector-field-input";
   timeInput.value = timeValue(parsed.hour, parsed.minute);
 
   const daySelect = makeSelect(
@@ -208,63 +228,76 @@ export function createSchedulePicker(initial: {
   );
 
   const customBox = document.createElement("textarea");
-  customBox.className = "memory-form-input memory-form-prompt";
+  customBox.className = "collector-field-input mono";
   customBox.rows = 2;
   customBox.placeholder = "FREQ=DAILY;BYHOUR=8";
   customBox.value = parsed.preset === "custom" ? (initial.schedule ?? "") : "";
 
   const subRow = document.createElement("div");
-  subRow.className = "schedule-picker-sub";
+  subRow.className = "collector-schedule-sub";
 
-  const caption = document.createElement("p");
-  caption.className = "memory-cursor-hint schedule-picker-caption";
+  const caption = document.createElement("div");
+  caption.className = "collector-plain-words";
 
-  function renderSubControls(): void {
-    subRow.innerHTML = "";
-    const preset = presetSelect.value as SchedulePreset;
-    if (preset === "daily") {
-      subRow.appendChild(timeInput);
-    } else if (preset === "weekly") {
-      subRow.appendChild(daySelect);
-      subRow.appendChild(timeInput);
-    } else if (preset === "custom") {
-      subRow.appendChild(customBox);
-    }
-    subRow.classList.toggle("hidden", preset === "none" || preset === "hourly");
-  }
-
-  function renderCaption(): void {
-    const preset = presetSelect.value as SchedulePreset;
-    if (preset === "custom") {
-      caption.textContent = customDescription ?? "";
-      return;
-    }
-    const [hour, minute] = parseTimeInput(timeInput.value);
-    caption.textContent = presetCaption(preset, hour, minute, daySelect.value);
-  }
-
-  presetSelect.addEventListener("change", () => {
+  const seg = makePresetSeg(currentPreset, (preset) => {
+    currentPreset = preset;
     renderSubControls();
     renderCaption();
   });
+
+  function renderSubControls(): void {
+    subRow.innerHTML = "";
+    if (currentPreset === "daily") {
+      subRow.appendChild(timeInput);
+    } else if (currentPreset === "weekly") {
+      subRow.appendChild(daySelect);
+      subRow.appendChild(timeInput);
+    } else if (currentPreset === "custom") {
+      subRow.appendChild(customBox);
+    }
+    subRow.classList.toggle("hidden", currentPreset === "none" || currentPreset === "hourly");
+  }
+
+  // The plain-words line always shows the human reading; a preset also gets
+  // its own current raw rule alongside it in a `<code>` span. "custom" gets
+  // no live preview (the box IS the raw text already); "none" has no
+  // schedule to describe at all, so the whole line disappears.
+  function renderCaption(): void {
+    caption.innerHTML = "";
+    caption.classList.toggle("hidden", currentPreset === "none");
+    if (currentPreset === "none") return;
+    const text = document.createElement("span");
+    if (currentPreset === "custom") {
+      text.textContent = customDescription ?? "";
+      caption.appendChild(text);
+      return;
+    }
+    const [hour, minute] = parseTimeInput(timeInput.value);
+    const rule = presetToRule(currentPreset, hour, minute, daySelect.value);
+    text.textContent = presetCaption(currentPreset, hour, minute, daySelect.value);
+    const code = document.createElement("code");
+    code.textContent = rule ?? "";
+    caption.appendChild(text);
+    caption.appendChild(code);
+  }
+
   timeInput.addEventListener("input", renderCaption);
   daySelect.addEventListener("change", renderCaption);
 
   renderSubControls();
   renderCaption();
 
-  wrapper.appendChild(presetSelect);
+  wrapper.appendChild(seg);
   wrapper.appendChild(subRow);
   wrapper.appendChild(caption);
 
   return {
     element: wrapper,
     getValue(): string | null {
-      const preset = presetSelect.value as SchedulePreset;
-      if (preset === "none") return null;
-      if (preset === "custom") return customBox.value.trim() || null;
+      if (currentPreset === "none") return null;
+      if (currentPreset === "custom") return customBox.value.trim() || null;
       const [hour, minute] = parseTimeInput(timeInput.value);
-      return presetToRule(preset, hour, minute, daySelect.value);
+      return presetToRule(currentPreset, hour, minute, daySelect.value);
     },
   };
 }

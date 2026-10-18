@@ -1,224 +1,273 @@
-/* Memories (collectors) tab, plus the trailing shared blocks (toast, search rows,
- * matches banner, search clear) — kept here, in their original position, so the
- * linked order of the five sheets reproduces today's cascade exactly.  Split from page.css (#2565). */
-/* --- Memories tab --- */
+/* Collectors tab (the old Memories view, restyled #2568), plus the trailing
+ * shared blocks (toast, search rows, matches banner, search clear) — kept
+ * here, in their original position, so the linked order of the five sheets
+ * reproduces today's cascade exactly. Split from page.css (#2565). Built on
+ * the shared `.toolbar`/`.flag-toggle`/`.search`/`.chip`/`.btn`/`.metric`
+ * components (#2566) — every class below is local to this tab unless noted. */
 
-#memories-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* ============================================================
+   List — one list for collections (+ archived, behind the toggle) and a
+   quieter "Logs" section below; each row is a flexible LEFT (name/chips/
+   description, truncates) and a fixed-width RIGHT (metrics -> chevron) on a
+   grid, so every row's columns land on the same vertical lines.
+   ============================================================ */
+
+#collectors-list {
+  padding-top: 6px;
 }
 
-.memory-row {
+.collector-section-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 18px 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-faint);
+}
+
+.collector-section-heading:first-child {
+  margin-top: 0;
+}
+
+.collector-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: var(--bg-secondary);
-  border-radius: 8px;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 11px 14px;
+  margin-bottom: 8px;
   cursor: pointer;
 }
 
-.memory-row:hover {
-  background: var(--bg-tertiary);
+.collector-row:hover {
+  background: var(--row-hover);
 }
 
-.memory-row-archived {
-  opacity: 0.55;
+.collector-row:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
 }
 
-.memory-name {
+.collector-row-archived {
+  opacity: .6;
+}
+
+/* Logs: a plainer, quieter card — no schedule/notify/archive apply to a
+   system-managed log, so its row drops those columns rather than padding
+   them with dashes; only entries stays, for a sense of size. */
+.collector-row-log {
+  box-shadow: none;
+  background: var(--panel-alt);
+  border-color: var(--border-soft);
+}
+
+.collector-row-log:hover {
+  background: var(--row-hover);
+}
+
+.collector-row-log .collector-row-name {
   font-weight: 600;
-  color: var(--text-primary);
-  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.collector-row-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.collector-row-left > * {
   flex-shrink: 0;
 }
 
-.memory-type-badge {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: var(--bg-tertiary);
-  color: var(--text-muted);
-  flex-shrink: 0;
+.collector-row-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
 }
 
-.memory-type-badge.collection {
-  background: rgba(74, 144, 226, 0.18);
-  color: var(--accent);
-}
-
-.memory-type-badge.log {
-  background: rgba(255, 200, 80, 0.18);
-  color: #c08c00;
-}
-
-.memory-type-badge.published {
-  background: rgba(80, 200, 120, 0.18);
-  color: #2e9e5b;
-}
-
-.memory-description {
-  flex: 1;
-  color: var(--text-muted);
-  font-size: 12px;
+.collector-row-desc {
+  flex: 1 1 auto !important;
+  min-width: 30px;
+  color: var(--text-dim);
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.memory-meta {
-  display: flex;
-  gap: 14px;
-  font-size: 11px;
-  color: var(--text-muted);
+/* A muted modifier on the shared `.chip` — "archived" is a location, not a
+   status, so it reads quieter than `.chip--accent` ("published"). */
+.collector-chip-muted {
+  color: var(--text-faint);
+  background: var(--panel-alt);
+  border: 1px solid var(--border-soft);
+}
+
+.collector-row-right {
+  display: grid;
+  grid-template-columns: 76px 96px 150px 16px; /* entries · last collected · schedule · chevron */
+  column-gap: 14px;
+  align-items: center;
   flex-shrink: 0;
 }
 
-.memory-meta i {
-  width: 12px;
-  margin-right: 4px;
+.collector-row-right-log {
+  grid-template-columns: 96px 16px; /* entries · chevron */
 }
 
-.memory-back-btn {
-  border: none;
-  background: none;
-  color: var(--text-muted);
+.collector-cell-muted {
+  color: var(--text-faint);
+}
+
+.collector-row-go {
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.collector-entries-empty {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: 12.5px;
+}
+
+/* Responsive column dropping — the right-hand columns never wrap; low
+   priority ones disappear in this order: schedule, then last collected.
+   Only below ~460px does a row wrap, and even there the chevron stays put. */
+@media (max-width: 1000px) {
+  .collector-row-right {
+    grid-template-columns: 76px 96px 16px; /* drop schedule */
+  }
+  .collector-row-right .metric:nth-child(3) {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .collector-row-right {
+    grid-template-columns: 76px 16px; /* also drop last collected */
+  }
+  .collector-row-right .metric:nth-child(2) {
+    display: none;
+  }
+}
+
+@media (max-width: 460px) {
+  .collector-row {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    gap: 6px 10px;
+  }
+  .collector-row-left {
+    flex-wrap: nowrap;
+  }
+  .collector-row-right {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    grid-template-columns: 1fr 16px;
+  }
+  .collector-row-right .metric:nth-child(2),
+  .collector-row-right .metric:nth-child(3) {
+    display: none;
+  }
+}
+
+/* ============================================================
+   Detail — crumb, header, then three stacked sections: Entries and Config
+   are plain and always open; Activity is a native <details>, closed by
+   default (the least often needed at a glance).
+   ============================================================ */
+
+.collector-crumb {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0 14px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.collector-crumb a {
+  color: var(--text-dim);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   cursor: pointer;
-  font-size: 13px;
-  padding: 8px 0;
+}
+
+.collector-crumb a:hover {
+  color: var(--text);
+}
+
+.collector-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 16px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.collector-detail-header h1 {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+#collector-detail-content,
+#collector-new-content {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.collector-section h2 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-faint);
+  margin-bottom: 10px;
+}
+
+/* ---- Entries ---- */
+
+.collector-entry {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: 10px 13px;
   margin-bottom: 8px;
 }
 
-.memory-back-btn:hover {
-  color: var(--text-primary);
-}
-
-#memory-detail-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.memory-detail-header {
+.collector-entry-header {
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: 10px;
+  margin-bottom: 6px;
 }
 
-.memory-detail-header h2 {
-  margin: 0;
-  font-size: 18px;
-  color: var(--text-primary);
-}
-
-.memory-detail-tabs {
-  display: flex;
-  gap: 6px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
-}
-
-.memory-tab-panel {
-  display: none;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.memory-tab-panel.active {
-  display: flex;
-}
-
-.memory-detail-section {
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  padding: 12px 16px;
-}
-
-.memory-detail-section h3 {
-  margin: 0 0 8px 0;
+.collector-entry-key {
+  font-family: var(--mono);
+  font-weight: 700;
   font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
-}
-
-.memory-detail-grid {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 6px 16px;
-  font-size: 13px;
-}
-
-.memory-detail-grid dt {
-  color: var(--text-muted);
-}
-
-.memory-detail-grid dd {
-  margin: 0;
-  color: var(--text-primary);
-  word-break: break-word;
-}
-
-.memory-detail-grid dd pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
-  font-family: inherit;
-  font-size: 13px;
-}
-
-.memory-entries-empty {
-  color: var(--text-muted);
-  font-style: italic;
-  font-size: 13px;
-}
-
-.memory-entries-section {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.memory-entries-section h3 {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
-}
-
-.memory-entry {
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  padding: 16px 18px;
-  transition: background 0.15s ease;
-}
-
-.memory-entry:hover {
-  background: var(--bg-tertiary);
-}
-
-.memory-entry-header {
-  display: flex;
-  gap: 12px;
-  /* Center vertically: the key is a larger monospace font, so baseline
-     alignment leaves the date/actions visibly floating above it. */
-  align-items: center;
-  font-size: 12px;
-  /* Pull out to the card edges so the divider spans full width. */
-  margin: 0 -18px 12px -18px;
-  padding: 0 18px 10px 18px;
-  border-bottom: 1px solid var(--border);
-}
-
-/* The title takes the row; the date + actions stay pinned right (the date's
-   margin-left:auto), and a long title ellipsizes rather than shoving them off. */
-.memory-entry-header .memory-entry-key {
+  color: var(--text);
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -226,248 +275,392 @@
   white-space: nowrap;
 }
 
-.memory-entry-key {
-  font-weight: 600;
-  color: var(--accent);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 13px;
-}
-
-.memory-entry-date {
-  color: var(--text-secondary);
-  font-weight: 500;
+.collector-entry-date {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
   margin-left: auto;
   flex-shrink: 0;
 }
 
 /* When there's no key (log entries), the date IS the title — promote it. */
-.memory-entry-date-primary {
-  color: var(--text-primary);
+.collector-entry-date-primary {
+  color: var(--text);
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12.5px;
   margin-left: 0;
   margin-right: auto;
 }
 
-.memory-entry-author {
-  color: var(--text-muted);
+.collector-entry-author {
+  color: var(--text-faint);
   font-size: 11px;
   flex-shrink: 0;
 }
 
-.memory-entry-content {
-  color: var(--text-primary);
-  font-size: 13px;
-  line-height: 1.5;
+.collector-entry-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  border-radius: 5px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.collector-entry-content {
+  font-size: 12.5px;
+  color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.memory-entry-content.collapsed {
+.collector-entry-content.collapsed {
   max-height: calc(20 * 1.5em);
   overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
   mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
 }
 
-.memory-entry-toggle {
+.collector-entry-toggle {
   border: none;
   background: none;
-  color: var(--accent);
+  color: var(--c-model);
   cursor: pointer;
   padding: 6px 0 0 0;
   font-size: 12px;
   font-weight: 500;
 }
 
-.memory-entry-toggle:hover {
+.collector-entry-toggle:hover {
   text-decoration: underline;
 }
 
-/* --- Memory edit forms --- */
+.collector-entry-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--panel-alt);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
 
-.memory-new-control {
+.collector-entry-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.collector-entry-key-input {
+  flex: 0 0 160px;
+}
+
+.collector-entry-add-row textarea {
+  flex: 1;
+}
+
+.collector-entry-add-actions {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: 4px;
 }
 
-.memory-new-btn,
-.memory-form-save,
-.memory-form-cancel,
-.memory-form-archive,
-.memory-form-run {
-  border: 1px solid var(--bg-tertiary);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 6px 14px;
-  border-radius: 6px;
+/* ---- Activity (<details>) ---- */
+
+.collector-activity {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.collector-activity-summary {
+  list-style: none;
   cursor: pointer;
-}
-
-.memory-new-btn:hover,
-.memory-form-save:hover,
-.memory-form-cancel:hover,
-.memory-form-archive:hover:not(:disabled),
-.memory-form-run:hover:not(:disabled) {
-  background: var(--bg-tertiary);
-}
-
-/* "Run extractor" sits to the left of archive/save in the actions row. */
-.memory-form-run {
-  margin-right: auto;
-  display: inline-flex;
+  user-select: none;
+  display: flex;
   align-items: center;
-  gap: 6px;
-}
-
-.memory-form-run:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.memory-form-save {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg-primary);
-}
-
-.memory-form-save:hover {
-  filter: brightness(1.1);
-}
-
-.memory-form-archive:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-
-.memory-new-form,
-.memory-detail-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.memory-new-form {
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin-bottom: 8px;
-}
-
-.memory-form-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.memory-form-label {
+  gap: 9px;
+  padding: 12px 14px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
-}
-
-.memory-form-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 6px 10px;
-  border: 1px solid var(--bg-tertiary);
-  border-radius: 6px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 13px;
+  letter-spacing: .6px;
+  color: var(--text-faint);
   outline: none;
 }
 
-.memory-form-input:focus {
-  border-color: var(--accent);
+.collector-activity-summary::-webkit-details-marker {
+  display: none;
 }
 
-.memory-form-checkbox {
-  width: 16px;
-  height: 16px;
-  align-self: flex-start;
-  accent-color: var(--accent);
-  cursor: pointer;
+.collector-activity-summary:hover {
+  background: var(--row-hover);
+  color: var(--text-dim);
 }
 
-.memory-form-prompt {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+.collector-activity-summary:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--c-model-soft), inset 0 0 0 1px var(--c-model);
+}
+
+.collector-chev {
+  transition: transform .15s ease;
+}
+
+.collector-activity[open] > .collector-activity-summary .collector-chev {
+  transform: rotate(90deg);
+}
+
+.collector-activity-sub {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-faint);
+  margin-left: 2px;
+}
+
+.collector-activity-body {
+  border-top: 1px solid var(--border);
+  padding: 12px 14px 14px;
+  background: var(--bg-raised);
+}
+
+/* ---- Config ---- */
+
+.collector-config-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 16px;
+}
+
+.collector-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.collector-field-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.collector-field-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.collector-field-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  outline: none;
+}
+
+textarea.collector-field-input {
+  resize: vertical;
+}
+
+.collector-field-input.mono {
+  font-family: var(--mono);
   font-size: 12px;
   white-space: pre-wrap;
 }
 
-.schedule-picker {
+.collector-field-input:focus {
+  border-color: var(--c-model);
+  box-shadow: 0 0 0 3px var(--c-model-soft);
+}
+
+.collector-toggle-row {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
 }
 
-.schedule-picker-sub {
+.collector-toggle-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.collector-toggle-row .collector-field-label {
+  margin: 0;
+}
+
+/* Schedule picker — the preset choice as the shared `.seg`, sub-controls for
+   the chosen preset below it, the plain-words reading (+ raw rule) last. */
+.collector-schedule-sub {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
 }
 
-.schedule-picker-sub > select,
-.schedule-picker-sub > input {
-  flex: 1;
+.collector-schedule-sub select,
+.collector-schedule-sub input[type="time"] {
+  width: auto;
 }
 
-.schedule-picker-sub > textarea {
-  flex: 1;
+.collector-schedule-sub textarea {
   width: 100%;
 }
 
-.schedule-picker-caption {
-  margin: 0;
-  color: var(--text-muted);
+.collector-plain-words {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
   font-size: 12px;
-  line-height: 1.4;
-  min-height: 1em;
+  color: var(--text-dim);
 }
 
-.memory-form-actions {
+.collector-plain-words code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  background: var(--panel-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+/* Read cursors, inside the Config card. */
+.collector-cursors-block {
+  margin: 4px 0 18px;
+}
+
+.collector-cursors-block h3 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+
+.collector-cursors-block .collector-field-hint {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.collector-cursor-row {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.collector-cursor-row:first-of-type {
+  border-top: none;
+}
+
+.collector-cursor-log {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  flex: 0 0 150px;
+}
+
+.collector-cursor-current {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  flex: 1 1 180px;
+}
+
+.collector-cursor-row input[type="datetime-local"] {
+  width: auto;
+  flex: 0 0 200px;
+}
+
+.collector-readonly-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 14px;
+  row-gap: 4px;
+  font-size: 12px;
+  margin: -2px 0 18px;
+}
+
+.collector-readonly-grid dt {
+  color: var(--text-faint);
+}
+
+.collector-readonly-grid dd {
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+.collector-actions-row {
+  display: flex;
+  gap: 10px;
   justify-content: flex-end;
+  margin-top: 18px;
+  flex-wrap: wrap;
 }
 
-.memory-entry-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 6px;
+.collector-actions-spacer {
+  flex: 1 1 auto;
 }
 
-.memory-entry-action {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 2px 6px;
-  font-size: 12px;
+/* "Run extractor" — the system accent, distinct from the violet `.btn-primary`. */
+.btn-run {
+  border-color: rgba(13, 143, 130, .35);
+  background: var(--c-sys-soft);
+  color: var(--c-sys);
 }
 
-.memory-entry-action:hover {
-  color: var(--text-primary);
+.btn-run:hover {
+  background: rgba(13, 143, 130, .16);
 }
 
-.memory-entry-add {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px dashed var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.btn-run:disabled {
+  cursor: default;
+  opacity: .6;
 }
 
-.memory-entry-key-input {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+/* ============================================================
+   New collector
+   ============================================================ */
+
+#collector-new-content h1 {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+@media (max-width: 460px) {
+  .collector-cursor-log {
+    flex-basis: 100%;
+  }
 }
 
 /* --- Toast --- */
@@ -493,13 +686,16 @@
   opacity: 1;
 }
 
-/* --- Search rows (Prompts + Memories tabs) --- */
+/* --- Search rows (Prompts tab's own markup still uses this legacy shape;
+   the Collectors toolbar above uses the shared `.search` instead — see the
+   `.search .search-clear` override below) --- */
 .search-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 4px;
   color: var(--text-muted);
+  position: relative;
 }
 .search-row input {
   flex: 1;
@@ -518,34 +714,6 @@
   box-shadow: 0 0 0 3px var(--c-model-soft);
 }
 
-/* --- Read-cursor controls in a collection's detail view --- */
-.memory-cursor-hint {
-  margin: 0 0 8px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.memory-cursor-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 6px 0;
-}
-.memory-cursor-log {
-  font-weight: 600;
-  font-size: 13px;
-}
-.memory-cursor-current {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-.memory-cursor-row input {
-  width: auto;
-  flex: 1;
-  min-width: 180px;
-}
-
 /* --- "Showing matches for X" banner above any filtered list --- */
 .search-banner {
   padding: 6px 10px;
@@ -557,10 +725,10 @@
   border-radius: 4px;
 }
 
-/* --- Custom clear (✕) for search inputs (Firefox shows no native one) --- */
-.search-row {
-  position: relative;
-}
+/* --- Custom clear (✕) for search inputs (Firefox shows no native one) ---
+   Base shape for `.search-row`'s absolute-positioned clear button; the
+   `.search .search-clear` rule below re-fits the same button/id pair for the
+   Collectors toolbar's flex `.search` row instead. */
 .search-clear {
   position: absolute;
   right: 6px;
@@ -579,4 +747,17 @@
 }
 .search-clear:hover {
   color: var(--text-primary);
+}
+
+.search .search-clear {
+  position: static;
+  transform: none;
+  color: inherit;
+  padding: 0;
+}
+.search .search-clear.visible {
+  display: inline-flex;
+}
+.search .search-clear:hover {
+  color: var(--text);
 }

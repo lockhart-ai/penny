@@ -27,13 +27,13 @@ import {
 } from "./prompts.js";
 import {
   handleCollectionTriggerResult,
-  handleMemoriesResponse,
-  handleMemoryChanged,
-  handleMemoryDetailResponse,
-  handleMemoryPageResponse,
-  handleMemorySaveError,
-  requestMemories,
-  setupMemories,
+  handleCollectorChanged,
+  handleCollectorDetailResponse,
+  handleCollectorPageResponse,
+  handleCollectorSaveError,
+  handleCollectorsResponse,
+  requestCollectors,
+  setupCollectors,
 } from "./collectors.js";
 import { loadDomainsFromCache, renderDomains, setupDomains } from "./domains.js";
 import { applyConfigResponse, loadToolUseState, setupConfig } from "./config.js";
@@ -62,7 +62,7 @@ function init(): void {
 
   // Set up all panel interactions
   setupPrompts();
-  setupMemories();
+  setupCollectors();
   setupDomains();
   setupConfig();
 }
@@ -80,7 +80,7 @@ function switchTab(tab: Tab): void {
     requestPromptLogs(0);
     markPromptsLoaded();
   } else if (tab === "memories") {
-    requestMemories();
+    requestCollectors();
   } else if (tab === "domains") {
     loadDomainsFromCache();
   } else if (tab === "config") {
@@ -114,17 +114,17 @@ function handleMessage(message: RuntimeMessage): void {
   } else if (message.type === RuntimeMessageType.DomainPermissionsSync) {
     renderDomains(message.permissions);
   } else if (message.type === RuntimeMessageType.MemoriesResponse) {
-    handleMemoriesResponse(message.memories);
+    handleCollectorsResponse(message.memories);
   } else if (message.type === RuntimeMessageType.MemoryDetailResponse) {
-    handleMemoryDetailResponse(message);
+    handleCollectorDetailResponse(message);
   } else if (message.type === RuntimeMessageType.MemoryPageResponse) {
-    handleMemoryPageResponse(message);
+    handleCollectorPageResponse(message);
   } else if (message.type === RuntimeMessageType.MemoryChanged) {
-    handleMemoryChanged(message.name);
+    handleCollectorChanged(message.name);
   } else if (message.type === RuntimeMessageType.CollectionTriggerResult) {
     handleCollectionTriggerResult(message);
   } else if (message.type === RuntimeMessageType.MemorySaveError) {
-    handleMemorySaveError(message);
+    handleCollectorSaveError(message);
   } else if (message.type === RuntimeMessageType.ConnectionState) {
     handleConnectionState(message.state);
   }
@@ -141,7 +141,7 @@ function handleConnectionState(state: ConnectionState): void {
   resetAndFetchPrompts();
   const memoriesPanel = document.getElementById("panel-memories");
   if (memoriesPanel && !memoriesPanel.classList.contains("hidden")) {
-    requestMemories();
+    requestCollectors();
   }
 }
 

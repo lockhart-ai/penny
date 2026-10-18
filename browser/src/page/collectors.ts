@@ -1,77 +1,71 @@
-/** Memories tab (the collectors view) — collections, logs, archived, and
- * each memory's detail: entries, activity, cursors, metadata.  Split out of
- * page.ts (#2565); every function here moved unchanged, only `export`/`import`
- * lines were added. */
+/** Collectors tab — one list of collections and logs (replacing the old
+ * Collections/Logs/Archived sub-tabs), and each collector's detail: entries,
+ * activity, read cursors, config. Restyled to the approved design (#2568);
+ * the server's own names (`memories_request`, `MemoryRecord`, the
+ * `memory_*`/`entry_*`/`cursor_*` message types) are untouched — only this
+ * module's own identifiers, markup and CSS say "collector" now. */
 
 import {
   type CursorRecord,
   type MemoryEntryRecord,
   type MemoryRecord,
-  type MemorySection,
   type PromptLogRun,
   type RuntimeCollectionTriggerResult,
   RuntimeMessageType,
   type RuntimeMemoryDetailResponse,
   type RuntimeMemoryPageResponse,
   type RuntimeMemorySaveError,
+  type MemorySection,
 } from "../protocol.js";
 import { createRunRow } from "./prompts.js";
-import { createSchedulePicker } from "./schedule_picker.js";
+import { createSchedulePicker, type SchedulePickerHandle } from "./schedule_picker.js";
+import { collectorsHeading, formatRelativeDate, logsHeading, scheduleAbbrev } from "./collector_format.js";
 import { createSearchBanner, formatDateTime, showToast, wireSearchClear } from "./shared.js";
 
-// --- Memories state ---
+// --- Collectors state ---
 
-const memoriesLoading = document.getElementById("memories-loading")!;
-const memoriesList = document.getElementById("memories-list")!;
-const memoryDetail = document.getElementById("memory-detail")!;
-const memoryDetailContent = document.getElementById("memory-detail-content")!;
-const memoryDetailBack = document.getElementById("memory-detail-back")!;
+const collectorsLoading = document.getElementById("collectors-loading")!;
+const collectorsList = document.getElementById("collectors-list")!;
+const collectorDetail = document.getElementById("collector-detail")!;
+const collectorDetailContent = document.getElementById("collector-detail-content")!;
+const collectorDetailBack = document.getElementById("collector-detail-back")!;
+const collectorNew = document.getElementById("collector-new")!;
+const collectorNewContent = document.getElementById("collector-new-content")!;
+const collectorNewBack = document.getElementById("collector-new-back")!;
+const archivedToggle = document.getElementById("collectors-archived-toggle")!;
+const newCollectorBtn = document.getElementById("collectors-new-btn")!;
 
-type MemoryTab = "collections" | "logs" | "archived";
-
-let allMemories: MemoryRecord[] = [];
-let activeMemoryName: string | null = null;
-let activeMemoryTab: MemoryTab = "collections";
-let memorySearch = "";
+let allCollectors: MemoryRecord[] = [];
+let activeCollectorName: string | null = null;
+let archivedVisible = false;
+let collectorSearch = "";
 
 // Detail view pagination — each section accumulates pages independently so
 // opening a big collection/log never loads its whole history at once.
-let activeMemory: MemoryRecord | null = null;
-let memoryEntries: MemoryEntryRecord[] = [];
-let memoryEntriesHasMore = false;
-let memoryRuns: PromptLogRun[] = [];
-let memoryRunsHasMore = false;
-let memoryCursors: CursorRecord[] = [];
+let activeCollector: MemoryRecord | null = null;
+let entries: MemoryEntryRecord[] = [];
+let entriesHasMore = false;
+let collectorRuns: PromptLogRun[] = [];
+let collectorRunsHasMore = false;
+let cursors: CursorRecord[] = [];
 // Name of the collection whose extractor is currently running on demand
 // (drives the "run extractor" button's disabled/spinner state).
-let triggeringCollection: string | null = null;
+let triggeringCollector: string | null = null;
 
 // ============================================================
-// Memories
+// Collectors
 // ============================================================
 
-// ============================================================
-// Memories
-// ============================================================
-
-export function setupMemories(): void {
-  memoryDetailBack.addEventListener("click", showMemoriesList);
-  for (const btn of Array.from(document.querySelectorAll("#memory-tabs .sub-tab"))) {
-    btn.addEventListener("click", () => {
-      const tab = btn.getAttribute("data-mtab") as MemoryTab | null;
-      if (!tab) return;
-      activeMemoryTab = tab;
-      for (const b of Array.from(document.querySelectorAll("#memory-tabs .sub-tab"))) {
-        b.classList.toggle("active", b === btn);
-      }
-      // Sub-tab switch returns to the list view.
-      activeMemoryName = null;
-      memoryDetail.classList.add("hidden");
-      memoriesList.classList.remove("hidden");
-      renderMemoriesList();
-    });
-  }
-  const search = document.getElementById("memories-search") as HTMLInputElement | null;
+export function setupCollectors(): void {
+  collectorDetailBack.addEventListener("click", showCollectorsList);
+  collectorNewBack.addEventListener("click", showCollectorsList);
+  newCollectorBtn.addEventListener("click", showNewCollectorForm);
+  archivedToggle.addEventListener("click", () => {
+    archivedVisible = !archivedVisible;
+    archivedToggle.classList.toggle("active", archivedVisible);
+    renderCollectorsList();
+  });
+  const search = document.getElementById("collectors-search") as HTMLInputElement | null;
   if (search) {
     let timer = 0;
     search.addEventListener("input", () => {
@@ -79,411 +73,445 @@ export function setupMemories(): void {
       timer = window.setTimeout(() => {
         // Server-side so the filter can match entry content too, not just the
         // names/descriptions the list view already holds.
-        memorySearch = search.value.trim();
-        if (activeMemoryName) {
-          // A collection is open — re-filter its entries (new query or cleared).
+        collectorSearch = search.value.trim();
+        if (activeCollectorName) {
+          // A collector is open — re-filter its entries (new query or cleared).
           browser.runtime.sendMessage({
             type: RuntimeMessageType.MemoryDetailRequest,
-            name: activeMemoryName,
-            query: memorySearch || undefined,
+            name: activeCollectorName,
+            query: collectorSearch || undefined,
           });
         } else {
-          requestMemories();
+          requestCollectors();
         }
       }, 250);
     });
   }
-  wireSearchClear("memories-search", "memories-search-clear");
+  wireSearchClear("collectors-search", "collectors-search-clear");
 }
 
-export function requestMemories(): void {
-  memoriesLoading.classList.remove("hidden");
+export function requestCollectors(): void {
+  collectorsLoading.classList.remove("hidden");
   browser.runtime.sendMessage({
     type: RuntimeMessageType.MemoriesRequest,
-    query: memorySearch || undefined,
+    query: collectorSearch || undefined,
   });
 }
 
-export function handleMemoriesResponse(memories: MemoryRecord[]): void {
-  allMemories = memories;
-  memoriesLoading.classList.add("hidden");
-  renderMemoriesList();
+export function handleCollectorsResponse(memories: MemoryRecord[]): void {
+  allCollectors = memories;
+  collectorsLoading.classList.add("hidden");
+  renderCollectorsList();
 }
 
-export function handleMemoryDetailResponse(message: RuntimeMemoryDetailResponse): void {
-  activeMemoryName = message.memory.name;
-  activeMemory = message.memory;
-  memoryEntries = message.entries;
-  memoryEntriesHasMore = message.entries_has_more;
-  memoryRuns = message.collector_runs;
-  memoryRunsHasMore = message.collector_runs_has_more;
-  memoryCursors = message.cursors;
-  showMemoryDetail();
-  renderMemoryDetail();
+export function handleCollectorDetailResponse(message: RuntimeMemoryDetailResponse): void {
+  activeCollectorName = message.memory.name;
+  activeCollector = message.memory;
+  entries = message.entries;
+  entriesHasMore = message.entries_has_more;
+  collectorRuns = message.collector_runs;
+  collectorRunsHasMore = message.collector_runs_has_more;
+  cursors = message.cursors;
+  showCollectorDetail();
+  renderCollectorDetail();
 }
 
-export function handleMemoryPageResponse(message: RuntimeMemoryPageResponse): void {
-  // Drop pages for a memory the user already navigated away from.
-  if (!activeMemory || message.name !== activeMemory.name) return;
+export function handleCollectorPageResponse(message: RuntimeMemoryPageResponse): void {
+  // Drop pages for a collector the user already navigated away from.
+  if (!activeCollector || message.name !== activeCollector.name) return;
   if (message.section === "collector_runs") {
-    memoryRuns = memoryRuns.concat(message.runs);
-    memoryRunsHasMore = message.has_more;
+    collectorRuns = collectorRuns.concat(message.runs);
+    collectorRunsHasMore = message.has_more;
   } else {
-    memoryEntries = memoryEntries.concat(message.entries);
-    memoryEntriesHasMore = message.has_more;
+    entries = entries.concat(message.entries);
+    entriesHasMore = message.has_more;
   }
-  renderMemoryDetail();
+  renderCollectorDetail();
 }
 
-function requestMemoryPage(section: MemorySection, offset: number): void {
-  if (!activeMemory) return;
+function requestCollectorPage(section: MemorySection, offset: number): void {
+  if (!activeCollector) return;
   browser.runtime.sendMessage({
     type: RuntimeMessageType.MemoryPageRequest,
-    name: activeMemory.name,
+    name: activeCollector.name,
     section,
     offset,
     // Keep entry pagination filtered to the active search.
-    query: section === "entries" ? memorySearch || undefined : undefined,
+    query: section === "entries" ? collectorSearch || undefined : undefined,
   });
 }
 
-export function handleMemoryChanged(name: string | null): void {
-  // The memories tab might not be visible — refresh data only if it is.
-  const memoriesPanel = document.getElementById("panel-memories");
-  if (!memoriesPanel || memoriesPanel.classList.contains("hidden")) return;
-  if (activeMemoryName && (name === null || name === activeMemoryName)) {
+export function handleCollectorChanged(name: string | null): void {
+  // The Collectors tab might not be visible — refresh data only if it is.
+  const collectorsPanel = document.getElementById("panel-memories");
+  if (!collectorsPanel || collectorsPanel.classList.contains("hidden")) return;
+  if (activeCollectorName && (name === null || name === activeCollectorName)) {
     browser.runtime.sendMessage({
       type: RuntimeMessageType.MemoryDetailRequest,
-      name: activeMemoryName,
-      query: memorySearch || undefined,
+      name: activeCollectorName,
+      query: collectorSearch || undefined,
     });
-  } else if (!activeMemoryName) {
-    requestMemories();
+  } else if (!activeCollectorName) {
+    requestCollectors();
   }
 }
 
-function showMemoriesList(): void {
-  activeMemoryName = null;
-  memoryDetail.classList.add("hidden");
-  memoriesList.classList.remove("hidden");
-  requestMemories();
+function showCollectorsList(): void {
+  activeCollectorName = null;
+  collectorDetail.classList.add("hidden");
+  collectorDetailContent.innerHTML = "";
+  collectorNew.classList.add("hidden");
+  collectorNewContent.innerHTML = "";
+  collectorsList.classList.remove("hidden");
+  requestCollectors();
 }
 
-function showMemoryDetail(): void {
-  memoriesList.classList.add("hidden");
-  memoryDetail.classList.remove("hidden");
+function showCollectorDetail(): void {
+  collectorsList.classList.add("hidden");
+  collectorNew.classList.add("hidden");
+  collectorNewContent.innerHTML = "";
+  collectorDetail.classList.remove("hidden");
 }
 
-function renderMemoriesList(): void {
-  memoriesList.innerHTML = "";
-  // The "+" affordance only makes sense on the collections tab — that's
-  // the only shape users can create from the addon.
-  if (activeMemoryTab === "collections") {
-    memoriesList.appendChild(createNewMemoryControl());
-  }
-  if (memorySearch) memoriesList.appendChild(createSearchBanner(memorySearch));
-  const visible = allMemories.filter(memoryMatchesTab);
-  if (visible.length === 0) {
+function showNewCollectorForm(): void {
+  collectorsList.classList.add("hidden");
+  collectorDetail.classList.add("hidden");
+  collectorDetailContent.innerHTML = "";
+  collectorNew.classList.remove("hidden");
+  collectorNewContent.innerHTML = "";
+  collectorNewContent.appendChild(createNewCollectorForm());
+}
+
+// ============================================================
+// List
+// ============================================================
+
+function renderCollectorsList(): void {
+  collectorsList.innerHTML = "";
+  if (collectorSearch) collectorsList.appendChild(createSearchBanner(collectorSearch));
+
+  const active = allCollectors.filter((m) => m.type === "collection" && !m.archived);
+  const archived = allCollectors.filter((m) => m.archived);
+  const logs = allCollectors.filter((m) => m.type === "log" && !m.archived);
+
+  if (active.length === 0 && archived.length === 0 && logs.length === 0) {
     const empty = document.createElement("div");
     empty.className = "panel-loading";
-    empty.textContent = memorySearch ? "No memories match." : emptyLabel(activeMemoryTab);
-    memoriesList.appendChild(empty);
+    empty.textContent = collectorSearch ? "No collectors match." : "No collectors yet.";
+    collectorsList.appendChild(empty);
     return;
   }
-  for (const memory of visible) {
-    memoriesList.appendChild(createMemoryRow(memory));
+
+  collectorsList.appendChild(
+    createSectionHeading(collectorsHeading(active.length, archived.length, archivedVisible)),
+  );
+  for (const record of active) collectorsList.appendChild(createCollectorRow(record));
+  if (archivedVisible) {
+    for (const record of archived) collectorsList.appendChild(createCollectorRow(record));
+  }
+
+  if (logs.length > 0) {
+    collectorsList.appendChild(createSectionHeading(logsHeading(logs.length)));
+    for (const record of logs) collectorsList.appendChild(createCollectorRow(record));
   }
 }
 
-function memoryMatchesTab(memory: MemoryRecord): boolean {
-  if (activeMemoryTab === "archived") return memory.archived;
-  if (memory.archived) return false;
-  return activeMemoryTab === "collections" ? memory.type === "collection" : memory.type === "log";
+function createSectionHeading(text: string): HTMLElement {
+  const heading = document.createElement("div");
+  heading.className = "collector-section-heading";
+  heading.textContent = text;
+  return heading;
 }
 
-function emptyLabel(tab: MemoryTab): string {
-  if (tab === "collections") return "No collections yet.";
-  if (tab === "logs") return "No logs yet.";
-  return "Nothing archived.";
-}
-
-function createNewMemoryControl(): HTMLElement {
-  const wrapper = document.createElement("div");
-  wrapper.className = "memory-new-control";
-
-  const button = document.createElement("button");
-  button.className = "memory-new-btn";
-  button.innerHTML = '<i class="fa-solid fa-plus"></i> New collection';
-  button.addEventListener("click", () => {
-    wrapper.replaceWith(createNewMemoryForm());
-  });
-  wrapper.appendChild(button);
-  return wrapper;
-}
-
-function createNewMemoryForm(): HTMLElement {
-  const form = document.createElement("div");
-  form.className = "memory-new-form";
-
-  const fields = createMemoryFormFields({
-    description: "",
-    published: false,
-    extraction_prompt: "",
-  });
-  const schedulePicker = createSchedulePicker({ schedule: null, description: null });
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
-  nameInput.placeholder = "collection-name";
-  nameInput.className = "memory-form-input";
-
-  form.appendChild(labelled("Name", nameInput));
-  form.appendChild(labelled("Description", fields.description));
-  form.appendChild(labelled("Notify on new (published)", fields.published));
-  form.appendChild(labelled("Extraction prompt", fields.extractionPrompt));
-  form.appendChild(labelled("Schedule", schedulePicker.element));
-
-  const actions = document.createElement("div");
-  actions.className = "memory-form-actions";
-
-  const cancel = document.createElement("button");
-  cancel.className = "memory-form-cancel";
-  cancel.textContent = "Cancel";
-  cancel.addEventListener("click", () => renderMemoriesList());
-
-  const create = document.createElement("button");
-  create.className = "memory-form-save";
-  create.textContent = "Create";
-  create.addEventListener("click", () => {
-    const name = nameInput.value.trim();
-    if (!name) {
-      showToast("Name is required");
-      return;
-    }
-    const promptValue = fields.extractionPrompt.value.trim();
-    browser.runtime.sendMessage({
-      type: RuntimeMessageType.MemoryCreate,
-      name,
-      description: fields.description.value.trim(),
-      published: fields.published.checked,
-      extraction_prompt: promptValue || null,
-      schedule: schedulePicker.getValue(),
-    });
-    showToast("Created");
-  });
-
-  actions.appendChild(cancel);
-  actions.appendChild(create);
-  form.appendChild(actions);
-  return form;
-}
-
-interface MemoryFormFields {
-  description: HTMLTextAreaElement;
-  published: HTMLInputElement;
-  extractionPrompt: HTMLTextAreaElement;
-}
-
-function createMemoryFormFields(initial: {
-  description: string;
-  published: boolean;
-  extraction_prompt: string;
-}): MemoryFormFields {
-  const description = document.createElement("textarea");
-  description.className = "memory-form-input";
-  description.rows = 2;
-  description.value = initial.description;
-
-  // Pub/sub: when checked, the notifier delivers new entries to the user.
-  const published = document.createElement("input");
-  published.type = "checkbox";
-  published.className = "memory-form-checkbox";
-  published.checked = initial.published;
-
-  const extractionPrompt = document.createElement("textarea");
-  extractionPrompt.className = "memory-form-input memory-form-prompt";
-  extractionPrompt.rows = 6;
-  // Some prompts have been stored with literal "\n" escape sequences
-  // instead of real newlines (chat-side tool calls or the model itself
-  // double-escaped).  Render those as real newlines so the textarea
-  // shows a multi-line prompt; saving from this form normalises the DB
-  // value naturally.
-  extractionPrompt.value = unescapeNewlines(initial.extraction_prompt);
-
-  return { description, published, extractionPrompt };
-}
-
-function labelled(label: string, control: HTMLElement): HTMLElement {
-  const wrapper = document.createElement("label");
-  wrapper.className = "memory-form-row";
-  const text = document.createElement("span");
-  text.className = "memory-form-label";
-  text.textContent = label;
-  wrapper.appendChild(text);
-  wrapper.appendChild(control);
-  return wrapper;
-}
-
-function createMemoryRow(memory: MemoryRecord): HTMLElement {
+function createCollectorRow(memory: MemoryRecord): HTMLElement {
   const row = document.createElement("div");
-  row.className = "memory-row";
-  if (memory.archived) row.classList.add("memory-row-archived");
+  row.className = "collector-row";
+  if (memory.type === "log") row.classList.add("collector-row-log");
+  if (memory.archived) row.classList.add("collector-row-archived");
+
+  const left = document.createElement("div");
+  left.className = "collector-row-left";
 
   const name = document.createElement("span");
-  name.className = "memory-name";
+  name.className = "collector-row-name";
   name.textContent = memory.name;
+  name.title = memory.name;
+  left.appendChild(name);
 
-  const badge = document.createElement("span");
-  badge.className = `memory-type-badge ${memory.type}`;
-  badge.textContent = memory.type;
+  if (memory.archived) {
+    left.appendChild(createChip("archived", "collector-chip-muted", "Archived — hidden unless shown"));
+  } else if (memory.published) {
+    left.appendChild(createChip("published", "chip--accent", "Notifies on new entries"));
+  }
 
   const description = document.createElement("span");
-  description.className = "memory-description";
+  description.className = "collector-row-desc";
   description.textContent = memory.description;
+  description.title = memory.description;
+  left.appendChild(description);
 
-  const meta = document.createElement("span");
-  meta.className = "memory-meta";
-  meta.appendChild(metaItem("fa-list", `${memory.entry_count} entries`));
-  if (memory.last_collected_at) {
-    meta.appendChild(metaItem("fa-clock-rotate-left", formatRelativeDate(memory.last_collected_at)));
-  } else if (memory.extraction_prompt) {
-    meta.appendChild(metaItem("fa-clock-rotate-left", "never"));
-  }
-
-  row.appendChild(name);
-  row.appendChild(badge);
-  if (memory.published) {
-    const publishedBadge = document.createElement("span");
-    publishedBadge.className = "memory-type-badge published";
-    publishedBadge.textContent = "published";
-    row.appendChild(publishedBadge);
-  }
-  row.appendChild(description);
-  row.appendChild(meta);
+  row.appendChild(left);
+  row.appendChild(createCollectorRowRight(memory));
 
   row.addEventListener("click", () => {
     browser.runtime.sendMessage({
       type: RuntimeMessageType.MemoryDetailRequest,
       name: memory.name,
       // Carry the active search so the detail view shows only matching entries.
-      query: memorySearch || undefined,
+      query: collectorSearch || undefined,
     });
   });
 
   return row;
 }
 
-function metaItem(iconClass: string, text: string): HTMLSpanElement {
-  const span = document.createElement("span");
-  span.innerHTML = `<i class="fa-solid ${iconClass}"></i>${text}`;
-  return span;
+function createChip(label: string, extraClass: string, title: string): HTMLElement {
+  const chip = document.createElement("span");
+  chip.className = `chip ${extraClass}`;
+  chip.textContent = label;
+  chip.title = title;
+  return chip;
 }
 
-function renderMemoryDetail(): void {
-  if (!activeMemory) return;
-  const memory = activeMemory;
-  memoryDetailContent.innerHTML = "";
+function createCollectorRowRight(memory: MemoryRecord): HTMLElement {
+  const right = document.createElement("div");
+  right.className =
+    memory.type === "log" ? "collector-row-right collector-row-right-log" : "collector-row-right";
 
-  memoryDetailContent.appendChild(createMemoryHeader(memory));
-  memoryDetailContent.appendChild(createMemoryDetailTabs(memory));
-}
-
-// Entries / Activity / Config as switchable panels under the header, replacing
-// the old single-page vertical stack.  Defaults to Entries.
-function createMemoryDetailTabs(memory: MemoryRecord): HTMLElement {
-  const wrapper = document.createElement("div");
-  wrapper.className = "memory-detail-tabs-wrapper";
-
-  const tabs = [
-    { label: "Entries", panel: createEntriesPanel(memory) },
-    { label: "Activity", panel: createActivityPanel(memory) },
-    { label: "Config", panel: createConfigPanel(memory) },
-  ];
-
-  const bar = document.createElement("div");
-  bar.className = "memory-detail-tabs";
-  tabs.forEach((tab, index) => {
-    const button = document.createElement("button");
-    button.className = index === 0 ? "sub-tab active" : "sub-tab";
-    button.textContent = tab.label;
-    tab.panel.classList.toggle("active", index === 0);
-    button.addEventListener("click", () => activateMemoryDetailTab(bar, tabs, index));
-    bar.appendChild(button);
-  });
-
-  wrapper.appendChild(bar);
-  for (const tab of tabs) wrapper.appendChild(tab.panel);
-  return wrapper;
-}
-
-function activateMemoryDetailTab(
-  bar: HTMLElement,
-  tabs: { label: string; panel: HTMLElement }[],
-  active: number,
-): void {
-  const buttons = Array.from(bar.querySelectorAll(".sub-tab"));
-  buttons.forEach((button, index) => button.classList.toggle("active", index === active));
-  tabs.forEach((tab, index) => tab.panel.classList.toggle("active", index === active));
-}
-
-function createMemoryTabPanel(): HTMLElement {
-  const panel = document.createElement("div");
-  panel.className = "memory-tab-panel";
-  return panel;
-}
-
-// The collection's stored entries (and, for collections, the add-entry form).
-function createEntriesPanel(memory: MemoryRecord): HTMLElement {
-  const panel = createMemoryTabPanel();
-  panel.appendChild(createMemoryEntriesSection(memory, memoryEntries, memoryEntriesHasMore));
-  return panel;
-}
-
-// Collector run history plus a collection's read positions over the logs it
-// consumes — both empty for logs, which aren't driven by a collector cycle.
-function createActivityPanel(memory: MemoryRecord): HTMLElement {
-  const panel = createMemoryTabPanel();
-  if (memory.type === "collection" && memoryCursors.length > 0) {
-    panel.appendChild(createCursorsSection(memory, memoryCursors));
+  right.appendChild(createMetricCell("fa-list", String(memory.entry_count), `${memory.entry_count} entries`));
+  if (memory.type === "collection") {
+    right.appendChild(createLastCollectedCell(memory));
+    right.appendChild(createScheduleCell(memory));
   }
-  if (memoryRuns.length > 0) {
-    panel.appendChild(createCollectorRunsSection(memoryRuns, memoryRunsHasMore));
+
+  const chevron = document.createElement("span");
+  chevron.className = "collector-row-go";
+  chevron.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+  right.appendChild(chevron);
+
+  return right;
+}
+
+function createMetricCell(iconClass: string, value: string, title: string): HTMLElement {
+  const cell = document.createElement("span");
+  cell.className = "metric";
+  cell.title = title;
+  cell.innerHTML = `<i class="fa-solid ${iconClass}"></i><span class="v">${value}</span>`;
+  return cell;
+}
+
+function createMutedCell(title: string): HTMLElement {
+  const cell = document.createElement("span");
+  cell.className = "metric collector-cell-muted";
+  cell.title = title;
+  cell.textContent = "—";
+  return cell;
+}
+
+function createLastCollectedCell(memory: MemoryRecord): HTMLElement {
+  if (memory.last_collected_at) {
+    return createMetricCell(
+      "fa-clock-rotate-left",
+      formatRelativeDate(memory.last_collected_at),
+      `Last collected ${formatDateTime(memory.last_collected_at)}`,
+    );
   }
-  if (!panel.hasChildNodes()) {
+  if (memory.extraction_prompt) {
+    return createMetricCell("fa-clock-rotate-left", "never", "This collector hasn't run yet");
+  }
+  return createMutedCell("No extraction prompt — entries are added by hand");
+}
+
+function createScheduleCell(memory: MemoryRecord): HTMLElement {
+  if (!memory.schedule) return createMutedCell("No schedule set");
+  const title = memory.schedule_description
+    ? `${memory.schedule_description} — ${memory.schedule}`
+    : memory.schedule;
+  return createMetricCell("fa-calendar", scheduleAbbrev(memory.schedule), title);
+}
+
+// ============================================================
+// Detail
+// ============================================================
+
+function renderCollectorDetail(): void {
+  if (!activeCollector) return;
+  const memory = activeCollector;
+  collectorDetailContent.innerHTML = "";
+  collectorDetailContent.appendChild(createCollectorDetailHeader(memory));
+  collectorDetailContent.appendChild(createEntriesSection(memory));
+  collectorDetailContent.appendChild(createActivitySection());
+  collectorDetailContent.appendChild(createConfigSection(memory));
+}
+
+function createCollectorDetailHeader(memory: MemoryRecord): HTMLElement {
+  const header = document.createElement("div");
+  header.className = "collector-detail-header";
+
+  const title = document.createElement("h1");
+  title.textContent = memory.name;
+  header.appendChild(title);
+
+  if (memory.published) {
+    header.appendChild(createChip("published", "chip--accent", "Notifies on new entries"));
+  }
+  if (memory.archived) {
+    header.appendChild(createChip("archived", "collector-chip-muted", "Archived — hidden from the active list"));
+  }
+  return header;
+}
+
+// The collector's stored entries (and, for collections, the add-entry form).
+function createEntriesSection(memory: MemoryRecord): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "collector-section";
+
+  if (collectorSearch) section.appendChild(createSearchBanner(collectorSearch));
+
+  const heading = document.createElement("h2");
+  const shown = entries.length;
+  const total = memory.entry_count;
+  if (collectorSearch) {
+    heading.textContent = `Entries (${shown}${entriesHasMore ? "+" : ""})`;
+  } else {
+    heading.textContent =
+      total > shown ? `Entries (showing ${shown} of ${total}, newest first)` : `Entries (${total})`;
+  }
+  section.appendChild(heading);
+
+  if (entries.length === 0) {
     const empty = document.createElement("div");
-    empty.className = "memory-entries-empty";
-    empty.textContent = "No collector activity yet.";
-    panel.appendChild(empty);
+    empty.className = "collector-entries-empty";
+    empty.textContent = collectorSearch ? `No entries match “${collectorSearch}”.` : "No entries yet.";
+    section.appendChild(empty);
+  } else {
+    for (const entry of entries) section.appendChild(createEntryRow(memory, entry));
   }
-  return panel;
+
+  if (entriesHasMore) {
+    section.appendChild(createLoadMoreButton(() => requestCollectorPage("entries", entries.length)));
+  }
+
+  // Logs are append-only by the system — manual entry add is collection-only.
+  if (memory.type === "collection") {
+    section.appendChild(createEntryAddForm(memory));
+  }
+  return section;
+}
+
+// Collector run history — a native <details>, closed by default (the least
+// often needed at a glance). Read cursors live in Config now, not here.
+function createActivitySection(): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "collector-activity";
+
+  const summary = document.createElement("summary");
+  summary.className = "collector-activity-summary";
+  const count = collectorRuns.length;
+  summary.innerHTML =
+    '<i class="fa-solid fa-chevron-right collector-chev"></i> Activity ' +
+    `<span class="collector-activity-sub">— ${count} collector run${count === 1 ? "" : "s"}</span>`;
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "collector-activity-body";
+  if (collectorRuns.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "collector-entries-empty";
+    empty.textContent = "No collector activity yet.";
+    body.appendChild(empty);
+  } else {
+    for (const run of collectorRuns) body.appendChild(createRunRow(run));
+    if (collectorRunsHasMore) {
+      body.appendChild(createLoadMoreButton(() => requestCollectorPage("collector_runs", collectorRuns.length)));
+    }
+  }
+  details.appendChild(body);
+  return details;
 }
 
 // Editable configuration (read-only metadata for system-managed logs).
-function createConfigPanel(memory: MemoryRecord): HTMLElement {
-  const panel = createMemoryTabPanel();
-  panel.appendChild(createMemoryMetadataSection(memory));
-  return panel;
+function createConfigSection(memory: MemoryRecord): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "collector-section";
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Config";
+  section.appendChild(heading);
+
+  const card = document.createElement("div");
+  card.className = "collector-config-card";
+  if (memory.type === "log") {
+    appendLogConfig(card, memory);
+  } else {
+    appendCollectionConfig(card, memory);
+  }
+  section.appendChild(card);
+  return section;
 }
 
-function createCursorsSection(memory: MemoryRecord, cursors: CursorRecord[]): HTMLElement {
-  const section = document.createElement("div");
-  section.className = "memory-detail-section";
+function appendLogConfig(card: HTMLElement, memory: MemoryRecord): void {
+  const grid = document.createElement("dl");
+  grid.className = "collector-readonly-grid";
+  appendDef(grid, "Description", memory.description || "—");
+  appendDef(grid, "Entries", String(memory.entry_count));
+  card.appendChild(grid);
+}
 
-  const title = document.createElement("h3");
-  title.textContent = "Read cursors";
-  section.appendChild(title);
+function appendCollectionConfig(card: HTMLElement, memory: MemoryRecord): void {
+  const fields = createCollectorFormFields({
+    description: memory.description,
+    published: memory.published,
+    extraction_prompt: memory.extraction_prompt ?? "",
+  });
+  const schedulePicker = createSchedulePicker({
+    schedule: memory.schedule,
+    description: memory.schedule_description,
+  });
+
+  card.appendChild(fieldRow("Description", fields.description));
+  card.appendChild(
+    toggleRow(
+      "collector-notify",
+      "Notify on new (published)",
+      fields.published,
+      "When on, Penny delivers each new entry to you as it's collected.",
+    ),
+  );
+  card.appendChild(fieldRow("Extraction prompt", fields.extractionPrompt));
+  card.appendChild(fieldRow("Schedule", schedulePicker.element));
+
+  if (cursors.length > 0) card.appendChild(createCursorsBlock(memory));
+
+  const readOnlyGrid = document.createElement("dl");
+  readOnlyGrid.className = "collector-readonly-grid";
+  appendDef(readOnlyGrid, "Entries", String(memory.entry_count));
+  if (memory.last_collected_at) {
+    appendDef(readOnlyGrid, "Last collected", formatDateTime(memory.last_collected_at));
+  }
+  card.appendChild(readOnlyGrid);
+
+  card.appendChild(createConfigActions(memory, fields, schedulePicker));
+}
+
+function createCursorsBlock(memory: MemoryRecord): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "collector-cursors-block";
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Read cursors";
+  wrapper.appendChild(heading);
 
   const hint = document.createElement("p");
-  hint.className = "memory-cursor-hint";
+  hint.className = "collector-field-hint";
   hint.textContent =
-    "Where this collection has read up to in each log. Pick an earlier point to " +
+    "Where this collector has read up to in each log. Pick an earlier point to " +
     "re-read from there (set it before your data starts to re-read everything); " +
     "Clear starts fresh from the most recent entries.";
-  section.appendChild(hint);
+  wrapper.appendChild(hint);
 
-  for (const cursor of cursors) {
-    section.appendChild(createCursorRow(memory, cursor));
-  }
-  return section;
+  for (const cursor of cursors) wrapper.appendChild(createCursorRow(memory, cursor));
+  return wrapper;
 }
 
 // datetime-local inputs speak local wall-clock "YYYY-MM-DDTHH:mm"; cursors are
@@ -499,23 +527,23 @@ function isoToLocalInput(iso: string): string {
 
 function createCursorRow(memory: MemoryRecord, cursor: CursorRecord): HTMLElement {
   const row = document.createElement("div");
-  row.className = "memory-cursor-row";
+  row.className = "collector-cursor-row";
 
   const log = document.createElement("span");
-  log.className = "memory-cursor-log";
+  log.className = "collector-cursor-log";
   log.textContent = cursor.log_name;
 
   const current = document.createElement("span");
-  current.className = "memory-cursor-current";
+  current.className = "collector-cursor-current";
   current.textContent = `read up to ${formatDateTime(cursor.last_read_at)}`;
 
   const picker = document.createElement("input");
   picker.type = "datetime-local";
-  picker.className = "memory-form-input";
+  picker.className = "collector-field-input";
   picker.value = isoToLocalInput(cursor.last_read_at);
 
   const setBtn = document.createElement("button");
-  setBtn.className = "memory-form-save";
+  setBtn.className = "btn";
   setBtn.textContent = "Set";
   setBtn.addEventListener("click", () => {
     if (!picker.value) return;
@@ -529,7 +557,7 @@ function createCursorRow(memory: MemoryRecord, cursor: CursorRecord): HTMLElemen
   });
 
   const clearBtn = document.createElement("button");
-  clearBtn.className = "memory-form-archive";
+  clearBtn.className = "btn";
   clearBtn.textContent = "Clear";
   clearBtn.addEventListener("click", () => {
     browser.runtime.sendMessage({
@@ -548,143 +576,36 @@ function createCursorRow(memory: MemoryRecord, cursor: CursorRecord): HTMLElemen
   return row;
 }
 
-// "Load more" affordance shared by the detail view's paginated sections.
-function createLoadMoreButton(onClick: () => void): HTMLElement {
-  const wrapper = document.createElement("div");
-  wrapper.className = "memory-load-more";
-  const button = document.createElement("button");
-  button.className = "load-more-btn";
-  button.innerHTML = '<i class="fa-solid fa-chevron-down"></i> Load more';
-  button.addEventListener("click", onClick);
-  wrapper.appendChild(button);
-  return wrapper;
-}
-
-// Collector activity is the prompts tab scoped to this collection: each run is
-// a full run → prompts → turns card via the shared `createRunRow`.
-function createCollectorRunsSection(
-  runs: PromptLogRun[],
-  hasMore: boolean,
+function createConfigActions(
+  memory: MemoryRecord,
+  fields: CollectorFormFields,
+  schedulePicker: SchedulePickerHandle,
 ): HTMLElement {
-  const section = document.createElement("div");
-  section.className = "memory-entries-section";
-
-  const title = document.createElement("h3");
-  title.textContent = hasMore
-    ? `Collector activity (showing ${runs.length}, newest first)`
-    : `Collector activity (${runs.length})`;
-  section.appendChild(title);
-
-  for (const run of runs) {
-    section.appendChild(createRunRow(run));
-  }
-  if (hasMore) {
-    section.appendChild(
-      createLoadMoreButton(() => requestMemoryPage("collector_runs", runs.length)),
-    );
-  }
-  return section;
-}
-
-function createMemoryHeader(memory: MemoryRecord): HTMLElement {
-  const header = document.createElement("div");
-  header.className = "memory-detail-header";
-
-  const title = document.createElement("h2");
-  title.textContent = memory.name;
-
-  const badge = document.createElement("span");
-  badge.className = `memory-type-badge ${memory.type}`;
-  badge.textContent = memory.type;
-
-  header.appendChild(title);
-  header.appendChild(badge);
-  if (memory.archived) {
-    const archived = document.createElement("span");
-    archived.className = "memory-type-badge";
-    archived.textContent = "archived";
-    header.appendChild(archived);
-  }
-  return header;
-}
-
-function createMemoryMetadataSection(memory: MemoryRecord): HTMLElement {
-  // Logs are system-managed (created by migrations, written by agents) — read-only.
-  // Collections are user-editable.
-  if (memory.type === "log") {
-    return createLogMetadataSection(memory);
-  }
-  return createCollectionMetadataSection(memory);
-}
-
-function createLogMetadataSection(memory: MemoryRecord): HTMLElement {
-  const section = document.createElement("div");
-  section.className = "memory-detail-section";
-
-  const title = document.createElement("h3");
-  title.textContent = "Metadata";
-  section.appendChild(title);
-
-  const grid = document.createElement("dl");
-  grid.className = "memory-detail-grid";
-  appendDef(grid, "Description", memory.description || "—");
-  appendDef(grid, "Entries", String(memory.entry_count));
-  section.appendChild(grid);
-  return section;
-}
-
-function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
-  const section = document.createElement("div");
-  section.className = "memory-detail-section";
-
-  const title = document.createElement("h3");
-  title.textContent = "Metadata";
-  section.appendChild(title);
-
-  const fields = createMemoryFormFields({
-    description: memory.description,
-    published: memory.published,
-    extraction_prompt: memory.extraction_prompt ?? "",
-  });
-  const schedulePicker = createSchedulePicker({
-    schedule: memory.schedule,
-    description: memory.schedule_description,
-  });
-
-  section.appendChild(labelled("Description", fields.description));
-  section.appendChild(labelled("Notify on new (published)", fields.published));
-  section.appendChild(labelled("Extraction prompt", fields.extractionPrompt));
-  section.appendChild(labelled("Schedule", schedulePicker.element));
-
-  const readOnlyGrid = document.createElement("dl");
-  readOnlyGrid.className = "memory-detail-grid";
-  appendDef(readOnlyGrid, "Entries", String(memory.entry_count));
-  if (memory.last_collected_at) {
-    appendDef(readOnlyGrid, "Last collected", formatDateTime(memory.last_collected_at));
-  }
-  section.appendChild(readOnlyGrid);
-
   const actions = document.createElement("div");
-  actions.className = "memory-form-actions";
+  actions.className = "collector-actions-row";
 
-  // Only collections with an extraction prompt have a collector to run.
+  // Only collectors with an extraction prompt have a collector to run.
   if (memory.extraction_prompt) {
     actions.appendChild(createRunExtractorButton(memory));
   }
 
+  const spacer = document.createElement("span");
+  spacer.className = "collector-actions-spacer";
+  actions.appendChild(spacer);
+
   const archive = document.createElement("button");
-  archive.className = "memory-form-archive";
+  archive.className = "btn";
   archive.textContent = memory.archived ? "Archived" : "Archive";
   archive.disabled = memory.archived;
   archive.addEventListener("click", () => {
     if (!confirm(`Archive "${memory.name}"? It will disappear from the active list.`)) return;
     browser.runtime.sendMessage({ type: RuntimeMessageType.MemoryArchive, name: memory.name });
     showToast("Archived");
-    showMemoriesList();
+    showCollectorsList();
   });
 
   const save = document.createElement("button");
-  save.className = "memory-form-save";
+  save.className = "btn btn-primary";
   save.textContent = "Save";
   save.addEventListener("click", () => {
     browser.runtime.sendMessage({
@@ -700,120 +621,228 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
 
   actions.appendChild(archive);
   actions.appendChild(save);
-  section.appendChild(actions);
-  return section;
+  return actions;
 }
 
 function createRunExtractorButton(memory: MemoryRecord): HTMLElement {
-  const running = triggeringCollection === memory.name;
+  const running = triggeringCollector === memory.name;
   const button = document.createElement("button");
-  button.className = "memory-form-run";
+  button.className = "btn btn-run";
   button.disabled = running;
   button.innerHTML = running
     ? '<i class="fa-solid fa-spinner fa-spin"></i> Running…'
     : '<i class="fa-solid fa-play"></i> Run extractor';
   button.addEventListener("click", () => {
-    triggeringCollection = memory.name;
+    triggeringCollector = memory.name;
     browser.runtime.sendMessage({ type: RuntimeMessageType.CollectionTrigger, name: memory.name });
-    renderMemoryDetail(); // reflect the running state immediately
+    renderCollectorDetail(); // reflect the running state immediately
   });
   return button;
 }
 
 export function handleCollectionTriggerResult(message: RuntimeCollectionTriggerResult): void {
-  if (triggeringCollection === message.name) triggeringCollection = null;
+  if (triggeringCollector === message.name) triggeringCollector = null;
   showToast(message.success ? "Extractor finished" : `Extractor failed: ${message.message}`);
   // Refresh the detail so re-enabled button, new entries, and updated
   // "last collected" all reflect the run (also arrives via memory_changed).
-  if (activeMemory && activeMemory.name === message.name) renderMemoryDetail();
+  if (activeCollector && activeCollector.name === message.name) renderCollectorDetail();
 }
 
 // A memory_create/memory_update whose schedule the server rejected (#2442) —
 // the optimistic "Created"/"Saved" toast already fired, so this one follows
 // it with the real outcome rather than leaving the rejection unsaid. Nothing
 // was persisted, so there is no detail to refresh.
-export function handleMemorySaveError(message: RuntimeMemorySaveError): void {
+export function handleCollectorSaveError(message: RuntimeMemorySaveError): void {
   const verb = message.action === "create" ? "Create" : "Save";
   showToast(`${verb} failed: ${message.message}`);
 }
 
-function appendDef(grid: HTMLElement, label: string, value: string, monospace = false): void {
+function appendDef(grid: HTMLElement, label: string, value: string): void {
   const dt = document.createElement("dt");
   dt.textContent = label;
   const dd = document.createElement("dd");
-  if (monospace) {
-    const pre = document.createElement("pre");
-    pre.textContent = value;
-    dd.appendChild(pre);
-  } else {
-    dd.textContent = value;
-  }
+  dd.textContent = value;
   grid.appendChild(dt);
   grid.appendChild(dd);
 }
 
-function createMemoryEntriesSection(
-  memory: MemoryRecord,
-  entries: MemoryEntryRecord[],
-  hasMore: boolean,
-): HTMLElement {
-  // The entries section is "flat" — entries themselves are the cards,
-  // so wrapping them in another card creates visual nesting noise.
-  const section = document.createElement("div");
-  section.className = "memory-entries-section";
+// ============================================================
+// New collector
+// ============================================================
 
-  if (memorySearch) section.appendChild(createSearchBanner(memorySearch));
+function createNewCollectorForm(): HTMLElement {
+  const wrapper = document.createElement("div");
 
-  const title = document.createElement("h3");
-  const shown = entries.length;
-  const total = memory.entry_count;
-  if (memorySearch) {
-    title.textContent = `Entries (${shown}${hasMore ? "+" : ""})`;
-  } else {
-    title.textContent =
-      total > shown ? `Entries (showing ${shown} of ${total}, newest first)` : `Entries (${total})`;
-  }
-  section.appendChild(title);
+  const heading = document.createElement("h1");
+  heading.textContent = "New collector";
+  wrapper.appendChild(heading);
 
-  if (entries.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "memory-entries-empty";
-    empty.textContent = memorySearch ? `No entries match “${memorySearch}”.` : "No entries yet.";
-    section.appendChild(empty);
-  } else {
-    for (const entry of entries) {
-      section.appendChild(createMemoryEntry(memory, entry));
+  const card = document.createElement("div");
+  card.className = "collector-config-card";
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "collector-name";
+  nameInput.className = "collector-field-input mono";
+
+  const fields = createCollectorFormFields({
+    description: "",
+    published: false,
+    extraction_prompt: "",
+  });
+  const schedulePicker = createSchedulePicker({ schedule: null, description: null });
+
+  card.appendChild(fieldRow("Name", nameInput));
+  card.appendChild(fieldRow("Description", fields.description));
+  card.appendChild(
+    toggleRow(
+      "new-collector-notify",
+      "Notify on new (published)",
+      fields.published,
+      "When on, Penny delivers each new entry to you as it's collected.",
+    ),
+  );
+  card.appendChild(fieldRow("Extraction prompt", fields.extractionPrompt));
+  card.appendChild(fieldRow("Schedule", schedulePicker.element));
+
+  const actions = document.createElement("div");
+  actions.className = "collector-actions-row";
+
+  const cancel = document.createElement("button");
+  cancel.className = "btn";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", showCollectorsList);
+
+  const create = document.createElement("button");
+  create.className = "btn btn-primary";
+  create.textContent = "Create";
+  create.addEventListener("click", () => {
+    const name = nameInput.value.trim();
+    if (!name) {
+      showToast("Name is required");
+      return;
     }
-  }
+    const promptValue = fields.extractionPrompt.value.trim();
+    browser.runtime.sendMessage({
+      type: RuntimeMessageType.MemoryCreate,
+      name,
+      description: fields.description.value.trim(),
+      published: fields.published.checked,
+      extraction_prompt: promptValue || null,
+      schedule: schedulePicker.getValue(),
+    });
+    showToast("Created");
+    showCollectorsList();
+  });
 
-  if (hasMore) {
-    section.appendChild(createLoadMoreButton(() => requestMemoryPage("entries", entries.length)));
-  }
+  actions.appendChild(cancel);
+  actions.appendChild(create);
+  card.appendChild(actions);
 
-  // Logs are append-only by the system — manual entry add is collection-only.
-  if (memory.type === "collection") {
-    section.appendChild(createEntryAddForm(memory));
-  }
-  return section;
+  wrapper.appendChild(card);
+  return wrapper;
 }
+
+// --- Shared form building blocks (detail's Config section + New collector) ---
+
+interface CollectorFormFields {
+  description: HTMLTextAreaElement;
+  published: HTMLInputElement;
+  extractionPrompt: HTMLTextAreaElement;
+}
+
+function createCollectorFormFields(initial: {
+  description: string;
+  published: boolean;
+  extraction_prompt: string;
+}): CollectorFormFields {
+  const description = document.createElement("textarea");
+  description.className = "collector-field-input";
+  description.rows = 2;
+  description.value = initial.description;
+
+  // Pub/sub: when checked, the notifier delivers new entries to the user.
+  const published = document.createElement("input");
+  published.type = "checkbox";
+  published.checked = initial.published;
+
+  const extractionPrompt = document.createElement("textarea");
+  extractionPrompt.className = "collector-field-input mono";
+  extractionPrompt.rows = 6;
+  // Some prompts have been stored with literal "\n" escape sequences
+  // instead of real newlines (chat-side tool calls or the model itself
+  // double-escaped).  Render those as real newlines so the textarea
+  // shows a multi-line prompt; saving from this form normalises the DB
+  // value naturally.
+  extractionPrompt.value = unescapeNewlines(initial.extraction_prompt);
+
+  return { description, published, extractionPrompt };
+}
+
+function fieldRow(label: string, control: HTMLElement): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "collector-field-row";
+  const text = document.createElement("span");
+  text.className = "collector-field-label";
+  text.textContent = label;
+  row.appendChild(text);
+  row.appendChild(control);
+  return row;
+}
+
+function toggleRow(id: string, label: string, checkbox: HTMLInputElement, hint: string): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "collector-field-row";
+
+  const inner = document.createElement("div");
+  inner.className = "collector-toggle-row";
+  checkbox.id = id;
+  inner.appendChild(checkbox);
+  const text = document.createElement("label");
+  text.htmlFor = id;
+  text.className = "collector-field-label";
+  text.textContent = label;
+  inner.appendChild(text);
+  row.appendChild(inner);
+
+  const hintEl = document.createElement("span");
+  hintEl.className = "collector-field-hint";
+  hintEl.textContent = hint;
+  row.appendChild(hintEl);
+  return row;
+}
+
+// "Load more" affordance shared by the detail view's paginated sections.
+function createLoadMoreButton(onClick: () => void): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "memory-load-more";
+  const button = document.createElement("button");
+  button.className = "load-more-btn";
+  button.innerHTML = '<i class="fa-solid fa-chevron-down"></i> Load more';
+  button.addEventListener("click", onClick);
+  wrapper.appendChild(button);
+  return wrapper;
+}
+
+// --- Entries ---
 
 // Long log entries (esp. ``user-messages`` / ``penny-messages``) get
 // collapsed by default so the list stays scannable.  CSS clips after
 // ~20 visual lines; the JS heuristic decides whether to clip at all.
-const MEMORY_ENTRY_COLLAPSE_LINES = 20;
-const MEMORY_ENTRY_COLLAPSE_CHARS = 600;
+const ENTRY_COLLAPSE_LINES = 20;
+const ENTRY_COLLAPSE_CHARS = 600;
 
-function createMemoryEntry(memory: MemoryRecord, entry: MemoryEntryRecord): HTMLElement {
+function createEntryRow(memory: MemoryRecord, entry: MemoryEntryRecord): HTMLElement {
   const row = document.createElement("div");
-  row.className = "memory-entry";
+  row.className = "collector-entry";
 
   const header = document.createElement("div");
-  header.className = "memory-entry-header";
+  header.className = "collector-entry-header";
 
   if (entry.key) {
     // Collections: the key is the title.
     const key = document.createElement("span");
-    key.className = "memory-entry-key";
+    key.className = "collector-entry-key";
     key.textContent = entry.key;
     header.appendChild(key);
   }
@@ -821,15 +850,15 @@ function createMemoryEntry(memory: MemoryRecord, entry: MemoryEntryRecord): HTML
   // For logs the timestamp IS the identifier; rendered prominently
   // either way so the eye lands on it quickly when scanning.
   const time = document.createElement("span");
-  time.className = entry.key ? "memory-entry-date" : "memory-entry-date memory-entry-date-primary";
+  time.className = entry.key ? "collector-entry-date" : "collector-entry-date collector-entry-date-primary";
   time.textContent = formatDateTime(entry.created_at);
   header.appendChild(time);
 
   // Logs distinguish authors (user vs penny); a collection's entries are all
-  // its collector's, so the author just repeats the collection name — drop it.
+  // its collector's, so the author just repeats the collector name — drop it.
   if (memory.type === "log") {
     const author = document.createElement("span");
-    author.className = "memory-entry-author";
+    author.className = "collector-entry-author";
     author.textContent = entry.author;
     header.appendChild(author);
   }
@@ -840,7 +869,7 @@ function createMemoryEntry(memory: MemoryRecord, entry: MemoryEntryRecord): HTML
   }
 
   const content = document.createElement("div");
-  content.className = "memory-entry-content";
+  content.className = "collector-entry-content";
   content.textContent = entry.content;
 
   row.appendChild(header);
@@ -855,15 +884,12 @@ function createMemoryEntry(memory: MemoryRecord, entry: MemoryEntryRecord): HTML
 }
 
 function shouldCollapseEntry(content: string): boolean {
-  return (
-    content.split("\n").length > MEMORY_ENTRY_COLLAPSE_LINES ||
-    content.length > MEMORY_ENTRY_COLLAPSE_CHARS
-  );
+  return content.split("\n").length > ENTRY_COLLAPSE_LINES || content.length > ENTRY_COLLAPSE_CHARS;
 }
 
 function createEntryCollapseToggle(content: HTMLElement): HTMLElement {
   const toggle = document.createElement("button");
-  toggle.className = "memory-entry-toggle";
+  toggle.className = "collector-entry-toggle";
   toggle.textContent = "Show more";
   toggle.addEventListener("click", () => {
     const stillCollapsed = content.classList.toggle("collapsed");
@@ -872,16 +898,12 @@ function createEntryCollapseToggle(content: HTMLElement): HTMLElement {
   return toggle;
 }
 
-function createEntryActions(
-  memory: MemoryRecord,
-  entry: MemoryEntryRecord,
-  row: HTMLElement,
-): HTMLElement {
+function createEntryActions(memory: MemoryRecord, entry: MemoryEntryRecord, row: HTMLElement): HTMLElement {
   const actions = document.createElement("span");
-  actions.className = "memory-entry-actions";
+  actions.className = "collector-entry-actions";
 
   const edit = document.createElement("button");
-  edit.className = "memory-entry-action";
+  edit.className = "icon-btn";
   edit.title = "Edit";
   edit.innerHTML = '<i class="fa-solid fa-pen"></i>';
   edit.addEventListener("click", (e) => {
@@ -890,7 +912,7 @@ function createEntryActions(
   });
 
   const del = document.createElement("button");
-  del.className = "memory-entry-action";
+  del.className = "icon-btn";
   del.title = "Delete";
   del.innerHTML = '<i class="fa-solid fa-trash"></i>';
   del.addEventListener("click", (e) => {
@@ -912,22 +934,22 @@ function createEntryActions(
 
 function enterEditMode(memory: MemoryRecord, entry: MemoryEntryRecord, row: HTMLElement): void {
   if (!entry.key) return;
-  const content = row.querySelector(".memory-entry-content") as HTMLElement | null;
+  const content = row.querySelector(".collector-entry-content") as HTMLElement | null;
   if (!content) return;
 
   const textarea = document.createElement("textarea");
-  textarea.className = "memory-form-input memory-form-prompt";
+  textarea.className = "collector-field-input mono";
   textarea.value = entry.content;
   textarea.rows = Math.max(3, entry.content.split("\n").length);
 
   const actions = document.createElement("div");
-  actions.className = "memory-form-actions";
+  actions.className = "collector-actions-row";
   const cancel = document.createElement("button");
-  cancel.className = "memory-form-cancel";
+  cancel.className = "btn";
   cancel.textContent = "Cancel";
   cancel.addEventListener("click", () => content.replaceWith(restored));
   const save = document.createElement("button");
-  save.className = "memory-form-save";
+  save.className = "btn btn-primary";
   save.textContent = "Save";
   save.addEventListener("click", () => {
     browser.runtime.sendMessage({
@@ -942,7 +964,7 @@ function enterEditMode(memory: MemoryRecord, entry: MemoryEntryRecord, row: HTML
   const restored = content.cloneNode(true) as HTMLElement;
 
   const wrapper = document.createElement("div");
-  wrapper.className = "memory-entry-content";
+  wrapper.className = "collector-entry-content";
   wrapper.appendChild(textarea);
   actions.appendChild(cancel);
   actions.appendChild(save);
@@ -953,20 +975,29 @@ function enterEditMode(memory: MemoryRecord, entry: MemoryEntryRecord, row: HTML
 
 function createEntryAddForm(memory: MemoryRecord): HTMLElement {
   const form = document.createElement("div");
-  form.className = "memory-entry-add";
+  form.className = "collector-entry-add";
+
+  const row = document.createElement("div");
+  row.className = "collector-entry-add-row";
 
   const keyInput = document.createElement("input");
   keyInput.type = "text";
   keyInput.placeholder = "key";
-  keyInput.className = "memory-form-input memory-entry-key-input";
+  keyInput.className = "collector-field-input mono collector-entry-key-input";
 
   const contentInput = document.createElement("textarea");
   contentInput.placeholder = "content";
-  contentInput.className = "memory-form-input";
+  contentInput.className = "collector-field-input";
   contentInput.rows = 2;
 
+  row.appendChild(keyInput);
+  row.appendChild(contentInput);
+  form.appendChild(row);
+
+  const actions = document.createElement("div");
+  actions.className = "collector-entry-add-actions";
   const submit = document.createElement("button");
-  submit.className = "memory-form-save";
+  submit.className = "btn btn-primary";
   submit.innerHTML = '<i class="fa-solid fa-plus"></i> Add entry';
   submit.addEventListener("click", () => {
     const key = keyInput.value.trim();
@@ -985,30 +1016,9 @@ function createEntryAddForm(memory: MemoryRecord): HTMLElement {
     contentInput.value = "";
     showToast("Added");
   });
-
-  form.appendChild(keyInput);
-  form.appendChild(contentInput);
-  form.appendChild(submit);
+  actions.appendChild(submit);
+  form.appendChild(actions);
   return form;
-}
-
-// --- Formatting helpers used only by this tab ---
-
-const MS_PER_DAY = 86_400_000;
-
-function formatRelativeDate(iso: string): string {
-  try {
-    const then = new Date(iso).getTime();
-    if (Number.isNaN(then)) return iso;
-    const days = Math.floor((Date.now() - then) / MS_PER_DAY);
-    if (days <= 0) return "today";
-    if (days === 1) return "yesterday";
-    if (days < 7) return `${days}d ago`;
-    if (days < 30) return `${Math.floor(days / 7)}w ago`;
-    return formatDateTime(iso);
-  } catch {
-    return iso;
-  }
 }
 
 /** Convert literal ``\n`` escape sequences to real newlines.  Used on
