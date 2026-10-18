@@ -1021,3 +1021,129 @@ class TestMicroContextDrawLinksToItsParentCall:
             row = session.exec(select(PromptLog)).one()
         assert row.run_id is not None
         assert row.parent_run_id is None
+
+
+# ── Frozen request payload (#2563) ──────────────────────────────────────────
+#
+# Conversation history is moving from ``list[dict]`` to ``list[LlmMessage]`` through
+# the agent loop (#2563/#2603/#2604), with the HARD constraint that the request
+# payload sent to the model stays byte-identical.  These literals are hand-written —
+# not derived by calling ``_translate_messages``/``_build_chat_kwargs`` themselves —
+# so a regression in either of those functions is still caught; copying their own
+# output into the "expected" side would make the comparison tautological.
+#
+# One message of every shape in use today: system, user, an assistant tool call
+# carrying a thinking passback, its tool result (with the internal
+# ``tool_success`` stamp), the injected page-context call (``ChatAgent.
+# _inject_page_context``) whose ``arguments`` is a bare dict rather than a JSON
+# string, and a vision user message carrying ``images``.
+
+_FROZEN_SYSTEM = {"role": "system", "content": "You are Penny."}
+_FROZEN_USER = {"role": "user", "content": "what should I pack for a trip to Lisbon?"}
+_FROZEN_ASSISTANT_TOOL_CALL = {
+    "role": "assistant",
+    "content": "",
+    "reasoning": "checking the forecast first",
+    "tool_calls": [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "browse",
+                "arguments": '{"queries": ["Lisbon weather forecast"]}',
+            },
+        }
+    ],
+}
+_FROZEN_TOOL_RESULT = {
+    "role": "tool",
+    "content": "(browse result)\nSunny and mild.",
+    "tool_call_id": "call_1",
+    PennyConstants.TOOL_RESULT_SUCCESS_KEY: True,
+}
+# The page-context shape (chat.py's ``_inject_page_context``): arguments is a bare
+# dict, not a JSON string, and its tool result carries no ``tool_success`` key.
+_FROZEN_PAGE_CONTEXT_CALL = {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+        {
+            "id": "page-context-call",
+            "type": "function",
+            "function": {
+                "name": "browse",
+                "arguments": {"queries": ["https://example.com/packing-guide"]},
+            },
+        }
+    ],
+}
+_FROZEN_PAGE_CONTEXT_RESULT = {
+    "role": "tool",
+    "content": "(browse result)\nPacking guide body text.",
+    "tool_call_id": "page-context-call",
+}
+_FROZEN_VISION_USER = {
+    "role": "user",
+    "content": "what's in this photo?",
+    "images": ["c3VpdGNhc2U="],
+}
+
+# Today's internal (pre-wire) dict shape, exactly as agent code builds it — what
+# ``LlmClient.chat()`` receives and what the prompt log stores verbatim.
+FROZEN_INTERNAL_MESSAGES = [
+    _FROZEN_SYSTEM,
+    _FROZEN_USER,
+    _FROZEN_ASSISTANT_TOOL_CALL,
+    _FROZEN_TOOL_RESULT,
+    _FROZEN_PAGE_CONTEXT_CALL,
+    _FROZEN_PAGE_CONTEXT_RESULT,
+    _FROZEN_VISION_USER,
+]
+
+# The wire shape ``_translate_messages`` produces today: ``tool_success`` stripped,
+# ``images`` folded into OpenAI content-parts — everything else untouched.
+FROZEN_WIRE_MESSAGES = [
+    _FROZEN_SYSTEM,
+    _FROZEN_USER,
+    _FROZEN_ASSISTANT_TOOL_CALL,
+    {"role": "tool", "content": "(browse result)\nSunny and mild.", "tool_call_id": "call_1"},
+    _FROZEN_PAGE_CONTEXT_CALL,
+    _FROZEN_PAGE_CONTEXT_RESULT,
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what's in this photo?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,c3VpdGNhc2U="}},
+        ],
+    },
+]
+
+FROZEN_KWARGS = {
+    "model": "frozen-test-model",
+    "messages": FROZEN_WIRE_MESSAGES,
+    "extra_body": {"reasoning": {"enabled": True}},
+}
+
+
+class TestFrozenRequestPayloadToday:
+    """Pins today's wire boundary (``_translate_messages`` + ``_build_chat_kwargs``),
+    independent of the #2563 typed-message refactor — this class references no
+    ``LlmMessage`` field the refactor adds, so it is unchanged by any stage of it.
+    A future change to either function that silently alters the wire payload for
+    any of these six shapes fails here first."""
+
+    def test_translate_messages_matches_the_frozen_wire_shape(self) -> None:
+        assert LlmClient._translate_messages(FROZEN_INTERNAL_MESSAGES) == FROZEN_WIRE_MESSAGES
+
+    def test_build_chat_kwargs_matches_the_frozen_request(self) -> None:
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="frozen-test-model",
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        translated = LlmClient._translate_messages(FROZEN_INTERNAL_MESSAGES)
+        kwargs = client._build_chat_kwargs(
+            translated, tools=None, format=None, token_budget=None, thinking_enabled=True
+        )
+        assert kwargs == FROZEN_KWARGS
