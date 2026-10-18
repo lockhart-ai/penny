@@ -808,8 +808,7 @@ _ANSWER_FROM_PAGE = _AnsweringCase(
     area=Area.ANSWERING_FROM_THE_WEB,
     behaviour=(
         "In the chat agent, when a question needs a current fact nothing stored can answer, "
-        "Penny opens the page it is posted on and puts that page's own value in her reply, "
-        "and the turn ends back in idle."
+        "Penny opens the page it is posted on and puts that page's own value in her reply."
     ),
     family=_ANSWER_FAMILY,
     world=_MUSEUM_WORLD,
@@ -823,7 +822,7 @@ _ANSWER_ONE_LINK_DEEP = _AnsweringCase(
     behaviour=(
         "In the chat agent, when the fact a question asks for is not on the page she reaches "
         "first but that page names the address it is credited at, Penny follows the link and "
-        "answers out of the second page, and the turn ends back in idle."
+        "answers out of the second page."
     ),
     family=_ANSWER_FAMILY,
     world=_GALLERY_WORLD,
@@ -838,8 +837,8 @@ _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE = _AnsweringCase(
     behaviour=(
         "In the chat agent, when a question asks for several things off a real-size page and "
         "the page answers some of them but carries nothing at all for one, Penny opens the "
-        "page, puts what it supplies in her reply, invents nothing for the part it doesn't "
-        "have, and the turn ends back in idle."
+        "page, puts what it supplies in her reply, and invents nothing for the part it "
+        "doesn't have."
     ),
     family=_ANSWER_FAMILY,
     world=_PORTLINE_WORLD,
@@ -857,7 +856,7 @@ _ADMITS_THE_READ_FAILED = _AnsweringCase(
     area=Area.ANSWERING_FROM_THE_WEB,
     behaviour=(
         "In the chat agent, when every source she tries is unreachable, everything Penny says "
-        "in her reply traces to what she was given, and the turn ends back in idle."
+        "in her reply traces to what she was given."
     ),
     family=_HONESTY_FAMILY,
     world=_UNREACHABLE_WORLD,
@@ -872,7 +871,7 @@ _SAYS_NOTHING_IS_STORED = _AnsweringCase(
     behaviour=(
         "In the chat agent, when the question is about something the user has told her and "
         "the store holds nothing of it, everything Penny says in her reply traces to what she "
-        "was given, and the turn ends back in idle."
+        "was given."
     ),
     family=_HONESTY_FAMILY,
     world=_COLD_STORE_WORLD,
@@ -984,8 +983,7 @@ async def test_a_compound_ask_over_a_real_size_page_gets_what_is_there_and_inven
     Whether she hunts for the missing half, and how much that costs, is MEASURED
     (``TOOL_SEQUENCE``, token cost) and never fixed — the #2373 ruling.  The bar this case
     holds her to is the honest end state: the three headlines she can answer come back
-    sourced, nothing stands in for the editor nobody gave her, and the turn still lands in
-    idle."""
+    sourced, and nothing stands in for the editor nobody gave her."""
     cohort = await _drive(chat_eval, model, _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE)
     # STORE
     cohort.assert_the_reply_answers_the_ask()

@@ -8,7 +8,7 @@ and one set of assertions (#2100), and the two messages ask different things of 
 | direction | case | what the run must leave |
 |---|---|---|
 | asked for | ``image-request-draws`` | a picture of what was asked for, in the media store |
-| the topic alone | ``image-no-fire`` | the machine in idle, and a reply that invents nothing |
+| the topic alone | ``image-no-fire`` | a reply that invents nothing |
 
 **"Draw me X" and "make a picture of X" are one behaviour in two wordings**, so they are two of
 the request case's five wordings rather than two cases.  The other three use verbs the tool's
@@ -133,7 +133,7 @@ _REQUEST = ImageCase(
     case_id="image-request-draws",
     behaviour=(
         "In the chat agent, when the user asks for a picture of something, Penny draws one whose "
-        "description names what was asked for, and stays in idle."
+        "description names what was asked for."
     ),
     ask="can you draw me a teal origami dragon perched on a lighthouse?",
     also_phrased=(
@@ -153,7 +153,7 @@ _NO_FIRE = ImageCase(
     case_id="image-no-fire",
     behaviour=(
         "In the chat agent, when a message talks about a painting without asking for a "
-        "picture, Penny stays in idle and says nothing she was not given."
+        "picture, Penny says nothing she was not given."
     ),
     ask="i saw a really nice watercolor painting at the gallery today, it was lovely",
     also_phrased=(

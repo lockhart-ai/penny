@@ -13,10 +13,9 @@ answers or it cannot be reached at all:
   unreachable: nothing is read, so nothing stated or stored traces to a message that was never
   returned;
 * ``email-absent-message`` — asked what an email comes to from a sender the mailbox holds
-  other mail from, on a subject no message carries, the turn ends in idle with every value
-  stated or stored sourced and the store as it was;
-* ``email-remark-stays-idle`` — told the inbox is out of control, the machine stays in idle
-  and the store is as it was.
+  other mail from, on a subject no message carries, every value stated or stored is sourced
+  and the store is as it was;
+* ``email-remark-stays-idle`` — told the inbox is out of control, the store is as it was.
 
 **The unreachable mailbox is its own case, and one A/B PAIR on one ask** with
 ``email-answers-from-the-message-asked-about``: the same five wordings, the same mailbox
@@ -24,7 +23,7 @@ contents, against a world where the mailbox search and the read both raise inste
 answering (`penny/tests/eval/utils/mailbox.py`'s `CannedMailbox(fails=True)`, installed via
 `World.mailbox_fails` — the mailbox-level counterpart of a page's own `CannedPage(fails=True)`
 in `test_chat_reply.py`'s `chat-reply-admits-the-read-failed`).  Nothing is readable, so
-nothing is claimed as the answer; what is claimed is the landing, that the store survives, and
+nothing is claimed as the answer; what is claimed is that the store survives, and
 that nothing stated or stored traces to a message the mailbox never returned.  Whether the
 reply SAYS the mailbox failed is prose and is read on the modal sample as reply spread, the
 same call the browse pair makes — not a vocabulary this case would have to guess in advance.
@@ -37,7 +36,7 @@ sender it names is the quote's own, who sent two messages and each carries an am
 subject it names is one no message carries, in a subject line or anywhere else.  So a search
 on the sender hands the turn two real messages with figures in them, and neither is the one
 asked about.  Every wording names the sender, the subject and the amount wanted, and says
-"email" or "inbox".  What is claimed is the landing, that the store survives, and that every
+"email" or "inbox".  What is claimed is that the store survives, and that every
 value stored or said was given.  What the reply does with the figures it was handed is
 behaviour, so it is MEASURED: the ``mailbox figure in the reply`` feature reads each reply as
 naming one of the mailbox's amounts or naming none, and the report shows the spread.  Whether
@@ -56,7 +55,7 @@ between them is the behaviour.
 
 **The remark is its own case**, because its correct end state is not the lookup's: a reply
 that answers it carries no figure from the mailbox at all, so the lookup's claims fail it.  It
-claims what SURVIVES — the machine still in idle and the store as it was — never that the
+claims what SURVIVES — the store as it was — never that the
 mailbox went unsearched: whether to look is the model's call on a remark about her inbox, and
 it is measured in the tool sequence (``docs/principles.md`` §4.3).  Nor does it claim anything
 about what her reply says.  A reply to a remark is advice in her own words — the apps, settings
@@ -352,7 +351,7 @@ LOOKUP = EmailCase(
     behaviour=(
         "In the chat agent, when the user asks what an email from a named sender about a named "
         "subject says, Penny answers with the figure that message carries and none of the "
-        "figures the messages beside it carry, and the turn ends back in idle."
+        "figures the messages beside it carry."
     ),
     world=LOOKUP_WORLD,
     ask=_LOOKUP_ASK,
@@ -363,7 +362,7 @@ UNREACHABLE = EmailCase(
     case_id="email-reply-admits-the-mailbox-failed",
     behaviour=(
         "In the chat agent, when the mailbox cannot be reached, Penny's reply says she "
-        "couldn't reach it and states no email content, and the turn ends back in idle."
+        "couldn't reach it and states no email content."
     ),
     world=UNREACHABLE_WORLD,
     ask=_LOOKUP_ASK,
@@ -375,8 +374,7 @@ ABSENT = EmailCase(
     behaviour=(
         "In the chat agent, when the user asks what an email comes to from a sender the mailbox "
         "holds other mail from, on a subject no message carries, Penny states and stores no "
-        "value she was not given, and the turn ends back in idle with everything the store "
-        "already held still there."
+        "value she was not given, and everything the store already held is still there."
     ),
     world=ABSENT_WORLD,
     ask=_ABSENT_ASK,
@@ -387,7 +385,7 @@ REMARK = EmailCase(
     case_id="email-remark-stays-idle",
     behaviour=(
         "In the chat agent, when the user remarks on their email without asking anything of it, "
-        "Penny stays in idle and everything the store already held is still there, unchanged."
+        "everything the store already held is still there, unchanged."
     ),
     world=REMARK_WORLD,
     ask=_REMARK,

@@ -296,7 +296,7 @@ _REMARK_ALSO_PHRASED = (
 
 _NO_FIRE_BEHAVIOUR = (
     "In the chat agent, when a message names notifications as its subject without asking for "
-    "them to be changed, Penny stays in idle with notifications still on."
+    "them to be changed, notifications are still on."
 )
 
 

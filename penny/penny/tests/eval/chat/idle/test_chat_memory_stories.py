@@ -1051,9 +1051,8 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
 # ═══ no-fire ═════════════════════════════════════════════════════════════════
 #
 # The negative direction, in its own case (#2100).  A message that mentions a subject and asks
-# for nothing is answered in conversation, and the round ends where it began: the machine back
-# in idle, and whatever the store already held still there.  Those two — the landing, and what
-# survives — are what this case asserts.
+# for nothing is answered in conversation, and the round ends where it began: whatever the
+# store already held is still there.  That — what survives — is what this case asserts.
 #
 # What it does NOT assert is that she refrained.  Whether a passing mention is worth keeping is
 # hers to decide — "I made a good recipe today" is a reasonable thing to remember and a
