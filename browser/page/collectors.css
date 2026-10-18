@@ -514,6 +514,12 @@ textarea.collector-field-input {
 
 /* Schedule picker — the preset choice as the shared `.seg`, sub-controls for
    the chosen preset below it, the plain-words reading (+ raw rule) last. */
+.collector-schedule-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .collector-schedule-sub {
   display: flex;
   align-items: center;
