@@ -376,8 +376,8 @@ class BrowseTool(Tool):
         dispatcher built it via ``CallLink.for_tool_call(tool_call_id)`` before
         ``run`` even validated args. Threaded through to every extraction draw this
         call makes, so each one links back to the run AND to this dispatched call."""
-        self._read_log, self._extract_log, self._extracting = [], [], False
         args = BrowseArgs(**kwargs)
+        self._read_log, self._extract_log, self._extracting = [], [], False
         cap = self._max_calls
         to_run, dropped = args.queries[:cap], args.queries[cap:]
 
