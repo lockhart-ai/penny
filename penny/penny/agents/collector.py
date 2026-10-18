@@ -263,9 +263,34 @@ class Collector(BackgroundAgent):
     ) -> tuple[bool, str]:
         """Run one full agent cycle bound to ``collection`` with audit cleanup.
 
-        Owns the ``run_id`` so cleanup has the correct UUID even if
-        ``_run_cycle`` raises before any prompts are logged, and so
-        neighbouring cycles can't smear into each other's promptlog rows.
+        A top-level run starter (#2458): mints the top ``CallLink`` around the
+        WHOLE cycle — the loop AND the notifier — because the notifier's draw
+        happens after ``_run_cycle`` returns, outside ``Agent.run``'s own
+        (narrower) link.  Everything this cycle calls links back to it, passed
+        explicitly — no ambient state anywhere.  Owns the ``run_id`` so cleanup
+        has the correct UUID even if ``_run_cycle`` raises before any prompts
+        are logged, and so neighbouring cycles can't smear into each other's
+        promptlog rows.
+
+        The locked run-and-settle work is ``_run_locked_cycle``'s; this is just
+        the mint, the delegation, and the report back to the caller.
+        """
+        run_id = uuid.uuid4().hex
+        call_link = CallLink.top(run_id)
+        success, response, outcome, reason = await self._run_locked_cycle(
+            collection, trigger, run_id, call_link
+        )
+        return success, self._cycle_message(outcome, reason, response)
+
+    async def _run_locked_cycle(
+        self,
+        collection: MemoryRow,
+        trigger: CycleTrigger,
+        run_id: str,
+        call_link: CallLink,
+    ) -> tuple[bool, ControllerResponse | None, RunOutcome, str]:
+        """Run the bound target under the cycle lock, then settle it — the whole
+        try/except/finally a cancellation has to see through cleanly.
 
         Between the loop and the audit stamp sits the one thing a finished cycle can
         still do (#1911): when its program ran to completion and the collection says
@@ -274,25 +299,10 @@ class Collector(BackgroundAgent):
         run record can state which of the four terminal shapes this cycle had —
         aborted, stopped, completed-quiet, completed-notified.
 
-        How the cycle ENDED is then determined once (``_cycle_end``) and read three
-        times (#1936): it decides whether the cycle's entry writes SURVIVE, how far its
-        read cursors advance, and whether its schedule occurrence is spent
-        (``_settle_occurrence``, #1935).  One classification, because they are one
-        question — a cycle that never reached its conclusion is thrown out whole and
-        retried from the state it started in.
-
         ``trigger`` says what set this cycle running — the schedule, or the user — and
         is carried, never inferred: the notification reads it to pick its delivery lane
         and the retry budget is keyed on it (#1939).
-
-        A top-level run starter (#2458): mints the top ``CallLink`` around the
-        WHOLE cycle — the loop AND the notifier — because the notifier's draw
-        happens after ``_run_cycle`` returns, outside ``Agent.run``'s own
-        (narrower) link.  Everything this cycle calls links back to it, passed
-        explicitly — no ambient state anywhere.
         """
-        run_id = uuid.uuid4().hex
-        call_link = CallLink.top(run_id)
         success = False
         response: ControllerResponse | None = None
         reads: tuple[CursorReadTool, ...] = ()
@@ -304,6 +314,12 @@ class Collector(BackgroundAgent):
         outcome, reason = RunOutcome.FAILED, ""
         async with self._cycle_lock:
             try:
+                # These three steps stay inline and in this order, never folded into
+                # one sub-call: if `_notify_if_due` raises (a mid-notify cancellation
+                # is real — foreground activity can preempt here same as anywhere
+                # else), `success`/`response`/`reads` must already be bound from the
+                # prior statements, so the settlement below sees the real run result
+                # instead of silently falling back to its defaults.
                 self._bind(collection)
                 result = await self._run_cycle(run_id, call_link)
                 success = result.success
@@ -318,35 +334,62 @@ class Collector(BackgroundAgent):
                 cancelled = True
                 raise
             finally:
-                # How the cycle ended, determined once and read by everything that has
-                # to know whether it was real (#1936).
-                end = self._cycle_end(cancelled, response, notified)
-                landed = self._settle_writes(collection.name, end)
-                self.settle_reads(reads, landed)
-                # Settle the occurrence this cycle was dispatched for: consume it, or
-                # leave it due for a bounded retry (#1935).  Runs while the program is
-                # still bound, since the deterministic arm is read off it.
-                deferred = self._settle_occurrence(collection.name, trigger, end, response)
-                if cancelled:
-                    self._tag_promptlog_run_cancelled(run_id)
-                else:
-                    # One determination of this cycle's outcome, used for the
-                    # audit log and the promptlog tag alike.
-                    outcome, reason = self._cycle_result(response, notified, landed)
-                    self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
-                    if not deferred:
-                        self._retire_if_ended(collection, run_id)
+                outcome, reason = self._settle_cycle(
+                    collection, run_id, trigger, cancelled, response, reads, notified
+                )
                 self._bind(None)
-        # The on-demand test message is STRUCTURAL (#1569): the run's outcome (or its
-        # write-gate stop reason) plus the actual tool trace — never a model-authored
-        # summary, which no longer exists.  It reports the SAME determination the audit
-        # log was stamped with, rather than a second one.
+        return success, response, outcome, reason
+
+    def _settle_cycle(
+        self,
+        collection: MemoryRow,
+        run_id: str,
+        trigger: CycleTrigger,
+        cancelled: bool,
+        response: ControllerResponse | None,
+        reads: tuple[CursorReadTool, ...],
+        notified: NotificationOutcome | None,
+    ) -> tuple[RunOutcome, str]:
+        """How the cycle ended, and everything that follows from it (#1936) —
+        determined ONCE and read by everything that has to know whether it was real.
+
+        How the cycle ENDED is determined once (``_cycle_end``) and read three
+        times: it decides whether the cycle's entry writes SURVIVE, how far its
+        read cursors advance, and whether its schedule occurrence is spent
+        (``_settle_occurrence``, #1935).  One classification, because they are one
+        question — a cycle that never reached its conclusion is thrown out whole and
+        retried from the state it started in.  Runs while the program is still
+        bound, since the deterministic arm is read off it; the caller unbinds after.
+        """
+        end = self._cycle_end(cancelled, response, notified)
+        landed = self._settle_writes(collection.name, end)
+        self.settle_reads(reads, landed)
+        deferred = self._settle_occurrence(collection.name, trigger, end, response)
+        if cancelled:
+            self._tag_promptlog_run_cancelled(run_id)
+            return RunOutcome.FAILED, ""
+        # One determination of this cycle's outcome, used for the audit log and
+        # the promptlog tag alike.
+        outcome, reason = self._cycle_result(response, notified, landed)
+        self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
+        if not deferred:
+            self._retire_if_ended(collection, run_id)
+        return outcome, reason
+
+    def _cycle_message(
+        self, outcome: RunOutcome, reason: str, response: ControllerResponse | None
+    ) -> str:
+        """The on-demand test message: STRUCTURAL (#1569) — the run's outcome (or its
+        write-gate stop reason) plus the actual tool trace — never a model-authored
+        summary, which no longer exists.  Reports the SAME determination the audit
+        log was stamped with, rather than a second one.
+        """
         detail = reason or outcome.value
         message = f"Collector cycle complete: {detail}"
         tool_trace = self._format_tool_trace(response)
         if tool_trace:
-            message = f"{message}\n\n{tool_trace}"
-        return success, message
+            return f"{message}\n\n{tool_trace}"
+        return message
 
     def _bind(self, collection: MemoryRow | None) -> None:
         """Bind (or release) the cycle's target.
