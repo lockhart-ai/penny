@@ -59,6 +59,24 @@ Quotes are the code owner's own words.
      still be right if the model had reached this call some other way?*
    - A failed check replies honestly: what is wrong, why, and what would
      succeed (§3 item 5). It neither removes the tool nor absorbs the call.
+   - The same holds at the edge between the model and the infrastructure.
+     *"the system should clearly delineate between valid and invalid
+     interactions between the deterministic infrastructure and the model and
+     enforce and communicate those boundaries clearly, it's the model's job to
+     adapt."* A malformed emission (an unknown tool name, arguments folded into
+     a name, a mangled call) is rejected with a reply that says what is valid.
+     It is never turned into a valid call by a special case: special cases for
+     one model's mistakes grow into a web of rules specific to that model.
+   - Designing a tool answers three questions, in this order:
+     1. What must stay true in the store, whatever path the model took to
+        this call? Updating a job keeps it the same job; it never quietly
+        becomes a different one.
+     2. How does the tool check it? Deterministically where it can; where it
+        takes judgement, a micro-context behind the tool boundary picks from
+        a declared set (item 7).
+     3. What does the rejection teach? What was wrong, why, and the call that
+        would succeed: *"there is no tool called `functions.done`; did you
+        mean `done`?"* followed by how `done` works.
    - What only judgement can settle, such as whether something is worth
      telling the user, the model decides from the facts it is shown, not
      through a gate.

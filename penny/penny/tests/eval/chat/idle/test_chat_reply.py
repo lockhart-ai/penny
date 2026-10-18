@@ -119,6 +119,7 @@ from typing import NamedTuple
 
 import pytest
 
+from penny.constants import PageReading
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.penny import Penny
@@ -128,6 +129,16 @@ from penny.tests.eval.conftest import (
     Preparer,
     collection_entries,
 )
+from penny.tests.eval.extractor.test_browse_extract_fields import (
+    _FRONT_PAGE_URL,
+    _FRONT_PAGE_WITH_RUNON_LABEL,
+    _TOP1_HEADLINE_ANCHOR,
+    _TOP1_LINK_ANCHOR,
+    _TOP2_HEADLINE_ANCHOR,
+    _TOP2_LINK_ANCHOR,
+    _TOP3_HEADLINE_ANCHOR,
+    _TOP3_LINK_ANCHOR,
+)
 from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -136,6 +147,8 @@ from penny.tests.eval.utils.cohort import (
     TOOL_SEQUENCE,
     TRANSITIONS,
     SampleObservation,
+    Share,
+    ShareReading,
     SpecCategory,
     fold_typography,
 )
@@ -613,6 +626,28 @@ _PORTLINE_PHRASINGS = (
     "editor-in-chief if it's listed anywhere",
 )
 
+# #2453: the same real-size front page (~90 links) the browse-extract micro-context's own
+# case (`extract-top-headlines-past-a-run-on-label`) reads, at the CHAT layer — a production
+# front-page read asked for exactly this (title, one-sentence description, link, for the top
+# 3) and the extractor spiralled over whether a later link's own run-on label meant the top
+# three headlines, which carry no description at all, were hiding the same split.  The ask
+# names the page directly by its URL, so the browse call is a direct read rather than a
+# search the mock has to resolve.
+_RUNON_HEADLINES_ASK = (
+    f"can you open {_FRONT_PAGE_URL} and give me the top 3 headlines — the title, a "
+    "one-sentence description, and the link for each?"
+)
+_RUNON_HEADLINES_PHRASINGS = (
+    f"go to {_FRONT_PAGE_URL} and pull the top three headlines for me, each with its title, "
+    "a one-sentence description, and the link",
+    f"what are the top 3 stories on {_FRONT_PAGE_URL} right now? i want a title, a "
+    "one-sentence description, and a link for each one",
+    f"could you read {_FRONT_PAGE_URL} and tell me the top three headlines, with the title, "
+    "a short one-sentence description, and the link for each",
+    f"pull the top 3 headlines off {_FRONT_PAGE_URL}, including the title, a one-sentence "
+    "summary, and a link for each",
+)
+
 # The ask names BOTH a route and a figure on it, and the world it is asked in holds neither:
 # any climb the reply states is a number nobody gave her.
 _CLIMB_ASK = "remind me what i told you about the marrow ridge loop — how much climb does it have?"
@@ -686,6 +721,39 @@ _PORTLINE_WORLD = World(
     keeps=(),
     excludes=(),
     answers=(_HEADLINE_1_ANCHOR, _HEADLINE_2_ANCHOR, _HEADLINE_3_ANCHOR),
+)
+
+# #2453: the top three headlines carry no description at all, and ``answers`` names both the
+# headline and the link for each — the ask requests a link too, so a reply that dropped the
+# links while stating the titles would satisfy a headline-only claim vacuously.  ``excludes``
+# stays empty for the same reason it does on ``_PORTLINE_WORLD``: what the page does not carry
+# (a description for the top three) is read through provenance, never through a name ruled
+# out in advance — an invented description is prose, not a token this world could name ahead
+# of the draw that writes it.
+#
+# The headline anchors are each the FIRST WORD of the extractor's own multi-word anchor
+# (``_TOP1_HEADLINE_ANCHOR`` etc.) rather than that anchor verbatim: ``answers`` tokens must be
+# single whitespace-free words (``test_every_claimed_answer_is_one_token_its_own_world_carries``
+# in ``test_eval_harness.py``) — the extractor's own claims fold through ``spoken_form``
+# containment instead, which tolerates a multi-word span, so the two layers' anchors are
+# related but not interchangeable.
+_RUNON_HEADLINES_WORLD = World(
+    name="a real-size front page with a later run-on label",
+    pages=(
+        CannedPage(
+            match=_FRONT_PAGE_URL, text=_FRONT_PAGE_WITH_RUNON_LABEL, reading=PageReading.LINK_LIST
+        ),
+    ),
+    keeps=(),
+    excludes=(),
+    answers=(
+        _TOP1_HEADLINE_ANCHOR.split()[0],
+        _TOP1_LINK_ANCHOR,
+        _TOP2_HEADLINE_ANCHOR.split()[0],
+        _TOP2_LINK_ANCHOR,
+        _TOP3_HEADLINE_ANCHOR.split()[0],
+        _TOP3_LINK_ANCHOR,
+    ),
 )
 
 # No pages and no stores: the production cold start.  A browse in this world reaches the
@@ -850,6 +918,27 @@ _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE = _AnsweringCase(
     timeout=420.0,
 )
 
+_ANSWER_TOP_HEADLINES_PAST_A_RUNON_LABEL = _AnsweringCase(
+    case_id="chat-answer-top-headlines-past-a-run-on-label",
+    area=Area.ANSWERING_FROM_THE_WEB,
+    behaviour=(
+        "In the chat agent, when asked for the top 3 headlines off a real-size front page "
+        "whose top three carry no description and a later link's own label runs directly "
+        "into a description with no separating space, Penny's turn ends in a reply of her "
+        "own that states the three headlines and their links, invents no description for "
+        "them, however long the extractor took to settle."
+    ),
+    family=_ANSWER_FAMILY,
+    world=_RUNON_HEADLINES_WORLD,
+    ask=_RUNON_HEADLINES_ASK,
+    also_phrased=_RUNON_HEADLINES_PHRASINGS,
+    # #2453: the extractor can spiral over the run-on label clear past the browse tool's own
+    # 300s timeout (observed on a real draw), so this sample's own budget has to outlast a
+    # timeout-and-retry on top of the extractor's ordinary cost, the same margin
+    # ``_ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE`` gives a real-size-page hunt.
+    timeout=420.0,
+)
+
 _ADMITS_THE_READ_FAILED = _AnsweringCase(
     case_id="chat-reply-admits-the-read-failed",
     area=Area.ANSWERING_FROM_THE_WEB,
@@ -900,6 +989,7 @@ ANSWERING_CASES = (
     _ANSWER_FROM_PAGE,
     _ANSWER_ONE_LINK_DEEP,
     _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE,
+    _ANSWER_TOP_HEADLINES_PAST_A_RUNON_LABEL,
     _ADMITS_THE_READ_FAILED,
     _SAYS_NOTHING_IS_STORED,
     _SAYS_ALREADY_THERE,
@@ -992,6 +1082,69 @@ async def test_a_compound_ask_over_a_real_size_page_gets_what_is_there_and_inven
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
+
+
+# The framework's own rendered opening of a browse call's timeout report
+# (``BrowseTool.timeout_report`` / ``_TIMEOUT_PARTIAL_PROGRESS`` in ``penny/tools/browse.py`,
+# #2367) — read off ``sample.given`` (#2453), never guessed from a tool name or a call count,
+# because this is the ONE piece of text that can only be there if the browse tool's own 300s
+# wait actually cancelled a call mid-extraction.
+_TOOL_TIMEOUT_MARKER = "It timed out after"
+
+
+def _browse_hit_its_own_timeout(sample: SampleObservation) -> ShareReading | None:
+    """Whether THIS sample's browse call reached the tool's own 300s wait (#2453) — a SHARE,
+    not a claim, because whether the extractor spirals that far is exactly what #2373 ruled
+    is measured rather than fixed; the claims below hold her to the honest END state
+    whichever way this reads."""
+    if not sample.given:
+        return None
+    hit = _TOOL_TIMEOUT_MARKER in sample.given
+    return ShareReading(value=1.0 if hit else 0.0, evidence=[_TOOL_TIMEOUT_MARKER] if hit else [])
+
+
+_BROWSE_TOOL_TIMED_OUT = Share(
+    "browse tool timeout",
+    _browse_hit_its_own_timeout,
+    open_above=0.0,
+    says=(
+        "of the samples with something to read, the share whose browse call reached the "
+        "tool's own 300s wait mid-extraction (#2453) before the turn's reply"
+    ),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_run_on_label_near_the_top_headlines_still_ends_in_an_honest_reply(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """#2453, carried to the chat layer, which is where the code owner ruled the stakes
+    actually are: a real production front-page read asked for exactly this (title,
+    one-sentence description, link, top 3), and the extractor spiralled over a later link's
+    own run-on label clear past the browse tool's own 300s timeout — on one real draw,
+    without ever writing its own ``EXTRACTED:`` tag, so the draw was discarded and rerolled.
+
+    Whether the extractor spirals that far this sample, and how much it costs, is MEASURED
+    (``_BROWSE_TOOL_TIMED_OUT``, token cost, ``TOOL_SEQUENCE``) — #2373's ruling carried
+    forward. The bar this case holds her to is the honest END STATE, however the extractor
+    got there: the turn closes on a reply of her own (never silence, never a canned apology —
+    a turn that answered nothing fails the completeness claim below), that reply states the
+    three headlines and their links the page actually supplies, and nothing in it is a value
+    she invented — which, read by hand against the page after a run, is exactly where a
+    description invented from a bare title for one of the three would show up, since the
+    page gives none for any of them.
+    """
+    cohort = await _drive(chat_eval, model, _ANSWER_TOP_HEADLINES_PAST_A_RUNON_LABEL)
+    # STORE — completeness: the reply states what the page actually gives (the three
+    # headlines and their links).  A silent or canned reply fails this vacuously, which is
+    # the "never silence" fact stated as an assertion rather than a prose rule.
+    cohort.assert_the_reply_answers_the_ask()
+
+    # PROVENANCE — nothing invented, in the store's own browse-results log and in the reply.
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED, _BROWSE_TOOL_TIMED_OUT)
 
 
 # ── Nothing to answer from ───────────────────────────────────────────────────
