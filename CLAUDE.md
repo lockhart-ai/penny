@@ -158,25 +158,11 @@ scripts/
 docs/                           — Design documents and review guides
   principles.md                 — THE NORTH STAR: Penny's core design principles (mechanics,
                                   presentation, tests); wins over every other doc
-  pr-review-guide.md            — Canonical PR review checklist (used by /quality skill)
-  agent-task-workflow.md        — Kitten SOP: one ticket → worktree → gate → draft PR → report
-  agent-supervisor-runbook.md   — Coordinator runbook: meta ticket, dispatch, waves, heartbeat, fleet-end
-  eval-iteration-workflow.md    — Eval iteration loop: one beat → pairs → seeded world → run → report → merge
-  eval-case-design.md           — Eval case contract: end-state assertions (three categories),
-                                  measured variance, the porting checklist (#1994)
-  eval-catalogue.md             — GENERATED ON DEMAND (gitignored, never committed, #2395): every
-                                  eval case by area, and which cases cover each machine edge.
-                                  `make catalogue` writes it; `make check` validates the same
-                                  declarations (area, edge, unique id) with no file to go stale
-  eval-working-guide.md         — Working method for eval cases: planning, running, reading a run,
-                                  finding and reducing variance, reasoning about a fix
-  eval-suite-history.md / migration-log.md — the eval-suite history and the DB migration log, moved out of `penny/CLAUDE.md`
-  browser-extension-architecture.md — Browser extension architecture & design
-  archive/                      — Documentation that stopped describing Penny: retired designs, finished
-                                  plans, superseded formats, and era snapshots, kept as the project's
-                                  history and indexed as a dated timeline (`archive/README.md`)
+  README.md                     — the map of every doc by kind; start there
   reference/                    — Per-area reference for `penny/penny/`, read before changing code in
                                   that area (the table in `penny/CLAUDE.md` maps paths to files)
+  archive/                      — Documentation that stopped describing Penny, kept as the project's
+                                  history and indexed as a dated timeline (`archive/README.md`)
 data/                           — Runtime data (gitignored)
   penny/                        — Penny runtime data
     penny.db                    — Production database
