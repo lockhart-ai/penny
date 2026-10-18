@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import timedelta
+from typing import NamedTuple
 
-from penny.constants import ChatPromptType, PennyConstants
+from sqlalchemy import update
+from sqlmodel import col
+
+from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import EntryInput
+from penny.database.models import MemoryEntry, PromptLog
 from penny.datetime_utils import user_timezone_name
 from penny.tests.conftest import TEST_SENDER, require_memory
-from penny.tests.eval.conftest import EVAL_MODELS, seeded_run_id
+from penny.tests.eval.conftest import EVAL_MODELS, Seeder, seeded_run_id
 from penny.tests.eval.utils.cohort import CycleSnapshot, Feature
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import render_creation_echo
@@ -296,10 +302,141 @@ def seed_known_routine(
     db.messages.log_message(PennyConstants.MessageDirection.OUTGOING, "penny", reply)
 
 
+# ── A standing job that operates on, rather than a turn that stands one up (#2519) ──────────
+#
+# ``seed_known_routine`` above is the full shape — a job plus the earlier conversation that
+# set it up — for a case whose claims read that conversation back.  A case that only operates
+# on an already-running job (switches a notify flag, re-times it, lists several at once, reads
+# one's record) needs none of that history: it needs the job's own row, exactly as the
+# production chokepoints (``create_collection`` + ``update_collection_metadata``) leave it.
+# ``StandingJob`` is that lighter shape, naive throughout: no skill or routine behind it, just
+# the job's own plain-text ``program`` — the same free-text shape ``seed_known_routine`` writes
+# into ``extraction_prompt`` — so a job built either way reads as one production shape.
+
+
+class StandingJob(NamedTuple):
+    """One collection as a standing job, naive-shape (#2455 naive baseline): no routine
+    distilled through a skill pipeline, just the job's own prompt naming the page and what to
+    find on it.
+
+    ``container`` is explicit rather than derived — there is no skill name and no bound-values
+    tuple left to derive one from, so a case names the collection a job lands on directly."""
+
+    container: str
+    url: str
+    watched_for: str
+    description: str
+    schedule: str
+    notify: bool
+    holdings: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def program(self) -> str:
+        """The job's own prompt — the plain naive shape ``seed_known_routine`` writes, so a
+        job built here and one built there read as the same production shape."""
+        return f"Check {self.url} for {self.watched_for} and save it."
+
+
+_STOOD_UP_RUN = seeded_run_id("stood-up-the-job")
+
+
+def seed_standing_jobs(*jobs: StandingJob) -> Seeder:
+    """Stand each job up through the store's own chokepoints: the container created, then
+    configured — its prompt, its cadence, its switch — then whatever it has already gathered.
+    Both writes cite ``_STOOD_UP_RUN``, so a later "who changed this, and when" read finds a
+    job with a history rather than a row that appeared from nowhere."""
+
+    def seed(db: Database) -> None:
+        for job in jobs:
+            _stand_up(db, job)
+
+    return seed
+
+
+def _stand_up(db: Database, job: StandingJob) -> None:
+    db.memories.create_collection(job.container, job.description, created_by_run_id=_STOOD_UP_RUN)
+    db.memories.update_collection_metadata(
+        job.container,
+        extraction_prompt=job.program,
+        schedule=job.schedule,
+        replace_schedule=True,
+        notify=job.notify,
+        run_id=_STOOD_UP_RUN,
+    )
+    if job.holdings:
+        require_memory(db, job.container).write(
+            [EntryInput(key=key, content=content) for key, content in job.holdings],
+            author=PennyConstants.MessageAuthor.COLLECTOR,
+            run_id=_STOOD_UP_RUN,
+        )
+
+
+def seed_job_cycle(
+    db: Database,
+    *,
+    container: str,
+    run_name: str,
+    calls: list[dict],
+    outcome: RunOutcome,
+    summary: str,
+    wrote: tuple[str, str] | None = None,
+    days_ago: int = 0,
+) -> str:
+    """Seed one completed collector cycle behind an already-standing job: one prompt-log row
+    carrying its own tool calls (built with ``_wire_tool_call``, the same wire shape
+    ``seed_known_routine``'s own turns use), its outcome, and — when it wrote — the entry it
+    left behind, attributed to this run.  Returns the run id, so a case can assert against the
+    exact row this wrote.
+
+    ``days_ago`` backdates the run's prompt rows (and any entry it wrote) — true of the seeded
+    world, not of anything the model did — so "last time" means something earlier than the
+    sample's own turn rather than the instant the seed runs."""
+    run_id = seeded_run_id(run_name)
+    db.messages.log_prompt(
+        model=_SEEDED_MODEL,
+        messages=[],
+        response=_seeded_response(tool_calls=calls),
+        agent_name=PennyConstants.MessageAuthor.COLLECTOR,
+        run_id=run_id,
+        run_target=container,
+    )
+    db.messages.set_run_outcome(run_id, outcome.value, summary)
+    if wrote is not None:
+        key, content = wrote
+        require_memory(db, container).write(
+            [EntryInput(key=key, content=content)],
+            author=PennyConstants.MessageAuthor.COLLECTOR,
+            run_id=run_id,
+        )
+    if days_ago:
+        _backdate_run(db, run_id, days_ago)
+    return run_id
+
+
+def _backdate_run(db: Database, run_id: str, days_ago: int) -> None:
+    """Push one run's prompt rows (and the entry it wrote) back by ``days_ago`` — true of the
+    seeded world, not of anything the model did.  A raw update because no public store method
+    takes an explicit timestamp for a logged run."""
+    stamp = db.clock.now() - timedelta(days=days_ago)
+    with db.get_session() as session:
+        session.exec(
+            update(PromptLog).where(col(PromptLog.run_id) == run_id).values(timestamp=stamp)
+        )
+        session.exec(
+            update(MemoryEntry)
+            .where(col(MemoryEntry.last_written_by_run_id) == run_id)
+            .values(created_at=stamp)
+        )
+        session.commit()
+
+
 __all__ = [
     "END_TO_END_WALK",
+    "StandingJob",
     "held_text_at",
     "ran_at",
-    "sent_at",
+    "seed_job_cycle",
     "seed_known_routine",
+    "seed_standing_jobs",
+    "sent_at",
 ]
