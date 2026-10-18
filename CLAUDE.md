@@ -64,7 +64,7 @@ Branch protection is enabled on `main`. All changes must go through pull request
 
   **The body opens with one sentence that summarises the whole PR on its own** — what changes and why, readable cold by someone who hasn't seen the issue, because the code owner reads new PRs as phone notifications that show only that first line. Never open with context that assumes the reader already knows it ("Per the review…", "Main moved…", "This adds the missing field…"). **The body then states the change and closes its ticket; it carries no generated-with footer and no session URLs** — the repo is public, and a session URL is a private link.
 
-  **Test PRs are named after the test group they implement, consistently** — not as free sentences: `test(eval): port <group>[ tranche N][ (<subset>)]`, where `<group>` is the group's name on the epic's map (`transitions`, `chat idle`, `collector recovery`, `browse extractor`). A correction to existing cases is `fix(eval): <group> <what changed>`.
+  **Test PRs are named after the test group they implement, consistently** — not as free sentences: `test(eval): port <group>[ tranche N][ (<subset>)]`, where `<group>` is the case directory it lands in (`chat`, `collector`, `end_to_end`, `extractor`, `notify`). A correction to existing cases is `fix(eval): <group> <what changed>`.
 
   ```
   fix(harness): resolve a bare RUN on eval-report by the invoking tree's HEAD, not recency

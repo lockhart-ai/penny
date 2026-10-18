@@ -1,4 +1,4 @@
-"""GitHub API client (GraphQL + REST) with GitHub App authentication."""
+"""GitHub App authentication; backs `make token`."""
 
 from github_api.auth import GitHubAuth
 
