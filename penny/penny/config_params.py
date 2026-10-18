@@ -50,6 +50,9 @@ class ConfigParam:
     default: int | float | str  # Default value (single source of truth)
     validator: Callable[[str], int | float | str]  # Parses and validates value from string
     group: str = GROUP_CHAT  # Display group for /config listing
+    # Closed value set, when the param has one — the browser addon renders a
+    # toggle or segmented editor from it instead of a free-text input (#2569).
+    choices: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         RUNTIME_CONFIG_PARAMS[self.key] = self
@@ -79,9 +82,12 @@ def _validate_positive_int(value: str) -> int:
     return parsed
 
 
+_SWITCH_CHOICES = ("0", "1")
+
+
 def _validate_switch(value: str) -> int:
     """Parse a runtime switch without accepting other integer values."""
-    if value not in ("0", "1"):
+    if value not in _SWITCH_CHOICES:
         raise ValueError("must be 0 or 1")
     return int(value)
 
@@ -327,6 +333,7 @@ ConfigParam(
     type=str,
     default=DOMAIN_MODE_RESTRICT,
     validator=_validate_domain_mode,
+    choices=(DOMAIN_MODE_RESTRICT, DOMAIN_MODE_ALLOW_ALL),
     group=GROUP_BROWSE,
 )
 
@@ -396,6 +403,7 @@ for _key, _description in (
         type=int,
         default=1,
         validator=_validate_switch,
+        choices=_SWITCH_CHOICES,
         group=GROUP_IOS_ATTACHMENTS,
     )
 

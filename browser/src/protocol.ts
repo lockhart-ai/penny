@@ -202,6 +202,10 @@ export interface RuntimeConfigParam {
   description: string;
   type: "int" | "float" | "str";
   group: string;
+  /** Closed value set, when the param has one — the addon renders a toggle
+   * or segmented editor from it instead of a free-text input (#2569).
+   * Optional because an older server may not send it. */
+  choices?: string[];
 }
 
 export interface WsIncomingConfigPayload {

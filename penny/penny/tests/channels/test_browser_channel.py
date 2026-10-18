@@ -608,17 +608,26 @@ class TestBrowserConfigHandlers:
 
     @pytest.mark.asyncio
     async def test_config_request_param_shape(self, tmp_path):
-        """Each param includes key, value, default, description, type, and group."""
+        """Each param includes key, value, default, description, type, group, choices."""
         channel, _ = self._channel(tmp_path)
         ws = _MockWs()
         await channel._handle_config_request(ws)  # ty: ignore[invalid-argument-type]
 
-        param = next(p for p in ws.sent[0]["params"] if p["key"] == "IDLE_SECONDS")
-        assert param["value"] == "60.0"
-        assert param["default"] == "60.0"
-        assert param["type"] == "float"
-        assert "silence" in param["description"].lower()
-        assert param["group"] == "Background"
+        params = {p["key"]: p for p in ws.sent[0]["params"]}
+        idle = params["IDLE_SECONDS"]
+        assert idle["value"] == "60.0"
+        assert idle["default"] == "60.0"
+        assert idle["type"] == "float"
+        assert "silence" in idle["description"].lower()
+        assert idle["group"] == "Background"
+        assert idle["choices"] == []
+
+        # Closed-set params carry their choices so the addon can render a
+        # segmented/toggle editor instead of a free-text input (#2569).
+        assert params["DOMAIN_PERMISSION_MODE"]["choices"] == ["restrict", "allow_all"]
+        assert params["DOMAIN_PERMISSION_MODE"]["default"] == "restrict"
+        assert params["IOS_AUTOMATIC_IMAGES"]["choices"] == ["0", "1"]
+        assert params["IOS_AUTOMATIC_IMAGES"]["default"] == "1"
 
     @pytest.mark.asyncio
     async def test_config_update_persists_value(self, tmp_path):

@@ -31,6 +31,18 @@
     <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></symbol>
     <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M4.5 7.5h15M4.5 16.5h15"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+    <!-- Symbols the Domains and Config panels use (#2569) — ids/paths taken
+         verbatim from the approved mockups (.claude/designs/domains.html,
+         config.html). -->
+    <symbol id="i-layers" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+    <symbol id="i-shield-ok" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></symbol>
+    <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="9.5" y1="9.5" x2="14.5" y2="14.5"/><line x1="14.5" y1="9.5" x2="9.5" y2="14.5"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.1-3.1a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></symbol>
+    <symbol id="i-asterisk" viewBox="0 0 24 24"><line x1="12" y1="4" x2="12" y2="20"/><line x1="5" y1="7.5" x2="19" y2="16.5"/><line x1="19" y1="7.5" x2="5" y2="16.5"/></symbol>
   </defs>
 </svg>
 <div id="app">
@@ -86,24 +98,64 @@
   </div>
 
 
-  <!-- Domains panel -->
+  <!-- Domains panel — toolbar (filter + search), one-line explainer, the
+       add row, and the list (#2569) -->
   <div id="panel-domains" class="panel hidden">
-    <div class="domains-add">
-      <input type="text" id="domains-input" placeholder="example.com">
-      <select id="domains-permission">
-        <option value="allowed">Allow</option>
-        <option value="blocked">Block</option>
-      </select>
-      <button id="domains-add-btn"><i class="fa-solid fa-plus"></i></button>
+    <div class="toolbar">
+      <div class="seg" id="domains-filter">
+        <button class="active" data-filter="all"><svg class="icon"><use href="#i-layers"/></svg><span class="label">All · <span id="domains-count-all">0</span></span></button>
+        <button data-filter="allowed"><svg class="icon ic-ok"><use href="#i-shield-ok"/></svg><span class="label">Allowed · <span id="domains-count-allowed">0</span></span></button>
+        <button data-filter="blocked"><svg class="icon ic-err"><use href="#i-shield-off"/></svg><span class="label">Blocked · <span id="domains-count-blocked">0</span></span></button>
+      </div>
+      <div class="search">
+        <svg class="icon"><use href="#i-search"/></svg>
+        <input type="search" id="domains-search" placeholder="Search domains…">
+        <svg class="icon clear" id="domains-search-clear" role="button" aria-label="Clear search"><use href="#i-x"/></svg>
+      </div>
     </div>
-    <div class="domains-list" id="domains-list"></div>
+    <div class="hint">
+      Penny checks every URL against this list before fetching it. An <strong>allowed</strong> domain is fetched without asking; a <strong>blocked</strong> one is refused. A domain not listed here falls back to the <strong>domain mode</strong> set on the Config tab — see <em>Browse → DOMAIN_PERMISSION_MODE</em>.
+    </div>
+    <div class="add-card">
+      <div class="add-input">
+        <svg class="icon"><use href="#i-globe"/></svg>
+        <input type="text" id="domains-input" placeholder="example.com">
+      </div>
+      <div class="seg" id="domains-permission">
+        <button class="allow active" data-permission="allowed"><span class="label">Allow</span></button>
+        <button class="block" data-permission="blocked"><span class="label">Block</span></button>
+      </div>
+      <button class="btn btn-primary" id="domains-add-btn"><svg class="icon"><use href="#i-plus"/></svg>Add domain</button>
+    </div>
+    <div class="list-card" id="domains-list"></div>
   </div>
 
-  <!-- Config panel -->
+  <!-- Config panel — toolbar, the device-local "Allow tool use" card, then
+       the runtime params grouped as the server groups them (#2569) -->
   <div id="panel-config" class="panel hidden">
-    <div id="tool-use-row" class="config-toggle-row">
-      <label for="tool-use-toggle"><i class="fa-solid fa-wrench"></i> Allow tool use</label>
-      <input type="checkbox" id="tool-use-toggle">
+    <div class="toolbar">
+      <div class="seg" id="config-filter">
+        <button class="active" data-filter="all"><svg class="icon"><use href="#i-layers"/></svg><span class="label">All params</span></button>
+        <button data-filter="modified"><svg class="icon"><use href="#i-asterisk"/></svg><span class="label">Modified · <span id="config-count-modified">0</span></span></button>
+      </div>
+      <div class="search">
+        <svg class="icon"><use href="#i-search"/></svg>
+        <input type="search" id="config-search" placeholder="Search key or description…">
+        <svg class="icon clear" id="config-search-clear" role="button" aria-label="Clear search"><use href="#i-x"/></svg>
+      </div>
+    </div>
+    <div id="tool-use-row" class="tool-use-card">
+      <div class="tool-use-left">
+        <svg class="icon"><use href="#i-wrench"/></svg>
+        <div class="tool-use-text">
+          <span class="t">Allow tool use</span>
+          <span class="s">Stored on this device — not a server setting</span>
+        </div>
+      </div>
+      <label class="tool-use-switch">
+        <input type="checkbox" id="tool-use-toggle">
+        <span class="toggle"><span class="knob"></span></span>
+      </label>
     </div>
     <div id="config-list"></div>
   </div>

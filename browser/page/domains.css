@@ -196,106 +196,284 @@
   background: var(--accent-hover);
 }
 
-/* --- Domains panel --- */
+/* --- Domains panel (#2569) — the filter toolbar, the one-line explainer,
+   the add card, and the flat domain list --- */
 
-.domains-list {
-  padding: 4px 0;
+/* The toolbar row is shared markup by the Domains and Config panels. */
+.panel .toolbar {
+  margin-bottom: 14px;
+}
+
+.ic-ok {
+  color: var(--ok);
+}
+
+.ic-err {
+  color: var(--err);
+}
+
+/* wireSearchClear reveals the clear ✕ only while there is text. */
+.search .clear {
+  display: none;
+}
+
+.search .clear.visible {
+  display: block;
+}
+
+.hint {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.hint strong {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* --- Add a domain --- */
+
+.add-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.add-card .add-input {
+  flex: 1 1 220px;
+  min-width: 180px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  border-radius: 7px;
+  padding: 7px 10px;
+}
+
+.add-card .add-input svg {
+  color: var(--text-faint);
+}
+
+.add-card .add-input input {
+  flex: 1;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.add-card .add-input input::placeholder {
+  color: var(--text-faint);
+  font-family: var(--sans);
+}
+
+.add-card .add-input:focus-within {
+  border-color: var(--c-model);
+  box-shadow: 0 0 0 3px var(--c-model-soft);
+}
+
+.add-card .seg {
+  flex-shrink: 0;
+}
+
+.add-card .seg button.allow.active {
+  color: var(--ok);
+  background: var(--ok-soft);
+  box-shadow: inset 0 0 0 1px rgba(26, 127, 55, .3);
+}
+
+.add-card .seg button.block.active {
+  color: var(--err);
+  background: var(--err-soft);
+  box-shadow: inset 0 0 0 1px rgba(207, 34, 46, .3);
+}
+
+.add-card .btn {
+  flex-shrink: 0;
+}
+
+/* --- The flat domain list --- */
+
+.list-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 
 .domain-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: var(--bg-secondary);
-  border-radius: 8px;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.domain-row:last-child {
+  border-bottom: none;
 }
 
 .domain-row:hover {
-  background: var(--bg-tertiary);
+  background: var(--row-hover);
+}
+
+/* the name flexes and truncates; the right-hand cluster is a fixed grid so
+   the toggle + remove land in the same place on every row */
+.domain-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.domain-left svg {
+  color: var(--text-faint);
+  flex-shrink: 0;
 }
 
 .domain-name {
-  flex: 1;
-  font-size: 13px;
-  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.domain-status {
-  padding: 2px 8px;
-  border: none;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
+/* fixed right-hand cluster — permission toggle + remove button */
+.domain-right {
+  display: grid;
+  grid-template-columns: 148px 24px;
+  column-gap: 10px;
+  align-items: center;
   flex-shrink: 0;
 }
 
-.domain-status.allowed {
-  background: var(--status-ok-bg);
-  color: var(--status-ok-text);
-}
-
-.domain-status.blocked {
-  background: var(--status-err-bg);
-  color: var(--status-err-text);
-}
-
-.domain-status:hover {
-  opacity: 0.8;
-}
-
-.domains-add {
+.perm-toggle {
   display: flex;
-  gap: 8px;
-  padding: 0 0 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 2px;
+  justify-self: end;
 }
 
-.domains-add input {
-  flex: 1;
-  padding: 8px 12px;
-  border: 1px solid var(--bg-tertiary);
-  border-radius: 8px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 13px;
-  outline: none;
-  min-width: 0;
-}
-
-.domains-add input:focus {
-  border-color: var(--accent);
-}
-
-.domains-add select {
-  padding: 8px 6px;
-  border: 1px solid var(--bg-tertiary);
-  border-radius: 8px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 12px;
-  outline: none;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.domains-add button {
-  padding: 8px 12px;
+.perm-toggle button {
   border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-text);
-  font-size: 13px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  padding: 4px 10px;
+  border-radius: 5px;
   cursor: pointer;
-  flex-shrink: 0;
+  white-space: nowrap;
 }
 
-.domains-add button:hover {
-  background: var(--accent-hover);
+.perm-toggle button.on.allow {
+  color: var(--ok);
+  background: var(--ok-soft);
+  box-shadow: inset 0 0 0 1px rgba(26, 127, 55, .3);
+}
+
+.perm-toggle button.on.block {
+  color: var(--err);
+  background: var(--err-soft);
+  box-shadow: inset 0 0 0 1px rgba(207, 34, 46, .3);
+}
+
+.perm-toggle button:not(.on):hover {
+  color: var(--text-dim);
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  border-radius: 5px;
+  color: var(--text-faint);
+  cursor: pointer;
+  justify-self: end;
+}
+
+.icon-btn:hover {
+  color: var(--err);
+  border-color: rgba(207, 34, 46, .4);
+}
+
+.domains-empty {
+  padding: 28px 14px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* --- Responsive — labels drop before layout breaks; the right-hand
+   columns stay fixed and right-aligned at every width --- */
+
+@media (max-width: 460px) {
+  .panel .toolbar {
+    gap: 6px;
+  }
+
+  /* only the filter/toolbars drop their labels — the add card's
+     Allow/Block labels stay, or its buttons would go empty */
+  #domains-filter .label,
+  #config-filter .label {
+    display: none;
+  }
+
+  #domains-filter button,
+  #config-filter button {
+    padding: 6px 9px;
+  }
+
+  .search {
+    flex-basis: 100%;
+    order: 5;
+  }
+
+  .add-card {
+    padding: 10px;
+  }
+
+  .add-card .add-input {
+    flex-basis: 100%;
+  }
+
+  .domain-right {
+    grid-template-columns: 104px 24px;
+    column-gap: 8px;
+  }
+
+  .perm-toggle button {
+    padding: 4px 6px;
+    font-size: 10px;
+  }
 }
 

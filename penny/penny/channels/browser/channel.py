@@ -1272,6 +1272,7 @@ class BrowserChannel(MessageChannel):
                         "description": param.description,
                         "type": param.type.__name__,
                         "group": group,
+                        "choices": list(param.choices),
                     }
                 )
         response = {"type": BROWSER_RESP_TYPE_CONFIG, "params": params}
