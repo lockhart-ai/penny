@@ -1,54 +1,89 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <link rel="stylesheet" href="../node_modules/@fortawesome/fontawesome-free/css/all.min.css">
+  <!-- shared/tokens.css + shared/components.css (#2566) own the design tokens,
+       the reset/base typography, and the icon/spin/pulse primitives the
+       sidebar builds on (#2570). Linked first so sidebar.css can rely on them. -->
+  <link rel="stylesheet" href="../shared/tokens.css">
+  <link rel="stylesheet" href="../shared/components.css">
   <link rel="stylesheet" href="sidebar.css">
 </head>
 <body>
+  <!-- Inline SVG icon symbols — the sidebar's own set (the full page keeps
+       its own; FontAwesome is not used here anymore). -->
+  <svg style="display:none">
+    <defs>
+      <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.1-3.1a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M4.5 7.5h15M4.5 16.5h15"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
+      <symbol id="i-spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="34 24"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
+      <symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-8.9 8.4 8.6 8.6 0 0 1-3.3-.7L3 21l1.8-5.7a8.4 8.4 0 0 1-.8-3.6 8.4 8.4 0 0 1 8.9-8.4 8.5 8.5 0 0 1 8.1 8.2z"/></symbol>
+      <symbol id="i-login" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></symbol>
+    </defs>
+  </svg>
+
   <div id="app">
     <div id="register" class="hidden">
+      <div class="brand"><span class="dot"></span>Penny</div>
       <p>Give this browser a name so Penny knows which device you're on.</p>
       <input id="device-label" type="text" placeholder="e.g. firefox macbook 16">
-      <button id="register-btn"><i class="fa-solid fa-right-to-bracket"></i> Register</button>
+      <button id="register-btn"><svg class="icon"><use href="#i-login"/></svg>Register</button>
     </div>
 
     <div id="chat" class="hidden">
+      <div id="conn-banner" class="hidden">
+        <svg class="icon spin"><use href="#i-spinner"/></svg>Reconnecting to Penny&hellip;
+      </div>
       <div id="nav-bar">
-        <div id="nav-top">
-          <a id="nav-logo" class="nav-link" title="Open Penny page">
-            <img src="../penny.svg" alt="Penny" class="nav-icon">
-            <span id="nav-title">Penny</span>
-          </a>
-          <span id="status" class="disconnected"></span>
-          <span id="tool-use-icon" class="hidden" title="Tool use enabled"><i class="fa-solid fa-wrench"></i></span>
+        <a id="nav-logo" class="brand" title="Open full page">
+          <span class="dot"></span><span class="brand-label">Penny</span>
+        </a>
+        <span id="status" class="disconnected" title="Disconnected — reconnecting"></span>
+        <div class="nav-right">
+          <span id="tool-use-icon" class="nav-icon-btn hidden" title="Tool use enabled"><svg class="icon"><use href="#i-wrench"/></svg></span>
+          <button id="open-page" class="nav-icon-btn" title="Open full page"><svg class="icon"><use href="#i-external"/></svg></button>
         </div>
       </div>
       <div id="conversation-panel">
         <div id="messages-wrapper">
           <div id="messages"></div>
+          <div id="empty-state" class="hidden">
+            <svg class="icon"><use href="#i-comment"/></svg>
+            <div class="empty-title">No messages yet</div>
+            <div class="empty-sub">Say hi, or open a page and ask Penny about it.</div>
+          </div>
         </div>
         <div id="permission-dialog" class="hidden">
-          <p>Penny wants to browse <strong id="permission-domain"></strong></p>
-          <p class="permission-url" id="permission-url"></p>
+          <div class="perm-head">
+            <div class="perm-badge"><svg class="icon"><use href="#i-globe"/></svg></div>
+            <div class="perm-text">
+              <div class="perm-title">Penny wants to browse <strong id="permission-domain"></strong></div>
+              <div class="perm-url" id="permission-url"></div>
+            </div>
+          </div>
           <div class="permission-actions">
-            <button id="permission-allow"><i class="fa-solid fa-check"></i> Allow</button>
-            <button id="permission-deny" class="deny"><i class="fa-solid fa-xmark"></i> Deny</button>
+            <button id="permission-deny" class="perm-deny"><svg class="icon"><use href="#i-x"/></svg>Deny</button>
+            <button id="permission-allow" class="perm-allow"><svg class="icon"><use href="#i-check"/></svg>Allow</button>
           </div>
         </div>
         <div id="page-context-bar" class="hidden">
-          <div id="page-context-header">
-            <img id="page-context-favicon" src="" alt="">
-            <span id="page-context-title"></span>
+          <img id="page-context-favicon" src="" alt="">
+          <div class="ctx-text">
+            <div class="ctx-title" id="page-context-title"></div>
+            <div class="ctx-sub" id="page-context-sub"></div>
           </div>
-          <label id="page-context-label">
-            <input type="checkbox" id="page-context-toggle" checked>
-            <i class="fa-solid fa-file-lines"></i> Include page content with message
-          </label>
+          <div class="ctx-toggle">
+            <input type="checkbox" id="page-context-toggle">
+            <label class="flag-toggle" for="page-context-toggle">Use this page</label>
+          </div>
         </div>
         <div id="input-area">
           <textarea id="input" placeholder="Message Penny..." rows="1"></textarea>
-          <button id="send"><i class="fa-solid fa-paper-plane"></i></button>
+          <button id="send" title="Send"><svg class="icon"><use href="#i-send"/></svg></button>
         </div>
       </div>
     </div>

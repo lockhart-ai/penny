@@ -3,7 +3,7 @@
   "scripts": {
     "build": "tsc && npm run build:content",
     "build:content": "node build-content.mjs",
-    "build:test": "esbuild src/content/page_text.ts --format=esm --outfile=dist/test/page_text.mjs && esbuild src/page/schedule_picker.ts --format=esm --outfile=dist/test/schedule_picker.mjs && esbuild src/page/draw_nesting.ts --format=esm --outfile=dist/test/draw_nesting.mjs && esbuild src/page/call_outcome.ts --format=esm --outfile=dist/test/call_outcome.mjs",
+    "build:test": "esbuild src/content/page_text.ts --format=esm --outfile=dist/test/page_text.mjs && esbuild src/page/schedule_picker.ts --format=esm --outfile=dist/test/schedule_picker.mjs && esbuild src/page/draw_nesting.ts --format=esm --outfile=dist/test/draw_nesting.mjs && esbuild src/page/call_outcome.ts --format=esm --outfile=dist/test/call_outcome.mjs && esbuild src/sidebar/trail.ts --format=esm --outfile=dist/test/trail.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.content.json",
     "test": "npm run build:test && node --test test/*.test.mjs",
     "watch": "concurrently \"tsc --watch\" \"npm:watch:content\"",

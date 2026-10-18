@@ -1,6 +1,6 @@
 /**
- * Sidebar script — minimal chat UI.
- * Clicking the Penny logo opens the full page with all panels.
+ * Sidebar script — chat UI restyled to the approved mockups (#2570).
+ * Clicking the Penny brand or the external-link button opens the full page.
  * Communicates with the background script via browser.runtime messaging.
  */
 
@@ -18,12 +18,17 @@ import {
   TEXTAREA_LINE_HEIGHT,
   TEXTAREA_MAX_ROWS,
 } from "../protocol.js";
+import { hostnameOf, type TrailRow, parseTrail } from "./trail.js";
 
 // DOM refs (resolved after init)
 let messagesEl: HTMLElement;
 let inputEl: HTMLTextAreaElement;
 let sendBtn: HTMLButtonElement;
 let statusEl: HTMLElement;
+
+const TYPING_ID = "typing";
+const PERM_WAIT_ID = "perm-wait";
+const EMPTY_STATE_ID = "empty-state";
 
 // Page context for decorating the next response
 let pendingPageRef: { title: string; url: string; image: string } | null = null;
@@ -84,13 +89,16 @@ async function showChat(): Promise<void> {
   });
   inputEl.addEventListener("input", autoResize);
 
-  // Penny logo opens the full page
-  document.getElementById("nav-logo")!.addEventListener("click", () => {
-    browser.tabs.create({ url: browser.runtime.getURL("page/page.html") });
-  });
+  // Both the brand and the external-link button open the full page
+  document.getElementById("nav-logo")!.addEventListener("click", openFullPage);
+  document.getElementById("open-page")!.addEventListener("click", openFullPage);
 
   await rehydrateHistory();
   listenToBackground();
+}
+
+function openFullPage(): void {
+  browser.tabs.create({ url: browser.runtime.getURL("page/page.html") });
 }
 
 // --- Background communication ---
@@ -112,6 +120,7 @@ function handleBackgroundMessage(message: RuntimeMessage): void {
     setStatus(message.state);
   } else if (message.type === RuntimeMessageType.ChatMessage) {
     setTyping(false);
+    removePermissionWaiting();
     let content = message.content;
     if (pendingPageRef) {
       content = buildPageHeader(pendingPageRef) + content.replace(/<img[^>]*><br>/g, "");
@@ -125,6 +134,7 @@ function handleBackgroundMessage(message: RuntimeMessage): void {
     showPermissionDialog(message.request_id, message.domain, message.url);
   } else if (message.type === RuntimeMessageType.PermissionDismiss) {
     document.getElementById("permission-dialog")?.classList.add("hidden");
+    removePermissionWaiting();
   } else if (message.type === RuntimeMessageType.ToolUseState) {
     document.getElementById("tool-use-icon")?.classList.toggle("hidden", !message.enabled);
   } else if (message.type === RuntimeMessageType.PageInfo) {
@@ -139,6 +149,7 @@ function updatePageContextBar(
 ): void {
   const bar = document.getElementById("page-context-bar")!;
   const titleEl = document.getElementById("page-context-title")!;
+  const subEl = document.getElementById("page-context-sub")!;
   const faviconEl = document.getElementById("page-context-favicon") as HTMLImageElement;
   const toggle = document.getElementById("page-context-toggle") as HTMLInputElement;
 
@@ -152,8 +163,12 @@ function updatePageContextBar(
 
   const urlChanged = bar.dataset.url !== url;
   titleEl.textContent = title;
+  titleEl.title = title;
   faviconEl.src = favicon || "";
   bar.dataset.url = url;
+  const hostname = hostnameOf(url);
+  subEl.textContent = hostname;
+  subEl.classList.toggle("hidden", hostname === "");
   if (urlChanged) {
     toggle.checked = false;
   }
@@ -167,6 +182,7 @@ function showPermissionDialog(requestId: string, domain: string, url: string): v
   document.getElementById("permission-domain")!.textContent = domain;
   document.getElementById("permission-url")!.textContent = url;
   dialog.classList.remove("hidden");
+  showPermissionWaiting(domain);
 
   const allowBtn = document.getElementById("permission-allow")!;
   const denyBtn = document.getElementById("permission-deny")!;
@@ -178,6 +194,7 @@ function showPermissionDialog(requestId: string, domain: string, url: string): v
       allowed,
     });
     dialog.classList.add("hidden");
+    removePermissionWaiting();
     allowBtn.removeEventListener("click", onAllow);
     denyBtn.removeEventListener("click", onDeny);
   }
@@ -187,6 +204,31 @@ function showPermissionDialog(requestId: string, domain: string, url: string): v
 
   allowBtn.addEventListener("click", onAllow);
   denyBtn.addEventListener("click", onDeny);
+}
+
+// Paused-on-permission status row (sidebar-permission.html): same rail,
+// no pulse — Penny is blocked on the user's answer, not streaming.
+
+function showPermissionWaiting(domain: string): void {
+  const trail = document.createElement("div");
+  trail.id = PERM_WAIT_ID;
+  trail.className = "live-status";
+  const row = document.createElement("div");
+  row.className = "status-row";
+  const rail = document.createElement("div");
+  rail.className = "rail";
+  rail.innerHTML = `<span class="dot"></span>`;
+  const line = document.createElement("div");
+  line.className = "status-line waiting";
+  line.textContent = `Waiting on permission to browse ${domain}`;
+  row.append(rail, line);
+  trail.append(row);
+  messagesEl.appendChild(trail);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function removePermissionWaiting(): void {
+  document.getElementById(PERM_WAIT_ID)?.remove();
 }
 
 function send(): void {
@@ -243,6 +285,7 @@ async function rehydrateHistory(): Promise<void> {
     renderMessage(msg.text, msg.sender, false);
   }
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  updateEmptyState();
 }
 
 async function persistMessage(text: string, sender: MessageSender): Promise<void> {
@@ -258,22 +301,34 @@ async function persistMessage(text: string, sender: MessageSender): Promise<void
 // --- Chat UI ---
 
 function renderMessage(text: string, sender: MessageSender, animate = true): void {
-  const div = document.createElement("div");
-  div.className = `message ${sender}`;
+  const row = document.createElement("div");
+  row.className = `msg-row ${sender}`;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
   if (sender === MS.Penny) {
-    div.innerHTML = text;
+    const avatar = document.createElement("div");
+    avatar.className = "avatar";
+    bubble.innerHTML = text;
+    row.append(avatar, bubble);
   } else {
-    div.textContent = text;
+    bubble.textContent = text;
+    row.append(bubble);
   }
-  messagesEl.appendChild(div);
+  messagesEl.appendChild(row);
+  updateEmptyState();
   if (!animate) return;
 
-  scrollToMessage(div);
+  scrollToMessage(row);
 
-  const images = Array.from(div.querySelectorAll("img"));
+  const images = Array.from(row.querySelectorAll("img"));
   for (const img of images) {
-    img.addEventListener("load", () => scrollToMessage(div), { once: true });
+    img.addEventListener("load", () => scrollToMessage(row), { once: true });
   }
+}
+
+function updateEmptyState(): void {
+  const hasMessages = messagesEl.querySelector(".msg-row") !== null;
+  document.getElementById(EMPTY_STATE_ID)?.classList.toggle("hidden", hasMessages);
 }
 
 function scrollToMessage(div: HTMLElement): void {
@@ -288,36 +343,60 @@ function addMessage(text: string, sender: MessageSender): void {
 
 function setStatus(state: ConnectionState): void {
   statusEl.className = state;
+  statusEl.title = state === CS.Connected ? "Connected to Penny" : "Disconnected — reconnecting";
+  document.getElementById("conn-banner")?.classList.toggle("hidden", state === CS.Connected);
   if (sendBtn) sendBtn.disabled = state !== CS.Connected;
 }
 
-function typingHTML(text: string): string {
-  const dots = `<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>`;
-  if (!text.includes("<br>")) return `${text}${dots}`;
-  return text
-    .split("<br>")
-    .map((line) => (line.startsWith("&#x2713;") ? line : `${line}${dots}`))
-    .join("<br>");
+// --- Live tool-status trail (the Prompts tab's rail-dot language) ---
+
+function typingDotsHTML(): string {
+  return `<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>`;
+}
+
+/** One trail row: rail (dot + connector line unless the last row) and label. */
+function trailRowEl(row: TrailRow, index: number, total: number): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "status-row";
+  const rail = document.createElement("div");
+  rail.className = "rail";
+  const dot = document.createElement("span");
+  dot.className = row.done ? "dot" : "dot live";
+  rail.appendChild(dot);
+  if (index < total - 1) {
+    const line = document.createElement("span");
+    line.className = "line";
+    rail.appendChild(line);
+  }
+  const text = document.createElement("div");
+  text.className = row.done ? "status-line done" : "status-line live";
+  const isLastLive = !row.done && index === total - 1;
+  const dots = isLastLive ? typingDotsHTML() : "";
+  text.innerHTML = row.done
+    ? `<svg class="icon ic-sys"><use href="#i-check"/></svg><span>${row.html}</span>`
+    : `<svg class="icon spin ic-model"><use href="#i-spinner"/></svg><span>${row.html}${dots}</span>`;
+  wrap.append(rail, text);
+  return wrap;
 }
 
 function setTyping(active: boolean, content?: string): void {
-  const text = content ?? "Penny is thinking";
-  const isToolStatus = content != null && content.includes("<br>");
-  let indicator = document.getElementById("typing");
-  if (active && !indicator) {
-    indicator = document.createElement("div");
-    indicator.id = "typing";
-    indicator.className = isToolStatus ? "typing tool-status" : "typing";
-    indicator.innerHTML = typingHTML(text);
-    messagesEl.appendChild(indicator);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  } else if (active && indicator && content) {
-    indicator.className = isToolStatus ? "typing tool-status" : "typing";
-    indicator.innerHTML = typingHTML(text);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  } else if (!active && indicator) {
-    indicator.remove();
+  const existing = document.getElementById(TYPING_ID);
+  if (!active) {
+    existing?.remove();
+    return;
   }
+  const text = content && content.trim() !== "" ? content : "Penny is thinking";
+  const rows = parseTrail(text);
+  const trail = document.createElement("div");
+  trail.id = TYPING_ID;
+  trail.className = "live-status";
+  rows.forEach((row, index) => trail.appendChild(trailRowEl(row, index, rows.length)));
+  if (existing) {
+    existing.replaceWith(trail);
+  } else {
+    messagesEl.appendChild(trail);
+  }
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function autoResize(): void {
