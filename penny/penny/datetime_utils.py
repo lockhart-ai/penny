@@ -182,6 +182,24 @@ def user_timezone_name(db: Database) -> str | None:
     return user_info.timezone if user_info is not None else None
 
 
+_SECOND = "second"
+_MINUTE = "minute"
+_HOUR = "hour"
+
+
+def _count_of(n: int, unit: str) -> str:
+    """Format a count with its unit, pluralizing if needed."""
+    return f"{n} {unit}" if n == 1 else f"{n} {unit}s"
+
+
+def _two_units(big: int, big_unit: str, small: int, small_unit: str) -> str:
+    """Combine two time units, omitting the small one if zero."""
+    big_part = _count_of(big, big_unit)
+    if small == 0:
+        return big_part
+    return f"{big_part} {_count_of(small, small_unit)}"
+
+
 def format_duration_plain_words(milliseconds: int) -> str:
     """Render a duration in milliseconds as human-readable plain words.
 
@@ -194,26 +212,14 @@ def format_duration_plain_words(milliseconds: int) -> str:
     total_seconds = milliseconds // 1000
 
     if total_seconds < 60:
-        unit = "second" if total_seconds == 1 else "seconds"
-        return f"{total_seconds} {unit}"
+        return _count_of(total_seconds, _SECOND)
 
     total_minutes = total_seconds // 60
     remainder_seconds = total_seconds % 60
 
     if total_minutes < 60:
-        minute_unit = "minute" if total_minutes == 1 else "minutes"
-        parts = [f"{total_minutes} {minute_unit}"]
-        if remainder_seconds:
-            second_unit = "second" if remainder_seconds == 1 else "seconds"
-            parts.append(f"{remainder_seconds} {second_unit}")
-        return " ".join(parts)
+        return _two_units(total_minutes, _MINUTE, remainder_seconds, _SECOND)
 
-    # One hour or more
     total_hours = total_minutes // 60
     remainder_minutes = total_minutes % 60
-    hour_unit = "hour" if total_hours == 1 else "hours"
-    parts = [f"{total_hours} {hour_unit}"]
-    if remainder_minutes:
-        minute_unit = "minute" if remainder_minutes == 1 else "minutes"
-        parts.append(f"{remainder_minutes} {minute_unit}")
-    return " ".join(parts)
+    return _two_units(total_hours, _HOUR, remainder_minutes, _MINUTE)
