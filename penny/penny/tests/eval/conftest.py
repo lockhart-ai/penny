@@ -1169,7 +1169,7 @@ def _render_call(function: dict) -> str:
 
     The SAME call is serialized two ways across a run: compactly in ``promptlog.response`` (the
     model's raw emission, ``{"queries":["x"]}``) and with default spacing in the NEXT prompt's
-    ``messages`` (``LlmMessage.to_input_message`` re-dumps the parsed args, spaced and
+    ``messages`` (``LlmMessage.to_log_dict`` re-dumps the parsed args, spaced and
     ASCII-escaping any unicode).  Parsing and re-dumping BOTH sides through one form
     (``ensure_ascii=False``, default separators) renders the call identically wherever it is read,
     so (1) a call's thinking — keyed off the response side by ``_thinking_by_content`` — binds to

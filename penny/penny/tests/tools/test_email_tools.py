@@ -86,7 +86,7 @@ async def test_read_emails_tool_summarizes_content():
     assert result.message == "Shipping Co shipped order #123-456, arriving Feb 12."
     mock_client.read_emails.assert_called_once_with(["M001"])
     mock_llm.chat.assert_called_once()
-    prompt = mock_llm.chat.call_args[0][0][0]["content"]
+    prompt = mock_llm.chat.call_args[0][0][0].content
     assert "what packages am I expecting" in prompt
     # The summarize prompt is grounded in the current date so the model can resolve
     # relative dates in email bodies ("arriving next Tuesday").

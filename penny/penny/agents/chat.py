@@ -17,7 +17,7 @@ from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
-from penny.llm.models import LlmError
+from penny.llm.models import LlmError, LlmMessage
 from penny.prompts import Prompt
 from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply, is_empty_draw
 from penny.tools import Tool
@@ -484,7 +484,7 @@ class ChatAgent(Agent):
                 "channel-layer validation should have rejected this message"
             )
         messages = [
-            {"role": "user", "content": Prompt.VISION_AUTO_DESCRIBE_PROMPT, "images": [image_b64]},
+            LlmMessage(role="user", content=Prompt.VISION_AUTO_DESCRIBE_PROMPT, images=[image_b64]),
         ]
         response = await self._vision_model_client.chat(
             messages=messages,

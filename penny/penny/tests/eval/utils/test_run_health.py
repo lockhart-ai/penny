@@ -26,7 +26,14 @@ from penny.database.message_store import PromptPerf
 from penny.database.models import PromptLog
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import CallOutcome, LlmError, LlmFault, LlmResponseError, LlmTimeoutError
+from penny.llm.models import (
+    CallOutcome,
+    LlmError,
+    LlmFault,
+    LlmMessage,
+    LlmResponseError,
+    LlmTimeoutError,
+)
 from penny.tests import conftest as root_conftest
 from penny.tests.eval import conftest as eval_conftest
 from penny.tests.eval.utils import cohort as eval_cohort
@@ -188,7 +195,9 @@ class TestTheFaultTallyReadsWhatTheClientWrites:
         monkeypatch.setattr(client.client.chat.completions, "create", answer_without_a_completion)
         try:
             with pytest.raises(LlmResponseError):
-                await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+                await client.chat(
+                    [LlmMessage(role="user", content="hi")], call_link=CallLink.new_top()
+                )
         finally:
             await client.close()
             logging.getLogger(run_health.PENNY_LOGGER).removeHandler(tally)
@@ -212,7 +221,9 @@ class TestTheFaultTallyReadsWhatTheClientWrites:
         monkeypatch.setattr(client.client.chat.completions, "create", refuse)
         try:
             with pytest.raises(LlmResponseError):
-                await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+                await client.chat(
+                    [LlmMessage(role="user", content="hi")], call_link=CallLink.new_top()
+                )
         finally:
             await client.close()
             logging.getLogger(run_health.PENNY_LOGGER).removeHandler(tally)
@@ -246,7 +257,7 @@ async def _raise_on_chat(client: LlmClient, monkeypatch, error: Exception) -> No
     monkeypatch.setattr(client.client.chat.completions, "create", refuse)
     with pytest.raises(LlmError):
         await client.chat(
-            [{"role": "user", "content": "hi"}],
+            [LlmMessage(role="user", content="hi")],
             call_link=CallLink.new_top(),
             agent_name=PennyConstants.CHAT_AGENT_NAME,
         )

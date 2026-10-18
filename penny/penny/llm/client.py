@@ -268,7 +268,7 @@ class LlmClient:
 
     async def chat(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage],
         tools: list[dict] | None = None,
         format: dict | str | None = None,
         *,
@@ -280,6 +280,12 @@ class LlmClient:
         thinking_enabled: bool = True,
     ) -> LlmResponse:
         """Generate a chat completion with optional tool calling.
+
+        ``messages`` is typed conversation history (#2563) — the one place it
+        becomes a dict is right here, via ``LlmMessage.to_log_dict()``, before
+        anything below (the retry loop, ``_translate_messages``, the prompt log)
+        runs. Everything from here down is unchanged: it always dealt in dicts
+        and still does — only the one hand-off at this boundary is new.
 
         Logs ONE ``promptlog`` row for this call, however it ends — completed,
         cancelled, timed out, or raised (#2355 part A) — written once at the END,
@@ -322,10 +328,13 @@ class LlmClient:
             call_link, agent_name, prompt_type, run_target
         )
         start = time.time()
-        messages_snapshot = list(messages)
+        # The one hand-off (#2563): typed history becomes the internal dict shape
+        # here, once, before the retry loop and the prompt log — both unchanged,
+        # both still dealing purely in dicts, exactly as before this call's entry.
+        messages_snapshot = [message.to_log_dict() for message in messages]
         try:
             response, raw = await self._chat_attempts(
-                messages, tools, format, token_budget, thinking_enabled
+                messages_snapshot, tools, format, token_budget, thinking_enabled
             )
         except asyncio.CancelledError:
             self._log_failed_call(
@@ -660,7 +669,7 @@ class LlmClient:
         prompt_type: str | None = None,
     ) -> LlmResponse:
         """Generate a completion for a prompt (converts to chat format internally)."""
-        messages = [{"role": "user", "content": prompt}]
+        messages = [LlmMessage(role="user", content=prompt)]
         return await self.chat(
             messages,
             tools,

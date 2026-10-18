@@ -33,7 +33,7 @@ from pydantic import BaseModel
 
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmError, LlmFault, ProviderPin
+from penny.llm.models import LlmError, LlmFault, LlmMessage, ProviderPin
 
 USAGE = "usage: python -m penny.tests.eval.utils.endpoint_smoke"
 
@@ -186,7 +186,7 @@ async def _smoke_once(
     client = _smoke_client(api_url=api_url, model=model, api_key=api_key, provider=provider)
     try:
         response = await client.chat(
-            [{"role": "user", "content": SMOKE_PROMPT}],
+            [LlmMessage(role="user", content=SMOKE_PROMPT)],
             tools=[SMOKE_TOOL],
             call_link=CallLink.new_top(),
         )

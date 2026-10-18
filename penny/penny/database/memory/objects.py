@@ -959,7 +959,7 @@ class LoggedToolCall(BaseModel):
     A logged call and the outgoing wire call are the SAME structure: the model's
     response is stored verbatim in ``promptlog.response`` (``raw.model_dump()``),
     where a tool call is ``{"function": {"name": …, "arguments": "<json string>"}}``
-    — the exact envelope the loop re-emits via ``LlmMessage.to_input_message`` and
+    — the exact envelope the loop re-emits via ``LlmMessage.to_log_dict`` and
     the executor parses via ``LlmClient._parse_tool_call``.  So logs contain calls;
     they never paraphrase them, and ``replay(logged_call) == original_call`` holds
     structurally.  This model formalizes that invariant: ``from_function`` reads a
@@ -1006,7 +1006,7 @@ class LoggedToolCall(BaseModel):
 
     def to_wire(self) -> dict[str, str]:
         """Re-emit the OpenAI wire ``function`` envelope — arguments re-serialized
-        exactly as ``LlmMessage.to_input_message`` does, so a round-trip is the
+        exactly as ``LlmMessage.to_log_dict`` does, so a round-trip is the
         identity and the loop would re-send this call unchanged."""
         return {"name": self.name, "arguments": json.dumps(self.arguments)}
 

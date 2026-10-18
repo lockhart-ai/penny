@@ -9,6 +9,7 @@ from penny.constants import PennyConstants
 from penny.email.protocol import EmailClient
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
+from penny.llm.models import LlmMessage
 from penny.prompts import Prompt
 from penny.tools.base import Tool
 from penny.tools.models import ReadEmailsArgs, ToolResult
@@ -98,6 +99,6 @@ class ReadEmailsTool(Tool):
             emails=raw_content,
         )
         response = await self._ollama.chat(
-            [{"role": "user", "content": prompt}], call_link=call_link.child()
+            [LlmMessage(role="user", content=prompt)], call_link=call_link.child()
         )
         return ToolResult(message=response.content or raw_content)

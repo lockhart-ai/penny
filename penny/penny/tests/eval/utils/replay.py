@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmError
+from penny.llm.models import LlmError, LlmMessage
 
 _DEFAULT_DB = "/penny/data/penny/penny.db"
 _RUNTIME_MARKER = "## Runtime rules"
@@ -198,10 +198,18 @@ async def _replay(
     client: LlmClient, messages: list[dict], tools: list[dict] | None, samples: int, label: str
 ) -> _Tally:
     tally = _Tally()
+    # The one conversion at this call site (#2563): this script works in the
+    # internal dict shape throughout (loaded verbatim off the promptlog, recomposed
+    # by ``_compose``) — ``from_dict`` lifts it to typed history only here, right
+    # before the one place it reaches ``LlmClient.chat()``.
+    typed_messages = [LlmMessage.from_dict(message) for message in messages]
     for index in range(samples):
         try:
             response = await client.chat(
-                messages, tools=tools, call_link=CallLink.new_top(), prompt_type=f"replay-{label}"
+                typed_messages,
+                tools=tools,
+                call_link=CallLink.new_top(),
+                prompt_type=f"replay-{label}",
             )
         except LlmError as error:
             tally.record_error()

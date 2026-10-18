@@ -13,6 +13,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, field_validator
 
+from penny.constants import PennyConstants
+
 # ── Tool-name normalization ──────────────────────────────────────────────
 
 # gpt-oss emits tool calls in the Harmony format, whose names are wrapped with
@@ -240,6 +242,15 @@ class LlmToolCallFunction(BaseModel):
 
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # Whether ``arguments`` wire-encodes as a bare object rather than a JSON string
+    # (#2563).  Every real model-originated call sets neither — ``arguments`` is
+    # always a JSON string on the wire, ``False`` is correct.  The one exception
+    # today is the injected page-context call (``ChatAgent._inject_page_context``),
+    # built directly as a dict literal rather than through this model, whose
+    # ``arguments`` is a bare object.  ``from_dict``/``to_log_dict`` round-trip that
+    # existing shape losslessly rather than silently changing it; #2604 removes this
+    # field once that builder constructs its call through ``LlmToolCall`` directly.
+    raw_arguments: bool = False
 
     @field_validator("name")
     @classmethod
@@ -259,18 +270,41 @@ class LlmToolCall(BaseModel):
 
 
 class LlmMessage(BaseModel):
-    """Message object from a chat response."""
+    """One turn of conversation history (#2563).
+
+    Carries every field any role in use today needs — a plain system/user turn
+    only ever sets ``role``/``content``; an assistant turn adds ``tool_calls``
+    and/or ``thinking``; a tool-result turn adds ``tool_call_id`` and
+    ``tool_success``; a vision turn adds ``images``.  One model, not a family
+    per role: the shapes differ only in which optional fields are populated, so
+    a role union would fragment every call site into a ``match`` for no gain.
+    """
 
     role: str
     content: str = ""
     tool_calls: list[LlmToolCall] | None = None
     thinking: str | None = None
+    # The call this message answers — set only on a tool-result turn.
+    tool_call_id: str | None = None
+    # The tool's own structural success stamp (``PennyConstants.
+    # TOOL_RESULT_SUCCESS_KEY``, #1600) — set only on a tool-result turn. Internal
+    # only: ``LlmClient._translate_messages`` drops it before the wire, but it
+    # stays on the logged/stored shape ``to_log_dict()`` produces.
+    tool_success: bool | None = None
+    # Base64 image payloads — set only on a vision user turn (Ollama-style
+    # ``images``, translated to OpenAI content-parts by ``LlmClient.
+    # _translate_messages`` at the wire boundary, never here).
+    images: list[str] | None = None
 
-    def to_input_message(self) -> dict[str, Any]:
-        """Convert to input message format for the next request.
+    def to_log_dict(self) -> dict[str, Any]:
+        """The internal (pre-wire) message-dict shape every agent-loop call site
+        builds today and the prompt log stores verbatim — the inverse of
+        :meth:`from_dict`.  Wire-level translation (folding ``images`` into
+        content-parts, stripping ``tool_success``) is one step later, in
+        ``LlmClient._translate_messages`` — not here.
 
         Carries the step's thinking as ``reasoning``, so the next step of the same turn
-        is drawn with it in view.  A plan made before the first call ("read the page,
+        is drawn with it in view. A plan made before the first call ("read the page,
         then write it down") is otherwise gone by the time the result comes back, and
         the step after a tool result is then decided without it.
 
@@ -287,12 +321,58 @@ class LlmMessage(BaseModel):
                     "type": "function",
                     "function": {
                         "name": tool_call.function.name,
-                        "arguments": json.dumps(tool_call.function.arguments),
+                        "arguments": (
+                            tool_call.function.arguments
+                            if tool_call.function.raw_arguments
+                            else json.dumps(tool_call.function.arguments)
+                        ),
                     },
                 }
                 for tool_call in self.tool_calls
             ]
+        if self.tool_call_id is not None:
+            message["tool_call_id"] = self.tool_call_id
+        if self.tool_success is not None:
+            message[PennyConstants.TOOL_RESULT_SUCCESS_KEY] = self.tool_success
+        if self.images is not None:
+            message["images"] = self.images
         return message
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LlmMessage:
+        """The inverse of :meth:`to_log_dict` — reconstructs a message from the
+        internal dict shape, e.g. off a run's own promptlog rows (#1778) or at a
+        call-site boundary that still builds that shape directly (#2563)."""
+        tool_calls = None
+        if data.get("tool_calls"):
+            tool_calls = [cls._tool_call_from_dict(call) for call in data["tool_calls"]]
+        return cls(
+            role=data["role"],
+            content=data.get("content", ""),
+            tool_calls=tool_calls,
+            thinking=data.get("reasoning"),
+            tool_call_id=data.get("tool_call_id"),
+            tool_success=data.get(PennyConstants.TOOL_RESULT_SUCCESS_KEY),
+            images=data.get("images"),
+        )
+
+    @staticmethod
+    def _tool_call_from_dict(data: dict[str, Any]) -> LlmToolCall:
+        """One ``tool_calls`` entry off the internal dict shape — ``arguments``
+        round-trips losslessly whether it arrived as a JSON string (the normal
+        shape) or a bare object (the page-context quirk, see
+        ``LlmToolCallFunction.raw_arguments``)."""
+        raw = data["function"]["arguments"]
+        raw_arguments = not isinstance(raw, str)
+        arguments = raw if raw_arguments else json.loads(raw)
+        return LlmToolCall(
+            id=data["id"],
+            function=LlmToolCallFunction(
+                name=data["function"]["name"],
+                arguments=arguments,
+                raw_arguments=raw_arguments,
+            ),
+        )
 
 
 class LlmResponse(BaseModel):

@@ -41,8 +41,11 @@ class _Model:
         self._draws = list(draws)
         self.calls: list[dict] = []
 
-    async def chat(self, messages: list[dict], **kwargs: Any):
-        self.calls.append({"messages": messages, **kwargs})
+    async def chat(self, messages: list[LlmMessage], **kwargs: Any):
+        # Recorded as dicts (#2563) — ``messages`` arrives typed now, same as the
+        # real client; every assertion below still reads a plain message dict.
+        dict_messages = [message.to_log_dict() for message in messages]
+        self.calls.append({"messages": dict_messages, **kwargs})
         text = self._draws[min(len(self.calls) - 1, len(self._draws) - 1)]
         return type("Response", (), {"content": text, "finish_reason": None})()
 

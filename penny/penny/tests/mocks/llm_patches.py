@@ -107,7 +107,7 @@ class MockLlmClient:
 
     async def chat(
         self,
-        messages: list[dict],
+        messages: list[LlmMessage] | list[dict],
         tools: list[dict] | None = None,
         format: dict | str | None = None,
         *,
@@ -127,11 +127,24 @@ class MockLlmClient:
         production would have stamped from whatever link it was handed.
         ``token_budget``/``thinking_enabled`` (#2474) are likewise recorded as
         plain values, so a test asserting on the budget a call kind resolved sees
-        exactly what the real client would have been sent."""
+        exactly what the real client would have been sent.
+
+        ``messages`` arrives shaped two ways (#2563): a direct caller — most
+        production/tool code, injecting this mock as ``model_client=`` — now hands
+        typed ``LlmMessage``s, exactly like the real client does. The ``mock_llm``
+        fixture's lower-level patch (``_MockOpenAIClient.create``, below) sits
+        BELOW ``LlmClient.chat()``'s own typed boundary and still hands
+        wire-translated dicts, as it always has. Normalizing to dicts here, once,
+        keeps every existing assertion on ``.requests[...]["messages"]`` — and
+        every line below this one — unchanged either way."""
+        dict_messages = [
+            message.to_log_dict() if isinstance(message, LlmMessage) else message
+            for message in messages
+        ]
         request_data = {
             "model": self.model,
             "run_id": call_link.run_id,
-            "messages": messages,
+            "messages": dict_messages,
             "tools": tools,
             "agent_name": agent_name,
             "prompt_type": prompt_type,
@@ -148,7 +161,7 @@ class MockLlmClient:
         # Only when no custom handler claims micro-context calls: a test that sets
         # its own handler (the micro-context contract tests) keeps full control.
         handler_defers = self._response_handler is None or not self._handler_answers_micro_contexts
-        system = messages[0].get("content", "") if messages else ""
+        system = dict_messages[0].get("content", "") if dict_messages else ""
         if (
             handler_defers
             and isinstance(system, str)
@@ -156,7 +169,8 @@ class MockLlmClient:
         ):
             self.micro_requests.append(request_data)
             user_content = next(
-                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
+                (m.get("content", "") for m in reversed(dict_messages) if m.get("role") == "user"),
+                "",
             )
             return self._make_text_response(request_data, f"EXTRACTED: {user_content}")
         self.requests.append(request_data)
@@ -177,7 +191,7 @@ class MockLlmClient:
         prompt_type: str | None = None,
     ) -> LlmResponse:
         """Mock generate() call — wraps chat like the real client."""
-        messages = [{"role": "user", "content": prompt}]
+        messages = [LlmMessage(role="user", content=prompt)]
         return await self.chat(
             messages,
             tools,

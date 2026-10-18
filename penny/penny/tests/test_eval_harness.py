@@ -2520,14 +2520,14 @@ def test_thinking_attaches_across_compact_and_pretty_serializations(tmp_path, mo
     args = {"queries": ["café hours"]}  # a curly-apostrophe-free café: the ASCII-escape case
     # Response side (production): the model's raw COMPACT emission, persisted verbatim.
     compact = json.dumps(args, separators=(",", ":"))
-    # Messages side (production reconstruction): LlmMessage.to_input_message re-dumps the PARSED
+    # Messages side (production reconstruction): LlmMessage.to_log_dict re-dumps the PARSED
     # args via default json.dumps — spaced + ASCII-escaped — a genuinely DIFFERENT string.
     reconstructed = LlmMessage(
         role="assistant",
         tool_calls=[
             LlmToolCall(id="c1", function=LlmToolCallFunction(name="browse", arguments=args))
         ],
-    ).to_input_message()
+    ).to_log_dict()
     assert compact != reconstructed["tool_calls"][0]["function"]["arguments"]  # two serializations
     _log_prompt(
         db,
@@ -3849,9 +3849,14 @@ def test_every_micro_context_observer_is_given_the_contract_it_drew_under(
     db = _make_db(tmp_path, "micro-context-given")
     _log_prompt(
         db,
-        messages=MicroContext._messages(
-            EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK, contract, user_template
-        ),
+        # ``_messages`` returns typed ``LlmMessage``s (#2563); ``_log_prompt`` stores
+        # exactly the dict shape production logs, so lower them here.
+        messages=[
+            message.to_log_dict()
+            for message in MicroContext._messages(
+                EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK, contract, user_template
+            )
+        ],
         agent_name=agent_name,
     )
 
@@ -3876,7 +3881,12 @@ def test_an_extraction_answer_carrying_the_contract_tags_invents_nothing(tmp_pat
     db = _make_db(tmp_path, "extraction-given")
     _log_prompt(
         db,
-        messages=MicroContext._messages(EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK),
+        # ``_messages`` returns typed ``LlmMessage``s (#2563); ``_log_prompt`` stores
+        # exactly the dict shape production logs, so lower them here.
+        messages=[
+            message.to_log_dict()
+            for message in MicroContext._messages(EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK)
+        ],
         agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
     )
 

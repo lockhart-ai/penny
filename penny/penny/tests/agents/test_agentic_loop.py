@@ -1634,8 +1634,8 @@ class TestThinkTagStripping:
         planned = LlmMessage(
             role="assistant", tool_calls=[call], thinking="read the page, then save it"
         )
-        assert planned.to_input_message()["reasoning"] == "read the page, then save it"
-        assert "reasoning" not in LlmMessage(role="assistant", content="done").to_input_message()
+        assert planned.to_log_dict()["reasoning"] == "read the page, then save it"
+        assert "reasoning" not in LlmMessage(role="assistant", content="done").to_log_dict()
 
     @pytest.mark.asyncio
     async def test_response_without_think_tags_unchanged(self, test_db, mock_llm):

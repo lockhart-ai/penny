@@ -279,7 +279,7 @@ class _OverlapProbe:
         self.completion_order: list[str] = []
         self.draws: Counter[str] = Counter()
 
-    async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
+    async def chat(self, messages: list[LlmMessage], **_kwargs: Any) -> LlmResponse:
         """One micro-context draw: identify whose page it is, join the batch, hold
         until the whole batch is in flight, then complete in reverse issue order."""
         marker = self._marker_for(messages)
@@ -311,9 +311,9 @@ class _OverlapProbe:
                 self._finished[self._markers[successor]].wait(), _GATE_GRACE_SECONDS
             )
 
-    def _marker_for(self, messages: list[dict]) -> str:
+    def _marker_for(self, messages: list[LlmMessage]) -> str:
         """Whose page this draw is reading, by the first page marker in its content."""
-        content = messages[-1].get("content", "")
+        content = messages[-1].content
         for marker in self._markers:
             if marker in content:
                 return marker
@@ -919,8 +919,8 @@ async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
     class _RaisesOnTheFirstPage:
         runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
 
-        async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
-            content = messages[-1].get("content", "")
+        async def chat(self, messages: list[LlmMessage], **_kwargs: Any) -> LlmResponse:
+            content = messages[-1].content
             if _MARKER_1 in content:
                 raise LlmTimeoutError("model call timed out")
             await asyncio.sleep(0)
@@ -963,8 +963,8 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
     class _StallsOnTheSecondPage:
         runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
 
-        async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
-            content = messages[-1].get("content", "")
+        async def chat(self, messages: list[LlmMessage], **_kwargs: Any) -> LlmResponse:
+            content = messages[-1].content
             if _MARKER_1 in content:
                 return LlmResponse(message=LlmMessage(role="assistant", content=_TAGGED_VALUE))
             await asyncio.sleep(10)  # cancelled by the tool's own timeout, well short of 10s

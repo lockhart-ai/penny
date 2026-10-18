@@ -58,6 +58,7 @@ from pydantic import BaseModel
 from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
 from penny.llm.call_link import CallLink
+from penny.llm.models import LlmMessage
 from penny.llm.refusal import is_refusal
 from penny.text_validity import (
     half_formed_send_reason,
@@ -692,7 +693,7 @@ class MicroContext:
         system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
         user_template: str = _USER_TEMPLATE,
         reading_note: str = "",
-    ) -> list[dict]:
+    ) -> list[LlmMessage]:
         """The scoped two-message context: the contract framing (``system_prompt``,
         default the browse-extract contract), then the user turn shaped by the
         customer's ``user_template`` (default: the instruction paired with bulk
@@ -702,13 +703,13 @@ class MicroContext:
         notifier's ``_BARE_CONTENT_TEMPLATE`` ("{content}") has no ``{reading_note}``
         slot to fill, so ``str.format`` simply ignores the supplied kwarg for it."""
         return [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": user_template.format(
+            LlmMessage(role="system", content=system_prompt),
+            LlmMessage(
+                role="user",
+                content=user_template.format(
                     instruction=instruction, content=content, reading_note=reading_note
                 ),
-            },
+            ),
         ]
 
 

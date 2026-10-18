@@ -38,6 +38,8 @@ from penny.llm.models import (
     LlmResponse,
     LlmResponseError,
     LlmTimeoutError,
+    LlmToolCall,
+    LlmToolCallFunction,
     ProviderPin,
     fault_for_status,
 )
@@ -109,7 +111,7 @@ class TestChatPropagatesSummarizedError:
         monkeypatch.setattr(client.client.chat.completions, "create", raise_not_found)
 
         with pytest.raises(LlmNotFoundError) as exc_info:
-            await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+            await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         message = str(exc_info.value)
         assert "HTTP 404" in message
@@ -169,7 +171,7 @@ class TestReasoningAlwaysOn:
             api_url="http://localhost:11434", model="m", max_retries=1, retry_delay=0.0
         )
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
-        await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+        await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         assert sent["extra_body"] == {"reasoning": {"enabled": True}}
         await client.close()
@@ -218,13 +220,13 @@ class TestTokenBudgetAndFinishReason:
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
 
         await client.chat(
-            [{"role": "user", "content": "hi"}], call_link=CallLink.new_top(), token_budget=1500
+            [LlmMessage(role="user", content="hi")], call_link=CallLink.new_top(), token_budget=1500
         )
         assert sent["max_tokens"] == 1500
         assert sent["max_completion_tokens"] == 1500
 
         sent.clear()
-        await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+        await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
         assert "max_tokens" not in sent
         assert "max_completion_tokens" not in sent
         await client.close()
@@ -245,7 +247,7 @@ class TestTokenBudgetAndFinishReason:
         )
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
         await client.chat(
-            [{"role": "user", "content": "hi"}],
+            [LlmMessage(role="user", content="hi")],
             call_link=CallLink.new_top(),
             thinking_enabled=False,
         )
@@ -271,7 +273,7 @@ class TestTokenBudgetAndFinishReason:
 
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
         response = await client.chat(
-            [{"role": "user", "content": "hi"}], call_link=CallLink.new_top(), token_budget=80
+            [LlmMessage(role="user", content="hi")], call_link=CallLink.new_top(), token_budget=80
         )
 
         assert response.finish_reason == "length"
@@ -306,7 +308,7 @@ class TestRetryResilience:
         monkeypatch.setattr("penny.llm.client.asyncio.sleep", record_sleep)
 
         with pytest.raises(LlmTimeoutError):
-            await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+            await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         # Three attempts, so two waits between them — doubling, not flat.
         assert waits == [1.0, 2.0]
@@ -339,7 +341,7 @@ class TestRetryResilience:
         monkeypatch.setattr(client.client.chat.completions, "create", answer_without_a_completion)
 
         with pytest.raises(LlmResponseError) as exc_info:
-            await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+            await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         assert attempts == 3  # retried, not raised on the first one
         # The provider's own words survive, so the run record says WHY rather than "None".
@@ -529,7 +531,7 @@ class TestFaultClassIsAValueNotASentence:
         monkeypatch.setattr(client.client.chat.completions, "create", refuse)
 
         with pytest.raises(LlmResponseError) as exc_info:
-            await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+            await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         assert exc_info.value.fault == LlmFault.RATE_LIMITED
         await client.close()
@@ -551,7 +553,7 @@ class TestFaultClassIsAValueNotASentence:
         monkeypatch.setattr(client.client.chat.completions, "create", answer_without_a_completion)
 
         with pytest.raises(LlmResponseError) as exc_info:
-            await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+            await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         assert exc_info.value.fault == LlmFault.NO_CHOICES
         await client.close()
@@ -597,7 +599,7 @@ class TestAConfiguredProviderIsPinned:
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
 
         with pytest.raises(LlmError):
-            await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+            await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         # The reasoning switch still rides the same passthrough — one is not added at the
         # cost of the other, and a run that lost it would be comparing a model to itself.
@@ -621,7 +623,7 @@ class TestAConfiguredProviderIsPinned:
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
 
         with pytest.raises(LlmError):
-            await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+            await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
         assert sent["extra_body"] == {"reasoning": {"enabled": True}}
         await client.close()
@@ -666,7 +668,7 @@ class TestAConfiguredProviderIsPinned:
         monkeypatch.setattr(client.client.chat.completions, "create", answer)
 
         response = await client.chat(
-            [{"role": "user", "content": "hi"}], call_link=CallLink.new_top()
+            [LlmMessage(role="user", content="hi")], call_link=CallLink.new_top()
         )
 
         # It pinned Cloudflare and DeepInfra answered — stated rather than hidden behind an
@@ -714,7 +716,7 @@ class TestParallelCallsReturnedAsOneCall:
         )
         monkeypatch.setattr(client.client.chat.completions, "create", answer)
         response = await client.chat(
-            [{"role": "user", "content": "hi"}], call_link=CallLink.top("run-1")
+            [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-1")
         )
         await client.close()
         return response
@@ -812,7 +814,9 @@ class TestCallLoggedHoweverItEnds:
         monkeypatch.setattr(client.client.chat.completions, "create", answer)
 
         await client.chat(
-            [{"role": "user", "content": "hi"}], agent_name="chat", call_link=CallLink.top("run-ok")
+            [LlmMessage(role="user", content="hi")],
+            agent_name="chat",
+            call_link=CallLink.top("run-ok"),
         )
         await client.close()
 
@@ -841,7 +845,7 @@ class TestCallLoggedHoweverItEnds:
 
         with pytest.raises(asyncio.CancelledError):
             await client.chat(
-                [{"role": "user", "content": "hi"}],
+                [LlmMessage(role="user", content="hi")],
                 agent_name="browse-extract",
                 call_link=CallLink.top("run-cancelled"),
             )
@@ -872,7 +876,7 @@ class TestCallLoggedHoweverItEnds:
 
         with pytest.raises(LlmConnectionError):
             await client.chat(
-                [{"role": "user", "content": "hi"}], call_link=CallLink.top("run-raised")
+                [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-raised")
             )
         await client.close()
 
@@ -897,7 +901,7 @@ class TestCallLoggedHoweverItEnds:
 
         with pytest.raises(LlmTimeoutError):
             await client.chat(
-                [{"role": "user", "content": "hi"}], call_link=CallLink.top("run-timeout")
+                [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-timeout")
             )
         await client.close()
 
@@ -929,7 +933,7 @@ class TestCallLoggedHoweverItEnds:
         monkeypatch.setattr(client.client.chat.completions, "create", fail_once_then_answer)
 
         await client.chat(
-            [{"role": "user", "content": "hi"}], call_link=CallLink.top("run-retried")
+            [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-retried")
         )
         await client.close()
 
@@ -959,7 +963,9 @@ class TestCallLoggedHoweverItEnds:
         )
         monkeypatch.setattr(client.client.chat.completions, "create", slow_then_fast)
 
-        await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.top("run-slow"))
+        await client.chat(
+            [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-slow")
+        )
         await client.close()
 
         row = self._one_row(db)
@@ -992,7 +998,7 @@ class TestMicroContextDrawLinksToItsParentCall:
         # as its PARENT and "call-browse-1" as its parent tool call in the process.
         dispatched = CallLink.top("chat-run-1").for_tool_call("call-browse-1")
         draw_link = dispatched.child()
-        await client.chat([{"role": "user", "content": "hi"}], call_link=draw_link)
+        await client.chat([LlmMessage(role="user", content="hi")], call_link=draw_link)
         await client.close()
 
         with db.get_session() as session:
@@ -1014,7 +1020,7 @@ class TestMicroContextDrawLinksToItsParentCall:
         )
         monkeypatch.setattr(client.client.chat.completions, "create", answer)
 
-        await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
+        await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
         await client.close()
 
         with db.get_session() as session:
@@ -1147,3 +1153,75 @@ class TestFrozenRequestPayloadToday:
             translated, tools=None, format=None, token_budget=None, thinking_enabled=True
         )
         assert kwargs == FROZEN_KWARGS
+
+
+# The same six shapes, built the #2563 way: a plain ``LlmMessage(...)`` for every
+# shape a direct caller constructs fresh (system/user/an assistant tool call with a
+# thinking passback/its tool result/a vision user turn), and ``LlmMessage.from_dict``
+# for the page-context pair — the one shape stage 1 does NOT convert its own builder
+# for (``ChatAgent._inject_page_context`` stays dict-literal until #2604), so the
+# round trip through ``from_dict``/``to_log_dict`` is what carries it through this
+# boundary unchanged.
+TYPED_FROZEN_MESSAGES = [
+    LlmMessage(role="system", content=_FROZEN_SYSTEM["content"]),
+    LlmMessage(role="user", content=_FROZEN_USER["content"]),
+    LlmMessage(
+        role="assistant",
+        content="",
+        thinking="checking the forecast first",
+        tool_calls=[
+            LlmToolCall(
+                id="call_1",
+                function=LlmToolCallFunction(
+                    name="browse", arguments={"queries": ["Lisbon weather forecast"]}
+                ),
+            )
+        ],
+    ),
+    LlmMessage(
+        role="tool",
+        content="(browse result)\nSunny and mild.",
+        tool_call_id="call_1",
+        tool_success=True,
+    ),
+    LlmMessage.from_dict(_FROZEN_PAGE_CONTEXT_CALL),
+    LlmMessage.from_dict(_FROZEN_PAGE_CONTEXT_RESULT),
+    LlmMessage(role="user", content="what's in this photo?", images=["c3VpdGNhc2U="]),
+]
+
+
+class TestTypedMessagesMatchTheFrozenPayload:
+    """``LlmMessage`` end to end (#2563): built the typed way, the exact same request
+    reaches the model — the HARD constraint this stage must hold."""
+
+    def test_to_log_dict_reproduces_todays_internal_shape(self) -> None:
+        """Every typed message's ``to_log_dict()`` is byte-identical to the dict
+        literal the agent loop builds for that same shape today — including the
+        page-context pair, round-tripped through ``from_dict`` rather than built
+        fresh, so its raw-dict ``arguments`` quirk survives unchanged (#2604 fixes
+        it, not this stage)."""
+        assert [m.to_log_dict() for m in TYPED_FROZEN_MESSAGES] == FROZEN_INTERNAL_MESSAGES
+
+    @pytest.mark.asyncio
+    async def test_chat_sends_the_frozen_wire_payload(self, monkeypatch) -> None:
+        """``LlmClient.chat(messages: list[LlmMessage])`` — the live entry point —
+        puts exactly the frozen wire messages on the request the SDK receives."""
+        sent = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="frozen-test-model",
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+
+        await client.chat(TYPED_FROZEN_MESSAGES, call_link=CallLink.new_top())
+
+        assert sent["messages"] == FROZEN_WIRE_MESSAGES
+        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        await client.close()

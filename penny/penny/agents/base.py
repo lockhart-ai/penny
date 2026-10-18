@@ -30,7 +30,7 @@ from penny.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
-from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
+from penny.llm.models import LlmError, LlmMessage, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import (
@@ -863,7 +863,7 @@ class Agent:
         ctx = await self._prepare_text_shape(response, ctx, run_id, call_link)
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
-                messages.append(response.message.to_input_message())
+                messages.append(response.message.to_log_dict())
                 messages.append({"role": MessageRole.USER, "content": message})
                 return True
             case Proceed():
@@ -897,7 +897,7 @@ class Agent:
     ) -> None:
         """Append the assistant turn + a failed tool-result for each call, exactly
         as ``_dedup_tool_calls`` rejects a repeat in place."""
-        messages.append(response.message.to_input_message())
+        messages.append(response.message.to_log_dict())
         for call in response.message.tool_calls or []:
             messages.append(
                 {
@@ -1087,7 +1087,13 @@ class Agent:
         """
         try:
             return await self._model_client.chat(
-                messages=messages,
+                # The one conversion at this call site (#2563): ``messages`` stays
+                # ``list[dict]`` through the rest of this loop (stage 2, #2603,
+                # retypes it) — ``LlmClient.chat()`` is the direct caller stage 1
+                # converts, so the minimum needed here is this one boundary.
+                # ``from_dict`` round-trips every shape in use today losslessly,
+                # including the injected page-context call's raw-dict arguments.
+                messages=[LlmMessage.from_dict(message) for message in messages],
                 tools=effective_tools,
                 agent_name=self.name,
                 prompt_type=prompt_type,
@@ -1665,7 +1671,7 @@ class Agent:
         legitimate retry-after-remediation / re-read-after-write runs next time.
         """
         logger.info("Model requested %d tool call(s)", len(response.message.tool_calls or []))
-        messages: list[dict] = [response.message.to_input_message()]
+        messages: list[dict] = [response.message.to_log_dict()]
         records: list[ToolCallRecord] = []
         source_urls: list[str] = []
 
