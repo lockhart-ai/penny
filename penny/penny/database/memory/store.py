@@ -22,7 +22,7 @@ from typing import cast
 import numpy as np
 from pydantic import BaseModel
 from similarity.dedup import JobSide, is_same_job
-from sqlalchemy import and_, func, or_
+from sqlalchemy import ColumnElement, and_, func, or_
 from sqlmodel import Session, col, select
 
 from penny.clock import Clock
@@ -66,6 +66,19 @@ _MESSAGE_LOG_DIRECTIONS = {
     PennyConstants.MEMORY_USER_MESSAGES_LOG: PennyConstants.MessageDirection.INCOMING,
     PennyConstants.MEMORY_PENNY_MESSAGES_LOG: PennyConstants.MessageDirection.OUTGOING,
 }
+
+
+def _count[T](column: T) -> ColumnElement[int]:
+    """``func.count(col(...))``, typed once.
+
+    ``ty`` resolves a bare SQLModel attribute (``Model.field``) to the
+    field's plain Python type rather than a column expression, so
+    ``func.count(Model.field)`` fails ``invalid-argument-type`` — the same
+    reason filter expressions wrap through ``col()`` (house rule, root
+    ``CLAUDE.md``). This wraps it once so a counting ``select`` never needs
+    a suppression at its own call site.
+    """
+    return func.count(col(column))
 
 
 class _MetadataUpdate(BaseModel):
@@ -484,20 +497,20 @@ class MemoryStore:
         """
         with self._session() as session:
             rows = session.exec(
-                select(MemoryEntry.memory_name, func.count(MemoryEntry.id)).group_by(  # ty: ignore[invalid-argument-type]
+                select(MemoryEntry.memory_name, _count(MemoryEntry.id)).group_by(
                     MemoryEntry.memory_name
-                )  # ty: ignore[invalid-argument-type]
+                )
             ).all()
             counts = dict(rows)
             by_direction = dict(
                 session.exec(
-                    select(MessageLog.direction, func.count(MessageLog.id))  # ty: ignore[invalid-argument-type]
+                    select(MessageLog.direction, _count(MessageLog.id))
                     .where(col(MessageLog.is_reaction).is_(False))
                     .group_by(MessageLog.direction)
                 ).all()
             )
             run_count = session.exec(
-                select(func.count(PromptLog.id)).where(  # ty: ignore[invalid-argument-type]
+                select(_count(PromptLog.id)).where(
                     col(PromptLog.run_outcome).isnot(None),
                     col(PromptLog.run_target).isnot(None),
                 )
