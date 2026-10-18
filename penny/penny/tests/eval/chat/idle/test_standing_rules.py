@@ -7,7 +7,7 @@ ordinary entry in the seeded ``rules`` collection — one ``collection_write`` t
 keep it, one ``collection_remove`` to forget it — and the ``### Standing rules``
 section renders the collection in full wherever Penny acts (the chat self-state
 header, every collector cycle's prompt, the notify document), so a rule holds
-without a lookup.  These three cases are the chat-surface contract for that
+without a lookup.  These cases are the chat-surface contract for that
 surface:
 
 | case | the behaviour | what the store must show |
@@ -15,6 +15,7 @@ surface:
 | keep one | ``rules-remember-always`` | an entry in ``rules`` carries the asked behaviour |
 | list them | ``rules-list-standing`` | ``rules`` unchanged; the reply states each rule |
 | forget one | ``rules-forget-one`` | the named rule gone; the other two unchanged |
+| honour one | ``rules-honoured-in-chat-reply`` | the reply ends the way the rule says |
 
 **The empty section is the state the first case is answered from.**  ``rules``
 seeds empty, so the write that keeps the first rule reads its destination off the
@@ -51,7 +52,7 @@ from penny.penny import Penny
 from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import EVAL_MODELS, Preparer, seeded_run_id
 from penny.tests.eval.drivers.chat import ChatEval
-from penny.tests.eval.utils.assertions import Cohort
+from penny.tests.eval.utils.assertions import Cohort, ends_with
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
@@ -60,6 +61,7 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
 )
+from penny.tests.eval.utils.fixtures import SynthCollection
 from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
@@ -137,16 +139,29 @@ class _RuleCase(NamedTuple):
     also_phrased: tuple[str, ...]
     rules: tuple[tuple[str, str], ...] = ()
     answers: tuple[str, ...] = ()
+    # A collection the world already holds when the turn begins — the fact an ordinary
+    # question is answered from.  Empty for the three asks about the rules themselves;
+    # the honour case carries the pantry its ask reads.
+    stores: tuple[SynthCollection, ...] = ()
 
     @property
     def ground(self) -> World:
         """The world every arm is answered against — the rules collection is seeded
         by the migration itself and this case's own entries by ``seed=``, so the
-        world's declared ``stores`` stay empty: declaring them would lay the entries
-        down a second time.  No pages: nothing here is answered off the web, and a
-        page set would hand a browsing sample something to talk about instead of
-        letting the wrong turn read as one."""
-        return World(name=self.case_id, pages=(), keeps=(), excludes=(), answers=self.answers)
+        world's declared ``stores`` stay empty of rules: declaring them would lay the
+        entries down a second time.  A case that answers from a fact in the store
+        declares that collection here (the honour case's pantry); the driver lays it
+        down through the same seed path.  No pages: nothing here is answered off the
+        web, and a page set would hand a browsing sample something to talk about
+        instead of letting the wrong turn read as one."""
+        return World(
+            name=self.case_id,
+            pages=(),
+            keeps=(),
+            excludes=(),
+            answers=self.answers,
+            stores=self.stores,
+        )
 
 
 async def _drive(chat_eval: ChatEval, model: str, case: _RuleCase) -> Cohort:
@@ -241,6 +256,27 @@ def _the_others_survive_unchanged(seeded: tuple[tuple[str, str], ...]):
         return not missing, f"no longer as seeded: {missing}"
 
     return answer
+
+
+def _rules_unchanged(seeded: tuple[tuple[str, str], ...]):
+    """``rules`` is exactly as the turn found it — the whole collection compared,
+    key and content, against what the case seeded.  A violating sample is nameable:
+    one that reworded the rule while answering, dropped it, or added a second one."""
+
+    def answer(sample: SampleObservation, _world: World) -> tuple[bool, str]:
+        held = set(_rules_entries(sample))
+        return held == set(seeded), f"`{RULES}` holds {sorted(held)}"
+
+    return answer
+
+
+def _the_reply_ends_with_the_sign_off(sample: SampleObservation, _world: World) -> tuple[bool, str]:
+    """The reply ends with the sign-off the standing rule names.  The ask never
+    mentions the rule, so the only place the word can come from is the section
+    itself — the whole point of the honour case.  A violating sample is nameable:
+    one that answered correctly and never signed off."""
+    ok = ends_with(_SIGNOFF, sample.reply)
+    return ok, f"the reply ends {sample.reply.rstrip()[-60:]!r}"
 
 
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
@@ -423,4 +459,107 @@ async def test_forgotten_rule_is_gone_and_the_others_stand(chat_eval: ChatEval, 
 
 # Every case, in one place — so the deterministic probe in ``test_eval_harness.py``
 # can drive each one's seeder and premise without a GPU.
-RULE_CASES = (_REMEMBER, _LIST_STANDING, _FORGET_ONE)
+# ═══ honour one in the reply ═════════════════════════════════════════════════
+#
+# A rule about HOW every message ends, and an ordinary question the world answers from —
+# the ask never mentions the rule, so the only place the sign-off can come from is the
+# section itself, which is the whole reachability contract of #2633 made behavioural: a
+# rule that renders and is never acted on is not a rule.  The sign-off token is exact
+# and case-sensitive (``ends_with``); how the reply words the answer in front of it is
+# the reply's spread.
+
+_SIGNOFF_KEY = "sign-off"
+_SIGNOFF_CONTENT = 'End every message you send me with the word "Finished!"'
+_SIGNOFF_RULE = (_SIGNOFF_KEY, _SIGNOFF_CONTENT)
+_SIGNOFF = "Finished!"
+
+# The small fact the honour case's turn answers from — a pantry with three items, so the
+# reply has real work in front of the sign-off.  Seeded by the driver off the world's
+# ``stores``, so the world render and the seed are one declaration.
+_PANTRY = SynthCollection(
+    "pantry",
+    "What is in the pantry right now: staples and how much of each is left.",
+    entries=(
+        "Basmati rice — half a bag left, about 400 g.",
+        "Chickpeas — two unopened tins.",
+        "Olive oil — about a third of a bottle.",
+    ),
+)
+
+# What the reply owes: each pantry item, named.  Chosen like every answers token set —
+# the smallest datum unique in this world, on the item's own words, on no other source's,
+# and in no wording of the ask (enforced at import below).
+_PANTRY_WORDS = ("rice", "chickpeas", "olive oil")
+
+
+def _honoured_tokens_stood_down() -> None:
+    """ENFORCED at import: the sign-off token is on the rule's words and nothing else's,
+    and each pantry token is on its item's words, on no other source's, and in no wording
+    of the ask — a token the ask or the rule carried would credit the reply for repeating
+    what it was handed."""
+    pantry_words = " ".join(_PANTRY.entries).casefold()
+    rule_words = f"{_SIGNOFF_KEY} {_SIGNOFF_CONTENT}".casefold()
+    assert _SIGNOFF.casefold() in rule_words, "the sign-off token must be on the rule's words"
+    assert _SIGNOFF.casefold() not in pantry_words, (
+        "the sign-off token must not be on the pantry's words"
+    )
+    for token in _PANTRY_WORDS:
+        assert token in pantry_words, f"{token!r} must be on its item's words: {_PANTRY.entries}"
+        assert token not in rule_words, f"{token!r} must not be on the rule's words"
+
+
+_honoured_tokens_stood_down()
+
+
+_HONOUR_REPLY = _RuleCase(
+    case_id="rules-honoured-in-chat-reply",
+    behaviour=(
+        "In the chat agent, when a standing rule says how every message should end, "
+        "Penny's reply ends that way."
+    ),
+    ask="what do I have in the pantry?",
+    also_phrased=(
+        "what's in the pantry right now?",
+        "can you tell me what food is in the pantry?",
+        "check the pantry for me — what's in it?",
+        "how are my pantry staples looking?",
+    ),
+    rules=(_SIGNOFF_RULE,),
+    answers=_PANTRY_WORDS,
+    stores=(_PANTRY,),
+)
+
+for _wording in (_HONOUR_REPLY.ask, *_HONOUR_REPLY.also_phrased):
+    for _token in (*_PANTRY_WORDS, _SIGNOFF):
+        assert _token.casefold() not in _wording.casefold(), (
+            f"an honour wording must not carry an answer token: {_wording!r}"
+        )
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_reply_ends_the_way_a_standing_rule_says(chat_eval: ChatEval, model: str) -> None:
+    """One standing rule about how every message ends, and an ordinary question about
+    the pantry — the reply answers the ask AND ends the way the rule says, with the
+    rules exactly as the turn found them."""
+    cohort = await _drive(chat_eval, model, _HONOUR_REPLY)
+    # STORE — the rule honoured on the delivered reply, and the rules untouched.
+    cohort.claim(
+        "state: the reply ends with the rule's sign-off",
+        _the_reply_ends_with_the_sign_off,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: `rules` is exactly as the turn found it",
+        _rules_unchanged((_SIGNOFF_RULE,)),
+        SpecCategory.STORE,
+    )
+
+    # PROVENANCE — the reply names the pantry items, and every value it states was given.
+    cohort.assert_the_reply_answers_the_ask()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.assert_every_value_in_the_store_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+RULE_CASES = (_REMEMBER, _LIST_STANDING, _FORGET_ONE, _HONOUR_REPLY)

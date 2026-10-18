@@ -1,6 +1,6 @@
 """A price watch, one cycle at a time: the first reading, an unchanged one, a moved one
-(#2017, the collector half of the cohort port), and a moved one on a real-length, decoy-rich
-page (#2366).
+(#2017, the collector half of the cohort port), a moved one on a real-length, decoy-rich
+page (#2366), and a moved one whose notification honours a standing rule (#2633).
 
 **Four cases, because there are four behaviours.**  A watch does three different things and
 each is a separate test with its own entry condition, its own single cycle and its own
@@ -69,15 +69,18 @@ from typing import NamedTuple
 
 import pytest
 
+from penny.agents.self_state import standing_rules_section
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput
+from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
     collection_entries,
     seeded_run_id,
 )
 from penny.tests.eval.drivers.collector_cycles import CollectorCyclesEval, CycleArm
-from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.assertions import Answer, ends_with
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
@@ -1135,6 +1138,116 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
         "state: the collection still holds one entry, rewritten", _one_entry, SpecCategory.STORE
     )
     cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
+
+
+# ── a standing rule honoured in the notification (#2633) ─────────────────────
+#
+# The MOVED-READING behaviour again — the same entry condition, the same pages, the same
+# claims about the store — with one thing added: a standing rule about how every message
+# must end, seeded the way the chat-surface rules cases seed theirs (through the store's
+# own write path, into the migration-seeded ``rules`` collection).  The rule renders in
+# full in every collector cycle's system prompt and in the notify composer's document, so
+# the notification a cycle sends is composed against it; the ask — the job's instruction —
+# never mentions the rule, so the only place the sign-off can come from is the section
+# itself.  A separate case rather than an arm of the moved-reading one because the added
+# input (the rule) is a different thing the cycle is answered from, and its honour is the
+# behaviour being measured.
+
+_RULES = PennyConstants.MEMORY_RULES_COLLECTION
+_SIGNOFF_KEY = "sign-off"
+_SIGNOFF_CONTENT = 'End every message you send me with the word "Finished!"'
+_SIGNOFF = "Finished!"
+
+
+def _sign_off_seeder(case: WatchCase, reading: Reading):
+    """The moved-reading world's seeder, plus the standing rule laid down through the
+    store's own write path into ``rules`` — a rule is an entry like any other — and the
+    render probed out loud, so a world that stopped showing the rule fails in the seed
+    rather than after GPU time."""
+
+    def seed(db: Database) -> None:
+        base = _seeder(case, reading)
+        base(db)
+        require_memory(db, _RULES).write(
+            [EntryInput(key=_SIGNOFF_KEY, content=_SIGNOFF_CONTENT)],
+            author="user",
+            run_id=seeded_run_id(_RULES),
+        )
+        rendered = standing_rules_section(db)
+        assert f"- {_SIGNOFF_KEY}: {_SIGNOFF_CONTENT} (added " in rendered, (
+            f"the section must render the seeded rule in full:\n{rendered!r}"
+        )
+
+    return seed
+
+
+def _sign_off_arms(case: WatchCase) -> list[CycleArm]:
+    """Five wordings of the moved-reading instruction, each carrying the rule."""
+    return [
+        CycleArm(
+            text=reading.extract,
+            seed=_sign_off_seeder(case, reading),
+            pages=[_page(case, reading)],
+            world=_world(case, reading),
+        )
+        for reading in READINGS
+    ]
+
+
+def _notification_ends_with_the_sign_off(sample: SampleObservation, _world: World) -> Answer:
+    """Every message the job put on the send queue ends the way the standing rule
+    says — exact and case-sensitive (``ends_with``), the rule's own words.  False
+    when nothing was sent: a silent cycle did not honour the rule, it sent nothing
+    at all, and the told-once claim beside it names that miss on its own."""
+    if not sample.notifications:
+        return False, "nothing reached the send queue"
+    off = [msg for msg in sample.notifications if not ends_with(_SIGNOFF, msg)]
+    return not off, f"notification(s) not ending with the sign-off: {off!r}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_notification_ends_the_way_a_standing_rule_says(
+    collector_cycles_eval: CollectorCyclesEval, model: str
+) -> None:
+    """A standing rule about how every message must end, and a job cycle that has news —
+    the write lands as it would without the rule, and the notification it sends ends the
+    way the rule says."""
+    cohort = await collector_cycles_eval(
+        case_id="rules-honoured-in-job-notification",
+        behaviour=(
+            "In a price-watch collector, when a standing rule says how every message "
+            "must end, the notification the job sends ends that way."
+        ),
+        area=Area.BACKGROUND_COLLECTORS,
+        model=model,
+        collection=_CONTAINER,
+        arms=_sign_off_arms(MOVED_READING),
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+
+    # STORE — the moved-reading behaviour unchanged by the rule, and the rule honoured
+    # on the message that reached the send queue.
+    cohort.claim(
+        f"state: the collection holds {_MOVED_AMOUNT} and no longer {_BASELINE_AMOUNT}",
+        _holds_the_moved_price_only,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the collection still holds one entry, rewritten", _one_entry, SpecCategory.STORE
+    )
+    cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
+    cohort.claim(
+        "state: the notification ends with the rule's sign-off",
+        _notification_ends_with_the_sign_off,
+        SpecCategory.STORE,
+    )
 
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
