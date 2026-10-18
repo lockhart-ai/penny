@@ -79,5 +79,5 @@ kind, with one line on when to read it. Start here before opening any one of the
 
 ## Generated, not committed
 
-- `eval-catalogue.md` — every eval case by area, and which cases cover each machine edge;
-  generated on demand by `make catalogue` (gitignored, never committed).
+- `eval-catalogue.md` — every eval case by area; generated on demand by `make catalogue`
+  (gitignored, never committed).
