@@ -283,6 +283,29 @@ class TestGemmaShapes:
             == "\u2022 **Example headline about a transit delay** (https://www.example.com/one)"
         )
 
+    def test_self_link_becomes_bare_url(self, channel):
+        assert (
+            channel.prepare_outgoing("[https://example.com/a](https://example.com/a)")
+            == "https://example.com/a"
+        )
+
+    def test_text_link_keeps_text_url_form(self, channel):
+        assert (
+            channel.prepare_outgoing(
+                "[Example headline about a transit delay](https://example.com/a)"
+            )
+            == "Example headline about a transit delay (https://example.com/a)"
+        )
+
+    def test_self_link_inside_numbered_list_line(self, channel):
+        text = (
+            "1. **Example headline about a transit delay** - "
+            "[https://example.com/a](https://example.com/a)"
+        )
+        assert channel.prepare_outgoing(text) == (
+            "1. **Example headline about a transit delay** - https://example.com/a"
+        )
+
     def test_star_bullet_with_wide_spacing_stays_a_bullet(self, channel):
         assert channel.prepare_outgoing("*   **Protein Levels:** Every cat is different.") == (
             "\u2022 **Protein Levels:** Every cat is different."

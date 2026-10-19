@@ -298,8 +298,10 @@ class SignalChannel(MessageChannel):
 
         Shapes the models write that Signal has no style for are converted:
         headings become bold lines, ``* `` / ``- `` bullets become ``• ``,
-        horizontal rules are dropped, and stray markers are removed.
+        horizontal rules are dropped, stray markers are removed, and a link
+        whose text is its own URL is sent as the bare URL.
         """
+        text = self._collapse_self_links(text)
         text = self._table_to_bullets(text)
         text, code_blocks, urls = self._protect_blocks(text)
         text = self._sanitize_tildes(text)
@@ -356,6 +358,24 @@ class SignalChannel(MessageChannel):
 
     # A markdown ATX heading: 1-6 #'s then the text.
     _HEADING_PATTERN = re.compile(r"^(#{1,6})[ \t]+(.+)$", re.MULTILINE)
+
+    # A markdown link whose text is its own URL: [url](url). Collapsed to the
+    # bare URL before _protect_blocks runs — that pass would otherwise swap
+    # the URL inside the link text for a placeholder (its pattern doesn't
+    # stop at `]`), leaving no link shape for the link conversion to match.
+    _SELF_LINK_PATTERN = re.compile(r"\[(https?://[^\s<>\]]+)\]\(\1\)")
+
+    @classmethod
+    def _collapse_self_links(cls, text: str) -> str:
+        """Collapse a markdown link whose text is its own URL to the bare URL.
+
+        ``[https://example.com/a](https://example.com/a)`` must reach Signal
+        as ``https://example.com/a`` — not the raw markdown it would survive
+        as, and not the duplicated ``url (url)`` the generic link conversion
+        would produce. Runs before ``_protect_blocks``: once URLs are
+        placeholders the link shape no longer exists to convert.
+        """
+        return cls._SELF_LINK_PATTERN.sub(r"\1", text)
 
     @classmethod
     def _drop_rule_lines(cls, text: str) -> str:
