@@ -140,10 +140,7 @@ class Prompt:
         "back empty, say so; if a call failed, say so. NEVER imply something "
         "changed when the tool said it didn't.\n"
         "3. Then give the answer.\n"
-        "On a plain reply with no tool calls, skip the recap and just respond.\n"
-        "Sending a reply ends the turn: nothing runs after it, so anything you say "
-        "you will do has to be done before you reply — what the reply only promises "
-        "is what the user is left with.\n\n"
+        "On a plain reply with no tool calls, skip the recap and just respond.\n\n"
         "Always include specific details (specs, dates, prices) and at least one "
         "source URL so the user can follow up."
     )
