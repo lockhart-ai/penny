@@ -631,13 +631,14 @@ def standing_rules_section(db: Database) -> str:
 
 # The one line that frames the rules where the chat agent reads INSTRUCTIONS.  Stated
 # in plain words, no imperative: the rules govern the whole message, its last
-# characters included, and the user's own ask wins over Penny's default style
-# wherever that style is stated in the prompt — named as the general case, never by
-# any one rule's words.
+# characters included, and a rule wins over anything else the prompt says — how she
+# looks things up and what she does, as well as how she writes — named as the general
+# case, never by any one rule's words (#2647).
 STANDING_RULES_FRAMING = (
     "The user's standing rules: follow each one in everything you send, to the very "
-    "end of the message. Where a rule asks for something different from the style "
-    "guidance in this prompt, the rule is what they want."
+    "end of the message. Where a rule asks for something different from any other "
+    "guidance in this prompt — how you look things up, what you do, or how you "
+    "write — the rule is what they want."
 )
 
 
