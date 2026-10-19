@@ -91,7 +91,7 @@ Quotes are the code owner's own words.
      Each fails as soon as a user leaves the path it encodes.
 
 3. **The model never writes historical records.** *"don't make the model do it at all."*
-   - Ledgers, run records, mutation events, what a turn wrote and what a skill is are all
+   - Ledgers, run records, mutation events and what a turn wrote are all
      derived by the framework at chokepoints.
    - The model acts; the system remembers.
    - When the model tells the user what happened, it reads a render of the record, never its
@@ -110,7 +110,7 @@ Quotes are the code owner's own words.
    - A design that changes what the model reads carries this reachability sketch on its
      ticket before it is built.
 
-6. **A skill is an arbitrary tool sequence.**
+6. **A job's tool sequence is arbitrary.**
    - Nothing may be keyed to a tool name, an argument position, or the wording of the example
      in front of you.
    - Ask: *what happens when a tool I have never heard of does this?*

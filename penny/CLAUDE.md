@@ -103,7 +103,7 @@ penny/
     list_folders.py   — ListFoldersTool (available mailboxes; Zoho only)
     draft_email.py    — DraftEmailTool (compose + stage draft; Zoho only). All five retired the /email + /zoho commands (epic #1445) — built per turn by ChatAgent's email_tools_builder; NL-dispatch contract: tests/eval/chat/idle/test_email_dispatch.py
     notifications.py  — NotificationsMuteTool / NotificationsUnmuteTool: chat-surface tools over the MuteState row (`db.users`); retired /mute + /unmute
-    collection_instantiation.py — The pure pieces behind `collection_configure`: schedule/expiry parsing and renders — no skill resolution, no parameters, no rendering seam (#1591)
+    collection_instantiation.py — The pure pieces behind `collection_configure`: schedule/expiry parsing and renders — no parameters to bind, no rendering seam (#1591)
     memory_args.py    — Pydantic arg models for the memory tool surface
     memory_tools.py   — Memory tool subclasses dispatching through `db.memory(name)`; `find`/`run_list`/`run_get`, `collection_configure`
   channels/
@@ -467,9 +467,9 @@ migrations ship — the eval tests them as deployed, not a hand-built copy. Two 
 - *Suspect stale seeded data before model incapacity.* Real example from this codebase: the
   chat agent set a new `published` flag **correctly** but *also* bolted on a `send_message`
   step and created duplicate collections — not because it couldn't reason about the flag,
-  but because the seeded **skills** still taught the old pattern. We nearly renamed a schema
+  but because stale seeded data still taught the old pattern. We nearly renamed a schema
   field chasing a "comprehension" problem that was actually stale data. The thinking trace
-  tells you which; fix at the highest rung (data/skill > prompt > code — see the root
+  tells you which; fix at the highest rung (data > prompt > code — see the root
   Design Principles). Corollary: adding a seeded collection in a migration changes the chat
   agent's Memory Inventory, so the verbatim system-prompt test will fail until you update
   its expected string — that's the test working, not a regression.
@@ -515,7 +515,7 @@ Second caveat — **check the claim before you blame the model.** A surprising `
 is as often a mis-specified claim as a real failure: read the model's actual tool calls
 (the auto-dumped thinking) and confirm it did the wrong thing before tuning the prompt.
 Two `0/3`s in one session were both bugs in the check — one counted a *distinct* seeded
-skill as a "duplicate", another penalised a bare `example.com` that appeared only in an
+entry as a "duplicate", another penalised a bare `example.com` that appeared only in an
 example phrasing. The model was correct; the contract was wrong. Verify the claim encodes
 the intended contract first.
 
@@ -539,7 +539,7 @@ Live-model cases are slow — a collector cycle is ~120-180s **per sample**, so 
 When a prompt change doesn't move a claim's count, the reason is almost never visible
 from the claim's one-line rationale — it's in the model's **thinking trace**. (Real
 example: the publish-flag cases failed not because the model misunderstood `published`
-— it set it correctly — but because a *stale seeded skill* still told it to add a
+— it set it correctly — but because a *stale seeded prompt* still told it to add a
 `send_message` step. Only the thinking + tool trace made that obvious.) So **reviewing
 the thinking is a required step of every prompt-iteration loop, not a last resort.**
 

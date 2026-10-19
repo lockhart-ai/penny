@@ -121,9 +121,9 @@ Two corollaries, both measured on this codebase:
 
 4. **Keep load-bearing discriminating rules SPECIFIC and CONCRETE — with a worked example.**
    The rule that makes or breaks a hard judgement must state the exact distinction and show
-   it. *Measured:* the skills collector's "two different tool names are different steps even
+   it. *Measured:* a collector's "two different tool names are different steps even
    when the params are identical — `collection_list(collection='x')` is not
-   `log_read(log='x')`" rule was worth **5/5 vs 0/5** on the tweak-STEPS case. Softening
+   `log_read(log='x')`" rule was worth **5/5 vs 0/5** on its eval case. Softening
    it to "match the tools" collapsed it. A vague rule is a dropped rule.
 
 5. **Positive spine, explicit permission, negative guards.** Default to stating what TO do, in
@@ -311,11 +311,8 @@ dialect while no single line looks wrong. *Measured* (#1830, PR #1831): five pat
 ## When a guard doesn't work, aim it at the *exact* pitfall — and re-check it didn't just move
 
 Adding an emphatic guard is easy to get subtly wrong: it fixes the failure you saw and *creates*
-a neighbouring one. Measured: to stop the model duplicating a skill, an "always match an existing
-skill by its TRIGGER" guard worked — but it made the model conclude "the TRIGGER already covers
-this → nothing to do" and **skip the STEPS fix** it was supposed to make. One failure traded for
-another. The guard has to point at the *specific* thing the traces show the model doing wrong
-(here: skipping the STEPS rewrite), not at a plausible-sounding neighbour. After any guard, re-run
+a neighbouring one. The guard has to point at the *specific* thing the traces show the model doing
+wrong, not at a plausible-sounding neighbour. After any guard, re-run
 and check the failure *moved*, not just changed shape.
 
 ## Prefer simple tool calls; complex ones spiral
@@ -371,8 +368,8 @@ others to catch a regression you introduced.
 - **Read the model's thinking on a failure**, not just the scorer line — that's where the
   reason lives (the harness auto-dumps it for failed samples).
 - **Check the scorer before blaming the model.** A surprising 0/N is as often a too-strict
-  scorer as a real failure. (Measured twice this codebase: a scorer requiring the literal word
-  "skill" rejected perfectly good messages like "added your phrasing for viewing collector
+  scorer as a real failure. (Measured twice this codebase: a scorer requiring a literal
+  keyword rejected perfectly good messages like "added your phrasing for viewing collector
   logs".)
 - **Ship a durable eval contract** with every model-facing change — the case that encodes the
   behaviour, so the next change can't silently regress it.
@@ -382,7 +379,7 @@ others to catch a regression you introduced.
 ## Structure of a good prompt
 
 1. **Frame** — one or two sentences on what this agent maintains/does and the key mental model
-   ("A skill is a tool-call sequence: STEPS + TRIGGER. Work from the tool calls, not the wording.").
+   ("You are the collector for the `reading-list` collection. Work from the tool calls, not the wording.").
 2. **Numbered steps** — each a tool call in the consistent `N. tool(args) — description` format.
 3. **The load-bearing rules inline** where they apply, emphasised if critical, concrete with an
    example.
