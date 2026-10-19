@@ -2060,7 +2060,7 @@ class TestParallelToolCalls:
 
 
 class TestSearchResultTrimming:
-    """Tests for _trim_search_result: strips search pages to links + context."""
+    """Tests for _trim_search_result: strips search pages to titles + links (#2647)."""
 
     def test_trims_to_lines_near_links(self):
         """Lines far from markdown links are removed."""
@@ -2092,6 +2092,12 @@ class TestSearchResultTrimming:
         assert "### NASA Article" in result
         assert "Lots of preamble" not in result
         assert "Filler line 3" not in result
+        # The snippets below each link are gone (#2647): the details live only on
+        # the pages the links open, and a reply cannot be built from them.
+        assert "Some snippet text" not in result
+        assert "More snippet" not in result
+        assert "Another snippet" not in result
+        assert "Yet more preamble" not in result
 
     def test_returns_original_when_no_links(self):
         """Content with no markdown links passes through unchanged."""
@@ -2125,15 +2131,21 @@ class TestSearchResultTrimming:
             ]
         )
         result = _trim_search_result(content)
-        # Real search result links and their context are kept
+        # Real search result links and their titles are kept
         assert "en.example.org/show" in result
         assert "imdb.com/title/tt1" in result
         assert "### Show Title" in result
+        assert "### Show - IMDb" in result
         # Knowledge panel prose with inline links is stripped
         assert "[fantasy]" not in result
         # Multi-link metadata lines are stripped
         assert "[Alice]" not in result
         assert "Ira [Martin]" not in result
+        # The snippets below each link are gone (#2647)
+        assert "An American fantasy drama television series." not in result
+        assert "A delightful return to the world." not in result
+        assert "Genre" not in result
+        assert "Created by" not in result
 
     def test_caps_at_max_search_links(self):
         """Only the first PennyConstants.MAX_SEARCH_LINKS standalone links are kept."""

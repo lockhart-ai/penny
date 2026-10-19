@@ -97,18 +97,20 @@ _MARKER_3 = "Copper Sundial"  # page 3's body phrase
 
 # A SEARCH query (#2141).  Plain text is routed through the configured search URL, and
 # what comes back is rendered by ``_trim_search_result`` — the "titles and links only"
-# header plus the lines around each solo link.  It is never extracted from, so its
-# whole render is the literal the main loop reads.
+# header plus each result's title and link (#2647); the snippet below the link is gone,
+# so the details live only on the pages.  It is never extracted from, so its whole
+# render is the literal the main loop reads.
 _SEARCH_QUERY = "antique compass auctions"
 _SEARCH_PAGE_URL = f"https://duckduckgo.com/?q={urllib.parse.quote(_SEARCH_QUERY)}"
 _SEARCH_RESULT_LINK = "[Lot 42 — the compass lot](https://auctions.example/lot/42)"
 _SEARCH_PAGE_TEXT = (
-    "Title: antique compass auctions — results\n"
-    "Zephyr compasses are eighteenth-century navigation instruments.\n"
-    f"{_SEARCH_RESULT_LINK}\n"
-    "Bidding closes Friday."
+    f"Title: antique compass auctions — results\n\n{_SEARCH_RESULT_LINK}\nBidding closes Friday."
 )
-_TRIMMED_SEARCH_RESULT = f"{Prompt.SEARCH_RESULT_HEADER}\n\n{_SEARCH_PAGE_TEXT}"
+_TRIMMED_SEARCH_RESULT = (
+    f"{Prompt.SEARCH_RESULT_HEADER}\n\n"
+    "Title: antique compass auctions — results\n"
+    f"{_SEARCH_RESULT_LINK}"
+)
 
 # A PAGE READ carrying standalone markdown links — the anchor a FAILED extraction hands
 # back (#2141), since the body itself never enters the conversation.

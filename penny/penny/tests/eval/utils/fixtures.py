@@ -367,9 +367,10 @@ MESSAGES: tuple[Message, ...] = (
 #
 # Real size (#2372): a search page with several results (a search's own shape — a handful of
 # hits, not a front page's ninety) and a fuller title page, up from one line each.  Every
-# distractor result keeps its own solo link within ``_trim_search_result``'s ±2-line window
-# (``tools/browse.py``) and NONE of them carries the year, so the date stays reachable only
-# by following the one true link through to the second page — the whole point of the hop.
+# distractor result keeps its own solo link through ``_trim_search_result``'s titles-and-
+# links render (``tools/browse.py``, #2647) and NONE of them carries the year, so the date
+# stays reachable only by following the one true link through to the second page — the
+# whole point of the hop.
 MULTIHOP_PAGES = (
     CannedPage(
         match="mistforge",

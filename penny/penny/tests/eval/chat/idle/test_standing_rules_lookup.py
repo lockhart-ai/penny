@@ -37,11 +37,11 @@ names a tool, mentions the rules, or states the expected outcome.
 the houseplant aside, the two deploy pushes), seeded through the stores' own
 chokepoints — message rows paired with their prompt-log runs, so the history
 renders the same tool lines production rendered.  The web behind ``browse`` is four
-shop pages behind a search page: the search page carries titles, snippets and
-links (including the mill-district shop's district, so a snippet-only reply CAN
-name the right shop — the failure this case measures is the missing read and the
-missing URL, not the district); the district shop's own page alone carries its street
-address — the page-only detail the read-proof claim reads.  Every name, place,
+shop pages behind a search page.  The search page's own text carries snippets —
+including the mill-district shop's district — but the search render shows titles
+and links only (#2647), so nothing on it reaches the model: the district and the
+street address both live only on the shop pages, and a reply that names the right
+shop with its address proves a page was really read.  Every name, place,
 shop, URL, person, pet and topic is invented, because the repo is public.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code
@@ -171,9 +171,10 @@ _BROWSE_ENTRIES = (
 
 # The district the ask narrows to, and the shops.  Framinghouse is the shop whose
 # material places it in the mill district (the answer).  Its search snippet carries
-# what it does but not where; its OWN page alone carries its street address — the
-# page-only detail the read-proof reads, anchored to what the user asked for ("the
-# specific details", the first rule's own words).  Sealcroft is the shop the
+# what it does but not where, and the search render shows titles and links only, so
+# its OWN page alone carries the district and its street address — the page-only
+# detail the read-proof reads, anchored to what the user asked for ("the specific
+# details", the first rule's own words).  Sealcroft is the shop the
 # conversation already recommended, whose own page places it outside the district.
 _CITY = "grelford"
 _DISTRICT = "mill district"
@@ -191,8 +192,8 @@ _SHOP_URL_HOSTS = (
 # Shop pages FIRST, the search page last: request dispatch matches the first page
 # whose ``match`` sits in the request URL, so a query naming a shop hits that shop's
 # page and a topic query (which carries the city) hits the search page.  The search
-# page is shaped like a real results page — titles, snippets and links — so its trim
-# (the ±2-line window around each solo link) reads like production's search results.
+# page is shaped like a real results page — titles, snippets and links — and its
+# trim (titles and links only, #2647) reads like production's search results.
 
 _FRAMINGHOUSE_PAGE = CannedPage(
     match="framinghouse",
@@ -668,11 +669,12 @@ def _assert_the_world_coheres() -> None:
     assert _PAGE_FACT not in shop_pages["foamline"]
     assert _PAGE_FACT not in history_text
 
-    # The answer shop's district placement is in its own snippet and page; the fact
-    # token's shop never claims the district (that reading costs the read).
+    # The answer shop's district placement is in its own snippet and page body; the
+    # snippet never reaches the model (the search render shows titles and links
+    # only), so the page is the only route to it.
     assert _ANSWER_SHOP in search_text and _ANSWER_SHOP in shop_pages["framinghouse"]
 
-    # Every shop host is on the search page (so a snippet-only reply COULD cite one)
+    # Every shop host is on the search page (so a search-only reply COULD cite one)
     # and on its own page's Source line.
     for host in _SHOP_URL_HOSTS:
         assert host in search_text, f"a shop host must be on the search page: {host}"

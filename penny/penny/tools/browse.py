@@ -149,11 +149,15 @@ _TIMEOUT_EXTRACT_WAITING = "Still waiting on: {labels}."
 RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None, PageReading]]]
 
 
-def _trim_search_result(text: str, context_lines: int = 2) -> str:
-    """Trim search result page to lines near standalone markdown links.
+def _trim_search_result(text: str) -> str:
+    """Trim a search result page to titles and links (#2647).
 
-    Pipeline: filter to solo-link lines (drops knowledge panel prose),
-    cap at MAX_SEARCH_LINKS, then keep context lines around each.
+    A result's summary snippet often carries the answer itself, and a reply built
+    from snippets is built from pages never opened — so the render keeps each
+    standalone link and the one line above it (the result's title, skipping blank
+    separators), and nothing below: the details live only on the pages the links
+    open.  Pipeline: filter to solo-link lines (drops knowledge-panel prose), cap
+    at MAX_SEARCH_LINKS, keep each link and its title.
     """
     lines = text.split("\n")
 
@@ -167,10 +171,12 @@ def _trim_search_result(text: str, context_lines: int = 2) -> str:
 
     keep: set[int] = set()
     for line_number in link_lines[: PennyConstants.MAX_SEARCH_LINKS]:
-        for offset in range(-context_lines, context_lines + 1):
-            idx = line_number + offset
-            if 0 <= idx < len(lines):
-                keep.add(idx)
+        keep.add(line_number)
+        above = line_number - 1
+        while above >= 0 and not lines[above].strip():
+            above -= 1
+        if above >= 0:
+            keep.add(above)
 
     trimmed = "\n".join(lines[i] for i in sorted(keep))
     return f"{Prompt.SEARCH_RESULT_HEADER}\n\n{trimmed}"

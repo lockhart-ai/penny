@@ -183,10 +183,10 @@ _MUSEUM_URL = "https://lanternmuseum.example/visit"
 # model's choice and an assertion targets the part with no alternative rendering.
 _ADULT_TICKET = "18.50"
 #  Real size (#2372): nine sections, each its own markdown-link block, rather than the three
-#  the page carried before — ``_trim_search_result`` (``tools/browse.py``) keeps at most
-#  ``MAX_SEARCH_LINKS`` (10) solo-link lines plus the two lines either side of each on a
-#  SEARCH-shaped read, so nine blocks is real size that still survives that path whole; a
-#  direct read of the URL (what the demonstration itself hands over) is never trimmed at all.
+#  the page carried before — a SEARCH-shaped read of it is trimmed by ``_trim_search_result``
+#  (``tools/browse.py``) to at most ``MAX_SEARCH_LINKS`` (10) solo-link lines with their
+#  titles (#2647), so nine blocks is real size that still survives that path whole; a direct
+#  read of the URL (what the demonstration itself hands over) is never trimmed at all.
 #  ``_ADULT_TICKET`` stays in its original block, unmoved, so the claim that reads it is
 #  unaffected by anything added around it.
 _MUSEUM_VISIT_PAGE = CannedPage(
