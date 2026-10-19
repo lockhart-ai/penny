@@ -503,7 +503,6 @@ def test_the_assembled_document_carries_the_standing_rules_section(db):
     from unittest.mock import MagicMock
 
     from penny.database.memory.objects import EntryInput
-    from penny.datetime_utils import format_log_timestamp
     from penny.llm.client import LlmClient
     from penny.tests.conftest import require_memory
 
@@ -521,15 +520,11 @@ def test_the_assembled_document_carries_the_standing_rules_section(db):
         [EntryInput(key="page links", content="always include a link when you mention a page")],
         author="user",
     )
-    stored = require_memory(db, "rules").read_all()[0]
-
     notifier = CollectorNotifier(db, failing, MagicMock())
     target = db.memories.get("rules")
     assert target is not None
     document = asyncio.run(notifier._document(target, "run-x", []))
 
     assert document.standing_rules == (
-        "### Standing rules\n"
-        f"- page links: always include a link when you mention a page "
-        f"(added {format_log_timestamp(stored.created_at)})"
+        "### Standing rules\n- always include a link when you mention a page"
     )

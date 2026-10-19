@@ -102,9 +102,9 @@ def _premise(rules: tuple[tuple[str, str], ...]) -> Preparer:
     standing-rules render shows the state the claims below are answered against —
     the empty line when nothing is seeded, every rule in full when they are.  Read
     through the header's own render so the probe and the surface cannot drift into
-    asserting different words for one state; a seeded rule's line is matched up to
-    its content, with the wall-clock ``added`` stamp the render appends left to the
-    render's own contract (pinned whole in ``test_self_state.py``)."""
+    asserting different words for one state; a seeded rule renders as its own
+    sentence — ``- <content>``, no key, no stamp (#2647) — and the line is matched
+    to the content whole (pinned whole in ``test_self_state.py``)."""
 
     def probe(penny: Penny) -> None:
         rendered = standing_rules_section(penny.db)
@@ -115,10 +115,8 @@ def _premise(rules: tuple[tuple[str, str], ...]) -> Preparer:
             return
         lines = rendered.splitlines()[1:]  # drop the section title
         assert len(lines) == len(rules), f"the section must render every rule:\n{rendered!r}"
-        for line, (key, content) in zip(lines, rules, strict=True):
-            assert line.startswith(f"- {key}: {content} (added "), (
-                f"a seeded rule must render whole: {line!r}"
-            )
+        for line, (_key, content) in zip(lines, rules, strict=True):
+            assert line == f"- {content}", f"a seeded rule must render whole: {line!r}"
 
     return probe
 

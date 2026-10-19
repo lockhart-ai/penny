@@ -170,8 +170,7 @@ def test_the_self_state_headers_own_data_sections_are_given_an_example_is_not() 
             f"{SelfStateHeader.MECHANISMS_HEADER}\n"
             f"- watch-prices — active · {cadence} · notify: on · no runs yet",
             f"{SelfStateHeader.STANDING_RULES_HEADER}\n"
-            "- page links: always include a link when you mention a page "
-            "(added 2026-07-11 07:00 UTC)",
+            "- always include a link when you mention a page",
             f"{SelfStateHeader.DURABLE_HEADER}\n- name: Alex\n- timezone: America/Denver",
             SelfStateHeader.POINTERS,
         ]
