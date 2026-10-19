@@ -95,16 +95,15 @@ def _premise(penny: Penny) -> None:
     """The case's premise, asserted inside the sample: the standing-rules render
     shows both rules — the state the reply is answered against. Read through the
     header's own render so the probe and the surface cannot drift into asserting
-    different words for one state."""
+    different words for one state; a seeded rule renders as its own sentence —
+    ``- <content>``, no key, no stamp (#2647)."""
     rendered = standing_rules_section(penny.db)
     lines = rendered.splitlines()[1:]  # drop the section title
     assert len(lines) == len(_SEEDED_RULES), (
         f"the section must render every seeded rule:\n{rendered!r}"
     )
-    for line, (key, content) in zip(lines, _SEEDED_RULES, strict=True):
-        assert line.startswith(f"- {key}: {content} (added "), (
-            f"a seeded rule must render whole: {line!r}"
-        )
+    for line, (_key, content) in zip(lines, _SEEDED_RULES, strict=True):
+        assert line == f"- {content}", f"a seeded rule must render whole: {line!r}"
 
 
 # ── The world: one search page, three shop pages ─────────────────────────────
