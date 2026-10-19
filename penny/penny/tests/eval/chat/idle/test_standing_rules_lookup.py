@@ -10,7 +10,7 @@ so what the case asserts is what reaches the user.
 
 | case | the behaviour | what the reply must carry |
 |---|---|---|
-| honour both | ``rules-honoured-in-web-lookup`` | a source URL; a fact only a read page carries |
+| honour both | ``rules-honoured-in-web-lookup`` | a source URL; the district shop's address |
 
 **The failure it was written from** (real use, cloned from the prod turn and
 replayed): with both rules standing, the model called a rule's own key — a
@@ -21,10 +21,12 @@ from any result page's body.  The rules rendered as ``- <key>: <content> (added
 by an instruction reads exactly like the tool list two sections down.
 
 **What is asserted.  Facts only.**  The reply carries a source URL the world owns,
-and a fact that appears ONLY in a result page's body — never in its search snippet,
-never in the conversation — so the fact can be in the reply only if a page was
-really read.  The store is read back: the two rules are exactly as the turn found
-them.  **What is NOT claimed**: that she called the rule's key as a tool, which
+and the district shop's street address, which appears ONLY in that shop's page
+body — never in its search snippet, never in the conversation — so the address can
+be in the reply only if the page was really read.  The store is read back: the two
+rules are exactly as the turn found them.
+
+**What is NOT claimed**: that she called the rule's key as a tool, which
 tools she called, in what order, or how she words the reply — the tool sequence and
 the reply text are measured variance (the rule-as-tool call is the failure's
 signature and is meant to VANISH from the sequence, not be asserted).  No wording
@@ -38,9 +40,9 @@ renders the same tool lines production rendered.  The web behind ``browse`` is f
 shop pages behind a search page: the search page carries titles, snippets and
 links (including the mill-district shop's district, so a snippet-only reply CAN
 name the right shop — the failure this case measures is the missing read and the
-missing URL, not the district); the recommended shop's own page alone carries where
-it actually is.  Every name, place, shop, URL, person, pet and topic is invented,
-because the repo is public.
+missing URL, not the district); the district shop's own page alone carries its street
+address — the page-only detail the read-proof claim reads.  Every name, place,
+shop, URL, person, pet and topic is invented, because the repo is public.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code
 owner's to accept once the numbers have been read.
@@ -166,12 +168,15 @@ _BROWSE_ENTRIES = (
 )
 
 # The district the ask narrows to, and the shops.  Framinghouse is the shop whose
-# material places it in the mill district (the answer); Sealcroft is the shop the
-# conversation already recommended, whose OWN page alone says where it actually is.
+# material places it in the mill district (the answer).  Its search snippet carries
+# what it does but not where; its OWN page alone carries its street address — the
+# page-only detail the read-proof reads, anchored to what the user asked for ("the
+# specific details", the first rule's own words).  Sealcroft is the shop the
+# conversation already recommended, whose own page places it outside the district.
 _CITY = "grelford"
 _DISTRICT = "mill district"
 _ANSWER_SHOP = "framinghouse"
-_FACT_TOKEN = "northolme"  # only on Sealcroft's page — the read-proof
+_PAGE_FACT = "cordage lane"  # Framinghouse's street address — only on its page
 _SHOP_URL_HOSTS = (
     "framinghouse.example.com",
     "sealcroft.example.com",
@@ -629,7 +634,7 @@ def _assert_wordings_carry_their_facts() -> None:
             f"a wording must carry the continuity: {wording!r}"
         )
         assert _ANSWER_SHOP not in folded, f"a wording must not name the answer: {wording!r}"
-        assert _FACT_TOKEN not in folded, f"a wording must not carry the page fact: {wording!r}"
+        assert _PAGE_FACT not in folded, f"a wording must not carry the page fact: {wording!r}"
         for host in _SHOP_URL_HOSTS:
             assert host not in folded, f"a wording must not carry a URL: {wording!r}"
         for key, content in _RULES:
@@ -659,13 +664,14 @@ def _assert_the_world_coheres() -> None:
     )
     history_text = history_text.casefold()
 
-    # The page fact is on exactly one page — no snippet, no history turn, no wording.
-    assert _FACT_TOKEN in shop_pages["sealcroft"]
-    assert _FACT_TOKEN not in search_text
-    assert _FACT_TOKEN not in shop_pages["framinghouse"]
-    assert _FACT_TOKEN not in shop_pages["lightbench"]
-    assert _FACT_TOKEN not in shop_pages["foamline"]
-    assert _FACT_TOKEN not in history_text
+    # The page fact — the district shop's street address — is on exactly one page: no
+    # snippet, no history turn, no wording, no other page.
+    assert _PAGE_FACT in shop_pages["framinghouse"]
+    assert _PAGE_FACT not in search_text
+    assert _PAGE_FACT not in shop_pages["sealcroft"]
+    assert _PAGE_FACT not in shop_pages["lightbench"]
+    assert _PAGE_FACT not in shop_pages["foamline"]
+    assert _PAGE_FACT not in history_text
 
     # The answer shop's district placement is in its own snippet and page; the fact
     # token's shop never claims the district (that reading costs the read).
@@ -681,7 +687,7 @@ def _assert_the_world_coheres() -> None:
     # No recorded exchange names the fact token, and the fillers carry nothing.
     for pair in _FILLER_PAIRS:
         for text in pair:
-            assert _FACT_TOKEN not in text.casefold()
+            assert _PAGE_FACT not in text.casefold()
             assert _ANSWER_SHOP not in text.casefold()
 
 
@@ -902,12 +908,14 @@ def _the_reply_carries_a_source_url(sample: SampleObservation, _world: World) ->
 
 
 def _the_reply_carries_the_page_fact(sample: SampleObservation, _world: World) -> Answer:
-    """The reply carries the fact that lives ONLY on a shop's own page — never in a
-    search snippet, never in the conversation — so it can be in the reply only if a
-    page was really read.  A violating sample is nameable: one that answered from
-    the search snippets alone, which do not carry it."""
+    """The reply carries the district shop's street address — the detail the user
+    asked for ("the specific details", the first rule's own words) that lives ONLY on
+    the shop's own page: never in a search snippet, never in the conversation — so it
+    can be in the reply only if that page was really read.  A violating sample is
+    nameable: one that answered from the search snippets alone, which carry the
+    shop's district but not its address."""
     said = fold_typography(sample.reply)
-    return _FACT_TOKEN in said, f"the reply never states the page fact {_FACT_TOKEN!r}"
+    return _PAGE_FACT in said, f"the reply never states the page fact {_PAGE_FACT!r}"
 
 
 def _the_reply_names_a_district_shop(sample: SampleObservation, _world: World) -> Answer:
@@ -970,7 +978,7 @@ async def test_the_reply_honours_the_standing_rules(chat_eval: ChatEval, model: 
         kind="reply",
     )
     cohort.claim(
-        "reply: it carries the fact only a read page carries",
+        "reply: it carries the district shop's page-only address",
         _the_reply_carries_the_page_fact,
         SpecCategory.PROVENANCE,
         kind="reply",
