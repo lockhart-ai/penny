@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 120
+        assert count == 121
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 120
+        assert count1 == 121
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 119 migrations
-        assert count == 119
+        # 0001 is skipped; the rest run = 120 migrations
+        assert count == 120
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 120  # all migrations applied
+        assert count == 121  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -306,6 +306,58 @@ class TestMigrate:
         row = conn.execute("SELECT run_id FROM messagelog WHERE id = 1").fetchone()
         assert row is not None and row[0] is None
         conn.close()
+
+    def test_0121_strips_the_copied_tool_calls_lines(self, tmp_path):
+        """Migration 0121 (#2658): the ``[Tool calls: …]`` lines Penny copied into
+        her own replies are stripped from stored OUTGOING rows — one trailing line,
+        two in a row, or a line with a later paragraph (which stays). An outgoing
+        row with no such line, an occurrence that is not a whole line of its own,
+        and any INCOMING row (the user's words) are untouched. Idempotent — a
+        second application changes nothing."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE messagelog (id INTEGER PRIMARY KEY, direction TEXT, content TEXT)"
+        )
+        rows = [
+            (1, "outgoing", "Found three results for you.\n[Tool calls: none]"),
+            (2, "outgoing", "Here you go.\n[Tool calls: browse]\n[Tool calls: none]"),
+            (
+                3,
+                "outgoing",
+                "Checked it.\n[Tool calls: collection_configure]\n\nOne more thing worth knowing.",
+            ),
+            (4, "outgoing", "A plain reply with no annotation."),
+            (5, "outgoing", "Mentioned [Tool calls: browse] in passing."),
+            (6, "incoming", "Why does your reply say [Tool calls: none]?"),
+        ]
+        conn.executemany("INSERT INTO messagelog (id, direction, content) VALUES (?, ?, ?)", rows)
+        conn.commit()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0121_strip_copied_tool_calls_lines.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0121", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+        stored = dict(conn.execute("SELECT id, content FROM messagelog").fetchall())
+        mod.up(conn)  # idempotent — a second application changes nothing
+        assert dict(conn.execute("SELECT id, content FROM messagelog").fetchall()) == stored
+        conn.close()
+
+        assert stored[1] == "Found three results for you."
+        assert stored[2] == "Here you go."
+        assert stored[3] == "Checked it.\n\nOne more thing worth knowing."
+        assert stored[4] == "A plain reply with no annotation."
+        assert stored[5] == "Mentioned [Tool calls: browse] in passing."
+        assert stored[6] == "Why does your reply say [Tool calls: none]?"
 
     def test_0069_regrounds_and_cleans_skills(self, tmp_path):
         """Migration 0069 swaps the skills prompt to the catalog-driven loop, drops
