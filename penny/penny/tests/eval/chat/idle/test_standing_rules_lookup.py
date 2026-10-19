@@ -60,11 +60,13 @@ from penny.agents.self_state import standing_rules_instruction
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
+from penny.database.memory.objects import run_tool_calls
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
     Preparer,
+    is_seeded_run,
     seeded_run_id,
 )
 from penny.tests.eval.drivers.chat import ChatEval
@@ -309,10 +311,11 @@ _SERVED_HOSTS = tuple(
 # ── The recorded conversation ─────────────────────────────────────────────────
 #
 # The real turn's history, genericised, in the order it was sent.  Each recorded run
-# carries the tool call its own prompt-log rows show it made (``call``), so the
-# history renders the tool lines production rendered; the autonomous pushes carry no
-# run.  ``suffix`` is the tool-call line the model itself emitted into a reply —
-# part of the recorded reply's stored text, as production stored it.
+# carries the tool call its own prompt-log rows show it made (``call``), stamped
+# under that run's id as production stamps it; the autonomous pushes carry no run.
+# ``suffix`` is the tool-call line the model itself emitted into a reply — part of
+# the recorded reply's stored text, as production stored it (the framework's own
+# per-run tool line is gone from history since #2651; these are the model's words).
 
 _RECORDED_SPEC_ASK = (
     f"Okay great good job. Anyways so that camera is a {_CAMERA} and it has worn "
@@ -481,12 +484,12 @@ _RECORDED_PUSH_THREADING = (
 class _Turn(NamedTuple):
     """One recorded exchange, as the message log holds it.
 
-    ``run_name`` names the seeded run whose prompt-log rows the history's tool lines
-    read (``None`` for an autonomous push, which carries no run and no line).
-    ``call`` is the one tool call the run made (``None`` for a run that only
-    talked); ``result`` is the framed tool result that call got back.  ``reply`` is
-    the stored outgoing content — including any tool-call line the model itself
-    emitted, as production stored it."""
+    ``run_name`` names the seeded run stamped onto the exchange's prompt-log rows
+    (``None`` for an autonomous push, which carries no run).  ``call`` is the one
+    tool call the run made (``None`` for a run that only talked); ``result`` is the
+    framed tool result that call got back.  ``reply`` is the stored outgoing
+    content — including any tool-call line the model itself emitted, as production
+    stored it."""
 
     ask: str | None
     reply: str
@@ -782,9 +785,9 @@ def _seed_world(db: Database) -> None:
 
 def _log_recorded_conversation(db: Database) -> None:
     """The recorded conversation, in send order: each ask, then Penny's reply — with
-    the run's own prompt-log rows when it made a call, so the history renders the
-    tool lines production rendered.  A run with a call logs two rows (the call, then
-    the reply after its result); a run that only talked logs one."""
+    the run's own prompt-log rows when it made a call, stamped under that run's id
+    as production stamps them.  A run with a call logs two rows (the call, then the
+    reply after its result); a run that only talked logs one."""
     history: list[dict] = []
     for turn in _RECORDED_TURNS:
         run_id = seeded_run_id(turn.run_name) if turn.run_name else None
@@ -842,10 +845,10 @@ def _log_recorded_conversation(db: Database) -> None:
 def _premise() -> Preparer:
     """The case's premise, asserted inside the sample before the turn runs: the rules
     render where she reads instructions carries both rules' sentences; the job is
-    live; the window is exactly the recorded conversation; and the seeded runs pair
-    so the history renders the recorded tool lines.  The render is asserted on the
-    SENTENCES, not the line shape, so what the render looks like is the fix's
-    business, never the probe's."""
+    live; the window is exactly the recorded conversation; and each seeded run is
+    stamped under its own run id, tracing the tools that run made.  The render is
+    asserted on the SENTENCES, not the line shape, so what the render looks like is
+    the fix's business, never the probe's."""
 
     def probe(penny: Penny) -> None:
         db = penny.db
@@ -874,12 +877,25 @@ def _premise() -> Preparer:
             window[1].content == _RECORDED_SPEC_ASK
         ), "the window must be the recorded conversation, shelf reply closing on the push"
 
-        traces = {t.run_id: t.tools for t in db.messages.chat_turn_tool_traces()}
-        assert traces.get(seeded_run_id("turn-rule")) == ("collection_write",), (
-            f"the rule turn must trace collection_write, it holds {traces}"
-        )
-        assert traces.get(seeded_run_id("turn-specs")) == ("browse",)
-        assert traces.get(seeded_run_id("turn-shelf")) == ()
+        # The history renders no tool lines (#2651), so the seeded runs' identity is
+        # what the premise carries: each recorded run's prompt rows are stamped under
+        # their own run id and trace the tools that run made.
+        seeded_rows = {
+            row.run_id: row
+            for row in db.messages.recent_prompts(limit=100)
+            if is_seeded_run(row.run_id)
+        }
+        for run_name, tools in (
+            ("turn-rule", ("collection_write",)),
+            ("turn-specs", ("browse",)),
+            ("turn-shelf", ()),
+        ):
+            group = [row for row in seeded_rows.values() if row.run_id == seeded_run_id(run_name)]
+            assert group, f"the seeded run {run_name!r} must have its own prompt-log record"
+            names = tuple(dict.fromkeys(name for name, _ in run_tool_calls(group)))
+            assert names == tools, (
+                f"the seeded run {run_name!r} must trace with {tools}, its records show {names}"
+            )
 
     return probe
 
