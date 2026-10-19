@@ -2060,53 +2060,59 @@ class TestParallelToolCalls:
 
 
 class TestSearchResultTrimming:
-    """Tests for _trim_search_result: strips search pages to titles + links (#2647)."""
+    """Tests for _trim_search_result: parses a search page to titles + URLs (#2647)."""
 
-    def test_trims_to_lines_near_links(self):
-        """Lines far from markdown links are removed."""
+    def test_lists_titles_and_urls(self):
+        """Each result is its title and the link's own target; nothing else from the
+        page — no snippets, no preamble."""
         content = "\n".join(
             [
                 "Lots of preamble text here",
-                "More preamble",
-                "Even more preamble",
-                "Still going",
-                "Yet more preamble",
                 "### NASA Article",
                 "[nasa.gov/artemis](https://www.nasa.gov/artemis/)",
                 "Some snippet text",
                 "More snippet",
-                "Filler line 1",
-                "Filler line 2",
-                "Filler line 3",
-                "Filler line 4",
-                "Filler line 5",
+                "",
                 "### Space.com Article",
                 "[space.com/artemis](https://www.space.com/artemis)",
                 "Another snippet",
             ]
         )
-        result = _trim_search_result(content)
+        result = _trim_search_result(content, "artemis mission", "duckduckgo.com")
+        assert 'You searched for "artemis mission"' in result
         assert "titles and links only" in result
-        assert "nasa.gov/artemis" in result
-        assert "space.com/artemis" in result
-        assert "### NASA Article" in result
-        assert "Lots of preamble" not in result
-        assert "Filler line 3" not in result
-        # The snippets below each link are gone (#2647): the details live only on
-        # the pages the links open, and a reply cannot be built from them.
+        assert "1. NASA Article (https://www.nasa.gov/artemis/)" in result
+        assert "2. Space.com Article (https://www.space.com/artemis)" in result
+        # Nothing else from the page: the snippets and the preamble are gone, so a
+        # reply cannot be built from them (#2647).
         assert "Some snippet text" not in result
         assert "More snippet" not in result
         assert "Another snippet" not in result
-        assert "Yet more preamble" not in result
+        assert "Lots of preamble" not in result
+
+    def test_title_is_taken_across_blank_separators(self):
+        """A blank line between a result's title and its link is skipped; the title
+        still names the result."""
+        content = "\n".join(
+            [
+                "### The Watch Page",
+                "",
+                "[watch.example.com](https://watch.example.com/)",
+                "Snippet text",
+            ]
+        )
+        result = _trim_search_result(content, "watches", "duckduckgo.com")
+        assert "1. The Watch Page (https://watch.example.com/)" in result
+        assert "Snippet text" not in result
 
     def test_returns_original_when_no_links(self):
         """Content with no markdown links passes through unchanged."""
         content = "Just plain text\nwith no links\nat all"
-        result = _trim_search_result(content)
+        result = _trim_search_result(content, "watches", "duckduckgo.com")
         assert result == content
 
     def test_strips_knowledge_panel_prose_with_inline_links(self):
-        """Wikipedia-style prose with inline links is excluded."""
+        """Wikipedia-style prose with inline links yields no items."""
         content = "\n".join(
             [
                 "A [fantasy](https://x.org/a) [drama](https://x.org/b).",
@@ -2130,43 +2136,51 @@ class TestSearchResultTrimming:
                 "A delightful return to the world.",
             ]
         )
-        result = _trim_search_result(content)
-        # Real search result links and their titles are kept
-        assert "en.example.org/show" in result
-        assert "imdb.com/title/tt1" in result
-        assert "### Show Title" in result
-        assert "### Show - IMDb" in result
-        # Knowledge panel prose with inline links is stripped
+        result = _trim_search_result(content, "the show", "duckduckgo.com")
+        assert "1. Show Title (https://en.example.org/show)" in result
+        assert "2. Show - IMDb (https://imdb.com/title/tt1)" in result
+        # Knowledge panel prose, multi-link metadata lines and snippets yield nothing.
         assert "[fantasy]" not in result
-        # Multi-link metadata lines are stripped
         assert "[Alice]" not in result
         assert "Ira [Martin]" not in result
-        # The snippets below each link are gone (#2647)
         assert "An American fantasy drama television series." not in result
         assert "A delightful return to the world." not in result
         assert "Genre" not in result
         assert "Created by" not in result
 
+    def test_engine_affordance_links_are_not_results(self):
+        """A standalone link back at the search engine's own host — its summariser,
+        its maps — is the engine's affordance, not a result, and is dropped."""
+        content = "\n".join(
+            [
+                "### First Result",
+                "[example.com/a](https://example.com/a)",
+                "Snippet one",
+                "### Map Block",
+                "[See Map](https://kagi.com/maps/search?q=watches)",
+            ]
+        )
+        result = _trim_search_result(content, "watches", "kagi.com")
+        assert "1. First Result (https://example.com/a)" in result
+        assert "kagi.com/maps" not in result
+        # The same link is a result when it does not point at the search host.
+        kept = _trim_search_result(content, "watches", "duckduckgo.com")
+        assert "kagi.com/maps" in kept
+
     def test_caps_at_max_search_links(self):
-        """Only the first PennyConstants.MAX_SEARCH_LINKS standalone links are kept."""
+        """Only the first PennyConstants.MAX_SEARCH_LINKS standalone links are listed."""
         lines: list[str] = []
         for i in range(PennyConstants.MAX_SEARCH_LINKS + 5):
             lines.append(f"### Result {i}")
             lines.append(f"[example.com/page{i}](https://example.com/page{i})")
             lines.append(f"Snippet for result {i}")
         content = "\n".join(lines)
-        result = _trim_search_result(content)
-        # First 10 kept
+        result = _trim_search_result(content, "query", "duckduckgo.com")
+        # First 10 listed
         assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS - 1}" in result
         # 11th and beyond dropped
         assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS}" not in result
         assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS + 4}" not in result
-
-    def test_header_injected(self):
-        """Trimmed results start with the search result header."""
-        content = "### Title\n[example](https://example.com)\nSnippet"
-        result = _trim_search_result(content)
-        assert result.startswith("These are search results")
 
 
 class TestLargeToolResults:

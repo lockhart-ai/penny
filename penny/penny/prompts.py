@@ -150,11 +150,12 @@ class Prompt:
     CONVERSATION_TAIL = CONVERSATION_TAIL_OPEN + REPLY_AFTER_READING + CONVERSATION_TAIL_CLOSE
     CONVERSATION_PROMPT = CONVERSATION_HEAD + IDLE_INSTRUCTION + CONVERSATION_TAIL
 
-    # Search result header — injected into trimmed search results
-    SEARCH_RESULT_HEADER = (
-        "These are search results — titles and links only. "
-        "You must read the actual pages before answering. "
-        "Pick a URL from below and pass it in your next queries array to read it."
+    # Search result instruction — the first line of a search section (#2647): a
+    # numbered list of titles and URLs follows, and the details live on the pages.
+    SEARCH_RESULT_INSTRUCTION = (
+        'You searched for "{query}". These are the results: titles and links only. '
+        "To answer the user, read the promising ones by passing their URLs in your "
+        "next browse."
     )
 
     # Browse channel-outage recovery clauses — the terminal move bound into a

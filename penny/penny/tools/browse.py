@@ -53,7 +53,7 @@ class BrowseChannelUnavailableError(Exception):
 
 _URL_PATTERN = re.compile(r"^https?://")
 
-_LINK_RE = re.compile(r"^\s*\[([^\]]*)\]\(https?://(?:[^)\\]|\\.)*\)\s*$")
+_LINK_RE = re.compile(r"^\s*\[([^\]]*)\]\((https?://(?:[^)\\]|\\.)*)\)\s*$")
 
 # First-person narration of a browse call — the #1480 per-tool override of the
 # seam's generic RESULT_NARRATION_*.  The seam prepends ONE line for the WHOLE call
@@ -149,37 +149,51 @@ _TIMEOUT_EXTRACT_WAITING = "Still waiting on: {labels}."
 RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None, PageReading]]]
 
 
-def _trim_search_result(text: str) -> str:
-    """Trim a search result page to titles and links (#2647).
+def _trim_search_result(text: str, query: str, search_host: str | None) -> str:
+    """Parse a search result page into a numbered list of titles and URLs (#2647).
 
     A result's summary snippet often carries the answer itself, and a reply built
-    from snippets is built from pages never opened — so the render keeps each
-    standalone link and the one line above it (the result's title, skipping blank
-    separators), and nothing below: the details live only on the pages the links
-    open.  Pipeline: filter to solo-link lines (drops knowledge-panel prose), cap
-    at MAX_SEARCH_LINKS, keep each link and its title.
+    from snippets is built from pages never opened — so the render is a clean list
+    with nothing else from the page: each result is its title (the line above its
+    link) and the link's own target, and nothing below.  The search engine's own
+    affordance links (its summariser, its maps) point back at the search host and
+    are not results, so they are dropped the same way the snippet lines are.
+
+    A page with no standalone links at all passes through unchanged — the
+    "nothing found" path keeps its own shape.
     """
     lines = text.split("\n")
 
-    link_lines: list[int] = []
+    results: list[tuple[str, str]] = []
     for i, line in enumerate(lines):
-        if _LINK_RE.match(line):
-            link_lines.append(i)
-
-    if not link_lines:
-        return text
-
-    keep: set[int] = set()
-    for line_number in link_lines[: PennyConstants.MAX_SEARCH_LINKS]:
-        keep.add(line_number)
-        above = line_number - 1
+        match = _LINK_RE.match(line)
+        if not match or len(results) == PennyConstants.MAX_SEARCH_LINKS:
+            continue
+        url = match.group(2)
+        if search_host and _url_host(url) == search_host:
+            continue
+        title = ""
+        above = i - 1
         while above >= 0 and not lines[above].strip():
             above -= 1
         if above >= 0:
-            keep.add(above)
+            title = lines[above].lstrip("#").strip()
+        results.append((title, url))
 
-    trimmed = "\n".join(lines[i] for i in sorted(keep))
-    return f"{Prompt.SEARCH_RESULT_HEADER}\n\n{trimmed}"
+    if not results:
+        return text
+
+    listed = "\n".join(
+        f"{number}. {title} ({url})" for number, (title, url) in enumerate(results, 1)
+    )
+    instruction = Prompt.SEARCH_RESULT_INSTRUCTION.format(query=query)
+    return f"{instruction}\n\n{listed}"
+
+
+def _url_host(url: str) -> str:
+    """The host of a link target, lowercased — the one part the engine-affordance
+    filter reads."""
+    return urllib.parse.urlparse(url).hostname or ""
 
 
 def _links_clause(text: str) -> str:
@@ -229,6 +243,7 @@ class BrowseTool(Tool):
     ):
         self._max_calls = max_calls
         self._search_url = search_url
+        self._search_host = _url_host(search_url)
         self._db = db
         self._embedding_client = embedding_client
         self._author = author
@@ -784,7 +799,7 @@ class BrowseTool(Tool):
             if isinstance(result, BaseException):
                 sections.append(self._error_section(header, value, result))
                 continue
-            section = self._page_section(header, value, result)
+            section = self._page_section(header, value, result, self._search_host)
             sections.append(section)
             if header == PennyConstants.BROWSE_PAGE_HEADER:
                 page_sections.append(section)
@@ -824,11 +839,12 @@ class BrowseTool(Tool):
         )
 
     @staticmethod
-    def _page_section(header: str, value: str, result: BrowsePage) -> str:
-        """Render one successful sub-call; search pages are trimmed to their links."""
+    def _page_section(header: str, value: str, result: BrowsePage, search_host: str) -> str:
+        """Render one successful sub-call; a search page parses to its titles and
+        URLs (#2647)."""
         text = result.text
         if header == PennyConstants.BROWSE_SEARCH_HEADER:
-            text = _trim_search_result(text)
+            text = _trim_search_result(text, value, search_host)
         return f"{header}{value}\n{text}"
 
     @staticmethod
