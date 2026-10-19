@@ -10,8 +10,17 @@ GRAND piano. Every snippet blurb sounds qualified (one even says
 "regulation"), and nothing in any snippet says who does grands. Each tuner's
 own page states its services; exactly one says it regulates grands, and
 others say outright that they don't, so a guess can land wrong. What the case
-measures is that end state: does the reply name the tuner whose page settles
-the requirement, and does it avoid naming one whose page disqualifies them.
+measures is that end state: the reply names the tuner whose page settles the
+requirement.
+
+**The claim that was dropped.** An early version also claimed the reply names
+no tuner whose page disqualifies them, read as "no disqualified tuner's name
+appears in the reply". The runs read it 0/15 on good answers: a careful reply
+MENTIONS the excluded tuners as excluded ("Piano Works doesn't take
+grands"), which the name check cannot tell from a wrong recommendation. The
+claim was retired; the world keeps the disqualification statements so a
+snippet-only guess can still land wrong, which is what the remaining claims
+measure.
 
 **The world is invented to the shape of a real lookup.** One ask, NO standing
 rules — the browse how-to is built into the chat prompt, so the behaviour is
@@ -26,15 +35,6 @@ measured in the tool sequence and never asserted. How she words the
 recommendation is its spread. The regulating tuner's rate sits only on its
 page, so a correct answer naturally carries it, but it is world texture, not
 a claim — the ask asks for the tuner, not the price.
-
-**The third claim's reading, stated plainly.** "Does not recommend a tuner
-whose page says they don't" is read deterministically as: no disqualified
-tuner's name appears in the reply. The world settles who is disqualified
-(their own pages say so in as many words), so a name the reply carries is a
-fact about the reply, not a judgement call. The blunt edge is accepted: a
-reply that only NOTES a disqualified tuner as unavailable ("Piano Works
-doesn't take grands") would fail this reading too — the rationale names the
-token found, so a reader can tell the two apart in the artifacts.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the
 code owner's to accept once the numbers have been read. Every tuner, place
@@ -96,7 +96,6 @@ _URL_PREFIX = "tuning.example.com/millhaven/"
 # names are the claim tokens — each appears only on its own page and as the
 # search page's link, so a name in the reply identifies exactly that tuner.
 _GRAND_TUNER = "Aldergate"
-_NO_GRAND_TUNERS = ("Piano Works", "Larkspur", "Quarryfield")
 
 _TUNER_PAGES = (
     CannedPage(
@@ -247,14 +246,10 @@ _SEARCH_PAGE = CannedPage(
 # how-to is the prompt's own, and a wording that lent its phrasing would be
 # answering the case for it.
 
-_ASK = (
-    "can you find a piano tuner in millhaven who can also regulate a grand "
-    "piano?"
-)
+_ASK = "can you find a piano tuner in millhaven who can also regulate a grand piano?"
 _ASKS = (
     "looking for a piano tuner in millhaven — one who does grand regulation",
-    "i need someone in millhaven to regulate a grand piano — can you find a "
-    "tuner who does that?",
+    "i need someone in millhaven to regulate a grand piano — can you find a tuner who does that?",
     "any piano tuners in millhaven who can regulate a grand piano?",
     "find me a millhaven piano tuner who handles grand regulation",
 )
@@ -302,7 +297,12 @@ def _assert_every_wording_carries_the_facts() -> None:
         assert "grands" in all_pages[disqualified].casefold(), (
             f"disqualified page {disqualified} must say it doesn't take grands"
         )
-    for tuner_name, own in (("Piano Works", 0), ("Larkspur", 1), ("Aldergate", 2), ("Quarryfield", 3)):
+    for tuner_name, own in (
+        ("Piano Works", 0),
+        ("Larkspur", 1),
+        ("Aldergate", 2),
+        ("Quarryfield", 3),
+    ):
         where = [i for i, text in enumerate(all_pages) if tuner_name in text]
         assert where == [own, len(_TUNER_PAGES)], (
             f"{tuner_name} must sit on its own page and the search page only — {where}"
@@ -357,26 +357,11 @@ def _reply_carries_a_served_url(sample: SampleObservation, _world: World) -> Ans
     return hit, f"served URL prefix {_URL_PREFIX!r} in the reply: {hit}"
 
 
-def _reply_names_no_disqualified_tuner(sample: SampleObservation, _world: World) -> Answer:
-    """The reply does not recommend a tuner whose page says it doesn't do the
-    requirement — read deterministically as: no disqualified tuner's name
-    appears in the reply. Their own pages disqualify them in as many words,
-    so the world settles who is out; a name the reply carries is a fact about
-    the reply. The rationale names the token found, so a reader can tell a
-    real wrong recommendation from a reply that merely notes a disqualified
-    tuner as unavailable (which this reading also fails — deliberate, see the
-    module docstring)."""
-    folded = fold_typography(sample.reply)
-    named = [name for name in _NO_GRAND_TUNERS if name.casefold() in folded]
-    return not named, f"disqualified tuner(s) named in the reply: {named or 'none'}"
-
-
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_lookup_reply_settles_the_ask_on_the_pages(chat_eval: ChatEval, model: str) -> None:
     """A lookup ask whose requirement the snippets never state: the reply
-    names the tuner whose page settles it, carries a URL of a page the world
-    served, and names no tuner whose page disqualifies them; the store is
-    left as the turn found it."""
+    names the tuner whose page settles it and carries a URL of a page the
+    world served; the store is left as the turn found it."""
     cohort = await chat_eval(
         case_id="lookup-reply-settles-the-ask-on-the-pages",
         behaviour=(
@@ -397,7 +382,8 @@ async def test_a_lookup_reply_settles_the_ask_on_the_pages(chat_eval: ChatEval, 
     # STORE — a read-only ask, nothing seeded by the case: what the store held
     # when the turn began is still there.
     cohort.assert_what_the_store_held_survives()
-    # PROVENANCE — the three halves the reworked world measures.
+    # PROVENANCE — the two halves the reworked world measures. (The dropped
+    # no-disqualified claim: see the module docstring.)
     cohort.claim(
         "reply: it names the tuner whose page settles the ask",
         _reply_names_the_settling_tuner,
@@ -407,12 +393,6 @@ async def test_a_lookup_reply_settles_the_ask_on_the_pages(chat_eval: ChatEval, 
     cohort.claim(
         "reply: it carries the URL of a page the world served",
         _reply_carries_a_served_url,
-        SpecCategory.PROVENANCE,
-        kind="reply",
-    )
-    cohort.claim(
-        "reply: it does not recommend a tuner whose page says it doesn't do the requirement",
-        _reply_names_no_disqualified_tuner,
         SpecCategory.PROVENANCE,
         kind="reply",
     )
