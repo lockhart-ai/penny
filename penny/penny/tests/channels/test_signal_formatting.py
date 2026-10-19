@@ -62,25 +62,25 @@ class TestTableToBullets:
 class TestPrepareOutgoing:
     """Tests for prepare_outgoing instance method."""
 
-    # --- Heading stripping ---
+    # --- Headings become bold lines ---
 
-    def test_strips_h1(self, channel):
-        assert channel.prepare_outgoing("# Foo") == "Foo"
+    def test_converts_h1_to_bold(self, channel):
+        assert channel.prepare_outgoing("# Foo") == "**Foo**"
 
-    def test_strips_h2(self, channel):
-        assert channel.prepare_outgoing("## Foo") == "Foo"
+    def test_converts_h2_to_bold(self, channel):
+        assert channel.prepare_outgoing("## Foo") == "**Foo**"
 
-    def test_strips_h3(self, channel):
-        assert channel.prepare_outgoing("### Foo bar") == "Foo bar"
+    def test_converts_h3_to_bold(self, channel):
+        assert channel.prepare_outgoing("### Foo bar") == "**Foo bar**"
 
-    def test_strips_h4(self, channel):
-        assert channel.prepare_outgoing("#### Foo bar baz") == "Foo bar baz"
+    def test_converts_h4_to_bold(self, channel):
+        assert channel.prepare_outgoing("#### Foo bar baz") == "**Foo bar baz**"
 
-    def test_strips_h5(self, channel):
-        assert channel.prepare_outgoing("##### Foo") == "Foo"
+    def test_converts_h5_to_bold(self, channel):
+        assert channel.prepare_outgoing("##### Foo") == "**Foo**"
 
-    def test_strips_heading_with_emoji(self, channel):
-        assert channel.prepare_outgoing("### 1\ufe0f\u20e3 Foo Bar") == ("1\ufe0f\u20e3 Foo Bar")
+    def test_converts_heading_with_emoji_to_bold(self, channel):
+        assert channel.prepare_outgoing("### 1\ufe0f\u20e3 Foo Bar") == "**1\ufe0f\u20e3 Foo Bar**"
 
     # --- Bold / italic preservation ---
 
@@ -94,8 +94,9 @@ class TestPrepareOutgoing:
         assert channel.prepare_outgoing("*Lorem:* ipsum dolor") == "*Lorem:* ipsum dolor"
 
     def test_preserves_bold_colon_list(self, channel):
-        text = "- **Foo:** $100\n- **Bar:** lorem ipsum"
-        assert channel.prepare_outgoing(text) == text
+        assert channel.prepare_outgoing("- **Foo:** $100\n- **Bar:** lorem ipsum") == (
+            "• **Foo:** $100\n• **Bar:** lorem ipsum"
+        )
 
     # --- Strikethrough / tilde handling ---
 
@@ -120,23 +121,21 @@ class TestPrepareOutgoing:
     # --- Stray asterisk removal ---
 
     def test_removes_stray_footnote_asterisk(self, channel):
-        assert (
-            channel.prepare_outgoing("Price: $100*\n\n- **Foo:** bar")
-            == "Price: $100\n\n- **Foo:** bar"
+        assert channel.prepare_outgoing("Price: $100*\n\n- **Foo:** bar") == (
+            "Price: $100\n\n• **Foo:** bar"
         )
 
     def test_stray_asterisk_does_not_break_bold(self, channel):
-        assert (
-            channel.prepare_outgoing("Foo*\n- **Bar:** $100\n- **Baz:** lorem")
-            == "Foo\n- **Bar:** $100\n- **Baz:** lorem"
+        assert channel.prepare_outgoing("Foo*\n- **Bar:** $100\n- **Baz:** lorem") == (
+            "Foo\n• **Bar:** $100\n• **Baz:** lorem"
         )
 
     def test_stray_asterisk_preserves_italic(self, channel):
         assert channel.prepare_outgoing("Foo*\n\n*Lorem ipsum.*") == "Foo\n\n*Lorem ipsum.*"
 
     def test_multiple_stray_asterisks_removed(self, channel):
-        assert (
-            channel.prepare_outgoing("Foo*\nBar*\n- **Baz:** value") == "Foo\nBar\n- **Baz:** value"
+        assert channel.prepare_outgoing("Foo*\nBar*\n- **Baz:** value") == (
+            "Foo\nBar\n• **Baz:** value"
         )
 
     def test_no_stray_asterisks_is_noop(self, channel):
@@ -197,9 +196,11 @@ class TestPrepareOutgoing:
             == "See https://example.com/foo for details"
         )
 
-    def test_heading_stripped_bare_urls_preserved(self, channel):
+    def test_heading_converted_bare_urls_preserved(self, channel):
         text = "## sources\nhttps://example.com\nhttps://other.com"
-        assert channel.prepare_outgoing(text) == "sources\nhttps://example.com\nhttps://other.com"
+        assert (
+            channel.prepare_outgoing(text) == "**sources**\nhttps://example.com\nhttps://other.com"
+        )
 
     # --- Code blocks preserved ---
 
@@ -244,16 +245,94 @@ class TestPrepareOutgoing:
             "*All prices approximate.*"
         )
         assert channel.prepare_outgoing(text) == (
-            "Top Items\n\n"
-            "1. Foo\n"
-            "- **Price:** $100\n"
-            "- **Pros**\n"
-            "  - Lorem ipsum\n\n"
-            "2. Bar\n"
-            "- **Price:** $200\n\n"
+            "**Top Items**\n\n"
+            "**1. Foo**\n"
+            "\u2022 **Price:** $100\n"
+            "\u2022 **Pros**\n"
+            "  \u2022 Lorem ipsum\n\n"
+            "**2. Bar**\n"
+            "\u2022 **Price:** $200\n\n"
             "**Foo**\n"
             "  \u2022 **Price**: $100\n\n"
             "**Bar**\n"
             "  \u2022 **Price**: $200\n\n"
             "*All prices approximate.*"
+        )
+
+
+class TestGemmaShapes:
+    """Whole-output shapes gemma writes that the converter used to mangle.
+
+    One literal per shape (#2659); all content invented.
+    """
+
+    def test_asterisk_rule_line_dropped(self, channel):
+        assert channel.prepare_outgoing("Before\n\n***\n\nAfter") == "Before\n\nAfter"
+
+    def test_underscore_rule_line_dropped(self, channel):
+        assert channel.prepare_outgoing("Before\n\n___\n\nAfter") == "Before\n\nAfter"
+
+    def test_spaced_asterisk_rule_line_dropped(self, channel):
+        assert channel.prepare_outgoing("Before\n\n* * *\n\nAfter") == "Before\n\nAfter"
+
+    def test_star_bullet_with_bold_link_stays_a_bullet(self, channel):
+        assert (
+            channel.prepare_outgoing(
+                "* [**Example headline about a transit delay**](https://www.example.com/one)"
+            )
+            == "\u2022 **Example headline about a transit delay** (https://www.example.com/one)"
+        )
+
+    def test_star_bullet_with_wide_spacing_stays_a_bullet(self, channel):
+        assert channel.prepare_outgoing("*   **Protein Levels:** Every cat is different.") == (
+            "\u2022 **Protein Levels:** Every cat is different."
+        )
+
+    def test_indented_dash_bullet_becomes_bullet(self, channel):
+        assert channel.prepare_outgoing("Intro:\n  - nested point\n- top point") == (
+            "Intro:\n  \u2022 nested point\n\u2022 top point"
+        )
+
+    def test_trailing_stray_underscore_after_emoji_removed(self, channel):
+        assert (
+            channel.prepare_outgoing("Hope that helps! \ud83d\udc3e_")
+            == "Hope that helps! \ud83d\udc3e"
+        )
+
+    def test_word_internal_underscores_kept(self, channel):
+        text = "Read my_var_name and foo_bar_baz carefully."
+        assert channel.prepare_outgoing(text) == text
+
+    def test_italic_date_line_preserved(self, channel):
+        assert channel.prepare_outgoing("*October 19, 2026*") == "*October 19, 2026*"
+
+    def test_daily_brief_shape_end_to_end(self, channel):
+        text = (
+            "# \ud83d\udcf0 Daily News Brief\n"
+            "*October 19, 2026*\n"
+            "***\n"
+            "\n"
+            "### \ud83c\udde8\ud83c\udde6 World News\n"
+            "* [**Example headline one about a library opening**](https://www.example.com/one)\n"
+            "* [**Example headline two about a transit delay**](https://www.example.com/two)\n"
+            "\n"
+            "### \ud83c\udf0d More News\n"
+            "* [**Example headline three about community gardens**](https://www.example.com/three)\n"
+            "\n"
+            "***\n"
+            "\n"
+            "How does that look? \u2728"
+        )
+        assert channel.prepare_outgoing(text) == (
+            "**\ud83d\udcf0 Daily News Brief**\n"
+            "*October 19, 2026*\n"
+            "\n"
+            "**\ud83c\udde8\ud83c\udde6 World News**\n"
+            "\u2022 **Example headline one about a library opening** (https://www.example.com/one)\n"
+            "\u2022 **Example headline two about a transit delay** (https://www.example.com/two)\n"
+            "\n"
+            "**\ud83c\udf0d More News**\n"
+            "\u2022 **Example headline three about community gardens** (https://www.example.com/three)\n"
+            "\n"
+            "How does that look? \u2728"
         )

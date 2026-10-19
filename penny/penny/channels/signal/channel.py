@@ -295,11 +295,19 @@ class SignalChannel(MessageChannel):
         - *italic* for italic
         - ~strikethrough~ for strikethrough (single tilde, not double)
         - `monospace` for monospace
+
+        Shapes the models write that Signal has no style for are converted:
+        headings become bold lines, ``* `` / ``- `` bullets become ``• ``,
+        horizontal rules are dropped, and stray markers are removed.
         """
         text = self._table_to_bullets(text)
         text, code_blocks, urls = self._protect_blocks(text)
         text = self._sanitize_tildes(text)
+        text = self._drop_rule_lines(text)
+        text = self._convert_bullets(text)
+        text = self._convert_headings(text)
         text = self._sanitize_asterisks(text)
+        text = self._sanitize_underscores(text)
         text = self._strip_markdown_elements(text)
         text = self._restore_blocks(text, code_blocks, urls)
         # Collapse multiple blank lines
@@ -337,6 +345,53 @@ class SignalChannel(MessageChannel):
         text = text.replace(placeholder, "~")
         return text
 
+    # A line made only of *, - or _ markers (three or more, spaces allowed):
+    # a markdown horizontal rule. Spaced variants ("* * *") must be dropped
+    # before bullet conversion so they don't read as a bullet plus strays.
+    _RULE_LINE_PATTERN = re.compile(r"^[ \t]*[*_-]([ \t]*[*_-]){2,}[ \t]*$", re.MULTILINE)
+
+    # A markdown bullet marker at line start: *, - or + followed by space.
+    # Whitespace before the marker is nesting indent — kept.
+    _BULLET_PATTERN = re.compile(r"^([ \t]*)[*+-][ \t]+", re.MULTILINE)
+
+    # A markdown ATX heading: 1-6 #'s then the text.
+    _HEADING_PATTERN = re.compile(r"^(#{1,6})[ \t]+(.+)$", re.MULTILINE)
+
+    @classmethod
+    def _drop_rule_lines(cls, text: str) -> str:
+        """Drop markdown horizontal rules (---, ***, ___, and spaced variants).
+
+        Signal renders a leftover ``***`` as a literal ``**`` line (the italic
+        sanitiser eats one marker), so a rule line is removed outright — it
+        carries no content to keep.
+        """
+        return cls._RULE_LINE_PATTERN.sub("", text)
+
+    @classmethod
+    def _convert_bullets(cls, text: str) -> str:
+        """Convert markdown bullet markers to Signal bullets.
+
+        Signal renders a line-start ``*`` as an italic marker, not a bullet —
+        ``* [**Title**](url)`` arrived as `` Title (url)`` with the bullet
+        eaten. ``• `` is the bullet the table converter already uses.
+        """
+        return cls._BULLET_PATTERN.sub(r"\1• ", text)
+
+    @classmethod
+    def _convert_headings(cls, text: str) -> str:
+        """Turn markdown headings into bold lines.
+
+        Signal has no heading style; the converter's one emphasis style it can
+        offer is bold. Any emphasis markers in the heading text itself are
+        stripped first so the wrap never nests with them.
+        """
+
+        def convert_heading(match: re.Match[str]) -> str:
+            content = match.group(2).strip().strip("*_").strip()
+            return f"**{content}**" if content else ""
+
+        return cls._HEADING_PATTERN.sub(convert_heading, text)
+
     @staticmethod
     def _sanitize_asterisks(text: str) -> str:
         """Protect bold/italic pairs and remove stray asterisks.
@@ -354,12 +409,43 @@ class SignalChannel(MessageChannel):
         return text
 
     @staticmethod
+    def _sanitize_underscores(text: str) -> str:
+        """Remove unpaired (stray) underscore markers, keep word-internal ones.
+
+        The model writes emphasis with underscores and a truncated pair leaves
+        a stray ``_`` (a reply ending ``🐾_``) that Signal renders literally.
+        Underscores with a word character on both sides (``snake_case``) are
+        never emphasis markers, so they don't count toward pairing; on each
+        line the remaining marks pair up greedily and an odd leftover — the
+        stray — is dropped. Markdown emphasis never crosses a line.
+        """
+
+        def clean_line(line: str) -> str:
+            marks = [
+                m.start()
+                for m in re.finditer("_", line)
+                if not (
+                    m.start() > 0
+                    and line[m.start() - 1].isalnum()
+                    and m.start() + 1 < len(line)
+                    and line[m.start() + 1].isalnum()
+                )
+            ]
+            if len(marks) % 2 == 0:
+                return line
+            stray = marks[-1]
+            return line[:stray] + line[stray + 1 :]
+
+        return "\n".join(clean_line(line) for line in text.split("\n"))
+
+    @staticmethod
     def _strip_markdown_elements(text: str) -> str:
-        """Remove markdown headings, horizontal rules, blockquotes, BR tags, and links."""
-        # Remove markdown headings (keep the text)
-        text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-        # Remove horizontal rules (--- or more dashes on a line by themselves)
-        text = re.sub(r"^-{3,}\s*$", "", text, flags=re.MULTILINE)
+        """Remove blockquote markers, BR tags, and markdown links.
+
+        Headings, horizontal rules and bullets are converted upstream (they
+        need to happen before the asterisk sanitiser, which would otherwise
+        eat their markers); only the plain strips remain here.
+        """
         # Strip blockquote markers (Signal doesn't render > as blockquotes)
         text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
         # Convert HTML <br> tags to newlines
