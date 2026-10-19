@@ -434,7 +434,7 @@ ConfigParam(
     key="TOKEN_BUDGET_CHAT",
     description="Max completion tokens for a chat-turn call",
     type=int,
-    default=5500,
+    default=16000,
     validator=_validate_positive_int,
     group=GROUP_TOKEN_BUDGETS,
 )
@@ -443,7 +443,7 @@ ConfigParam(
     key="TOKEN_BUDGET_COLLECTOR",
     description="Max completion tokens for a collector-cycle call",
     type=int,
-    default=1500,
+    default=16000,
     validator=_validate_positive_int,
     group=GROUP_TOKEN_BUDGETS,
 )
@@ -452,7 +452,7 @@ ConfigParam(
     key="TOKEN_BUDGET_BROWSE_EXTRACT",
     description="Max completion tokens for a browse-extraction micro-context call",
     type=int,
-    default=8000,
+    default=16000,
     validator=_validate_positive_int,
     group=GROUP_TOKEN_BUDGETS,
 )
@@ -461,7 +461,7 @@ ConfigParam(
     key="TOKEN_BUDGET_NOTIFY_COMPOSER",
     description="Max completion tokens for a notify-composing micro-context call",
     type=int,
-    default=9500,
+    default=16000,
     validator=_validate_positive_int,
     group=GROUP_TOKEN_BUDGETS,
 )

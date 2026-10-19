@@ -187,9 +187,9 @@ class TestTokenBudgetResolution:
 
     def test_a_known_call_kind_resolves_its_configured_default(self) -> None:
         runtime = RuntimeParams()
-        assert token_budget_for(runtime, PennyConstants.CHAT_AGENT_NAME) == 5500
-        assert token_budget_for(runtime, "collector") == 1500
-        assert token_budget_for(runtime, PennyConstants.BROWSE_EXTRACT_AGENT_NAME) == 8000
+        assert token_budget_for(runtime, PennyConstants.CHAT_AGENT_NAME) == 16000
+        assert token_budget_for(runtime, "collector") == 16000
+        assert token_budget_for(runtime, PennyConstants.BROWSE_EXTRACT_AGENT_NAME) == 16000
 
     def test_an_unrecognised_or_absent_kind_sends_no_cap(self) -> None:
         runtime = RuntimeParams()
