@@ -50,6 +50,7 @@ owner's to accept once the numbers have been read.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import NamedTuple
 
@@ -295,6 +296,14 @@ PAGES = (
     _LIGHTBENCH_PAGE,
     _FOAMLINE_PAGE,
     _SEARCH_PAGE,
+)
+
+# Every host the world puts in front of the model, read off the pages themselves —
+# each served page's own source URL plus every link its pages carry (the search
+# page's directory entry among them).  Derived, never a hand-kept copy: a host the
+# world gains is a host this claim accepts, and one it loses drops off by itself.
+_SERVED_HOSTS = tuple(
+    sorted({host for page in PAGES for host in re.findall(r"[a-z0-9-]+\.example\.com", page.text)})
 )
 
 # ── The recorded conversation ─────────────────────────────────────────────────
@@ -896,12 +905,14 @@ def _rules_unchanged():
 
 
 def _the_reply_carries_a_source_url(sample: SampleObservation, _world: World) -> Answer:
-    """The reply carries a source URL the world owns — the rule the user gave, made
-    behavioural.  A violating sample is nameable: one that replied from the search
+    """The reply carries a source URL from the world — the rule the user gave, made
+    behavioural.  Any host the world's own pages carry counts, the search page's
+    directory entry included: a URL the world serves or shows is a source the world
+    owns.  A violating sample is nameable: one that replied from the search
     snippets' titles and names, naming shops and addresses but citing nothing."""
     said = fold_typography(sample.reply)
-    hit = [host for host in _SHOP_URL_HOSTS if host in said]
-    return bool(hit), f"the reply cites none of {list(_SHOP_URL_HOSTS)}"
+    hit = [host for host in _SERVED_HOSTS if host in said]
+    return bool(hit), f"the reply cites none of {list(_SERVED_HOSTS)}"
 
 
 def _the_reply_carries_the_page_fact(sample: SampleObservation, _world: World) -> Answer:
