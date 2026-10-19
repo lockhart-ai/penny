@@ -116,12 +116,27 @@ class DrawField(StrEnum):
 # rather than a forbidding sentence with nowhere to put the missing thought;
 # and a list ask gets one item per line, each holding only the parts the page
 # gives, in the order the instruction names them.
+#
+# The address is part of the value (#2648).  The draw's content is headed by the
+# page's own ``## browse: <url>`` line, but that header reads as scaffolding, not
+# as part of the answer: measured on a source-URL standing rule, every extraction
+# came back a bare value with no URL, and 8 of 9 page-reading replies carried no
+# source at all.  So the value itself now leads with the page's address, whatever
+# the instruction asked for — the person reading the answer (the enclosing chat
+# turn, the collector writing it into the store) can cite where it came from
+# without re-deriving which page it was.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
     "Answer in plain text from the page alone, as a list with one item per "
     "line when the instruction asks for several, and never a value the page "
     "doesn't state.\n"
+    "\n"
+    "Each page's content begins with that page's own address — the URL the page "
+    "was read at — and the address is part of the value: begin every answer with "
+    "the URL of the page it came from, so the person reading the answer knows "
+    "where it came from and can go back to it, whatever the instruction asked "
+    "for.\n"
     "\n"
     "An instruction often names several things at once, and a page rarely "
     "carries all of them. Give what the page has for each thing named, in the "
@@ -137,7 +152,8 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     "sentence and stop there.\n"
     "\n"
     "Write only the answer — no preamble, no restating the instruction, and "
-    "nothing about how you are answering."
+    "nothing about how you are answering. The address the answer begins with is "
+    "part of the answer, not a preamble."
 )
 
 # The structural reading-mode note (#2388).  The extension already knows whether it

@@ -1076,13 +1076,21 @@ def test_micro_context_system_prompt_is_plain_text_with_no_tags():
     contract (#1682/#1942/#2360) retired entirely — reading a page is not a
     reasoning task, so the draw answers in plain text, as a list when several
     things are asked for, naming a shortfall or a total absence in a plain
-    sentence, never a separate tagged line."""
+    sentence, never a separate tagged line.  The value leads with the page's
+    own address (#2648): the URL the content is headed by is part of the value,
+    not scaffolding, so the enclosing turn can cite its source."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
         "Answer in plain text from the page alone, as a list with one item per "
         "line when the instruction asks for several, and never a value the page "
         "doesn't state.\n"
+        "\n"
+        "Each page's content begins with that page's own address — the URL the page "
+        "was read at — and the address is part of the value: begin every answer with "
+        "the URL of the page it came from, so the person reading the answer knows "
+        "where it came from and can go back to it, whatever the instruction asked "
+        "for.\n"
         "\n"
         "An instruction often names several things at once, and a page rarely "
         "carries all of them. Give what the page has for each thing named, in the "
@@ -1098,7 +1106,8 @@ def test_micro_context_system_prompt_is_plain_text_with_no_tags():
         "sentence and stop there.\n"
         "\n"
         "Write only the answer — no preamble, no restating the instruction, and "
-        "nothing about how you are answering."
+        "nothing about how you are answering. The address the answer begins with is "
+        "part of the answer, not a preamble."
     )
 
 
