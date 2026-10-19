@@ -1144,15 +1144,12 @@ _BASIC_FLOW_EXPECTED = (
     "How to use the browse tool:\n"
     "1. If the user gave you URLs, read them directly — pass the URLs in the queries "
     "array. Do NOT search for a site the user already linked.\n"
-    "2. On a topic (no URLs), work in two phases — search, then read. First call browse "
-    "to search the topic and discover what's out there. Then pick the most promising "
-    "URLs from the search results and call browse again with those URLs (e.g., "
-    'queries: ["https://example.com/page"]) to read the actual pages. A search result '
-    "names its page and little more — real pages have prices, full specs, availability, "
-    "and details that search snippets leave out.\n"
-    "3. The `extract` argument is REQUIRED on every browse — say, in plain language, "
-    "exactly what to pull out: what the user needs from the page to act on the ask. A "
-    "description in ordinary words IS the whole specification "
+    "2. If the user gave you a topic (no URLs), call browse to discover relevant pages.\n"
+    "3. Read the most promising pages by passing their URLs in the queries array (e.g., "
+    'queries: ["https://example.com/page"]). Real pages have full details that search '
+    "snippets leave out.\n"
+    "4. The `extract` argument is REQUIRED on every browse — say, in plain language, "
+    "exactly what to pull out. A description in ordinary words IS the whole specification "
     '— "the opening hours" or "anything the page says about refunds" are complete, '
     "sufficient answers, and nothing more precise exists to give. You get back just that "
     "value (plus a handle to the stored full page), never the whole page. There are no "
