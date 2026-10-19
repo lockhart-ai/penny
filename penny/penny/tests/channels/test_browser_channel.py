@@ -195,11 +195,12 @@ class TestBrowseTool:
     """BrowseTool passes through pre-sanitized content from the channel."""
 
     @staticmethod
-    def _make_tool(request_fn, permission_manager=None):
+    def _make_tool(request_fn, permission_manager=None, max_queries_per_call=None):
         """Create a BrowseTool wired to a mock browse provider."""
         perm = permission_manager or MagicMock(check_domain=AsyncMock())
         tool = BrowseTool(
             max_calls=3,
+            max_queries_per_call=max_queries_per_call,
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
         )
@@ -388,9 +389,11 @@ class TestBrowseTool:
 
     @pytest.mark.asyncio
     async def test_queries_past_cap_are_named_not_dropped(self):
-        """Queries beyond max_calls are run for the first N and the rest are named in
-        a dropped-queries section (not silently truncated), so the model can rerun
-        them — the run queries still succeed, so success stays True."""
+        """Queries beyond the per-call total ceiling are run for the first N and the
+        rest are named in a dropped-queries section (not silently truncated), so
+        the model can rerun them — the run queries still succeed, so success stays
+        True.  With no ceiling wired, the total falls back to the batch size, so
+        this also pins the unwired construction's behaviour."""
         request_fn = AsyncMock(
             return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
         )
@@ -407,8 +410,10 @@ class TestBrowseTool:
         assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
         assert "https://d.com" in result.message
         # The recovery is spelled as the exact next call with bound args (canonical
-        # call notation), not a bare "browse" mention.
+        # call notation), not a bare "browse" mention, and the ceiling is named as
+        # the per-call TOTAL (#2662).
         assert "browse(queries=['https://d.com'])" in result.message
+        assert "beyond the 3-per-call total" in result.message
 
         # The narration names only what ran (#2661) — the requested list past the
         # cap would claim a page that was never fetched; the dropped section stays
@@ -433,6 +438,85 @@ class TestBrowseTool:
             if line.startswith(PennyConstants.BROWSE_DROPPED_HEADER)
         )
         assert "https://d.com" in dropped_section
+
+    @pytest.mark.asyncio
+    async def test_queries_past_parallel_cap_run_in_batches(self):
+        """#2662: the parallel cap bounds fetches IN FLIGHT, not the call's total —
+        five URLs at max_calls=3 all run in this call, in two batches of at most 3
+        in flight, every section present in request order, and no dropped section
+        (nothing was left for a second model call)."""
+        pages = {
+            f"https://{n}.com": (
+                f"Title: {n.upper()}\nURL: https://{n}.com\n\nContent of {n}.",
+                None,
+                PageReading.ARTICLE,
+            )
+            for n in ("a", "b", "c", "d", "e")
+        }
+        in_flight = 0
+        max_in_flight = 0
+        calls = 0
+
+        async def request_fn(method: str, params: dict):
+            nonlocal in_flight, max_in_flight, calls
+            calls += 1
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return pages[params["url"]]
+
+        tool = self._make_tool(request_fn, max_queries_per_call=12)
+
+        result = await tool.execute(
+            CallLink.new_top(),
+            queries=list(pages),
+            extract="the page content",
+        )
+
+        assert result.success is True
+        assert calls == 5
+        assert max_in_flight <= 3
+        for n in ("a", "b", "c", "d", "e"):
+            assert f"Content of {n}." in result.message
+        assert PennyConstants.BROWSE_DROPPED_HEADER not in result.message
+        # Sections render in request order across the batches.
+        positions = [result.message.index(f"Content of {n}.") for n in ("a", "b", "c", "d", "e")]
+        assert positions == sorted(positions)
+        # The narration names everything that ran (#2661/#2662) — all five URLs.
+        assert "You opened" in result.narration
+        for n in ("a", "b", "c", "d", "e"):
+            assert f"https://{n}.com" in result.narration
+
+    @pytest.mark.asyncio
+    async def test_queries_past_total_ceiling_are_dropped(self):
+        """#2662: queries past the per-call TOTAL (not the batch size) get the
+        dropped section naming the excess — here max_calls=2 and a total of 3 run
+        three queries in two batches and name the fourth."""
+        request_fn = AsyncMock(
+            return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
+        )
+        tool = BrowseTool(
+            max_calls=2,
+            max_queries_per_call=3,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+        )
+        tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
+
+        result = await tool.execute(
+            CallLink.new_top(),
+            queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
+            extract="the page content",
+        )
+
+        assert result.success is True
+        assert request_fn.call_count == 3
+        assert "https://a.com" in result.message
+        assert "https://c.com" in result.message
+        assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
+        assert "beyond the 3-per-call total" in result.message
+        assert "browse(queries=['https://d.com'])" in result.message
 
     @pytest.mark.asyncio
     async def test_checks_permission_before_browsing(self):

@@ -311,9 +311,21 @@ ConfigParam(
 
 ConfigParam(
     key="MAX_QUERIES",
-    description="Max parallel queries per browse tool call",
+    description="Max queries one browse tool call fetches in parallel (the batch size)",
     type=int,
     default=3,
+    validator=_validate_positive_int,
+    group=GROUP_BROWSE,
+)
+
+ConfigParam(
+    key="BROWSE_MAX_QUERIES_PER_CALL",
+    description=(
+        "Total queries one browse tool call may run; queries past this come back "
+        "in a dropped section. Fetched in batches of MAX_QUERIES."
+    ),
+    type=int,
+    default=12,
     validator=_validate_positive_int,
     group=GROUP_BROWSE,
 )

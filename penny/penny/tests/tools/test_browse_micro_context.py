@@ -210,10 +210,13 @@ def _responds_routed(routes: dict[str, str]) -> MockLlmClient:
     return model
 
 
-def _multi_extract_tool(db: Database, model: MockLlmClient | LlmClient, provider) -> BrowseTool:
+def _multi_extract_tool(
+    db: Database, model: MockLlmClient | LlmClient, provider, max_queries_per_call=None
+) -> BrowseTool:
     """An extract-capable browse tool over a caller-supplied multi-page provider."""
     tool = BrowseTool(
         max_calls=3,
+        max_queries_per_call=max_queries_per_call,
         db=db,
         embedding_client=cast(Any, MockLlmClient()),
         model_client=cast(Any, model),
@@ -593,6 +596,89 @@ async def test_two_page_batch_yields_two_attributed_sections(tmp_path, mock_llm)
         ).all()
     assert len(rows) == 2
     assert {row.run_target for row in rows} == {"widget-watch"}
+
+
+@pytest.mark.asyncio
+async def test_extract_spans_parallel_batches_in_one_call(tmp_path, mock_llm):
+    """#2662: five pages at max_calls=3 under a 12-per-call total — the fetches run
+    in two parallel batches, and the ONE extract call still draws every page
+    CONCURRENTLY (#1941): five sections, each under its own header in request
+    order, each carrying its own value, no dropped section, and five attributed
+    ledger rows."""
+    # Two further fictional pages beyond the three defined at module top.
+    page_4_url = "https://auctions.example/lot/15"
+    page_4_text = "Title: Lot 15\nLot 15 — Tin Astrolabe. Current bid: 44 zorkmids."
+    marker_4 = "Tin Astrolabe"
+    value_4 = "The current bid is 44 zorkmids."
+    page_5_url = "https://auctions.example/lot/23"
+    page_5_text = "Title: Lot 23\nLot 23 — Glass Barometer. Current bid: 61 zorkmids."
+    marker_5 = "Glass Barometer"
+    value_5 = "The current bid is 61 zorkmids."
+
+    db = _make_db(tmp_path)
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.0,
+    )
+    mock_llm.set_response_handler(
+        _page_router(
+            {
+                _MARKER_1: _EXTRACTED_VALUE,
+                _MARKER_2: _EXTRACTED_VALUE_2,
+                _MARKER_3: _EXTRACTED_VALUE_3,
+                marker_4: value_4,
+                marker_5: value_5,
+            }
+        )
+    )
+    tool = _multi_extract_tool(
+        db,
+        client,
+        _provider_by_url(
+            {
+                _PAGE_URL: _PAGE_TEXT,
+                _PAGE_URL_2: _PAGE_TEXT_2,
+                _PAGE_URL_3: _PAGE_TEXT_3,
+                page_4_url: page_4_text,
+                page_5_url: page_5_text,
+            }
+        ),
+        max_queries_per_call=12,
+    )
+
+    urls = [_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3, page_4_url, page_5_url]
+    result = await tool.execute(CallLink.new_top(), queries=urls, extract=_INSTRUCTION)
+
+    sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
+    assert len(sections) == 5
+    values = [
+        _EXTRACTED_VALUE,
+        _EXTRACTED_VALUE_2,
+        _EXTRACTED_VALUE_3,
+        value_4,
+        value_5,
+    ]
+    for slot, (url, value) in enumerate(zip(urls, values, strict=True)):
+        assert sections[slot].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n")
+        assert value in sections[slot]
+    assert PennyConstants.BROWSE_DROPPED_HEADER not in result.message
+    assert result.success is True
+    # The narration names everything that ran — all five pages.
+    assert result.narration is not None
+    for url in urls:
+        assert url in result.narration
+
+    # Five pages → five attributed ledger rows (one micro-call per page).
+    with Session(db.engine) as session:
+        rows = session.exec(
+            select(PromptLog).where(
+                PromptLog.agent_name == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
+            )
+        ).all()
+    assert len(rows) == 5
 
 
 @pytest.mark.asyncio

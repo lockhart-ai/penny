@@ -2,7 +2,8 @@
 
 The model packs everything into a single queries array; the tool detects URLs
 and reads them directly, while plain text is converted to search URLs.
-Queries are dispatched in parallel.
+Queries run in batches of ``max_calls`` fetched in parallel, one batch after
+another, up to the per-call total ceiling.
 """
 
 from __future__ import annotations
@@ -201,7 +202,9 @@ class BrowseTool(Tool):
     The model emits one tool call with a queries array:
       {"queries": ["topic", "https://example.com", "another topic"]}
     URLs are read directly; plain text is converted to a search URL.
-    All queries are dispatched in parallel.
+    Every query up to the per-call total ceiling runs in this call, fetched in
+    parallel batches of ``max_calls`` — the browser-tab limit — one batch after
+    another.  Queries past the total come back named in a dropped section.
     """
 
     name = "browse"
@@ -224,8 +227,17 @@ class BrowseTool(Tool):
         embedding_client: LlmClient,
         model_client: LlmClient | None = None,
         channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT,
+        max_queries_per_call: int | None = None,
     ):
         self._max_calls = max_calls
+        # The per-call TOTAL ceiling (#2662): every requested query up to this runs
+        # in this call, in parallel batches of ``max_calls``.  Unwired constructions
+        # (older tests, tools built before the setting exists) fall back to the
+        # batch size itself, so a tool without a ceiling behaves exactly as the
+        # pre-batching tool did.
+        self._max_queries_per_call = (
+            max_calls if max_queries_per_call is None else (max_queries_per_call)
+        )
         self._search_url = search_url
         self._db = db
         self._embedding_client = embedding_client
@@ -257,15 +269,15 @@ class BrowseTool(Tool):
 
     @property
     def description(self) -> str:  # type: ignore[override]
-        """Dynamic description reflecting current max_calls."""
-        n = self._max_calls
+        """Dynamic description reflecting the per-call total ceiling."""
+        n = self._max_queries_per_call
         items = "query and/or URL" if n == 1 else "queries and/or URLs"
         return f"Look things up. Pass up to {n} {items}."
 
     @property
     def parameters(self) -> dict[str, Any]:  # type: ignore[override]
-        """Dynamic parameters reflecting current max_calls."""
-        n = self._max_calls
+        """Dynamic parameters reflecting the per-call total ceiling."""
+        n = self._max_queries_per_call
         return {
             "type": "object",
             "properties": {
@@ -374,7 +386,8 @@ class BrowseTool(Tool):
         return " ".join(parts) if parts else _NARRATION_LOOKED_UP
 
     async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Dispatch all lookups in parallel via the browser extension.
+        """Dispatch every requested lookup (up to the per-call total) via the browser
+        extension, in parallel batches of ``max_calls``.
 
         With an ``extract`` micro-instruction (and at least one readable page),
         the fetched content goes to a fresh micro-context and only the typed
@@ -391,19 +404,48 @@ class BrowseTool(Tool):
         ``## browse dropped:`` section stays the only place the rest are named."""
         args = BrowseArgs(**kwargs)
         self._read_log, self._extract_log, self._extracting = [], [], False
-        cap = self._max_calls
-        to_run, dropped = args.queries[:cap], args.queries[cap:]
+        total = self._max_queries_per_call
+        to_run, dropped = args.queries[:total], args.queries[total:]
 
-        tasks = self._build_tasks(to_run)
-        results = await asyncio.gather(*[coro for _, _, coro in tasks], return_exceptions=True)
-        sections, page_sections, page_readings, captures = self._assemble_sections(tasks, results)
+        sections: list[str] = []
+        page_sections: list[str] = []
+        page_readings: list[PageReading] = []
+        captures: list[BrowsePage] = []
+        channel_outage = False
+        results: list[Any] = []
+        # Batching (#2662): the parallel cap bounds how many fetches are in flight,
+        # not how many the call runs — the requested queries up to the TOTAL ceiling
+        # go through in batches of ``max_calls``, one batch after another, so a
+        # four-site job pays no extra model round trip.  Order is preserved: each
+        # batch's sections append in request order, and the batches run in order.
+        for start in range(0, len(to_run), self._max_calls):
+            batch = to_run[start : start + self._max_calls]
+            tasks = self._build_tasks(batch)
+            batch_results = await asyncio.gather(
+                *[coro for _, _, coro in tasks], return_exceptions=True
+            )
+            results.extend(batch_results)
+            (
+                batch_sections,
+                batch_pages,
+                batch_readings,
+                batch_captures,
+                batch_outage,
+            ) = self._assemble_sections(tasks, batch_results)
+            sections.extend(batch_sections)
+            page_sections.extend(batch_pages)
+            page_readings.extend(batch_readings)
+            captures.extend(batch_captures)
+            channel_outage = channel_outage or batch_outage
+        if channel_outage:
+            sections.append(self._channel_outage_section())
 
         stored = await self._append_pages_to_browse_results(page_sections)
         await self._store_media(captures)
         self._record_read_log(page_sections, stored)
 
         if dropped:
-            sections.append(self._dropped_section(cap, dropped))
+            sections.append(self._dropped_section(total, dropped))
         # Browse is a *read* for work-accounting (its browse-results log write is
         # incidental), so ``mutated`` stays False.  But when EVERY dispatched query
         # errored the call did nothing, so it reports ``success=False`` — making the
@@ -796,11 +838,14 @@ class BrowseTool(Tool):
 
     def _assemble_sections(
         self, tasks: list[tuple[str, str, Any]], results: list[Any]
-    ) -> tuple[list[str], list[str], list[PageReading], list[BrowsePage]]:
+    ) -> tuple[list[str], list[str], list[PageReading], list[BrowsePage], bool]:
         """Fold gathered results into rendered sections, the page-only subset (for
         the browse-results log), each page-only section's own reading mark (#2388,
-        aligned 1:1 with ``page_sections`` the same way ``stored`` is), and the
-        captured page images."""
+        aligned 1:1 with ``page_sections`` the same way ``stored`` is), the
+        captured page images, and whether a channel outage hit — the outage
+        SECTION itself is appended by ``execute`` ONCE per call, not once per
+        batch (#2662: a whole-channel outage dooms every batch identically, and
+        one rendered outage names it)."""
         sections: list[str] = []
         page_sections: list[str] = []
         page_readings: list[PageReading] = []
@@ -821,9 +866,7 @@ class BrowseTool(Tool):
                 page_readings.append(result.reading)
                 if result.image:
                     captures.append(result)
-        if channel_outage:
-            sections.append(self._channel_outage_section())
-        return sections, page_sections, page_readings, captures
+        return sections, page_sections, page_readings, captures, channel_outage
 
     @staticmethod
     def _error_section(header: str, value: str, error: BaseException) -> str:
@@ -862,15 +905,15 @@ class BrowseTool(Tool):
         return f"{header}{value}\n{text}"
 
     @staticmethod
-    def _dropped_section(cap: int, dropped: list[str]) -> str:
-        """Name the queries dropped past the per-call cap so the omission is visible
+    def _dropped_section(total: int, dropped: list[str]) -> str:
+        """Name the queries dropped past the per-call TOTAL so the omission is visible
         to the model, with the exact recovery: rerun the rest in a follow-up call."""
-        ran = "query was" if cap == 1 else f"{cap} queries were"
+        ran = "query was" if total == 1 else f"{total} queries were"
         count = len(dropped)
         dropped_list = ", ".join(repr(q) for q in dropped)
         return (
             f"{PennyConstants.BROWSE_DROPPED_HEADER}only the first {ran} run; "
-            f"{count} beyond the {cap}-per-call limit were not run: {dropped_list}. "
+            f"{count} beyond the {total}-per-call total were not run: {dropped_list}. "
             f"Call browse(queries=[{dropped_list}]) again if you still need the results."
         )
 

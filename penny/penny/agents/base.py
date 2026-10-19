@@ -1618,6 +1618,7 @@ class Agent:
         search_url = str(self.config.runtime.SEARCH_URL)
         tool = BrowseTool(
             max_calls=max_calls,
+            max_queries_per_call=int(self.config.runtime.BROWSE_MAX_QUERIES_PER_CALL),
             search_url=search_url,
             db=self.db,
             embedding_client=self._embedding_model_client,
