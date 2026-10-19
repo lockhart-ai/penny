@@ -1,35 +1,44 @@
-"""A lookup's reply carries the detail only the result pages carry (#2653).
+"""A lookup's reply settles the ask on the pages the search results only name (#2653).
 
 The contract is `docs/eval-case-design.md`.
 
-The system prompt's own browse how-to says to read the most promising pages
-after a search — real pages have the details search snippets leave out — and
-its close forbids answering from snippets alone. So on a lookup whose search
-results name the candidates but carry none of the detail the ask wants, the
-reply should carry that page-only detail: the only way it can is a read.
-What the case measures is that end state: does the reply carry the detail,
-and does it carry a source URL of a page the world served?
+The prod failure is the tempting-snippets trap: the search results look like
+they answer — name, area, a friendly one-line blurb — so the reply can read
+as complete while the one thing the ask turns on is only on the pages. So the
+ask names a requirement the snippets never state: a tuner who can regulate a
+GRAND piano. Every snippet blurb sounds qualified (one even says
+"regulation"), and nothing in any snippet says who does grands. Each tuner's
+own page states its services; exactly one says it regulates grands, and
+others say outright that they don't, so a guess can land wrong. What the case
+measures is that end state: does the reply name the tuner whose page settles
+the requirement, and does it avoid naming one whose page disqualifies them.
 
 **The world is invented to the shape of a real lookup.** One ask, NO standing
 rules — the browse how-to is built into the chat prompt, so the behaviour is
-measured without one — a search page whose snippets name three candidates
-without any price, and three real-size candidate pages each carrying its own
-rates, the way a shop's own page does. Every tuner, place, URL, address and
+measured without one — a search page listing four tuners with name, area and
+blurb, and four real-size candidate pages each carrying its own services and
+rates the way a shop's own page does. Every tuner, place, URL, address and
 price is invented.
 
 **What is NOT claimed.** That she called ``browse``, that any call carried
 ``extract``, which pages she opened, how many, or in what order — all ROUTE,
-measured in the tool sequence and never asserted. Which candidate the reply
-leads with, and how she words it, are its spread. The page-only detail the
-claim reads is the price token: every price in the world sits only on its own
-page (the snippets carry none), so ANY of them in the reply is evidence a
-page was read — and a reply answered purely from the search results' snippets
-can satisfy neither claim, because there is no price in a snippet to quote
-and no shop URL beyond the search page's own links.
+measured in the tool sequence and never asserted. How she words the
+recommendation is its spread. The regulating tuner's rate sits only on its
+page, so a correct answer naturally carries it, but it is world texture, not
+a claim — the ask asks for the tuner, not the price.
+
+**The third claim's reading, stated plainly.** "Does not recommend a tuner
+whose page says they don't" is read deterministically as: no disqualified
+tuner's name appears in the reply. The world settles who is disqualified
+(their own pages say so in as many words), so a name the reply carries is a
+fact about the reply, not a judgement call. The blunt edge is accepted: a
+reply that only NOTES a disqualified tuner as unavailable ("Piano Works
+doesn't take grands") would fail this reading too — the rationale names the
+token found, so a reader can tell the two apart in the artifacts.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the
-code owner's to accept once the numbers have been read. Every rule, tuner,
-place and URL is invented, because the repo is public.
+code owner's to accept once the numbers have been read. Every tuner, place
+and URL is invented, because the repo is public.
 """
 
 from __future__ import annotations
@@ -55,37 +64,39 @@ pytestmark = pytest.mark.eval
 
 _FAMILY = "lookup-reads-pages"
 
-# ── The world: one search page, three tuner pages ────────────────────────────
+# ── The world: one search page, four tuner pages ─────────────────────────────
 #
 # The search page's ``match`` is the place name, so any query naming Millhaven
-# reaches it; the three tuner pages stand BEFORE it, since their own URLs also
+# reaches it; the four tuner pages stand BEFORE it, since their own URLs also
 # carry the place name and the slug is the more specific match. Each tuner page
-# is real-size — an address section, rates, hours, notes — the shape a shop's
-# own page carries, and each carries its URL in the visible body the way every
-# canned page here does (``CannedPage``: the model cites URLs from the text it
-# sees — on a read the ``## browse:`` header renders the URL beside the value
-# the extract returned).
+# is real-size — an address section, services, hours, notes — the shape a
+# shop's own page carries, and each carries its URL in the visible body the way
+# every canned page here does (``CannedPage``: the model cites URLs from the
+# text it sees — on a read the ``## browse:`` header renders the URL beside the
+# value the extract returned).
 #
-# The PRICES are the page-only detail: the search snippets name the candidates
-# and describe them, but carry no price at all, so a reply that quotes one can
-# only have read a page.
+# The TEMPTATION is the point of the world: every snippet blurb sounds
+# qualified but states no requirement-relevant fact — Aldergate's blurb (the
+# one tuner whose page says it regulates grands) deliberately says nothing
+# about grands, and Larkspur's says "regulation" (it regulates uprights only),
+# so a snippet-only choice can land on a tuner whose page disqualifies them.
 
 _TUNER1_URL = "https://tuning.example.com/millhaven/piano-works"
 _TUNER2_URL = "https://tuning.example.com/millhaven/larkspur-keys"
 _TUNER3_URL = "https://tuning.example.com/millhaven/aldergate-tuning"
+_TUNER4_URL = "https://tuning.example.com/millhaven/quarryfield-pianos"
 
 # The host-and-path prefix every served source URL shares — the shape a cited
 # URL must carry. A URL token, never a slug: the slugs are the tuners' own
 # names and a name-only reply would satisfy a slug check without any URL in it.
 _URL_PREFIX = "tuning.example.com/millhaven/"
 
-# The page-only price tokens. Each appears exactly once in the whole world —
-# on its own page — and nowhere else, mutually exclusive, absent from every
-# address, hour and note: whichever one a reply carries, it was read off a page.
-_PRICE1 = "135"
-_PRICE2 = "160"
-_PRICE3 = "185"
-_PAGE_ONLY_PRICES = (_PRICE1, _PRICE2, _PRICE3)
+# The requirement is settled by exactly one page: Aldergate's says it
+# regulates grand pianos; the other three say outright that they don't. The
+# names are the claim tokens — each appears only on its own page and as the
+# search page's link, so a name in the reply identifies exactly that tuner.
+_GRAND_TUNER = "Aldergate"
+_NO_GRAND_TUNERS = ("Piano Works", "Larkspur", "Quarryfield")
 
 _TUNER_PAGES = (
     CannedPage(
@@ -93,24 +104,25 @@ _TUNER_PAGES = (
         text=(
             "Title: Millhaven Piano Works — tuning and repairs\n"
             "Millhaven Piano Works is a family-run workshop on Bellman Street "
-            "in Millhaven, tuning uprights and grands across the town.\n"
+            "in Millhaven, tuning uprights and consoles across the town.\n"
             f"Source: {_TUNER1_URL}\n"
             "\n"
             "Address\n"
             "14 Bellman Street, Millhaven, opposite the mill pond.\n"
             "\n"
-            "Rates\n"
-            f"Standard tuning, ${_PRICE1} a visit, typically two hours on site.\n"
+            "Services\n"
+            "Standard tuning, $135 a visit, typically two hours on site.\n"
             "Pitch raise before tuning, from $70 when the piano has been left "
             "flat for years.\n"
             "Minor repair work (sticky keys, pedal adjustments), quoted on site.\n"
+            "Uprights and consoles are what we take — we don't work on grands.\n"
             "\n"
             "Hours\n"
             "Weekdays 9 to 6, Saturdays 10 to 4, closed Sundays.\n"
             "\n"
             "Notes\n"
-            "Bookings usually about a week out; loaner practice room available "
-            "while a piano is in the workshop for bigger jobs.\n"
+            "Bookings usually about a week out; a loaner practice room is "
+            "available while a piano is in the workshop for bigger jobs.\n"
         ),
     ),
     CannedPage(
@@ -124,41 +136,70 @@ _TUNER_PAGES = (
             "Address\n"
             "2 Corver Lane, Millhaven, behind the garden centre.\n"
             "\n"
-            "Rates\n"
-            f"Standard tuning, ${_PRICE2} a visit, including a light clean of "
-            "the keys.\n"
-            "Voicing and regulation, from $95, quoted after a first look.\n"
+            "Services\n"
+            "Standard tuning, $160 a visit, including a light clean of the keys.\n"
+            "Voicing and regulation on uprights, from $95, quoted after a "
+            "first look.\n"
+            "Grands are the one thing we don't take on — no exceptions.\n"
             "\n"
             "Hours\n"
             "Weekdays 10 to 7, Saturdays 9 to 1, closed Sundays.\n"
             "\n"
             "Notes\n"
-            "Evening appointments twice a week; the visit always ends with a "
-            "short playing check with the owner.\n"
+            "Evening appointments twice a week; every visit ends with a short "
+            "playing check with the owner.\n"
         ),
     ),
     CannedPage(
         match="aldergate-tuning",
         text=(
-            "Title: Aldergate Tuning — concert and home pianos\n"
+            "Title: Aldergate Tuning — tuning, voicing and grand regulation\n"
             "Aldergate Tuning is a bench-trained tuner on Harrow Walk in "
-            "Millhaven, tuning both concert instruments and family pianos.\n"
+            "Millhaven, taking both family pianos and grands.\n"
             f"Source: {_TUNER3_URL}\n"
             "\n"
             "Address\n"
             "88 Harrow Walk, Millhaven, three doors from the fountain.\n"
             "\n"
-            "Rates\n"
-            f"Standard tuning, ${_PRICE3} a visit, with a written condition "
-            "report afterwards.\n"
+            "Services\n"
+            "Standard tuning, $185 a visit, with a written condition report "
+            "afterwards.\n"
+            "Grand piano regulation, from $120 — action regulation on any "
+            "make of grand.\n"
             "Humidity-control fitting and check-ups, quoted per instrument.\n"
             "\n"
             "Hours\n"
             "Weekdays 8 to 5, Saturdays by appointment, closed Sundays.\n"
             "\n"
             "Notes\n"
-            "Two-week lead time for first visits; piano teachers in Millhaven "
-            "get a standing discount on repeat tunings.\n"
+            "Two-week lead time for first visits; a grand can stay on the "
+            "stands for the job's length by arrangement.\n"
+        ),
+    ),
+    CannedPage(
+        match="quarryfield-pianos",
+        text=(
+            "Title: Quarryfield Piano Services — tuning, moving and "
+            "restoration\n"
+            "Quarryfield Piano Services is a family business on Quarryfield "
+            "Road in Millhaven, tuning, moving and restoring pianos.\n"
+            f"Source: {_TUNER4_URL}\n"
+            "\n"
+            "Address\n"
+            "5 Quarryfield Road, Millhaven, by the rail bridge.\n"
+            "\n"
+            "Services\n"
+            "Standard tuning, $210 a visit, two tuners on staff.\n"
+            "Piano moving within Millhaven, quoted by staircase.\n"
+            "Restoration and re-finishing, quoted after a workshop look.\n"
+            "Uprights only for tuning work — grands we refer out.\n"
+            "\n"
+            "Hours\n"
+            "Weekdays 8 to 6, Saturdays 9 to 3, closed Sundays.\n"
+            "\n"
+            "Notes\n"
+            "A twice-yearly reminder service for annual tunings; restoration "
+            "slots book out months ahead.\n"
         ),
     ),
 )
@@ -167,23 +208,29 @@ _SEARCH_PAGE = CannedPage(
     match="millhaven",
     text=(
         "Title: piano tuner Millhaven — search results\n"
-        "Piano tuners and tuning services in Millhaven, with prices on request.\n"
+        "Piano tuners and tuning services in Millhaven.\n"
         "[Millhaven Piano Works — tuning and repairs]"
         f"({_TUNER1_URL})\n"
         "Family-run workshop on Bellman Street doing standard tunings, pitch "
-        "raises and minor repairs on uprights and grands.\n"
+        "raises and minor repairs on all pianos.\n"
         "\n"
         "Larkspur Key & String — piano tuning and voicing\n"
         "[Larkspur Key & String — tuning and voicing]"
         f"({_TUNER2_URL})\n"
-        "One-person studio off Corver Lane; tuning, voicing and regulation for "
-        "home uprights and school halls.\n"
+        "One-person studio off Corver Lane; tuning, voicing and regulation "
+        "for home pianos, with evening appointments twice a week.\n"
         "\n"
-        "Aldergate Tuning — concert and home pianos\n"
-        "[Aldergate Tuning — concert and home pianos]"
+        "Aldergate Tuning — careful work and condition reports\n"
+        "[Aldergate Tuning — tuning and voicing]"
         f"({_TUNER3_URL})\n"
-        "Bench-trained tuner on Harrow Walk covering concert instruments and "
-        "family pianos, with written condition reports.\n"
+        "Bench-trained tuner on Harrow Walk, known for careful work and a "
+        "written condition report after every visit.\n"
+        "\n"
+        "Quarryfield Piano Services — tuning and restoration\n"
+        "[Quarryfield Piano Services — tuning, moving and restoration]"
+        f"({_TUNER4_URL})\n"
+        "Family business on Quarryfield Road; pianos tuned, moved and "
+        "restored, with a twice-yearly reminder service.\n"
         "\n"
         "A beginner's guide to looking after an acoustic piano\n"
         "[Caring for an acoustic piano — a guide]"
@@ -194,61 +241,89 @@ _SEARCH_PAGE = CannedPage(
 
 # ── The five wordings ────────────────────────────────────────────────────────
 #
-# Ways a user asks for a local-service lookup and its price. What must not
-# vary: the place, the service, and the want for what it costs. None mentions
-# a link, a URL, a source, a snippet or the rules — the browse how-to is the
-# prompt's own, and a wording that lent its phrasing would be answering the
-# case for it.
+# Ways a user asks for a tuner who can handle the requirement. What must not
+# vary: the place, the service, the grand, and the regulation want. None
+# mentions a link, a URL, a source, a snippet or the rules — the browse
+# how-to is the prompt's own, and a wording that lent its phrasing would be
+# answering the case for it.
 
-_ASK = "can you find a piano tuner in millhaven? want to know what they charge"
+_ASK = (
+    "can you find a piano tuner in millhaven who can also regulate a grand "
+    "piano?"
+)
 _ASKS = (
-    "looking for a piano tuner in millhaven — how much does a tuning cost?",
-    "need my piano tuned in millhaven. who does it, and what do they charge?",
-    "any piano tuners in millhaven? curious what a tuning costs",
-    "find me a piano tuner in millhaven and tell me what they charge",
+    "looking for a piano tuner in millhaven — one who does grand regulation",
+    "i need someone in millhaven to regulate a grand piano — can you find a "
+    "tuner who does that?",
+    "any piano tuners in millhaven who can regulate a grand piano?",
+    "find me a millhaven piano tuner who handles grand regulation",
 )
 
-_TUNER_CLAUSES = ("piano tuner", "tuned", "tuning")
-_PRICE_CLAUSES = ("charge", "cost", "costs")
+_TUNER_CLAUSES = ("piano tuner", "tuners", "tuner")
+_GRAND_CLAUSES = ("grand",)
+_REGULATE_CLAUSES = ("regulat",)
 
 
 def _assert_every_wording_carries_the_facts() -> None:
     """Every one of the five wordings carries the facts the claims read — the
-    place, the service, and the price want — and none of them names a link, a
-    URL, a source, a snippet or the rules, so a dropped fact or a self-answering
-    ask fails here rather than as a puzzling score after a paid run."""
+    place, the service, the grand, and the regulation want — and none of them
+    names a link, a URL, a source, a snippet or the rules, so a dropped fact
+    or a self-answering ask fails here rather than as a puzzling score after
+    a paid run."""
     for ask in (_ASK, *_ASKS):
         folded = ask.casefold()
         assert "millhaven" in folded, f"this wording names no place — {ask!r}"
         assert any(clause in folded for clause in _TUNER_CLAUSES), (
             f"this wording names no service — {ask!r}"
         )
-        assert any(clause in folded for clause in _PRICE_CLAUSES), (
-            f"this wording asks for no price — {ask!r}"
+        assert any(clause in folded for clause in _GRAND_CLAUSES), (
+            f"this wording names no grand — {ask!r}"
+        )
+        assert any(clause in folded for clause in _REGULATE_CLAUSES), (
+            f"this wording asks for no regulation — {ask!r}"
         )
         for banned in ("link", "url", "source", "rule", "snippet"):
             assert banned not in folded, (
                 f"this wording names {banned!r}, which is the prompt's own job — {ask!r}"
             )
-    # The world coheres with the claims: each page-only price appears exactly
-    # once — on its own page, never on the search page or a sibling — and the
-    # search page links every tuner at an address under the served prefix.
+    # The world coheres with the claims: exactly one page settles the
+    # requirement, the others disqualify themselves in as many words, each
+    # tuner's rate sits only on its own page, and the search page links every
+    # tuner at an address under the served prefix — with no blurb naming the
+    # requirement's winner.
     all_pages = [page.text for page in _TUNER_PAGES] + [_SEARCH_PAGE.text]
-    for price in _PAGE_ONLY_PRICES:
-        where = [i for i, text in enumerate(all_pages) if price in text]
-        assert where == [_PAGE_ONLY_PRICES.index(price)], (
-            f"{price} must sit exactly once, on its own page — found at {where}"
+    for rate in ("135", "160", "185", "210"):
+        where = [i for i, text in enumerate(all_pages) if rate in text]
+        assert len(where) == 1, f"{rate} must sit exactly once — found at {where}"
+    assert "grand piano regulation" in all_pages[2].casefold(), (
+        "the settling page must state the requirement in as many words"
+    )
+    for disqualified in (0, 1, 3):
+        assert "grands" in all_pages[disqualified].casefold(), (
+            f"disqualified page {disqualified} must say it doesn't take grands"
         )
-    for tuner_url in (_TUNER1_URL, _TUNER2_URL, _TUNER3_URL):
+    for tuner_name, own in (("Piano Works", 0), ("Larkspur", 1), ("Aldergate", 2), ("Quarryfield", 3)):
+        where = [i for i, text in enumerate(all_pages) if tuner_name in text]
+        assert where == [own, len(_TUNER_PAGES)], (
+            f"{tuner_name} must sit on its own page and the search page only — {where}"
+        )
+    for tuner_url in (_TUNER1_URL, _TUNER2_URL, _TUNER3_URL, _TUNER4_URL):
         assert tuner_url in _SEARCH_PAGE.text, f"{tuner_url} is linked from no search page"
         assert _URL_PREFIX in tuner_url
+    assert "grand" not in _SEARCH_PAGE.text.casefold(), (
+        "no snippet blurb may name the requirement or grand work — the snippets "
+        "must tempt without stating the fact that settles the ask"
+    )
 
 
 _assert_every_wording_carries_the_facts()
 
 
 _WORLD = World(
-    name="a local-service lookup whose snippets name the candidates but carry no prices",
+    name=(
+        "a local-service lookup whose snippets sound qualified but state "
+        "nothing about the requirement"
+    ),
     pages=(*_TUNER_PAGES, _SEARCH_PAGE),
     keeps=(),
     excludes=(),
@@ -258,23 +333,14 @@ _WORLD = World(
 # ── The claims ───────────────────────────────────────────────────────────────
 
 
-def _reply_carries_the_page_only_price(sample: SampleObservation, _world: World) -> Answer:
-    """The reply carries a price only the pages carry — the case's first half,
-    read as any of the three price tokens, typography-folded.
-
-    Every price in the world sits exactly once, on its own page; the search
-    snippets carry none, so whichever token the reply quotes, it was read off
-    a page. A violating sample is nameable: one that names the tuners and
-    what they do with no price at all — an answer built from the search
-    results' snippets. A sample that read one page and quoted its rate passes;
-    how many pages she read, and which, are route — measured in the tool
-    sequence, never asserted."""
+def _reply_names_the_settling_tuner(sample: SampleObservation, _world: World) -> Answer:
+    """The reply names the tuner whose page settles the ask — the requirement
+    (grand regulation) is stated on exactly one page and in no snippet, so the
+    name can only be earned by a read or a lucky guess; the world settles
+    which name is correct. Typography-folded containment."""
     folded = fold_typography(sample.reply)
-    hits = [price for price in _PAGE_ONLY_PRICES if price in folded]
-    return (
-        bool(hits),
-        f"page-only price(s) {hits or 'none'} of {_PAGE_ONLY_PRICES} in the reply",
-    )
+    hit = _GRAND_TUNER.casefold() in folded
+    return hit, f"{_GRAND_TUNER!r} named in the reply: {hit}"
 
 
 def _reply_carries_a_served_url(sample: SampleObservation, _world: World) -> Answer:
@@ -283,27 +349,40 @@ def _reply_carries_a_served_url(sample: SampleObservation, _world: World) -> Ans
     a cited URL counts with or without its scheme.
 
     A URL the reply reached only through the search results' own links still
-    counts: those links are the same addresses the pages serve, and the reply
-    carries them whether or not a page was opened. The search's one distractor
-    link (a care guide, under a different host) is deliberately NOT accepted:
-    it is a URL the world served, but not a source of anything the reply
-    states about the tuners."""
+    counts: those links are the same addresses the pages serve. The search's
+    one distractor link (a care guide, under a different host) is deliberately
+    NOT accepted: it is a URL the world served, but not a source of anything
+    the reply states about the tuners."""
     hit = _URL_PREFIX in fold_typography(sample.reply)
     return hit, f"served URL prefix {_URL_PREFIX!r} in the reply: {hit}"
 
 
+def _reply_names_no_disqualified_tuner(sample: SampleObservation, _world: World) -> Answer:
+    """The reply does not recommend a tuner whose page says it doesn't do the
+    requirement — read deterministically as: no disqualified tuner's name
+    appears in the reply. Their own pages disqualify them in as many words,
+    so the world settles who is out; a name the reply carries is a fact about
+    the reply. The rationale names the token found, so a reader can tell a
+    real wrong recommendation from a reply that merely notes a disqualified
+    tuner as unavailable (which this reading also fails — deliberate, see the
+    module docstring)."""
+    folded = fold_typography(sample.reply)
+    named = [name for name in _NO_GRAND_TUNERS if name.casefold() in folded]
+    return not named, f"disqualified tuner(s) named in the reply: {named or 'none'}"
+
+
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_lookup_reply_carries_the_page_only_detail(chat_eval: ChatEval, model: str) -> None:
-    """A lookup ask with no standing rules: the search results name the
-    candidates but carry no prices, and the pages do. The reply carries a
-    page-only price and a URL of a page the world served, and the store is
+async def test_a_lookup_reply_settles_the_ask_on_the_pages(chat_eval: ChatEval, model: str) -> None:
+    """A lookup ask whose requirement the snippets never state: the reply
+    names the tuner whose page settles it, carries a URL of a page the world
+    served, and names no tuner whose page disqualifies them; the store is
     left as the turn found it."""
     cohort = await chat_eval(
-        case_id="lookup-reply-carries-the-page-detail",
+        case_id="lookup-reply-settles-the-ask-on-the-pages",
         behaviour=(
-            "In the chat agent, when a lookup's search results name the "
-            "candidates but the detail the ask wants is only on the pages "
-            "themselves, Penny's reply carries the page-only detail."
+            "In the chat agent, when a lookup's ask turns on a requirement "
+            "the search snippets never state, Penny's reply names the "
+            "candidate whose page settles it."
         ),
         area=Area.ANSWERING_FROM_THE_WEB,
         model=model,
@@ -313,21 +392,27 @@ async def test_a_lookup_reply_carries_the_page_only_detail(chat_eval: ChatEval, 
         samples_per_phrasing=3,
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
-        timeout=420.0,  # a search, up to three page reads each with an extraction draw
+        timeout=480.0,  # a search, up to four page reads each with an extraction draw
     )
     # STORE — a read-only ask, nothing seeded by the case: what the store held
     # when the turn began is still there.
     cohort.assert_what_the_store_held_survives()
-    # PROVENANCE — both halves the issue exists for.
+    # PROVENANCE — the three halves the reworked world measures.
     cohort.claim(
-        "reply: it carries the detail only the pages carry",
-        _reply_carries_the_page_only_price,
+        "reply: it names the tuner whose page settles the ask",
+        _reply_names_the_settling_tuner,
         SpecCategory.PROVENANCE,
         kind="reply",
     )
     cohort.claim(
         "reply: it carries the URL of a page the world served",
         _reply_carries_a_served_url,
+        SpecCategory.PROVENANCE,
+        kind="reply",
+    )
+    cohort.claim(
+        "reply: it does not recommend a tuner whose page says it doesn't do the requirement",
+        _reply_names_no_disqualified_tuner,
         SpecCategory.PROVENANCE,
         kind="reply",
     )
