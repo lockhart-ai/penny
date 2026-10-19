@@ -397,7 +397,23 @@ class BrowseTool(Tool):
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
+            source_urls=self._read_urls(sections),
         )
+
+    @staticmethod
+    def _read_urls(sections: list[str]) -> list[str]:
+        """The URL of every page THIS call actually read successfully, in read
+        order — taken off each page section's own ``## browse: <url>`` header
+        value, the one place the tool already records it.  A failed read
+        (``## browse error:``) read nothing and a search section (``## browse
+        search:``) is links, not a page read, so neither contributes (#2648):
+        these ride ``ToolResult.source_urls`` to the reply-side fallback, which
+        appends the first one when the composed reply carries no URL."""
+        return [
+            section[len(PennyConstants.BROWSE_PAGE_HEADER) :].partition("\n")[0]
+            for section in sections
+            if section.startswith(PennyConstants.BROWSE_PAGE_HEADER)
+        ]
 
     def timeout_report(self, timeout: float) -> str:
         """Override of ``Tool.timeout_report`` (#2367): what THIS call had
@@ -513,6 +529,7 @@ class BrowseTool(Tool):
                 self._merge_extracted(sections, batch, extracted)
             ),
             success=self._read_anything(sections, extracted),
+            source_urls=self._read_urls(sections),
         )
 
     @staticmethod
@@ -693,6 +710,7 @@ class BrowseTool(Tool):
                 self._merge_extracted(sections, batch, unavailable)
             ),
             success=self._read_anything(sections, unavailable),
+            source_urls=self._read_urls(sections),
         )
 
     def _unavailable_section(

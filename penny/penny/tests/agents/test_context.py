@@ -158,7 +158,9 @@ async def test_conversation_pairs_tool_calls_by_run_id(
         conversation = penny.chat_agent._build_conversation(TEST_SENDER)
         assistant_turns = [content for role, content in conversation if role == "assistant"]
         assert assistant_turns == [
-            "here's what i found!\n[Tool calls: browse]",
+            # The browse read a page, so the reply-side URL fallback had a source
+            # to append (#2648): the reply carries the read page's URL.
+            "here's what i found!\n\nhttps://weather.example.com/today\n[Tool calls: browse]",
             "glad that helped!\n[Tool calls: none]\na proactive note",
         ]
 

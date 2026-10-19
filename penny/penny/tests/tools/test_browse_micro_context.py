@@ -470,6 +470,9 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
     )
     assert result.success is False
     assert _CATALOGUE_BODY not in result.message
+    # The page WAS read successfully (only the extraction degraded), so it is a
+    # source URL even on the no-model path (#2648).
+    assert result.source_urls == [_CATALOGUE_URL]
 
 
 # ── Whole-render literals: the enumerated micro-result forms (via execute) ─────
@@ -698,6 +701,9 @@ async def test_failed_fetch_in_the_middle_keeps_its_slot(tmp_path):
         f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_3}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_3}",
     ]
     assert result.success is True
+    # The two pages that actually read carry their URLs, in read order; the
+    # failed fetch in the middle contributes none (#2648).
+    assert result.source_urls == [_PAGE_URL, _PAGE_URL_3]
 
 
 # ── A search is links; a failed page extraction keeps the page's (#2141) ──────
@@ -727,6 +733,8 @@ async def test_search_section_is_returned_as_links_and_never_extracted(tmp_path)
     )
     assert model.requests == []  # the extractor was never asked to read a link list
     assert result.success is True
+    # A search read nothing, so it contributes no source URL (#2648).
+    assert result.source_urls == []
 
 
 @pytest.mark.asyncio
@@ -762,6 +770,9 @@ async def test_search_beside_a_page_read_extracts_only_the_page(tmp_path):
         f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}"
     ]
     assert result.success is True
+    # Only the PAGE READ counts as read for the reply's source URLs (#2648) —
+    # the search beside it contributes nothing.
+    assert result.source_urls == [_PAGE_URL]
 
 
 @pytest.mark.asyncio
