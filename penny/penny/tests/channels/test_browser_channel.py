@@ -24,6 +24,7 @@ from penny.llm.call_link import CallLink
 from penny.tests.conftest import require_memory, wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
+from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.collection_instantiation import describe_schedule
 from penny.tools.models import ToolResult
@@ -408,6 +409,30 @@ class TestBrowseTool:
         # The recovery is spelled as the exact next call with bound args (canonical
         # call notation), not a bare "browse" mention.
         assert "browse(queries=['https://d.com'])" in result.message
+
+        # The narration names only what ran (#2661) — the requested list past the
+        # cap would claim a page that was never fetched; the dropped section stays
+        # the only place the fourth URL is named.
+        framed = Tool.format_result(
+            "browse",
+            {
+                "queries": ["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
+                "extract": "the page content",
+            },
+            result,
+        )
+        narration_line = framed.partition("\n")[0]
+        assert (
+            narration_line
+            == "You opened https://a.com, https://b.com, https://c.com (browse result)"
+        )
+        assert "https://d.com" not in narration_line
+        dropped_section = next(
+            line
+            for line in framed.splitlines()
+            if line.startswith(PennyConstants.BROWSE_DROPPED_HEADER)
+        )
+        assert "https://d.com" in dropped_section
 
     @pytest.mark.asyncio
     async def test_checks_permission_before_browsing(self):

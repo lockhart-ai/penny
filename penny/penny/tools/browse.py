@@ -62,6 +62,10 @@ _LINK_RE = re.compile(r"^\s*\[([^\]]*)\]\(https?://(?:[^)\\]|\\.)*\)\s*$")
 # disambiguate each page.  So these summarise the batch as a single natural clause
 # reflecting search-vs-read (a URL query is a direct read; plain text is a search)
 # and the outcome (`result.success` is False only when EVERY query errored).
+# Composed by ``_result_narration`` from the queries TO narrate — for a result the
+# tool itself returned that is the DISPATCHED list (``execute`` sets the composed
+# line on ``ToolResult.narration``, #2661), never the requested list, which past
+# the per-call cap names pages that were never fetched.
 _NARRATION_SEARCHED = "You searched for {queries}"
 _NARRATION_OPENED = "You opened {urls}"
 _NARRATION_ALSO_OPENED = "and opened {urls}"
@@ -331,15 +335,28 @@ class BrowseTool(Tool):
         ``## browse ...:`` section headers already disambiguate each page in the
         body, so this narrates the *batch* — what was searched and/or opened, and
         whether anything was readable — as one natural clause, not per section.
-        Branches on ``result.success``, which the tool reports False only when
-        every dispatched query errored (a total failure), so a partial success
-        still narrates the action it took.
+
+        A result ``execute`` itself returned carries the composed line on
+        ``ToolResult.narration`` (built from the queries actually DISPATCHED,
+        #2661), so the seam never reaches here for one — this override answers
+        only for a result built OUTSIDE the tool (a synthetic seeded result,
+        which has no cap to have dropped anything past) and narrates the
+        requested queries.  Branches on ``result.success``, which the tool
+        reports False only when every dispatched query errored (a total
+        failure), so a partial success still narrates the action it took.
         """
-        queries = arguments.get("queries", [])
+        return cls._result_narration(arguments.get("queries", []), result.success)
+
+    @classmethod
+    def _result_narration(cls, queries: list[str], success: bool) -> str:
+        """The narration line for ``queries`` — the ONE place the action clause and
+        the failure suffix meet.  Callers pass the list to NARRATE: the dispatched
+        queries for a result the tool built, the requested ones for a synthetic
+        result with no dispatched list behind it."""
         searches = [q for q in queries if not _URL_PATTERN.match(q)]
         reads = [q for q in queries if _URL_PATTERN.match(q)]
         action = cls._browse_action_clause(searches, reads)
-        if result.success:
+        if success:
             return action
         return f"{action} {NARRATION_FAILURE_SUFFIX}"
 
@@ -366,7 +383,12 @@ class BrowseTool(Tool):
         ``call_link`` (#2458) is THIS dispatched call's own linkage — the tool
         dispatcher built it via ``CallLink.for_tool_call(tool_call_id)`` before
         ``run`` even validated args. Threaded through to every extraction draw this
-        call makes, so each one links back to the run AND to this dispatched call."""
+        call makes, so each one links back to the run AND to this dispatched call.
+
+        Every result returned here carries its own ``narration`` (#2661), composed
+        from ``to_run`` — the queries actually dispatched — so the first-person line
+        never names a page past the per-call cap that was never fetched; the
+        ``## browse dropped:`` section stays the only place the rest are named."""
         args = BrowseArgs(**kwargs)
         self._read_log, self._extract_log, self._extracting = [], [], False
         cap = self._max_calls
@@ -392,12 +414,13 @@ class BrowseTool(Tool):
         if args.extract is not None and not all_failed:
             self._extracting = True
             return await self._extract_result(
-                sections, stored, page_readings, args.extract, call_link
+                sections, stored, page_readings, args.extract, call_link, ran=to_run
             )
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
             source_urls=self._read_urls(sections),
+            narration=self._result_narration(to_run, not all_failed),
         )
 
     @staticmethod
@@ -484,6 +507,7 @@ class BrowseTool(Tool):
         page_readings: list[PageReading],
         instruction: str,
         call_link: CallLink,
+        ran: list[str],
     ) -> ToolResult:
         """One micro-context call PER successfully-fetched page (#1682) — each result
         rendered UNDER that page's own ``## browse …:`` section header, so a
@@ -509,10 +533,16 @@ class BrowseTool(Tool):
         order up front (``_extract_batch``), and every result is written back into
         that slot (``_merge_extracted``) — so the sections render in page order
         whatever order the draws finish in.  Nothing else moves: same calls, same
-        renders, same per-draw reroll machinery."""
+        renders, same per-draw reroll machinery.
+
+        ``ran`` is the queries this call actually dispatched (``execute``'s
+        ``to_run``) — the narration names exactly those, never the requested
+        list past the cap (#2661)."""
         micro_context = self._micro_context
         if micro_context is None:
-            return self._extract_unavailable_result(sections, stored, page_readings, instruction)
+            return self._extract_unavailable_result(
+                sections, stored, page_readings, instruction, ran
+            )
         batch = self._extract_batch(sections, stored, page_readings)
         drawn = await asyncio.gather(
             *[
@@ -524,12 +554,14 @@ class BrowseTool(Tool):
             return_exceptions=True,
         )
         extracted = self._drawn_pages(drawn)
+        success = self._read_anything(sections, extracted)
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(
                 self._merge_extracted(sections, batch, extracted)
             ),
-            success=self._read_anything(sections, extracted),
+            success=success,
             source_urls=self._read_urls(sections),
+            narration=self._result_narration(ran, success),
         )
 
     @staticmethod
@@ -686,6 +718,7 @@ class BrowseTool(Tool):
         stored: list[MemoryEntry],
         page_readings: list[PageReading],
         instruction: str,
+        ran: list[str],
     ) -> ToolResult:
         """Honest degradation when ``extract`` is requested but no model client is
         wired for the micro-context — each page read renders the named failure under
@@ -695,7 +728,8 @@ class BrowseTool(Tool):
         they do on every other extract path — so a browse that only searched is served
         whole by a tool with no extraction model, and says nothing about one.  No draw
         happens on this path, so the reading mark is carried only for ``_extract_batch``'s
-        shared signature — never read here."""
+        shared signature — never read here.  ``ran`` is the queries this call actually
+        dispatched, for the narration (#2661)."""
         batch = self._extract_batch(sections, stored, page_readings)
         if batch:
             logger.error(
@@ -705,12 +739,14 @@ class BrowseTool(Tool):
             (self._unavailable_section(section, instruction, entry), False)
             for _, section, entry, _reading in batch
         ]
+        success = self._read_anything(sections, unavailable)
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(
                 self._merge_extracted(sections, batch, unavailable)
             ),
-            success=self._read_anything(sections, unavailable),
+            success=success,
             source_urls=self._read_urls(sections),
+            narration=self._result_narration(ran, success),
         )
 
     def _unavailable_section(
