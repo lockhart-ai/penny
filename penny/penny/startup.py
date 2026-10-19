@@ -3,6 +3,7 @@
 import logging
 import os
 
+from penny.constants import PennyConstants
 from penny.database.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
@@ -78,7 +79,7 @@ async def get_restart_message(db: Database, ollama_client: LlmClient, commit_mes
         )
         announcement = response.content.strip()
 
-        if not announcement or len(announcement) > 150:
+        if not announcement or len(announcement) > PennyConstants.RESTART_ANNOUNCEMENT_MAX_CHARS:
             # Reachable — the model answered, it just came back empty or unusably
             # long — so this is not the one case that keeps RESTART_FALLBACK (#2370):
             # a plain note built from the commit information itself, no second call.

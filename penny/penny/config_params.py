@@ -352,6 +352,19 @@ ConfigParam(
     group=GROUP_SEND,
 )
 
+# ── iOS push preview ─────────────────────────────────────────────────────────
+
+ConfigParam(
+    key="PUSH_PREVIEW_CHARS",
+    description=(
+        "Max characters of an outgoing message the iOS push notification's preview carries"
+    ),
+    type=int,
+    default=140,
+    validator=_validate_positive_int,
+    group=GROUP_SEND,
+)
+
 # ── Email tools ──────────────────────────────────────────────────────────────
 
 ConfigParam(

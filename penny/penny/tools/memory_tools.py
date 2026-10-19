@@ -486,24 +486,19 @@ def _description_degraded_suffix(description: str | None, embedding: list[float]
 _STATUS_ACTIVE = "active"
 _STATUS_ARCHIVED = "archived"
 _EXPIRES_NEVER = "never"
-# First N characters of the spawning message, rendered as "the ask" (#1566).
-_ASK_EXCERPT_CHARS = 80
 
 
 def _ask_excerpt(db: Database, source_message_id: int | None) -> str | None:
-    """A one-line excerpt (first ``_ASK_EXCERPT_CHARS`` chars) of the user message
-    that spawned a mechanism, or ``None`` when there is no source message (seeded
-    / system rows) or the row can't be found.  Whitespace is collapsed so a
-    multi-line ask reads as one line."""
+    """The user message that spawned a mechanism, whitespace collapsed so a
+    multi-line ask reads as one line and rendered whole — no cap (#2642) — or
+    ``None`` when there is no source message (seeded / system rows) or the row
+    can't be found."""
     if source_message_id is None:
         return None
     message = db.messages.get_by_id(source_message_id)
     if message is None:
         return None
-    collapsed = " ".join(message.content.split())
-    if len(collapsed) <= _ASK_EXCERPT_CHARS:
-        return collapsed
-    return f"{collapsed[:_ASK_EXCERPT_CHARS].rstrip()}…"
+    return " ".join(message.content.split())
 
 
 def _status_line(row: MemoryRow) -> str:
@@ -2676,11 +2671,6 @@ _FIND_AMBIGUOUS_TAIL = (
     "otherwise narrow by its exact name."
 )
 
-# A stored entry's value renders as one compact, whitespace-collapsed line — a
-# short fact shows whole (the find IS the answer, #1640), a long one is capped
-# like the run-trace result preview so a big value can't blow up the result.
-_ENTRY_PREVIEW_CHARS = 120
-
 
 def _find_state(match: ResolvedMatch) -> str:
     """The live/archived state word: a collection or log is ``active`` or
@@ -2715,11 +2705,8 @@ def _find_addressing(match: ResolvedMatch) -> str:
 
 def _entry_preview(content: str) -> str:
     """One compact, whitespace-collapsed line of an entry's stored value (#1640) —
-    shown whole when short (the find carries the answer), capped when long."""
-    collapsed = " ".join(content.split())
-    if len(collapsed) <= _ENTRY_PREVIEW_CHARS:
-        return collapsed
-    return f"{collapsed[:_ENTRY_PREVIEW_CHARS].rstrip()}…"
+    the find IS the answer, so the whole value renders; no cap (#2642)."""
+    return " ".join(content.split())
 
 
 def _entry_identity(entry: ResolvedEntry) -> str:

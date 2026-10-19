@@ -163,7 +163,7 @@ class IosStore:
             row = session.get(IosOutboxItem, item_id)
             if row is None:
                 return
-            row.push_error = error[:500]
+            row.push_error = error
             session.add(row)
             session.commit()
 

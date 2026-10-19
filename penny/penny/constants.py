@@ -812,6 +812,17 @@ class PennyConstants:
     # roughly the first sentence of a real job's prompt with room to spare; the full
     # prompt is always one anchored read away.
     SELF_STATE_JOB_PROMPT_CHARS = 160
+    # How many characters of each redacted tool argument an iOS agent-progress
+    # event carries (#2642).  The progress payload is a transient preview, not the
+    # data — the run record and the tool's own result render the argument whole.
+    IOS_PROGRESS_REDACT_PREVIEW_CHARS = 120
+    # Discord's own hard message-length limit (#2642): a longer outgoing message is
+    # split into chunks of this size, so nothing is ever lost.
+    DISCORD_MESSAGE_LIMIT = 2000
+    # A restart announcement is one line (#2642): an LLM-drafted announcement past
+    # this length is rejected whole (never truncated) in favour of the deterministic
+    # fallback note, because a longer draft is not an announcement.
+    RESTART_ANNOUNCEMENT_MAX_CHARS = 150
     MEMORY_PENNY_MESSAGES_LOG = "penny-messages"
     MEMORY_BROWSE_RESULTS_LOG = "browse-results"
     # Typed-id separator for an entry handle (``<memory>#<id>``).  A browse

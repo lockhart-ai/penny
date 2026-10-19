@@ -115,7 +115,6 @@ _HOLDINGS_GONE = (
 _LAST_TOLD_HEAD = "## What you last told the user"
 _LAST_TOLD_NEVER = "You have never sent them anything about this collection."
 _LAST_TOLD_LINE = 'The last thing you told the user: "{snippet}" ({when})'
-_LAST_TOLD_SNIPPET_CHARS = 120
 
 
 class Collector(BackgroundAgent):
@@ -637,22 +636,15 @@ class Collector(BackgroundAgent):
 
     @staticmethod
     def _format_tool_trace(response: ControllerResponse | None) -> str:
-        """Numbered list of tool calls from the cycle, with long args truncated."""
+        """Numbered list of the cycle's tool calls, each argument rendered whole —
+        no cap (#2642)."""
         if not response or not response.tool_calls:
             return ""
         lines = []
         for i, record in enumerate(response.tool_calls, 1):
-            args = ", ".join(
-                f"{k}={Collector._truncate_arg(v)}" for k, v in record.arguments.items()
-            )
+            args = ", ".join(f"{k}={v}" for k, v in record.arguments.items())
             lines.append(f"{i}. {record.tool}({args})")
         return "\n".join(lines)
-
-    @staticmethod
-    def _truncate_arg(value: object) -> str:
-        """Stringify a tool argument value, truncating to 50 chars."""
-        rendered = str(value)
-        return rendered if len(rendered) <= 50 else rendered[:47] + "..."
 
     @staticmethod
     def _produced_work(
@@ -1017,17 +1009,12 @@ class Collector(BackgroundAgent):
 
         Read off the emission provenance the drainer stamps (#1568) — the newest
         outgoing message whose mechanism is this collection — so the answer is a
-        read, not a judgment.  The snippet is bounded and collapsed like the
-        emission render's, so a long notification reads as one line."""
+        read, not a judgment.  Whitespace is collapsed so a multi-line body reads
+        as one line, and the whole thing renders — no cap (#2642)."""
         send = self.db.messages.latest_mechanism_send(target_name)
         if send is None:
             return f"{_LAST_TOLD_HEAD}\n{_LAST_TOLD_NEVER}"
-        collapsed = " ".join(send.content.split())
-        snippet = (
-            collapsed
-            if len(collapsed) <= _LAST_TOLD_SNIPPET_CHARS
-            else f"{collapsed[:_LAST_TOLD_SNIPPET_CHARS].rstrip()}…"
-        )
+        snippet = " ".join(send.content.split())
         when = format_log_timestamp(send.timestamp)
         line = _LAST_TOLD_LINE.format(snippet=snippet, when=when)
         return f"{_LAST_TOLD_HEAD}\n{line}"

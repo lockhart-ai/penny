@@ -197,11 +197,6 @@ class EmissionActivity(BaseModel):
     snippet: str
 
 
-# First N characters of a delivered autonomous send, rendered as the
-# activity-block emission snippet (#1568).  A short, whitespace-collapsed excerpt
-# — enough to recognise what Penny said, not the whole message.
-_EMISSION_SNIPPET_CHARS = 50
-
 # How many of the newest chat promptlog rows the conversation history's tool
 # traces read (#2630).  A run straddling the window's oldest edge is dropped
 # rather than rendered with a truncated call list.
@@ -209,12 +204,9 @@ TOOL_TRACE_PROMPTLOG_WINDOW = 500
 
 
 def _emission_snippet(content: str) -> str:
-    """A one-line excerpt (first ``_EMISSION_SNIPPET_CHARS`` chars) of an outgoing
-    autonomous send, whitespace collapsed so a multi-line body reads as one line."""
-    collapsed = " ".join(content.split())
-    if len(collapsed) <= _EMISSION_SNIPPET_CHARS:
-        return collapsed
-    return f"{collapsed[:_EMISSION_SNIPPET_CHARS].rstrip()}…"
+    """The delivered autonomous send as one line — whitespace collapsed so a
+    multi-line body reads as one line, rendered whole (no cap, #2642)."""
+    return " ".join(content.split())
 
 
 def _count_run_tool_calls(prompts: list[PromptLog]) -> int:

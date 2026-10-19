@@ -203,6 +203,13 @@ class IosChannel(MessageChannel):
             related=bool(runtime.IOS_RELATED_IMAGES),
         )
 
+    def _push_preview_limit(self) -> int:
+        """The push preview's character limit — the runtime config param, or its
+        default when no config is attached."""
+        if self._config is None:
+            return int(RUNTIME_CONFIG_PARAMS["PUSH_PREVIEW_CHARS"].default)
+        return int(self._config.runtime.PUSH_PREVIEW_CHARS)
+
     def set_permission_manager(self, manager: PermissionManager) -> None:
         """Set the permission manager for routing iOS permission decisions."""
         self._permission_manager = manager
@@ -1104,7 +1111,7 @@ class IosChannel(MessageChannel):
         source_name: str | None,
     ) -> IosOutboxItem:
         source_type, source_hint = _source_metadata(source_name)
-        push_title, push_summary = _push_preview(message)
+        push_title, push_summary = _push_preview(message, self._push_preview_limit())
         return self._db.ios.enqueue_outbox(
             message_log_id=message_log_id,
             device_id=device_id,
@@ -1203,9 +1210,12 @@ class IosChannel(MessageChannel):
             if value is None:
                 continue
             if isinstance(value, str):
-                redacted[key] = value[:120]
+                redacted[key] = value[: PennyConstants.IOS_PROGRESS_REDACT_PREVIEW_CHARS]
             elif isinstance(value, list):
-                redacted[key] = [str(item)[:120] for item in value[:10]]
+                redacted[key] = [
+                    str(item)[: PennyConstants.IOS_PROGRESS_REDACT_PREVIEW_CHARS]
+                    for item in value[:10]
+                ]
         return redacted
 
     async def _send_agent_progress(
@@ -1404,12 +1414,12 @@ def _source_metadata(source_name: str | None) -> tuple[str | None, str | None]:
     return SOURCE_TYPE_COLLECTOR, f"{SOURCE_HINT_COLLECTOR_PREFIX}{source_name}"
 
 
-def _push_preview(message: str) -> tuple[str, str]:
-    body = _summarize_for_push(message)
+def _push_preview(message: str, limit: int) -> tuple[str, str]:
+    body = _summarize_for_push(message, limit)
     return PUSH_GREETING_TITLE, body
 
 
-def _summarize_for_push(message: str, limit: int = 140) -> str:
+def _summarize_for_push(message: str, limit: int) -> str:
     text = _strip_markup(message)
     first_sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
     summary = first_sentence or text

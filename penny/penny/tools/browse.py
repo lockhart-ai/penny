@@ -309,7 +309,7 @@ class BrowseTool(Tool):
         for q in arguments.get("queries", []):
             if _URL_PATTERN.match(q):
                 short = q.replace("https://", "").replace("http://", "")
-                parts.append(f"Reading {short[:50]}")
+                parts.append(f"Reading {short}")
             else:
                 parts.append(f'Searching "{q}"')
         return "<br>".join(parts) if parts else "Looking up..."

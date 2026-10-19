@@ -29,7 +29,7 @@ from penny.channels.ios.models import (
     IOS_RESP_TYPE_OUTBOX_CHANGED,
     IOS_RESP_TYPE_REGISTERED,
 )
-from penny.constants import ChannelType
+from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 
 
@@ -196,6 +196,24 @@ async def test_agent_progress_is_redacted_and_connection_scoped(db):
     )
     assert len(foreground.sent) == 2
     assert len(other.sent) == 1
+
+    # A long allowed argument is redacted to the named preview bound — the payload
+    # is a transient preview, not the data (#2642).
+    long_subject = "Quarterly " * 20
+    await channel._send_agent_progress(
+        AgentProgressEvent(
+            event="tools_started",
+            run_id="run-3",
+            agent="chat",
+            scope="foreground",
+            step=1,
+            max_steps=8,
+            tools=(("draft_email", {"subject": long_subject}),),
+        )
+    )
+    assert foreground.sent[2]["tools"][0]["arguments"] == {
+        "subject": long_subject[: PennyConstants.IOS_PROGRESS_REDACT_PREVIEW_CHARS]
+    }
 
 
 async def _wait_for_server(channel: IosChannel) -> None:

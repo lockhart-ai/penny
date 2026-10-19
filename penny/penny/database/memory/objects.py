@@ -1497,11 +1497,6 @@ def _run_header(prompts: list[PromptLog]) -> str:
 # a reader can name (and re-fetch) exactly what was attached to the reply.
 _GENERATED_MEDIA_RE = re.compile(re.escape(PennyConstants.GENERATED_IMAGE_RESULT_PREFIX) + r"(\d+)")
 
-# A step's result renders as ONE compact line (bulk results — page content — stay
-# whole in the ledger and are rendered by reference here, per the canonical-call
-# policy): first line only, capped so a big result can't blow up the trace.
-_RESULT_PREVIEW_CHARS = 120
-
 
 def _generated_media_ids(prompts: list[PromptLog]) -> list[int]:
     """Ids of the media a run generated and delivered with its reply (#1560).
@@ -1542,14 +1537,12 @@ def _tool_results_by_id(prompts: list[PromptLog]) -> dict[str, str]:
 
 
 def _compact_result(content: str | None) -> str:
-    """One compact line for a step's result — first non-blank line, capped.  Bulk
-    results (page content) stay whole in the ledger; this render is by reference."""
+    """One compact line for a step's result — its first non-blank line, whole — no
+    cap (#2642).  Bulk results (page content) stay whole in the ledger; this render
+    is by reference."""
     if not content:
         return ""
-    line = next((part.strip() for part in content.splitlines() if part.strip()), "")
-    return (
-        line if len(line) <= _RESULT_PREVIEW_CHARS else f"{line[:_RESULT_PREVIEW_CHARS].rstrip()}…"
-    )
+    return next((part.strip() for part in content.splitlines() if part.strip()), "")
 
 
 def _step_line(index: int, call: LoggedToolCall, result: str | None) -> str:

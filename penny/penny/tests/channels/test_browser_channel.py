@@ -1487,6 +1487,13 @@ class TestFormatToolStatus:
         )
         assert result == "Reading example.com"
 
+    def test_browse_with_long_url_query_renders_whole(self):
+        # A URL longer than the old 50-char progress-label cap renders whole —
+        # no invented truncation (#2642).
+        long_url = "https://example.com/" + "segment/" * 8 + "page"
+        result = BrowserChannel._format_tool_status(BrowseTool.name, {"queries": [long_url]})
+        assert result == f"Reading {long_url.removeprefix('https://')}"
+
     def test_browse_with_text_query(self):
         result = BrowserChannel._format_tool_status(
             BrowseTool.name, {"queries": ["best guitar amps"]}

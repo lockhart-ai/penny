@@ -10,7 +10,7 @@ import discord
 
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.channels.discord.models import DiscordMessage, DiscordUser
-from penny.constants import ChannelType
+from penny.constants import ChannelType, PennyConstants
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
@@ -250,7 +250,9 @@ class DiscordChannel(MessageChannel):
             logger.error("Unexpected error sending Discord message: %s", e)
             return None
 
-    def _chunk_message(self, text: str, limit: int = 2000) -> list[str]:
+    def _chunk_message(
+        self, text: str, limit: int = PennyConstants.DISCORD_MESSAGE_LIMIT
+    ) -> list[str]:
         """Split text into chunks that fit within Discord's character limit."""
         if len(text) <= limit:
             return [text]

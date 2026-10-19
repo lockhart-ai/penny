@@ -1011,8 +1011,8 @@ def test_activity_mutation_lines_no_detail_matrix(db):
 
 def test_activity_emission_lines_and_exclusions(db):
     """Delivered autonomous sends (#1568) render as ``sent · …`` lines, interleaved
-    by time with a run: a short body renders whole, a long one is snippet-truncated
-    with an ellipsis, and a direct reply (no mechanism) seeded NEWER than an
+    by time with a run: a body renders whole whatever its length — no cap (#2642) —
+    and a direct reply (no mechanism) seeded NEWER than an
     emission is excluded (it is the conversation, not its complement)."""
     with Session(db.engine) as session:
         _add_run(
@@ -1563,7 +1563,7 @@ _EMISSION_MATRIX = (
     "run rr11worked · 2026-07-11 09:50 UTC · alpha-watch → WORKED (2 calls)\n"
     'sent · 2026-07-11 09:40 UTC · alpha-watch — "A short ping."\n'
     'sent · 2026-07-11 09:20 UTC · beta-watch — "The morning digest is ready with '
-    "today's five top…\"\n"
+    "today's five top headlines for you to skim over coffee\"\n"
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"

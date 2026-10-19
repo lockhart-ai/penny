@@ -3193,7 +3193,7 @@ class TestRegistryProvenanceAndLifecycle:
         )
 
     @pytest.mark.asyncio
-    async def test_long_ask_is_excerpted(self, db):
+    async def test_long_ask_renders_whole(self, db):
         long_ask = (
             "please keep a really thorough running list of every single new mechanical "
             "keyboard group buy you can find anywhere on the internet, forever"
@@ -3201,11 +3201,9 @@ class TestRegistryProvenanceAndLifecycle:
         await self._create(db, "keyboards", created_by_run_id="run-kb-01")
         self._spawn(db, "run-kb-01", long_ask)
         result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="keyboards")
-        # The ask is truncated to the first ~80 chars with an ellipsis marker, so
-        # a verbose request doesn't blow up the rendered line.
-        assert long_ask[:40] in result.message
-        assert long_ask not in result.message
-        assert "…" in result.message
+        # The ask renders WHOLE — no invented truncation (#2642): the exact user
+        # words that spawned the job are what the render shows.
+        assert long_ask in result.message
 
     @pytest.mark.asyncio
     async def test_expires_at_renders_end_condition(self, db):
@@ -3491,20 +3489,28 @@ class TestFind:
     async def test_keyless_log_entry_addresses_a_read_with_log_get(self, db, mock_llm):
         """A keyless log entry renders its ``#<id>`` identity + the ``log_get`` call
         that reads it back by that id — a log has no key to re-read by (#1640).
-        The log's OWN description is orthogonal, so only the entry surfaces."""
+        The log's OWN description is orthogonal, so only the entry surfaces.  An
+        entry longer than the old preview cap renders WHOLE — the find IS the
+        answer, no invented truncation (#2642)."""
         client = _axis_client(mock_llm)
         await LogCreateTool(db, client).execute(
             CallLink.new_top(), log="aurora-log", description="orbit nebula"
         )
+        long_entry = (
+            "aurora echo foxtrot: the full survey came back with every detail "
+            "worth keeping about the launch window and the launch window's "
+            "backstop schedule"
+        )
+        assert len(long_entry) > 120
         await LogAppendTool(db, client, author="test").execute(
-            CallLink.new_top(), log="aurora-log", content="aurora echo foxtrot"
+            CallLink.new_top(), log="aurora-log", content=long_entry
         )
         entry_id = db.memories.memory("aurora-log").read_all()[0].id
         result = await FindTool(db, client).execute(CallLink.new_top(), query="aurora echo foxtrot")
         assert result.success
         assert result.message == (
             'Found 1 thing matching "aurora echo foxtrot":\n'
-            f'1. entry #{entry_id} in `aurora-log` (log) — "aurora echo foxtrot"\n'
+            f'1. entry #{entry_id} in `aurora-log` (log) — "{long_entry}"\n'
             f"   read it: log_get(log='aurora-log', id={entry_id})"
         )
 

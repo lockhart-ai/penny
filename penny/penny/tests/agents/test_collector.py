@@ -2104,6 +2104,17 @@ async def test_run_history_section_carries_the_last_told_line(test_config, tmp_p
     assert "Two new board games this week" in section
     assert "A different collection's message entirely." not in section
 
+    # A send longer than the old snippet cap renders WHOLE — no invented
+    # truncation (#2642): the close reads what the user was actually told.
+    long_send = "The full survey came back: " + ", ".join(f"item {i}" for i in range(1, 31))
+    assert len(long_send) > 120
+    db.messages.log_message("outgoing", sender="penny", content=long_send, mechanism="board-games")
+    section = _normalise_stamps(collector._run_history_section("board-games"))
+    assert section.endswith(
+        "## What you last told the user\n"
+        f'The last thing you told the user: "{long_send}" [YYYY-MM-DD HH:MM UTC]'
+    )
+
 
 @pytest.mark.asyncio
 async def test_run_history_section_absent_without_runs(test_config, tmp_path):
@@ -2976,7 +2987,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
     assert "1. log_read(log=user-messages)" in message
 
 
-def test_format_tool_trace_numbers_calls_and_truncates_args():
+def test_format_tool_trace_numbers_calls_and_renders_args_whole():
     response = ControllerResponse(
         answer="",
         tool_calls=[
@@ -2988,11 +2999,7 @@ def test_format_tool_trace_numbers_calls_and_truncates_args():
     trace = Collector._format_tool_trace(response)
     lines = trace.splitlines()
     assert lines[0] == "1. log_read(log=user-messages)"
-    assert lines[1].startswith("2. browse(queries=")
-    assert "..." in lines[1]  # long query was truncated
-    assert (
-        len(lines[1]) <= len("2. browse(queries=") + 50 + 2
-    )  # name + max rendered arg + closing paren
+    assert lines[1] == f"2. browse(queries=['{'board game ' * 10}'])"
     assert lines[2].startswith("3. done(")
 
 

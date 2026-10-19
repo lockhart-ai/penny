@@ -819,10 +819,10 @@ def test_render_run_calls_empty_history():
     assert render_run_calls([]) == "(no data)"
 
 
-def test_render_run_calls_truncates_bulk_results_by_reference():
+def test_render_run_calls_first_line_whole():
     """Result-compaction logic (not a render contract): a bulk result renders as
-    its first line capped with an ellipsis — stored whole in the ledger, rendered
-    by reference.  The expected preview is computed (a 150-char run of x's is the
+    its first line WHOLE — no cap (#2642) — stored whole in the ledger, rendered
+    by reference.  The expected render is computed (a 150-char run of x's is the
     fixture), so this stays a logic test; the render contracts above are the
     whole-output literals."""
     long_line = "## browse: " + "x" * 150
@@ -834,5 +834,4 @@ def test_render_run_calls_truncates_bulk_results_by_reference():
             messages=json.dumps([_tool_result("browse", f"{long_line}\npage body")]),
         )
     ]
-    expected_preview = f"{long_line[:120].rstrip()}…"
-    assert render_run_calls(run) == f"run run-long\n    step 1: browse(['a']) => {expected_preview}"
+    assert render_run_calls(run) == f"run run-long\n    step 1: browse(['a']) => {long_line}"
