@@ -17,9 +17,9 @@ said exactly that: *the tool call blocks are provided by the system or generated
 invented: a running news job, the two standing rules the user gave, and a nine-exchange
 history (a rule stored, a photo of a propagation shelf, plant chatter, a browse-backed
 factual answer, a shops errand) whose past replies carry both kinds of tool-call line —
-the model's own copies, as the real history held, and the framework's annotations,
-rendered by the live ``chat_turn_tool_traces`` pairing off the seeded runs' own
-prompt-log records.  The ask asks which rule the last reply broke.
+the model's own copies, as the real history held, and the framework's annotations, which
+before #2646 the builder rendered off the seeded runs' own prompt-log records.  The ask
+asks which rule the last reply broke.
 
 **The decided fix (code owner) and what the case measures.**  #2646 reverts the
 annotation: `_build_conversation` stops appending the line, and the traces behind it go
@@ -47,15 +47,19 @@ here is synthetic, on an ``example`` domain, because the repo is public.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
+from penny.database.memory.objects import run_tool_calls
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
+    is_seeded_run,
     seeded_run_id,
 )
 from penny.tests.eval.drivers.chat import ChatEval
@@ -90,10 +94,10 @@ RULES = PennyConstants.MEMORY_RULES_COLLECTION
 #
 # Nine exchanges of one conversation, seeded into her own logs the way a real history
 # renders, plus the stores that conversation left behind.  Every past reply is seeded with
-# the run id its framework line is read off (the ``chat_turn_tool_traces`` pairing), and
-# the runs' own prompt-log rows are seeded with the tool calls those runs really made —
-# so the live render path produces the same history the prod turn was shown: the model's
-# own copies already in the stored text, the framework's line appended at render.
+# the run id the framework stamps on a reply, and the runs' own prompt-log rows are seeded
+# with the tool calls those runs made — before #2646 the builder read the history's tool
+# line off these rows, so the rendered history carried both kinds of line: the model's own
+# copies already in the stored text, the framework's line appended at render.
 #
 # The window is the nine exchanges the conversation builder's own cap renders — the real
 # turn's history carried this conversation's last nine exchanges and nothing older, so
@@ -571,11 +575,12 @@ def _probe_history_tool_line_world(penny: Penny) -> None:
     """The case's premise, asserted out loud before the turn runs.
 
     The rules collection holds exactly the two rules the ask is about, the job is live
-    and telling the user, and — the premise every claim below stands on — the
-    conversation builder's own trace pairing has the eight seeded runs in the order the
-    history shows them, with the tool names the exchanges really made.  The framework's
-    tool-call line is rendered off exactly this list, so a seed that has drifted from it
-    turns the render into a different history than the one the failure happened in."""
+    and telling the user, and — the premise every claim below stands on — every seeded
+    reply is logged under the run id the framework stamps, and each seeded run's own
+    prompt-log records carry the tool calls that run made.  The history is built from
+    exactly these rows (and, before #2646, its per-run tool line was read off them), so
+    a seed that has drifted from them turns the turn into a different history than the
+    one the failure happened in."""
     db = penny.db
     held = sorted(
         (entry.key or "", entry.content) for entry in require_memory(db, RULES).read_all()
@@ -592,15 +597,29 @@ def _probe_history_tool_line_world(penny: Penny) -> None:
         f"the seeded profile must name {_USER_NAME!r}"
     )
     assert not db.users.is_muted(TEST_SENDER), "notifications must start on"
-    traces = db.messages.chat_turn_tool_traces()
-    expected = [
-        (seeded_run_id(name), tools)
-        for name, tools in _RUN_TOOLS.items()
-        if name in [run_name for _, _, run_name in _EXCHANGES]
-    ]
-    assert [(t.run_id, t.tools) for t in traces] == expected, (
-        f"the trace pairing must show the seeded runs in order, it shows {traces}"
-    )
+    logged = {
+        row.run_id: row.content
+        for row in db.messages.get_messages_since(TEST_SENDER, since=datetime.min, limit=100)
+        if row.direction == PennyConstants.MessageDirection.OUTGOING and row.run_id
+    }
+    for _user_text, reply, run_name in _EXCHANGES:
+        run_id = seeded_run_id(run_name)
+        assert logged.get(run_id) == reply, (
+            f"the reply for {run_name!r} must be logged under its own run id, the log "
+            f"holds {logged.get(run_id)!r}"
+        )
+    seeded_rows = {
+        row.run_id: row
+        for row in db.messages.recent_prompts(limit=100)
+        if is_seeded_run(row.run_id)
+    }
+    for run_name, tools in _RUN_TOOLS.items():
+        group = [row for row in seeded_rows.values() if row.run_id == seeded_run_id(run_name)]
+        assert group, f"the seeded run {run_name!r} must have its own prompt-log record"
+        names = tuple(dict.fromkeys(name for name, _ in run_tool_calls(group)))
+        assert names == tools, (
+            f"the seeded run {run_name!r} must trace with {tools}, its records show {names}"
+        )
 
 
 # ── The claims, as pure functions over one sample ─────────────────────────────

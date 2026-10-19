@@ -14,8 +14,8 @@ from sqlmodel.sql.expression import SelectOfScalar
 
 from penny.agents.models import MessageRole
 from penny.clock import Clock
-from penny.constants import ChatPromptType, PennyConstants, RunOutcome
-from penny.database.memory.objects import classify_run, render_run_record, run_tool_calls
+from penny.constants import PennyConstants, RunOutcome
+from penny.database.memory.objects import classify_run, render_run_record
 from penny.database.models import (
     CommandLog,
     Device,
@@ -82,18 +82,6 @@ class ToolFinished(BaseModel):
     tool_name: str
     status: str
     success: bool
-
-
-class ChatTurnTrace(NamedTuple):
-    """One chat run as the conversation history reads it (#2630): the run's id and
-    the tool names the run's OWN prompt-log records show it called — the ledger's
-    projection, never a reconstruction from the reply's wording.  The history pairs
-    a trace with its reply by ``messagelog.run_id`` equality, both stamped by the
-    framework, so a send that slips between the run's last call and its reply can
-    never steal the pairing."""
-
-    run_id: str
-    tools: tuple[str, ...]
 
 
 class PromptPerf(NamedTuple):
@@ -195,12 +183,6 @@ class EmissionActivity(BaseModel):
     mechanism: str
     sent_at: datetime
     snippet: str
-
-
-# How many of the newest chat promptlog rows the conversation history's tool
-# traces read (#2630).  A run straddling the window's oldest edge is dropped
-# rather than rendered with a truncated call list.
-TOOL_TRACE_PROMPTLOG_WINDOW = 500
 
 
 def _emission_snippet(content: str) -> str:
@@ -852,49 +834,6 @@ class MessageStore:
             all_messages = incoming + threaded + autonomous
             all_messages.sort(key=_in_send_order)
             return all_messages[-limit:]
-
-    def chat_turn_tool_traces(
-        self, limit: int = TOOL_TRACE_PROMPTLOG_WINDOW
-    ) -> list[ChatTurnTrace]:
-        """Every chat run, oldest first, as the history's tool line reads it: the
-        run's id, and the tool names the run's own prompt-log records show it called
-        (the run record's projection, deduplicated).
-
-        The reply's ``messagelog.run_id`` carries the same id — both stamped by the
-        framework — so the history pairs by identity; a run whose reply predates
-        the stamping column has no trace here to pair, and an older row gets no
-        tool line rather than a guessed one.  Rows with no run id at all are
-        skipped outright.  Bounded to the newest ``limit`` promptlog rows; a run
-        straddling that window's oldest edge is dropped rather than rendered with
-        a truncated call list."""
-        with self._session() as session:
-            rows = list(
-                session.exec(
-                    select(PromptLog)
-                    .where(
-                        PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME,
-                        PromptLog.prompt_type == ChatPromptType.USER_MESSAGE.value,
-                        col(PromptLog.run_id).is_not(None),
-                    )
-                    .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
-                    .limit(limit)
-                ).all()
-            )
-        rows.reverse()
-        # Group by run id in call order.
-        groups: dict[str, list[PromptLog]] = {}
-        for row in rows:
-            groups.setdefault(row.run_id or "", []).append(row)
-        ordered = list(groups.values())
-        if len(rows) == limit and ordered:
-            ordered = ordered[1:]  # the oldest visible run may be truncated
-        return [
-            ChatTurnTrace(
-                run_id=group_rows[0].run_id or "",
-                tools=tuple(dict.fromkeys(name for name, _ in run_tool_calls(group_rows))),
-            )
-            for group_rows in ordered
-        ]
 
     def ios_history_page(
         self,

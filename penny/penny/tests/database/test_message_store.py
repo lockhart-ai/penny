@@ -4,9 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 from sqlmodel import Session
 
-from penny.constants import ChatPromptType, PennyConstants
+from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.message_store import ChatTurnTrace
 from penny.database.models import MessageLog
 
 # One synthetic instant, to the microsecond — what every row in an ordering test is
@@ -204,83 +203,6 @@ class TestMessagesInOneMicrosecondKeepTheirWriteOrder:
         assert [m.content for m in messages] == [
             "anything on the ferry?",
             "the ferry is delayed",
-        ]
-
-
-def _log_chat_prompt(db: Database, run_id: str, response: dict) -> None:
-    """One chat-loop promptlog row under ``run_id`` — the ledger rows the history's
-    tool traces read."""
-    db.messages.log_prompt(
-        model="test-model",
-        messages=[{"role": "user", "content": "hi"}],
-        response=response,
-        agent_name=PennyConstants.CHAT_AGENT_NAME,
-        prompt_type=ChatPromptType.USER_MESSAGE.value,
-        run_id=run_id,
-    )
-
-
-def _tool_call_response(*names: str) -> dict:
-    """A logged response carrying the given tool calls, in order."""
-    return {
-        "choices": [
-            {
-                "message": {
-                    "tool_calls": [
-                        {"id": f"call_{i}", "function": {"name": name, "arguments": "{}"}}
-                        for i, name in enumerate(names)
-                    ]
-                }
-            }
-        ]
-    }
-
-
-class TestChatTurnToolTraces:
-    """``chat_turn_tool_traces`` — one trace per chat run, keyed by the run id the
-    reply's ``messagelog.run_id`` carries (#2630), so the history's pairing is an
-    identity join, not a timestamp guess."""
-
-    def test_one_trace_per_chat_run_tools_deduplicated(self, db):
-        _log_chat_prompt(db, "run-a", _tool_call_response("browse"))
-        _log_chat_prompt(db, "run-a", _tool_call_response("browse"))
-        _log_chat_prompt(db, "run-b", _tool_call_response("collection_configure"))
-
-        traces = db.messages.chat_turn_tool_traces()
-        assert traces == [
-            ChatTurnTrace(run_id="run-a", tools=("browse",)),
-            ChatTurnTrace(run_id="run-b", tools=("collection_configure",)),
-        ]
-
-    def test_a_run_that_only_talked_traces_with_no_tools(self, db):
-        """A chat run whose draws carried no tool call still traces — with an empty
-        tuple, which the history renders as ``[Tool calls: none]`` (#2630)."""
-        _log_chat_prompt(db, "run-quiet", {"choices": [{"message": {"content": "hi"}}]})
-
-        assert db.messages.chat_turn_tool_traces() == [ChatTurnTrace(run_id="run-quiet", tools=())]
-
-    def test_rows_without_a_run_id_and_other_agents_are_skipped(self, db):
-        _log_chat_prompt(db, "run-chat", _tool_call_response("browse"))
-        # A collector cycle's rows are another agent's ledger — not chat turns.
-        db.messages.log_prompt(
-            model="test-model",
-            messages=[{"role": "user", "content": "hi"}],
-            response=_tool_call_response("browse"),
-            agent_name=PennyConstants.COLLECTOR_AGENT_NAME,
-            prompt_type=ChatPromptType.USER_MESSAGE.value,
-            run_id="run-other-agent",
-        )
-        # A chat row with no run id can pair with no reply — skipped outright.
-        db.messages.log_prompt(
-            model="test-model",
-            messages=[{"role": "user", "content": "hi"}],
-            response=_tool_call_response("browse"),
-            agent_name=PennyConstants.CHAT_AGENT_NAME,
-            prompt_type=ChatPromptType.USER_MESSAGE.value,
-        )
-
-        assert db.messages.chat_turn_tool_traces() == [
-            ChatTurnTrace(run_id="run-chat", tools=("browse",))
         ]
 
 

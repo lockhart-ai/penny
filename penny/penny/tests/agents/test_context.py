@@ -95,13 +95,15 @@ async def test_conversation_merges_consecutive_same_role(
 
 
 @pytest.mark.asyncio
-async def test_conversation_pairs_tool_calls_by_run_id(
+async def test_conversation_carries_the_replies_and_their_run_ids(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """Each past assistant turn carries the tool line its own run's ledger rows
-    back (#2630), paired by the run id stamped on the reply — not guessed from
-    timestamps.  A turn that only talked reads ``[Tool calls: none]``; an
-    autonomous send with no run behind it carries no line at all."""
+    """The history carries each past reply as the user received it and nothing
+    else (#2646): no tool line appended, whatever the run called — the line read
+    as part of how her own replies look, and one real turn copied it in place
+    of a call.  The framework's run-id stamping stays: the reply's row carries
+    the same run id the chat run's promptlog rows carry, so a reader of the
+    record can still walk from a reply to the calls behind it."""
     config = make_config()
 
     async with running_penny(config) as penny:
@@ -115,7 +117,7 @@ async def test_conversation_pairs_tool_calls_by_run_id(
         await signal_server.wait_for_message(timeout=10.0)
 
         # The reply's row carries the same run id the chat run's own promptlog
-        # rows carry — both stamped by the framework, which is the whole join.
+        # rows carry — both stamped by the framework.
         with Session(penny.db.engine) as session:
             reply = session.exec(
                 select(MessageLog)
@@ -137,16 +139,14 @@ async def test_conversation_pairs_tool_calls_by_run_id(
             "the reply's run id must be the chat run's own id, not a guess"
         )
 
-        # A second turn that only talked: its run traces with no tools.
+        # A second turn that only talked, and an autonomous send between turns
+        # with no run behind it — logged the way the drainer logs one.
         mock_llm.set_response_handler(
             lambda request, count: mock_llm._make_text_response(request, "glad that helped!"),
             answers_micro_contexts=False,
         )
         await signal_server.push_message(sender=TEST_SENDER, content="thanks!")
         await signal_server.wait_for_message(timeout=10.0)
-
-        # An autonomous send between turns has no run behind it — logged the way
-        # the drainer logs one — and must carry no tool line.
         autonomous_id = penny.db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
             penny.config.signal_number,
@@ -159,9 +159,10 @@ async def test_conversation_pairs_tool_calls_by_run_id(
         assistant_turns = [content for role, content in conversation if role == "assistant"]
         assert assistant_turns == [
             # The browse read a page, so the reply-side URL fallback had a source
-            # to append (#2648): the reply carries the read page's URL.
-            "here's what i found!\n\nhttps://weather.example.com/today\n[Tool calls: browse]",
-            "glad that helped!\n[Tool calls: none]\na proactive note",
+            # to append (#2648): the reply carries the read page's URL.  No tool
+            # line after any reply (#2646): the history carries the replies alone.
+            "here's what i found!\n\nhttps://weather.example.com/today",
+            "glad that helped!\na proactive note",
         ]
 
 
