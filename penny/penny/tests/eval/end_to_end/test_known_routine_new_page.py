@@ -44,8 +44,10 @@ new page's two readings and the taught page's price are mutually exclusive as nu
 sample that invented a plausible number cannot satisfy a claim that names the one the page
 actually carries.
 
-Report-only (``min_pass_rate=None``). All content is synthetic, on an ``example`` domain,
-because the repo is public.
+Report-only (``min_pass_rate=None``). The watched product, its sibling listing, the taught
+page, the marketplace and the sellers are real names the model recognises (#2673); the
+prices and the sellers' histories are made up and live only on the listing pages, and the
+repo is public.
 """
 
 from __future__ import annotations
@@ -85,8 +87,8 @@ _BEHAVIOUR = (
 
 # ── The new page the ask names, and the two readings its cycles see ──────────
 
-_URL = "https://ridgelinegear.example/cedar-ridge-camp-table"
-_ITEM = "Cedar Ridge Camp Table"
+_URL = "https://www.ebay.com/itm/snow-peak-single-action-table"
+_ITEM = "Snow Peak Single Action Table"
 
 _BASELINE_AMOUNT = "212"
 _MOVED_AMOUNT = "189"
@@ -110,35 +112,36 @@ _SPEC_LINK = f"[{_ITEM} spec sheet]({_URL}/spec)"
 # datum, seller and condition notes, a specification block, two unrelated items from the same
 # seller with their own prices, and a returns policy — several kilobytes.
 _BASELINE_PAGE = CannedPage(
-    match="cedar-ridge-camp-table",
+    match="snow-peak-single-action-table",
     text=(
-        f"Title: {_ITEM} — roll-top aluminium camp table | ridgelinegear\n"
+        f"Title: {_ITEM} — folding aluminium camp table | eBay\n"
         f"{_URL}\n"
         "\n"
-        f"{_ITEM} (light use, one season). Sold by a fictional outfitter; sizes rotate.\n"
+        f"{_ITEM} (light use, one season). Sold by a specialist outdoor reseller; sizes "
+        "rotate.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
-        "Seller: granitepeak_outfitters (4.6 stars). The asking price last changed five days ago.\n"
+        "Seller: moosejaw (4.6 stars). The asking price last changed five days ago.\n"
         "Condition: light use, one season. Ships within two working days.\n"
         "\n"
         "Specification\n"
-        "Roll-top aluminium surface, adjustable legs, 1.1m unfolded length\n"
+        "Slatted aluminium top, single-action adjustable legs, 1.1m unfolded length\n"
         f"{_SPEC_LINK}\n"
-        "Sets up in about a minute without tools; the legs pack inside the rolled top.\n"
-        "Weight 3.4kg · Seats four on a bench side · Carries in a 45cm sleeve\n"
+        "Sets up in about a minute without tools; the legs fold flat beneath the top.\n"
+        "Weight 4.1kg · Seats four on a bench side · Carries in a 60cm carry bag\n"
         "\n"
         "Others from this seller\n"
-        "Granitepeak Camp Stool, folding — $45\n"
-        "[Granitepeak Camp Stool](https://ridgelinegear.example/granitepeak-camp-stool)\n"
-        "Ridgeline Mug, 350ml enamel — $18\n"
-        "Both ship from the same fictional depot, usually inside a week.\n"
+        "Coleman camp stool, folding — $45\n"
+        "[Coleman camp stool](https://www.ebay.com/itm/coleman-camp-stool)\n"
+        "GSI Outdoors enamel mug, 350ml — $18\n"
+        "Both ship from the same depot, usually inside a week.\n"
         "\n"
         "What buyers say\n"
         '"Rock solid in a breeze — the adjustable legs earn their keep." — verified buyer\n'
         '"Heavier than I expected, but it packs down fine for a car trip." — verified buyer\n'
         "\n"
         "Returns are accepted within thirty days of delivery; return postage is the buyer's.\n"
-        "This fictional outfitter ships from one regional depot and restocks every Friday.\n"
+        "This seller ships from one regional depot and restocks every Friday.\n"
     ),
 )
 _MOVED_PAGE = datum(_BASELINE_PAGE, _DATUM, _MOVED_DATUM)

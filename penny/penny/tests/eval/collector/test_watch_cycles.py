@@ -58,8 +58,9 @@ these three do not (#2007).  The fourth case is kept apart from that rule becaus
 an unlabelled price among several of the SAME item, on a page an order of magnitude larger —
 is not a shape any of the first three's pages exercise.
 
-Report-only (``min_pass_rate=None``).  All content is synthetic — the house listing fixture on
-an invented marketplace — because the repo is public.
+Report-only (``min_pass_rate=None``).  The watched product, its sibling listings, the
+marketplace and the sellers are real names the model recognises (#2673); the prices and the
+sellers' histories are made up and live only on the listing pages, and the repo is public.
 """
 
 from __future__ import annotations
@@ -240,22 +241,22 @@ _HEAD = f"Title: {_ITEM} — handheld console | eBay\n{LISTING_URL}\n\n"
 # Shared across READINGS and MESSY_READINGS — one copy, not a near-duplicate per page set
 # (#2366: the ruling that the first three cases' pages get real length too).
 _FULL_SPECS = (
-    "7-inch 1200p display with 512 GB of storage\n"
-    "About four hours of battery per charge; the cell is replaceable\n"
-    "Weight 640g · Original box and charger · One controller included\n"
-    "Bluetooth 5.2 and a USB-C port for charging and wired audio\n"
-    "Runs the open handheld OS, version 14\n"
-    "Supports external storage up to 1 TB via its card slot\n"
-    "Available in slate grey or sandstone\n"
-    "Comes with a one-year manufacturer warranty, extendable at checkout\n"
+    "3.5-inch 1600x1440 display\n"
+    "Plays original Game Boy, Game Boy Color and Game Boy Advance cartridges\n"
+    "Cartridge adapters for other classic systems sold separately\n"
+    "openFPGA cores run from the microSD card slot\n"
+    "Bluetooth for wireless audio, plus a 3.5mm headphone jack and a USB-C port\n"
+    "Supports microSD cards up to 1 TB\n"
+    "Available in black or white\n"
+    "Comes with a one-year seller warranty, extendable at checkout\n"
 )
 
 _QA_BLOCK = (
     "Q: Does it come with a case? A: A soft pouch is included; a hard case is sold "
     "separately.\n"
     "Q: Is the storage expandable? A: Yes, via the card slot, up to 1 TB.\n"
-    "Q: Does it work outside this region? A: The charger is dual-voltage; the plug may need "
-    "an adapter.\n"
+    "Q: Does it work outside this region? A: It charges over USB-C from any standard "
+    "charger; a plug adapter may be needed abroad.\n"
     "Q: Can I pick this up locally? A: No, this storefront ships only, no local pickup.\n"
 )
 
@@ -264,13 +265,13 @@ _RETURN_POLICY = (
     "unless the item arrived faulty. Exchanges are processed once the returned unit is "
     "received and inspected. A protection plan purchased with this order is refunded in full "
     "if the unit is returned within the same window. Orders placed after the daily cutoff "
-    "ship the next business day. This listing is provided by an independent seller on a "
-    "fictional marketplace platform and is not sold or fulfilled by the platform itself.\n"
+    "ship the next business day. This listing is provided by an independent seller on the "
+    "marketplace and is not sold or fulfilled by the marketplace itself.\n"
 )
 
 _BOX_CONTENTS = (
     "What's in the box\n"
-    "One handheld console · One USB-C charging cable · One controller · A quick-start guide\n"
+    "One handheld console · One USB-C charging cable · A quick-start guide\n"
     "The protection plan, if purchased, is applied automatically at checkout and needs no "
     "separate registration.\n"
 )
@@ -279,19 +280,19 @@ _SHIPPING_OPTIONS = (
     "Shipping options\n"
     "Standard delivery is tracked door-to-door; expedited delivery is available at checkout "
     "for an additional fee.\n"
-    "Ships from a fictional warehouse in a plain, unbranded box.\n"
+    "Ships from the seller's warehouse in a plain, unbranded box.\n"
 )
 
 _COMPARE_BLOCK = (
     "Compare similar listings\n"
-    "Buyers who viewed this also looked at two other open-box handhelds from the same "
+    "Buyers who viewed this also looked at other open-box listings from the same "
     "storefront, each listed separately with its own asking price and condition notes.\n"
 )
 
 _SELLER_INFO_BLOCK = (
     "Seller information\n"
     "This storefront has operated on the marketplace for several years and ships from a "
-    "single fictional warehouse. Customer messages are typically answered within one "
+    "single warehouse. Customer messages are typically answered within one "
     "business day.\n"
 )
 
@@ -319,23 +320,23 @@ READINGS = (
     Reading(
         "current-price",
         "the current price",
-        _HEAD + f"{_ITEM} (open box, tested). Sold by a fictional reseller; stock moves weekly.\n"
+        _HEAD + f"{_ITEM} (open box, tested). Sold by a specialist reseller; stock moves weekly.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
         "Seller: musicmagpie (4.9 stars). The asking price last changed nine days ago.\n"
         "Condition: open box, tested. Dispatched within two working days.\n"
         "\n"
         "Specification\n"
-        "7-inch 1200p display with 512 GB of storage\n"
+        "3.5-inch 1600x1440 display with a microSD card slot\n"
         f"{_SPEC_LINK}\n"
-        "About four hours of battery per charge; the cell is replaceable.\n"
-        "Weight 640g · Original box and charger · One controller included\n"
+        "About six hours of battery per charge; the cell is replaceable.\n"
+        "Weight 350g · Original box and USB-C cable included\n"
         "\n"
         "Others from this seller\n"
-        "Aurora Deck 1, refurbished — $329\n"
-        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
-        "Nebula Dock, charging stand — $59\n"
-        "Both ship from the same fictional warehouse.\n"
+        "Steam Deck, refurbished — $329\n"
+        "[Steam Deck](https://www.ebay.com/itm/steam-deck)\n"
+        "Analogue Dock, charging stand — $59\n"
+        "Both ship from the same warehouse.\n"
         "\n"
         "Returns are accepted within thirty days; return postage is the buyer's.\n"
         "\n"
@@ -362,24 +363,23 @@ READINGS = (
     Reading(
         "asking-price",
         "the asking price on the page",
-        _HEAD
-        + "A fictional marketplace listing. The shop reprices this one whenever the shelf moves.\n"
+        _HEAD + "The shop reprices this one whenever the shelf moves.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
-        "Offered by driftwood_games (4.8 stars). The asking price is reviewed every Monday.\n"
+        "Offered by cex (4.8 stars). The asking price is reviewed every Monday.\n"
         "Condition: open box, tested. Two working days to dispatch.\n"
         "\n"
         "What you get\n"
-        f"{_ITEM} handheld · 7-inch 1200p display · 512 GB\n"
+        f"{_ITEM} handheld · 3.5-inch 1600x1440 display · microSD card slot\n"
         f"{_SPEC_LINK}\n"
-        "The battery runs about four hours; charger and one controller are in the box.\n"
-        "Weight 640g · Original packaging · No trade-ins accepted on this listing\n"
+        "The battery runs about six hours; the original USB-C cable is in the box.\n"
+        "Weight 350g · Original packaging · No trade-ins accepted on this listing\n"
         "\n"
         "Also listed by this shop\n"
-        "Aurora Deck Lite, boxed — $279\n"
-        "[Aurora Deck Lite](https://www.ebay.com/itm/aurora-deck-lite)\n"
-        "Spare stylus, twin pack — $19\n"
-        "Everything ships from one fictional depot.\n"
+        "Retroid Pocket 5, boxed — $279\n"
+        "[Retroid Pocket 5](https://www.ebay.com/itm/retroid-pocket-5)\n"
+        "Screen protector, twin pack — $19\n"
+        "Everything ships from one depot.\n"
         "\n"
         "Thirty-day returns. The buyer pays return postage.\n"
         "\n"
@@ -406,21 +406,21 @@ READINGS = (
     Reading(
         "asking-right-now",
         "what the listing is asking right now",
-        _HEAD + "Listed by a fictional trade-in counter that re-prices its shelf every few days.\n"
+        _HEAD + "Listed by a trade-in counter that re-prices its shelf every few days.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
-        "Seller: quayside_swap (4.7 stars). What the counter asks moves with what it pays.\n"
+        "Seller: decluttr (4.7 stars). What the counter asks moves with what it pays.\n"
         "Condition: open box, tested. Ready to dispatch inside two working days.\n"
         "\n"
         "Hardware\n"
-        "A 7-inch 1200p screen and 512 GB of onboard storage\n"
+        "A 3.5-inch 1600x1440 screen and a microSD card slot\n"
         f"{_SPEC_LINK}\n"
-        "Around four hours of play per charge; a workshop can swap the battery.\n"
-        "Weight 640g · Boxed as it came · Charger included\n"
+        "Around six hours of play per charge; the cell can be swapped.\n"
+        "Weight 350g · Boxed as it came · USB-C cable included\n"
         "\n"
         "On the same shelf\n"
-        "Aurora Deck 1, tested — $315\n"
-        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
+        "Steam Deck, tested — $315\n"
+        "[Steam Deck](https://www.ebay.com/itm/steam-deck)\n"
         "Moulded travel case — $44\n"
         "The counter posts its shelf every morning.\n"
         "\n"
@@ -449,23 +449,23 @@ READINGS = (
     Reading(
         "listed-today",
         "the price it is listed at today",
-        _HEAD + "A fictional clearance warehouse. Today's shelf, republished each morning.\n"
+        _HEAD + "Today's shelf, republished each morning by a clearance outlet.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
-        "Seller: pier_clearance (4.6 stars). The asking price is set each day at opening.\n"
+        "Seller: gamestop (4.6 stars). The asking price is set each day at opening.\n"
         "Condition: open box, tested. Two working days from order to dispatch.\n"
         "\n"
         "Specification\n"
-        "Display 7-inch 1200p · Storage 512 GB\n"
+        "Display 3.5-inch 1600x1440 · Storage via microSD\n"
         f"{_SPEC_LINK}\n"
-        "Roughly four hours of battery; the pack is a serviceable part.\n"
-        "Weight 640g · Original box and charger · One controller\n"
+        "Roughly six hours of battery; the cell is a serviceable part.\n"
+        "Weight 350g · Original box and USB-C cable\n"
         "\n"
         "Today's other handhelds\n"
-        "Aurora Deck Lite, open box — $265\n"
-        "[Aurora Deck Lite](https://www.ebay.com/itm/aurora-deck-lite)\n"
+        "Retroid Pocket 5, open box — $265\n"
+        "[Retroid Pocket 5](https://www.ebay.com/itm/retroid-pocket-5)\n"
         "Screen guard, twin pack — $12\n"
-        "The whole shelf ships from one fictional warehouse.\n"
+        "The whole shelf ships from one warehouse.\n"
         "\n"
         "Returns accepted for thirty days; the buyer covers return postage.\n"
         "\n"
@@ -492,24 +492,23 @@ READINGS = (
     Reading(
         "listing-shows",
         "the price this listing shows",
-        _HEAD
-        + "A fictional consignment listing. The page shows whatever the owner last agreed to.\n"
+        _HEAD + "The page shows whatever the owner last agreed to.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
-        "Seller: lantern_consign (4.9 stars). The asking price is whatever this page shows.\n"
+        "Seller: cashconverters (4.9 stars). The asking price is whatever this page shows.\n"
         "Condition: open box, tested. Dispatch within two working days.\n"
         "\n"
         "Specification sheet\n"
-        "7-inch 1200p display · 512 GB storage · 640g\n"
+        "3.5-inch 1600x1440 display · microSD storage · 350g\n"
         f"{_SPEC_LINK}\n"
-        "The battery lasts about four hours and is replaceable at a workshop.\n"
-        "Charger, one controller and the original box are included.\n"
+        "The battery lasts about six hours and is replaceable.\n"
+        "A USB-C cable and the original box are included.\n"
         "\n"
         "Elsewhere in this consignment\n"
-        "Aurora Deck 1, boxed — $340\n"
-        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
+        "Steam Deck, boxed — $340\n"
+        "[Steam Deck](https://www.ebay.com/itm/steam-deck)\n"
         "Dock and cable set — $69\n"
-        "All consigned stock ships from one fictional store.\n"
+        "All consigned stock ships from one store.\n"
         "\n"
         "Thirty days to return; return postage is the buyer's.\n"
         "\n"
@@ -610,8 +609,8 @@ _BUNDLE_LINE = f"Bundle of 3: ${_BUNDLE_AMOUNT}"
 _FOUR_PAY_LINE = f"Or 4 payments of ${_FOUR_PAY_AMOUNT}"
 _SHIPPING_LINE = f"Shipping: ${_SHIPPING_AMOUNT}, arrives in three to five business days"
 _WARRANTY_LINE = f"Add a two-year protection plan: ${_WARRANTY_AMOUNT}"
-_OTHER_ITEM_1_LINE = f"Aurora Deck 1, refurbished — ${_OTHER_ITEM_1_AMOUNT}"
-_OTHER_ITEM_2_LINE = f"Nebula Dock, charging stand — ${_OTHER_ITEM_2_AMOUNT}"
+_OTHER_ITEM_1_LINE = f"Steam Deck, refurbished — ${_OTHER_ITEM_1_AMOUNT}"
+_OTHER_ITEM_2_LINE = f"Analogue Dock, charging stand — ${_OTHER_ITEM_2_AMOUNT}"
 _REVIEW_ONE = (
     f'"Paid ${_REVIEW_AMOUNT} for mine last spring and have zero regrets — still going '
     'strong." — a verified buyer\n'
@@ -675,9 +674,9 @@ def _messy_body(voice: _MessyVoice) -> str:
         "\n"
         "Frequently bought together\n"
         f"{_OTHER_ITEM_1_LINE}\n"
-        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
+        "[Steam Deck](https://www.ebay.com/itm/steam-deck)\n"
         f"{_OTHER_ITEM_2_LINE}\n"
-        "Both ship from the same fictional warehouse.\n"
+        "Both ship from the same warehouse.\n"
         "\n"
         f"{_BOX_CONTENTS}"
         "\n"
@@ -712,7 +711,7 @@ _MESSY_VOICES = (
     _MessyVoice(
         name="current-price-messy",
         extract="the current price",
-        intro="A fictional marketplace listing for a handheld console, open box and tested.",
+        intro="A marketplace listing for a handheld console, open box and tested.",
         seller="Seller: musicmagpie (4.9 stars). The asking price last changed nine days ago.",
         condition="Condition: open box, tested. Dispatched within two working days.",
         spec_header="Specification",
@@ -728,21 +727,19 @@ _MESSY_VOICES = (
     _MessyVoice(
         name="asking-price-messy",
         extract="the asking price on the page",
-        intro=(
-            "A fictional marketplace listing. The shop reprices this one whenever the shelf moves."
-        ),
-        seller="Offered by driftwood_games (4.8 stars). The asking price is reviewed every Monday.",
+        intro=("The shop reprices this one whenever the shelf moves."),
+        seller="Offered by cex (4.8 stars). The asking price is reviewed every Monday.",
         condition="Condition: open box, tested. Two working days to dispatch.",
         spec_header="What you get",
-        review_two='"Controller feels great, a bit heavier than I expected." — a verified buyer\n',
+        review_two='"Feels solid, a bit heavier than I expected." — a verified buyer\n',
         review_three='"Exactly as described, fast shipping." — a verified buyer\n',
-        closing="driftwood_games ships everything from one fictional depot.",
+        closing="cex ships everything from one depot.",
     ),
     _MessyVoice(
         name="asking-right-now-messy",
         extract="what the listing is asking right now",
-        intro="Listed by a fictional trade-in counter that re-prices its shelf every few days.",
-        seller="Seller: quayside_swap (4.7 stars). What the counter asks moves with what it pays.",
+        intro="Listed by a trade-in counter that re-prices its shelf every few days.",
+        seller="Seller: decluttr (4.7 stars). What the counter asks moves with what it pays.",
         condition="Condition: open box, tested. Ready to dispatch inside two working days.",
         spec_header="Hardware",
         review_two='"Good value for an open-box unit, no complaints." — a verified buyer\n',
@@ -750,29 +747,29 @@ _MESSY_VOICES = (
             '"Screen has a couple of tiny scuffs but nothing you notice in use." — a verified '
             "buyer\n"
         ),
-        closing="quayside_swap posts its shelf every morning.",
+        closing="decluttr posts its shelf every morning.",
     ),
     _MessyVoice(
         name="listed-today-messy",
         extract="the price it is listed at today",
-        intro="A fictional clearance warehouse. Today's shelf, republished each morning.",
-        seller="Seller: pier_clearance (4.6 stars). The asking price is set each day at opening.",
+        intro="Today's shelf, republished each morning by a clearance outlet.",
+        seller="Seller: gamestop (4.6 stars). The asking price is set each day at opening.",
         condition="Condition: open box, tested. Two working days from order to dispatch.",
         spec_header="Specification",
         review_two='"Bought as a backup unit, works perfectly." — a verified buyer\n',
         review_three=('"Box was a bit beat up but the unit itself was fine." — a verified buyer\n'),
-        closing="The whole shelf ships from one fictional warehouse.",
+        closing="The whole shelf ships from one warehouse.",
     ),
     _MessyVoice(
         name="listing-shows-messy",
         extract="the price this listing shows",
-        intro="A fictional consignment listing. The page shows whatever the owner last agreed to.",
-        seller="Seller: lantern_consign (4.9 stars). The asking price is whatever this page shows.",
+        intro="The page shows whatever the owner last agreed to.",
+        seller="Seller: cashconverters (4.9 stars). The asking price is whatever this page shows.",
         condition="Condition: open box, tested. Dispatch within two working days.",
         spec_header="Specification sheet",
         review_two='"Seller was responsive and the handoff was smooth." — a verified buyer\n',
         review_three='"Works like new, battery holds a charge fine." — a verified buyer\n',
-        closing="All consigned stock ships from one fictional store.",
+        closing="All consigned stock ships from one store.",
     ),
 )
 
