@@ -1442,9 +1442,9 @@ _EX4_REPLY = (
     "morning. I'll grab those top 3 OregonLive headlines and send them your way. 🗞️"
 )
 _EX5_USER = (
-    "fantastic. now try reading portlandmercury.com, wweek.com, and "
-    "streetroots.org, and tell me if you're able to read them and get 3 headlines "
-    "from each of them too"
+    "fantastic. now try reading the Portland Mercury (portlandmercury.com), "
+    "Willamette Week (wweek.com), and Street Roots (streetroots.org), and tell "
+    "me if you're able to read them and get 3 headlines from each of them too"
 )
 _EX5_REPLY = (
     "I searched all three and they all worked! Here is what I found:\n\n"
