@@ -196,7 +196,9 @@ async def test_the_delivery_turn_reads_the_report_whole(db, test_config, mock_ll
         "- into `indie-metroidvanias`, under `Cinder Drift`: Cinder Drift — a hand-drawn "
         "metroidvania. https://ex.example/cd\n"
         "\n"
-        "Write the one message to send the user about this run, from what the job wrote."
+        "Write the one message to send the user about this run, from what the job wrote. It "
+        "can be as long as it takes to cover every entry — a job's report isn't a quick "
+        "text."
     )
 
 

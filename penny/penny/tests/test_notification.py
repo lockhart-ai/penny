@@ -69,7 +69,9 @@ def test_a_job_report_renders_whole():
         "tells them about every one.\n"
         "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
         "\n"
-        "Write the one message to send the user about this run, from what the job wrote."
+        "Write the one message to send the user about this run, from what the job wrote. It "
+        "can be as long as it takes to cover every entry — a job's report isn't a quick "
+        "text."
     )
 
 
@@ -94,7 +96,9 @@ def test_a_report_states_a_no_write_cycle_and_a_user_triggered_run():
         "## What the job wrote this run\n"
         "It wrote nothing down this run.\n"
         "\n"
-        "Write the one message to send the user about this run, from what the job wrote."
+        "Write the one message to send the user about this run, from what the job wrote. It "
+        "can be as long as it takes to cover every entry — a job's report isn't a quick "
+        "text."
     )
 
 

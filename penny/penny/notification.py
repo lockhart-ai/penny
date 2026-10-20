@@ -118,7 +118,11 @@ _WROTE_LEAD = (
 _WROTE_NONE = "It wrote nothing down this run."
 _WRITE_LINE = "- into `{memory}`, under `{key}`: {content}"
 _WRITE_LINE_NO_KEY = "- into `{memory}`: {content}"
-_ASK = "Write the one message to send the user about this run, from what the job wrote."
+_ASK = (
+    "Write the one message to send the user about this run, from what the job "
+    "wrote. It can be as long as it takes to cover every entry — a job's report "
+    "isn't a quick text."
+)
 _REPORT_LEAD = 'Your job "{collection}" just finished a run and asked to tell the user.'
 _REPORT_ABOUT = "What the job is for: {description}"
 
