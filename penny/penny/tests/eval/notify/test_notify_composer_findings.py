@@ -1,25 +1,31 @@
-"""The notify COMPOSER micro-context, in isolation: what it makes of a finished collector
-cycle's assembled document (#1911/#2363).
+"""The delivery turn that writes a notifying job's message, in isolation: what it
+makes of a finished cycle's report (#1911/#2363, ported to #2656's path).
 
-No cycle runs and no store is seeded — the composer's whole input is one framework-rendered
-document (``penny.notification.render_notification``), so a case is that one document.  The
-``notify_composer_eval`` driver mirrors the browse extractor's shape: a fixed set of facts
-(the cycle's own findings, held byte-identical across the arms) and five wordings of the one
-piece of upstream free text the document carries — the collection's own ``description`` — the
+No cycle runs — the driver seeds the job and the entries ONE finished cycle wrote,
+enqueues the report row the way ``_notify_if_due`` does, and drives the real
+delivery turn the send-queue drainer runs.  The ``job_report_eval`` driver mirrors
+the browse extractor's shape: a fixed set of facts (the job's name and its cycle's
+entries, held byte-identical across the arms) and five wordings of the one piece of
+upstream free text the report carries — the collection's own ``description`` — the
 same role the extractor's ``instruction``/``also_instructed`` play.
 
-Two cases:
+Two cases (identities kept from the composer they ported; the composer itself is
+retired — the cases now measure the chat-agent delivery turn that replaced it):
 
-* ``notify-composer-single-finding`` — the driver's own smoke test and cost baseline: one
-  ordinary finding, nothing to summarise.
-* ``notify-composer-many-findings`` — the adversarial case research 3/3 of the honest-failure
-  meta (#2373) asked for: a cycle that wrote 18 real-sized findings of mixed relevance in one
-  pass, across several marketplaces, which is the shape ``render_notification`` actually
-  renders bounded (#1934) — only the first ``PennyConstants.NOTIFY_WRITTEN_ENTRIES`` (8) are
-  shown, the rest reduced to an honest "N more entries not shown" count.
+* ``notify-composer-single-finding`` — the driver's own smoke test and cost baseline:
+  one ordinary finding, nothing to summarise.
+* ``notify-composer-many-findings`` — the adversarial case research 3/3 of the
+  honest-failure meta (#2373) asked for: a cycle that wrote 18 real-sized findings of
+  mixed relevance in one pass, across several marketplaces.  The composer's document
+  capped the render at 8 and the claims named only those 8; the report the delivery
+  turn reads carries the entries FULL and uncapped (#2656), so the claim strengthens
+  to ALL 18 — every finding the cycle wrote must reach the user, not the 8 a budget
+  happened to show.  (Claim change flagged for the code owner in the PR body.)
 
-All content is synthetic: invented marketplace names, invented items, invented prices —
-nothing resembling a real person or listing.
+The marketplaces, brands and prices are real ones the model recognises (Reverb,
+eBay, Craigslist, Amazon; Korg, Moog, Roland and the rest), per the code owner's
+ruling of Oct 19 — the listings themselves are fictional, and the repo is public, so
+nothing resembling a real person or a real live listing appears.
 
 Every case is report-only; the thresholds are the code owner's.
 """
@@ -28,9 +34,9 @@ from __future__ import annotations
 
 import pytest
 
-from penny.notification import NotificationInput, WrittenEntry
+from penny.database.memory import EntryInput
 from penny.tests.eval.conftest import EVAL_MODELS
-from penny.tests.eval.drivers.notify_composer import NotifyComposerEval
+from penny.tests.eval.drivers.notify_composer import JobReportEval
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import REPLY_SPREAD
 from penny.tests.eval.utils.worlds import World
@@ -40,13 +46,10 @@ pytestmark = pytest.mark.eval
 _FAMILY = "notify-composer"
 
 # ── notify-composer-many-findings ────────────────────────────────────────────────────────
-# 18 findings from one cycle.  The document's own render caps written entries at
-# NOTIFY_WRITTEN_ENTRIES (8, constants.py), so only the first 8 ever reach the model; the
-# rest exist to produce the real overflow line a heavy cycle's document actually carries
-# ("10 more entries not shown").  Two of the eight RENDERED findings (#3, #6) are
-# deliberately borderline-relevant — true facts the cycle wrote down that are not quite "a
-# synth" — to test that the composer reports them honestly rather than editorialising about
-# relevance it was not asked to judge.
+# 18 findings from one cycle.  Under the composer these were capped at the first 8
+# (``NOTIFY_WRITTEN_ENTRIES``) and the rest reduced to an honest "N more entries not
+# shown" count; the report the delivery turn reads is UNCAPPED (#2656), so every one of
+# the 18 is in front of the model and every one of them is claimed.
 #
 # Each finding's ANCHOR is its own item name — real content a friendly summary would
 # naturally restate, never a separate id tag appended to the line: an appended tag reads to
@@ -55,54 +58,53 @@ _FAMILY = "notify-composer"
 # "zx01q-listing"-shaped tag while still naming the item in plain prose, which scored as a
 # miss under the first anchor scheme even though nothing was dropped).
 _MANY_FINDINGS_COLLECTION = "vintage-synth-watch"
-_MANY_FINDINGS_MARKETS = ("Faraday Exchange", "Orbital Swap", "Nightjar Market")
+_MANY_FINDINGS_MARKETS = ("Reverb", "eBay", "Craigslist")
 _MANY_FINDINGS_CONTENT = (
-    "a Korrigan-7 analog synth on Faraday Exchange, asking 410 credits, described as lightly used",
-    "a Halcyon Drift desktop module on Orbital Swap, listed new in box at 275 credits",
-    "a Korrigan Satchel carry case sized for the Korrigan series on Faraday Exchange, "
-    "40 credits, not an instrument itself",
-    "a Tamsin Eight polysynth on Nightjar Market, price dropped from 700 to 610 credits",
-    "a Vesper Loop semi-modular rig on Orbital Swap, 325 credits, two units available",
-    "a Fenlow Thumper drum machine bundled free with a Vesper Loop purchase on Orbital "
-    "Swap, a different instrument category",
-    "a Marrow FM synth on Faraday Exchange, 540 credits, auction ending soon",
-    "a Quillfeather duo-oscillator synth on Nightjar Market, 190 credits, seller offering "
-    "a bundle discount",
-    "a Driftwood Six eurorack case on Orbital Swap, 95 credits",
-    "a Pellucid Arp sequencer on Faraday Exchange, 220 credits",
-    "a Rill & Moth ribbon controller on Nightjar Market, 60 credits",
-    "a Second Harvest FM synth on Orbital Swap, 480 credits",
-    "a Low Tide chorus pedal on Faraday Exchange, 35 credits",
-    "a Candlewright string synth on Nightjar Market, 390 credits",
-    "a Foxglove patchbay on Orbital Swap, 70 credits",
-    "a Winter Reed wavetable synth on Faraday Exchange, 455 credits",
-    "a Scrimshaw mixer on Nightjar Market, 110 credits",
-    "a Juniper Line percussion synth on Orbital Swap, 265 credits",
+    "a Korg MS-20 analog synth on Reverb, asking $410, described as lightly used",
+    "a Moog Grandmother desktop module on eBay, listed new in box at $275",
+    "a Korg gig bag sized for the MS-20 on Reverb, $40, not an instrument itself",
+    "a Roland Juno-106 polysynth on Craigslist, price dropped from $700 to $610",
+    "an Arturia MicroFreak semi-modular rig on eBay, $325, two units available",
+    "an Akai Rhythm Wolf drum machine bundled free with a MicroFreak purchase on eBay, "
+    "a different instrument category",
+    "a Yamaha DX7 synth on Reverb, $540, auction ending soon",
+    "a Novation Circuit groovebox on Craigslist, $190, seller offering a bundle discount",
+    "a Doepfer eurorack case on eBay, $95",
+    "an Elektron sequencer on Reverb, $220",
+    "an Eowave ribbon controller on Craigslist, $60",
+    "a Yamaha Reface synth on eBay, $480",
+    "a Boss chorus pedal on Reverb, $35",
+    "a Roland JX-3P synth on Craigslist, $390",
+    "a Behringer patchbay on eBay, $70",
+    "a Nord wavetable synth on Reverb, $455",
+    "a Mackie mixer on Craigslist, $110",
+    "a Teenage Engineering OP-Z percussion synth on eBay, $265",
 )
-_MANY_FINDINGS_WRITTEN = tuple(
-    WrittenEntry(memory=_MANY_FINDINGS_COLLECTION, key=f"listing-{index:02d}", content=content)
+_MANY_FINDINGS_ENTRIES = tuple(
+    EntryInput(key=f"listing-{index:02d}", content=content)
     for index, content in enumerate(_MANY_FINDINGS_CONTENT, start=1)
 )
-_MANY_FINDINGS_BASE = NotificationInput(
-    collection=_MANY_FINDINGS_COLLECTION,
-    description="",
-    calls=(),
-    written=_MANY_FINDINGS_WRITTEN,
-    related=(),
-)
-# The item NAME of each of the first 8 findings — the ones NOTIFY_WRITTEN_ENTRIES actually
-# renders into the document the draw reads.  The other 10 are never given to the model, so
-# claiming them would be unfair (#2373 ruling): "every finding named" means every finding
-# the model was shown, never the whole batch the cycle wrote.
+# EVERY finding's item name — the report is uncapped now, so "every finding named" means
+# every finding the cycle wrote, not the 8 a budget happened to render.
 _MANY_FINDINGS_ANCHORS = (
-    "Korrigan-7",
-    "Halcyon Drift",
-    "Korrigan Satchel",
-    "Tamsin Eight",
-    "Vesper Loop",
-    "Fenlow Thumper",
-    "Marrow FM",
-    "Quillfeather",
+    "Korg MS-20",
+    "Moog Grandmother",
+    "gig bag",
+    "Juno-106",
+    "MicroFreak",
+    "Rhythm Wolf",
+    "Yamaha DX7",
+    "Novation Circuit",
+    "eurorack",
+    "Elektron",
+    "ribbon controller",
+    "Reface",
+    "chorus pedal",
+    "JX-3P",
+    "patchbay",
+    "Nord",
+    "Mackie",
+    "OP-Z",
 )
 _MANY_FINDINGS_WORLD = World(
     name="vintage-synth-watch-cycle",
@@ -130,20 +132,12 @@ _MANY_FINDINGS_ALSO_DESCRIBED = (
 # The anchor is the item's own name — real content, not an appended id tag (see the
 # many-findings comment above for why).
 _SINGLE_FINDING_COLLECTION = "garden-tool-watch"
-_SINGLE_FINDING_ANCHOR = "Fenwick & Vance telescoping pruner"
-_SINGLE_FINDING_WRITTEN = (
-    WrittenEntry(
-        memory=_SINGLE_FINDING_COLLECTION,
+_SINGLE_FINDING_ANCHOR = "Fiskars telescoping pruner"
+_SINGLE_FINDING_ENTRIES = (
+    EntryInput(
         key="listing-01",
-        content=f"a {_SINGLE_FINDING_ANCHOR} on Orbital Swap, listed new in box at 38 credits",
+        content=f"a {_SINGLE_FINDING_ANCHOR} on Amazon, listed new in box at $38",
     ),
-)
-_SINGLE_FINDING_BASE = NotificationInput(
-    collection=_SINGLE_FINDING_COLLECTION,
-    description="",
-    calls=(),
-    written=_SINGLE_FINDING_WRITTEN,
-    related=(),
 )
 _SINGLE_FINDING_WORLD = World(
     name="garden-tool-watch-cycle",
@@ -152,30 +146,31 @@ _SINGLE_FINDING_WORLD = World(
     excludes=(),
     answers=(_SINGLE_FINDING_ANCHOR,),
 )
-_SINGLE_FINDING_DESCRIPTION = "keeps an eye on Orbital Swap for new garden-tool listings"
+_SINGLE_FINDING_DESCRIPTION = "keeps an eye on Amazon for new garden-tool listings"
 _SINGLE_FINDING_ALSO_DESCRIBED = (
-    "watches Orbital Swap and flags new garden-tool listings",
-    "checks the Orbital Swap listings for anything garden-tool related that's new",
-    "tracks new garden-tool listings on Orbital Swap",
-    "scans Orbital Swap for fresh garden-tool listings",
+    "watches Amazon and flags new garden-tool listings",
+    "checks the Amazon listings for anything garden-tool related that's new",
+    "tracks new garden-tool listings on Amazon",
+    "scans Amazon for fresh garden-tool listings",
 )
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_notify_composer_names_one_ordinary_finding(
-    notify_composer_eval: NotifyComposerEval, model: str
+    job_report_eval: JobReportEval, model: str
 ) -> None:
     """The driver's own smoke test and cost baseline: one ordinary finding, nothing to
-    summarise, nothing capped — what ``notify-composer-many-findings`` is read against."""
-    cohort = await notify_composer_eval(
+    summarise — what ``notify-composer-many-findings`` is read against."""
+    cohort = await job_report_eval(
         case_id="notify-composer-single-finding",
         behaviour=(
-            "In the notify composer, when a cycle finds one ordinary new entry, Penny's "
-            "notification names what the finding carries and invents nothing."
+            "In a finished job's delivery turn, when the cycle found one ordinary new "
+            "entry, Penny's message names what the finding carries and invents nothing."
         ),
         area=Area.NOTIFICATIONS,
         model=model,
-        base=_SINGLE_FINDING_BASE,
+        collection=_SINGLE_FINDING_COLLECTION,
+        entries=_SINGLE_FINDING_ENTRIES,
         world=_SINGLE_FINDING_WORLD,
         description=_SINGLE_FINDING_DESCRIPTION,
         also_described=_SINGLE_FINDING_ALSO_DESCRIBED,
@@ -183,7 +178,8 @@ async def test_notify_composer_names_one_ordinary_finding(
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # STORE — empty, by report: a single call writes to no store.
+    # STORE — the cycle's entries were seeded, and the delivery turn writes no store of
+    # its own; the message it queues is the read.
     # PROVENANCE
     cohort.assert_the_reply_answers_the_ask()
     cohort.assert_every_value_in_the_reply_is_sourced()
@@ -193,22 +189,23 @@ async def test_notify_composer_names_one_ordinary_finding(
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_notify_composer_names_many_findings_at_once(
-    notify_composer_eval: NotifyComposerEval, model: str
+    job_report_eval: JobReportEval, model: str
 ) -> None:
     """A cycle that wrote 18 findings in one pass across three marketplaces, mixed
-    relevance, real-sized text — the shape research 3/3 of the honest-failure meta (#2373)
-    asked for.  The document's own render caps written entries at 8
-    (``PennyConstants.NOTIFY_WRITTEN_ENTRIES``), so "every finding named" claims only the 8
-    the draw is actually shown, never the 10 it is never given."""
-    cohort = await notify_composer_eval(
+    relevance, real-sized text — the shape research 3/3 of the honest-failure meta
+    (#2373) asked for.  The report the delivery turn reads carries every entry FULL
+    and uncapped (#2656), so the claim is ALL 18 findings — the composer's document
+    showed only the first 8 and the claim had to stop where the budget did."""
+    cohort = await job_report_eval(
         case_id="notify-composer-many-findings",
         behaviour=(
-            "In the notify composer, when a cycle finds many new entries at once, Penny's "
-            "notification names what the findings carry and invents nothing."
+            "In a finished job's delivery turn, when the cycle found many new entries at "
+            "once, Penny's message names what the findings carry and invents nothing."
         ),
         area=Area.NOTIFICATIONS,
         model=model,
-        base=_MANY_FINDINGS_BASE,
+        collection=_MANY_FINDINGS_COLLECTION,
+        entries=_MANY_FINDINGS_ENTRIES,
         world=_MANY_FINDINGS_WORLD,
         description=_MANY_FINDINGS_DESCRIPTION,
         also_described=_MANY_FINDINGS_ALSO_DESCRIBED,
@@ -216,7 +213,8 @@ async def test_notify_composer_names_many_findings_at_once(
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # STORE — empty, by report: a single call writes to no store.
+    # STORE — the cycle's entries were seeded, and the delivery turn writes no store of
+    # its own; the message it queues is the read.
     # PROVENANCE
     cohort.assert_the_reply_answers_the_ask()
     cohort.assert_every_value_in_the_reply_is_sourced()

@@ -134,7 +134,10 @@ def _send_queue_rows(db: Database) -> list[SendQueueItem]:
         return list(
             session.exec(
                 select(SendQueueItem)
-                .where(col(SendQueueItem.cancelled_at).is_(None))
+                .where(
+                    col(SendQueueItem.cancelled_at).is_(None),
+                    col(SendQueueItem.failed_at).is_(None),
+                )
                 .order_by(col(SendQueueItem.created_at).asc())
             ).all()
         )
@@ -158,6 +161,33 @@ def _live_run_ids(db: Database) -> set[str]:
     return {row.run_id for row in live_prompts(db, _PERF_WINDOW) if row.run_id}
 
 
+async def deliver_pending_reports(penny: Penny) -> set[str]:
+    """Compose and deliver every pending report row the way the idle drainer would
+    (#2656).
+
+    A notifying cycle ENQUEUES a report row — the hand-off naming the run whose
+    written entries the message comes from — and the SEND-QUEUE DRAINER composes it:
+    it builds the report, runs ONE chat-agent delivery turn, gates what the turn
+    wrote, and stores it on the row for delivery.  The scheduler that would run the
+    drainer is not running under the harness, so the driver runs the same
+    ``execute()`` here — the real code path, not a re-implementation — until no
+    report row is pending, and returns the run ids the deliveries created (each a
+    chat run of its own, excluded from the cycle's own tool sequence by the caller).
+    """
+    runs_before = _live_run_ids(penny.db)
+    for _ in range(len(penny.db.send_queue.pending_items())):
+        reports = [
+            row
+            for row in penny.db.send_queue.pending_items()
+            if row.report_run_id and not row.content
+        ]
+        if not reports:
+            break
+        if not await penny.send_queue_drainer.execute():
+            break
+    return _live_run_ids(penny.db) - runs_before
+
+
 def _observe_cycle(
     db: Database,
     collection: str,
@@ -167,10 +197,15 @@ def _observe_cycle(
     sent_before: int,
     served_before: int,
     runs_before: set[str],
+    extra_runs: frozenset[str] = frozenset(),
 ) -> CycleObservation:
     """One cycle's footprint, composed from the state it left: what it wrote, what it
-    queued, what it called, what it was SERVED, and the run record it closed with."""
-    runs = _live_run_ids(db) - runs_before
+    queued, what it called, what it was SERVED, and the run record it closed with.
+
+    ``extra_runs`` are runs in the window that are NOT the cycle's — the delivery
+    chat turn a queued report rode (#2656), a run of its own on the chat agent — so
+    the cycle's tool sequence and its run record stay the cycle's own."""
+    runs = (_live_run_ids(db) - runs_before) - extra_runs
     rows = [row for row in live_prompts(db, _PERF_WINDOW) if row.run_id in runs]
     closed = next((row for row in rows if row.run_outcome is not None), None)
     return CycleObservation(
@@ -254,6 +289,11 @@ async def _drive_cycles(
         _, message = await penny.collector.run_for(collection)
         if _live_run_ids(penny.db) == runs_before and refusal is None:
             refusal = message
+        # The report the cycle queued is composed by the DELIVERY chat turn (#2656) —
+        # driven here, exactly as the idle drainer would run it, before anything is
+        # observed: `sent` reads what the user will actually receive, and the
+        # delivery's own runs stay out of the cycle's tool sequence.
+        delivery_runs = await deliver_pending_reports(penny)
         observed.append(
             _observe_cycle(
                 penny.db,
@@ -263,6 +303,7 @@ async def _drive_cycles(
                 sent_before=sent_before,
                 served_before=served_before,
                 runs_before=runs_before,
+                extra_runs=frozenset(delivery_runs),
             )
         )
     return _DrivenCycles(observed=observed, ran=refusal is None, refusal=refusal)

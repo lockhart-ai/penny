@@ -469,23 +469,15 @@ ConfigParam(
     group=GROUP_TOKEN_BUDGETS,
 )
 
-ConfigParam(
-    key="TOKEN_BUDGET_NOTIFY_COMPOSER",
-    description="Max completion tokens for a notify-composing micro-context call",
-    type=int,
-    default=16000,
-    validator=_validate_positive_int,
-    group=GROUP_TOKEN_BUDGETS,
-)
-
 # Which ConfigParam names which call kind's budget.  A kind absent from this table — a
 # future agent, or a test's made-up name — gets no cap: ``token_budget_for`` returns
-# ``None`` rather than inventing a number nobody chose for it.
+# ``None`` rather than inventing a number nobody chose for it.  (The notify-composer
+# kind retired with the composing job in #2656: the delivery turn is a chat turn and
+# rides TOKEN_BUDGET_CHAT.)
 TOKEN_BUDGET_PARAM_BY_AGENT_NAME: dict[str, str] = {
     PennyConstants.CHAT_AGENT_NAME: "TOKEN_BUDGET_CHAT",
     PennyConstants.COLLECTOR_AGENT_NAME: "TOKEN_BUDGET_COLLECTOR",
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: "TOKEN_BUDGET_BROWSE_EXTRACT",
-    PennyConstants.NOTIFY_COMPOSE_AGENT_NAME: "TOKEN_BUDGET_NOTIFY_COMPOSER",
 }
 
 

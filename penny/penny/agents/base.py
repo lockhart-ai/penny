@@ -203,7 +203,7 @@ class Agent:
     name: str = "Agent"
 
     # Static system prompt for this agent.  Subclasses with a fixed prompt
-    # set this class attribute (e.g. ``system_prompt = Prompt.NOTIFY_SYSTEM_PROMPT``).
+    # set this class attribute (e.g. a micro-context's own contract framing).
     # Agents that build their prompt dynamically (e.g. ChatAgent's
     # _build_system_prompt) leave this empty and pass ``system_prompt=``
     # explicitly to ``run()``.
@@ -2155,9 +2155,9 @@ class BackgroundAgent(Agent):
 
     It adds exactly ONE thing to the chat-style tool surface: ``done``, the terminator
     a background cycle closes with (#1569, restored #1916).  ``send_message`` is NOT
-    back — the message is written and queued after the cycle by a scoped micro-context
-    with no tool channel at all (#1911), so the long chat-flavoured tail the cycles
-    were dying in stays gone.  What came back is only the close, because deriving it
+    back — telling the user is not a tool a cycle calls: a notifying close hands the
+    report to the send queue, and the delivery chat turn writes the message from it
+    (#1911, reshaped #2656).  What came back is only the close, because deriving it
     from program coverage left a cycle that departed from its program for a good reason
     with no way to finish at all.
     """

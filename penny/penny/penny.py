@@ -252,9 +252,13 @@ class Penny:
             config=config,
             embedding_model_client=self.embedding_model_client,
         )
-        # Deterministic task (no LLM) that delivers queued autonomous messages
-        # once the autonomous-send cooldown clears.
-        self.send_queue_drainer = SendQueueDrainer(db=self.db, config=config)
+        # Delivers queued autonomous messages once the autonomous-send cooldown
+        # clears.  Mostly deterministic — its one model-shaped step (#2656) is
+        # composing a notifying cycle's report, which it rides through the chat
+        # agent before delivering.
+        self.send_queue_drainer = SendQueueDrainer(
+            db=self.db, config=config, chat_agent=self.chat_agent
+        )
 
     def _init_commands(self, config: Config) -> None:
         """Create command registry.

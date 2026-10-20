@@ -25,7 +25,7 @@ flowchart TD
         Coll[Collector dispatcher] -->|"per-collection prompt<br>+ scoped tools"| FG_Ollama3["LLM<br>(OpenAI SDK)"]
         Coll -.->|"reads memory rows<br>(extraction_prompt, interval,<br>last_collected_at)"| DB
         Coll -.->|"writes entries<br>scoped to one collection"| DB
-        Coll -->|"notify micro-context<br>(after a done-closed cycle)"| Channel
+        Coll -->|"queues the job's report;<br>the drainer's delivery turn<br>writes the message"| Channel
     end
 
     User -.->|"resets idle<br>cancels background"| Scheduler
@@ -71,17 +71,17 @@ penny/
   startup.py          — Startup announcement message generation (git commit info)
   preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on image/browser/channel issues
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
-  notification.py     — Composes the one message a finished collector cycle sends (#1911) — bounded and ordered
+  notification.py     — The finished cycle's report hand-off (#1911, reshaped #2656): the report row the cycle enqueues, the typed JobReport + its deterministic render, the outcome vocabulary the run record is stamped from, and the send gate
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
     models.py         — ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
-    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the ambient self-state prompt, one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result
+    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the ambient self-state prompt, one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656)
     self_state.py     — `SelfStateHeader`: renders Penny's operational self-state into the chat prompt's dynamic tail
     collector.py      — Collector: single dispatcher agent driving every per-collection extractor
   scheduler/
     base.py           — BackgroundScheduler + Schedule ABC
     schedules.py      — PeriodicSchedule implementation
-    send_queue_drainer.py — `SendQueueDrainer`: delivers queued autonomous messages on the send cooldown, by origin lane (#1939)
+    send_queue_drainer.py — `SendQueueDrainer`: delivers queued autonomous messages on the send cooldown, by origin lane (#1939); composes a notifying cycle's report on one chat-agent delivery turn before delivering it (#2656)
   commands/
     __init__.py       — create_command_registry() factory
     base.py           — Command ABC, CommandRegistry
@@ -93,8 +93,7 @@ penny/
     base.py           — Tool ABC (`args_model` + `run()`) + ToolRegistry/ToolExecutor — arg validation, did-you-mean on a missing tool
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls/narration), ToolDefinition, and per-tool arg models
     browse.py         — BrowseTool: web search and page reading via the browser extension, with optional micro-context extraction (#1588)
-    micro_context.py  — MicroContext: single-shot extraction over bulk content, shared by the browse extractor and the notify composer
-    micro_context_shape.py — The declared tagged-line output grammar every micro-context customer's prompt and parser share (#1814)
+    micro_context.py  — MicroContext: single-shot extraction over bulk content (the browse extractor — its one customer since the notify composer retired, #2656)
     generate_image.py — GenerateImageTool: image generation via OllamaImageClient; stored to media, delivered deterministically by id to its own reply (ToolResult.media_id → ControllerResponse.generated_media_ids → send_response) (chat-only, gated on LLM_IMAGE_MODEL)
     content_cleaning.py — Post-processing for browse results (strips navigation, proxy images, boilerplate)
     search_emails.py  — SearchEmailsTool (JMAP + Zoho) — chat surface, config-gated on a mailbox
@@ -131,7 +130,7 @@ penny/
     media_store.py    — MediaStore: browsed images, matched to outgoing text by embedding at egress (generated images deliver by id to their own reply, then join this pool)
     models.py         — SQLModel tables (see Data Model section)
     migrate.py        — Migration runner: file discovery, tracking table, validation
-    migrations/       — Numbered migration files (0001–0025)
+    migrations/       — Numbered migration files (0001–0122)
   llm/
     client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one. `chat` takes a required `call_link: CallLink` and reads `run_id`/`parent_run_id`/`parent_tool_call_id` straight off it — no ambient state, no default
     call_link.py      — `CallLink` (#2458): the frozen, explicit run/tool-call linkage every model call and every dispatched tool call carries — `run_id`/`parent_run_id`/`parent_tool_call_id` (logged identity) plus `tool_call_id` (position: the tool call this link is presently inside, consumed only by `child()`). Constructors: `top(run_id)` / `new_top()` for a run starter, `for_tool_call(id)` for the dispatcher, `child()` for a micro-context's own draw — required everywhere, no ambient reads, no fallback
@@ -174,7 +173,7 @@ penny/
       test_client.py
     tools/            — Tool tests
       test_tool_timeout.py, test_tool_not_found.py, test_tool_reasoning.py,
-      test_notifications.py, test_email_tools.py, test_notify_micro_context.py
+      test_notifications.py, test_email_tools.py
 Dockerfile            — Python 3.14-slim
 pyproject.toml        — Dependencies and project metadata
 ```
@@ -217,7 +216,7 @@ There are no conditional (config-gated) commands — email retired onto the chat
 - `RuntimeParams` class provides attribute access: `config.runtime.IDLE_SECONDS`
 - Three-tier lookup chain: DB override → env override → ConfigParam.default
 - Config values are read on each use (not cached), so changes take effect immediately
-- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS, dedup thresholds), Email (body max length, search/list limits, request timeout), Browse (parallel fetch cap `MAX_QUERIES`, per-call total query ceiling `BROWSE_MAX_QUERIES_PER_CALL`), Token budgets (one `TOKEN_BUDGET_*` param per model-call kind — chat, collector, browse-extract, notify-composer — read by `token_budget_for(runtime, agent_name)` and sent as `LlmClient.chat()`'s `token_budget`, #2474)
+- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS, dedup thresholds), Email (body max length, search/list limits, request timeout), Browse (parallel fetch cap `MAX_QUERIES`, per-call total query ceiling `BROWSE_MAX_QUERIES_PER_CALL`), Token budgets (one `TOKEN_BUDGET_*` param per model-call kind — chat, collector, browse-extract — read by `token_budget_for(runtime, agent_name)` and sent as `LlmClient.chat()`'s `token_budget`, #2474)
 
 ## Data Model
 
@@ -287,7 +286,7 @@ All tables are SQLModel classes in `database/models.py` — the prompt/message l
 
 ## Database Migrations
 
-File-based migration system in `database/migrations/` (currently 0001–0025):
+File-based migration system in `database/migrations/` (currently 0001–0122):
 - Each migration is a numbered Python file (e.g., `0001_initial_schema.py`) with a `def up(conn)` function
 - Two types: **schema** (DDL — ALTER TABLE, CREATE INDEX) and **data** (DML — UPDATE, backfills), both use `up()`
 - Runner in `database/migrate.py` discovers files, tracks applied migrations in `_migrations` table
@@ -393,7 +392,7 @@ tests/eval/
                       mailbox — the per-area world builders the cases seed from, and each
                       of their own unit tests
   extractor/        — the browse extractor's own draw
-  notify/           — the notify composer's own draw
+  notify/           — the delivery turn that writes a notifying job's message (#2656; the cases ported from the retired composer)
   collector/        — the background agent: enactment, honesty
   end_to_end/       — a running job plus an earlier conversation, read back whole
   chat/             — the chat agent

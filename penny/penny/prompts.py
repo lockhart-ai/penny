@@ -329,12 +329,12 @@ class Prompt:
     )
 
     # ``COLLECTOR_NOTIFY_STEPS`` stays DELETED (#1911).  The composed collector prompt
-    # carries the skill and nothing else about telling the user: that moved out of the
-    # cycle altogether — a framework-entered micro-context that runs after the cycle
-    # closes (``penny.notification``), whose message-framing wording is
-    # ``micro_context.NOTIFY_SYSTEM_PROMPT``, distilled from the steps that used to
-    # live here.  What that removed is the long chat-flavoured tail 42 of 49 measured
-    # cycle deaths landed in, immediately after a ``read_similar``.
+    # carries the job's own instructions and nothing else about telling the user: that
+    # moved out of the cycle altogether — the close queues a report row and the
+    # send-queue drainer writes the message on one chat turn from it (#1911, reshaped
+    # #2656; the micro-context composer that sat between is retired).  What the split
+    # removed is the long chat-flavoured tail 42 of 49 measured cycle deaths landed
+    # in, immediately after a ``read_similar``.
     #
     # The close is BACK (#1916, reverting #1911's half of this).  A cycle says when it
     # is finished, because the alternative measured worse: deriving the close from

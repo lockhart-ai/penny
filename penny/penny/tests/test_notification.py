@@ -1,375 +1,156 @@
-"""Telling the user about a finished collector cycle (#1911).
+"""Telling the user about a finished collector cycle (#1911, reshaped by #2656).
 
 Three layers, tested where each lives:
 
-- **The program's calls, and when a run has covered them** (``penny.program``) — pure,
-  so every program shape a routine can have is a plain case rather than a live run.
-- **The notify document** (``render_notification``) — pure, so the exact text the draw
-  reads is pinned whole, including the nothing-matched form, a no-write program's, and
-  (#1934) the bounded shape an oversized cycle assembles to.
-- **The send gate + enqueue** (``CollectorNotifier.queue``) — the three declines that
-  need runtime state, and the enqueue that is the successful handoff.
+- **The job report** (``render_job_report`` / ``build_job_report``) — the delivery
+  turn's whole input, pure, so the exact text the chat agent reads is pinned whole:
+  the job's name and description, why it ran, and every written entry FULL, with the
+  key it is stored under.  Nothing is condensed and nothing is capped — the composer's
+  cut was the measured failure (#2656).
+- **The send gate** (``withheld_reason``) — the declines that need runtime state or
+  are correct no-ops, read as reasons the drainer records.
+- **The composing report on the queue** (``db.send_queue``) — the hand-off row the
+  cycle enqueues and the drainer composes from: its states, its bounded attempts,
+  and the round trip.
 
-The micro-context's own prompt is pinned in ``tests/tools/test_micro_context_prompts.py``;
-the trigger, the coverage exit and the run records are driven end to end through the real
-collector loop in ``tests/agents/test_collector.py``.
+The delivery turn itself is driven end to end in ``tests/test_report_delivery.py``;
+the trigger and the run records are driven through the real collector loop in
+``tests/agents/test_collector.py``.
 """
 
 from __future__ import annotations
 
 import pytest
+from sqlmodel import Session
 
-from penny.constants import CycleTrigger, PennyConstants
+from penny.constants import CycleEnd, CycleTrigger, PennyConstants
+from penny.database.models import SendQueueItem
 from penny.notification import (
-    CollectorNotifier,
-    CycleCall,
-    NotificationInput,
+    NOTIFICATION_NOTES,
+    NOTIFIED_CYCLE_ENDS,
+    JobReport,
     NotificationOutcome,
-    RelatedMessages,
     WrittenEntry,
-    render_notification,
+    build_job_report,
+    render_job_report,
+    withheld_reason,
 )
 
 pytestmark = pytest.mark.bare_db
 
 
-# ── The notify document (#1911) ───────────────────────────────────────────────
+# ── The job report (#2656) ────────────────────────────────────────────────────
 
 
-_DOCUMENT = NotificationInput(
-    collection="ferry-departures",
-    description="the dawn sailing on the north pier timetable",
-    calls=(
-        CycleCall(
-            call="browse(queries=['https://northpier.example/departures'])",
-            result="EXTRACTED: 06:12",
+def test_a_job_report_renders_whole():
+    """The whole delivery turn's input, char-for-char — assembled entirely
+    framework-side: the job's name, what it is for, why it ran, and the written
+    entries FULL, in the order the cycle wrote them, each with the key it is stored
+    under.  The key is the anchor a follow-up needs; the content is the payload the
+    message is written from.  No entry is condensed and no section is capped."""
+    report = JobReport(
+        collection="ferry-departures",
+        description="the dawn sailing on the north pier timetable",
+        trigger=CycleTrigger.CADENCE,
+        run_id="cycle-run-1",
+        entries=(
+            WrittenEntry(
+                memory="ferry-departures", key="dawn sailing", content="06:12 from the pier"
+            ),
         ),
-        CycleCall(
-            call="collection_write(collection='ferry-departures', entries=['06:12'])",
-            result="Wrote 1 entry.",
-        ),
-    ),
-    written=(
-        WrittenEntry(memory="ferry-departures", key="dawn sailing", content="06:12 from the pier"),
-    ),
-    related=(
-        RelatedMessages(
-            source="user-messages",
-            lines=("1. [2026-08-19 07:03 UTC] when does the dawn one leave?",),
-        ),
-        RelatedMessages(source="penny-messages", lines=()),
-    ),
-)
-
-
-def test_notify_document_renders_whole():
-    """The whole document, char-for-char — what the draw reads, assembled entirely
-    framework-side: what ran, what landed in the store, how the cycle got there with
-    every call and its result, and the past messages Python looked up.
-
-    The ORDINARY case is unchanged by the #1934 bound: nothing here overflows a section
-    budget, so every value is verbatim and no omission marker appears anywhere.  What
-    #1934 did change is the ORDER — the entries the cycle wrote lead, the earlier
-    conversation is labelled background and comes last.  A log that matched nothing
-    renders no section of its own; only a document where NEITHER matched says so."""
-    assert render_notification(_DOCUMENT) == (
-        "The `ferry-departures` job just ran on its own, and it is time to tell the user.\n"
-        "What this collection is for: the dawn sailing on the north pier timetable\n"
+    )
+    assert render_job_report(report) == (
+        'Your job "ferry-departures" just finished a run and asked to tell the user.\n'
+        "What the job is for: the dawn sailing on the north pier timetable\n"
+        "It ran on its own schedule.\n"
         "\n"
-        "## What it wrote this cycle\n"
+        "## What the job wrote this run\n"
         "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
         "\n"
-        "## How it got there\n"
-        "1. browse(queries=['https://northpier.example/departures'])\n"
-        "   → EXTRACTED: 06:12\n"
-        "2. collection_write(collection='ferry-departures', entries=['06:12'])\n"
-        "   → Wrote 1 entry.\n"
-        "\n"
-        "## Background: earlier messages\n"
-        "These messages are from before this cycle ran. What this cycle found is at the "
-        "top of this document.\n"
-        "\n"
-        "### user-messages\n"
-        "1. [2026-08-19 07:03 UTC] when does the dawn one leave?\n"
-        "\n"
-        "### Standing rules\n"
-        "(none yet — when the user asks you to always or never do something, it goes in "
-        "`rules`)"
+        "Write the one message to send the user about this run, from what the job wrote."
     )
 
 
-def test_notify_document_states_a_no_write_cycle_and_a_nothing_matched_lookup():
+def test_a_report_states_a_no_write_cycle_and_a_user_triggered_run():
     """The two plain absences, rendered as statements rather than as gaps.
 
     A routine with NO write completes and notifies like any other, so "wrote nothing"
-    is an ordinary shape here; and nothing matching in either message log is the
-    ORDINARY case, so it says there is no callback to make — which is what stops a
-    callback line being invented.  A failed call is marked as one, so the draw never
-    reads an error as a find."""
-    document = NotificationInput(
+    is an ordinary shape here; and a cycle the user pressed "run this now" on says
+    so — the same fact the queued row's lane carries."""
+    report = JobReport(
         collection="tide-times",
         description="the tide table for the north pier",
-        calls=(
-            CycleCall(call="log_read(log='user-messages')", result="No entries."),
-            CycleCall(
-                call="browse(queries=['https://tides.example'])",
-                result="## browse error: unreachable",
-                failed=True,
-            ),
-        ),
-        related=(
-            RelatedMessages(source="user-messages", lines=()),
-            RelatedMessages(source="penny-messages", lines=()),
-        ),
+        trigger=CycleTrigger.ON_DEMAND,
+        run_id="cycle-run-2",
+        entries=(),
     )
-
-    assert render_notification(document) == (
-        "The `tide-times` job just ran on its own, and it is time to tell the user.\n"
-        "What this collection is for: the tide table for the north pier\n"
+    assert render_job_report(report) == (
+        'Your job "tide-times" just finished a run and asked to tell the user.\n'
+        "What the job is for: the tide table for the north pier\n"
+        "It ran just now because the user asked it to run.\n"
         "\n"
-        "## What it wrote this cycle\n"
-        "It wrote nothing down this cycle.\n"
+        "## What the job wrote this run\n"
+        "It wrote nothing down this run.\n"
         "\n"
-        "## How it got there\n"
-        "1. log_read(log='user-messages')\n"
-        "   → No entries.\n"
-        "2. browse(queries=['https://tides.example'])\n"
-        "   → (this call failed) ## browse error: unreachable\n"
-        "\n"
-        "## Background: earlier messages\n"
-        "Nothing in your past messages matched this — there is no callback to make.\n"
-        "\n"
-        "### Standing rules\n"
-        "(none yet — when the user asks you to always or never do something, it goes in "
-        "`rules`)"
+        "Write the one message to send the user about this run, from what the job wrote."
     )
 
 
-# ── The document's bound and its order (#1934) ────────────────────────────────
+def test_a_keyless_entry_renders_without_a_key(db):
+    """A log append has no key, and its line says where it went and nothing else."""
+    report = JobReport(
+        collection="tide-log",
+        description="the day's tides",
+        trigger=CycleTrigger.CADENCE,
+        run_id="cycle-run-3",
+        entries=(WrittenEntry(memory="tide-log", key=None, content="high at 06:41"),),
+    )
+    rendered = render_job_report(report)
+    assert "- into `tide-log`: high at 06:41" in rendered
 
 
-# The failure shape, recreated with synthetic content: one browse call whose RESULT is
-# a whole fetched page, one write call whose ARGUMENTS restate the payload it carried,
-# entries holding that same text a third time, more calls and entries than a section
-# shows, and a background section of long prior messages.  The measured production
-# document assembled to 50,805 characters this way.
-_PAGE = "## browse: https://harbour.example/\n" + "\n".join(
-    f"{n}. the keel lantern on pier {n} went dark overnight" for n in range(1, 400)
-)
-_DIGEST = " ".join(f"pier {n} dark;" for n in range(1, 900))
-_WRITE_CALL = (
-    "collection_write(collection='harbour-watch', "
-    f"entries=[{{'key': 'lanterns', 'content': '{_DIGEST}'}}])"
-)
-_LONG_MESSAGE = "1. [2026-01-02 07:03 UTC] " + " ".join(
-    f"which pier was it, {n}?" for n in range(1, 60)
-)
-# An entry KEY is model-authored and length-gated nowhere upstream, and it renders once
-# per written entry — so it is bounded here like every other free-text field.
-_LONG_KEY = "lanterns-" + "-".join(str(n) for n in range(1, 60))
+def test_a_built_report_carries_the_full_written_entries(db):
+    """The assembly reads the STORE: the collection row's own description, and every
+    entry whose current value the run wrote — WHOLE, whatever its length.  The
+    composer's document condensed an entry to a 500-character preview and the message
+    named only what the preview held (#2656's failure); this is the fix's other half —
+    the chat agent is shown everything."""
+    from penny.database.memory.objects import EntryInput
+    from penny.tests.conftest import require_memory
 
-_OVERSIZED = NotificationInput(
-    collection="harbour-watch",
-    description="the pier lanterns on the harbour front",
-    calls=(
-        CycleCall(call="browse(queries=['https://harbour.example/'])", result=_PAGE),
-        CycleCall(call=_WRITE_CALL, result="Wrote 10 entries to 'harbour-watch'."),
-        *(
-            CycleCall(
-                call=f"collection_list(collection='harbour-watch', k={n})",
-                result="No entries.",
-            )
-            for n in range(3, 12)
-        ),
-    ),
-    written=(
-        WrittenEntry(memory="harbour-watch", key=_LONG_KEY, content=_DIGEST),
-        *(
-            WrittenEntry(memory="harbour-watch", key=f"pier-{n}", content=f"pier {n} is dark")
-            for n in range(2, 11)
-        ),
-    ),
-    related=(
-        RelatedMessages(
-            source="user-messages",
-            lines=(
-                _LONG_MESSAGE,
-                *(f"{n}. [2026-01-0{n} 07:03 UTC] which lantern?" for n in range(2, 8)),
-            ),
-        ),
-        RelatedMessages(
-            source="penny-messages",
-            lines=(
-                "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) "
-                "The pier 1 lantern went dark overnight.",
-            ),
-        ),
-    ),
-)
-
-# The document's declared ceiling: every free-text field's own budget, plus an allowance
-# for the frame those budgets sit in (the headings, the background lead, the per-item
-# prefixes, the memory and routine names, and the omission markers themselves).  Derived
-# from the constants rather than picked, so tightening a budget tightens the claim with
-# it — and a field left OUT of this sum is a field that can defeat the ceiling, which is
-# why the entry key is in it.
-_SECTION_BUDGETS = (
-    PennyConstants.NOTIFY_WRITTEN_ENTRIES
-    * (PennyConstants.NOTIFY_WRITTEN_CONTENT_CHARS + PennyConstants.NOTIFY_ENTRY_KEY_CHARS)
-    + PennyConstants.NOTIFY_CYCLE_CALLS
-    * (PennyConstants.NOTIFY_CALL_CHARS + PennyConstants.NOTIFY_CALL_RESULT_CHARS)
-    + 2 * PennyConstants.NOTIFY_RELATED_MESSAGES * PennyConstants.NOTIFY_RELATED_LINE_CHARS
-    + PennyConstants.NOTIFY_DESCRIPTION_CHARS
-)
-_FRAME_ALLOWANCE = 2_000
-_DECLARED_BOUND = _SECTION_BUDGETS + _FRAME_ALLOWANCE
-
-
-def test_an_oversized_cycle_assembles_under_the_declared_bound():
-    """The whole bounded document, char-for-char.
-
-    Every one of the three bulk carriers is condensed against its own budget and every
-    cut STATES itself — the page-sized browse result, the write call whose arguments
-    restate its payload, and the entry holding that text again — as is the entry KEY
-    nothing upstream length-gates, and each section that holds more items than it shows
-    ends in an honest count of the rest.  The entries the cycle wrote still LEAD, the
-    earlier conversation is still labelled background and still last, and the whole
-    thing lands under the ceiling the constants declare."""
-    rendered = render_notification(_OVERSIZED)
-
-    assert rendered == (
-        "The `harbour-watch` job just ran on its own, and it is time to tell the user.\n"
-        "What this collection is for: the pier lanterns on the harbour front\n"
-        "\n"
-        "## What it wrote this cycle\n"
-        f"- into `harbour-watch`, under `{_LONG_KEY[:120]}"
-        f"… [{len(_LONG_KEY) - 120} characters omitted]`: {_DIGEST[:500]}"
-        f"… [{len(_DIGEST) - 500} characters omitted]\n"
-        "- into `harbour-watch`, under `pier-2`: pier 2 is dark\n"
-        "- into `harbour-watch`, under `pier-3`: pier 3 is dark\n"
-        "- into `harbour-watch`, under `pier-4`: pier 4 is dark\n"
-        "- into `harbour-watch`, under `pier-5`: pier 5 is dark\n"
-        "- into `harbour-watch`, under `pier-6`: pier 6 is dark\n"
-        "- into `harbour-watch`, under `pier-7`: pier 7 is dark\n"
-        "- into `harbour-watch`, under `pier-8`: pier 8 is dark\n"
-        "2 more entries not shown.\n"
-        "\n"
-        "## How it got there\n"
-        "1. browse(queries=['https://harbour.example/'])\n"
-        f"   → {_PAGE[:300]}… [{len(_PAGE) - 300} characters omitted]\n"
-        f"2. {_WRITE_CALL[:150]}… [{len(_WRITE_CALL) - 150} characters omitted]\n"
-        "   → Wrote 10 entries to 'harbour-watch'.\n"
-        "3. collection_list(collection='harbour-watch', k=3)\n"
-        "   → No entries.\n"
-        "4. collection_list(collection='harbour-watch', k=4)\n"
-        "   → No entries.\n"
-        "5. collection_list(collection='harbour-watch', k=5)\n"
-        "   → No entries.\n"
-        "6. collection_list(collection='harbour-watch', k=6)\n"
-        "   → No entries.\n"
-        "7. collection_list(collection='harbour-watch', k=7)\n"
-        "   → No entries.\n"
-        "8. collection_list(collection='harbour-watch', k=8)\n"
-        "   → No entries.\n"
-        "9. collection_list(collection='harbour-watch', k=9)\n"
-        "   → No entries.\n"
-        "10. collection_list(collection='harbour-watch', k=10)\n"
-        "   → No entries.\n"
-        "1 more call not shown.\n"
-        "\n"
-        "## Background: earlier messages\n"
-        "These messages are from before this cycle ran. What this cycle found is at the "
-        "top of this document.\n"
-        "\n"
-        "### user-messages\n"
-        f"{_LONG_MESSAGE[:200]}… [{len(_LONG_MESSAGE) - 200} characters omitted]\n"
-        "2. [2026-01-02 07:03 UTC] which lantern?\n"
-        "3. [2026-01-03 07:03 UTC] which lantern?\n"
-        "4. [2026-01-04 07:03 UTC] which lantern?\n"
-        "5. [2026-01-05 07:03 UTC] which lantern?\n"
-        "2 more messages not shown.\n"
-        "\n"
-        "### penny-messages\n"
-        "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) "
-        "The pier 1 lantern went dark overnight.\n"
-        "\n"
-        "### Standing rules\n"
-        "(none yet — when the user asks you to always or never do something, it goes in "
-        "`rules`)"
+    db.memories.create_collection("harbour-watch", "the pier lanterns on the harbour front")
+    require_memory(db, "harbour-watch").write(
+        [EntryInput(key="lanterns", content="pier 4 went dark overnight")],
+        author="producer",
+        run_id="cycle-run-9",
+    )
+    built = build_job_report(db, "harbour-watch", "cycle-run-9", trigger=CycleTrigger.CADENCE)
+    assert built is not None
+    assert built.collection == "harbour-watch"
+    assert built.description == "the pier lanterns on the harbour front"
+    assert built.trigger is CycleTrigger.CADENCE
+    assert built.entries == (
+        WrittenEntry(memory="harbour-watch", key="lanterns", content="pier 4 went dark overnight"),
+    )
+    # And the render carries the entry WHOLE — no cut, no omission marker.
+    assert "- into `harbour-watch`, under `lanterns`: pier 4 went dark overnight" in (
+        render_job_report(built)
     )
 
-    # The input carried the production failure's bulk; the render carries the budget.
-    raw = len(_PAGE) + len(_WRITE_CALL) + len(_DIGEST) * 2 + len(_LONG_MESSAGE)
-    assert raw > 50_000
-    assert len(rendered) < _DECLARED_BOUND
+
+def test_a_report_for_a_vanished_collection_is_a_named_failure(db):
+    """A collection that vanished between the enqueue and the compose builds no
+    report: the caller records the failure on the row rather than composing from a
+    half-assembled one."""
+    assert build_job_report(db, "no-such-job", "run-x", trigger=CycleTrigger.CADENCE) is None
 
 
-def test_a_prior_notification_cannot_displace_this_cycles_writes():
-    """The failure this order exists to stop: the previous notification's own lead sat
-    in the closest-prior-messages section, and the composed message re-reported it as
-    today's top story.
-
-    A prior message repeating what an OLDER cycle found now reaches the draw last, in a
-    section that says what it is, and this cycle's own write is the first thing after
-    the header — so the freshest fact is the one nearest the top, whatever a background
-    line happens to say."""
-    document = NotificationInput(
-        collection="harbour-watch",
-        description="the pier lanterns on the harbour front",
-        calls=(CycleCall(call="browse(queries=['https://harbour.example/'])", result="read"),),
-        written=(WrittenEntry(memory="harbour-watch", key="lanterns", content="pier 4 went dark"),),
-        related=(
-            RelatedMessages(source="user-messages", lines=()),
-            RelatedMessages(
-                source="penny-messages",
-                lines=("1. [2026-01-08 09:00 UTC] (sent by harbour-watch) pier 1 went dark",),
-            ),
-        ),
-    )
-
-    rendered = render_notification(document)
-    assert rendered == (
-        "The `harbour-watch` job just ran on its own, and it is time to tell the user.\n"
-        "What this collection is for: the pier lanterns on the harbour front\n"
-        "\n"
-        "## What it wrote this cycle\n"
-        "- into `harbour-watch`, under `lanterns`: pier 4 went dark\n"
-        "\n"
-        "## How it got there\n"
-        "1. browse(queries=['https://harbour.example/'])\n"
-        "   → read\n"
-        "\n"
-        "## Background: earlier messages\n"
-        "These messages are from before this cycle ran. What this cycle found is at the "
-        "top of this document.\n"
-        "\n"
-        "### penny-messages\n"
-        "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) pier 1 went dark\n"
-        "\n"
-        "### Standing rules\n"
-        "(none yet — when the user asks you to always or never do something, it goes in "
-        "`rules`)"
-    )
-
-    # This cycle's find leads; the stale one is reachable only inside the labelled
-    # background section, which is the last thing in the document.
-    assert rendered.index("pier 4 went dark") < rendered.index("## Background: earlier messages")
-    assert rendered.index("pier 1 went dark") > rendered.index("## Background: earlier messages")
-    assert rendered.index("## What it wrote this cycle") < rendered.index("## How it got there")
-
-
-# ── The send gate + the enqueue (#1911) ───────────────────────────────────────
+# ── The send gate (#1911, as a reason) ────────────────────────────────────────
 
 
 _RECIPIENT = "+15551234567"
 _MECHANISM = "ferry-departures"
 _MESSAGE = "Hey! The dawn sailing is at 06:12 now."
-
-
-def _notifier(db) -> CollectorNotifier:
-    from unittest.mock import MagicMock
-
-    return CollectorNotifier(db, MagicMock(), MagicMock())
 
 
 def _register_user(db) -> None:
@@ -382,97 +163,120 @@ def _register_user(db) -> None:
     )
 
 
-def test_a_drawn_message_is_queued_under_its_mechanism(db):
-    """The handoff: the drawn text goes into the send queue unchanged, attributed to
-    the collection whose cycle produced it, and waits there for the drainer to deliver
-    it.  Enqueue IS the success — nothing about WHEN it goes out is decided here, but
-    the row does carry WHAT SET THE CYCLE RUNNING (#1939), which is what the drainer
-    reads to pick a delivery lane."""
+def test_a_sendable_message_is_declined_nowhere(db):
+    """The pass case: a complete, non-refusal message from a registered, unmuted user
+    is declined nowhere, and the drainer stores and delivers it."""
     _register_user(db)
-
-    assert (
-        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.CADENCE)
-        is NotificationOutcome.QUEUED
-    )
-
-    pending = db.send_queue.next_pending()
-    assert pending is not None
-    assert pending.content == _MESSAGE
-    assert pending.collection == _MECHANISM
-    assert pending.origin == CycleTrigger.CADENCE
-    assert pending.sent_at is None
+    assert withheld_reason(db, _MESSAGE) is None
 
 
-def test_a_user_triggered_cycles_message_is_queued_in_the_on_demand_lane(db):
-    """The same handoff for a cycle the USER pressed "run this now" on: the queued row
-    says so, so the drainer can deliver it without waiting out the anti-spam cooldown
-    meant for messages nobody asked for (#1939).  The lane is a READ of what set the
-    cycle running — nothing here re-decides it from the content."""
-    _register_user(db)
-
-    assert (
-        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.ON_DEMAND)
-        is NotificationOutcome.QUEUED
-    )
-
-    pending = db.send_queue.next_pending()
-    assert pending is not None
-    assert pending.origin == CycleTrigger.ON_DEMAND
-    # And it is reachable BY lane, which is how the drainer asks for it.
-    on_demand = db.send_queue.next_pending(origin=CycleTrigger.ON_DEMAND)
-    assert on_demand is not None and on_demand.id == pending.id
-    assert db.send_queue.next_pending(origin=CycleTrigger.CADENCE) is None
-
-
-def test_the_three_declines_queue_nothing(db):
-    """The declines that need runtime state or are correct no-ops: a muted user, no
-    registered recipient, and content that reads as a model refusal.  Each is the same
-    enumerated outcome — nothing was sent — and none of them queues anything."""
+def test_the_declines_name_why_nothing_will_be_sent(db):
+    """The declines that need runtime state or are correct no-ops — decisions no
+    retry changes: content that reads as a model refusal, no registered recipient,
+    and a muted user.  Each names its reason — the drainer records it on the row —
+    and none of them is a silent skip."""
     # No registered user at all.
-    assert (
-        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.CADENCE)
-        is NotificationOutcome.NOT_DELIVERABLE
-    )
-    assert db.send_queue.next_pending() is None
+    assert withheld_reason(db, _MESSAGE) == "there is no registered recipient"
 
     _register_user(db)
-    refusal = "I'm sorry, I can't help with that as an AI language model."
-    assert (
-        _notifier(db).queue(_MECHANISM, refusal, CycleTrigger.CADENCE)
-        is NotificationOutcome.NOT_DELIVERABLE
-    )
-    assert db.send_queue.next_pending() is None
+    refusal = withheld_reason(db, "I'm sorry, I can't help with that as an AI language model.")
+    assert refusal == "the message read as a model refusal"
 
     db.users.set_muted(_RECIPIENT)
     # A user-triggered run is no exception: the lane says WHEN a message goes out, not
-    # WHETHER — a muted user is still muted when they press the button.
-    assert (
-        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.ON_DEMAND)
-        is NotificationOutcome.NOT_DELIVERABLE
-    )
-    assert db.send_queue.next_pending() is None
+    # WHETHER — a muted user is still muted when the compose happens.
+    assert withheld_reason(db, _MESSAGE) == "the user is muted"
 
 
-def test_a_half_formed_message_never_reaches_the_queue(db):
-    """The content gate the draw's own acceptance rule enforces one layer up, held
-    again here so nothing reaches the queue unvalidated whatever put it there.  Judged
-    as a WHOLE message: a trailing-off body is refused, while one that merely embeds an
-    ellipsis mid-sentence is a complete message and goes out."""
-    _register_user(db)
-    notifier = _notifier(db)
+def test_a_message_that_is_not_whole_is_a_compose_failure_not_a_decline(db):
+    """The whole-message rule is a RETRY, not a withhold: a trailing-off body is a
+    compose failure (the drainer counts it against the row's bounded budget, the way
+    the retired composer re-rolled it), while one that merely embeds an ellipsis
+    mid-sentence is a complete message and goes out.  The rule is the shared
+    ``half_formed_send_reason`` — the one definition the send path validates with."""
+    from penny.text_validity import half_formed_send_reason
 
-    assert (
-        notifier.queue(_MECHANISM, "Hi there! ......???", CycleTrigger.CADENCE)
-        is NotificationOutcome.NOT_DELIVERABLE
-    )
-    assert db.send_queue.next_pending() is None
+    assert half_formed_send_reason("Hi there! ......???") is not None
+    assert half_formed_send_reason("anyway… that's the gist 🤓") is None
 
-    assert (
-        notifier.queue(_MECHANISM, "anyway… that's the gist 🤓", CycleTrigger.CADENCE)
-        is NotificationOutcome.QUEUED
-    )
+
+# ── The composing report on the queue (#2656) ─────────────────────────────────
+
+
+def test_a_report_row_is_queued_without_content(db):
+    """The hand-off: the cycle's row carries the collection, the lane and the run id,
+    and NO content yet — the message is written later, by the delivery turn the
+    drainer runs.  It is reachable as the pending head either lane-blind or by lane."""
+    row_id = db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.CADENCE, "cycle-run-1")
+
     pending = db.send_queue.next_pending()
-    assert pending is not None and pending.content == "anyway… that's the gist 🤓"
+    assert pending is not None and pending.id == row_id
+    assert pending.content == ""
+    assert pending.collection == _MECHANISM
+    assert pending.report_run_id == "cycle-run-1"
+    assert pending.origin == CycleTrigger.CADENCE
+    assert db.send_queue.next_pending(origin=CycleTrigger.CADENCE) is not None
+    assert db.send_queue.next_pending(origin=CycleTrigger.ON_DEMAND) is None
+
+
+def test_a_composed_report_is_stored_then_delivered_and_marked_sent(db):
+    """The compose-and-deliver round trip on the row: the turn's message is stored on
+    the row (so the audit trail says what went out), delivery marks it sent, and the
+    pending tail empties."""
+    db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.ON_DEMAND, "cycle-run-1")
+    row = db.send_queue.next_pending()
+    assert row is not None
+
+    db.send_queue.store_composed(row.id, _MESSAGE)
+    stored = db.send_queue.next_pending()
+    assert stored is not None and stored.content == _MESSAGE
+    assert stored.report_run_id == "cycle-run-1"
+
+    db.send_queue.mark_sent(row.id)
+    assert db.send_queue.next_pending() is None
+
+
+def test_compose_failures_are_counted_then_failed_visibly(db):
+    """The bounded retry: each failed compose bumps ``attempts`` and leaves the row
+    pending, until the budget is spent and the row is stamped ``failed_at`` — kept as
+    the audit trail, excluded from the pending queries structurally, never counted
+    as a message the user received."""
+    db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.CADENCE, "cycle-run-1")
+    row = db.send_queue.next_pending()
+    assert row is not None
+
+    for expected_attempt in range(1, PennyConstants.COLLECTOR_RETRY_ATTEMPTS):
+        assert db.send_queue.bump_compose_attempts(row.id) == expected_attempt
+        assert db.send_queue.next_pending() is not None
+
+    assert db.send_queue.bump_compose_attempts(row.id) == PennyConstants.COLLECTOR_RETRY_ATTEMPTS
+    db.send_queue.mark_failed(row.id)
+
+    assert db.send_queue.next_pending() is None
+    with Session(db.engine) as session:
+        final = session.get(SendQueueItem, row.id)
+        assert final is not None
+        assert final.failed_at is not None
+        assert final.sent_at is None
+        assert final.cancelled_at is None
+
+
+def test_a_declined_report_is_cancelled_not_failed(db):
+    """A withhold on purpose is a DECISION, not a failure: the row is stamped
+    ``cancelled_at`` — the same audit-trail state an archived collector's queued
+    sends get (#1634) — and stays distinct from a failed compose."""
+    db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.CADENCE, "cycle-run-1")
+    row = db.send_queue.next_pending()
+    assert row is not None
+
+    db.send_queue.mark_cancelled(row.id)
+    assert db.send_queue.next_pending() is None
+    with Session(db.engine) as session:
+        final = session.get(SendQueueItem, row.id)
+        assert final is not None
+        assert final.cancelled_at is not None
+        assert final.failed_at is None
+        assert final.sent_at is None
 
 
 def test_send_queue_store_round_trip(db):
@@ -490,41 +294,19 @@ def test_send_queue_store_round_trip(db):
     assert [item.content for item in db.send_queue.pending_items()] == ["two"]
 
 
-def test_the_assembled_document_carries_the_standing_rules_section(db):
-    """The assembly renders the shared standing-rules section off the store (#2633),
-    so a rule the user gave holds in the notification the same way it holds in the
-    chat header and in every collector cycle's prompt — the ONE render in three
-    places, stamped with the same wall-clock read the render shows.
+# ── The outcome vocabulary ────────────────────────────────────────────────────
 
-    The embedding client is one pointed at nothing that answers — the documented
-    transient-failure path — so the related-message lookup yields no groups and
-    this test is about the standing-rules assembly alone."""
-    import asyncio
-    from unittest.mock import MagicMock
 
-    from penny.database.memory.objects import EntryInput
-    from penny.llm.client import LlmClient
-    from penny.tests.conftest import require_memory
-
-    failing = LlmClient(
-        api_url="http://localhost:11434",
-        model="test-model",
-        max_retries=1,
-        retry_delay=0.0,
-    )
-
-    db.memories.create_collection(
-        "rules", "Standing instructions the user has given: things to always or never do"
-    )
-    require_memory(db, "rules").write(
-        [EntryInput(key="page links", content="always include a link when you mention a page")],
-        author="user",
-    )
-    notifier = CollectorNotifier(db, failing, MagicMock())
-    target = db.memories.get("rules")
-    assert target is not None
-    document = asyncio.run(notifier._document(target, "run-x", []))
-
-    assert document.standing_rules == (
-        "### Standing rules\n- always include a link when you mention a page"
-    )
+def test_the_outcome_tables_are_total():
+    """Both tables are indexed with NO default — an outcome in neither, or a note
+    missing, would be a KeyError inside a cycle's settlement or a silent second
+    answer, so the totality is pinned here rather than left to whoever adds the
+    next outcome.  ``NOT_DRAWN`` retired with the composing job (#2656): a message
+    that is never written is no longer a cycle outcome at all."""
+    assert set(NOTIFIED_CYCLE_ENDS) == set(NotificationOutcome)
+    assert set(NOTIFIED_CYCLE_ENDS.values()) == {
+        CycleEnd.CLOSED_NOTIFIED,
+        CycleEnd.CLOSED_DECLINED,
+    }
+    assert set(NOTIFICATION_NOTES) == set(NotificationOutcome)
+    assert "NOT_DRAWN" not in NotificationOutcome.__members__

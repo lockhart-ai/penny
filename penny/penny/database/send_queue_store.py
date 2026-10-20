@@ -3,12 +3,20 @@
 ``send_message`` enqueues here rather than dropping a message when the
 autonomous-send cooldown hasn't elapsed; the background drain schedule pops the
 oldest pending row once the cooldown clears.  A row is **pending** while
-``sent_at IS NULL AND cancelled_at IS NULL``; stamping ``sent_at`` marks it
-delivered and stamping ``cancelled_at`` marks it cancelled (the queuing collector
-was archived before delivery, #1634) — both are kept, not deleted, so the queue
-doubles as a delivery/cancellation audit trail.  ``sent_at`` stays the single
-source of truth for "was it sent": a cancelled row leaves it NULL because it never
-was.
+``sent_at IS NULL AND cancelled_at IS NULL AND failed_at IS NULL``; stamping
+``sent_at`` marks it delivered, ``cancelled_at`` marks it cancelled (the queuing
+collector was archived before delivery, #1634) and ``failed_at`` marks it failed
+(a composing report whose message never became sendable within the retry budget,
+#2656) — all are kept, not deleted, so the queue doubles as a
+delivery/cancellation audit trail.  ``sent_at`` stays the single source of truth
+for "was it sent": a cancelled or failed row leaves it NULL because it never was.
+
+A **composing report** (#2656) is a row enqueued with ``report_run_id`` set and
+empty content: the notifying cycle's hand-off, naming WHERE the message comes
+from rather than carrying it.  The drainer builds the report from that run's
+written entries, runs the delivery chat turn, and stores what it wrote before
+delivering — the model never sees the queue, and the row never reaches a user
+without content.
 """
 
 from __future__ import annotations
@@ -58,12 +66,79 @@ class SendQueueStore:
             logger.info("Queued message %d from %s (%d chars)", row.id, collection, len(content))
             return row.id
 
+    def enqueue_report(self, collection: str, origin: CycleTrigger, report_run_id: str) -> int:
+        """Queue a composing report and return its assigned id.
+
+        The notifying cycle's hand-off (#2656): the row carries WHAT SET THE CYCLE
+        RUNNING (``origin``, the delivery lane) and WHERE THE MESSAGE COMES FROM
+        (``report_run_id``, the cycle's run id), and no content yet — the message
+        is written later, by the delivery chat turn the drainer runs.  A cycle
+        whose notification could not be enqueued because the user is muted or
+        nobody is registered never reaches here: the decline is decided before
+        the row exists."""
+        with self._session() as session:
+            row = SendQueueItem(
+                content="",
+                collection=collection,
+                origin=origin,
+                report_run_id=report_run_id,
+                created_at=self._clock.now(),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            if row.id is None:
+                raise RuntimeError("send_queue row was inserted but has no id")
+            logger.info(
+                "Queued report %d from %s (cycle run %s)", row.id, collection, report_run_id
+            )
+            return row.id
+
+    def store_composed(self, item_id: int, content: str) -> None:
+        """Store the message the delivery chat turn wrote for this report row."""
+        with self._session() as session:
+            row = session.get(SendQueueItem, item_id)
+            if row is None:
+                return
+            row.content = content
+            session.add(row)
+            session.commit()
+            logger.info("Report %d composed (%d chars)", item_id, len(content))
+
+    def bump_compose_attempts(self, item_id: int) -> int:
+        """Count one failed compose; return the row's new attempt count."""
+        with self._session() as session:
+            row = session.get(SendQueueItem, item_id)
+            if row is None:
+                return 0
+            row.attempts = (row.attempts or 0) + 1
+            session.add(row)
+            session.commit()
+            return row.attempts
+
+    def mark_failed(self, item_id: int) -> None:
+        """Stamp a row failed — the retry budget spent with nothing sendable.
+
+        VISIBLE, not deletion: the row stays as the audit trail, ``sent_at``
+        stays NULL (it was never sent), and the pending queries exclude it
+        structurally so the drainer can never pick it up again."""
+        with self._session() as session:
+            row = session.get(SendQueueItem, item_id)
+            if row is None or row.failed_at is not None:
+                return
+            row.failed_at = self._clock.now()
+            session.add(row)
+            session.commit()
+            logger.error("Report %d failed to compose within its retry budget", item_id)
+
     def next_pending(self, origin: CycleTrigger | None = None) -> SendQueueItem | None:
         """The oldest message still awaiting delivery, or None if the queue is empty.
 
-        A cancelled row (``cancelled_at`` stamped) is excluded structurally — in
-        the WHERE, never a Python filter downstream — so the drainer can never
-        deliver a message whose collector was archived (#1634).
+        A cancelled row (``cancelled_at`` stamped) and a failed one
+        (``failed_at`` stamped) are excluded structurally — in the WHERE, never
+        a Python filter downstream — so the drainer can never deliver a message
+        whose collector was archived (#1634) or re-pick a report whose retry
+        budget is spent (#2656).
 
         ``origin`` narrows the queue to one delivery lane (#1939), and it is asked
         in the WHERE for the same reason: reading the head and then discarding it
@@ -74,6 +149,7 @@ class SendQueueStore:
             query = select(SendQueueItem).where(
                 col(SendQueueItem.sent_at).is_(None),
                 col(SendQueueItem.cancelled_at).is_(None),
+                col(SendQueueItem.failed_at).is_(None),
             )
             if origin is not None:
                 query = query.where(SendQueueItem.origin == origin)
@@ -96,6 +172,7 @@ class SendQueueStore:
                     .where(
                         col(SendQueueItem.sent_at).is_(None),
                         col(SendQueueItem.cancelled_at).is_(None),
+                        col(SendQueueItem.failed_at).is_(None),
                     )
                     .order_by(col(SendQueueItem.created_at).asc())
                 )
@@ -119,6 +196,7 @@ class SendQueueStore:
                         SendQueueItem.collection == collection,
                         col(SendQueueItem.sent_at).is_(None),
                         col(SendQueueItem.cancelled_at).is_(None),
+                        col(SendQueueItem.failed_at).is_(None),
                     )
                 )
             )
@@ -129,6 +207,22 @@ class SendQueueStore:
         if rows:
             logger.info("Cancelled %d pending send(s) from archived %s", len(rows), collection)
         return len(rows)
+
+    def mark_cancelled(self, item_id: int) -> None:
+        """Stamp one row cancelled — withheld on purpose, never to be delivered.
+
+        The single-row form of ``cancel_pending``: a composing report the send gate
+        declined at compose time (a refusal, a mute taken since the enqueue) is a
+        DECISION, not a failure (#2656) — the row is kept as the audit trail,
+        ``sent_at`` stays NULL, and the pending queries exclude it structurally."""
+        with self._session() as session:
+            row = session.get(SendQueueItem, item_id)
+            if row is None or row.cancelled_at is not None:
+                return
+            row.cancelled_at = self._clock.now()
+            session.add(row)
+            session.commit()
+            logger.info("Cancelled send_queue row %d — withheld before delivery", item_id)
 
     def mark_sent(self, item_id: int) -> None:
         """Stamp a row delivered so the drain never re-sends it."""

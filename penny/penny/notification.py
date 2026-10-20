@@ -1,67 +1,46 @@
-"""Telling the user about a finished collector cycle (#1911).
+"""Telling the user about a finished collector cycle (#1911, reshaped by #2656).
 
 Notification used to be part of the cycle: four numbered steps appended to the
 collection's own program — two ``read_similar`` calls, "compose one short friendly
 message", and ``send_message`` — carried out by the same loop, on the same context.
 Measured on an instrumented run, that tail is where the cycles died: 42 of 49
-reroll-exhaustion deaths landed in it, immediately after a ``read_similar``, because
-by then the context was long and chat-flavoured and the model's tool-call envelope
-decayed.  86% of the deaths, and almost none of the value.
+reroll-exhaustion deaths landed in it.  So the tail was taken apart: the lookups
+moved to Python, the composing became its own micro-context on a fresh short
+document with no tool channel, and the send stayed deterministic.
 
-So the tail is taken apart along the line of what actually needs a model:
+#2656 retires the micro-context.  Its document CUT what the cycle wrote —
+measured in prod, a 12-headline digest entry was condensed to a 500-character
+preview and the message named only the first source's stories — and its tone read
+as a template, because it had no conversation, no standing rules and no voice but
+its own prompt.  So the composing moves to the chat agent itself:
 
-- the two lookups are STORE QUERIES — embed what the run found, read the nearest
-  entries out of ``user-messages`` and ``penny-messages``.  Python, always;
-- the composing is a MODEL job — it is prose about one particular find — so it runs
-  as its own micro-context (``MicroContext.compose_notification``) on a FRESH, short
-  document with NO tool channel at all, which is why a decayed tool-call envelope can
-  no longer end a cycle here: there is no call left to decay into;
-- the send is DETERMINISTIC — the refusal / no-recipient / mute gate and the enqueue
-  the ``SendQueueDrainer`` drains on the cooldown.  Python, always.
+- the cycle stays on the task: it ends with ``done(notify=…)``, as now, and
+  ``_notify_if_due`` enqueues a REPORT ROW — the job's name, the trigger, and the
+  run id whose entries the report is built from.  No message is written here;
+- the send-queue drainer, when it reaches that row, builds the :class:`JobReport`
+  from the cycle's written entries — FULL, never cut — and runs ONE chat-agent
+  turn on it: the message is written with Penny's whole context (persona,
+  history, standing rules, the user's formatting asks) and then passes the same
+  send gate and rides the same queue and drainer as every autonomous send.
 
-What is left in the model's hands is exactly the sentence the user reads, and every
-fact in it was put in front of it by the framework.
-
-That document is BOUNDED and ORDERED (#1934).  The first live cycle after the reset
-assembled 50,805 characters of it for an ordinary three-page news round — a browse
-result inlined whole, a write call restating its whole payload in its own arguments,
-and the entries holding that text a third time — on a model whose degeneration onset is
-~4K prompt tokens; and the message it composed led with a headline that was not the
-fetched page's top story but WAS the lead of the PREVIOUS notification, which sat in
-the closest prior messages.  So the entries the cycle wrote lead the document, the
-calls follow them, and the earlier conversation comes last under a heading that says
-what it is.  Every section is bounded in the RENDER against a stated budget, and every
-cut states what it left out — a condensed value is something the draw can act on, where
-a silent one is not.
+What this module still holds is the framework's half of that hand-off: the
+outcome vocabulary the run record is stamped from, the typed report, its
+deterministic render, and the send gate.  Nothing here calls the model.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
-from penny.agents.models import ToolCallRecord
-from penny.agents.self_state import (
-    SelfStateHeader,
-    standing_rules_section,
-)
-from penny.constants import CycleEnd, CycleTrigger, PennyConstants
-from penny.database.memory.objects import render_tool_call
-from penny.database.models import MemoryEntry, MemoryRow
-from penny.datetime_utils import format_log_timestamp
-from penny.llm.call_link import CallLink
+from penny.constants import CycleEnd, CycleTrigger
 from penny.llm.refusal import is_refusal
-from penny.llm.similarity import embed_text
-from penny.tools.micro_context import MicroContext
-from penny.tools.models import SendMessageArgs
 
 if TYPE_CHECKING:
     from penny.database import Database
-    from penny.llm.client import LlmClient
 
 logger = logging.getLogger(__name__)
 
@@ -72,63 +51,37 @@ class NotificationOutcome(StrEnum):
     inferred from whether a ``send_message`` call happens to be in the trace.
 
     ``QUEUED`` is the whole success case (the queue IS the handoff; the drainer owns
-    when it goes out).  ``NOT_DRAWN`` is a model that could not produce a sendable
-    message within its reroll budget — an honest degradation, never a crash and never
-    a silent skip.  ``NOT_DELIVERABLE`` is the send gate declining for a reason no
-    rewrite would fix: the content read as a refusal, nobody is registered to receive
-    it, or the user has muted autonomous messages."""
+    composing the message and when it goes out).  ``NOT_DELIVERABLE`` is the send gate
+    declining for a reason no rewrite would fix: nobody is registered to receive it,
+    or the user has muted autonomous messages.  (The compose failures that used to be
+    ``NOT_DRAWN`` live with the delivery turn now (#2656): the message is written
+    after the cycle has settled, so a draw that never became a message retries on the
+    row, bounded, instead of throwing the cycle's writes away.)"""
 
     QUEUED = "queued"
-    NOT_DRAWN = "not_drawn"
     NOT_DELIVERABLE = "not_deliverable"
 
 
 # What the run record says about each outcome — the honest note the ticket asks for,
-# appended to the completed-cycle reason so all four terminal shapes (aborted,
-# stopped, completed-quiet, completed-notified) read differently on the run.
+# appended to the completed-cycle reason so the terminal shapes (aborted, stopped,
+# completed-quiet, completed-notified) read differently on the run.
 NOTIFICATION_NOTES: dict[NotificationOutcome, str] = {
-    NotificationOutcome.QUEUED: "the user was told",
-    NotificationOutcome.NOT_DRAWN: "nothing was sent — no usable message could be written",
+    NotificationOutcome.QUEUED: "the report was queued to reach the user",
     NotificationOutcome.NOT_DELIVERABLE: "nothing was sent — the send was declined",
 }
 
 
 # How a done-closed cycle ENDED, per notification outcome (#1936) — the other table
 # every outcome is read through, and the one that decides whether the cycle's entry
-# writes survive.
-#
-# ``QUEUED`` and ``NOT_DELIVERABLE`` are both ENDS: the cycle did its job, and a decline
-# is a decision rather than a failure — the user is muted, or nobody is registered to
-# receive it, and attempting the same cycle again reaches the same answer.  (Two of the
-# gate's own refusals — content that reads as a refusal, or that is not a whole message
-# — are theoretically reachable here and read as declines too; the draw's acceptance
-# rule screens both before the queue ever sees them.)  ``NOT_DRAWN`` is not an end at
-# all: the compose micro-context exhausted its rerolls, so the cycle never reached the
-# point of reporting anything, and the whole run is thrown out and retried.
+# writes survive.  Both outcomes are ENDS: the cycle did its job, and a decline is a
+# decision rather than a failure — the user is muted, or nobody is registered to
+# receive it, and attempting the same cycle again reaches the same answer.  A message
+# that is never WRITTEN is no longer a cycle outcome at all: the composing happens on
+# the queued row after the cycle has settled (#2656), bounded there.
 NOTIFIED_CYCLE_ENDS: dict[NotificationOutcome, CycleEnd] = {
     NotificationOutcome.QUEUED: CycleEnd.CLOSED_NOTIFIED,
     NotificationOutcome.NOT_DELIVERABLE: CycleEnd.CLOSED_DECLINED,
-    NotificationOutcome.NOT_DRAWN: CycleEnd.NOTIFICATION_NOT_DRAWN,
 }
-
-
-class CycleCall(BaseModel):
-    """One executed call of the cycle, as the notify document renders it: the call in
-    the canonical ``tool(args)`` notation and its result.
-
-    Both halves are carried WHOLE here and CONDENSED at the render, against a stated
-    budget (#1934).  #1911 carried them whole all the way down, on the reasoning that a
-    truncated result is where an invented detail comes from; the first live cycle after
-    the reset measured what that costs — one browse result inlined at 31,725 characters
-    and one ``collection_write`` whose ARGUMENTS restated the whole payload at 14,923
-    on a single line, on a model that degenerates past ~4K prompt tokens.  A document
-    the model cannot read is not a safer document, so the cut stands but STATES itself:
-    a condensed value ends in the count of what was left out, which is a fact the draw
-    can act on, where a silent cut is not."""
-
-    call: str
-    result: str = ""
-    failed: bool = False
 
 
 class WrittenEntry(BaseModel):
@@ -140,333 +93,119 @@ class WrittenEntry(BaseModel):
     content: str
 
 
-class RelatedMessages(BaseModel):
-    """The nearest past messages from ONE message log, best-first, already rendered.
+class JobReport(BaseModel):
+    """Everything the delivery chat turn is given about a finished cycle (#2656).
 
-    Both logs are carried even when one came back empty, so the document states the
-    absence rather than leaving a section out and letting it read as an oversight."""
-
-    source: str
-    lines: tuple[str, ...] = ()
-
-
-class NotificationInput(BaseModel):
-    """Everything the notify micro-context is given, assembled framework-side.
-
-    A single typed value rather than five arguments, because the render and the
-    assembly are two halves of one contract and a test drives the render alone.
-
-    ``standing_rules`` is the shared ``### Standing rules`` section (#2633), rendered
-    off the store at assembly (``standing_rules_section``) so a rule the user gave
-    holds in the notification too.  Empty falls back to the empty-collection line,
-    which is what a store without the rules collection renders."""
+    Assembled framework-side, as ONE typed value a test can build and render alone.
+    The entries are carried WHOLE — never condensed, never capped: the composer's cut
+    was the measured failure, and the chat agent can write a message the user can act
+    on only from what it is actually shown."""
 
     collection: str
     description: str
-    calls: tuple[CycleCall, ...] = ()
-    written: tuple[WrittenEntry, ...] = ()
-    related: tuple[RelatedMessages, ...] = ()
-    standing_rules: str = ""
+    trigger: CycleTrigger
+    run_id: str
+    entries: tuple[WrittenEntry, ...]
 
 
-_LEAD = "The `{collection}` job just ran on its own, and it is time to tell the user."
-_ABOUT = "What this collection is for: {description}"
-_WROTE_HEAD = "## What it wrote this cycle"
-_WROTE_NONE = "It wrote nothing down this cycle."
-_DID_HEAD = "## How it got there"
-_DID_NONE = "It made no calls."
-_RELATED_HEAD = "## Background: earlier messages"
-_RELATED_LEAD = (
-    "These messages are from before this cycle ran. What this cycle found is at the "
-    "top of this document."
-)
-_RELATED_NONE = "Nothing in your past messages matched this — there is no callback to make."
-_RESULT_PREFIX = "   → "
-_FAILED_PREFIX = "   → (this call failed) "
-# The two honest-omission markers (#1934).  A bound that cuts says what it cut: the
-# characters a condensed value dropped, and the items a capped section left out.
-_CHARS_OMITTED = "… [{count} characters omitted]"
-_MORE_ITEMS = "{count} more {noun} not shown."
-# What each capped section counts, singular and plural — declared beside the marker
-# they fill rather than passed as bare words at each call site.
-_ENTRY_NOUNS = ("entry", "entries")
-_CALL_NOUNS = ("call", "calls")
-_MESSAGE_NOUNS = ("message", "messages")
+_CADENCE_LINE = "It ran on its own schedule."
+_ON_DEMAND_LINE = "It ran just now because the user asked it to run."
+_WROTE_HEAD = "## What the job wrote this run"
+_WROTE_NONE = "It wrote nothing down this run."
+_WRITE_LINE = "- into `{memory}`, under `{key}`: {content}"
+_WRITE_LINE_NO_KEY = "- into `{memory}`: {content}"
+_ASK = "Write the one message to send the user about this run, from what the job wrote."
+_REPORT_LEAD = 'Your job "{collection}" just finished a run and asked to tell the user.'
+_REPORT_ABOUT = "What the job is for: {description}"
 
 
-def render_notification(document: NotificationInput) -> str:
-    """The whole notify document, rendered from framework-assembled facts alone.
+def render_job_report(report: JobReport) -> str:
+    """The whole delivery turn's input, rendered from framework-assembled facts alone.
 
-    Pure and deterministic — no database, no model — so the exact text the draw reads
-    is pinned by a whole-render test rather than by whatever a live run happened to
-    produce.
-
-    Sections in the order the message is written FROM (#1934): what ran, then what the
-    cycle WROTE — the payload, at the head — then how it got there, then the earlier
-    conversation, labelled as background and last.  The order is load-bearing: with the
-    closest prior messages sitting nearest the draw, one measured composition took the
-    PREVIOUS notification's lead as its template and re-reported it as today's top
-    story.  Every section is BOUNDED here rather than at the assembly, so the bound
-    holds whatever put the facts in front of it, and every cut states itself.
-
-    The standing rules close the document (#2633): standing context, not this cycle's
-    news, so they sit behind it."""
-    return "\n".join(
-        [
-            _LEAD.format(collection=document.collection),
-            _ABOUT.format(
-                description=_condensed(
-                    document.description, PennyConstants.NOTIFY_DESCRIPTION_CHARS
-                )
-            ),
-            "",
-            _WROTE_HEAD,
-            _render_written(document.written),
-            "",
-            _DID_HEAD,
-            _render_calls(document.calls),
-            "",
-            _RELATED_HEAD,
-            _render_related(document.related),
-            "",
-            document.standing_rules
-            or f"{SelfStateHeader.STANDING_RULES_HEADER}\n{SelfStateHeader.EMPTY_STANDING_RULES}",
-        ]
-    )
+    Pure and deterministic — no database, no model — so the exact text the chat agent
+    reads is pinned by a whole-render test rather than by whatever a live run happened
+    to produce.  Every written entry renders FULL and in the order the cycle wrote
+    them, with the key it is stored under: the key is the anchor a follow-up
+    (``collection_get``) needs, and the content is the payload the message is written
+    from.  Nothing is condensed and nothing is capped."""
+    lines = [
+        _REPORT_LEAD.format(collection=report.collection),
+        _REPORT_ABOUT.format(description=report.description),
+        _CADENCE_LINE if report.trigger is CycleTrigger.CADENCE else _ON_DEMAND_LINE,
+        "",
+        _WROTE_HEAD,
+    ]
+    if not report.entries:
+        lines.append(_WROTE_NONE)
+    else:
+        lines.extend(_written_report_line(entry) for entry in report.entries)
+    lines.extend(["", _ASK])
+    return "\n".join(lines)
 
 
-def _condensed(text: str, budget: int) -> str:
-    """``text`` within its budget, or its head plus the count of what was left out.
-
-    Never a silent cut: the marker is the difference between a draw reading a partial
-    value knowingly and one reading it as the whole thing."""
-    if len(text) <= budget:
-        return text
-    return f"{text[:budget]}{_CHARS_OMITTED.format(count=len(text) - budget)}"
-
-
-def _overflow_line(shown: int, total: int, nouns: tuple[str, str]) -> list[str]:
-    """The honest count of the items a section's cap left out, or nothing at all."""
-    rest = total - shown
-    if rest <= 0:
-        return []
-    singular, plural = nouns
-    return [_MORE_ITEMS.format(count=rest, noun=singular if rest == 1 else plural)]
-
-
-def _render_written(written: Sequence[WrittenEntry]) -> str:
-    """The durable outcome, and the document's LEAD: the entries whose current value
-    this cycle wrote, in the order the run wrote them, up to the section's cap.
-
-    Empty is a real answer and says so plainly — a routine with no write at all
-    completes and notifies like any other (the exit is the cycle's own close, never a
-    write), so "nothing written" is an ordinary shape here."""
-    if not written:
-        return _WROTE_NONE
-    shown = written[: PennyConstants.NOTIFY_WRITTEN_ENTRIES]
-    lines = [_written_line(entry) for entry in shown]
-    return "\n".join([*lines, *_overflow_line(len(shown), len(written), _ENTRY_NOUNS)])
-
-
-def _written_line(entry: WrittenEntry) -> str:
-    content = _condensed(entry.content, PennyConstants.NOTIFY_WRITTEN_CONTENT_CHARS)
+def _written_report_line(entry: WrittenEntry) -> str:
     if entry.key is None:
-        return f"- into `{entry.memory}`: {content}"
-    key = _condensed(entry.key, PennyConstants.NOTIFY_ENTRY_KEY_CHARS)
-    return f"- into `{entry.memory}`, under `{key}`: {content}"
+        return _WRITE_LINE_NO_KEY.format(memory=entry.memory, content=entry.content)
+    return _WRITE_LINE.format(memory=entry.memory, key=entry.key, content=entry.content)
 
 
-def _render_calls(calls: Sequence[CycleCall]) -> str:
-    """The cycle's calls in order, each with its result under it — the run-record
-    register (``tool(args)``, one call per line) with the results the record itself
-    leaves out, because a record is read for what a run DID and this document is read
-    for what it FOUND.
+def build_job_report(
+    db: Database, collection: str, run_id: str, *, trigger: CycleTrigger
+) -> JobReport | None:
+    """Assemble the report for one queued row: the collection row's own words, and the
+    FULL current value of every entry that run wrote.
 
-    Both halves are condensed: a call's own ARGUMENTS restate whatever payload it
-    carried (a measured ``collection_write`` ran to 14,923 characters on one line), and
-    a browse result carries a whole fetched page."""
-    if not calls:
-        return _DID_NONE
-    shown = calls[: PennyConstants.NOTIFY_CYCLE_CALLS]
-    lines: list[str] = []
-    for index, call in enumerate(shown, start=1):
-        lines.append(f"{index}. {_condensed(call.call, PennyConstants.NOTIFY_CALL_CHARS)}")
-        if call.result:
-            prefix = _FAILED_PREFIX if call.failed else _RESULT_PREFIX
-            result = _condensed(call.result, PennyConstants.NOTIFY_CALL_RESULT_CHARS)
-            lines.append(f"{prefix}{result}")
-    return "\n".join([*lines, *_overflow_line(len(shown), len(calls), _CALL_NOUNS)])
+    ``trigger`` is the queued row's own ``origin`` — a required parameter, carried
+    never inferred: it is what the report says about why the cycle ran, and what the
+    drainer's delivery lane already read off the row.
 
-
-def _render_related(related: Sequence[RelatedMessages]) -> str:
-    """Both message logs' nearest entries as BACKGROUND, or the one plain
-    nothing-matched line.
-
-    Nothing matching is the ORDINARY case, so it renders as a statement rather than as
-    two empty sections: a callback line is worth having when there is something to
-    call back to, and inventing one is the failure this wording exists to prevent.
-    When there IS something, the section says what it is — messages from before this
-    cycle — and where the cycle's own findings are, because these are the only lines in
-    the document that were never produced by the run being reported."""
-    populated = [group for group in related if group.lines]
-    if not populated:
-        return _RELATED_NONE
-    return "\n\n".join([_RELATED_LEAD, *(_related_group(group) for group in populated)])
-
-
-def _related_group(group: RelatedMessages) -> str:
-    """One log's nearest messages, capped and each condensed to its own budget."""
-    shown = group.lines[: PennyConstants.NOTIFY_RELATED_MESSAGES]
-    lines = [_condensed(line, PennyConstants.NOTIFY_RELATED_LINE_CHARS) for line in shown]
-    overflow = _overflow_line(len(shown), len(group.lines), _MESSAGE_NOUNS)
-    return "\n".join([f"### {group.source}", *lines, *overflow])
-
-
-class CollectorNotifier:
-    """Assembles a finished cycle's notify document, draws the message, and queues it.
-
-    Framework-entered: the collector calls it after the cycle's program is covered, so
-    nothing here is reachable from a model's tool call and no prompt can ask for it.
-    """
-
-    def __init__(self, db: Database, embedding_client: LlmClient, model_client: LlmClient) -> None:
-        self._db = db
-        self._embedding_client = embedding_client
-        self._micro_context = MicroContext(model_client)
-
-    async def notify(
-        self,
-        target: MemoryRow,
-        run_id: str,
-        records: Sequence[ToolCallRecord],
-        trigger: CycleTrigger,
-        *,
-        call_link: CallLink,
-    ) -> NotificationOutcome:
-        """Tell the user about this cycle — assemble, draw, queue.
-
-        ``trigger`` is what set the cycle running, carried through to the queued row so
-        the drainer knows whether anyone is waiting on this message (#1939).
-
-        Returns the enumerated outcome the collector stamps on the run.  Every branch
-        is a recorded fact: a message that could not be written and a send that was
-        declined are both stated on the run record rather than passing as a quiet
-        success."""
-        document = await self._document(target, run_id, records)
-        message = await self._micro_context.compose_notification(
-            render_notification(document), call_link=call_link, run_target=target.name
+    ``None`` when the collection has vanished between the enqueue and the compose —
+    logged, and the caller records the failure on the row rather than composing from
+    a half-assembled report.  (A collection archived after the enqueue already had
+    its pending rows cancelled at the archive chokepoint, so reaching here with no
+    row means something else moved it; the honest answer is a named failure.)"""
+    row = db.memories.get(collection)
+    if row is None:
+        logger.error(
+            "Report for '%s' (run %s) cannot be built — the collection no longer exists",
+            collection,
+            run_id,
         )
-        if message is None:
-            logger.warning(
-                "No sendable notification could be drawn for '%s' — run %s sends nothing",
-                target.name,
-                run_id,
-            )
-            return NotificationOutcome.NOT_DRAWN
-        return self.queue(target.name, message, trigger)
-
-    def queue(self, mechanism: str, content: str, trigger: CycleTrigger) -> NotificationOutcome:
-        """The send gate every autonomous message passes, then the enqueue.
-
-        The three declines are the ones that need runtime state or are correct no-ops:
-        content that reads as a model refusal, no registered recipient, and a muted
-        user.  Enqueue IS the successful handoff — the ``SendQueueDrainer`` owns when
-        the message actually goes out, so a cooldown delays a message rather than
-        losing it.  ``trigger`` is stamped on the row and decides WHICH lane it waits
-        in: a cadence cycle's message rides the full autonomous-send cooldown, while a
-        cycle the user pressed "run this now" on goes out on the next drain tick,
-        because they are sitting there waiting for it (#1939).
-
-        Content validity is checked one layer up, in the draw's own acceptance rule
-        (a half-formed message is re-drawn rather than queued), and re-validated here
-        through the same :class:`SendMessageArgs` model so nothing reaches the queue
-        unvalidated whatever put it there."""
-        try:
-            args = SendMessageArgs(content=content)
-        except ValidationError:
-            logger.warning("Notification for '%s' was not a complete message", mechanism)
-            return NotificationOutcome.NOT_DELIVERABLE
-        if is_refusal(args.content):
-            logger.info("Notification for '%s' read as a model refusal", mechanism)
-            return NotificationOutcome.NOT_DELIVERABLE
-        recipient = self._db.users.get_primary_sender()
-        if recipient is None:
-            logger.info("Notification for '%s' has no registered recipient", mechanism)
-            return NotificationOutcome.NOT_DELIVERABLE
-        if self._db.users.is_muted(recipient):
-            logger.info("Notification for '%s' withheld — the user is muted", mechanism)
-            return NotificationOutcome.NOT_DELIVERABLE
-        self._db.send_queue.enqueue(content=args.content, collection=mechanism, origin=trigger)
-        logger.info("Notification queued (%s): %s → %s", trigger.value, mechanism, recipient)
-        return NotificationOutcome.QUEUED
-
-    async def _document(
-        self, target: MemoryRow, run_id: str, records: Sequence[ToolCallRecord]
-    ) -> NotificationInput:
-        """The framework's whole assembly: the run's own calls, what it wrote, and the
-        past-message lookups Python performs on the caller's behalf."""
-        written = self._db.memories.entries_written_by_run(run_id)
-        return NotificationInput(
-            collection=target.name,
-            description=target.description,
-            calls=tuple(_cycle_call(record) for record in records),
-            written=tuple(_written_entry(entry) for entry in written),
-            related=await self._related(target, written),
-            standing_rules=standing_rules_section(self._db),
-        )
-
-    async def _related(
-        self, target: MemoryRow, written: Sequence[MemoryEntry]
-    ) -> tuple[RelatedMessages, ...]:
-        """The two message logs' nearest past entries — the retired notify steps'
-        ``read_similar(memory=…, anchor=<what you just found>, k=5)`` pair, done here.
-
-        The ANCHOR is what the cycle found: the contents of everything it wrote,
-        joined.  A cycle that wrote nothing has no find to anchor on, so it falls back
-        to the collection's own description — the same meaning anchor the registry
-        resolves the collection by — which keeps a no-write routine's callback line
-        answerable instead of arbitrary.  A transient embed failure yields no groups
-        at all, which the render states as nothing-matched: honest, and the message is
-        still written."""
-        anchor = "\n".join(entry.content for entry in written) or target.description
-        vector = await embed_text(self._embedding_client, anchor)
-        if vector is None:
-            logger.warning("Notify anchor for '%s' could not be embedded", target.name)
-            return ()
-        return tuple(
-            self._nearest(log_name, vector)
-            for log_name in (
-                PennyConstants.MEMORY_USER_MESSAGES_LOG,
-                PennyConstants.MEMORY_PENNY_MESSAGES_LOG,
-            )
-        )
-
-    def _nearest(self, log_name: str, vector: list[float]) -> RelatedMessages:
-        """One log's nearest entries, best-first, rendered with their timestamps — the
-        same plain ``[stamp] content`` shape a log read shows the model."""
-        log = self._db.memory(log_name)
-        if log is None:
-            return RelatedMessages(source=log_name)
-        entries = log.read_similar(vector, PennyConstants.NOTIFY_RELATED_MESSAGES)
-        return RelatedMessages(
-            source=log_name,
-            lines=tuple(
-                f"{index}. [{format_log_timestamp(entry.created_at)}] {entry.content}"
-                for index, entry in enumerate(entries, start=1)
-            ),
-        )
-
-
-def _cycle_call(record: ToolCallRecord) -> CycleCall:
-    """One executed call as the document renders it — the canonical call notation the
-    run trace uses everywhere, so what the draw reads of the cycle matches what every
-    other surface says about it."""
-    return CycleCall(
-        call=render_tool_call(record.tool, record.arguments),
-        result=record.result or "",
-        failed=record.failed,
+        return None
+    written = db.memories.entries_written_by_run(run_id)
+    return JobReport(
+        collection=collection,
+        description=row.description,
+        trigger=trigger,
+        run_id=run_id,
+        entries=tuple(
+            WrittenEntry(memory=entry.memory_name, key=entry.key, content=entry.content)
+            for entry in written
+        ),
     )
 
 
-def _written_entry(entry: MemoryEntry) -> WrittenEntry:
-    return WrittenEntry(memory=entry.memory_name, key=entry.key, content=entry.content)
+def withheld_reason(db: Database, content: str) -> str | None:
+    """The send gate every composed message passes, as a reason or ``None``.
+
+    The declines are the ones that need runtime state or are correct no-ops —
+    decisions no retry changes: content that reads as a model refusal, no registered
+    recipient, and a muted user.  ``None`` means the content may be stored on the
+    row and delivered.
+
+    The recipient and mute checks run here as well as at the enqueue because the two
+    moments can be far apart — a cooldown can hold a report for minutes, and the
+    user's mute state may have changed since the cycle queued it.  (A message that
+    is not WHOLE is not a decline: that is a compose failure, retried on the row —
+    the drainer reads it off ``half_formed_send_reason`` directly, the same rule the
+    retired composer's acceptance rule enforced, so what the framework is willing to
+    deliver, what a ``send_message`` would carry, and what a failed send is flagged
+    on are one definition.)"""
+    if is_refusal(content):
+        return "the message read as a model refusal"
+    recipient = db.users.get_primary_sender()
+    if recipient is None:
+        return "there is no registered recipient"
+    if db.users.is_muted(recipient):
+        return "the user is muted"
+    return None

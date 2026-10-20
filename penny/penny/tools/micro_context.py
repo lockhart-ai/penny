@@ -8,40 +8,17 @@ bulk page body never enters the parent run's context: only the extracted value
 content come back (the anchor discipline).  A micro-context is structurally
 incapable of confabulating a stored value it has never seen.
 
-A customer that declares a tagged shape does so as DATA, not a bespoke parser:
-since #1814 each one names a
-:class:`~penny.tools.micro_context_shape.MicroContextShape` — its tags, which
-lines are required, which repeat per item, how each line's payload carves into
-named fields, and which of those fields may be absent.  The prompt's contract
-block is RENDERED from that declaration (``render_line``), so the tags and
-separators the model is told to write are literally the ones the parser splits
-on; :func:`~penny.tools.micro_context_shape.parse_draw` is the ONE validate step
-a shaped customer rides, so it never partitions a string itself.  What that
-bought is the failure it replaced: a ``PARAM`` line whose separator came back as
-an en-dash where the parser wanted an em-dash used to partition to nothing and
-hand the entire remainder over as a parameter's semantic name — a 60-character
-"name" carrying its own description, persisted as a skill's binding key, with no
-reroll because the parse had "succeeded".  Tolerance is now declared once and
-"parsed to something implausible" is a contract violation, not a value.
+**Browse-extract is the one customer** (#2615): reading a page is not a reasoning
+task, so its draw runs with thinking off and its plain text IS the value,
+verbatim — nothing parses it.  The tagged-line shape machinery that used to serve
+a second customer (the notify composer, retired with it in #2656) is gone with
+that customer; what remains is the poison screen every draw still rides.
 
-**Browse-extract is the one customer that no longer declares a shape (#2615):**
-reading a page is not a reasoning task, so its draw runs with thinking off and
-its plain text IS the value, verbatim — see :meth:`MicroContext.extract` and
-:data:`MICRO_CONTEXT_SYSTEM_PROMPT` below.  The notifier still declares one
-(:data:`NOTIFY_SHAPE`), so the shape machinery above serves it: a violation of a
-REQUIRED part of ITS shape is rerolled on the unchanged context and then fails
-honestly; a violation of an OPTIONAL or PER_ITEM line is simply an ABSENT line
-at the GRAMMAR level — but whether absence is acceptable is the CUSTOMER's to
-declare, as a runtime constraint (``accepts``): the notifier refuses a draw
-whose text is not worth delivering (:func:`_is_sendable`).  An accepted draw
-never contains an invalid line.
-
-Every customer's single call — shaped or not — is screened by the same
-degeneracy / leaked-Harmony-envelope / empty-draw detectors the agent-loop
-reroll guard uses (:mod:`penny.text_validity`): poison is discarded and
-re-drawn on the *unchanged* context up to ``DEGENERATE_REROLL_ATTEMPTS``, never
-appended (appending a collapse feeds it back in).  An unusable result is an
-honest enumerated outcome, never a silent empty.
+Every draw is screened by the same degeneracy / leaked-Harmony-envelope /
+empty-draw detectors the agent-loop reroll guard uses (:mod:`penny.text_validity`):
+poison is discarded and re-drawn on the *unchanged* context up to
+``DEGENERATE_REROLL_ATTEMPTS``, never appended (appending a collapse feeds it back
+in).  An unusable result is an honest enumerated outcome, never a silent empty.
 
 It is itself a ledger-visible model call — its own ``agent_name`` /
 ``prompt_type`` so run traces attribute it — but it does NOT inflate the parent
@@ -52,7 +29,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -62,40 +38,16 @@ from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage
-from penny.llm.refusal import is_refusal
 from penny.text_validity import (
-    half_formed_send_reason,
     has_leaked_harmony_envelope,
     is_degenerate_run,
     is_empty_draw,
-)
-from penny.tools.micro_context_shape import (
-    FieldSpec,
-    LineSpec,
-    MicroContextShape,
-    ParsedDraw,
-    PayloadSpan,
-    parse_draw,
-    render_line,
 )
 
 if TYPE_CHECKING:
     from penny.llm import LlmClient
 
 logger = logging.getLogger(__name__)
-
-
-class DrawField(StrEnum):
-    """The named field a declared shape's line carves out.
-
-    A customer reads a draw by this name — ``drawn.field(MESSAGE_TAG,
-    DrawField.MESSAGE)`` — never by position and never by partitioning a string, so
-    a grammar change lands in the declaration rather than in a bespoke parser.
-    Browse-extract retired its own three fields with its shape (#2615): it reads
-    a draw's plain text directly, so this enum now serves the notifier alone."""
-
-    MESSAGE = "message"
-
 
 # Browse-extract retired its tagged contract (#2615): reading a page is not a
 # reasoning task.  Production measured the tagged shape costing a correct read
@@ -104,9 +56,8 @@ class DrawField(StrEnum):
 # plain-text answer discarded and re-rolled for carrying no parseable tag.  The
 # code owner's ruling: drop the shape.  The draw always runs with thinking off
 # and returns plain text; nothing parses it.  ``EXTRACTED_TAG`` / ``NOT_PRESENT_TAG``
-# / ``EXTRACT_MISSING_TAG`` and the declared ``EXTRACT_SHAPE`` are gone with it —
-# see :meth:`MicroContext.extract`, which no longer rides the shape/reroll loop
-# below at all.
+# / ``EXTRACT_MISSING_TAG`` and the declared shape are gone with it —
+# see :meth:`MicroContext.extract`, whose draw never rides a shape loop at all.
 #
 # The three things the shape used to carry STRUCTURALLY are said in PLAIN WORDS
 # instead, carried over from the shape's own history (#1942/#2360): the
@@ -182,102 +133,6 @@ _LINK_LIST_READING_NOTE = (
 
 _USER_TEMPLATE = "Instruction: {instruction}\n\n{reading_note}Content:\n{content}"
 
-# ── Second customer: telling the user about a cycle — the notifier (#1911) ─────
-# The customer above (extraction) runs around a CHAT turn.  This one closes a COLLECTOR
-# cycle: once the program's calls are covered and the collection says notify, the
-# framework assembles what the cycle did, what it wrote, and the past messages nearest
-# to it — all in Python — and this draw turns that into the one message the user gets.
-#
-# It exists because the same job used to be four numbered steps APPENDED to the
-# collector's own program, carried out by the same loop, on the same context: two
-# ``read_similar`` calls, "compose one short friendly message", and a ``send_message``.
-# Measured, that tail was where the cycles died — 42 of 49 reroll-exhaustion deaths in
-# one instrumented run landed in it, immediately after a ``read_similar``, because by
-# then the context had grown long and chat-flavoured and the model's tool-call envelope
-# decayed.  The tail was 86% of the deaths and almost none of the value.
-#
-# So the two reads move to Python (a store query needs no model), the compose stays a
-# model job (it is prose about a particular find), and the send moves to Python (the
-# queue was always deterministic).  What is left for the model is the ONE thing only a
-# model can do, on a FRESH short context with NO tool channel at all — which is why a
-# decayed tool-call envelope cannot end this cycle: there is no call to decay into.
-MESSAGE_TAG = "MESSAGE:"
-
-# One line spanning the REMAINDER — the ``EXTRACTED:`` shape (#1682), since a message
-# is prose that may run to several lines.  The tag carries its own colon so it is
-# self-delimiting, like the extraction contract's.
-#
-# It is anchored ANYWHERE rather than at the head of the draw, which is the one place
-# this differs from extraction, and deliberately: the tag's whole job here is to say
-# where the message the user receives BEGINS, so a chatty draw's "Sure, here you go."
-# is something to leave behind rather than something to fail the cycle's notification
-# over.  Anything before the tag is dropped; everything after it is the message.
-_MESSAGE_LINE = LineSpec(
-    tag=MESSAGE_TAG,
-    span=PayloadSpan.REMAINDER,
-    fields=(
-        FieldSpec(
-            name=DrawField.MESSAGE,
-            placeholder="<the message — it may begin on this same line>",
-        ),
-    ),
-)
-NOTIFY_SHAPE = MicroContextShape(lines=(_MESSAGE_LINE,))
-
-# WORDING FOR CODE-OWNER REVIEW (#1911).  A minimal distillation of the retired
-# ``Prompt.COLLECTOR_NOTIFY_STEPS`` into a single-purpose framing: the same message
-# shape it asked for (a quick greeting · what was found in plain words · the source url
-# when there is one · a callback ONLY when a past message is genuinely related), with
-# the two ``read_similar`` steps gone because their results are handed in already, and
-# the ``send_message`` step gone because the framework sends.  Nothing about tools, and
-# nothing about deciding WHETHER to write — both were settled before this draw.
-#
-# The opening sentence NAMES THE DOCUMENT'S SECTIONS IN THE ORDER THEY RENDER (#1934),
-# so the one sentence framing the document cannot describe a different document from
-# the one under it: what the cycle wrote leads, the calls follow, and the earlier
-# messages are named as BACKGROUND — the only part of the document the reported run did
-# not produce, and the part a measured composition took as its template.
-NOTIFY_SYSTEM_PROMPT = (
-    "You are writing one message to the user. A job of theirs just ran on its own "
-    "and found something, and you are given everything about that run: what it wrote "
-    "down, how it got there, and — as background — the closest things the two of you "
-    "have said before.\n"
-    "\n"
-    "Write the message they will actually receive:\n"
-    "1. Open with a quick greeting.\n"
-    "2. Tell them what the job found in flowing, conversational sentences — the way "
-    "you'd tell a friend what you turned up, not a form to fill in. Name every item "
-    "under what it wrote this cycle — not just the ones that look most relevant: the "
-    "job already decided what counted as a find, so every one of them gets named — "
-    "and give each one the facts that make it worth telling, read straight from the "
-    "record: where it's listed, its price, and what changed about it (a price drop, "
-    "a new listing, something hard to find). The items' storage labels (like "
-    "`listing-01`) are bookkeeping — talk about the things themselves.\n"
-    "3. When the record says more entries exist than are listed, mention that too, "
-    "in the same breath, so the count is never a surprise.\n"
-    "4. Include the source link when the run has one.\n"
-    "5. Add one line calling back to an earlier message ONLY when one of them is "
-    "genuinely about this. When none of them is, say nothing about them — that is the "
-    "ordinary case and it is fine.\n"
-    "\n"
-    "Keep it short and friendly, the way a person messages a friend. Write only what "
-    "the run actually found: never a detail that is not in front of you, and never a "
-    "claim about what happens next.\n"
-    "\n"
-    "Respond with this line and nothing else:\n"
-    f"{render_line(_MESSAGE_LINE)}\n"
-    f"Everything after {MESSAGE_TAG} is the message itself, so write no preamble, no "
-    "explanation, and no restating of these instructions."
-)
-
-# A user turn that is the rendered document ALONE — no ``Instruction:``/``Content:``
-# wrapper.  That frame is the extraction customer's (natural for "here's a page, pull X
-# out"); a customer whose ask lives entirely in its system prompt would only repeat the
-# instruction by wrapping, and would label a structured situation as bulk content.  The
-# notifier reads this way too (#1911), so it is named for the SHAPE of the turn rather
-# than for either customer.
-_BARE_CONTENT_TEMPLATE = "{content}"
-
 
 class MicroExtractOutcome(StrEnum):
     """The enumerated outcome of a micro-context extraction — a closed set the
@@ -288,9 +143,7 @@ class MicroExtractOutcome(StrEnum):
     — the plain-text draw says which, and that reads as variance, not as a
     closed field.  ``EXTRACTION_FAILED`` is the one escape left: no usable
     draw came back after the whole reroll budget (degenerate, a leaked
-    envelope, or blank) — this merges what used to be a separate
-    ``POISON_REROLL_FAILED``, since there is no second failure KIND (a shape
-    violation) left to tell it apart from any more.
+    envelope, or blank).
     """
 
     EXTRACTED = "extracted"
@@ -311,26 +164,6 @@ class MicroContextResult(BaseModel):
 
     outcome: MicroExtractOutcome
     value: str = ""
-
-
-class DrawFailure(StrEnum):
-    """Why no usable draw came back once the budget was spent, for a customer
-    still riding :meth:`MicroContext._valid_draw`'s shape/accepts loop
-    (#2615: browse-extract no longer does — see :meth:`MicroContext.extract`).
-
-    ``POISON`` is a transport artifact every time (a degeneration collapse, a
-    leaked Harmony envelope, or a blank draw).  ``INVALID`` is a clean draw
-    that never matched its DECLARED shape or its runtime constraint (e.g. the
-    notifier's sendability check, :func:`_is_sendable`)."""
-
-    POISON = "poison"
-    INVALID = "invalid"
-
-
-def _accept_any(_drawn: ParsedDraw) -> bool:
-    """The default runtime constraint: none.  For a customer with no membership
-    sets to check, the declared shape IS the whole contract."""
-    return True
 
 
 class MicroContext:
@@ -391,113 +224,6 @@ class MicroContext:
             return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTION_FAILED)
         return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=text.strip())
 
-    async def compose_notification(
-        self,
-        content: str,
-        *,
-        call_link: CallLink,
-        run_target: str | None = None,
-    ) -> str | None:
-        """Write the one message a finished collector cycle sends the user (#1911) — the
-        SECOND customer of this machinery, and the first that closes a background cycle
-        rather than a chat turn.
-
-        ``content`` is the framework-assembled document (``penny.notification``): what
-        the cycle did, what it wrote, and the past messages Python already looked up.
-        Rides ``_valid_draw``'s shape/accepts loop (#2615: browse-extract no longer
-        does), against its own declared shape (:data:`NOTIFY_SHAPE`) and the
-        bare-content user turn (the assembled document IS the whole ask), plus the
-        runtime constraint a static shape cannot carry: the drawn text must be a
-        message worth delivering (:func:`_is_sendable`).
-
-        ``None`` when no usable draw came back — the honest escape every run-end
-        customer keeps.  The caller records that on the run and sends nothing, which is
-        the whole degradation: a cycle that found something and could not phrase it
-        still leaves its find written down and its run record saying so."""
-        drawn = await self._valid_draw(
-            content,
-            "",
-            run_target,
-            call_link=call_link,
-            shape=NOTIFY_SHAPE,
-            accepts=_is_sendable,
-            system_prompt=NOTIFY_SYSTEM_PROMPT,
-            agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
-            prompt_type=PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE,
-            user_template=_BARE_CONTENT_TEMPLATE,
-            thinking_enabled=False,
-        )
-        if isinstance(drawn, DrawFailure):
-            return None
-        return drawn.field(MESSAGE_TAG, DrawField.MESSAGE)
-
-    async def _valid_draw(
-        self,
-        content: str,
-        instruction: str,
-        run_target: str | None,
-        *,
-        call_link: CallLink,
-        shape: MicroContextShape,
-        accepts: Callable[[ParsedDraw], bool] = _accept_any,
-        system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
-        agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-        prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
-        user_template: str = _USER_TEMPLATE,
-        reading_note: str = "",
-        thinking_enabled: bool = True,
-    ) -> ParsedDraw | DrawFailure:
-        """The ONE validate step every customer rides (#1814): a poison-screened
-        draw, read against its DECLARED ``shape`` and checked against ``accepts``
-        (the runtime constraint a static shape can't carry — e.g. the notifier's
-        sendability check), re-rolled on the unchanged context while the contract
-        is violated, then an honest typed failure the customer maps onto its own
-        outcome.
-
-        A contract violation gets the SAME patience as poison — one budget
-        (``self._reroll_attempts``, defaulting to ``DEGENERATE_REROLL_ATTEMPTS``),
-        not a second number beside it (code-owner ruling).  We know deterministically
-        what a valid draw looks like — the shape, and the customer's own runtime
-        constraint — so a violation is DETECTED rather than judged, and a
-        detected-invalid draw is cheap to throw away and redraw.  The fallback stays
-        the honest end after the budget, not a thing to reach one draw sooner.
-
-        Only the shape (and the prompt + attribution) differs per customer, so no
-        customer owns a reroll loop or partitions a string of its own.  ``call_link``
-        (#2458) is passed straight through to ``_draw_clean``, which derives ONE
-        child link for the whole draw before the reroll loop starts — every attempt
-        of one draw still names the same run (and, for a tool-nested draw, the same
-        call) it was made for, never re-derived per attempt.  ``reading_note``
-        (#2388) rides the same way — only ``extract`` ever supplies a non-empty one;
-        every other customer's ``_BARE_CONTENT_TEMPLATE`` ignores it."""
-        for _ in range(self._reroll_attempts):
-            draw = await self._draw_clean(
-                content,
-                instruction,
-                run_target,
-                call_link=call_link,
-                system_prompt=system_prompt,
-                agent_name=agent_name,
-                prompt_type=prompt_type,
-                user_template=user_template,
-                reading_note=reading_note,
-                thinking_enabled=thinking_enabled,
-            )
-            if draw is None:
-                return DrawFailure.POISON
-            parsed = parse_draw(draw, shape)
-            if parsed is not None and accepts(parsed):
-                return parsed
-            logger.warning(
-                "%s output violated its declared shape — discarding and re-rolling", agent_name
-            )
-        logger.warning(
-            "%s output still violated its declared shape after %d draws",
-            agent_name,
-            self._reroll_attempts,
-        )
-        return DrawFailure.INVALID
-
     async def _draw_clean(
         self,
         content: str,
@@ -505,20 +231,12 @@ class MicroContext:
         run_target: str | None,
         *,
         call_link: CallLink,
-        system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
-        agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-        prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
-        user_template: str = _USER_TEMPLATE,
         reading_note: str = "",
         thinking_enabled: bool = True,
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
         is unusable.  Mirrors the agent-loop reroll guard — discard poison, never
         append it, re-draw on the same context, abort after the attempt budget.
-
-        The ``system_prompt`` + ledger attribution are parameters (defaulting to the
-        browse-extract contract) so a second output contract — notify composition
-        (#1911) — rides the SAME poison/reroll loop without duplicating it.
 
         Derives its OWN draw link via ``call_link.child()`` (#2458) ONCE, before the
         reroll loop — the whole point being that a micro-context's call is its own
@@ -538,10 +256,9 @@ class MicroContext:
 
         ``thinking_enabled`` (#2615) is the per-customer reasoning switch —
         browse-extract always draws with it ``False`` (reading a page is not a
-        reasoning task), every other customer keeps the default ``True``.  A
-        draw the cap cut (``finish_reason="length"``) gets ONE more call on the
-        same messages with thinking forced off — the budget spent its
-        reasoning tokens, so the last draw is asked to answer with what it has
+        reasoning task).  A draw the cap cut (``finish_reason="length"``) gets ONE
+        more call on the same messages with thinking forced off — the budget spent
+        its reasoning tokens, so the last draw is asked to answer with what it has
         — and that response takes the cut one's place; the poison screen then
         reads it like any other draw.  That retry only fires when the cut draw
         itself drew WITH thinking on: a customer already drawing thinking-off
@@ -549,18 +266,19 @@ class MicroContext:
         ``not retried_cut and thinking_enabled``.  At most once per draw either
         way: a retry that is itself cut is used as-is, an honest escape rather
         than an unbounded loop."""
-        messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
+        messages = self._messages(content, instruction, reading_note)
         draw_link = call_link.child()
         runtime = self._model_client.runtime
         token_budget = token_budget_for(
-            runtime if runtime is not None else RuntimeParams(), agent_name
+            runtime if runtime is not None else RuntimeParams(),
+            PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         )
         retried_cut = False
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
                 messages=messages,
-                agent_name=agent_name,
-                prompt_type=prompt_type,
+                agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+                prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
                 call_link=draw_link,
                 run_target=run_target,
                 token_budget=token_budget,
@@ -574,12 +292,12 @@ class MicroContext:
                 retried_cut = True
                 logger.warning(
                     "%s draw was cut at its token budget — one more draw with thinking off",
-                    agent_name,
+                    PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
                 )
                 response = await self._model_client.chat(
                     messages=messages,
-                    agent_name=agent_name,
-                    prompt_type=prompt_type,
+                    agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+                    prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
                     call_link=draw_link,
                     run_target=run_target,
                     token_budget=token_budget,
@@ -612,23 +330,16 @@ class MicroContext:
     def _messages(
         content: str,
         instruction: str,
-        system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
-        user_template: str = _USER_TEMPLATE,
         reading_note: str = "",
     ) -> list[LlmMessage]:
-        """The scoped two-message context: the contract framing (``system_prompt``,
-        default the browse-extract contract), then the user turn shaped by the
-        customer's ``user_template`` (default: the instruction paired with bulk
-        content; the notifier passes the bare-content template).
-
-        ``reading_note`` (#2388) only ever renders on ``_USER_TEMPLATE`` — the
-        notifier's ``_BARE_CONTENT_TEMPLATE`` ("{content}") has no ``{reading_note}``
-        slot to fill, so ``str.format`` simply ignores the supplied kwarg for it."""
+        """The scoped two-message context: the extraction contract framing, then
+        the user turn pairing the instruction with the bulk content (and, on a
+        link-list read, the note saying how the page was read)."""
         return [
-            LlmMessage(role="system", content=system_prompt),
+            LlmMessage(role="system", content=MICRO_CONTEXT_SYSTEM_PROMPT),
             LlmMessage(
                 role="user",
-                content=user_template.format(
+                content=_USER_TEMPLATE.format(
                     instruction=instruction, content=content, reading_note=reading_note
                 ),
             ),
@@ -655,20 +366,3 @@ def spoken_form(text: str) -> str:
     copy of it, so what a case calls a match and what production calls a span are one
     definition."""
     return _SPOKEN_WHITESPACE.sub(" ", text).strip().casefold()
-
-
-def _is_sendable(drawn: ParsedDraw) -> bool:
-    """The runtime constraint the notify shape cannot carry (#1911): the drawn text has
-    to be a message a user should actually receive.
-
-    Read through the SHARED ``half_formed_send_reason`` rule — the same definition the
-    send path validates with and the run-health classifier flags ``⚠ HALF-FORMED SEND``
-    on — so what the framework draws and what it is willing to deliver are one
-    definition, and a blank / bare-url / trailing-off draw is a contract violation
-    re-drawn on the unchanged context rather than something the queue refuses later.  A
-    model REFUSAL is refused here for the same reason: it is not a message about the
-    run, and nothing downstream would improve it."""
-    message = drawn.field(MESSAGE_TAG, DrawField.MESSAGE)
-    if message is None:
-        return False
-    return half_formed_send_reason(message) is None and not is_refusal(message)

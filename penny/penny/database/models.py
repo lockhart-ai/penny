@@ -416,13 +416,16 @@ class SendQueueItem(SQLModel, table=True):
     ``send_message`` enqueues here instead of dropping a message when the
     autonomous-send cooldown hasn't elapsed; a background drain schedule
     delivers the oldest pending row once the cooldown clears, then stamps
-    ``sent_at``.  A row has three states, and each marker means exactly one
-    thing: **pending** (``sent_at IS NULL AND cancelled_at IS NULL``),
-    **delivered** (``sent_at`` stamped — the single source of truth for "was
-    it sent"), and **cancelled** (``cancelled_at`` stamped while ``sent_at``
-    stays NULL — the collector was archived before the message went out, so it
-    was never sent; #1634).  ``collection`` is the collector that queued it (the
-    bound target name), so delivery — and cancellation — is attributable.
+    ``sent_at``.  A row has four states, and each marker means exactly one
+    thing: **pending** (``sent_at IS NULL AND cancelled_at IS NULL AND
+    failed_at IS NULL``), **delivered** (``sent_at`` stamped — the single
+    source of truth for "was it sent"), **cancelled** (``cancelled_at``
+    stamped while ``sent_at`` stays NULL — the collector was archived before
+    the message went out, so it was never sent; #1634), and **failed**
+    (``failed_at`` stamped, ``sent_at`` NULL — a composing report whose
+    message never became sendable within the retry budget, #2656).
+    ``collection`` is the collector that queued it (the bound target name), so
+    delivery — and cancellation — is attributable.
     """
 
     __tablename__ = "send_queue"
@@ -438,6 +441,23 @@ class SendQueueItem(SQLModel, table=True):
     # a cadence message waits it out.  Never NULL: an unstamped row is a cadence
     # row, which is the conservative direction (the bypass must be claimed).
     origin: str = Field(default=CycleTrigger.CADENCE)  # CycleTrigger value
+    # The composing report (#2656): the collector cycle's run id whose written
+    # entries the report is built from.  NULL for a row that already carries its
+    # content (the ordinary queued message); a row with this set and empty
+    # content is a report awaiting composition — the drainer builds the
+    # JobReport from the cycle's entries, runs the delivery chat turn, and
+    # stores what it wrote before delivering.
+    report_run_id: str | None = Field(default=None, index=True)
+    # How many times composing this row's report has failed, so the retry is
+    # bounded and the bounded end is visible (#2656).
+    attempts: int = Field(default=0)
+    # Stamped when the retry budget is spent without a sendable message — a
+    # VISIBLE terminal state: the row is kept, never delivered, and excluded
+    # from the pending query structurally.  Distinct from ``cancelled_at``: a
+    # failed report is a compose that never produced a message, where a
+    # cancelled one was withheld on purpose (an archived collector, a mute).
+    # ``sent_at`` stays NULL on both — neither was ever sent.
+    failed_at: datetime | None = None
     sent_at: datetime | None = None
     # Stamped when the queuing collector is archived before delivery (#1634):
     # a VISIBLE cancellation (the row is kept as an audit trail, not deleted),
@@ -458,7 +478,7 @@ class SendQueueItem(SQLModel, table=True):
             "ix_send_queue_pending_lane",
             "origin",
             "created_at",
-            sqlite_where=text("sent_at IS NULL AND cancelled_at IS NULL"),
+            sqlite_where=text("sent_at IS NULL AND cancelled_at IS NULL AND failed_at IS NULL"),
         ),
     )
 

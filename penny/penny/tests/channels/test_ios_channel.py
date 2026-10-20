@@ -1025,7 +1025,7 @@ async def test_ios_image_policy_only_changes_new_automatic_deliveries(db, test_c
     async def deliver():
         if collector:
             db.send_queue.enqueue(content=content, collection="test-images")
-            drainer = SendQueueDrainer(db, test_config)
+            drainer = SendQueueDrainer(db, test_config, chat_agent=MagicMock())
             drainer.set_channel(channel)
             db.messages.log_message("incoming", "ios-keychain-id", "run now")
             assert await drainer.execute()

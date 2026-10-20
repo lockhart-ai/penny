@@ -46,7 +46,7 @@ from penny.constants import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.models import MemoryRow
+from penny.database.models import MemoryRow, SendQueueItem
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmMessage, LlmResponse
@@ -61,7 +61,6 @@ from penny.tools.memory_tools import (
     LogReadTool,
     build_memory_tools,
 )
-from penny.tools.micro_context import NOTIFY_SYSTEM_PROMPT
 
 
 def _llm_client(db: Database | None = None) -> LlmClient:
@@ -1169,30 +1168,24 @@ def _program_handler(
     *,
     key: str = "Cinder Drift",
     content: str,
-    drawn: str | None,
     notify: bool = True,
 ):
-    """A handler that runs the two-call program, CLOSES with ``done(notify=…)``, and
-    then answers the notify draw.
+    """A handler that runs the two-call program and CLOSES with ``done(notify=…)``.
 
-    It branches on the CONVERSATION — the notify draw by its own system prompt, the
-    program step by how many tool results have come back — so the three cycle steps
-    (read, write, close) fall out in order and the close always follows the write.
+    It branches on the CONVERSATION — the program step by how many tool results
+    have come back — so the three cycle steps (read, write, close) fall out in
+    order and the close always follows the write.  The compose is no longer a draw
+    the cycle makes (#2656): a notifying close ENDS the cycle, and the message is
+    written later by the delivery turn.
 
     The close's ``notify`` reads the state the write left: a write the gate returned
     as UNCHANGED / ALREADY-RECORDED means nothing new since what the user was told,
     so the close records ``notify=false`` (the quiet cycle is a normal outcome,
     #2385) — unless ``notify`` explicitly says otherwise, which is how a test pins
     the model recording true anyway.  A write that landed news closes with
-    ``notify`` as given.
-
-    ``drawn`` is what the notify micro-context replies; ``None`` makes it reply with
-    something that is not a message at all, which is how the no-usable-draw path is
-    exercised without reaching for a mock of the micro-context itself."""
+    ``notify`` as given."""
 
     def handler(request: dict, count: int) -> LlmResponse:
-        if request["messages"][0].get("content", "") == NOTIFY_SYSTEM_PROMPT:
-            return mock_llm._make_text_response(request, drawn or "I could not think of anything.")
         results = _results_so_far(request)
         if results == 0:
             return mock_llm._make_tool_call_response(
@@ -1214,11 +1207,9 @@ def _program_handler(
 
 
 def _collector_run(db: Database) -> dict:
-    """The CYCLE's own run row.
-
-    Selected by agent name because the notify draw is its own ledger-visible run beside
-    it (that separation is the point: two contexts, two runs), so "the run" has to say
-    which one."""
+    """The CYCLE's own run row — the only collector run in these tests: the compose
+    is no longer a draw of the cycle's (#2656), so there is no second ledger
+    identity beside it to tell apart."""
     runs = [run for run in db.messages.get_prompt_log_runs() if run["agent_name"] == "collector"]
     assert len(runs) == 1
     return runs[0]
@@ -1230,53 +1221,49 @@ def _run_reason(db: Database) -> str:
     return _collector_run(db)["run_reason"]
 
 
-def _notify_draws(db: Database) -> list[dict]:
-    """The notify micro-context's own draws — each under its own ledger identity, and
-    listed inside the cycle's run as one of its ``child_draws`` (#2435), not as a
-    top-level run of its own."""
-    return [
-        draw
-        for run in db.messages.get_prompt_log_runs()
-        for draw in run.get("child_draws", [])
-        if draw["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
-    ]
+def _report_row(db: Database) -> SendQueueItem:
+    """The report row a notifying cycle queued — the hand-off the delivery turn
+    composes from (#2656)."""
+    pending = db.send_queue.pending_items()
+    assert len(pending) == 1
+    return pending[0]
 
 
 @pytest.mark.asyncio
-async def test_a_done_closed_cycle_queues_exactly_one_notification(mock_llm, test_config, tmp_path):
-    """THE TRIGGER (#1911/#1916): a notify=true cycle that CLOSES with ``done()`` and no
-    STOP enters the notify micro-context and hands what it writes to the existing send
-    queue.
+async def test_a_done_closed_cycle_queues_exactly_one_report(mock_llm, test_config, tmp_path):
+    """THE TRIGGER (#1911/#1916, the hand-off reshaped #2656): a notify=true cycle
+    that CLOSES with ``done()`` and no STOP queues exactly one report row — the
+    hand-off the send-queue drainer composes the message from.
 
-    Three things are asserted together because they are one mechanism: the loop closed
-    on the terminator (the read, the write, then the close — three cycle calls), the
-    micro-context was asked exactly once on its own scoped prompt, and the queue holds
-    the drawn message under the collection that produced it.  The run record says which
-    terminal shape this was, and a clean close carries only what telling the user came
-    to — there is no completion phrase in front of it any more."""
+    Three things are asserted together because they are one mechanism: the loop
+    closed on the terminator (the read, the write, then the close — three cycle
+    calls, and NO compose call — the message is written later, on the delivery
+    turn), the queue holds the row under the collection that produced it carrying
+    the cycle's own run id, and the row holds no content yet.  The run record says
+    which terminal shape this was, and a clean close carries only what telling the
+    user came to."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)
     mock_llm.set_response_handler(
         _program_handler(
             mock_llm,
             content="Cinder Drift — a new metroidvania. https://ex.example/cd",
-            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
         )
     )
 
     success, _ = await collector.run_for("indie-metroidvanias")
 
     assert success is True
-    # The two program calls and the close, then the ONE notify draw — nothing else.
-    assert len(mock_llm.requests) == 4
-    assert len(_notify_draws(db)) == 1  # its own ledger identity, nested inside the cycle's run
-    pending = db.send_queue.pending_items()
-    assert [item.content for item in pending] == [_DRAWN_MESSAGE]
-    assert pending[0].collection == "indie-metroidvanias"
+    # The two program calls and the close — no compose draw anywhere.
+    assert len(mock_llm.requests) == 3
+    row = _report_row(db)
+    assert row.collection == "indie-metroidvanias"
+    assert row.report_run_id == _collector_run(db)["run_id"]
+    assert row.content == ""
     # This cycle was the USER's own "run this now", and the queued row says so (#1939)
-    # — which is what lets the drainer hand it over without waiting out the
+    # — which is what lets the drainer deliver it without waiting out the
     # autonomous-send cooldown meant for messages nobody asked for.
-    assert pending[0].origin == CycleTrigger.ON_DEMAND
+    assert row.origin == CycleTrigger.ON_DEMAND
     assert _run_reason(db) == NOTIFICATION_NOTES[NotificationOutcome.QUEUED]
 
 
@@ -1297,7 +1284,6 @@ async def test_a_done_closed_cycle_without_notify_stays_quiet(mock_llm, test_con
         _program_handler(
             mock_llm,
             content="Cinder Drift — a new metroidvania. https://ex.example/cd",
-            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
             notify=False,
         )
     )
@@ -1326,13 +1312,12 @@ async def test_a_notify_true_close_on_a_notify_off_collection_sends_nothing(
         _program_handler(
             mock_llm,
             content="Cinder Drift — a new metroidvania. https://ex.example/cd",
-            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
         )
     )
 
     await collector.run_for("indie-metroidvanias")
 
-    assert len(mock_llm.requests) == 3  # the close said true; no composer call followed
+    assert len(mock_llm.requests) == 3  # the close said true; no compose call followed
     assert db.send_queue.next_pending() is None
     assert _run_reason(db) == ""
 
@@ -1346,8 +1331,6 @@ def _bad_done_then_close(mock_llm, bad_args: dict):
     stays quiet (notify=false) so the subject is the failed record itself."""
 
     def handler(request: dict, count: int) -> LlmResponse:
-        if request["messages"][0].get("content", "") == NOTIFY_SYSTEM_PROMPT:
-            return mock_llm._make_text_response(request, f"MESSAGE: {_DRAWN_MESSAGE}")
         results = _results_so_far(request)
         if results == 0:
             return mock_llm._make_tool_call_response(
@@ -1441,15 +1424,12 @@ _READ_ONLY_PROGRAM = (
 )
 
 
-def _read_only_handler(mock_llm, *, drawn: str, notify: bool = True):
-    """Runs the one-call read-only program, closes with ``done(notify=…)``, then
-    answers the notify draw — branching on the CONVERSATION (the draw by its own
-    system prompt, the cycle step by how many results have come back) like
-    ``_program_handler``."""
+def _read_only_handler(mock_llm, *, notify: bool = True):
+    """Runs the one-call read-only program, closes with ``done(notify=…)``,
+    branching on the CONVERSATION (the cycle step by how many results have come
+    back) like ``_program_handler``."""
 
     def handler(request: dict, count: int) -> LlmResponse:
-        if request["messages"][0].get("content", "") == NOTIFY_SYSTEM_PROMPT:
-            return mock_llm._make_text_response(request, drawn)
         if _results_so_far(request) == 0:
             return mock_llm._make_tool_call_response(
                 request, "collection_list", {"collection": "indie-metroidvanias"}
@@ -1471,11 +1451,12 @@ async def test_a_read_only_cycle_that_told_the_user_records_worked(mock_llm, tes
     with it."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db, extraction_prompt=_READ_ONLY_PROGRAM)
-    mock_llm.set_response_handler(_read_only_handler(mock_llm, drawn=f"MESSAGE: {_DRAWN_MESSAGE}"))
+    mock_llm.set_response_handler(_read_only_handler(mock_llm))
 
     await collector.run_for("indie-metroidvanias")
 
-    assert [item.content for item in db.send_queue.pending_items()] == [_DRAWN_MESSAGE]
+    row = _report_row(db)
+    assert row.content == ""  # the report is queued; the message is the delivery turn's
     run = _collector_run(db)
     assert run["run_outcome"] == RunOutcome.WORKED.value
     assert run["run_reason"] == NOTIFICATION_NOTES[NotificationOutcome.QUEUED]
@@ -1492,9 +1473,7 @@ async def test_a_read_only_cycle_that_told_nobody_still_records_no_work(
     completed cycle into work."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db, notify=False, extraction_prompt=_READ_ONLY_PROGRAM)
-    mock_llm.set_response_handler(
-        _read_only_handler(mock_llm, drawn=f"MESSAGE: {_DRAWN_MESSAGE}", notify=False)
-    )
+    mock_llm.set_response_handler(_read_only_handler(mock_llm, notify=False))
 
     await collector.run_for("indie-metroidvanias")
 
@@ -1505,46 +1484,37 @@ async def test_a_read_only_cycle_that_told_nobody_still_records_no_work(
 
 
 @pytest.mark.asyncio
-async def test_an_undrawable_notification_records_honestly_and_reverts_the_cycle(
+async def test_a_notifying_cycle_spends_its_occurrence_and_keeps_its_writes(
     mock_llm, test_config, tmp_path
 ):
-    """Visible degradation (#1911) plus the ratified revert (#1936): when no usable
-    message can be drawn within the reroll budget, the cycle sends NOTHING, its run
-    record says so, and the WHOLE run is thrown out.
+    """A notifying close is a HEALTHY end (#1936), whatever the delivery turn later
+    makes of the report (#2656): the cycle's entry writes stand and its schedule
+    occurrence is spent.
 
-    A failed notification draw is not a healthy end — the collector never reached the
-    point of reporting anything — so keeping the write would leave the next cycle
-    re-observing a value the user was never told about, which is the same swallowed
-    change an abort mid-browse causes.  The write is undone and the occurrence stays
-    due, so the retry re-observes the change and reports it.
-
-    The draw here comes back as prose with no MESSAGE line at all, which is a contract
-    violation the micro-context re-rolls and then fails honestly."""
+    What replaced the undrawable-message revert: the compose is no longer part of
+    the cycle, so there is no draw whose failure throws the run out.  A message
+    that is never written is the queued row's own bounded retry (visible there),
+    and the find the cycle made stays in the store for the user to be told about —
+    the retry reports the SAME find rather than re-observing it."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)
     mock_llm.set_response_handler(
         _program_handler(
             mock_llm,
             content="Cinder Drift — a new metroidvania. https://ex.example/cd",
-            drawn=None,
         )
     )
 
-    await collector.run_for("indie-metroidvanias")
+    success, _ = await collector.run_for("indie-metroidvanias")
 
-    assert db.send_queue.next_pending() is None
-    # The find is GONE: the cycle that made it never got to report it, so the store is
-    # back to the one seeded entry and the retry starts from there.
-    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift") == []
-    assert [entry.key for entry in require_memory(db, "indie-metroidvanias").read_all()] == [
-        _NOTIFY_SEED_KEY
-    ]
-    assert _get(db, "indie-metroidvanias").last_collected_at is None  # kept for the retry
-    # The record carries the note alone (#1916) — a clean close has no phrase of its own
-    # to open with — and the note is quoted here because "says so" is this test's whole
-    # subject: a reason that named the outcome enum instead would be a silent skip.
-    assert _run_reason(db) == NOTIFICATION_NOTES[NotificationOutcome.NOT_DRAWN]
-    assert _run_reason(db) == "nothing was sent — no usable message could be written"
+    assert success is True
+    # The find stands, and the occurrence is spent — the healthy end's settlement.
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift")
+    assert _get(db, "indie-metroidvanias").last_collected_at is not None
+    # The report row is the only record that the telling is still owed — its own
+    # bounded retry, never the cycle's.
+    assert _report_row(db).report_run_id == _collector_run(db)["run_id"]
+    assert _run_reason(db) == NOTIFICATION_NOTES[NotificationOutcome.QUEUED]
 
 
 @pytest.mark.asyncio
@@ -1565,7 +1535,6 @@ async def test_an_unchanged_write_runs_on_to_a_quiet_close(mock_llm, test_config
             mock_llm,
             key=_NOTIFY_SEED_KEY,
             content=_NOTIFY_SEED_CONTENT,
-            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
         )
     )
 
@@ -1596,7 +1565,6 @@ async def test_an_already_recorded_write_runs_on_to_a_quiet_close(mock_llm, test
             mock_llm,
             key="hollow verge",  # the same release, worded differently — not the exact key
             content=_NOTIFY_SEED_CONTENT,
-            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
         )
     )
 
@@ -1634,7 +1602,6 @@ async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
             mock_llm,
             key=_NOTIFY_SEED_KEY,
             content=new_value,
-            drawn=f"MESSAGE: Update on {_NOTIFY_SEED_KEY}!",
         )
     )
     await collector.run_for("indie-metroidvanias")
@@ -1645,9 +1612,9 @@ async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
     assert len(stored) == 1
     assert stored[0].content == new_value
     assert stored[0].last_written_by_run_id is not None
-    assert [item.content for item in db.send_queue.pending_items()] == [
-        f"Update on {_NOTIFY_SEED_KEY}!"
-    ]
+    row = _report_row(db)
+    assert row.content == ""  # the message is the delivery turn's to write, not the cycle's
+    assert row.report_run_id == _collector_run(db)["run_id"]
 
     # Cycle 2: the source is unchanged since the refresh.  The write comes back
     # UNCHANGED and the cycle runs on to a close that records the quiet cycle.
@@ -1761,7 +1728,6 @@ async def test_an_aborted_cycles_write_is_reverted_so_the_retry_still_reports_th
             mock_llm,
             key=_NOTIFY_SEED_KEY,
             content=new_value,
-            drawn=f"MESSAGE: Update on {_NOTIFY_SEED_KEY}!",
         )
     )
     assert (await collector.run_for("indie-metroidvanias"))[0] is True
@@ -1770,9 +1736,14 @@ async def test_an_aborted_cycles_write_is_reverted_so_the_retry_still_reports_th
     assert len(refreshed) == 1
     assert refreshed[0].content == new_value
     assert refreshed[0].last_written_by_run_id is not None
-    assert [item.content for item in db.send_queue.pending_items()] == [
-        f"Update on {_NOTIFY_SEED_KEY}!"
-    ]
+    row = _report_row(db)
+    assert row.content == ""  # the message is the delivery turn's to write, not the cycle's
+    # The report names the RETRY's run — the cycle that actually closed and queued it
+    # (newest first), not the aborted attempt the ledger keeps beside it.
+    retry_run = next(
+        run for run in db.messages.get_prompt_log_runs() if run["agent_name"] == "collector"
+    )
+    assert row.report_run_id == retry_run["run_id"]
     assert _get(db, "indie-metroidvanias").last_collected_at is not None
     assert collector._retry_attempts == {}
 
@@ -1888,9 +1859,8 @@ async def test_a_muted_delivery_still_keeps_the_cycles_writes(mock_llm, test_con
     """A DELIBERATE decline is a healthy end (#1936): the user is muted, so the cycle
     did everything it could and a retry would reach the same answer.
 
-    Its write therefore stands and its occurrence is spent — the opposite of the
-    undrawable-message case, where the cycle never got as far as having something to
-    decline to send.
+    Its write therefore stands and its occurrence is spent — the decline is decided
+    before the report row exists (#2656), so nothing is queued and nothing is owed.
     """
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)
@@ -1899,7 +1869,6 @@ async def test_a_muted_delivery_still_keeps_the_cycles_writes(mock_llm, test_con
         _program_handler(
             mock_llm,
             content="Cinder Drift — a new metroidvania. https://ex.example/cd",
-            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
         )
     )
 
@@ -3137,10 +3106,9 @@ def test_produced_work_distinguishes_state_changes():
     # leave the cycle exactly as idle as its tool trace says it was.
     assert Collector._produced_work(_idle_response(), NotificationOutcome.QUEUED) is True
     assert Collector._produced_work(None, NotificationOutcome.QUEUED) is True
-    assert Collector._produced_work(_idle_response(), NotificationOutcome.NOT_DRAWN) is False
     assert Collector._produced_work(_idle_response(), NotificationOutcome.NOT_DELIVERABLE) is False
     # A write still carries the cycle on its own when nothing was sent.
-    assert Collector._produced_work(_work_response(), NotificationOutcome.NOT_DRAWN) is True
+    assert Collector._produced_work(_work_response(), NotificationOutcome.NOT_DELIVERABLE) is True
 
 
 def test_consumed_input_advances_cursor_on_work_even_without_done():

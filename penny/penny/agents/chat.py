@@ -18,6 +18,7 @@ from penny.constants import ChatPromptType, RunOutcome
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
+from penny.notification import JobReport, render_job_report
 from penny.prompts import Prompt
 from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply, is_empty_draw
 from penny.tools import Tool
@@ -268,18 +269,83 @@ class ChatAgent(Agent):
         same ``Prompt.CONVERSATION_PROMPT`` — there is no second state to pick an
         instruction for.
         """
+        logger.info("Handling message from %s (conversation mode)", sender)
+        return await self._dispatch_turn(
+            content,
+            sender,
+            call_link=call_link,
+            prompt_type=ChatPromptType.USER_MESSAGE,
+            progress_scope="foreground",
+            images=images,
+            page_context=page_context,
+            quoted_text=quoted_text,
+            on_tool_start=on_tool_start,
+            on_progress=on_progress,
+        )
+
+    async def handle_job_report(
+        self, report: JobReport, sender: str, *, call_link: CallLink
+    ) -> ControllerResponse:
+        """The system-originated delivery turn (#2656): write the message that tells
+        the user what a finished job's cycle found.
+
+        The input is the framework-rendered report (``render_job_report``) — the
+        job's name, what it is for, why it ran, and the FULL content of every entry
+        the cycle wrote — never anything model-written.  Everything else the message
+        needs is the turn's own ambient state: her persona and voice, the standing
+        rules, the conversation history (a past report is there to be read, and a
+        formatting ask in it holds here as anywhere), and the full chat tool surface
+        — so "show me yesterday's" shape follow-ups stay one ``collection_get`` away
+        from the rendered job name.
+
+        ``sender`` is the user the message is written for (the primary sender, read
+        by the caller); ``call_link`` (#2458) is REQUIRED, as on every run starter.
+        The reply is NOT delivered here — the caller (the send-queue drainer) gates
+        it and queues it, so it is logged and delivered exactly like any other
+        autonomous send."""
+        prompt = render_job_report(report)
+        logger.info("Handling job report for %s (delivery turn)", report.collection)
+        return await self._dispatch_turn(
+            prompt,
+            sender,
+            call_link=call_link,
+            prompt_type=ChatPromptType.JOB_REPORT,
+            progress_scope="background",
+        )
+
+    async def _dispatch_turn(
+        self,
+        prompt: str,
+        sender: str,
+        *,
+        call_link: CallLink,
+        prompt_type: ChatPromptType,
+        progress_scope: str,
+        images: list[str] | None = None,
+        page_context: PageContext | None = None,
+        quoted_text: str | None = None,
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> ControllerResponse:
+        """The one turn both entry points ride — the template method under
+        ``handle`` and ``handle_job_report``: per-turn state held for the span of
+        the turn and cleared in its ``finally``, context built (thread history when
+        quoted, the ambient self-state header always), tools installed, loop run.
+
+        The two entry points differ only in what they hand in: a user turn carries
+        its attachments, its page context and its progress plumbing and runs in the
+        foreground scope; a delivery turn carries none of that and runs in the
+        background scope.  There is no second state to pick an instruction for."""
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
         try:
-            self._current_message = content
+            self._current_message = prompt
             history = self.get_history(sender, quoted_text=quoted_text)
-
-            logger.info("Handling message from %s (conversation mode)", sender)
             self._install_tools(self.get_tools(run_id=run_id))
             system_prompt = await self._build_system_prompt(sender)
             return await self.run(
-                prompt=content,
+                prompt=prompt,
                 max_steps=self.get_max_steps(),
                 call_link=call_link,
                 history=history,
@@ -287,8 +353,8 @@ class ChatAgent(Agent):
                 images=images,
                 on_tool_start=on_tool_start,
                 on_progress=on_progress,
-                progress_scope="foreground",
-                prompt_type=ChatPromptType.USER_MESSAGE,
+                progress_scope=progress_scope,
+                prompt_type=prompt_type,
             )
         finally:
             self._current_user = None

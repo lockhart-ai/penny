@@ -10,11 +10,13 @@ the notify composer's document condensed the entry to a preview
 marker) — so the composer drew its message from a document that no longer held
 eleven of the twelve items, and the message carried only what the preview held.
 
-This case reproduces that shape before any fix lands: a digest long enough that
-the preview cut is guaranteed to fall mid-entry, a cycle that notifies, and a
-claim that the delivered message carries every item the entry wrote.  On today's
-main the entry-side claim should hold while the message-side claim fails — the
-cut is framework work, not a model choice, so the miss belongs to the document.
+This case was written to reproduce that shape before the fix landed: a digest long
+enough that the preview cut was guaranteed to fall mid-entry, a cycle that notifies,
+and a claim that the delivered message carries every item the entry wrote — on the
+unfixed main the entry-side claim held while the message-side claim failed, which is
+what attributed the miss to the cut.  #2656 is the fix: the composer's document (and
+its cut) is retired, the message is written by the chat-agent delivery turn from the
+FULL entries, and this case stands as the contract that the delivery carries whole.
 
 **One case, because there is one behaviour.**  The watch cases
 (``test_watch_cycles.py``) split on the ENTRY CONDITION; this case's entry
@@ -37,8 +39,10 @@ pages wrapped in that arm's own masthead voice.  Constant facts are what let the
 claims name every headline rather than "some digest" — the same reasoning the
 watch's one pair of prices is held for.
 
-Report-only (``min_pass_rate=None``).  All content is synthetic — four invented
-front pages on ``.example`` domains — because the repo is public.
+Report-only (``min_pass_rate=None``).  The outlets are real ones the model
+recognises, served whole from the local fixture mechanism (nothing is fetched from
+the network, and the repo is public): the mastheads and URLs are real, the headlines
+fictional but plausible.
 """
 
 from __future__ import annotations
@@ -47,7 +51,6 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.constants import PennyConstants
 from penny.database import Database
 from penny.tests.eval.conftest import EVAL_MODELS, collection_entries, seeded_run_id
 from penny.tests.eval.drivers.collector_cycles import CollectorCyclesEval, CycleArm
@@ -82,11 +85,6 @@ _CONTAINER_DESCRIPTION = (
 # The job's cadence — a daily brief.  Stated because a configured collection has one,
 # though the cycle is driven through ``run_for``, which bypasses readiness.
 _SCHEDULE = "FREQ=DAILY"
-
-# The notify document's budget for one written entry's content — the cut under test.  A
-# digest below it would never show the failure, so the world is probed to prove the
-# smallest entry the prompt asks for runs far past it (see ``_assert_the_digest_world``).
-_CUT = PennyConstants.NOTIFY_WRITTEN_CONTENT_CHARS
 
 
 class Headline(NamedTuple):
@@ -129,96 +127,100 @@ class Voice(NamedTuple):
 # mid-entry for the failure to show.  Every token is distinctive to its own headline and
 # probed (in the seed) to appear on no other source's page.
 
-HARBOUR_DAILY = Source(
-    masthead="Harbour Daily",
-    url="https://harbourdaily.example",
-    match="harbourdaily",
+# Real outlets, served from the same local fixture mechanism — the model recognises
+# these mastheads and URLs, where invented ones read as a private world and measurably
+# change its behaviour (code-owner ruling, Oct 19).  The HEADLINES stay fictional but
+# plausible, each anchored on a real place or body the model knows.
+CBC = Source(
+    masthead="CBC News",
+    url="https://www.cbc.ca",
+    match="cbc.ca",
     headlines=(
         Headline(
-            "Ferry pier reopens a month early after an eighteen-month refit",
-            "https://harbourdaily.example/city/ferry-pier-refit-opens-early",
+            "Halifax ferry terminal reopens a month early after an eighteen-month refit",
+            "https://www.cbc.ca/news/canada/nova-scotia/halifax-ferry-terminal-refit-opens-early",
             "ferry",
         ),
         Headline(
-            "Council rejects the harbour tunnel toll plan after a heated debate",
-            "https://harbourdaily.example/council/harbour-tunnel-toll-plan-vote",
+            "Ottawa council rejects the downtown tunnel toll plan after a heated debate",
+            "https://www.cbc.ca/news/canada/ottawa/ottawa-tunnel-toll-plan-vote",
             "tunnel",
         ),
         Headline(
-            "Kelp farm wins the estuary's first coastal lease",
-            "https://harbourdaily.example/business/kelp-farm-first-coastal-lease",
+            "Nova Scotia kelp farm wins the province's first coastal lease",
+            "https://www.cbc.ca/news/canada/nova-scotia/kelp-farm-first-coastal-lease",
             "kelp",
         ),
     ),
 )
-LARKWIRE = Source(
-    masthead="Larkwire",
-    url="https://larkwire.example",
-    match="larkwire",
+REUTERS = Source(
+    masthead="Reuters",
+    url="https://www.reuters.com",
+    match="reuters.com",
     headlines=(
         Headline(
             "Songbird atlas passes 40,000 sightings in its first winter",
-            "https://larkwire.example/science/songbird-atlas-first-winter-count",
+            "https://www.reuters.com/science/songbird-atlas-first-winter-count",
             "songbird",
         ),
         Headline(
-            "Otter cameras catch a first litter in the tidal marshes",
-            "https://larkwire.example/nature/otter-cameras-first-litter-marshes",
+            "Otter cameras catch a first litter in the Norfolk marshes",
+            "https://www.reuters.com/world/uk/otter-cameras-first-litter-norfolk-marshes",
             "otter",
         ),
         Headline(
-            "Night-sky survey logs a record meteor count over the sound",
-            "https://larkwire.example/science/night-sky-record-meteor-count",
+            "Night-sky survey logs a record meteor count over the Atacama",
+            "https://www.reuters.com/science/night-sky-record-meteor-count-atacama",
             "meteor",
         ),
     ),
 )
-GULLPOST = Source(
-    masthead="Gullpost",
-    url="https://gullpost.example",
-    match="gullpost",
+AP_NEWS = Source(
+    masthead="AP News",
+    url="https://apnews.com",
+    match="apnews.com",
     headlines=(
         Headline(
-            "Harborough stun the league leaders with a late winner",
-            "https://gullpost.example/sport/harborough-stun-league-leaders",
-            "harborough",
+            "Luton stun the league leaders with a late winner",
+            "https://apnews.com/sport/luton-stun-league-leaders",
+            "luton",
         ),
         Headline(
             "Rowing eight retain the head of the river title",
-            "https://gullpost.example/sport/rowing-eight-head-of-the-river",
+            "https://apnews.com/sport/rowing-eight-head-of-the-river",
             "rowing",
         ),
         Headline(
             "Velodrome bids to host next year's national track meeting",
-            "https://gullpost.example/sport/velodrome-national-track-meeting-bid",
+            "https://apnews.com/sport/velodrome-national-track-meeting-bid",
             "velodrome",
         ),
     ),
 )
-COVE_LEDGER = Source(
-    masthead="Cove Ledger",
-    url="https://coveledger.example",
-    match="coveledger",
+BBC = Source(
+    masthead="BBC News",
+    url="https://www.bbc.com/news",
+    match="bbc.com",
     headlines=(
         Headline(
-            "Quayside distillery doubles its bottling line with a new hall",
-            "https://coveledger.example/business/quayside-distillery-bottling-line",
+            "Glasgow distillery doubles its bottling line with a new hall",
+            "https://www.bbc.com/news/uk-scotland-glasgow-distillery-bottling-line",
             "distillery",
         ),
         Headline(
-            "Marina hotel wins planning permission after a two-year appeal",
-            "https://coveledger.example/business/marina-hotel-planning-appeal-win",
+            "Brighton marina hotel wins planning permission after a two-year appeal",
+            "https://www.bbc.com/news/uk-england-brighton-marina-hotel-planning-appeal-win",
             "marina",
         ),
         Headline(
-            "Cannery workers ratify a three-year pay deal",
-            "https://coveledger.example/business/cannery-workers-ratify-pay-deal",
+            "Belfast cannery workers ratify a three-year pay deal",
+            "https://www.bbc.com/news/uk-northern-ireland-belfast-cannery-workers-ratify-pay-deal",
             "cannery",
         ),
     ),
 )
 
-SOURCES = (HARBOUR_DAILY, LARKWIRE, GULLPOST, COVE_LEDGER)
+SOURCES = (CBC, REUTERS, AP_NEWS, BBC)
 
 # Every headline's distinctive word — the answer the delivered message owes, all twelve.
 # This is the claim that reproduces the failure: a message drawn from a cut preview can
@@ -240,7 +242,7 @@ _STANDFIRSTS: dict[str, str] = {
     ),
     "otter": ("The marsh cameras caught the litter playing at dawn on three separate mornings."),
     "meteor": ("The count peaked after midnight, with more than two hundred trails an hour."),
-    "harborough": "A stoppage-time goal lifts the side off the bottom of the table.",
+    "luton": "A stoppage-time goal lifts the side off the bottom of the table.",
     "rowing": ("The crew held off a late charge from the boat club two bridges downstream."),
     "velodrome": ("The track needs resurfacing before any national meeting could be hosted there."),
     "distillery": ("The expansion adds a second still hall and twelve new jobs at the quayside."),
@@ -251,19 +253,19 @@ _STANDFIRSTS: dict[str, str] = {
 # Per-source furniture — constant across arms, like the headline blocks: a weather strip,
 # field notes, fixtures, or a markets line, none of it a headline and none of it linked.
 _FURNITURE: dict[str, tuple[str, str]] = {
-    "harbourdaily": (
+    "cbc.ca": (
         "Weather: low cloud clearing by noon, highs near 14, a southerly breeze on the water.",
         "Tide times: 06:41 high, 13:02 low, 19:20 high.",
     ),
-    "larkwire": (
+    "reuters.com": (
         "Field notes: the reserve's boardwalk closes for repairs after this weekend.",
         "Sky diary: the observatory opens its dome to visitors on the first Friday of the month.",
     ),
-    "gullpost": (
+    "apnews.com": (
         "Fixtures: the cup draw is made on Monday evening.",
         "Club notes: season cards go on sale at the end of the month.",
     ),
-    "coveledger": (
+    "bbc.com": (
         "Markets: the harbour index closed a little firmer, led by the shipping lines.",
         "Briefing: the chamber's trade breakfast is on Thursday; seats are limited.",
     ),
@@ -436,20 +438,6 @@ def _world(voice: Voice) -> World:
     )
 
 
-def _minimal_digest_chars() -> int:
-    """The characters in the SMALLEST entry the prompt's ask produces: each headline's
-    title and URL joined, one masthead line per source, and the separators between.  The
-    notify document condenses that entry to ``_CUT`` characters — the world is probed to
-    prove the cut falls mid-entry, several headlines deep."""
-    joined = sum(
-        len(f"{headline.title} — {headline.url}")
-        for source in SOURCES
-        for headline in source.headlines
-    )
-    heads = sum(len(f"{source.masthead}:") for source in SOURCES)
-    return joined + heads + len(SOURCES) * len(" — ") + len(SOURCES) * 3
-
-
 def _seeder(voice: Voice):
     """The world this case's cycle starts in: a job already configured with its prompt,
     an EMPTY collection (a digest job's first run of the day), and every claim that world
@@ -520,12 +508,6 @@ def _assert_the_digest_world(db: Database, voice: Voice) -> None:
                 "an ambiguous token cannot tell the digest's items apart.  Other "
                 f"pages: {others!r}"
             )
-    smallest = _minimal_digest_chars()
-    assert smallest > _CUT, (
-        f"the smallest entry the ask produces is {smallest} characters — it must run "
-        f"well past the notify document's {_CUT}-character cut, or the failure under "
-        "test cannot appear"
-    )
 
 
 def _arms() -> list[CycleArm]:

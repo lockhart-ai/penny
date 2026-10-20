@@ -20,7 +20,7 @@ for it.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlmodel import Session, select
@@ -74,7 +74,9 @@ def _make_channel():
 
 
 def _make_drainer(db, channel, cooldown_seconds: float = 600.0) -> SendQueueDrainer:
-    drainer = SendQueueDrainer(db=db, config=_make_config(cooldown_seconds))
+    # The chat agent only matters to the compose path (#2656), which these
+    # ordinary-row tests never reach — a mock stands in for it.
+    drainer = SendQueueDrainer(db=db, config=_make_config(cooldown_seconds), chat_agent=MagicMock())
     drainer.set_channel(channel)
     return drainer
 
@@ -241,7 +243,7 @@ async def test_drain_routes_to_ios_default_device_identifier(tmp_path):
 async def test_drain_no_channel_is_noop(tmp_path):
     """No channel wired → drainer reports no work rather than crashing."""
     db = _make_db(tmp_path)
-    drainer = SendQueueDrainer(db=db, config=_make_config())
+    drainer = SendQueueDrainer(db=db, config=_make_config(), chat_agent=MagicMock())
     db.send_queue.enqueue(content="queued", collection=_COLLECTION)
 
     assert await drainer.execute() is False

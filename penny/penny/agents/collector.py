@@ -74,7 +74,6 @@ from penny.llm.client import LlmClient
 from penny.notification import (
     NOTIFICATION_NOTES,
     NOTIFIED_CYCLE_ENDS,
-    CollectorNotifier,
     NotificationOutcome,
 )
 from penny.prompts import Prompt
@@ -189,7 +188,6 @@ class Collector(BackgroundAgent):
         # ``_current_target`` is never clobbered by an overlapping run.
         self._current_target: MemoryRow | None = None
         self._cycle_lock = asyncio.Lock()
-        self._notifier = CollectorNotifier(db, embedding_model_client, model_client)
         # How many times each collection's CURRENT occurrence has been re-attempted
         # (#1935) — the bound on ``_settle_occurrence``'s deferral, cleared the moment
         # a cycle settles.  In memory rather than on the row because the exit it
@@ -292,10 +290,11 @@ class Collector(BackgroundAgent):
 
         Between the loop and the audit stamp sits the one thing a finished cycle can
         still do (#1911): when its program ran to completion and the collection says
-        notify, the framework enters the notify micro-context and queues what it
-        writes.  It runs INSIDE the lock and BEFORE the outcome is determined, so the
-        run record can state which of the four terminal shapes this cycle had —
-        aborted, stopped, completed-quiet, completed-notified.
+        notify, the framework queues the cycle's report row — the hand-off the
+        send-queue drainer composes the message from (#2656).  It runs INSIDE the
+        lock and BEFORE the outcome is determined, so the run record can state which
+        of the four terminal shapes this cycle had — aborted, stopped,
+        completed-quiet, completed-notified.
 
         ``trigger`` says what set this cycle running — the schedule, or the user — and
         is carried, never inferred: the notification reads it to pick its delivery lane
@@ -323,9 +322,7 @@ class Collector(BackgroundAgent):
                 success = result.success
                 response = result.response
                 reads = result.reads
-                notified = await self._notify_if_due(
-                    collection, run_id, call_link, response, trigger
-                )
+                notified = await self._notify_if_due(collection, run_id, response, trigger)
             except asyncio.CancelledError:
                 # Foreground activity preempted the cycle — tag clearly rather
                 # than letting it look like a model crash, then re-raise.
@@ -402,12 +399,12 @@ class Collector(BackgroundAgent):
         self,
         collection: MemoryRow,
         run_id: str,
-        call_link: CallLink,
         response: ControllerResponse,
         trigger: CycleTrigger,
     ) -> NotificationOutcome | None:
-        """Tell the user about this cycle, when the cycle itself said there was news
-        (#1911, the choice moved onto the close in #2385).
+        """Queue the report of this cycle, when the cycle itself said there was news
+        (#1911, the choice moved onto the close in #2385; the composing moved to the
+        delivery turn in #2656).
 
         The trigger is exactly three structural facts: the collection carries
         ``notify``, no step raised a STOP, and the cycle closed with a SUCCESSFUL
@@ -424,14 +421,17 @@ class Collector(BackgroundAgent):
         on to its close, where the quiet cycle is recorded as ``notify=false`` rather
         than being pre-empted by the gate.
 
-        **The #2417 fourth fact — a declared write step that mutated nothing this run
-        reads as a STOP — is REMOVED on this branch (#2455 naive baseline)**: it read
-        the bound PROGRAM's own calls (``_program_writes``), which no longer exists —
-        a job's cycle follows a free-text prompt, not a parsed program, so there is no
-        declared-write-step fact left to read.
+        What is QUEUED is the hand-off, not a message: the row names the collection,
+        the lane (``trigger`` — WHEN it reaches the user, #1939) and the run id whose
+        written entries the report is built from; the send-queue drainer composes the
+        message as one chat turn before delivering it (#2656).  Nothing model-written
+        happens here, so there is no draw to fail and no reroll budget to spend —
+        which is also why a cycle can no longer die of an undrawable notification: the
+        compose failures live on the queued row, bounded there.
 
-        ``trigger`` travels through to the queued row: WHETHER to tell the user is the
-        facts above, WHEN it reaches them is which lane the message is in (#1939).
+        The two declines are decided BEFORE the row exists, exactly as they always
+        were: no registered recipient, or a muted user.  Both are decisions no retry
+        changes, so they read ``NOT_DELIVERABLE`` — the decline, stamped on the run.
 
         ``None`` when the cycle is not one that notifies, which is the ordinary case.
         """
@@ -439,9 +439,16 @@ class Collector(BackgroundAgent):
             return None
         if self._done_notify(response) is not True:
             return None
-        return await self._notifier.notify(
-            collection, run_id, response.tool_calls, trigger, call_link=call_link
-        )
+        recipient = self.db.users.get_primary_sender()
+        if recipient is None:
+            logger.info("Notification for '%s' has no registered recipient", collection.name)
+            return NotificationOutcome.NOT_DELIVERABLE
+        if self.db.users.is_muted(recipient):
+            logger.info("Notification for '%s' withheld — the user is muted", collection.name)
+            return NotificationOutcome.NOT_DELIVERABLE
+        self.db.send_queue.enqueue_report(collection.name, trigger, run_id)
+        logger.info("Report queued (%s): %s → %s", trigger.value, collection.name, recipient)
+        return NotificationOutcome.QUEUED
 
     @staticmethod
     def _done_notify(response: ControllerResponse | None) -> bool | None:

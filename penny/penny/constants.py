@@ -170,12 +170,11 @@ class CycleEnd(StrEnum):
     ``STOPPED`` — a write-gate STOP closed the cycle at the chokepoint.  An early
     clean no-news exit IS an end point, so whatever landed before it stands ·
     ``CLOSED_QUIET`` — closed with ``done()`` on a collection that does not notify ·
-    ``CLOSED_NOTIFIED`` — closed with ``done()``, and the notification was QUEUED ·
+    ``CLOSED_NOTIFIED`` — closed with ``done()``, and the report was QUEUED for the
+    delivery turn ·
     ``CLOSED_DECLINED`` — closed with ``done()``, and delivery was deliberately
     declined (the user is muted, or there is no registered recipient): a retry cannot
     change either, so the cycle ended and the decline is stamped on the run record ·
-    ``NOTIFICATION_NOT_DRAWN`` — closed, but the compose micro-context exhausted its
-    rerolls, so the cycle never reached the point of reporting anything ·
     ``ABORTED`` — a model call died mid-run (#1909) ·
     ``CANCELLED`` — foreground activity preempted the cycle ·
     ``UNFINISHED`` — every other way of stopping short: the step cap, a model that
@@ -188,7 +187,6 @@ class CycleEnd(StrEnum):
     CLOSED_QUIET = "closed_quiet"
     CLOSED_NOTIFIED = "closed_notified"
     CLOSED_DECLINED = "closed_declined"
-    NOTIFICATION_NOT_DRAWN = "notification_not_drawn"
     ABORTED = "aborted"
     CANCELLED = "cancelled"
     UNFINISHED = "unfinished"
@@ -220,7 +218,6 @@ HEALTHY_CYCLE_ENDS: frozenset[CycleEnd] = frozenset(
 # user's, not the collection's — so each of these, attempted a moment later, is a
 # different draw.
 CYCLE_END_RETRY_REASONS: dict[CycleEnd, str] = {
-    CycleEnd.NOTIFICATION_NOT_DRAWN: "no message the cycle could send was ever written",
     CycleEnd.ABORTED: "the cycle's model call died mid-run",
     CycleEnd.CANCELLED: "the cycle was preempted by foreground activity",
     CycleEnd.UNFINISHED: "the cycle stopped short of a close",
@@ -346,6 +343,12 @@ class ChatPromptType(StrEnum):
     """
 
     USER_MESSAGE = "user_message"
+    # The system-originated delivery turn a notifying job's report rides (#2656):
+    # the framework renders the report (the job's name, description, and the full
+    # written entries) and the chat agent writes the message from it with its whole
+    # context.  Its own type so a run trace shows the delivery apart from the
+    # user-initiated turns on the same agent.
+    JOB_REPORT = "job_report"
 
 
 class PennyConstants:
@@ -635,51 +638,6 @@ class PennyConstants:
     # bulk page content never enters the parent run's context.
     BROWSE_EXTRACT_AGENT_NAME = "browse-extract"
     BROWSE_MICRO_CONTEXT_PROMPT_TYPE = "browse_micro_context"
-    # The ledger identity of the NOTIFY-COMPOSING micro-context (#1911) — the SECOND
-    # customer, and the first that closes a collector cycle rather than a chat turn.
-    # Its own agent/prompt type so a run trace shows the message-writing draw apart
-    # from the cycle's own calls: they are two contexts, and the whole point of the
-    # split is that the second one is short and carries no tool channel.
-    NOTIFY_COMPOSE_AGENT_NAME = "notify-composer"
-    NOTIFY_COMPOSE_PROMPT_TYPE = "notify_compose"
-    # How many nearest past messages the notify document carries from each of the two
-    # message logs (#1911) — the ``k=5`` the retired notify steps asked for, kept
-    # because a handful is what a callback line can be judged from and the document
-    # stays short.  Since #1934 it is also the RENDER's own cap on that section, so the
-    # bound holds wherever the lines came from rather than only where they were fetched.
-    NOTIFY_RELATED_MESSAGES = 5
-    # The notify document's section budgets (#1934).  The document is assembled whole,
-    # framework-side, and the first live post-reset cycle assembled 50,805 characters of
-    # it for an ordinary three-page news round — on a model whose degeneration onset is
-    # ~4K prompt tokens.  Three things carried the bulk, and each has a budget below: a
-    # browse call's RESULT inlined whole (31,725), the rendered CALL notation restating
-    # the whole write payload in its arguments (14,923 on ONE line), and the entries the
-    # cycle wrote (14,989 — the same content a third time).
-    #
-    # These are prompt-budget bounds with a VISIBLE overflow, not silent truncations:
-    # every cut states the characters or the items it left out, so a draw reading a
-    # condensed result knows it is reading part of one.  Proportions follow what the
-    # message is written FROM — the entries the cycle wrote are the payload and get the
-    # largest share, the calls are how it got there, and the earlier conversation is
-    # background.  Together they hold an ordinary document near ~10K characters (~2.5K
-    # tokens), comfortably under the onset, with the frame on top.  Deliberately
-    # generous within that; sizing is tunable later.
-    #
-    # EVERY free-text field the document repeats is bounded, not just the three that
-    # carried the measured bulk — a ceiling one unbounded field can defeat is not a
-    # ceiling, and an entry KEY is model-authored with no length gate anywhere and
-    # renders once per written entry.  The two fields deliberately left WHOLE are the
-    # collection's name and the routine's: they render once each, they are bounded
-    # upstream where they are derived (``DERIVED_NAME_MAX_LENGTH`` / the framer's mint),
-    # and they are ANCHORS a message may need to copy verbatim.
-    NOTIFY_WRITTEN_ENTRIES = 8
-    NOTIFY_WRITTEN_CONTENT_CHARS = 500
-    NOTIFY_ENTRY_KEY_CHARS = 120
-    NOTIFY_CYCLE_CALLS = 10
-    NOTIFY_CALL_CHARS = 150
-    NOTIFY_CALL_RESULT_CHARS = 300
-    NOTIFY_RELATED_LINE_CHARS = 200
-    NOTIFY_DESCRIPTION_CHARS = 300
     # How many recent conversational runs ``run_list`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

@@ -1583,12 +1583,10 @@ class MicroPlacement(StrEnum):
 
 # Every micro-context customer, by its ledger identity (``promptlog.agent_name``), with the
 # placement its position in the run implies.  The ONE place agent names appear in the transcript
-# walk; everything downstream reads the placement.
+# walk; everything downstream reads the placement.  (The notify composer retired with its
+# composing job in #2656.)
 MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
-    # The notify composer closes a collector CYCLE rather than a chat turn (#1911) — it draws
-    # after the cycle's last action.
-    PennyConstants.NOTIFY_COMPOSE_AGENT_NAME: MicroPlacement.RUN_CLOSE,
 }
 
 _NUDGE_FRAMES = (

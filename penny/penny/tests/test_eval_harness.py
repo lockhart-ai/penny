@@ -1608,11 +1608,9 @@ def test_a_seeded_prior_turn_is_not_read_as_this_samples_work(tmp_path) -> None:
 # Every micro-context that draws on the cohort path, by the ledger identity its rows carry.
 # Listed because the completeness gate has to hold for each of them (#2076).  The skill-framer/
 # -binder/-namer and the state classifier retired with the skill framework and conversation
-# machine (#2538); the browse extractor and the notify composer are the two that remain.
-_MICRO_CONTEXT_AGENTS = (
-    PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-    PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
-)
+# machine (#2538), the notify composer with its composing job (#2656); the browse extractor
+# is the one that remains.
+_MICRO_CONTEXT_AGENTS = (PennyConstants.BROWSE_EXTRACT_AGENT_NAME,)
 
 
 @pytest.mark.parametrize("agent_name", _MICRO_CONTEXT_AGENTS)
@@ -2803,15 +2801,19 @@ _MICRO_PROMPT_CASE = "micro-prompts"
 _QUIET_CUSTOMER_CASE = "micro-prompts-quiet"
 _EXTRACT_PROMPT = "Extract one value."
 _NOTIFY_PROMPT = "Compose one message."
+# The ledger's second customer is an ARBITRARY name: with the notify composer retired
+# (#2656) the fixture is about the generic deposit-and-scope mechanism, not a production
+# trace, so it pins nothing about which identities exist.
+_SECOND_CUSTOMER = "notify-composer"
 
 
 def _two_customer_ledger(db: Database) -> None:
     """One microcontext sample's promptlog as a two-customer run leaves it (#1803): a
-    browse-extraction draw, a notify-composing draw, and — between them — a main-agent
-    row that is neither, so what the deposit is SCOPED to is assertable rather than
-    assumed.  The two customers don't share a real turn in production (#2538: one closes
-    a chat call, the other a collector cycle) — this fixture is about the generic
-    deposit-and-scope mechanism, not a production trace."""
+    browse-extraction draw, a second customer's draw under an arbitrary identity, and —
+    between them — a main-agent row that is neither, so what the deposit is SCOPED to is
+    assertable rather than assumed.  The two customers don't share a real turn in
+    production — this fixture is about the generic deposit-and-scope mechanism, not a
+    production trace."""
     _log_prompt(
         db,
         agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
@@ -2832,7 +2834,7 @@ def _two_customer_ledger(db: Database) -> None:
     )
     _log_prompt(
         db,
-        agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
+        agent_name=_SECOND_CUSTOMER,
         messages=[
             {"role": "system", "content": _NOTIFY_PROMPT},
             {"role": "user", "content": "wrote: watching the listing"},
@@ -2855,7 +2857,7 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
     _case_prompts.pop(_MICRO_PROMPT_CASE, None)
     customers = (
         PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-        PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
+        _SECOND_CUSTOMER,
     )
     result = SampleResult.graded([Check("named the routine", ok=True, kind="state")])
     for index in range(2):
@@ -3905,9 +3907,7 @@ def test_every_micro_context_observer_is_given_the_contract_it_drew_under(
         # exactly the dict shape production logs, so lower them here.
         messages=[
             message.to_log_dict()
-            for message in MicroContext._messages(
-                EXTRACT_PLAIN_PAGE, EXTRACT_PLAIN_ASK, contract, user_template
-            )
+            for message in MicroContext._messages(EXTRACT_PLAIN_PAGE, EXTRACT_PLAIN_ASK)
         ],
         agent_name=agent_name,
     )
