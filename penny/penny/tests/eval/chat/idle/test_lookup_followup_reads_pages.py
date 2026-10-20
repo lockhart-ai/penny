@@ -25,12 +25,13 @@ import from #2652's module, so this PR never depends on that one.
 real prod turn stands in her own logs (the spec question, the shop
 recommendations that listed the candidates, the houseplant aside, the two
 deploy pushes), seeded through the stores' own chokepoints. The web behind
-``browse`` is four shop pages behind a search page. The search page's own
-text carries snippets — including the district shop's district — but the
-search render shows titles and links only, so nothing on it reaches the
-model: the district and the street address both live only on the shop pages,
-and a reply that names the right shop with its address proves a page was
-really read.
+``browse`` is four shop pages behind a set of search-results pages — one per
+shop (a query naming a shop gets a list led by that shop) and a generic
+four-shop list for the topic queries, whatever tokens they carry. A search
+renders titles and links only, and nothing a search page carries says where
+a shop is: the district and the street address both live only on the shop
+pages, and a reply that names the right shop with its address proves a page
+was really read.
 
 **Real proper nouns, invented shops.** The proper nouns the model must
 treat as real and searchable are REAL — the city (Portland), a real
@@ -165,12 +166,12 @@ _BROWSE_ENTRIES = (
 )
 
 # The district the ask narrows to, and the shops.  Cascade is the shop whose
-# material places it in the pearl district (the answer).  Its search snippet carries
-# what it does but not where, and the search render shows titles and links only, so
-# its OWN page alone carries the district and its street address — the page-only
-# detail the read-proof reads.  Rose City is the shop the conversation already
-# recommended, whose own page places it outside the district — the trap a
-# snippet-and-history answer falls into.
+# material places it in the pearl district (the answer).  No search page carries
+# where it is — the lists say what each shop does, never where — and the search
+# render shows titles and links only, so its OWN page alone carries the district
+# and its street address — the page-only detail the read-proof reads.  Rose City
+# is the shop the conversation already recommended, whose own page places it
+# outside the district — the trap a snippet-and-history answer falls into.
 _CITY = "portland"
 _DISTRICT = "pearl district"
 _ANSWER_SHOP = "cascade"
@@ -184,11 +185,16 @@ _SHOP_URL_HOSTS = (
 
 # ── The web behind browse ─────────────────────────────────────────────────────
 #
-# Shop pages FIRST, the search page last: request dispatch matches the first page
-# whose ``match`` sits in the request URL, so a query naming a shop hits that shop's
-# page and a topic query (which carries the city) hits the search page.  The search
-# page is shaped like a real results page — titles, snippets and links — and its
-# trim (titles and links only) reads like production's search results.
+# Shop pages FIRST, then the search pages: dispatch answers the first page whose
+# ``match`` sits in the request, and it tells the two request shapes apart (#2680) —
+# a search matches only ``search=True`` pages, a URL read only ``search=False`` ones,
+# so a search naming a shop gets a results list, never that shop's body.  Among the
+# search pages the per-shop lists come first (a query naming a shop gets a list led
+# by that shop), then the generic list on the tokens a topic query carries
+# (``camera``, ``seal``, the city) — so a camera-repair or seal query for the city
+# or a neighbourhood gets the four-shop list whether or not it says "Portland".
+# A search page's text carries titles, links and what each shop does — never where
+# a shop is: the district and the street address stay page-only.
 
 _CASCADE_PAGE = CannedPage(
     match="cascade",
@@ -255,37 +261,112 @@ _BEAVERTON_PAGE = CannedPage(
     ),
 )
 
+# ── The search pages ──────────────────────────────────────────────────────────
+#
+# Each shop's result block is one constant shared by every list it appears on,
+# so a shop's entry cannot drift between the generic list and the per-shop
+# lists.  A block's title and link are the shop's own page's; the snippet says
+# what the shop does and never where it is.
+
+_DIRECTORY_RESULT = (
+    "### Best camera repair near the Pearl District, Portland\n"
+    "[www.yellowpages.com/search?search_terms=camera+repair+portland]"
+    "(https://www.yellowpages.com/search?search_terms=camera+repair+portland)\n"
+    "Best camera repair in Portland - Cascade Camera Works, Rose City "
+    "Repair, Eastside Camera Service, Beaverton Camera Service\n"
+)
+
+_CASCADE_RESULT = (
+    "### Cascade Camera Works — vintage camera service\n"
+    "[yelp.com/biz/cascade-camera-works-portland]"
+    "(https://yelp.com/biz/cascade-camera-works-portland)\n"
+    "Vintage camera service. Light-seal kits cut and fitted while you wait.\n"
+)
+
+_ROSECITY_RESULT = (
+    "### Rose City Camera Repair — custom seal cutting\n"
+    "[yelp.com/biz/rose-city-camera-repair-portland]"
+    "(https://yelp.com/biz/rose-city-camera-repair-portland)\n"
+    "Custom foam and light-seal cutting for film cameras. Mail-in and drop-off.\n"
+)
+
+_EASTSIDE_RESULT = (
+    "### Eastside Camera Service — camera service\n"
+    "[yelp.com/biz/eastside-camera-service-portland]"
+    "(https://yelp.com/biz/eastside-camera-service-portland)\n"
+    "Light-seal replacement for 35mm cameras, walk-in seven days.\n"
+)
+
+_BEAVERTON_RESULT = (
+    "### Beaverton Camera Service — precision seals\n"
+    "[yelp.com/biz/beaverton-camera-service-beaverton]"
+    "(https://yelp.com/biz/beaverton-camera-service-beaverton)\n"
+    "Precision light-seal cutting to your measurements. Mail-in service.\n"
+)
+
+
+def _results_page(title: str, *blocks: str) -> str:
+    """A search-results page's text: its own title, then the result blocks."""
+    return f"Title: {title}\n\n" + "\n".join(blocks)
+
+
 _SEARCH_PAGE = CannedPage(
-    match="portland",
-    text=(
-        "Title: camera light seal replacement — search results\n"
-        "\n"
-        "### Best camera repair near the Pearl District, Portland\n"
-        "[www.yellowpages.com/search?search_terms=camera+repair+portland]"
-        "(https://www.yellowpages.com/search?search_terms=camera+repair+portland)\n"
-        "Best camera repair in Portland - Cascade Camera Works, Rose City "
-        "Repair, Eastside Camera Service, Beaverton Camera Service\n"
-        "\n"
-        "### Cascade Camera Works — vintage camera service\n"
-        "[yelp.com/biz/cascade-camera-works-portland]"
-        "(https://yelp.com/biz/cascade-camera-works-portland)\n"
-        "Vintage camera service in the Pearl District. Light-seal kits cut and fitted "
-        "while you wait.\n"
-        "\n"
-        "### Rose City Camera Repair — custom seal cutting\n"
-        "[yelp.com/biz/rose-city-camera-repair-portland]"
-        "(https://yelp.com/biz/rose-city-camera-repair-portland)\n"
-        "Custom foam and light-seal cutting for film cameras. Mail-in and drop-off.\n"
-        "\n"
-        "### Eastside Camera Service — camera service\n"
-        "[yelp.com/biz/eastside-camera-service-portland]"
-        "(https://yelp.com/biz/eastside-camera-service-portland)\n"
-        "NE Portland. Light-seal replacement for 35mm cameras, walk-in seven days.\n"
-        "\n"
-        "### Beaverton Camera Service — precision seals\n"
-        "[yelp.com/biz/beaverton-camera-service-beaverton]"
-        "(https://yelp.com/biz/beaverton-camera-service-beaverton)\n"
-        "Precision light-seal cutting to your measurements. Mail-in service.\n"
+    match="camera",
+    text=_results_page(
+        "camera light seal replacement — search results",
+        _DIRECTORY_RESULT,
+        _CASCADE_RESULT,
+        _ROSECITY_RESULT,
+        _EASTSIDE_RESULT,
+        _BEAVERTON_RESULT,
+    ),
+    search=True,
+)
+
+# The same generic list for the topic queries that carry no "camera": a seal
+# query, and a query naming the city alone.
+_SEARCH_PAGE_SEALS = CannedPage(match="seal", text=_SEARCH_PAGE.text, search=True)
+_SEARCH_PAGE_CITY = CannedPage(match="portland", text=_SEARCH_PAGE.text, search=True)
+
+# A query naming one shop gets a list led by that shop, plus two plausible
+# other results.
+_SEARCH_PAGE_CASCADE = CannedPage(
+    match="cascade",
+    text=_results_page(
+        "cascade camera works — search results",
+        _CASCADE_RESULT,
+        _ROSECITY_RESULT,
+        _EASTSIDE_RESULT,
+    ),
+    search=True,
+)
+_SEARCH_PAGE_ROSE = CannedPage(
+    match="rose",
+    text=_results_page(
+        "rose city camera repair — search results",
+        _ROSECITY_RESULT,
+        _CASCADE_RESULT,
+        _EASTSIDE_RESULT,
+    ),
+    search=True,
+)
+_SEARCH_PAGE_EASTSIDE = CannedPage(
+    match="eastside",
+    text=_results_page(
+        "eastside camera service — search results",
+        _EASTSIDE_RESULT,
+        _CASCADE_RESULT,
+        _ROSECITY_RESULT,
+    ),
+    search=True,
+)
+_SEARCH_PAGE_BEAVERTON = CannedPage(
+    match="beaverton",
+    text=_results_page(
+        "beaverton camera service — search results",
+        _BEAVERTON_RESULT,
+        _CASCADE_RESULT,
+        _ROSECITY_RESULT,
     ),
     search=True,
 )
@@ -295,7 +376,13 @@ PAGES = (
     _ROSECITY_PAGE,
     _EASTSIDE_PAGE,
     _BEAVERTON_PAGE,
+    _SEARCH_PAGE_CASCADE,
+    _SEARCH_PAGE_ROSE,
+    _SEARCH_PAGE_EASTSIDE,
+    _SEARCH_PAGE_BEAVERTON,
     _SEARCH_PAGE,
+    _SEARCH_PAGE_SEALS,
+    _SEARCH_PAGE_CITY,
 )
 
 # Every host the world puts in front of the model, read off the pages themselves —
@@ -382,9 +469,9 @@ _RECORDED_SHOPS_REPLY = (
     "choice for a project like this. "
     "[https://yelp.com/biz/cascade-camera-works-portland]"
     "(https://yelp.com/biz/cascade-camera-works-portland)\n"
-    " Northwest Camera Service: A highly-rated shop (5 stars on the directory!) located at 312 "
-    "NW 21st Avenue. They have experience with light-seal changes and provide "
-    "very reliable service.\n"
+    " Eastside Camera Service: A straightforward walk-in option — they handle "
+    "light-seal replacement for 35mm cameras and are open seven days, which makes "
+    "them an easy choice for a standard swap like this.\n"
     "\n"
     "My recommendation: Since we are aiming for a very specific fit to ensure that "
     "vintage AE-1 is protected, I'd reach out to Rose City Camera Repair first. Their "
@@ -661,6 +748,15 @@ def _assert_the_world_coheres() -> None:
     assert _PAGE_FACT not in shop_pages["eastside"]
     assert _PAGE_FACT not in shop_pages["beaverton"]
     assert _PAGE_FACT not in history_text
+
+    # The page-only fact appears on no search page — the generic list and every
+    # per-shop list alike: a search result never carries a shop's address.
+    for page in PAGES:
+        if page.search:
+            assert _PAGE_FACT not in page.text.casefold(), (
+                f"the page fact {_PAGE_FACT!r} must appear on no search page "
+                f"(the {page.match!r} list carries it)"
+            )
 
     # The answer shop's district placement is in its own snippet and page body; the
     # snippet never reaches the model (the search render shows titles and links
