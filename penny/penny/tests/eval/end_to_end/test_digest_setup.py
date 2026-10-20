@@ -136,8 +136,8 @@ def _seed(db: Database) -> None:
     from penny.agents.self_state import standing_rules_section
 
     rendered = standing_rules_section(db)
-    assert f"- {_SIGNOFF_KEY}: {_SIGNOFF_CONTENT} (added " in rendered, (
-        f"the section must render the seeded rule in full:\n{rendered!r}"
+    assert f"- {_SIGNOFF_CONTENT}" in rendered.splitlines(), (
+        f"the section must render the seeded rule as its own sentence:\n{rendered!r}"
     )
 
 
