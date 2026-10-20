@@ -2186,10 +2186,11 @@ class TestSearchResultTrimming:
             "2. Visit London — official guide (https://www.visitlondon.example.com/)"
         )
 
-    def test_links_without_headings_pass_through_unchanged(self):
+    def test_links_without_headings_list_by_link_text(self):
         """A page whose links all sit under non-heading lines — links but no
-        headings at all — drops every link and passes through unchanged, the
-        same honest shape as the no-links path rather than an empty list."""
+        headings at all — still renders the numbered list under the instruction
+        header, each link titled by its own link text (#2697): the raw page must
+        never enter the context under no header."""
         content = "\n".join(
             [
                 "London is the capital of England.",
@@ -2201,7 +2202,13 @@ class TestSearchResultTrimming:
             ]
         )
         result = _trim_search_result(content, "london", "kagi.com")
-        assert result == content
+        assert result == (
+            'You searched for "london". These are the results, titles and URLs only. '
+            "You must read them to answer the user:\n"
+            "\n"
+            "1. london.wikilike.org (https://london.wikilike.org/wiki/London)\n"
+            "2. cityoflondon.gov.example (https://www.cityoflondon.gov.example/)"
+        )
 
     def test_engine_affordance_links_are_not_results(self):
         """A standalone link back at the search engine's own host — its summariser,

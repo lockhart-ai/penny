@@ -167,16 +167,20 @@ def _trim_search_result(text: str, query: str, search_host: str | None) -> str:
     affordance links (its summariser, its maps) point back at the search host and
     are not results, so they are dropped the same way the snippet lines are.
 
-    A page with no standalone links at all — and equally one whose links all sit
-    under non-heading lines, leaving no results — passes through unchanged: the
-    "nothing found" path keeps its own shape rather than rendering an empty list.
+    A page with no standalone links at all passes through unchanged — the
+    "nothing found" path keeps its own shape.  A page whose standalone links all
+    sit under non-heading lines (a search engine that dropped its headings) still
+    lists those links under the same instruction header, each titled by its own
+    link text (#2697): the raw page — knowledge-panel prose, snippets and all —
+    must never enter the context under no header.
     """
     lines = text.split("\n")
 
     results: list[tuple[str, str]] = []
+    unheaded: list[tuple[str, str]] = []
     for i, line in enumerate(lines):
         match = _LINK_RE.match(line)
-        if not match or len(results) == PennyConstants.MAX_SEARCH_LINKS:
+        if not match:
             continue
         url = match.group(2)
         if search_host and _url_host(url) == search_host:
@@ -187,10 +191,14 @@ def _trim_search_result(text: str, query: str, search_host: str | None) -> str:
         # Only a heading line above the link names a result (#2697): a knowledge
         # panel's paragraph or an infobox row rendered as a "title" under the
         # titles-and-URLs-only header, and the model answered from it.
-        if above < 0 or not lines[above].lstrip().startswith("#"):
-            continue
-        title = lines[above].lstrip().lstrip("#").strip()
-        results.append((title, url))
+        if above >= 0 and lines[above].lstrip().startswith("#"):
+            results.append((lines[above].lstrip().lstrip("#").strip(), url))
+        else:
+            unheaded.append((match.group(1), url))
+
+    if not results:
+        results = unheaded
+    results = results[: PennyConstants.MAX_SEARCH_LINKS]
 
     if not results:
         return text
