@@ -362,10 +362,11 @@ MESSAGES: tuple[Message, ...] = (
 
 # ── Canned browse pages (for the browse-driven tool-reasoning cases) ──────────
 # Invented page content on real hosts and about real names (#2673); the checkable
-# facts (a 2031 release date, a $19 price) are made up and live only on these pages.
+# facts (an update landing March 14, 2027, a $19 price) are made up and live only
+# on these pages.
 
 # chat-browse-multihop: the search page links to a detail page but withholds the
-# date; the year (2031) lives ONLY on the detail page, so a reply that cites it
+# date; the date (March 14, 2027) lives ONLY on the detail page, so a reply that cites it
 # proves the model chained a second browse to the linked URL.
 #
 # Real size (#2372): a search page with several results (a search's own shape — a handful of
@@ -381,12 +382,12 @@ MULTIHOP_PAGES = (
         match="into-the-breach",
         text=(
             "Title: Into the Breach — official title page\n"
-            "Into the Breach was released on March 14, 2031 by Subset Games. "
-            "It is a turn-based strategy game with co-op campaigns.\n"
+            "Into the Breach is a turn-based strategy game with co-op campaigns, by "
+            "Subset Games. The Advanced Edition update lands March 14, 2027.\n"
             "Source: https://www.mobygames.com/game/into-the-breach\n"
             "\n"
             "Platforms\n"
-            "Available on PC, and on console from the following autumn.\n"
+            "Available on PC and Switch.\n"
             "Cross-platform saves are supported between the two.\n"
             "\n"
             "Gameplay modes\n"

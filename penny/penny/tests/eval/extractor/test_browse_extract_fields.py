@@ -490,7 +490,7 @@ _LISTING = (
     "Analogue 3D, handheld console — $760. [View listing](https://www.ebay.com/itm/analogue-3d)\n"
     "Carrying case for Analogue handhelds — $35. [View listing](https://www.ebay.com/itm/analogue-handheld-case)\n"
     "Charging dock for Analogue handhelds — $58. [View listing](https://www.ebay.com/itm/analogue-handheld-dock)\n"
-    "Nimbus Play, handheld console — $349. [View listing](https://www.ebay.com/itm/nimbus-play)"
+    "Miyoo Mini Plus, handheld console — $349. [View listing](https://www.ebay.com/itm/miyoo-mini-plus)"
 )
 
 
