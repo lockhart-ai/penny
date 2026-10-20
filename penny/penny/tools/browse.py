@@ -159,13 +159,17 @@ def _trim_search_result(text: str, query: str, search_host: str | None) -> str:
 
     A result's summary snippet often carries the answer itself, and a reply built
     from snippets is built from pages never opened — so the render is a clean list
-    with nothing else from the page: each result is its title (the line above its
-    link) and the link's own target, and nothing below.  The search engine's own
+    with nothing else from the page: each result is its title (the heading line
+    above its link) and the link's own target, and nothing below.  Real results
+    carry a heading (``### Title``); a standalone link under anything else — a
+    knowledge-panel paragraph, an infobox row — is not a result and is dropped
+    (#2697), so its text never renders as a title.  The search engine's own
     affordance links (its summariser, its maps) point back at the search host and
     are not results, so they are dropped the same way the snippet lines are.
 
-    A page with no standalone links at all passes through unchanged — the
-    "nothing found" path keeps its own shape.
+    A page with no standalone links at all — and equally one whose links all sit
+    under non-heading lines, leaving no results — passes through unchanged: the
+    "nothing found" path keeps its own shape rather than rendering an empty list.
     """
     lines = text.split("\n")
 
@@ -177,12 +181,15 @@ def _trim_search_result(text: str, query: str, search_host: str | None) -> str:
         url = match.group(2)
         if search_host and _url_host(url) == search_host:
             continue
-        title = ""
         above = i - 1
         while above >= 0 and not lines[above].strip():
             above -= 1
-        if above >= 0:
-            title = lines[above].lstrip("#").strip()
+        # Only a heading line above the link names a result (#2697): a knowledge
+        # panel's paragraph or an infobox row rendered as a "title" under the
+        # titles-and-URLs-only header, and the model answered from it.
+        if above < 0 or not lines[above].lstrip().startswith("#"):
+            continue
+        title = lines[above].lstrip().lstrip("#").strip()
         results.append((title, url))
 
     if not results:
