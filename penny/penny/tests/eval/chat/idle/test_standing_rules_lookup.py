@@ -119,13 +119,13 @@ _RULES = (
 )
 
 _USER_NAME = "Wren"
-_USER_LOCATION = "Grelford, OR"
+_USER_LOCATION = "Portland, OR"
 _USER_TIMEZONE = "America/Los_Angeles"
 
 # The camera and the job.  The headline job is ambient state (it renders in the
 # Jobs section, notify on, no runs yet), the profile collection the earlier
 # conversation created.
-_CAMERA = "Corvina CC-3"
+_CAMERA = "Canon AE-1"
 _JOB_NAME = "daily_headlines"
 _JOB_DESCRIPTION = (
     "Daily top 3 headlines from the city's news sites including title, description, and link"
@@ -142,7 +142,7 @@ _JOB_SCHEDULE = "DTSTART:20261015T093000\nFREQ=DAILY"
 _PROFILE_ENTRIES = (
     (
         "career",
-        "Runs the bakery on Sawmill Row in Grelford; the ovens go on at five every morning.",
+        "Runs the bakery on Belmont Street in Portland; the ovens go on at five every morning.",
     ),
     (
         "outdoors",
@@ -158,36 +158,35 @@ _PROFILE_ENTRIES = (
 # The browse log the conversation's earlier searches left behind — six entries, the
 # count the real turn's memory inventory showed, about the earlier camera research.
 _BROWSE_ENTRIES = (
-    "Corvina CC-3 — specifications: folding camera, 35mm film, door channel takes a "
-    "2.0 mm light seal.",
-    "Corvina CC-3 — light seals: original seals were foam strips, replaced by cutting "
+    "Canon AE-1 — specifications: 35mm SLR, door channel takes a 2.0 mm light seal.",
+    "Canon AE-1 — light seals: original seals were foam strips, replaced by cutting "
     "new foam to the channel width.",
     "Light seals — materials: closed-cell foam, self-adhesive backing, cut to length "
     "and fitted dry.",
-    "Corvina CC-3 — value: clean examples sell in the mid three figures; a light-tight "
+    "Canon AE-1 — value: clean examples sell in the mid three figures; a light-tight "
     "seal is the first thing buyers check.",
-    "Corvina CC-3 — servicing: seals, bellows and shutter are the three usual jobs on "
-    "a folding camera of this age.",
+    "Canon AE-1 — servicing: seals, light traps and shutter are the three usual jobs on "
+    "a 35mm SLR of this age.",
     "Light seals — fitting: strip the old foam fully, clean the channel with alcohol, "
     "fit the new seal without stretching it.",
 )
 
-# The district the ask narrows to, and the shops.  Framinghouse is the shop whose
-# material places it in the mill district (the answer).  Its search snippet carries
+# The district the ask narrows to, and the shops.  Bluebird is the shop whose
+# material places it in the Hollywood District (the answer).  Its search snippet carries
 # what it does but not where, and the search render shows titles and links only, so
 # its OWN page alone carries the district and its street address — the page-only
 # detail the read-proof reads, anchored to what the user asked for ("the specific
-# details", the first rule's own words).  Sealcroft is the shop the
+# details", the first rule's own words).  Bridgetown is the shop the
 # conversation already recommended, whose own page places it outside the district.
-_CITY = "grelford"
-_DISTRICT = "mill district"
-_ANSWER_SHOP = "framinghouse"
-_PAGE_FACT = "cordage lane"  # Framinghouse's street address — only on its page
+_CITY = "portland"
+_DISTRICT = "hollywood district"
+_ANSWER_SHOP = "bluebird"
+_PAGE_FACT = "fremont street"  # Bluebird's street address — only on its page
 _SHOP_URL_HOSTS = (
-    "framinghouse.example.com",
-    "sealcroft.example.com",
-    "lightbench.example.com",
-    "foamline.example.com",
+    "bluebird.example.com",
+    "bridgetown.example.com",
+    "eastbank.example.com",
+    "stumptown.example.com",
 )
 
 # ── The web behind browse ─────────────────────────────────────────────────────
@@ -198,20 +197,20 @@ _SHOP_URL_HOSTS = (
 # page is shaped like a real results page — titles, snippets and links — and its
 # trim (titles and links only, #2647) reads like production's search results.
 
-_FRAMINGHOUSE_PAGE = CannedPage(
-    match="framinghouse",
+_BLUEBIRD_PAGE = CannedPage(
+    match="bluebird",
     text=(
-        "Title: Framinghouse Camera Works — services and contact\n"
-        "Source: https://framinghouse.example.com/services\n"
+        "Title: Bluebird Camera Works — services and contact\n"
+        "Source: https://bluebird.example.com/services\n"
         "\n"
-        "Framinghouse Camera Works\n"
-        "4 Cordage Lane, Mill District, Grelford\n"
+        "Bluebird Camera Works\n"
+        "4210 NE Fremont Street, Hollywood District, Portland\n"
         "\n"
         "Services\n"
-        "Light-seal replacement for folding and rangefinder cameras: old foam stripped "
+        "Light-seal replacement for 35mm film cameras: old foam stripped "
         "out, the channel cleaned, and a new seal cut and fitted the same day.\n"
         "Seal foam is cut in 2.0 mm and 1.5 mm widths and stocked for the common "
-        "folding cameras.\n"
+        "35mm cameras.\n"
         "Bellows re-covering, shutter servicing and general vintage camera repair.\n"
         "\n"
         "Counter hours\n"
@@ -220,16 +219,16 @@ _FRAMINGHOUSE_PAGE = CannedPage(
     ),
 )
 
-_SEALCROFT_PAGE = CannedPage(
-    match="sealcroft",
+_BRIDGETOWN_PAGE = CannedPage(
+    match="bridgetown",
     text=(
-        "Title: Sealcroft Repair — contact and workshop\n"
-        "Source: https://sealcroft.example.com\n"
+        "Title: Bridgetown Camera Repair — contact and workshop\n"
+        "Source: https://bridgetown.example.com\n"
         "\n"
-        "Sealcroft Repair\n"
-        "Unit 9, Northolme Trading Estate, Northolme (Grelford county)\n"
+        "Bridgetown Camera Repair\n"
+        "8502 North Lombard Street, St. Johns\n"
         "\n"
-        "Custom light-seal and foam cutting for folding cameras, posted in or dropped "
+        "Custom light-seal and foam cutting for 35mm film cameras, posted in or dropped "
         "at the workshop door.\n"
         "Workshop hours Monday to Friday, 09:00 to 17:00. No walk-in counter — "
         "fittings are by appointment.\n"
@@ -237,66 +236,66 @@ _SEALCROFT_PAGE = CannedPage(
     ),
 )
 
-_LIGHTBENCH_PAGE = CannedPage(
-    match="lightbench",
+_EASTBANK_PAGE = CannedPage(
+    match="eastbank",
     text=(
-        "Title: Lightbench Co — what we do\n"
-        "Source: https://lightbench.example.com\n"
+        "Title: Eastbank Photo Supply — what we do\n"
+        "Source: https://eastbank.example.com\n"
         "\n"
-        "Lightbench Co, 118 Foundry Street, North Grelford.\n"
+        "Eastbank Photo Supply, 118 NE Going Street, Northeast Portland.\n"
         "Sensor cleaning, light-seal replacement for 35mm fixed-lens cameras, and "
         "general check-ups.\n"
         "Open seven days, 09:00 to 19:00.\n"
     ),
 )
 
-_FOAMLINE_PAGE = CannedPage(
-    match="foamline",
+_STUMPTOWN_PAGE = CannedPage(
+    match="stumptown",
     text=(
-        "Title: Foamline Service — precision seal cutting\n"
-        "Source: https://foamline.example.com\n"
+        "Title: Stumptown Seal Works — precision seal cutting\n"
+        "Source: https://stumptown.example.com\n"
         "\n"
-        "Foamline Service, Unit 6, Ellerslie Industrial Park.\n"
+        "Stumptown Seal Works, Unit 6, Central Eastside Industrial District.\n"
         "Precision light-seal and gasket cutting to the measurements you send in; "
-        "standard kits for the common folding cameras.\n"
+        "standard kits for the common 35mm cameras.\n"
         "Mail-in only; turnaround three working days.\n"
     ),
 )
 
 _SEARCH_PAGE = CannedPage(
-    match="grelford",
+    match="portland",
     text=(
         "Title: camera light seal replacement — search results\n"
         "\n"
-        "### Best camera repair near the mill district, Grelford\n"
-        "[directory.example.com/camera-repair/grelford](https://directory.example.com/camera-repair/grelford)\n"
-        "Best camera repair in Grelford - Framinghouse Camera Works, Sealcroft "
-        "Repair, Lightbench Co, Foamline Service\n"
+        "### Best camera repair near the Hollywood District, Portland\n"
+        "[directory.example.com/camera-repair/portland](https://directory.example.com/camera-repair/portland)\n"
+        "Best camera repair in Portland - Bluebird Camera Works, Bridgetown "
+        "Camera Repair, Eastbank Photo Supply, Stumptown Seal Works\n"
         "\n"
-        "### Framinghouse Camera Works — vintage camera service\n"
-        "[framinghouse.example.com/services](https://framinghouse.example.com/services)\n"
-        "Vintage camera service in the mill district. Light-seal kits cut and fitted "
+        "### Bluebird Camera Works — vintage camera service\n"
+        "[bluebird.example.com/services](https://bluebird.example.com/services)\n"
+        "Vintage camera service in the Hollywood District. Light-seal kits cut and fitted "
         "while you wait.\n"
         "\n"
-        "### Sealcroft Repair — custom seal cutting\n"
-        "[sealcroft.example.com](https://sealcroft.example.com)\n"
-        "Custom foam and light-seal cutting for folding cameras. Mail-in and drop-off.\n"
+        "### Bridgetown Camera Repair — custom seal cutting\n"
+        "[bridgetown.example.com](https://bridgetown.example.com)\n"
+        "Custom foam and light-seal cutting for 35mm cameras. Mail-in and drop-off.\n"
         "\n"
-        "### Lightbench Co — camera service\n"
-        "[lightbench.example.com](https://lightbench.example.com)\n"
-        "North Grelford. Light-seal replacement for 35mm cameras, walk-in seven days.\n"
+        "### Eastbank Photo Supply — camera service\n"
+        "[eastbank.example.com](https://eastbank.example.com)\n"
+        "Northeast Portland. Light-seal replacement for 35mm cameras, walk-in seven days.\n"
         "\n"
-        "### Foamline Service — precision seals\n"
-        "[foamline.example.com](https://foamline.example.com)\n"
+        "### Stumptown Seal Works — precision seals\n"
+        "[stumptown.example.com](https://stumptown.example.com)\n"
         "Precision light-seal cutting to your measurements. Mail-in service.\n"
     ),
 )
 
 PAGES = (
-    _FRAMINGHOUSE_PAGE,
-    _SEALCROFT_PAGE,
-    _LIGHTBENCH_PAGE,
-    _FOAMLINE_PAGE,
+    _BLUEBIRD_PAGE,
+    _BRIDGETOWN_PAGE,
+    _EASTBANK_PAGE,
+    _STUMPTOWN_PAGE,
     _SEARCH_PAGE,
 )
 
@@ -323,7 +322,7 @@ _RECORDED_SPEC_ASK = (
     "figure out the exact dimensions of the seals so we can order a kit?"
 )
 _RECORDED_SPEC_REPLY = (
-    "I've been digging into the specs for that Corvina CC-3 to help you get that "
+    "I've been digging into the specs for that Canon AE-1 to help you get that "
     "fresh-seal upgrade!\n"
     "\n"
     "Finding exact dimensions for vintage light seals can be a bit tricky because "
@@ -332,11 +331,11 @@ _RECORDED_SPEC_REPLY = (
     "\n"
     "The door channel on your specific model is 35mm wide. From what I gathered:\n"
     "\n"
-    '   The "2.0" Clue: I found a reference to an original Corvina foam seal for '
+    '   The "2.0" Clue: I found a reference to an original Canon foam seal for '
     'this exact model (part number RX5017) that lists "WIDTH 2.0". In the repair '
     "world, this often refers to a thickness of 2.0mm. \n"
     "   Standard Fit: For a 35mm channel, a ~2.0mm seal is a very standard and "
-    "logical fit for a folding-door camera like this.\n"
+    "logical fit for a 35mm SLR like this.\n"
     "\n"
     "Recommendation for Ordering:\n"
     "When you look for a seal kit, I'd suggest searching for one with a thickness of "
@@ -348,43 +347,43 @@ _RECORDED_SPEC_REPLY = (
     "you can carefully measure the width of the channel where the old seal sits.\n"
     "2.  The Specialist Route: Since you're looking at a seal swap, you might want "
     "to check with a specialized vintage parts supplier. They can often confirm the "
-    "exact channel width for the CC-3 reference.\n"
+    "exact channel width for the AE-1 reference.\n"
     "\n"
     "It's going to look sharp once that's swapped out—the fresh seals will keep the "
     "film bay light-tight again! 📷✨"
 )
 _RECORDED_SHOPS_ASK = (
-    "okay good findings can you look and see who in grelford we can take it to to "
+    "okay good findings can you look and see who in portland we can take it to to "
     "help size and fit and install the seals"
 )
 _RECORDED_SHOPS_REPLY = (
-    "I've found several highly-rated options in Grelford that specialize in exactly "
+    "I've found several highly-rated options in Portland that specialize in exactly "
     "what you're looking for—vintage camera repair and light-seal replacement.\n"
     "\n"
     "Depending on whether you want someone who can custom-cut a specific size or a "
     "full-service shop, here are my top recommendations:\n"
     "\n"
     "The Specialist Options (Great for Custom/Specific Sizing):\n"
-    " Sealcroft Repair: This is a fantastic option for your project. They specialize "
+    " Bridgetown Camera Repair: This is a fantastic option for your project. They specialize "
     "in custom seal cutting, and specifically mention vintage camera restoration. "
     "This would be ideal if you need that exact '2.0mm' fit we discussed. "
-    "[https://sealcroft.example.com](https://sealcroft.example.com)\n"
-    " Foamline Service: If you want absolute precision, these guys are specialists "
+    "[https://bridgetown.example.com](https://bridgetown.example.com)\n"
+    " Stumptown Seal Works: If you want absolute precision, these guys are specialists "
     "in light-seal cutting and can custom-cut any seal that isn't in their standard "
     "catalog. They are a go-to for many professionals. "
-    "[https://foamline.example.com](https://foamline.example.com)\n"
+    "[https://stumptown.example.com](https://stumptown.example.com)\n"
     "\n"
     "The Full-Service Options (Great for a Full Service Experience):\n"
-    " Framinghouse Camera Works: They handle vintage models and specifically list "
+    " Bluebird Camera Works: They handle vintage models and specifically list "
     "light-seal replacement as part of their services. It's a very professional "
     "choice for a project like this. "
-    "[https://framinghouse.example.com](https://framinghouse.example.com)\n"
-    " Corvina Service Centre: A highly-rated shop (5 stars on the directory!) located at 312 "
-    "Chandler Street W. They have experience with light-seal changes and provide "
+    "[https://bluebird.example.com](https://bluebird.example.com)\n"
+    " Cascade Camera Service: A highly-rated shop (5 stars on the directory!) located at 312 "
+    "NW Flanders Street. They have experience with light-seal changes and provide "
     "very reliable service.\n"
     "\n"
     "My recommendation: Since we are aiming for a very specific fit to ensure that "
-    "vintage Corvina is protected, I'd reach out to Sealcroft Repair first. Their "
+    "vintage Canon is protected, I'd reach out to Bridgetown Camera Repair first. Their "
     "expertise in custom seal cutting sounds like a perfect match for the delicate "
     "needs of a vintage piece. 📷✨"
 )
@@ -612,16 +611,16 @@ _FILLER_EXTRA_REPLIES: tuple[str, ...] = (
 
 ASK = (
     "oh penny i was gonna ask, we were looking at camera shops earlier, find me one "
-    "that can fit the seals but only in the mill district in grelford"
+    "that can fit the seals but only in the hollywood district in portland"
 )
 ALSO_PHRASED: tuple[str, ...] = (
     "hey so about those camera shops from before — which one can do the seal swap "
-    "and is actually in the mill district of grelford?",
-    "find me a grelford shop that can install the light seals like we talked about "
-    "before, it has to be in the mill district",
-    "so which shop we looked at before, in the mill district of grelford, can fit "
-    "the seals on the CC-3 for me?",
-    "can you look for a camera shop in the mill district of grelford that can do "
+    "and is actually in the hollywood district of portland?",
+    "find me a portland shop that can install the light seals like we talked about "
+    "before, it has to be in the hollywood district",
+    "so which shop we looked at before, in the hollywood district of portland, can fit "
+    "the seals on the AE-1 for me?",
+    "can you look for a camera shop in the hollywood district of portland that can do "
     "the light seal replacement? like the ones we looked at before",
 )
 
@@ -663,7 +662,7 @@ def _assert_the_world_coheres() -> None:
     search_text = _SEARCH_PAGE.text.casefold()
     shop_pages = {
         page.match: page.text.casefold()
-        for page in (_FRAMINGHOUSE_PAGE, _SEALCROFT_PAGE, _LIGHTBENCH_PAGE, _FOAMLINE_PAGE)
+        for page in (_BLUEBIRD_PAGE, _BRIDGETOWN_PAGE, _EASTBANK_PAGE, _STUMPTOWN_PAGE)
     }
     history_text = (
         " ".join(turn.ask or "" for turn in _RECORDED_TURNS)
@@ -674,17 +673,17 @@ def _assert_the_world_coheres() -> None:
 
     # The page fact — the district shop's street address — is on exactly one page: no
     # snippet, no history turn, no wording, no other page.
-    assert _PAGE_FACT in shop_pages["framinghouse"]
+    assert _PAGE_FACT in shop_pages["bluebird"]
     assert _PAGE_FACT not in search_text
-    assert _PAGE_FACT not in shop_pages["sealcroft"]
-    assert _PAGE_FACT not in shop_pages["lightbench"]
-    assert _PAGE_FACT not in shop_pages["foamline"]
+    assert _PAGE_FACT not in shop_pages["bridgetown"]
+    assert _PAGE_FACT not in shop_pages["eastbank"]
+    assert _PAGE_FACT not in shop_pages["stumptown"]
     assert _PAGE_FACT not in history_text
 
     # The answer shop's district placement is in its own snippet and page body; the
     # snippet never reaches the model (the search render shows titles and links
     # only), so the page is the only route to it.
-    assert _ANSWER_SHOP in search_text and _ANSWER_SHOP in shop_pages["framinghouse"]
+    assert _ANSWER_SHOP in search_text and _ANSWER_SHOP in shop_pages["bluebird"]
 
     # Every shop host is on the search page (so a search-only reply COULD cite one)
     # and on its own page's Source line.
