@@ -412,3 +412,21 @@ ASSEMBLE time over the case document already on disk — the same seam `summaris
 up with **no re-run**. With every fold bounded, a part over the cap is an INVARIANT VIOLATION rather than
 a case: `comment_split.enforce_part_cap` raises `OversizedPartError` as the renderer bug it is instead of
 refusing the caller.
+
+**A model OUTSIDE the roster runs through the env override, and Liquid refuses a thinking-off draw
+(#2706, 2026-10-20).** The first trial of a model the roster does not name: `liquid/lfm-2.5-24b-a2b`
+served by OpenRouter's **Liquid** endpoint (OpenRouter lists `tools`/`tool_choice` among its supported
+parameters), on the four `end_to_end` cases, run `run-20261020T065850Z-20838-c51eaacd` at `c51eaacd`.
+No harness change was needed — the `eval-remote` recipe already resolves the roster from the invoking
+shell FIRST (`EVAL_MODELS="${EVAL_MODELS:-$(from_env EVAL_MODELS)}"`), so the model and its pin went in
+the command's own environment and the primary `.env` was never read or edited. 60 of 60 samples
+completed, none excluded. Passing counts beside gemma's reference on the same commit: cold ask **83/120**
+(gemma 120/120), known routine on a new page **84/120** (gemma 120/120), two values **53/105** (gemma
+104/105), digest set up in chat **64/105** (gemma 96/105) — **284/450** against gemma's 440/450. One
+MECHANISM, not the model, carried much of the gap: Liquid's endpoint rejects a reasoning-off draw with
+`HTTP 400: Reasoning is mandatory for this endpoint and cannot be disabled`, and the runtime's
+browse-extract micro-context draws run thinking-off (`THINKING_OFF_BODY`, `reasoning_effort: "none"`,
+#2615) — so 1,194 of the run's 3,118 model calls faulted, every extraction degraded to the error row's
+link list, and the collector fell back to reading those (the digest entries still carried the headlines;
+the notification the cycle was to send never did). Cost per sample: 240,116 in · 12,013 out (77%
+thinking) · 38.7 calls · 109s.
