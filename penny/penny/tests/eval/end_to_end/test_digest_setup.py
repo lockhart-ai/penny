@@ -30,8 +30,10 @@ queued), the created job's own terms (cadence, notify), the one entry the cycle 
 everything specific — never the message's wording or the cycle's tool sequence, which
 are variance.
 
-Report-only (``min_pass_rate=None``). All content is synthetic, on ``.example``
-domains, because the repo is public.
+Report-only (``min_pass_rate=None``).  The outlets are real ones the model
+recognises, served whole from the local fixture mechanism (nothing is fetched from
+the network, and the repo is public): the mastheads and URLs are real, the headlines
+fictional but plausible.
 """
 
 from __future__ import annotations

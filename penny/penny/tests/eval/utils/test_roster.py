@@ -78,6 +78,19 @@ class TestTheRosterIsRequired:
         assert roster[0].provider is None
         assert roster[0].render() == "a (no provider named)"
 
+    def test_an_entry_may_declare_reasoning_mandatory(self) -> None:
+        """A model whose endpoint cannot turn reasoning off carries the declaration
+        (#2708); one that does not name it reads as not mandatory, the default."""
+        roster = parse_roster(
+            json.dumps([{"model": "a", "provider": "SomeCloud", "reasoning_mandatory": True}])
+        )
+        assert roster[0].reasoning_mandatory is True
+        assert roster[0].render() == "a via SomeCloud (reasoning mandatory)"
+
+        plain = parse_roster(json.dumps([{"model": "a", "provider": "SomeCloud"}]))
+        assert plain[0].reasoning_mandatory is False
+        assert plain[0].render() == "a via SomeCloud"
+
 
 class TestWhichEntryThisInvocationRuns:
     def test_the_first_entry_is_the_default(self) -> None:
@@ -111,6 +124,22 @@ class TestWhatTheRecipeReads:
     def test_a_providerless_entry_renders_no_provider_line(self) -> None:
         assert render_resolution(EvalModel(model="local-model")) == ["eval: model = local-model"]
 
+    def test_a_mandatory_reasoning_entry_renders_the_declaration_line(self) -> None:
+        """The third line the Makefile reads, carrying the value it forwards into
+        ``LLM_REASONING_MANDATORY`` (#2708); an entry without the declaration renders
+        none, so the setting stays unset and the default holds."""
+        assert render_resolution(
+            EvalModel(model="vendor/model-a", provider="SomeCloud", reasoning_mandatory=True)
+        ) == [
+            "eval: model = vendor/model-a",
+            "eval: pinned provider = SomeCloud",
+            "eval: reasoning mandatory = 1",
+        ]
+        assert render_resolution(EvalModel(model="vendor/model-a", provider="SomeCloud")) == [
+            "eval: model = vendor/model-a",
+            "eval: pinned provider = SomeCloud",
+        ]
+
     def test_the_cli_exit_code_is_what_stops_the_run(self, monkeypatch, capsys) -> None:
         monkeypatch.delenv(EVAL_MODELS_ENV, raising=False)
         assert main([]) == 1
@@ -121,6 +150,15 @@ class TestWhatTheRecipeReads:
         out = capsys.readouterr().out
         assert "eval: model = vendor/model-b" in out
         assert "eval: pinned provider = OtherCloud" in out
+        assert "eval: reasoning mandatory" not in out
+
+        # A declared entry prints the line the Makefile forwards (#2708).
+        monkeypatch.setenv(
+            EVAL_MODELS_ENV,
+            json.dumps([{"model": "vendor/a", "provider": "X", "reasoning_mandatory": True}]),
+        )
+        assert main(["vendor/a"]) == 0
+        assert "eval: reasoning mandatory = 1" in capsys.readouterr().out
 
         # A stray argument is a usage error, distinct from an unconfigured roster.
         assert main(["a", "b"]) == 2

@@ -37,6 +37,9 @@ USAGE = "usage: python -m penny.tests.eval.utils.roster [<model>]"
 # operator sees the same two facts the run records.
 MODEL_LINE_PREFIX = "eval: model ="
 PINNED_PROVIDER_LINE_PREFIX = "eval: pinned provider ="
+# Printed only when the entry declares it; the Makefile reads the value ("1") straight
+# into LLM_REASONING_MANDATORY.
+REASONING_MANDATORY_LINE_PREFIX = "eval: reasoning mandatory ="
 
 _SHAPE_EXAMPLE = '    EVAL_MODELS=[{"model":"vendor/model-a","provider":"SomeCloud"}]'
 
@@ -53,17 +56,25 @@ class EvalModel(BaseModel):
     ``ProviderPin``), so the run is served by that provider or by nobody.  Name it
     as the gateway reports it back (OpenRouter answers ``Groq``, not ``groq``), so the
     manifest's pinned-versus-answered comparison reads a match as a match.
+
+    ``reasoning_mandatory`` (#2708) carries a deployment declaration the model needs:
+    its endpoint cannot turn reasoning off, so thinking-off draws ask for the lowest
+    effort instead of ``"none"``.  The recipe forwards it as ``LLM_REASONING_MANDATORY``,
+    the same pass-through ``provider`` gets as ``LLM_PROVIDER`` — a roster model
+    declares its own endpoint, rather than every operator remembering to set it.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     model: str
     provider: str | None = None
+    reasoning_mandatory: bool = False
 
     def render(self) -> str:
         """This entry as the operator wrote it — used when the roster has to be quoted."""
         served = f" via {self.provider}" if self.provider else " (no provider named)"
-        return f"{self.model}{served}"
+        mandatory = " (reasoning mandatory)" if self.reasoning_mandatory else ""
+        return f"{self.model}{served}{mandatory}"
 
 
 _ROSTER_ADAPTER = TypeAdapter(list[EvalModel])
@@ -120,10 +131,13 @@ def resolve(roster: list[EvalModel], requested: str | None) -> EvalModel:
 
 
 def render_resolution(entry: EvalModel) -> list[str]:
-    """The lines the Makefile reads: always the model, the provider when one is named."""
+    """The lines the Makefile reads: always the model, the provider when one is named,
+    the reasoning-mandatory declaration when the entry carries one."""
     lines = [f"{MODEL_LINE_PREFIX} {entry.model}"]
     if entry.provider:
         lines.append(f"{PINNED_PROVIDER_LINE_PREFIX} {entry.provider}")
+    if entry.reasoning_mandatory:
+        lines.append(f"{REASONING_MANDATORY_LINE_PREFIX} 1")
     return lines
 
 

@@ -31,8 +31,9 @@ policy, the way a real marketplace listing reads. The baseline and moved prices 
 exclusive as numerals, so a sample that invented a plausible number cannot satisfy a claim
 that names the one the page actually carries.
 
-Report-only (``min_pass_rate=None``). All content is synthetic, on an ``example`` domain,
-because the repo is public.
+Report-only (``min_pass_rate=None``). The watched product, its sibling listing, the
+marketplace and the seller are real names the model recognises (#2673); the prices and the
+seller's history are made up and live only on the listing page, and the repo is public.
 """
 
 from __future__ import annotations
@@ -73,8 +74,8 @@ _BEHAVIOUR = (
 
 # ── The page the demonstration reads, and the two readings its cycles see ────
 
-_URL = "https://trailgear.example/juniper-trail-stove"
-_ITEM = "Juniper Trail Stove"
+_URL = "https://www.ebay.com/itm/jetboil-minimo"
+_ITEM = "Jetboil MiniMo"
 
 _BASELINE_AMOUNT = "129"
 _MOVED_AMOUNT = "109"
@@ -94,35 +95,36 @@ _SPEC_LINK = f"[{_ITEM} spec sheet]({_URL}/spec)"
 # returns policy — several kilobytes, the shape of a real marketplace listing rather than a
 # fixture trimmed to the one line a claim reads.
 _BASELINE_PAGE = CannedPage(
-    match="juniper-trail-stove",
+    match="jetboil-minimo",
     text=(
-        f"Title: {_ITEM} — backpacking stove | trailgear\n"
+        f"Title: {_ITEM} — backpacking stove | eBay\n"
         f"{_URL}\n"
         "\n"
-        f"{_ITEM} (open box, tested). Sold by a fictional outfitter; stock turns over weekly.\n"
+        f"{_ITEM} (open box, tested). Sold by a specialist outdoor reseller; stock turns over "
+        "weekly.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
-        "Seller: pinehollow_gear (4.8 stars). The asking price last changed six days ago.\n"
+        "Seller: cabelas (4.8 stars). The asking price last changed six days ago.\n"
         "Condition: open box, tested. Ships within two working days.\n"
         "\n"
         "Specification\n"
-        "Two-burner folding frame, 9,000 BTU output, piezo ignition\n"
+        "Half-litre aluminium cooking cup with an insulated sleeve, push-button igniter\n"
         f"{_SPEC_LINK}\n"
-        "Boils half a litre of water in about ninety seconds on a full canister.\n"
-        "Weight 860g · Folds flat to a 20cm case · One wind guard included\n"
+        "Boils half a litre of water in about two minutes on a full canister.\n"
+        "Weight 415g · Packs to a 12cm case · Measuring marks on the cup\n"
         "\n"
         "Others from this seller\n"
-        "Birch Camp Lantern, refurbished — $39\n"
-        "[Birch Camp Lantern](https://trailgear.example/birch-camp-lantern)\n"
-        "Pinehollow Fuel Canister, 450g — $14\n"
-        "Both ship from the same fictional depot, usually inside a week.\n"
+        "Coleman Quad lantern, refurbished — $39\n"
+        "[Coleman Quad lantern](https://www.ebay.com/itm/coleman-quad-lantern)\n"
+        "Jetpower fuel canister, 450g — $14\n"
+        "Both ship from the same depot, usually inside a week.\n"
         "\n"
         "What buyers say\n"
-        '"Lit first try even in wind — the guard earns its keep." — verified buyer\n'
+        '"Lit first try even in wind — the igniter earns its keep." — verified buyer\n'
         '"Smaller than I expected, packs well for a weekend trip." — verified buyer\n'
         "\n"
         "Returns are accepted within thirty days of delivery; return postage is the buyer's.\n"
-        "This fictional outfitter ships from one regional depot and restocks every Tuesday.\n"
+        "This seller ships from one regional depot and restocks every Tuesday.\n"
     ),
 )
 _MOVED_PAGE = datum(_BASELINE_PAGE, _DATUM, _MOVED_DATUM)

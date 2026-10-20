@@ -179,6 +179,27 @@ ConfigParam(
     group=GROUP_CHAT,
 )
 
+# A deployment DECLARATION about its model's endpoint, not a behaviour dial: set it when
+# the endpoint's reasoning cannot be turned off at all (OpenRouter marks such models
+# ``"reasoning": {"mandatory": true}``). The client's thinking-off draws (the browse
+# extractor's micro-contexts) then ask for the lowest reasoning effort the endpoint
+# accepts instead of sending ``reasoning_effort: "none"``, which such an endpoint refuses
+# outright with HTTP 400. Declared, never inferred from an error string; default off, so
+# endpoints that do accept "none" are unchanged.
+ConfigParam(
+    key="LLM_REASONING_MANDATORY",
+    description=(
+        "Set when this deployment's model cannot turn reasoning off: thinking-off "
+        "draws then ask for the lowest reasoning effort instead of 'none', which "
+        "such an endpoint refuses"
+    ),
+    type=int,
+    default=0,
+    validator=_validate_switch,
+    choices=_SWITCH_CHOICES,
+    group=GROUP_CHAT,
+)
+
 # ── Background — every background agent (thinking, notify, extractors) ───────
 
 ConfigParam(

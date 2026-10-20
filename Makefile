@@ -108,11 +108,14 @@ HEAD_COMMIT_CMD = git rev-parse HEAD 2>/dev/null || echo unknown
 # `endpoint_smoke.PROVIDER_LINE_PREFIX` — the recipe reads the provider off it and forwards
 # it as EVAL_PROVIDER, so the manifest records WHERE the model was served from (#1996).
 SMOKE_PROVIDER_LINE := eval: chat provider =
-# The two lines `penny.tests.eval.utils.roster` prints its resolution on. Must match
-# `roster.MODEL_LINE_PREFIX` / `roster.PINNED_PROVIDER_LINE_PREFIX` — the recipe reads
-# the run's model and its PINNED upstream off them.
+# The lines `penny.tests.eval.utils.roster` prints its resolution on. Must match
+# `roster.MODEL_LINE_PREFIX` / `roster.PINNED_PROVIDER_LINE_PREFIX` /
+# `roster.REASONING_MANDATORY_LINE_PREFIX` — the recipe reads the run's model, its PINNED
+# upstream and its reasoning-mandatory declaration off them (the last printed only when
+# the entry declares it; an absent line leaves the setting unset, the default).
 ROSTER_MODEL_LINE := eval: model =
 ROSTER_PROVIDER_LINE := eval: pinned provider =
+ROSTER_REASONING_LINE := eval: reasoning mandatory =
 # Where a LEVER-LESS run drops its per-process health records. A report run uses its own
 # run dir; an ephemeral iteration run has none, and this is inside the --rm container, so
 # the records die with the run exactly as the rest of its artifacts do. The run still gets
@@ -346,6 +349,7 @@ eval-remote: $(if $(LOCAL),,build)
 	cat "$$roster_log"; \
 	model="$$(sed -n 's/^$(ROSTER_MODEL_LINE) //p' "$$roster_log" | tail -1)"; \
 	pinned="$$(sed -n 's/^$(ROSTER_PROVIDER_LINE) //p' "$$roster_log" | tail -1)"; \
+	mandatory="$$(sed -n 's/^$(ROSTER_REASONING_LINE) //p' "$$roster_log" | tail -1)"; \
 	rm -f "$$roster_log"; \
 	if [ "$$rostered" = 0 ]; then exit 1; fi; \
 	llm_url="$${LLM_API_URL:-$(EVAL_REMOTE_ENDPOINT)}"; \
@@ -405,6 +409,7 @@ eval-remote: $(if $(LOCAL),,build)
 		EVAL_RUN_ID="$$run_id" \
 		EVAL_HEALTH_DIR="$$health_dir" \
 		LLM_PROVIDER="$$pinned" \
+		LLM_REASONING_MANDATORY="$$mandatory" \
 		EVAL_PREFERRED_PROVIDER="$$pinned" \
 		EVAL_PROVIDER="$$provider" \
 		EVAL_COMMIT="$$commit" \
