@@ -517,6 +517,34 @@ _ASTORIAN_FRONT_PAGE = CannedPage(
     ),
 )
 
+# The search page this world never had (#2680): the ask reaches the front page by
+# searching, and the honest search mock needs a results page to return.  Titles and
+# links only — no headline text and no editor anywhere on it, which is the point of
+# the ask's second half (the front page is the only source the answers tokens sit
+# on, and the editor is named nowhere at all).  The match token is the word the ask
+# itself carries; the front page keeps the same token, safe now that the mock
+# matches the two shapes apart.
+_ASTORIAN_SEARCH_PAGE = CannedPage(
+    match="astorian",
+    search=True,
+    text=(
+        "Title: the astorian — search results\n"
+        "\n"
+        "### The Astorian — front page (official site)\n"
+        f"[dailyastorian.com]({_ASTORIAN_URL})\n"
+        "The paper's own site: today's edition, coastal and regional coverage.\n"
+        "\n"
+        "### The Astorian — Wikipedia\n"
+        "[en.wikipedia.org/wiki/The_Astorian]"
+        "(https://en.wikipedia.org/wiki/The_Astorian)\n"
+        "The paper's founding, ownership and circulation history.\n"
+        "\n"
+        "### The Astorian — archive\n"
+        "[dailyastorian.com/archive](https://www.dailyastorian.com/archive)\n"
+        "Past issues, searchable by date.\n"
+    ),
+)
+
 
 # ── The user's own collection ────────────────────────────────────────────────
 #
@@ -694,9 +722,42 @@ _RECORD_PHRASINGS = (
 # to answer from must NOT say is carried by the provenance claim instead, as the module
 # docstring argues.
 
+# The search page this world never had (#2680): the ask reaches the visiting page by
+# searching, and the honest search mock needs a results page to return.  Titles and
+# links only — nothing here answers the ask, so the adult ticket price stays only on
+# the visiting page (an ``answers`` token sits on exactly one source).  The match token
+# is the word every wording's search naturally carries; the visiting page keeps the
+# same token, which is safe now that the mock matches the two shapes apart.  The
+# museum's result names itself the official site: samples read an unnamed result on an
+# unfamiliar host as a placeholder and would not click it.
+_MUSEUM_SEARCH_PAGE = CannedPage(
+    match="maritime",
+    search=True,
+    text=(
+        "Title: the columbia river maritime museum — search results\n"
+        "\n"
+        "### Columbia River Maritime Museum — visiting and tickets (official site)\n"
+        f"[crmm.org/visit]({_MUSEUM_URL})\n"
+        "The museum's own site: opening hours, admission and travel.\n"
+        "\n"
+        "### Columbia River Maritime Museum — Wikipedia\n"
+        "[en.wikipedia.org/wiki/Columbia_River_Maritime_Museum]"
+        "(https://en.wikipedia.org/wiki/Columbia_River_Maritime_Museum)\n"
+        "Background on the museum and its mission.\n"
+        "\n"
+        "### Columbia River Maritime Museum — visitor reviews\n"
+        "[tripadvisor.com/Attraction_Review-g52017-Columbia_River_Maritime_Museum]"
+        "(https://www.tripadvisor.com/Attraction_Review-g52017-Columbia_River_Maritime_Museum)\n"
+        "Recent visitor reviews and photographs.\n"
+    ),
+)
+
 _MUSEUM_WORLD = World(
     name="the museum's own visiting page",
-    pages=(_MUSEUM_VISIT_PAGE,),
+    pages=(
+        _MUSEUM_SEARCH_PAGE,
+        _MUSEUM_VISIT_PAGE,
+    ),
     keeps=(),
     excludes=(),
     answers=(_ADULT_TICKET,),
@@ -729,7 +790,10 @@ _GALLERY_WORLD = World(
 # since this page names no staff at all.
 _ASTORIAN_WORLD = World(
     name="the astorian's real-size front page",
-    pages=(_ASTORIAN_FRONT_PAGE,),
+    pages=(
+        _ASTORIAN_SEARCH_PAGE,
+        _ASTORIAN_FRONT_PAGE,
+    ),
     keeps=(),
     excludes=(),
     answers=(_HEADLINE_1_ANCHOR, _HEADLINE_2_ANCHOR, _HEADLINE_3_ANCHOR),
