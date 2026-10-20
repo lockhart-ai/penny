@@ -255,8 +255,8 @@ class BrowseTool(Tool):
     def __init__(
         self,
         max_calls: int,
+        db: Database,
         search_url: str = "https://duckduckgo.com/?q=",
-        db: Database | None = None,
         author: str = "unknown",
         *,
         embedding_client: LlmClient,
@@ -275,6 +275,8 @@ class BrowseTool(Tool):
         )
         self._search_url = search_url
         self._search_host = _url_host(search_url)
+        # REQUIRED — no default, no ``None`` (#2702): the store browse results log
+        # to, and the one the micro-context's discarded draws are marked on.
         self._db = db
         self._embedding_client = embedding_client
         self._author = author

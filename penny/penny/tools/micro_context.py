@@ -176,14 +176,14 @@ class MicroContext:
         model_client: LlmClient,
         *,
         reroll_attempts: int = PennyConstants.DEGENERATE_REROLL_ATTEMPTS,
-        db: Database | None = None,
+        db: Database,
     ) -> None:
         self._model_client = model_client
         self._reroll_attempts = reroll_attempts
-        # The store the discarded draws are marked on (#2702) — read through the
-        # enclosing tool's db (browse).  Optional only because a ``db``-less
-        # construction is legitimate (tests, the eval driver): with none there
-        # is no row to mark, and every draw outcome still resolves honestly.
+        # The store the discarded draws are marked on (#2702) — REQUIRED, no
+        # default and no ``None`` (a construction without one would silently
+        # stop marking its rerolls): the enclosing tool's own db (browse), the
+        # running Penny's db (the eval driver), the test's ``db`` fixture.
         self._db = db
 
     async def extract(
@@ -350,9 +350,14 @@ class MicroContext:
     def _mark_discarded(self, response: LlmResponse, condition: ConditionKey) -> None:
         """Stamp on the draw's own ``promptlog`` row that its output was not
         used (#2702) — the same post-hoc mark the agent loop applies, by the
-        row id the response carries; a no-op where no row exists (no ``db``,
-        or the call never got one)."""
-        if self._db is None or response.prompt_log_id is None:
+        row id the response carries.
+
+        The one no-op: ``response.prompt_log_id`` is ``None``.  The client
+        stamps it only when it writes the row, so it is ``None`` exactly when
+        no row exists to mark — a client built without a ``db`` (a test, a
+        one-off script) or a call that never finished (those rows already say
+        so via ``call_outcome``/``call_error_*``)."""
+        if response.prompt_log_id is None:
             return
         self._db.messages.mark_prompt_discarded(response.prompt_log_id, condition.value)
 

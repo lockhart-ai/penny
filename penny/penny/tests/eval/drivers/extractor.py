@@ -346,7 +346,7 @@ def extractor_eval(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
             asked = spoken[sample_index]
-            micro = MicroContext(penny.model_client)
+            micro = MicroContext(penny.model_client, db=penny.db)
             extracted: MicroContextResult | None = None
             try:
                 extracted = await asyncio.wait_for(

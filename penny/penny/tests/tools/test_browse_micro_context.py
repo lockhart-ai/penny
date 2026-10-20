@@ -1099,13 +1099,13 @@ def test_render_tool_call_names_the_micro_context_browse_step():
 
 
 @pytest.mark.asyncio
-async def test_micro_context_returns_byte_identical_value_with_attribution():
+async def test_micro_context_returns_byte_identical_value_with_attribution(db: Database):
     """A draw's plain text is the extracted value — stripped once, verbatim
     otherwise (#2615: nothing parses it) — and the call carries the ledger
     attribution, drawn with thinking OFF (reading a page is not a reasoning
     task)."""
     model = _responds(f"  {_EXTRACTED_VALUE}  ")
-    result = await MicroContext(cast(Any, model)).extract(
+    result = await MicroContext(cast(Any, model), db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top(), run_target="widget-watch"
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
@@ -1124,13 +1124,13 @@ async def test_micro_context_returns_byte_identical_value_with_attribution():
 
 
 @pytest.mark.asyncio
-async def test_micro_context_link_list_reading_adds_one_note_before_content():
+async def test_micro_context_link_list_reading_adds_one_note_before_content(db: Database):
     """#2388: a link-list read (the extension's own structural mark, never guessed
     from the text's shape) gets one note, placed BEFORE ``Content:``, saying the
     page was read as its list of links — the byte-identical test above pins its
     absence on every other reading."""
     model = _responds(_EXTRACTED_VALUE)
-    result = await MicroContext(cast(Any, model)).extract(
+    result = await MicroContext(cast(Any, model), db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top(), reading=PageReading.LINK_LIST
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
@@ -1140,12 +1140,12 @@ async def test_micro_context_link_list_reading_adds_one_note_before_content():
 
 
 @pytest.mark.asyncio
-async def test_micro_context_plain_text_answer_needs_no_tag():
+async def test_micro_context_plain_text_answer_needs_no_tag(db: Database):
     """A page the extractor finds nothing on is still an ``EXTRACTED`` draw whose
     plain text says so (#2615) — there is no second outcome, and no tag, for it to
     land on instead."""
     model = _responds(_NOT_PRESENT_ANSWER)
-    result = await MicroContext(cast(Any, model)).extract(
+    result = await MicroContext(cast(Any, model), db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
@@ -1154,13 +1154,13 @@ async def test_micro_context_plain_text_answer_needs_no_tag():
 
 
 @pytest.mark.asyncio
-async def test_micro_context_extracts_multi_line_value_whole():
+async def test_micro_context_extracts_multi_line_value_whole(db: Database):
     """A multi-line value (a bulleted digest) round-trips WHOLE (#1682/#2615): the
     plain-text draw IS the value — stripped once, nothing else touched — so an
     item-per-line list survives into ``MicroContextResult`` byte-identical."""
     digest = "Notable lots:\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids\n- Lot 7: 3 zorkmids"
     model = _responds(digest)
-    result = await MicroContext(cast(Any, model)).extract(
+    result = await MicroContext(cast(Any, model), db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
@@ -1280,7 +1280,7 @@ async def test_micro_context_blank_draw_is_discarded_and_rerolled(tmp_path, mock
 
 
 @pytest.mark.asyncio
-async def test_micro_context_reroll_can_recover():
+async def test_micro_context_reroll_can_recover(db: Database):
     """A reroll re-draws on the unchanged context — a usable draw recovers the
     extraction, and it can arrive anywhere inside the budget: two unusable draws
     still leave a third, and the run costs exactly the draws it took."""
@@ -1293,7 +1293,7 @@ async def test_micro_context_reroll_can_recover():
             )
         )
     )
-    result = await MicroContext(cast(Any, model)).extract(
+    result = await MicroContext(cast(Any, model), db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
@@ -1309,7 +1309,7 @@ async def test_micro_context_reroll_can_recover():
             )
         )
     )
-    recovered = await MicroContext(cast(Any, late)).extract(
+    recovered = await MicroContext(cast(Any, late), db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert recovered.outcome == MicroExtractOutcome.EXTRACTED
@@ -1349,12 +1349,12 @@ async def test_micro_context_poison_is_discarded_and_rerolled(tmp_path, mock_llm
 
 
 @pytest.mark.asyncio
-async def test_extract_always_draws_with_thinking_off():
+async def test_extract_always_draws_with_thinking_off(db: Database):
     """Browse-extract draws with thinking OFF on every attempt (#2615) — reading a
     page is not a reasoning task, and this is the one customer that always says
     so, unconditionally, from the first draw."""
     model = _responds(_EXTRACTED_VALUE)
-    result = await MicroContext(cast(Any, model)).extract(
+    result = await MicroContext(cast(Any, model), db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
@@ -1362,7 +1362,7 @@ async def test_extract_always_draws_with_thinking_off():
 
 
 @pytest.mark.asyncio
-async def test_draw_clean_cut_draw_gets_one_thinking_off_last_draw():
+async def test_draw_clean_cut_draw_gets_one_thinking_off_last_draw(db: Database):
     """A draw the token budget cut (``finish_reason="length"``, empty content)
     gets ONE more call on the same messages with thinking disabled and the same
     budget (#2476), and that response answers the draw in place of the cut one —
@@ -1387,7 +1387,7 @@ async def test_draw_clean_cut_draw_gets_one_thinking_off_last_draw():
             finish_reason="length" if count == 1 else None,
         )
     )
-    text = await MicroContext(cast(Any, model))._draw_clean(
+    text = await MicroContext(cast(Any, model), db=db)._draw_clean(
         _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=True
     )
     assert text == _EXTRACTED_VALUE
@@ -1436,7 +1436,7 @@ async def test_draw_clean_cut_draw_row_carries_its_reason(tmp_path, mock_llm):
 
 
 @pytest.mark.asyncio
-async def test_draw_clean_skips_the_cut_retry_when_already_thinking_off():
+async def test_draw_clean_skips_the_cut_retry_when_already_thinking_off(db: Database):
     """The cut-draw retry's whole point is turning thinking off (#2476) — so when a
     draw already ran with it off (every browse-extract draw, #2615), a second,
     identical call would buy nothing.  The guard (``not retried_cut and
@@ -1449,7 +1449,7 @@ async def test_draw_clean_skips_the_cut_retry_when_already_thinking_off():
             finish_reason="length",
         )
     )
-    text = await MicroContext(cast(Any, model))._draw_clean(
+    text = await MicroContext(cast(Any, model), db=db)._draw_clean(
         _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=False
     )
     assert text is None  # every attempt drew the same empty, cut response
@@ -1457,7 +1457,7 @@ async def test_draw_clean_skips_the_cut_retry_when_already_thinking_off():
     assert all(request["thinking_enabled"] is False for request in model.requests)
 
 
-def test_micro_result_render_by_handle_is_a_typed_id():
+def test_micro_result_render_by_handle_is_a_typed_id(db: Database):
     """The fetch handle is a typed ``log='browse-results' id=<id>`` read
     (rendered directly) — on the FAILURE render, where it is the remedy
     (#2615: the one failure outcome left).  A successful extraction renders
@@ -1467,7 +1467,7 @@ def test_micro_result_render_by_handle_is_a_typed_id():
 
     The page's LINKS follow the same split (#2141): handed to every render, and
     only the FAILURE render appends them."""
-    tool = BrowseTool(max_calls=1, embedding_client=cast(Any, MockLlmClient()))
+    tool = BrowseTool(max_calls=1, db=db, embedding_client=cast(Any, MockLlmClient()))
     stored = [cast(Any, SimpleNamespace(id=7))]
     links = f"\n{_LINKS_CLAUSE}"
     body = tool._render_micro_result(

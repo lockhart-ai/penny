@@ -195,11 +195,12 @@ class TestBrowseTool:
     """BrowseTool passes through pre-sanitized content from the channel."""
 
     @staticmethod
-    def _make_tool(request_fn, permission_manager=None, max_queries_per_call=None):
+    def _make_tool(request_fn, permission_manager=None, max_queries_per_call=None, *, db: Database):
         """Create a BrowseTool wired to a mock browse provider."""
         perm = permission_manager or MagicMock(check_domain=AsyncMock())
         tool = BrowseTool(
             max_calls=3,
+            db=db,
             max_queries_per_call=max_queries_per_call,
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
@@ -208,7 +209,7 @@ class TestBrowseTool:
         return tool
 
     @pytest.mark.asyncio
-    async def test_returns_channel_content_as_search_result(self):
+    async def test_returns_channel_content_as_search_result(self, db: Database):
         """Tool returns a ToolResult with the channel content."""
         request_fn = AsyncMock(
             return_value=(
@@ -217,7 +218,7 @@ class TestBrowseTool:
                 PageReading.ARTICLE,
             )
         )
-        tool = self._make_tool(request_fn)
+        tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
             CallLink.new_top(), queries=["https://example.com"], extract="the page content"
         )
@@ -264,7 +265,7 @@ class TestBrowseTool:
         assert rows[0].embedding is not None
 
     @pytest.mark.asyncio
-    async def test_cleans_kagi_cruft_from_content(self):
+    async def test_cleans_kagi_cruft_from_content(self, db: Database):
         """Tool strips Kagi proxy images, empty links, and image grid sections."""
         kagi_content = (
             "### Best guitar amps 2026\n"
@@ -294,7 +295,7 @@ class TestBrowseTool:
             "A useful snippet about the second result."
         )
         request_fn = AsyncMock(return_value=(kagi_content, None, PageReading.ARTICLE))
-        tool = self._make_tool(request_fn)
+        tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
             CallLink.new_top(),
             queries=["https://kagi.com/search?q=test"],
@@ -338,14 +339,14 @@ class TestBrowseTool:
         assert _all_media(db) == []
 
     @pytest.mark.asyncio
-    async def test_browser_runtime_error_becomes_error_section(self, monkeypatch):
+    async def test_browser_runtime_error_becomes_error_section(self, db: Database, monkeypatch):
         """A RuntimeError from request_fn (structured browser failure) is surfaced
         under the dedicated error header, not the success header."""
 
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 0)
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
         request_fn = AsyncMock(side_effect=RuntimeError("extraction failed after 10 retries"))
-        tool = self._make_tool(request_fn)
+        tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
             CallLink.new_top(), queries=["https://example.com"], extract="the page content"
         )
@@ -360,7 +361,7 @@ class TestBrowseTool:
         assert PennyConstants.BROWSE_PAGE_HEADER + "https://example.com" not in result.message
 
     @pytest.mark.asyncio
-    async def test_partial_failure_stays_success(self, monkeypatch):
+    async def test_partial_failure_stays_success(self, db: Database, monkeypatch):
         """When some queries succeed and others error, the result stays success=True
         — the model works from whatever came back; only an all-queries-failed call
         is a structural failure."""
@@ -376,7 +377,7 @@ class TestBrowseTool:
                 PageReading.ARTICLE,
             )
 
-        tool = self._make_tool(request_fn)
+        tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
             CallLink.new_top(),
             queries=["https://good.com", "https://bad.com"],
@@ -388,7 +389,7 @@ class TestBrowseTool:
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://bad.com" in result.message
 
     @pytest.mark.asyncio
-    async def test_queries_past_cap_are_named_not_dropped(self):
+    async def test_queries_past_cap_are_named_not_dropped(self, db: Database):
         """Queries beyond the per-call total ceiling are run for the first N and the
         rest are named in a dropped-queries section (not silently truncated), so
         the model can rerun them — the run queries still succeed, so success stays
@@ -397,7 +398,7 @@ class TestBrowseTool:
         request_fn = AsyncMock(
             return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
         )
-        tool = self._make_tool(request_fn)  # max_calls=3
+        tool = self._make_tool(request_fn, db=db)  # max_calls=3
 
         result = await tool.execute(
             CallLink.new_top(),
@@ -440,7 +441,7 @@ class TestBrowseTool:
         assert "https://d.com" in dropped_section
 
     @pytest.mark.asyncio
-    async def test_queries_past_parallel_cap_run_in_batches(self):
+    async def test_queries_past_parallel_cap_run_in_batches(self, db: Database):
         """#2662: the parallel cap bounds fetches IN FLIGHT, not the call's total —
         five URLs at max_calls=3 all run in this call, in two batches of at most 3
         in flight, every section present in request order, and no dropped section
@@ -466,7 +467,7 @@ class TestBrowseTool:
             in_flight -= 1
             return pages[params["url"]]
 
-        tool = self._make_tool(request_fn, max_queries_per_call=12)
+        tool = self._make_tool(request_fn, max_queries_per_call=12, db=db)
 
         result = await tool.execute(
             CallLink.new_top(),
@@ -489,7 +490,7 @@ class TestBrowseTool:
             assert f"https://{n}.com" in result.narration
 
     @pytest.mark.asyncio
-    async def test_queries_past_total_ceiling_are_dropped(self):
+    async def test_queries_past_total_ceiling_are_dropped(self, db: Database):
         """#2662: queries past the per-call TOTAL (not the batch size) get the
         dropped section naming the excess — here max_calls=2 and a total of 3 run
         three queries in two batches and name the fourth."""
@@ -498,6 +499,7 @@ class TestBrowseTool:
         )
         tool = BrowseTool(
             max_calls=2,
+            db=db,
             max_queries_per_call=3,
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
@@ -519,14 +521,14 @@ class TestBrowseTool:
         assert "browse(queries=['https://d.com'])" in result.message
 
     @pytest.mark.asyncio
-    async def test_checks_permission_before_browsing(self):
+    async def test_checks_permission_before_browsing(self, db: Database):
         """Tool calls permission_manager.check_domain before requesting the page."""
         mock_perm = MagicMock()
         mock_perm.check_domain = AsyncMock()
         request_fn = AsyncMock(
             return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
         )
-        tool = self._make_tool(request_fn, permission_manager=mock_perm)
+        tool = self._make_tool(request_fn, permission_manager=mock_perm, db=db)
         await tool.execute(
             CallLink.new_top(), queries=["https://example.com"], extract="the page content"
         )
@@ -535,7 +537,7 @@ class TestBrowseTool:
         request_fn.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_permission_denied_reports_error_in_result(self, monkeypatch):
+    async def test_permission_denied_reports_error_in_result(self, db: Database, monkeypatch):
         """Permission denial appears under the browse error header, request_fn not called."""
 
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 0)
@@ -543,7 +545,7 @@ class TestBrowseTool:
         mock_perm = MagicMock()
         mock_perm.check_domain = AsyncMock(side_effect=RuntimeError("blocked"))
         request_fn = AsyncMock()
-        tool = self._make_tool(request_fn, permission_manager=mock_perm)
+        tool = self._make_tool(request_fn, permission_manager=mock_perm, db=db)
 
         result = await tool.execute(
             CallLink.new_top(), queries=["https://blocked.com"], extract="the page content"
@@ -554,7 +556,7 @@ class TestBrowseTool:
         request_fn.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_hanging_request_fn_times_out_per_attempt(self, monkeypatch):
+    async def test_hanging_request_fn_times_out_per_attempt(self, db: Database, monkeypatch):
         """A hung request_fn should timeout per-attempt and surface as an error section."""
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 1)
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
@@ -564,7 +566,7 @@ class TestBrowseTool:
             await asyncio.sleep(1000)
             return ("", None, PageReading.ARTICLE)
 
-        tool = self._make_tool(hanging_request_fn)
+        tool = self._make_tool(hanging_request_fn, db=db)
         result = await tool.execute(
             CallLink.new_top(), queries=["https://example.com"], extract="the page content"
         )

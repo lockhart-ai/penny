@@ -18,6 +18,7 @@ type + description hints for that exact shape (asserted below).
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from penny.database import Database
 from penny.llm.call_link import CallLink
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
@@ -84,10 +85,10 @@ class TestToolReasoningSchema:
         # The tool's own parameters should NOT have reasoning
         assert "reasoning" not in tool.parameters["properties"]
 
-    def test_tool_declared_reasoning_not_overwritten(self):
+    def test_tool_declared_reasoning_not_overwritten(self, db: Database):
         """A tool that declares reasoning in its OWN parameters (browse) keeps
         its hand-written description — injection never overwrites it."""
-        tool = BrowseTool(max_calls=3, embedding_client=MagicMock())
+        tool = BrowseTool(max_calls=3, db=db, embedding_client=MagicMock())
         own_description = tool.parameters["properties"]["reasoning"]["description"]
         schema = tool.to_ollama_tool()
         props = schema["function"]["parameters"]["properties"]

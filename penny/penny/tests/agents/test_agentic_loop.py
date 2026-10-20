@@ -1896,6 +1896,7 @@ class TestParallelToolCalls:
 
         tool = BrowseTool(
             max_calls=5,
+            db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
         )
@@ -1921,6 +1922,7 @@ class TestParallelToolCalls:
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
         tool = BrowseTool(
             max_calls=5,
+            db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
         )
@@ -1995,6 +1997,7 @@ class TestParallelToolCalls:
         with an actionable message pointing at queries."""
         tool = BrowseTool(
             max_calls=5,
+            db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
         )
@@ -2028,6 +2031,7 @@ class TestParallelToolCalls:
 
         tool = BrowseTool(
             max_calls=5,
+            db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
         )
@@ -2044,7 +2048,7 @@ class TestParallelToolCalls:
         assert "https://other.com" in browsed_urls
 
     @pytest.mark.asyncio
-    async def test_url_timeout_returns_error_section(self, monkeypatch):
+    async def test_url_timeout_returns_error_section(self, test_db, monkeypatch):
         """When request_fn raises TimeoutError, execute() returns an error section.
 
         This is the regression test for the 'Tool execution timeout: browse' bug:
@@ -2063,6 +2067,7 @@ class TestParallelToolCalls:
 
         tool = BrowseTool(
             max_calls=5,
+            db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
         )
@@ -2077,14 +2082,16 @@ class TestParallelToolCalls:
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
         assert "slow.example.com" in result.message
 
-    def test_browse_tool_timeout_exceeds_request_timeout(self):
+    def test_browse_tool_timeout_exceeds_request_timeout(self, test_db):
         """BrowseTool.timeout must exceed the per-URL BROWSE_REQUEST_TIMEOUT.
 
         Ensures the inner per-URL timeout fires before the outer executor
         timeout, so hung URLs produce graceful error sections instead of
         cancelling the entire tool call.
         """
-        tool = BrowseTool(max_calls=3, embedding_client=cast(Any, MockLlmClient()))
+        tool = BrowseTool(
+            max_calls=3, db=Database(test_db), embedding_client=cast(Any, MockLlmClient())
+        )
         assert tool.timeout is not None
         assert tool.timeout > PennyConstants.BROWSE_REQUEST_TIMEOUT
 

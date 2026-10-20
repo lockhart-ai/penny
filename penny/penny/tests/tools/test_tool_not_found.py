@@ -249,7 +249,7 @@ class StubSkillGetTool(Tool):
         return "skill"
 
 
-def _stub_browse_tool() -> BrowseTool:
+def _stub_browse_tool(db: Database) -> BrowseTool:
     """A real ``BrowseTool``, not a same-named stub subclass (#2510).
 
     ``Tool.__init_subclass__`` registers every subclass into the CLASS-level,
@@ -260,7 +260,7 @@ def _stub_browse_tool() -> BrowseTool:
     every other test that dispatches through it (progress-emoji reactions,
     result narration, status text). Constructing the real tool, as other
     suites already do, carries its real name without ever re-registering it."""
-    return BrowseTool(max_calls=3, embedding_client=cast(Any, MockLlmClient()))
+    return BrowseTool(max_calls=3, db=db, embedding_client=cast(Any, MockLlmClient()))
 
 
 class TestToolNotFoundSuggestion:
@@ -399,12 +399,12 @@ class TestToolNotFoundSuggestion:
         )
 
     @pytest.mark.asyncio
-    async def test_real_name_inside_a_stray_argument_fragment_is_suggested(self):
+    async def test_real_name_inside_a_stray_argument_fragment_is_suggested(self, db: Database):
         """A malformed emission trailing a stray argument fragment
         (``browse(extract: the price``) still gets a suggestion from the
         containment leg (#2510)."""
         registry = ToolRegistry()
-        registry.register(_stub_browse_tool())
+        registry.register(_stub_browse_tool(db))
         executor = ToolExecutor(registry, timeout=30.0)
 
         result = await executor.execute(
@@ -416,13 +416,13 @@ class TestToolNotFoundSuggestion:
         assert "browse: Look things up." in result.message
 
     @pytest.mark.asyncio
-    async def test_two_available_names_inside_a_malformed_one_suggest_nothing(self):
+    async def test_two_available_names_inside_a_malformed_one_suggest_nothing(self, db: Database):
         """Two available tool names both sit inside the requested one — picking
         between them would be a guess, so the containment leg stays silent and the
         call is rejected with no suggestion (#2510, principles.md §2 item 7)."""
         registry = ToolRegistry()
         registry.register(DoneTool())
-        registry.register(_stub_browse_tool())
+        registry.register(_stub_browse_tool(db))
         executor = ToolExecutor(registry, timeout=30.0)
 
         result = await executor.execute(
