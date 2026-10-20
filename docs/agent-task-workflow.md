@@ -82,7 +82,7 @@ Poll `gh pr checks <n>` in-turn until it resolves. Red → diagnose from the CI 
 
 ## 11. Report back
 
-PR link; how each acceptance point was checked; the eval run posted (if any) and its result; decisions you made where the issue was silent; open questions. **Quote, don't describe:** the gate's last line (`EXIT_CODE=…`, read from your output file) and the output of `git log --oneline -2` taken right after your push, both pasted verbatim — a description of a green run is not evidence of one. Leave your worktree and branch exactly as they are — **cleanup is not yours**; the coordinator clears them once the PR reaches a terminal state (merged or closed).
+PR link; how each acceptance point was checked; the eval run posted (if any) and its result; decisions you made where the issue was silent; open questions. **Every count of checks or samples is a passing count** — "13/15" means 13 of 15 passed; a failure is described in words ("2 samples narrated without calling the tool"), never as a k/N, and a count from a subagent in the other direction is translated before it lands in your report. **Quote, don't describe:** the gate's last line (`EXIT_CODE=…`, read from your output file) and the output of `git log --oneline -2` taken right after your push, both pasted verbatim — a description of a green run is not evidence of one. Leave your worktree and branch exactly as they are — **cleanup is not yours**; the coordinator clears them once the PR reaches a terminal state (merged or closed).
 
 ## 12. Review fixes
 

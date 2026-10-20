@@ -739,7 +739,9 @@ look that gates nothing; a PR's evidence is the suite's model.
 classes, and which provider answered — a degraded run is not evidence
 ([`docs/eval-case-design.md` §1, category C](eval-case-design.md)). A run that finished is not
 automatically a healthy one to read further into if its manifest shows a different provider
-answered than the one pinned.
+answered than the one pinned. Every count of samples or checks you write down is a **passing**
+count — "11/15" means 11 of 15 passed; a failure is described in words ("2 samples narrated
+without calling the tool"), never as a k/N in the other direction.
 
 ### A case document has three sections, and an observed failure belongs in exactly one
 
