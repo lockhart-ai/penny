@@ -26,8 +26,10 @@ measure.
 rules — the browse how-to is built into the chat prompt, so the behaviour is
 measured without one — a search page listing four tuners with name, area and
 blurb, and four real-size candidate pages each carrying its own services and
-rates the way a shop's own page does. Every tuner, place, URL, address and
-price is invented.
+rates the way a shop's own page does. Every tuner, place, address and price
+is invented; the pages sit on real, common websites (yelp.com, wikipedia.org)
+with invented paths and content, because an obviously made-up domain tells the
+model the world is fake.
 
 **What is NOT claimed.** That she called ``browse``, that any call carried
 ``extract``, which pages she opened, how many, or in what order — all ROUTE,
@@ -37,8 +39,8 @@ page, so a correct answer naturally carries it, but it is world texture, not
 a claim — the ask asks for the tuner, not the price.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the
-code owner's to accept once the numbers have been read. Every tuner, place
-and URL is invented, because the repo is public.
+code owner's to accept once the numbers have been read. Every tuner, place,
+address and price is invented; the page hosts are real, common websites.
 """
 
 from __future__ import annotations
@@ -81,15 +83,15 @@ _FAMILY = "lookup-reads-pages"
 # about grands, and Larkspur's says "regulation" (it regulates uprights only),
 # so a snippet-only choice can land on a tuner whose page disqualifies them.
 
-_TUNER1_URL = "https://tuning.example.com/millhaven/piano-works"
-_TUNER2_URL = "https://tuning.example.com/millhaven/larkspur-keys"
-_TUNER3_URL = "https://tuning.example.com/millhaven/aldergate-tuning"
-_TUNER4_URL = "https://tuning.example.com/millhaven/quarryfield-pianos"
+_TUNER1_URL = "https://yelp.com/biz/millhaven-piano-works"
+_TUNER2_URL = "https://yelp.com/biz/millhaven-larkspur-keys"
+_TUNER3_URL = "https://yelp.com/biz/millhaven-aldergate-tuning"
+_TUNER4_URL = "https://yelp.com/biz/millhaven-quarryfield-pianos"
 
 # The host-and-path prefix every served source URL shares — the shape a cited
 # URL must carry. A URL token, never a slug: the slugs are the tuners' own
 # names and a name-only reply would satisfy a slug check without any URL in it.
-_URL_PREFIX = "tuning.example.com/millhaven/"
+_URL_PREFIX = "yelp.com/biz/millhaven-"
 
 # The requirement is settled by exactly one page: Aldergate's says it
 # regulates grand pianos; the other three say outright that they don't. The
@@ -233,7 +235,7 @@ _SEARCH_PAGE = CannedPage(
         "\n"
         "A beginner's guide to looking after an acoustic piano\n"
         "[Caring for an acoustic piano — a guide]"
-        "(https://keynotes.example.com/acoustic-piano-care)\n"
+        "(https://en.wikipedia.org/wiki/Piano_tuning)\n"
         "How often to tune, where to put the piano, and what humidity does.\n"
     ),
 )

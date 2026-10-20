@@ -35,10 +35,12 @@ really read.
 **Real proper nouns, invented shops.** The proper nouns the model must
 treat as real and searchable are REAL — the city (Portland), a real
 neighbourhood in it (the Pearl District), real streets (NW Flanders Street,
-NE Sandy Boulevard), and a real camera model (the Canon AE-1): an invented
-town gave the model room to doubt the world was real and offer instead of
-searching. The shops, their addresses, the URLs, the person, and every
-topic stay invented, because the repo is public.
+NE Sandy Boulevard), a real camera model (the Canon AE-1), and the page
+hosts (yelp.com, yellowpages.com — common sites a real search would return):
+an invented town or an obviously made-up domain gave the model room to doubt
+the world was real and offer instead of searching. The shops, their
+addresses, the page paths and content, the person, and every topic stay
+invented, because the repo is public.
 
 **What is asserted.  Facts only.**  The reply carries a source URL the world
 owns, the district shop's street address (which appears ONLY in that shop's
@@ -122,8 +124,8 @@ _JOB_DESCRIPTION = (
     "Daily top 3 headlines from the city's news sites including title, description, and link"
 )
 _JOB_PROGRAM = (
-    "Find the top 3 news headlines from harbourline.example, quarrypost.example, "
-    "gullwind.example, and beaconwire.example.\n"
+    "Find the top 3 news headlines from oregonlive.com, portlandtribune.com, "
+    "kgw.com, and koin.com.\n"
     "Keep the headline as published, with a one-sentence description of the story.\n"
     "Carry each story's link so the reader can open the piece.\n"
     "Skip sports scores and weather, which move faster than a daily collection reads."
@@ -174,10 +176,10 @@ _DISTRICT = "pearl district"
 _ANSWER_SHOP = "cascade"
 _PAGE_FACT = "flanders street"  # Cascade's street address — only on its page
 _SHOP_URL_HOSTS = (
-    "cascade.example.com",
-    "rosecity.example.com",
-    "eastside.example.com",
-    "beaverton.example.com",
+    "yelp.com/biz/cascade-camera-works-portland",
+    "yelp.com/biz/rose-city-camera-repair-portland",
+    "yelp.com/biz/eastside-camera-service-portland",
+    "yelp.com/biz/beaverton-camera-service-beaverton",
 )
 
 # ── The web behind browse ─────────────────────────────────────────────────────
@@ -192,7 +194,7 @@ _CASCADE_PAGE = CannedPage(
     match="cascade",
     text=(
         "Title: Cascade Camera Works — services and contact\n"
-        "Source: https://cascade.example.com/services\n"
+        "Source: https://yelp.com/biz/cascade-camera-works-portland\n"
         "\n"
         "Cascade Camera Works\n"
         "413 NW Flanders Street, Pearl District, Portland\n"
@@ -211,10 +213,10 @@ _CASCADE_PAGE = CannedPage(
 )
 
 _ROSECITY_PAGE = CannedPage(
-    match="rosecity",
+    match="rose",
     text=(
         "Title: Rose City Camera Repair — contact and workshop\n"
-        "Source: https://rosecity.example.com\n"
+        "Source: https://yelp.com/biz/rose-city-camera-repair-portland\n"
         "\n"
         "Rose City Camera Repair\n"
         "Unit 9, Swan Island Industrial Park, North Portland\n"
@@ -231,7 +233,7 @@ _EASTSIDE_PAGE = CannedPage(
     match="eastside",
     text=(
         "Title: Eastside Camera Service — what we do\n"
-        "Source: https://eastside.example.com\n"
+        "Source: https://yelp.com/biz/eastside-camera-service-portland\n"
         "\n"
         "Eastside Camera Service, 818 NE Sandy Boulevard, Portland.\n"
         "Sensor cleaning, light-seal replacement for 35mm fixed-lens cameras, and "
@@ -244,7 +246,7 @@ _BEAVERTON_PAGE = CannedPage(
     match="beaverton",
     text=(
         "Title: Beaverton Camera Service — precision seal cutting\n"
-        "Source: https://beaverton.example.com\n"
+        "Source: https://yelp.com/biz/beaverton-camera-service-beaverton\n"
         "\n"
         "Beaverton Camera Service, Unit 6, Cornell Business Park, Beaverton.\n"
         "Precision light-seal and gasket cutting to the measurements you send in; "
@@ -259,26 +261,30 @@ _SEARCH_PAGE = CannedPage(
         "Title: camera light seal replacement — search results\n"
         "\n"
         "### Best camera repair near the Pearl District, Portland\n"
-        "[directory.example.com/camera-repair/portland]"
-        "(https://directory.example.com/camera-repair/portland)\n"
+        "[www.yellowpages.com/search?search_terms=camera+repair+portland]"
+        "(https://www.yellowpages.com/search?search_terms=camera+repair+portland)\n"
         "Best camera repair in Portland - Cascade Camera Works, Rose City "
         "Repair, Eastside Camera Service, Beaverton Camera Service\n"
         "\n"
         "### Cascade Camera Works — vintage camera service\n"
-        "[cascade.example.com/services](https://cascade.example.com/services)\n"
+        "[yelp.com/biz/cascade-camera-works-portland]"
+        "(https://yelp.com/biz/cascade-camera-works-portland)\n"
         "Vintage camera service in the Pearl District. Light-seal kits cut and fitted "
         "while you wait.\n"
         "\n"
         "### Rose City Camera Repair — custom seal cutting\n"
-        "[rosecity.example.com](https://rosecity.example.com)\n"
+        "[yelp.com/biz/rose-city-camera-repair-portland]"
+        "(https://yelp.com/biz/rose-city-camera-repair-portland)\n"
         "Custom foam and light-seal cutting for film cameras. Mail-in and drop-off.\n"
         "\n"
         "### Eastside Camera Service — camera service\n"
-        "[eastside.example.com](https://eastside.example.com)\n"
+        "[yelp.com/biz/eastside-camera-service-portland]"
+        "(https://yelp.com/biz/eastside-camera-service-portland)\n"
         "NE Portland. Light-seal replacement for 35mm cameras, walk-in seven days.\n"
         "\n"
         "### Beaverton Camera Service — precision seals\n"
-        "[beaverton.example.com](https://beaverton.example.com)\n"
+        "[yelp.com/biz/beaverton-camera-service-beaverton]"
+        "(https://yelp.com/biz/beaverton-camera-service-beaverton)\n"
         "Precision light-seal cutting to your measurements. Mail-in service.\n"
     ),
 )
@@ -296,7 +302,9 @@ PAGES = (
 # page's directory entry among them).  Derived, never a hand-kept copy: a host the
 # world gains is a host this claim accepts, and one it loses drops off by itself.
 _SERVED_HOSTS = tuple(
-    sorted({host for page in PAGES for host in re.findall(r"[a-z0-9-]+\.example\.com", page.text)})
+    sorted(
+        {host for page in PAGES for host in re.findall(r"\b[a-z0-9.-]+\.(?:com|org)\b", page.text)}
+    )
 )
 
 # ── The recorded conversation ─────────────────────────────────────────────────
@@ -359,17 +367,20 @@ _RECORDED_SHOPS_REPLY = (
     " Rose City Camera Repair: This is a fantastic option for your project. They specialize "
     "in custom seal cutting, and specifically mention vintage camera restoration. "
     "This would be ideal if you need that exact '2.0mm' fit we discussed. "
-    "[https://rosecity.example.com](https://rosecity.example.com)\n"
+    "[https://yelp.com/biz/rose-city-camera-repair-portland]"
+    "(https://yelp.com/biz/rose-city-camera-repair-portland)\n"
     " Beaverton Camera Service: If you want absolute precision, these guys are specialists "
     "in light-seal cutting and can custom-cut any seal that isn't in their standard "
     "catalog. They are a go-to for many professionals. "
-    "[https://beaverton.example.com](https://beaverton.example.com)\n"
+    "[https://yelp.com/biz/beaverton-camera-service-beaverton]"
+    "(https://yelp.com/biz/beaverton-camera-service-beaverton)\n"
     "\n"
     "The Full-Service Options (Great for a Full Service Experience):\n"
     " Cascade Camera Works: They handle vintage models and specifically list "
     "light-seal replacement as part of their services. It's a very professional "
     "choice for a project like this. "
-    "[https://cascade.example.com](https://cascade.example.com)\n"
+    "[https://yelp.com/biz/cascade-camera-works-portland]"
+    "(https://yelp.com/biz/cascade-camera-works-portland)\n"
     " Northwest Camera Service: A highly-rated shop (5 stars on the directory!) located at 312 "
     "NW 21st Avenue. They have experience with light-seal changes and provide "
     "very reliable service.\n"
@@ -645,7 +656,7 @@ def _assert_the_world_coheres() -> None:
     # snippet, no history turn, no wording, no other page.
     assert _PAGE_FACT in shop_pages["cascade"]
     assert _PAGE_FACT not in search_text
-    assert _PAGE_FACT not in shop_pages["rosecity"]
+    assert _PAGE_FACT not in shop_pages["rose"]
     assert _PAGE_FACT not in shop_pages["eastside"]
     assert _PAGE_FACT not in shop_pages["beaverton"]
     assert _PAGE_FACT not in history_text
