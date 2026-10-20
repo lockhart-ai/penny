@@ -81,6 +81,7 @@ from penny.tools.collection_instantiation import (
     render_tombstone_duplicate,
     sentinel_expiry_note,
 )
+from penny.tools.job_summary import job_summary_line
 from penny.tools.memory_args import (
     CollectionCreateArgs,
     CollectionEntrySpec,
@@ -1630,13 +1631,7 @@ def _summary_as_prompt_refusal(row: MemoryRow, prompt: str) -> str | None:
     prefix — the copied line with the instructions tail edited or cut.  Anything
     else passes: real instructions that merely mention the page are the normal
     case, and the render's page-less form (no ``reads `` clause) is matched by the
-    verbatim comparison alone.
-
-    The import is inside the function because ``penny.agents`` imports this module
-    (``agents.base`` builds its tool surface from it), so a module-level import
-    here would be a cycle."""
-    from penny.agents.self_state import job_summary_line
-
+    verbatim comparison alone."""
     if row.extraction_prompt is None:
         return None
     summary = job_summary_line(row).strip()

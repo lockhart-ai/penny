@@ -18,7 +18,6 @@ from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
 from penny.agents.models import ToolCallRecord
-from penny.agents.self_state import job_summary_line
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import (
@@ -46,6 +45,7 @@ from penny.tools.collection_instantiation import (
     parse_schedule,
     render_schedule_clause,
 )
+from penny.tools.job_summary import job_summary_line
 from penny.tools.memory_args import (
     OPTIONAL_ARG_FORMS,
     CollectionCreateArgs,
