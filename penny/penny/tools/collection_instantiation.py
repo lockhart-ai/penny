@@ -771,11 +771,15 @@ def _lead_cadence_phrase(row: MemoryRow, timezone_name: str | None) -> str:
 def _lead_end_phrase(row: MemoryRow, timezone_name: str | None) -> str:
     """The 'when it stops' clause, off the row's own expiry on the user's clock
     (#2712) — the end the job carries, or the honest no-end statement a job that
-    runs until stopped carries.  The cadence phrase already states any run quota,
-    so it is not repeated here."""
-    if row.expires_at is None:
-        return _NO_END_CLAUSE
-    return f"until {_expires_value(row, timezone_name)}"
+    runs until stopped carries.  A job with a run quota (``max_runs``, lifted from
+    a rule's ``COUNT=``) stops after that many cycles, and the cadence phrase
+    already states the quota, so it gets no end clause at all — never the false
+    'runs until stopped'."""
+    if row.expires_at is not None:
+        return f"until {_expires_value(row, timezone_name)}"
+    if row.max_runs is not None:
+        return ""
+    return _NO_END_CLAUSE
 
 
 def _lead_notify_tail(row: MemoryRow) -> str:
@@ -793,7 +797,8 @@ def _lead_line(row: MemoryRow, timezone_name: str | None) -> str:
     quietly store what it finds."."""
     cadence = _lead_cadence_phrase(row, timezone_name)
     end = _lead_end_phrase(row, timezone_name)
-    return f"{cadence} against '{row.name}' {end} and {_lead_notify_tail(row)}"
+    end_clause = f" {end}" if end else ""
+    return f"{cadence} against '{row.name}'{end_clause} and {_lead_notify_tail(row)}"
 
 
 def _instantiation_echo(row: MemoryRow, headline: str, timezone_name: str | None) -> str:

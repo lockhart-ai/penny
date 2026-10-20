@@ -1214,6 +1214,33 @@ class TestCollectionUpdateScheduleAtApply:
         assert db.memories.get("deals-watch").schedule is None
 
     @pytest.mark.asyncio
+    async def test_a_count_job_lead_line_states_no_end_because_the_quota_is_its_end(self, db):
+        """A job bounded by a run quota (#2712) — ``COUNT=3`` lifted into ``max_runs``
+        with no ``expires_at`` — does NOT run until stopped: it retires after its three
+        runs, and the cadence phrase already says so.  The lead line therefore carries
+        no end clause at all, and no doubled spacing where one would have gone.  Whole
+        render, so the lead line and the quota-bearing cadence are pinned together."""
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            name="deals-watch",
+            description="track the trail-runner shoe deals",
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
+            schedule="FREQ=DAILY;COUNT=3",
+        )
+        assert result.success
+        assert result.message == (
+            "On the schedule every day, 3 times (rule: `FREQ=DAILY;COUNT=3`) I'll run "
+            "against 'deals-watch' and quietly store what it finds.\n"
+            "Created collection 'deals-watch':\n"
+            "  description: track the trail-runner shoe deals\n"
+            "  schedule: every day, 3 times (rule: `FREQ=DAILY;COUNT=3`)\n"
+            "  notify: False\n"
+            "  expires: never\n"
+            "  prompt: |\n"
+            "    Check Cinder Peak's elevation above sea level and save it."
+        )
+
+    @pytest.mark.asyncio
     async def test_plain_update_on_schedule_less_collection_echoes_none(self, db):
         """The live-observed #1666 bug: a plain metadata update (no skill/params) on a
         collection with no schedule echoes ``schedule: none`` — never a half-formed
