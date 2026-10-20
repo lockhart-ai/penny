@@ -1180,7 +1180,7 @@ def _sign_off_seeder(case: WatchCase, reading: Reading):
             run_id=seeded_run_id(_RULES),
         )
         rendered = standing_rules_section(db)
-        assert f"- {_SIGNOFF_KEY}: {_SIGNOFF_CONTENT} (added " in rendered, (
+        assert rendered.splitlines()[1:] == [f"- {_SIGNOFF_CONTENT}"], (
             f"the section must render the seeded rule in full:\n{rendered!r}"
         )
 
