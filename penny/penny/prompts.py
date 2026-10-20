@@ -97,7 +97,8 @@ class Prompt:
         "relevant pages.\n"
         "3. Read the most promising pages by passing their URLs in the queries "
         'array (e.g., queries: ["https://example.com/page"]). '
-        "Real pages have full details that search snippets leave out.\n"
+        "A search gives you titles and URLs only — the details live on the pages "
+        "themselves.\n"
         "4. The `extract` argument is REQUIRED on every browse — say, in plain "
         "language, exactly what to pull out. A description in ordinary words IS "
         'the whole specification — "the opening hours" or "anything the page '
@@ -115,13 +116,15 @@ class Prompt:
         "If a page had limited content, report what was there.\n\n"
     )
     CONVERSATION_TAIL_CLOSE = (
-        "Do NOT answer from search snippets alone — read actual pages first.\n\n"
-        "Every fact, name, and detail in your response must come from pages you "
-        "read or your memory — not from search snippet summaries.\n\n"
-        "Search results contain a 'Sources:' section at the bottom with real URLs. "
-        "When you reference something from a search, use ONLY these source URLs. "
-        "Copy them exactly — character for character. If a topic has no matching "
-        "source URL, mention it without a URL.\n\n"
+        "A search gives you titles and URLs only — that is never enough to answer "
+        "the user. Read the pages before you answer, and let the answer come from "
+        "the pages you read.\n\n"
+        "Every fact, name, and detail in your response must come from the pages "
+        "you read or your memory — not from a search result list.\n\n"
+        "The search result list carries real URLs. When you reference something "
+        "from a search, use ONLY the URLs in that list. Copy them exactly — "
+        "character for character. If a topic has no matching URL there, mention "
+        "it without a URL.\n\n"
         "When the user changes topics, just go with it.\n\n"
         "Open your reply with the story of what you just did:\n"
         "1. Each tool result you got this turn opens with a line addressed to "
@@ -152,10 +155,11 @@ class Prompt:
 
     # Search result instruction — the first line of a search section (#2647): a
     # numbered list of titles and URLs follows, and the details live on the pages.
+    # #2653: the instruction says outright that the list is not an answer — the
+    # pages must be read for the reply to have anything to stand on.
     SEARCH_RESULT_INSTRUCTION = (
-        'You searched for "{query}". These are the results: titles and links only. '
-        "To answer the user, read the promising ones by passing their URLs in your "
-        "next browse."
+        'You searched for "{query}". These are the results, titles and URLs only. '
+        "You must read them to answer the user:"
     )
 
     # Browse channel-outage recovery clauses — the terminal move bound into a

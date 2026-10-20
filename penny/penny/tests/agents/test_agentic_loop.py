@@ -2080,7 +2080,7 @@ class TestSearchResultTrimming:
         )
         result = _trim_search_result(content, "artemis mission", "duckduckgo.com")
         assert 'You searched for "artemis mission"' in result
-        assert "titles and links only" in result
+        assert "titles and URLs only" in result
         assert "1. NASA Article (https://www.nasa.gov/artemis/)" in result
         assert "2. Space.com Article (https://www.space.com/artemis)" in result
         # Nothing else from the page: the snippets and the preamble are gone, so a

@@ -105,9 +105,8 @@ _SEARCH_PAGE_TEXT = (
     f"### antique compass auctions — results\n\n{_SEARCH_RESULT_LINK}\nBidding closes Friday."
 )
 _TRIMMED_SEARCH_RESULT = (
-    'You searched for "antique compass auctions". These are the results: titles and '
-    "links only. To answer the user, read the promising ones by passing their URLs in "
-    "your next browse.\n\n"
+    'You searched for "antique compass auctions". These are the results, titles and '
+    "URLs only. You must read them to answer the user:\n\n"
     "1. antique compass auctions — results (https://auctions.example/lot/42)"
 )
 
@@ -806,8 +805,8 @@ async def test_search_section_is_returned_as_links_and_never_extracted(tmp_path)
     extractor had the extractor obey it: its output was a bare URL, which violates the
     declared ``EXTRACTED:``/``NOT_PRESENT:`` shape, was re-rolled the whole budget, and
     rendered as "the extractor returned nothing usable" over a page of perfectly good
-    links.  So a search is left exactly as the header says it is — titles and links, to
-    be picked from — and the call still reports success, since something readable came
+    links.  So a search is left exactly as the header says it is — titles and URLs, to
+    be read from — and the call still reports success, since something readable came
     back even though no draw speaks for it."""
     db = _make_db(tmp_path)
     model = MockLlmClient()
