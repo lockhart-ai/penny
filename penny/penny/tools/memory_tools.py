@@ -1608,6 +1608,46 @@ _NO_SCHEDULE_NOTE = (
 )
 
 
+# A ``prompt`` that is the job's own one-line summary from the self-state Jobs line
+# (#2685) — copied back verbatim, it would replace the job's real instructions with
+# a rendering OF them, and the collector would then run that rendering.  Refused,
+# not stripped: nothing is normalised on her behalf, she gets the refusal and
+# retries with real instructions or leaves ``prompt`` out.
+_SUMMARY_AS_PROMPT_REFUSAL = (
+    "That's how your current state summarises '{name}', not its instructions — "
+    "leave `prompt` out to keep them, or pass the full new instructions."
+)
+
+
+def _summary_as_prompt_refusal(row: MemoryRow, prompt: str) -> str | None:
+    """The refusal when ``prompt`` is the job's own current-state summary line
+    (#2685), else ``None``.
+
+    Matched against ``job_summary_line`` — the SAME render the Jobs section hangs
+    under the row, so what the tool refuses is exactly what the state shows, keyed
+    to this job's row and never to a tool name or a sample's wording.  Two ways:
+    the whole line verbatim (whitespace-trimmed), and its ``reads <page> — "``
+    prefix — the copied line with the instructions tail edited or cut.  Anything
+    else passes: real instructions that merely mention the page are the normal
+    case, and the render's page-less form (no ``reads `` clause) is matched by the
+    verbatim comparison alone.
+
+    The import is inside the function because ``penny.agents`` imports this module
+    (``agents.base`` builds its tool surface from it), so a module-level import
+    here would be a cycle."""
+    from penny.agents.self_state import job_summary_line
+
+    if row.extraction_prompt is None:
+        return None
+    summary = job_summary_line(row).strip()
+    passed = prompt.strip()
+    if passed == summary:
+        return _SUMMARY_AS_PROMPT_REFUSAL.format(name=row.name)
+    if summary.startswith("reads ") and passed.startswith(summary[: summary.index(' — "') + 4]):
+        return _SUMMARY_AS_PROMPT_REFUSAL.format(name=row.name)
+    return None
+
+
 class CollectionSetTool(MemoryTool):
     """The ONE idempotent create-or-update entry point for a collection (the
     code-owner fusion): identity is dispatched HERE, in python — the model never
@@ -1947,8 +1987,16 @@ class CollectionUpdateTool(MemoryTool):
         (#2455 naive baseline) — an edit to a running job, a swap to a different job, or
         adopting a prompt onto a legacy inert (prompt-less) collection for the first
         time.  The prompt the model wrote IS the prompt the collector runs; there is no
-        rendering seam to validate against, only the same length check authoring takes."""
+        rendering seam to validate against, only the same length check authoring takes —
+        plus the summary-line refusal (#2685): a ``prompt`` that is this job's own
+        current-state summary line would replace the instructions with a rendering of
+        them, so it's refused and she retries."""
         assert args.prompt is not None
+        row = self._db.memories.get(args.name)
+        if row is not None:
+            refusal = _summary_as_prompt_refusal(row, args.prompt)
+            if refusal is not None:
+                return ToolResult(message=refusal, success=False)
         if (too_short := check_extraction_prompt(args.prompt)) is not None:
             return ToolResult(message=too_short, success=False)
         embedding = await self._description_embedding(args)

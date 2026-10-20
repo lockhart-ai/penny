@@ -18,6 +18,7 @@ from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
 from penny.agents.models import ToolCallRecord
+from penny.agents.self_state import job_summary_line
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import (
@@ -1231,6 +1232,91 @@ class TestCollectionUpdateScheduleAtApply:
             "  description: track the road-runner shoe deals\n"
             "  steps: |\n    "
         )
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_that_is_the_jobs_summary_line_is_refused(self, db):
+        """A re-time that also passes the job's own current-state summary line as its
+        ``prompt`` (#2685) is refused: the summary is a rendering OF the instructions,
+        and storing it would clobber them with it.  Nothing is stripped or normalised
+        on her behalf — the refusal names the fix, and the row is untouched."""
+        row = _seed_collection(
+            db,
+            name="watch",
+            extraction_prompt=(
+                "Check https://quillmarket.example.com/typewriters for portable "
+                "typewriters and save it."
+            ),
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            name="watch",
+            prompt=job_summary_line(row).strip(),
+            schedule="FREQ=DAILY;BYHOUR=11",
+        )
+        assert not result.success
+        assert result.message == (
+            "That's how your current state summarises 'watch', not its instructions — "
+            "leave `prompt` out to keep them, or pass the full new instructions."
+        )
+        stored = db.memories.get("watch")
+        assert stored.extraction_prompt == row.extraction_prompt
+        assert stored.schedule == "FREQ=HOURLY"
+
+    @pytest.mark.asyncio
+    async def test_a_summary_line_with_its_instructions_tail_changed_is_refused_too(self, db):
+        """The copied line with the instructions tail edited or cut (#2685) — it still
+        starts with the ``reads <page> — "`` prefix the render builds from this job's
+        own page — is refused the same way, and the row is untouched."""
+        row = _seed_collection(
+            db,
+            name="watch",
+            extraction_prompt=(
+                "Check https://quillmarket.example.com/typewriters for portable "
+                "typewriters and save it."
+            ),
+        )
+        summary = job_summary_line(row).strip()
+        prefix = summary[: summary.index(' — "') + 4]
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            name="watch",
+            prompt=f"{prefix}keep an eye out for portable typewriters under $400.",
+            schedule="FREQ=DAILY;BYHOUR=11",
+        )
+        assert not result.success
+        assert result.message == (
+            "That's how your current state summarises 'watch', not its instructions — "
+            "leave `prompt` out to keep them, or pass the full new instructions."
+        )
+        assert db.memories.get("watch").extraction_prompt == row.extraction_prompt
+
+    @pytest.mark.asyncio
+    async def test_real_instructions_that_merely_mention_the_page_are_accepted(self, db):
+        """New instructions that happen to name the same page (#2685) are the normal
+        case — a prompt whose words merely overlap the render's page URL passes and is
+        stored verbatim."""
+        _seed_collection(
+            db,
+            name="watch",
+            extraction_prompt=(
+                "Check https://quillmarket.example.com/typewriters for portable "
+                "typewriters and save it."
+            ),
+        )
+        new_prompt = (
+            "Read https://quillmarket.example.com/typewriters, list every portable "
+            "typewriter added since the last cycle, and save each with its price."
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            name="watch",
+            prompt=new_prompt,
+            schedule="FREQ=DAILY;BYHOUR=11",
+        )
+        assert result.success
+        stored = db.memories.get("watch")
+        assert stored.extraction_prompt == new_prompt
+        assert stored.schedule == "FREQ=DAILY;BYHOUR=11"
 
 
 class TestCollectionWritesAndReads:

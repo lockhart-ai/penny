@@ -261,17 +261,9 @@ class SelfStateHeader:
         return line
 
     def _instructions_line(self, row: MemoryRow) -> str:
-        """The hung second line under a live job's row: ``reads <url> — "<instructions>"``
-        (#2495). The page is the FIRST ``https?://`` URL anywhere in the job's full
-        prompt — an anchor, so it renders whole no matter how the instructions are
-        capped — and the instructions are the prompt's own words. The ``reads`` clause
-        is omitted when the prompt names no page; the quoted instructions always
-        render, so the line never disappears entirely."""
-        page = self._page(row)
-        instructions = self._instructions(row)
-        if page is None:
-            return f'  "{instructions}"'
-        return f'  reads {page} — "{instructions}"'
+        """The hung second line under a live job's row (#2495) — the shared
+        ``job_summary_line`` render, indented two spaces under its row."""
+        return f"  {job_summary_line(row)}"
 
     @staticmethod
     def _page(row: MemoryRow) -> str | None:
@@ -286,7 +278,8 @@ class SelfStateHeader:
         # Strip trailing punctuation that often appears at sentence ends
         return url.rstrip(".,;:)!?'\"") or url
 
-    def _instructions(self, row: MemoryRow) -> str:
+    @staticmethod
+    def _instructions(row: MemoryRow) -> str:
         """The job's prompt as the instructions line shows it: whole when it fits the
         character budget (#2495), otherwise its first sentence — hard-cut at a word
         boundary inside the budget when even that sentence is longer — followed by a
@@ -296,11 +289,11 @@ class SelfStateHeader:
         cap = PennyConstants.SELF_STATE_JOB_PROMPT_CHARS
         if len(prompt) <= cap:
             return prompt
-        sentences = self._sentences(prompt)
+        sentences = SelfStateHeader._sentences(prompt)
         first = sentences[0]
         first_was_longer_than_cap = len(first) > cap
         if first_was_longer_than_cap:
-            first = self._cut_at_word(first, cap)
+            first = SelfStateHeader._cut_at_word(first, cap)
         cut = len(sentences) - 1
 
         # When the FIRST sentence itself is cut (because it's longer than cap) and
@@ -586,6 +579,29 @@ class SelfStateHeader:
             lines.append(f"- timezone: {info.timezone}")
             lines.append(f"- location: {info.location}")
         return "\n".join(lines)
+
+
+def job_summary_line(row: MemoryRow) -> str:
+    """``reads <url> — "<instructions>"`` — the second line the Jobs section hangs
+    under a live job's row (#2495), without its two-space indent.
+
+    The page is the FIRST ``https?://`` URL anywhere in the job's full prompt — an
+    anchor, so it renders whole no matter how the instructions are capped — and the
+    instructions are the prompt's own words, whole when they fit the character
+    budget, otherwise the first sentence cut at a word boundary with a note naming
+    the ``memory_get`` hop to the whole prompt.  The ``reads`` clause is omitted
+    when the prompt names no page; the quoted instructions always render, so the
+    line never disappears entirely.
+
+    ONE render for two consumers: the Jobs section above, and
+    ``collection_configure``'s refusal of the summary passed back as a ``prompt``
+    (#2685) — the check and the display read the same code, so what the tool
+    refuses is exactly what the state shows."""
+    page = SelfStateHeader._page(row)
+    instructions = SelfStateHeader._instructions(row)
+    if page is None:
+        return f'"{instructions}"'
+    return f'reads {page} — "{instructions}"'
 
 
 # ── The shared standing-rules render (#2633) ──────────────────────────────────
