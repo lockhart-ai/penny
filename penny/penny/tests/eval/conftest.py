@@ -435,10 +435,14 @@ class _Perf:
 # somewhere else must not drag memory's embeddings along with it.  Each name is its
 # ``Config`` field uppercased, so a var present here overrides exactly that field and an
 # absent one leaves the field's own default standing — which is why the local path is
-# unchanged by this list existing.
+# unchanged by this list existing.  The exception is ``LLM_REASONING_MANDATORY`` (#2708):
+# a RUNTIME param, not a ``Config`` field — ``make_config`` routes a name in
+# ``RUNTIME_CONFIG_PARAMS`` into runtime overrides, and it must arrive as its int, so
+# ``_endpoint_overrides`` parses it out of the raw env string.
 _ENDPOINT_ENV_VARS = (
     "LLM_API_KEY",
     "LLM_PROVIDER",
+    "LLM_REASONING_MANDATORY",
     "LLM_EMBEDDING_API_URL",
     "LLM_EMBEDDING_API_KEY",
 )
@@ -476,15 +480,24 @@ def env_seconds(name: str, default: float) -> float:
 _EVAL_LLM_TIMEOUT = env_seconds("LLM_TIMEOUT", _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS)
 
 
-def _endpoint_overrides() -> dict[str, str]:
+def _endpoint_overrides() -> dict[str, str | int]:
     """The endpoint settings present in the environment, keyed by ``Config`` field.
 
     An unset var is OMITTED rather than passed as empty, so ``Config``'s own default
     stays in place: absent ``LLM_EMBEDDING_API_URL`` keeps embeddings on the chat
     endpoint (what a local Ollama run wants), and absent ``LLM_API_KEY`` keeps the
-    "not-needed" key local inference servers accept.
+    "not-needed" key local inference servers accept.  ``LLM_REASONING_MANDATORY`` is
+    parsed to its int when present — the switch the client reads, not the raw env
+    string ``make_config`` would otherwise carry into the runtime overrides as-is.
     """
-    return {name.lower(): value for name in _ENDPOINT_ENV_VARS if (value := os.environ.get(name))}
+    overrides: dict[str, str | int] = {
+        name.lower(): value for name in _ENDPOINT_ENV_VARS if (value := os.environ.get(name))
+    }
+    if "llm_reasoning_mandatory" in overrides:
+        raw = str(overrides["llm_reasoning_mandatory"])
+        # The same spelling ``Config``'s env tier accepts for an on-switch.
+        overrides["llm_reasoning_mandatory"] = int(raw.strip().lower() in ("1", "true", "yes"))
+    return overrides
 
 
 def _real_model_config(

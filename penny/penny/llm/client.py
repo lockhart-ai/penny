@@ -78,6 +78,20 @@ REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
 # drops the always-on key for this call rather than updating it.
 THINKING_OFF_BODY = {"reasoning_effort": "none"}
 
+# The thinking-off body for a deployment that DECLARED its model's reasoning cannot be
+# turned off (#2708): ``reasoning_effort: "none"`` is refused outright by such an
+# endpoint ("Reasoning is mandatory for this endpoint and cannot be disabled.", HTTP 400
+# — 1,194 of run-20261020T065850Z-20838's 3,118 calls on ``liquid/lfm-2.5-24b-a2b``
+# pinned to Liquid), so a thinking-off draw asks for the lowest effort the endpoint
+# accepts instead. PROBED on that endpoint before building, over a short tool-call
+# prompt, two reps each: ``reasoning_effort: "minimal"``, ``"low"`` and
+# ``{"reasoning": {"effort": "low"}}`` were ALL accepted and each spent 10 reasoning
+# tokens; "minimal" is the lowest effort by name, so it stands here. Like
+# ``THINKING_OFF_BODY`` it must omit the ``reasoning`` key entirely (#2607). The
+# declaration is the ``LLM_REASONING_MANDATORY`` runtime setting — declared, never
+# inferred from an error string — and when it is false this body is never sent.
+THINKING_OFF_REASONING_MANDATORY_BODY = {"reasoning_effort": "minimal"}
+
 # Ask for embedding vectors as plain floats rather than the SDK's base64 default.
 # Not every backend accepts base64: Google AI Studio refuses it outright ("embeddings do
 # not support base64 encoding_format"), and the failure is the quiet kind — the write path
@@ -820,6 +834,18 @@ class LlmClient:
 
     # ── Internal: request building ───────────────────────────────────────
 
+    def _thinking_off_body(self) -> dict[str, Any]:
+        """The body a thinking-off draw sends, per the deployment's declaration.
+
+        When ``LLM_REASONING_MANDATORY`` is set (#2708), the endpoint refuses
+        ``reasoning_effort: "none"`` outright, so the lowest-effort body stands in;
+        when it is not, today's body is unchanged byte for byte. ``None`` runtime (a
+        test, a one-off client) reads as not declared — the default.
+        """
+        if self.runtime is not None and self.runtime.LLM_REASONING_MANDATORY:
+            return dict(THINKING_OFF_REASONING_MANDATORY_BODY)
+        return dict(THINKING_OFF_BODY)
+
     def _build_chat_kwargs(
         self,
         messages: list[dict],
@@ -844,7 +870,9 @@ class LlmClient:
         # {enabled: True}`` must never ride alongside the off switch — not even as a
         # stale key a naive ``.update()`` would leave in place from a prior merge.
         extra_body: dict[str, Any] = (
-            dict(THINKING_OFF_BODY) if not thinking_enabled else dict(REASONING_ENABLED_BODY)
+            dict(self._thinking_off_body())
+            if not thinking_enabled
+            else dict(REASONING_ENABLED_BODY)
         )
         if self.provider_pin is not None:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()

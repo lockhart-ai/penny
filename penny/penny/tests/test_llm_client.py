@@ -239,7 +239,9 @@ class TestTokenBudgetAndFinishReason:
         PRESENCE keeps thinking on regardless of its ``enabled`` value, so the
         always-on ``reasoning: {enabled: True}`` must never ride alongside the off
         switch. An ordinary call is unchanged: the always-on key, no
-        ``reasoning_effort``."""
+        ``reasoning_effort``. With ``LLM_REASONING_MANDATORY`` declared (#2708), the
+        off draw asks for the lowest effort instead — such an endpoint refuses "none"
+        outright — and the on draw is byte-identical to the undeclared one."""
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -268,6 +270,49 @@ class TestTokenBudgetAndFinishReason:
         assert sent["extra_body"] == {"reasoning": {"enabled": True}}
         assert "reasoning_effort" not in sent["extra_body"]
         await client.close()
+
+        # The declared branch (#2708): same client shape, runtime carrying the switch.
+        declared = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            runtime=RuntimeParams(env_overrides={"LLM_REASONING_MANDATORY": 1}),
+        )
+        monkeypatch.setattr(declared.client.chat.completions, "create", capture)
+        await declared.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            thinking_enabled=False,
+        )
+        assert sent["extra_body"] == {"reasoning_effort": "minimal"}
+        assert "reasoning" not in sent["extra_body"]
+
+        sent.clear()
+        await declared.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+        )
+        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        assert "reasoning_effort" not in sent["extra_body"]
+        await declared.close()
+
+        # Explicitly declared OFF reads like undeclared: the off draw still sends "none".
+        off = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            runtime=RuntimeParams(env_overrides={"LLM_REASONING_MANDATORY": 0}),
+        )
+        monkeypatch.setattr(off.client.chat.completions, "create", capture)
+        await off.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            thinking_enabled=False,
+        )
+        assert sent["extra_body"] == {"reasoning_effort": "none"}
+        await off.close()
 
     @pytest.mark.asyncio
     async def test_a_cut_response_reports_its_own_finish_reason(self, monkeypatch) -> None:
