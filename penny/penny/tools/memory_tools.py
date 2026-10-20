@@ -3007,9 +3007,9 @@ class DoneTool(Tool):
     ``success``/``summary`` to confabulate — what is generated cannot lie.  The one
     argument the close carries is the notify CHOICE (#2385): a required ``notify``
     boolean the framework reads after the cycle to decide whether the composer runs.
-    Saying true does not send anything by itself — the message is written after the
-    cycle, from what the cycle did, and a job with notifications off or a muted user
-    sends nothing either way.
+    Saying true does not send anything by itself — Penny tells the user afterwards,
+    from what the cycle wrote (#2656), and a job with notifications off or a muted
+    user sends nothing either way.
 
     It came back because the alternative was worse.  Deriving the close from PROGRAM
     COVERAGE (#1911) fixed the path in advance, and a cycle that departed from it for
@@ -3024,13 +3024,15 @@ class DoneTool(Tool):
 
     name = PennyConstants.DONE_TOOL_NAME
     description = (
-        "Call this when the cycle is finished, with notify set to true or false. Say "
-        "true when this cycle found or stored something the user would want to hear "
-        "now; say false when nothing changed since what you last told them — a quiet "
-        "cycle is a normal outcome, not a failure. Saying true does not send anything "
-        "by itself: the message is written after the cycle, from what you did, and a "
-        "job with notifications off or a muted user sends nothing either way. The run "
-        "record is generated from your tool calls, so there is nothing to summarise."
+        "Call this when the cycle is finished, with notify set to true or false. A "
+        "cycle does not message the user itself: what the cycle writes down, plus "
+        "this close with notify=true, is how they find out — Penny tells them "
+        "afterwards, from what the cycle wrote. Say true when this cycle found or "
+        "stored something the user would want to hear now; say false when nothing "
+        "changed since what you last told them — a quiet cycle is a normal outcome, "
+        "not a failure. A job with notifications off or a muted user sends nothing "
+        "either way. The run record is generated from your tool calls, so there is "
+        "nothing to summarise."
     )
     parameters = {
         "type": "object",

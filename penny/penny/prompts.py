@@ -355,11 +355,13 @@ class Prompt:
     # a normal outcome, because the old argless close read quiet as "nothing to
     # report" and the model had no way to say so on the record.
     COLLECTOR_DONE_INSTRUCTION = (
-        "Finish with done(notify=…). Say true when this cycle found or stored "
-        "something the user would want to hear now — compare what the collection "
-        "holds and what you last told them with what you found. Say false when "
-        "nothing changed since what you last told them: a quiet cycle is a normal "
-        "outcome, not a failure."
+        "A cycle does not message the user itself: what you write down here, plus "
+        "the close with notify=true, is how they find out — Penny tells them "
+        "afterwards, from what the cycle wrote. Finish with done(notify=…). Say "
+        "true when this cycle found or stored something the user would want to "
+        "hear now — compare what the collection holds and what you last told them "
+        "with what you found. Say false when nothing changed since what you last "
+        "told them: a quiet cycle is a normal outcome, not a failure."
     )
 
     # The one tools-off draw a run falls back to when it has nothing more to do but
