@@ -63,7 +63,8 @@ The path, in order. Each step says who does it, what it produces, and where the 
     the "before" on all three measures. Further rounds repeat steps 10 and 11.
 12. **Review and merge** (the coordinator, then the code owner). The PR adds an eval case, so the
     code owner reviews it; a batch of fixes still ends with one whole-suite run, asked of the code
-    owner first.
+    owner first. The reproducing case then stays in the suite as the regression guard
+    ([`docs/principles.md` §4.11](principles.md)).
 
 **One issue, one PR.** The code owner: *"i only want a single pr … write the test, create the pr,
 run it to show it reproduces the failure, then push the fix, run it again to show it resolves it,

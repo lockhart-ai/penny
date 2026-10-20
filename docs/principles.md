@@ -288,3 +288,14 @@ The eval cases are where the code owner states what Penny should do. The contrac
     - Read the thinking before proposing a lever.
     - The thinking is where the rational-actor rule (§3.1) meets a case: it is the model's
       account of the state it saw, so it points at the gap in the inputs, not at the model.
+
+11. **A bug is first recreated as a test that reproduces it; that test validates the fix; the
+    test stays as the regression guard.** *"the way i like to work in general is: if we
+    encounter a bug, we first recreate it as a test to reproduce the failure; then we use that
+    reproducing test to validate a fix; then we keep the test to catch any future regressions.
+    that should also be a principle"*
+   - A case whose first run doesn't show the failure doesn't test the bug, and the bug is
+     closed as not reproducible.
+   - A reproducing case that passes once the fix lands stays in the suite and is never deleted
+     for being green.
+   - A case whose failure an earlier change already fixed still lands as the guard.

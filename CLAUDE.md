@@ -21,7 +21,7 @@ Work on Penny runs in **Glade tasks** — a desktop app that runs Claude agent s
 - **If you are a task's parent agent, you are the coordinator.** You diagnose with the code owner, file the issue, delegate every edit to a kitten, review each kitten's PR against its issue, and report. You never edit files, run the gate, or run evals yourself. Your steps: [`docs/agent-supervisor-runbook.md`](docs/agent-supervisor-runbook.md).
 - **If a brief started you, you are a kitten** — a subagent the coordinator dispatched with the model set explicitly: **Sonnet** for building and judgement, **Haiku** for mechanical jobs, **GLM through OpenRouter** when Claude usage is tight. Never Opus. Your steps: [`docs/agent-task-workflow.md`](docs/agent-task-workflow.md).
 - **One issue, one todo, one draft PR.** A kitten opens its PR as a draft and never marks it ready, approves, or merges — the coordinator does that after review; production (`make prod`/`up`/`kill`, the live DB), a whole-suite eval run, and anything outward outside the repo are asked of the code owner first.
-- **A problem with Penny's behaviour starts with an eval case that reproduces it, and the case and its fix land in one PR** — not a code fix with a case added after. The path is [`docs/eval-working-guide.md`](docs/eval-working-guide.md) §1.
+- **A problem with Penny's behaviour starts with an eval case that reproduces it, and the case and its fix land in one PR** — not a code fix with a case added after, and the case stays in the suite as the regression guard ([`docs/principles.md`](docs/principles.md) §4.11). The path is [`docs/eval-working-guide.md`](docs/eval-working-guide.md) §1.
 
 ## Environment Notes
 
