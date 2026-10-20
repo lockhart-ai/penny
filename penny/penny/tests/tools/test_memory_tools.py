@@ -1200,7 +1200,8 @@ class TestCollectionUpdateScheduleAtApply:
         )
         assert result.success
         expected_echo = (
-            "I'll run against 'deals-watch' and quietly store what it finds.\n"
+            "I'll run against 'deals-watch' with no end date — it runs until stopped — "
+            "and quietly store what it finds.\n"
             "Re-configured collection 'deals-watch':\n"
             "  description: track the trail-runner shoe deals\n"
             "  schedule: none\n"

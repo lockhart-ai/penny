@@ -731,6 +731,7 @@ def _schedule_line(row: MemoryRow, timezone_name: str | None) -> str:
 
 
 _NO_EXPIRY_CLAUSE = "never"
+_NO_END_CLAUSE = "with no end date — it runs until stopped —"
 
 
 def _expires_value(row: MemoryRow, timezone_name: str | None) -> str:
@@ -767,6 +768,16 @@ def _lead_cadence_phrase(row: MemoryRow, timezone_name: str | None) -> str:
     return f"On the schedule {describe_schedule(row, timezone_name)} I'll run"
 
 
+def _lead_end_phrase(row: MemoryRow, timezone_name: str | None) -> str:
+    """The 'when it stops' clause, off the row's own expiry on the user's clock
+    (#2712) — the end the job carries, or the honest no-end statement a job that
+    runs until stopped carries.  The cadence phrase already states any run quota,
+    so it is not repeated here."""
+    if row.expires_at is None:
+        return _NO_END_CLAUSE
+    return f"until {_expires_value(row, timezone_name)}"
+
+
 def _lead_notify_tail(row: MemoryRow) -> str:
     """The 'what it does with a change' clause — the notify flag in plain words."""
     if row.notify:
@@ -775,12 +786,14 @@ def _lead_notify_tail(row: MemoryRow) -> str:
 
 
 def _lead_line(row: MemoryRow, timezone_name: str | None) -> str:
-    """One deterministic English sentence: cadence + target + notify —
+    """One deterministic English sentence: cadence + target + end + notify —
     e.g. "On the schedule every 15 minutes (rule: `FREQ=MINUTELY;INTERVAL=15`) I'll run
-    against 'aurora-prices' and message you when something changes." /
-    "…and quietly store what it finds."."""
+    against 'aurora-prices' until 2026-10-22 18:00 PDT and message you when something
+    changes." / "…against 'aurora-prices' with no end date — it runs until stopped — and
+    quietly store what it finds."."""
     cadence = _lead_cadence_phrase(row, timezone_name)
-    return f"{cadence} against '{row.name}' and {_lead_notify_tail(row)}"
+    end = _lead_end_phrase(row, timezone_name)
+    return f"{cadence} against '{row.name}' {end} and {_lead_notify_tail(row)}"
 
 
 def _instantiation_echo(row: MemoryRow, headline: str, timezone_name: str | None) -> str:
