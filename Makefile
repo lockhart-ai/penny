@@ -449,7 +449,8 @@ assemble: $(if $(LOCAL),,build)
 # There is no "most recent" fall back.
 # OVER THE 64K CAP (#1808): GitHub refuses a comment body over 65,536 chars and an 8-sample chat beat
 # assembles to ~290K, so the body is staged into <run>/$(COMMENT_SUBDIR)/ and cut there by
-# `penny.tests.eval.utils.comment_split` — on SAMPLE-FOLD boundaries only, each part headed `report N of M`,
+# `penny.tests.eval.utils.comment_split` — on SAMPLE-FOLD boundaries, and on whole-block boundaries when a
+# part is still over the cap (#2696), each part headed `report N of M`,
 # posted in order, and `.posted` stamped with the FIRST part's URL so idempotency + the unreviewed-run
 # banner stay honest. The splitter also REFUSES a body opening with build noise (`docker compose`,
 # `GIT_COMMIT=`, `#1 [internal]`) — the pollution a hand-piped `make assemble` publishes.

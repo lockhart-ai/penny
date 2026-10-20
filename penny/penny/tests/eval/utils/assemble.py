@@ -447,31 +447,36 @@ def _write_comments(argv: list[str]) -> int:
 
     A case document SPLITS on sample-fold boundaries (a single case can outgrow the comment cap
     on its own); the run summary carries no folds at all, so it splits on its COVERAGE table's
-    row boundaries instead (#2256) — two different documents, two different legal seams.
+    row boundaries instead (#2256) — two different documents, two different legal seams. A part
+    the fold cut still leaves over the cap is re-cut at whole-block boundaries (#2696), with
+    each case's own ``.md`` named as where a last-resort cut's content lives.
 
     Build noise is checked BEFORE anything is split: it is a caller error (a hand-piped
-    ``make assemble``) and refusing it is the answer, while a part over the cap is a renderer
-    bug the invariant raises."""
+    ``make assemble``) and refusing it is the answer."""
     if len(argv) < 2:
         print(USAGE, file=sys.stderr)
         return 2
     out_dir, report_dirs = Path(argv[0]), [Path(one) for one in argv[1:]]
     try:
         case_documents = [
-            document
+            (document, artifact_file)
             for report_dir in report_dirs
-            for document in assemble_case_comments(report_dir)
+            for document, artifact_file in _case_documents(report_dir)
         ]
         summary_document = render_run_summary(report_dirs)
     except FileNotFoundError as error:
         print(str(error), file=sys.stderr)
         return 1
-    refusal = _build_noise_refusal([*case_documents, summary_document])
+    refusal = _build_noise_refusal(
+        [*[document for document, _ in case_documents], summary_document]
+    )
     if refusal:
         print(f"assemble: refusing to post — {refusal}", file=sys.stderr)
         return 1
     parts = [
-        part for document in case_documents for part in comment_split.split_run_comment(document)
+        part
+        for document, artifact_file in case_documents
+        for part in comment_split.split_run_comment(document, artifact_file=artifact_file)
     ]
     parts += comment_split.split_run_summary(summary_document)
     comment_split.enforce_part_cap(parts)
@@ -644,6 +649,12 @@ def assemble_case_comments(report_dir: Path) -> list[str]:
     did not wrote sample folds alone, and with the run header stripped as a duplicate its
     comment named neither the case nor the commit.  ``report.headed`` gives both shapes one
     line."""
+    return [document for document, _ in _case_documents(report_dir)]
+
+
+def _case_documents(report_dir: Path) -> list[tuple[str, str]]:
+    """The case documents paired with the run-dir file that holds each case's whole record —
+    the ``.md`` an over-cap block cut names when the poster must cut one (#2696)."""
     manifest = load_manifest(report_dir)
     by_id = {artifact.case_id: artifact for artifact in load_case_artifacts(report_dir)}
     documents = []
@@ -659,7 +670,9 @@ def assemble_case_comments(report_dir: Path) -> list[str]:
             index=case_index(report_dir, case_id),
             run=_case_run_facts(manifest),
         )
-        documents.append(f"{body}\n\n{render_footer(report_dir)}\n")
+        documents.append(
+            (f"{body}\n\n{render_footer(report_dir)}\n", f"{report_dir.name}/{artifact.case_id}.md")
+        )
     return documents
 
 

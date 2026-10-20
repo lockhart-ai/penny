@@ -23,9 +23,11 @@ import pytest
 
 from penny.tests.eval.utils.comment_split import (
     GITHUB_COMMENT_LIMIT,
+    OVERSIZE_CUT_MARKER,
     PART_HEADER,
     USAGE,
     OversizedPartError,
+    block_segments,
     build_noise_reason,
     enforce_part_cap,
     main,
@@ -191,6 +193,159 @@ def test_cli_refuses_bad_input(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "refusing to post" in capsys.readouterr().err
     assert main([str(empty)]) == 2
     assert capsys.readouterr().err.strip() == USAGE
+
+
+# ── The block rescue: an over-cap part re-cut at whole-block boundaries (#2696) ──────
+#
+# A real run's case comment carried its bounded representative fold (44.8K) with the case's
+# tail — `#### Test inputs`, `#### Outliers` — glued after it and NO fold boundary between, so
+# the fold cut emitted one uncuttable 70K part and the run could not post. These drive the
+# rescue over a synthetic document of that shape, built from the real fold primitives, with
+# the trap the real prompt folds carry: a ``</details>``-looking line inside a fence must not
+# open or close a fold for the cut to find.
+
+_TAIL_HEADING = "#### Test inputs"
+_REPRESENTATIVE_HEADING = "#### Representative sample"
+_ARTIFACT_FILE = "run-20261020T035935Z-39260-c3dd5ae3/digest-set-up-in-chat-carries-every-item.md"
+
+
+def _representative_document(fold_size: int, tail_size: int) -> str:
+    """A case comment shaped like the run that failed (#2696): the run header, a case heading,
+    the representative section (heading + one fold whose body carries a fenced prompt with
+    ``</details>``-looking lines at line start, plus a nested fold), then the case tail — its
+    own heading and fold. The representative fold's summary is the sample's own banner — the
+    shape ``titled_fold`` renders — so the ONLY fold seam in the document is the representative
+    heading, and fold + tail assemble into ONE segment the fold cut cannot split."""
+    nested = "\n\n".join(
+        [
+            "<details><summary>System prompts — 3 contexts · 1 shared by every sample</summary>",
+            "```\nYou are Penny.\n</details> — quoted markup at line start, inside the fence\n```",
+            "<details><summary>a nested fold</summary>\n\ninner\n\n</details>",
+            "</details>",
+        ]
+    )
+    rep_fold = "<details><summary>❌ fail · behavioral · 231s · 11 calls</summary>\n\n" + (
+        f"{nested}\n\n{'x' * fold_size}\n\n</details>"
+    )
+    tail_fold = (
+        "<details><summary>Phrasings — 5 wordings of one ask</summary>\n\n"
+        f"{'y' * tail_size}\n\n</details>"
+    )
+    return (
+        "\n\n".join(
+            [
+                RUN_HEADER,
+                CASE_HEADING,
+                _REPRESENTATIVE_HEADING,
+                rep_fold,
+                _TAIL_HEADING,
+                tail_fold,
+                FOOTER,
+            ]
+        )
+        + "\n"
+    )
+
+
+def _fold_balance(text: str) -> int:
+    """The fold balance the splitter itself reads: line-START ``<details>``/``</details>``
+    edges, with a fence's content ignored exactly as ``_block_state_step`` ignores it — a
+    ``</details>``-looking line inside a fence must not read as an unclosed fold."""
+    depth, fence = 0, False
+    for line in text.splitlines():
+        if fence:
+            fence = not line.startswith("```")
+        elif line.startswith("```"):
+            fence = True
+        elif line.startswith("<details>"):
+            depth += 1
+        elif line.startswith("</details>"):
+            depth -= 1
+    return depth
+
+
+def test_block_segments_cut_only_on_legal_blank_lines() -> None:
+    """The segments are whole blocks: every fold, fence, and heading stays in one segment, the
+    fenced ``</details>``-looking line never opens or closes a fold for the cut, and the
+    segments concatenate back to the text byte for byte."""
+    text = _representative_document(fold_size=100, tail_size=100)
+    segments = block_segments(text)
+    assert "".join(segments) == text
+    for segment in segments:
+        assert _fold_balance(segment) == 0
+        assert segment.count("```") % 2 == 0
+    rep = next(segment for segment in segments if segment.startswith("<details><summary>❌ fail"))
+    assert "</details> — quoted markup" in rep, "the fence's quoted markup rode inside the fold"
+    assert "<details><summary>a nested fold</summary>" in rep, "so did the fold nested inside it"
+
+
+def test_an_over_cap_part_is_rescued_on_whole_block_boundaries() -> None:
+    """A part over the cap with no fold boundary left to pack on — a bounded representative
+    fold plus a glued case tail — is re-cut at the part's own block boundaries: every part
+    under the hard cap, structurally whole, and the bodies rejoin byte-identically to the
+    input (nothing dropped, nothing rewritten)."""
+    document = _representative_document(fold_size=45000, tail_size=24000)
+    parts = split_run_comment(document)
+    assert len(parts) >= 2, "the fixture genuinely outgrew one part"
+    assert all(len(part) <= GITHUB_COMMENT_LIMIT for part in parts)
+    assert "".join(part.split("\n\n", 1)[1] for part in parts) == document
+    for part in parts:
+        assert _fold_balance(part) == 0, "no fold is cut in half"
+        assert part.count("```") % 2 == 0, "no fence is left open"
+    assert _TAIL_HEADING in parts[-1], (
+        "the tail rides after the fold it was glued to, not before it"
+    )
+    for part in parts:
+        last = [line for line in part.splitlines() if line.strip()][-1]
+        assert last != _TAIL_HEADING, "the tail heading rides with its fold, never dangles"
+    assert any(part.split("\n\n", 1)[-1].startswith(_REPRESENTATIVE_HEADING) for part in parts), (
+        "a heading opens the part that carries what it introduces"
+    )
+
+
+def test_a_table_block_over_the_budget_is_cut_between_rows_with_its_header_repeated() -> None:
+    """A table block too big for a part is cut BETWEEN its rows by the run summary's row
+    splitter: every part holding rows opens its table with the head + separator, every row
+    appears exactly once in order, and a continuation carries the continued-rows note. A table
+    that fits is never split, so no header is ever repeated for one."""
+    head, sep = "| # | note |", "|---|---|"
+    table = "\n".join([head, sep, *(f"| {n} | {'x' * 2400} |" for n in range(1, 31))]) + "\n"
+    document = (
+        "\n\n".join([RUN_HEADER, CASE_HEADING, fold_sample(1, "✅ pass", "small"), table, FOOTER])
+        + "\n"
+    )
+    parts = split_run_comment(document)
+    assert len(parts) >= 2
+    assert all(len(part) <= GITHUB_COMMENT_LIMIT for part in parts)
+    seen = [int(n) for part in parts for n in re.findall(r"^\| (\d+) \|", part, flags=re.MULTILINE)]
+    assert seen == list(range(1, 31)), "every row exactly once, in order"
+    for part in parts:
+        rows = part.splitlines()
+        first = next((i for i, line in enumerate(rows) if line.startswith("|")), None)
+        if first is not None:
+            assert rows[first] == head and rows[first + 1] == sep, (
+                "a table never renders bare cells"
+            )
+    assert any("continued" in part for part in parts), "a continuation says which rows it holds"
+
+
+def test_a_single_block_still_over_the_cap_is_cut_and_names_its_file() -> None:
+    """One block with no seam left anywhere — a single giant fold — is cut on a line boundary:
+    the cut part fits the cap, closes the fold it leaves open, and ends in a line naming the
+    run-dir file that holds the block whole. With no artifact file to name, the part is left
+    over the cap and the invariant raises, exactly as before the rescue."""
+    body = "\n".join(f"transcript line {i}: {'x' * 90}" for i in range(700))
+    document = "\n\n".join([RUN_HEADER, CASE_HEADING, fold_sample(1, "❌ fail", body)]) + "\n"
+    parts = split_run_comment(document, artifact_file=_ARTIFACT_FILE)
+    assert len(parts) >= 2
+    assert all(len(part) <= GITHUB_COMMENT_LIMIT for part in parts)
+    cut = parts[-1]
+    assert _ARTIFACT_FILE in cut, "the cut names the file that holds the block whole"
+    assert OVERSIZE_CUT_MARKER.split("{", 1)[0] in cut
+    assert _fold_balance(cut) == 0, "the cut closed the fold it left open"
+    assert cut.count("```") % 2 == 0
+    with pytest.raises(OversizedPartError):
+        enforce_part_cap(split_run_comment(document))
 
 
 # ── The run-summary splitter: a table's ROW boundary (#2256) ─────────────────
