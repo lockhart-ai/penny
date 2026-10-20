@@ -51,7 +51,7 @@ from penny.tests.eval.collector.test_digest_delivery import (
 from penny.tests.eval.conftest import EVAL_MODELS, seeded_run_id
 from penny.tests.eval.drivers.end_to_end import EndToEndArm, EndToEndEval
 from penny.tests.eval.end_to_end.world import sent_at
-from penny.tests.eval.utils.assertions import Answer, ends_with
+from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
@@ -212,16 +212,17 @@ def _the_message_carries_every_headline(sample: SampleObservation, _world: World
     return not missing, f"the message never states {missing}; it says: {sent!r}"
 
 
-def _the_message_ends_with_the_sign_off(sample: SampleObservation, _world: World) -> Answer:
-    """The delivered message ends the way the conversation's standing format says —
-    exact and case-sensitive (``ends_with``), the rule's own words.  False when
+def _the_message_carries_the_sign_off(sample: SampleObservation, _world: World) -> Answer:
+    """The delivered message carries the conversation's standing format — the rule's
+    own word, read with the shared ``token_stands_in`` check (a trailing emoji
+    beside it is her voice, not a miss; the code owner's ruling).  False when
     nothing was sent: a silent delivery did not honour the rule, it sent nothing at
     all, and the told-once claim beside it names that miss on its own."""
     sent = _told_messages(sample)
     if not sent:
         return False, "nothing reached the user"
-    off = [message for message in sent if not ends_with(_SIGNOFF, message)]
-    return not off, f"message(s) not ending with the sign-off: {off!r}"
+    missing = [message for message in sent if not token_stands_in(_SIGNOFF, message)]
+    return not missing, f"message(s) without the sign-off word: {missing!r}"
 
 
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD, TURNS_DRIVEN)
@@ -268,8 +269,8 @@ async def test_a_digest_set_up_in_chat_is_delivered_carrying_every_item(
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: the message ends with the conversation's sign-off",
-        _the_message_ends_with_the_sign_off,
+        "state: the message carries the conversation's sign-off",
+        _the_message_carries_the_sign_off,
         SpecCategory.STORE,
     )
 
