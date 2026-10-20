@@ -145,26 +145,28 @@ ENACTING_TOOLS = (
 
 
 # ── The listing journey (the auction script's own page) ──────────────────────
-# A fictional marketplace listing with ONE controllable field — its price — so a
-# stored "$499" says the page was really read and a later variant can move it.
+# A marketplace listing with ONE controllable field — its price — so a stored
+# "$499" says the page was really read and a later variant can move it.  The
+# product, marketplace and seller are real names (#2673); the price and the
+# seller's history are made up and live only on this page.
 
-LISTING_URL = "https://faux-market.example/aurora-deck-2"
+LISTING_URL = "https://www.ebay.com/itm/analogue-pocket"
 
-AURORA_LISTING_499 = CannedPage(
-    match="aurora-deck-2",
+POCKET_LISTING_499 = CannedPage(
+    match="analogue-pocket",
     text=(
-        "Title: Aurora Deck 2 — handheld console | faux-market\n"
+        "Title: Analogue Pocket — handheld console | eBay\n"
         f"{LISTING_URL}\n"
         "\n"
-        "Aurora Deck 2 (open box, tested). Ships from a fictional warehouse.\n"
+        "Analogue Pocket (open box, tested). Ships from the seller's warehouse.\n"
         "Price: $499\n"
-        f"[Aurora Deck 2 listing]({LISTING_URL})\n"
-        "Seller: nebula_resale (4.9 stars). Listing updated daily.\n"
+        f"[Analogue Pocket listing]({LISTING_URL})\n"
+        "Seller: musicmagpie (4.9 stars). Listing updated daily.\n"
         "\n"
         "Shipping and handling\n"
         "Dispatched from the seller's own warehouse, boxed in the original packaging\n"
         f"[Shipping details]({LISTING_URL}/shipping)\n"
-        "Tracked courier only; faux-market does not offer its own delivery network.\n"
+        "Tracked courier only; eBay does not offer its own delivery network.\n"
         "A signature is asked for on any order over a modest value.\n"
         "\n"
         "Returns policy\n"
@@ -174,8 +176,8 @@ AURORA_LISTING_499 = CannedPage(
         "Refunds go back to the original payment method once the item is checked in.\n"
         "\n"
         "Seller storefront\n"
-        "nebula_resale deals mainly in refurbished handheld electronics\n"
-        f"[Visit nebula_resale]({LISTING_URL}/seller/nebula-resale)\n"
+        "musicmagpie deals mainly in refurbished handheld electronics\n"
+        f"[Visit musicmagpie]({LISTING_URL}/seller/musicmagpie)\n"
         "Every listing in the storefront is graded and photographed before it goes up.\n"
         "Buyers can message the seller directly from the storefront page.\n"
         "\n"
@@ -192,21 +194,21 @@ AURORA_LISTING_499 = CannedPage(
         "A dispute over condition pauses the release until support has looked at it.\n"
         "\n"
         "Warranty\n"
-        "Refurbished electronics on faux-market carry the seller's own warranty, not the "
+        "Refurbished electronics on eBay carry the seller's own warranty, not the "
         "manufacturer's\n"
         f"[Warranty terms]({LISTING_URL}/warranty)\n"
-        "nebula_resale's warranty covers the console but not a damaged charger cable.\n"
+        "musicmagpie's warranty covers the console but not a damaged charger cable.\n"
         "A fault reported inside the warranty window is repaired or replaced free.\n"
         "\n"
         "Packaging and condition grading\n"
-        "faux-market grades every open-box and refurbished listing before it's posted\n"
+        "eBay grades every open-box and refurbished listing before it's posted\n"
         f"[Condition grading]({LISTING_URL}/grading)\n"
         'An "open box, tested" grade means the unit was powered on and checked over.\n'
         "A lower grade would note cosmetic wear the listing photos don't already show.\n"
         "\n"
-        "About faux-market\n"
-        "A fictional marketplace for secondhand and open-box electronics, nothing more.\n"
-        "Every seller is verified before their first listing goes live, and buyer "
+        "About eBay\n"
+        "A marketplace for secondhand and open-box electronics, among much else.\n"
+        "Every seller is reviewed before their first listing goes live, and buyer "
         "protection covers anything that arrives not as described. Support can be "
         "reached from the help centre linked in the site footer, and most questions "
         "about a specific listing are better put to the seller directly, who usually "
@@ -359,7 +361,8 @@ MESSAGES: tuple[Message, ...] = (
 
 
 # ── Canned browse pages (for the browse-driven tool-reasoning cases) ──────────
-# All invented, privacy-safe topics on example.com domains.
+# Invented page content on real hosts and about real names (#2673); the checkable
+# facts (a 2031 release date, a $19 price) are made up and live only on these pages.
 
 # chat-browse-multihop: the search page links to a detail page but withholds the
 # date; the year (2031) lives ONLY on the detail page, so a reply that cites it
@@ -371,38 +374,16 @@ MESSAGES: tuple[Message, ...] = (
 # (``tools/browse.py``) and NONE of them carries the year, so the date stays reachable only
 # by following the one true link through to the second page — the whole point of the hop.
 MULTIHOP_PAGES = (
+    # The detail page FIRST: ``install_browse`` answers with the first page whose match is in
+    # the url, and the detail page's slug contains the search page's own token — a direct read
+    # of the linked URL must land here, not on the search page.
     CannedPage(
-        match="mistforge",
+        match="into-the-breach",
         text=(
-            "Title: Mistforge Tactics — search results\n"
-            "Mistforge Tactics is a turn-based strategy game.\n"
-            "[Mistforge Tactics — official title page]"
-            "(https://gamedb.example.com/titles/mt-clans-2099)\n"
-            "See the official title page for full release details.\n"
-            "\n"
-            "Fan wiki entry, last edited by the community this month\n"
-            "[Mistforge Tactics — fan wiki]"
-            "(https://gamedb.example.com/wiki/mistforge-tactics)\n"
-            "Covers unit types, faction lore and a map of every campaign mission.\n"
-            "\n"
-            "A roundup of this month's turn-based strategy releases, Mistforge among them\n"
-            "[New turn-based strategy games this month]"
-            "(https://gamedb.example.com/roundups/strategy-this-month)\n"
-            "Six titles covered, with a short paragraph on each.\n"
-            "\n"
-            "A forum thread comparing Mistforge Tactics to two older titles in its genre\n"
-            "[Mistforge Tactics — forum discussion]"
-            "(https://gamedb.example.com/forums/mistforge-tactics-comparison)\n"
-            "Forty-one replies, mostly about the co-op campaign's difficulty curve.\n"
-        ),
-    ),
-    CannedPage(
-        match="mt-clans-2099",
-        text=(
-            "Title: Mistforge Tactics — official title page\n"
-            "Mistforge Tactics was released on March 14, 2031 by Emberline Studios. "
+            "Title: Into the Breach — official title page\n"
+            "Into the Breach was released on March 14, 2031 by Subset Games. "
             "It is a turn-based strategy game with co-op campaigns.\n"
-            "Source: https://gamedb.example.com/titles/mt-clans-2099\n"
+            "Source: https://www.mobygames.com/game/into-the-breach\n"
             "\n"
             "Platforms\n"
             "Available on PC, and on console from the following autumn.\n"
@@ -420,6 +401,32 @@ MULTIHOP_PAGES = (
             "Reception\n"
             "Reviewers praised the co-op campaign and criticised the skirmish AI's pacing.\n"
             "A balance patch addressing the skirmish AI is planned for next quarter.\n"
+        ),
+    ),
+    CannedPage(
+        match="breach",
+        text=(
+            "Title: Into the Breach — search results\n"
+            "Into the Breach is a turn-based strategy game.\n"
+            "[Into the Breach — official title page]"
+            "(https://www.mobygames.com/game/into-the-breach)\n"
+            "See the official title page for full release details.\n"
+            "\n"
+            "Fan wiki entry, last edited by the community this month\n"
+            "[Into the Breach — fan wiki]"
+            "(https://www.mobygames.com/wiki/into-the-breach)\n"
+            "Covers unit types, faction lore and a map of every campaign mission.\n"
+            "\n"
+            "A roundup of this month's turn-based strategy releases, Into the Breach among "
+            "them\n"
+            "[New turn-based strategy games this month]"
+            "(https://www.mobygames.com/roundups/strategy-this-month)\n"
+            "Six titles covered, with a short paragraph on each.\n"
+            "\n"
+            "A forum thread comparing Into the Breach to two older titles in its genre\n"
+            "[Into the Breach — forum discussion]"
+            "(https://www.mobygames.com/forums/into-the-breach-comparison)\n"
+            "Forty-one replies, mostly about the co-op campaign's difficulty curve.\n"
         ),
     ),
 )
@@ -451,21 +458,21 @@ RESEARCH_PAGES = (
         text=(
             "Title: New indie metroidvanias this month\n"
             "Fresh indie metroidvania releases below.\n"
-            "[Hollow Verge — new metroidvania release]"
-            "(https://indiegames.example.com/hollow-verge)\n"
-            "Hollow Verge launched this week — a hand-drawn metroidvania with a "
+            "[Animal Well — new metroidvania release]"
+            "(https://www.rockpapershotgun.com/animal-well)\n"
+            "Animal Well launched this week — a hand-drawn metroidvania with a "
             "grappling-hook traversal system and a branching map, priced at $19.\n"
         ),
     ),
     # The detail page, in case the model reads the linked URL ("read actual pages").
     CannedPage(
-        match="hollow-verge",
+        match="animal-well",
         text=(
-            "Title: Hollow Verge — release page\n"
-            "Hollow Verge is a newly released indie metroidvania, out this week. It "
+            "Title: Animal Well — release page\n"
+            "Animal Well is a newly released indie metroidvania, out this week. It "
             "features hand-drawn art, a grappling-hook traversal system, and a branching "
             "interconnected map. It is priced at $19 and is available now.\n"
-            "Source: https://indiegames.example.com/hollow-verge\n"
+            "Source: https://www.rockpapershotgun.com/animal-well\n"
         ),
     ),
 )
@@ -476,26 +483,27 @@ THINKING_PAGES = (
         match="board",
         text=(
             "Title: Board game news\n"
-            "[New cooperative board game spotlight](https://bgnews.example.com/tidewatch)\n"
-            "A new cooperative board game called Tidewatch launched this month, "
+            "[New cooperative board game spotlight]"
+            "(https://www.boardgamegeek.com/boardgame/forbidden-island)\n"
+            "A new cooperative board game called Forbidden Island launched this month, "
             "featuring a modular ocean board and a 60-minute play time.\n"
         ),
     ),
     # The detail page, in case the model reads the linked URL rather than the snippet.
     CannedPage(
-        match="tidewatch",
+        match="forbidden-island",
         text=(
-            "Title: Tidewatch — co-op board game\n"
-            "Tidewatch is a newly released cooperative board game, out this month. It "
-            "features a modular ocean board and a 60-minute play time, for 1-4 players.\n"
-            "Source: https://bgnews.example.com/tidewatch\n"
+            "Title: Forbidden Island — co-op board game\n"
+            "Forbidden Island is a newly released cooperative board game, out this month. "
+            "It features a modular ocean board and a 60-minute play time, for 1-4 players.\n"
+            "Source: https://www.boardgamegeek.com/boardgame/forbidden-island\n"
         ),
     ),
 )
 
 # extract-knowledge: a page already in the browse-results log to summarize.
 KNOWLEDGE_PAGE_CONTENT = (
-    "## browse: https://history.example.com/antikythera\n"
+    "## browse: https://en.wikipedia.org/wiki/Antikythera_mechanism\n"
     "Title: The Antikythera Mechanism\n"
     "The Antikythera mechanism is an ancient Greek hand-powered analog device used "
     "to predict astronomical positions and eclipses decades in advance. Recovered "
@@ -516,15 +524,15 @@ KNOWLEDGE_PAGE_CONTENT = (
 # this fixture used to also exercise an invention-detection edge case against; see
 # ``test_cohort.py``'s retirement note for that history).
 EXTRACT_PLAIN_PAGE = (
-    "## browse: https://sports-beta.example/hockey\n"
-    "Ridgeline Foxes sign veteran goalie Aurelio Brandt\n"
+    "## browse: https://www.dailyastorian.com/sports\n"
+    "Astoria Otters sign veteran goalie Aurelio Brandt\n"
     "by Marisol Vance\n\n"
     "Harbour bridge reopens after a two-year refit\n"
     "by Marisol Vance\n"
 )
 EXTRACT_PLAIN_ASK = "the headline, the byline and the published time for each story"
 EXTRACT_PLAIN_ANSWER = (
-    "Ridgeline Foxes sign veteran goalie Aurelio Brandt, by Marisol Vance. The page "
+    "Astoria Otters sign veteran goalie Aurelio Brandt, by Marisol Vance. The page "
     "does not give a published time for this story.\n"
     "Harbour bridge reopens after a two-year refit, by Marisol Vance. The page does "
     "not give a published time for this story."

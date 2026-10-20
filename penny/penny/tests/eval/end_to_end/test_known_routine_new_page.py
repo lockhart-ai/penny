@@ -6,11 +6,11 @@ in one turn, with a FOLLOW-UP agreement driven only while no job has been create
 run — then the job the script stood up, run through its OWN real cycles against that page.
 
 The follow-up answers a Penny who offers before acting: known-routine binding can land her on
-an offer ("set it up like the Aurora listing?") that waits for the user rather than creating
+an offer ("set it up like the Pocket listing?") that waits for the user rather than creating
 the job outright, and a one-turn script would never answer it.  A Penny who binds and acts on
 the cold ask alone is driven once; the agreement is there for the one that asks first.
 
-The entry condition is SEEDED: the price-watcher job already running, taught on the Aurora
+The entry condition is SEEDED: the price-watcher job already running, taught on the Analogue Pocket
 listing (#2455 naive baseline, code-owner ruling — there is no skill registry left to teach a
 routine into, so "a routine she already knows" is represented by the job already running PLUS
 the earlier conversation that set it up, in her own logs).  That taught page stays LIVE and
@@ -68,7 +68,7 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
 )
-from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, LISTING_URL, CannedPage, datum
+from penny.tests.eval.utils.fixtures import LISTING_URL, POCKET_LISTING_499, CannedPage, datum
 from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT
 from penny.tests.eval.utils.worlds import World
 
@@ -98,9 +98,9 @@ _MOVED_PRICE = f"${_MOVED_AMOUNT}"
 _DATUM = f"Current price: {_BASELINE_PRICE}"
 _MOVED_DATUM = f"Current price: {_MOVED_PRICE}"
 
-# The price the routine was TAUGHT on — the Aurora listing's, the one value in this world the
-# new job must never record or relay.  Checked as the bare amount so any spelling of it in a
-# stored entry or a sent message reads as the miss it is.
+# The price the routine was TAUGHT on — the Pocket listing's, the one value in this
+# world the new job must never record or relay.  Checked as the bare amount so any
+# spelling of it in a stored entry or a sent message reads as the miss it is.
 _TAUGHT_AMOUNT = "499"
 
 _LISTING_LINK = f"[{_ITEM} listing]({_URL})"
@@ -144,18 +144,18 @@ _BASELINE_PAGE = CannedPage(
 _MOVED_PAGE = datum(_BASELINE_PAGE, _DATUM, _MOVED_DATUM)
 
 # The entry condition is SEEDED — five finished journeys, the price-watcher taught on the
-# Aurora listing — so the job's two cycles are: the new page as the ask names it, then the
+# Analogue Pocket listing — so the job's two cycles are: the new page as the ask names it, then the
 # moved reading.  The TAUGHT page rides in every register beside the new one: a cycle that
 # reads it gets the taught price back, which the claims below forbid.
 _CYCLES = (
-    [_BASELINE_PAGE, AURORA_LISTING_499],
-    [_MOVED_PAGE, AURORA_LISTING_499],
+    [_BASELINE_PAGE, POCKET_LISTING_499],
+    [_MOVED_PAGE, POCKET_LISTING_499],
 )
 
 # The ground the SCRIPT's own turn is answered against — both pages, installed before the ask
 # runs.  ``keeps``/``excludes``/``answers`` are all empty by report: the ask sets a job running,
 # so it asks to be TOLD rather than to be given a value back, and it names nothing to exclude.
-_WORLD = World(name=_CASE_ID, pages=(_BASELINE_PAGE, AURORA_LISTING_499), keeps=(), excludes=())
+_WORLD = World(name=_CASE_ID, pages=(_BASELINE_PAGE, POCKET_LISTING_499), keeps=(), excludes=())
 
 # The terms the ask gives: fires hourly, stops sunday night, tells the user.  Read against
 # ``_the_new_job`` in ``assertions.py`` — existentially, since "a job she created" is the
@@ -184,8 +184,8 @@ _END_TOKEN = "sunday night"
 _TELLING_CLAUSES = ("let me know", "tell me", "message")
 
 # The FOLLOW-UP (#2494): driven only while the cold ask above hasn't already created the job —
-# the answer to a Penny who offers to set it up like the Aurora listing and waits, rather than
-# acting on the cold ask's own terms.
+# the answer to a Penny who offers to set it up like the Pocket listing and waits, rather
+# than acting on the cold ask's own terms.
 _AGREEMENT = "yes, set it up as a new job like that"
 
 
@@ -213,18 +213,20 @@ def _assert_every_wording_carries_the_facts() -> None:
 _assert_every_wording_carries_the_facts()
 
 
-_TAUGHT_COLLECTION = "aurora-deck-2-price"
+_TAUGHT_COLLECTION = "analogue-pocket-price"
 _TAUGHT_ENTRY_KEY = "price"
 _TAUGHT_ENTRY_VALUE = f"Price: ${_TAUGHT_AMOUNT}"
-# The earlier conversation that set the Aurora price-watcher up (#2455 naive baseline,
+# The earlier conversation that set the Analogue Pocket price-watcher up (#2455 naive baseline,
 # code-owner ruling): her own past logs are the other half of "a routine she already
 # knows", beside the job itself.
-_TAUGHT_ASK = "can you keep an eye on the Aurora Deck 2 price for me and let me know if it changes?"
-_TAUGHT_REPLY = "done — I'll check the Aurora Deck 2 price and let you know if it moves. 🌟"
+_TAUGHT_ASK = (
+    "can you keep an eye on the Analogue Pocket price for me and let me know if it changes?"
+)
+_TAUGHT_REPLY = "done — I'll check the Analogue Pocket price and let you know if it moves. 🌟"
 
 
 def _seed(db: Database) -> None:
-    """The entry condition: the Aurora price-watcher as "a routine she already knows"
+    """The entry condition: the Analogue Pocket price-watcher as "a routine she already knows"
     (#2455 naive baseline, code-owner ruling) — both halves of it, through the chokepoints
     the runtime itself writes through: the job ALREADY RUNNING, and the EARLIER
     CONVERSATION that set it up, in her own logs (the ask, her read → write →
@@ -240,7 +242,7 @@ def _seed(db: Database) -> None:
     seed_known_routine(
         db,
         collection=_TAUGHT_COLLECTION,
-        description="the Aurora Deck 2 handheld console price",
+        description="the Analogue Pocket handheld console price",
         url=LISTING_URL,
         extract="the current price",
         entry_key=_TAUGHT_ENTRY_KEY,

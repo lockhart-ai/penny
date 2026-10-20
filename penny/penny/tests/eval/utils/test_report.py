@@ -1431,7 +1431,7 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
         "<details><summary>1 phrasing · 2 pages · 6 must-keep, 2 must-not</summary>" in tail
     )
     assert "Seeded ground — 2 pages · 6 must-keep, 2 must-not" in tail
-    assert "| 1 | page `ridgelinefoxes` |" in tail, "and the table it labels is right there"
+    assert "| 1 | page `astoria-otters` |" in tail, "and the table it labels is right there"
 
 
 def _named(name: str, arm: str, tools: list[str], turns: int):

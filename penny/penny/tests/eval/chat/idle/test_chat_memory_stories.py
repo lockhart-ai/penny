@@ -141,10 +141,9 @@ _GAMES = SynthCollection(
     entries=(),
 )
 
-# The one game the lookup story is about — invented, so it exists on no real site and cannot be
-# answered from what the model already knows.  Its key is the text before the em dash, the way
-# every seeded entry in this suite is written.
-_MISTFORGE_ENTRY = "Mistforge Tactics — a turn-based strategy game."
+# The one game the lookup story is about.  Its key is the text before the em dash, the
+# way every seeded entry in this suite is written.
+_MISTFORGE_ENTRY = "Into the Breach — a turn-based strategy game."
 
 _GAMES_WITH_MISTFORGE = SynthCollection(
     _GAMES.name, _GAMES.description, entries=(_MISTFORGE_ENTRY,)
@@ -179,7 +178,7 @@ _RECIPE_BOX = SynthCollection(
 )
 _FAJITAS_KEY = _RECIPE_BOX.keyed[0][0]
 
-_GEAR_PRICE_KEY = "aurora deck 2 price"
+_GEAR_PRICE_KEY = "analogue pocket price"
 _GEAR_PRICE = "$499"
 
 _GEAR_NOTES = SynthCollection(
@@ -196,12 +195,12 @@ _GEAR_NOTES = SynthCollection(
 # is after — and a token spelled twice would let the premise stop guarding the claim it exists
 # for.  Each is shrunk to the part with no alternative rendering and no other bearer in its
 # world: ``499`` and not ``$499`` (a draw that wrote the figure without the currency symbol
-# read the same entry), ``mistforge`` and not ``Mistforge Tactics`` (a draw that put the title
+# read the same entry), ``breach`` and not ``Into the Breach`` (a draw that put the title
 # in the key and the blurb in the body read the same page), ``office`` and not ``loud offices``
 # (a measured reply answered out of all three collections and wrote "loud office spaces", which
 # the plural failed — the singular is the part every correct rendering shares).
 
-_SUBJECT = "mistforge"  # the game the lookup story is about
+_SUBJECT = "breach"  # the game the lookup story is about
 _PRICE = "499"  # the figure the cold recall has to state
 _AVOIDED = "office"  # the one thing the avoid list already holds
 _INTO_ANCHOR = "chess"  # the note the into-list holds in every world that seeds it
@@ -429,7 +428,7 @@ def _stored_the_subject(token: str) -> _ClaimFn:
     """What this turn stored carries the subject — the SMALLEST datum that is unique in the
     world, matched as a substring of the whole entry.
 
-    ``mistforge`` rather than ``Mistforge Tactics``: a draw that stored the title in the key and
+    ``breach`` rather than ``Into the Breach``: a draw that stored the title in the key and
     the blurb in the body read the same page as one that wrote the full name into a sentence,
     and the part they share is the fact."""
 
@@ -622,8 +621,9 @@ def _not_filed_in(collection: str, token: str) -> _ClaimFn:
 # ═══ save ════════════════════════════════════════════════════════════════════
 #
 # The value comes off a PAGE rather than out of the user's mouth, and the ask names exactly one
-# place for it to go.  The subject is the invented game *Mistforge Tactics*, which exists on no
-# real site, so the model has to read rather than answer from what it already knows.
+# place for it to go.  The subject is the real game *Into the Breach*, and the pages the world
+# serves are the only ground the round is given — anything stated beyond them fails the
+# provenance claims, and the store claim reads the subject off whatever the turn stored.
 
 _SAVE = _VerbCase(
     case_id="memory-look-up-and-save",
@@ -646,13 +646,15 @@ _SAVE = _VerbCase(
     # it to your games list" is a complete answer, so requiring a token would fail a correct run
     # for something nobody requested.  Widening an ask so it requests a value is a code owner's
     # call rather than an in-flight repair.
-    world=World(name="mistforge", pages=MULTIHOP_PAGES, keeps=(), excludes=(), stores=(_GAMES,)),
-    ask="can you look up Mistforge Tactics, read up on it, and save it to my games list?",
+    world=World(
+        name="into-the-breach", pages=MULTIHOP_PAGES, keeps=(), excludes=(), stores=(_GAMES,)
+    ),
+    ask="can you look up Into the Breach, read up on it, and save it to my games list?",
     also_phrased=(
-        "could you find out about Mistforge Tactics and put it on my games list?",
-        "have a look at Mistforge Tactics, read up on it, and add it to my games list",
-        "go read about Mistforge Tactics and save what you find to my games list",
-        "look Mistforge Tactics up for me and stick it on my games list",
+        "could you find out about Into the Breach and put it on my games list?",
+        "have a look at Into the Breach, read up on it, and add it to my games list",
+        "go read about Into the Breach and save what you find to my games list",
+        "look Into the Breach up for me and stick it on my games list",
     ),
     empty=(_GAMES.name,),
     withholds=(_SUBJECT,),
@@ -713,14 +715,14 @@ _COLD_RECALL = _VerbCase(
         stores=(_GEAR_NOTES,),
     ),
     ask=(
-        "hey — a while back I asked you to remember what the aurora deck 2 "
+        "hey — a while back I asked you to remember what the analogue pocket "
         "was listed at. what was the price?"
     ),
     also_phrased=(
-        "a while back i had you note down the aurora deck 2's listed price — what was it?",
-        "you saved the aurora deck 2's price for me a while ago. what did it say?",
-        "what was the aurora deck 2 listed at? i asked you to remember it a while back",
-        "remind me of the aurora deck 2 price i had you keep from a while back",
+        "a while back i had you note down the analogue pocket's listed price — what was it?",
+        "you saved the analogue pocket's price for me a while ago. what did it say?",
+        "what was the analogue pocket listed at? i asked you to remember it a while back",
+        "remind me of the analogue pocket price i had you keep from a while back",
     ),
     holds=((_GEAR_NOTES.name, (_PRICE,)),),
 )

@@ -147,7 +147,7 @@ def _log_chat_step(db: Database, *, run_id: str, messages: list[dict], response:
 # seeded job's own ``notify`` must agree with this, or a later turn reads a history that
 # asked to be told sitting beside a job that quietly wouldn't, and rationally "fixes" it
 # (#2508: the finding behind samples 4 and 13 of ``end-to-end-new-page``, where the model
-# flipped the seeded Aurora job's ``notify`` unprompted because its own earlier ask —
+# flipped the seeded Analogue Pocket job's ``notify`` unprompted because its own earlier ask —
 # "let me know if it changes" — contradicted the row).
 _TELLING_PHRASES = ("let me know", "tell me", "notify")
 

@@ -129,8 +129,8 @@ _KEY = "asking price"
 # lets the claims below name a value: five listings would force every one of them back to a
 # shape claim, and a shape claim cannot tell a watch that recorded the right price from one
 # that recorded a plausible number.
-_ITEM = "Aurora Deck 2"
-_MATCH = "aurora-deck-2"
+_ITEM = "Analogue Pocket"
+_MATCH = "analogue-pocket"
 
 # The two readings, in their two roles.  The AMOUNT is the identity of the reading and what
 # every claim matches on; the PRICE is how a listing displays it, and it is what the pages
@@ -230,7 +230,7 @@ _BEHAVIOUR = {
 
 _SPEC_LINK = f"[{_ITEM} specification sheet]({LISTING_URL}/spec)"
 _LISTING_LINK = f"[{_ITEM} listing]({LISTING_URL})"
-_HEAD = f"Title: {_ITEM} — handheld console | faux-market\n{LISTING_URL}\n\n"
+_HEAD = f"Title: {_ITEM} — handheld console | eBay\n{LISTING_URL}\n\n"
 
 # Generic, number-free boilerplate every page below shares — real-listing furniture (a full
 # spec table, a Q&A block, a returns paragraph, box contents, shipping options, a seller blurb,
@@ -321,7 +321,7 @@ READINGS = (
         _HEAD + f"{_ITEM} (open box, tested). Sold by a fictional reseller; stock moves weekly.\n"
         f"{_DATUM}\n"
         f"{_LISTING_LINK}\n"
-        "Seller: nebula_resale (4.9 stars). The asking price last changed nine days ago.\n"
+        "Seller: musicmagpie (4.9 stars). The asking price last changed nine days ago.\n"
         "Condition: open box, tested. Dispatched within two working days.\n"
         "\n"
         "Specification\n"
@@ -332,7 +332,7 @@ READINGS = (
         "\n"
         "Others from this seller\n"
         "Aurora Deck 1, refurbished — $329\n"
-        "[Aurora Deck 1](https://faux-market.example/aurora-deck-1)\n"
+        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
         "Nebula Dock, charging stand — $59\n"
         "Both ship from the same fictional warehouse.\n"
         "\n"
@@ -376,7 +376,7 @@ READINGS = (
         "\n"
         "Also listed by this shop\n"
         "Aurora Deck Lite, boxed — $279\n"
-        "[Aurora Deck Lite](https://faux-market.example/aurora-deck-lite)\n"
+        "[Aurora Deck Lite](https://www.ebay.com/itm/aurora-deck-lite)\n"
         "Spare stylus, twin pack — $19\n"
         "Everything ships from one fictional depot.\n"
         "\n"
@@ -419,7 +419,7 @@ READINGS = (
         "\n"
         "On the same shelf\n"
         "Aurora Deck 1, tested — $315\n"
-        "[Aurora Deck 1](https://faux-market.example/aurora-deck-1)\n"
+        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
         "Moulded travel case — $44\n"
         "The counter posts its shelf every morning.\n"
         "\n"
@@ -462,7 +462,7 @@ READINGS = (
         "\n"
         "Today's other handhelds\n"
         "Aurora Deck Lite, open box — $265\n"
-        "[Aurora Deck Lite](https://faux-market.example/aurora-deck-lite)\n"
+        "[Aurora Deck Lite](https://www.ebay.com/itm/aurora-deck-lite)\n"
         "Screen guard, twin pack — $12\n"
         "The whole shelf ships from one fictional warehouse.\n"
         "\n"
@@ -506,7 +506,7 @@ READINGS = (
         "\n"
         "Elsewhere in this consignment\n"
         "Aurora Deck 1, boxed — $340\n"
-        "[Aurora Deck 1](https://faux-market.example/aurora-deck-1)\n"
+        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
         "Dock and cable set — $69\n"
         "All consigned stock ships from one fictional store.\n"
         "\n"
@@ -674,7 +674,7 @@ def _messy_body(voice: _MessyVoice) -> str:
         "\n"
         "Frequently bought together\n"
         f"{_OTHER_ITEM_1_LINE}\n"
-        "[Aurora Deck 1](https://faux-market.example/aurora-deck-1)\n"
+        "[Aurora Deck 1](https://www.ebay.com/itm/aurora-deck-1)\n"
         f"{_OTHER_ITEM_2_LINE}\n"
         "Both ship from the same fictional warehouse.\n"
         "\n"
@@ -712,7 +712,7 @@ _MESSY_VOICES = (
         name="current-price-messy",
         extract="the current price",
         intro="A fictional marketplace listing for a handheld console, open box and tested.",
-        seller="Seller: nebula_resale (4.9 stars). The asking price last changed nine days ago.",
+        seller="Seller: musicmagpie (4.9 stars). The asking price last changed nine days ago.",
         condition="Condition: open box, tested. Dispatched within two working days.",
         spec_header="Specification",
         review_two=(
@@ -720,7 +720,7 @@ _MESSY_VOICES = (
         ),
         review_three='"Arrived well packaged, screen was spotless." — a verified buyer\n',
         closing=(
-            "This listing is part of the nebula_resale storefront; browse their other gear "
+            "This listing is part of the musicmagpie storefront; browse their other gear "
             "from the seller page."
         ),
     ),

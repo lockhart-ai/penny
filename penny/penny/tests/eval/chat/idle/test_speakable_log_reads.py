@@ -340,10 +340,10 @@ def _assert_unreachable_except_by_reading(db: Database, token: str) -> None:
 # case is actually about.
 
 _PATCH_NOTES_JOB = StandingJob(
-    container="mistforge-patch-notes",
-    url="https://mistforge.example.com/patch-notes",
+    container="into-the-breach-patch-notes",
+    url="https://subsetgames.com/patch-notes",
     watched_for="balance changes",
-    description="Notable new Mistforge Tactics patch notes worth knowing about.",
+    description="Notable new Into the Breach patch notes worth knowing about.",
     schedule="FREQ=HOURLY",
     notify=True,
 )

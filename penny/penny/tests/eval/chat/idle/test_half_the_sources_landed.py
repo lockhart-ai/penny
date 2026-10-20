@@ -36,8 +36,9 @@ had nothing to report carries no name, number or URL, so store provenance, which
 those, passes it.  How the reply describes what she did stays variance.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
-accept once the numbers have been read.  Every team, player, page and list is invented, because
-the repo is public.
+accept once the numbers have been read.  The pages and list are invented because the repo is
+public; the clubs read as real-city teams (#2673) with invented rosters, so the keeps tokens
+stay facts no real page could hand the model.
 """
 
 from __future__ import annotations
@@ -110,7 +111,7 @@ _TEAM_NEWS = SynthCollection(
 # The source that cannot be read.  ``fails=True`` makes a matched read raise a PAGE-level
 # failure, so the run renders that address's own ``## browse error:`` section and the page's
 # text never enters the model's context at all.
-_SEALS_UNREACHABLE = CannedPage(match="harborseals", text="", fails=True)
+_SEALS_UNREACHABLE = CannedPage(match="newport-whalers", text="", fails=True)
 
 
 _SOURCE_DOWN_WORLD = World(

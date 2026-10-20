@@ -418,7 +418,7 @@ _SECTION = (
 # a per-field read should show at all.  It is at the house url (`LISTING_URL`) and the house
 # price (`499`), which is what the rest of the suite shares and what the claims below name.
 #
-# The PAGE ITSELF is local, and deliberately not `fixtures.AURORA_LISTING_499`.  This case is
+# The PAGE ITSELF is local, and deliberately not `fixtures.POCKET_LISTING_499`.  This case is
 # the one that needs THREE fields answered, and the shared listing carries two: it has a title,
 # a price, a seller and a self-link, and it says nothing about stock.  Adding a stock line to it
 # would change the page every browse-driven case in the suite reads, which is a measurement this
@@ -431,11 +431,11 @@ _SECTION = (
 # prices, none of which is `499` and none of which repeats the exact item name — a product
 # page's own real estate, not a five-line stand-in.
 _LISTING = (
-    "Aurora Deck 2, handheld console\n"
+    "Analogue Pocket, handheld console\n"
     "\n"
     "Price: $499\n"
     "In stock — three left, open box and tested\n"
-    "Ships from a fictional warehouse within two days.\n"
+    "Ships from the seller's warehouse within two days.\n"
     "\n"
     "About this item\n"
     "This handheld console has a seven inch display, a detachable controller grip and "
@@ -457,7 +457,7 @@ _LISTING = (
     "Included: console, grip, charging cable, and the original box insert.\n"
     "\n"
     "Shipping and returns\n"
-    "Ships from a fictional warehouse within two days of payment clearing. Returns are "
+    "Ships from the seller's warehouse within two days of payment clearing. Returns are "
     "accepted within thirty days provided the unit is returned in the condition it was "
     "sent, with the original cable included. Buyers outside the seller's usual delivery "
     "region should expect an extra day or two in transit depending on the carrier's "
@@ -465,7 +465,7 @@ _LISTING = (
     "original cable or box insert.\n"
     "\n"
     "Seller notes\n"
-    "Seller: nebula_resale (4.9 stars). Listing updated daily. The seller has sold open-box "
+    "Seller: musicmagpie (4.9 stars). Listing updated daily. The seller has sold open-box "
     "electronics on this marketplace for six years and answers questions within a day on "
     "most listings, usually faster on weekdays than on weekends.\n"
     "\n"
@@ -486,11 +486,11 @@ _LISTING = (
     "as a clear improvement over the previous generation's panel, particularly outdoors.\n"
     "\n"
     "Customers also viewed\n"
-    "Aurora Deck 1, handheld console — $219. [View listing](https://faux-market.example/aurora-deck-1)\n"
-    "Aurora Prime, handheld console — $760. [View listing](https://faux-market.example/aurora-prime)\n"
-    "Carrying case for Aurora handhelds — $35. [View listing](https://faux-market.example/aurora-handheld-case)\n"
-    "Charging dock for Aurora handhelds — $58. [View listing](https://faux-market.example/aurora-handheld-dock)\n"
-    "Nimbus Play, handheld console — $349. [View listing](https://faux-market.example/nimbus-play)"
+    "Analogue Mega SG, handheld console — $219. [View listing](https://www.ebay.com/itm/analogue-mega-sg)\n"
+    "Analogue 3D, handheld console — $760. [View listing](https://www.ebay.com/itm/analogue-3d)\n"
+    "Carrying case for Analogue handhelds — $35. [View listing](https://www.ebay.com/itm/analogue-handheld-case)\n"
+    "Charging dock for Analogue handhelds — $58. [View listing](https://www.ebay.com/itm/analogue-handheld-dock)\n"
+    "Nimbus Play, handheld console — $349. [View listing](https://www.ebay.com/itm/nimbus-play)"
 )
 
 
@@ -506,7 +506,7 @@ _LISTING = (
 # dropped a currency symbol, read the page exactly as well as one that copied the line, and an
 # anchor carrying the whole line would fail it.  Unique on the page as well as small: the probe
 # holds both, since a span appearing twice would be satisfied by the wrong one.
-_ITEM_ANCHOR = "Aurora Deck 2"
+_ITEM_ANCHOR = "Analogue Pocket"
 _PRICE_ANCHOR = "499"
 # The ASK is a BOOLEAN — "whether it is in stock" — so the anchor is the page's own phrase for
 # that boolean, never the count beside it: a draw that answers "yes, it's in stock" has answered

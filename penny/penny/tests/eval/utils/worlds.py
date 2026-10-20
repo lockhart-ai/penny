@@ -18,8 +18,8 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from penny.tests.eval.utils.fixtures import (
-    AURORA_LISTING_499,
     LISTING_URL,
+    POCKET_LISTING_499,
     CannedPage,
     SynthCollection,
 )
@@ -89,8 +89,8 @@ class World(BaseModel):
     ``keeps`` is one token set per SOURCE, in that same order — tokens that appear ONLY on that
     source, so a stored copy says which one it came from and an invented one matches neither.
     They identify the SOURCE; they are not a list of what the ask puts in scope.  That
-    distinction is the whole difference between "something from the seals page was written down"
-    and "the seals page's player was written down": the seals page's only item is an executive
+    distinction is the whole difference between "something from the Whalers page was written down"
+    and "the Whalers page's player was written down": the Whalers page's only item is an executive
     appointment, and a round told to collect trades and signings can read the page, correctly
     find nothing in scope, and still be right.  Requiring `volk`/`petra` failed such a round; the
     sibling case has always asked the first question and passes 4/4.
@@ -241,28 +241,28 @@ def _tokens(tokens: tuple[str, ...]) -> str:
 # pages describe the WORLD, not the case, so a second case reading these pages inherits them
 # instead of restating them and drifting.
 
-FOXES_URL = "https://www.ridgelinefoxes.com/news"
-SEALS_URL = "https://www.harborseals.com/news"
+FOXES_URL = "https://www.dailyastorian.com/sports/astoria-otters"
+SEALS_URL = "https://www.dailyastorian.com/sports/newport-whalers"
 
 FOXES_NEWS = CannedPage(
-    match="ridgelinefoxes",
+    match="astoria-otters",
     text=(
-        "Title: Ridgeline Foxes | Official Site — Team News\n"
+        "Title: Astoria Otters — Team News | The Astorian\n"
         f"{FOXES_URL}\n\n"
-        "Foxes sign veteran goalie Aurelio Brandt to a two-year deal — the club "
+        "Otters sign veteran goalie Aurelio Brandt to a two-year deal — the club "
         "confirmed the signing Thursday morning.\n"
-        "Final score: Foxes 3, Rovers 2 (overtime).\n"
-        "Training camp opens next month at Ridgeline Arena.\n"
+        "Final score: Otters 3, Rovers 2 (overtime).\n"
+        "Training camp opens next month at the Astoria Recreation Center.\n"
     ),
 )
 
 SEALS_NEWS = CannedPage(
-    match="harborseals",
+    match="newport-whalers",
     text=(
-        "Title: Harbor Seals | Official Site — Team News\n"
+        "Title: Newport Whalers — Team News | The Astorian\n"
         f"{SEALS_URL}\n\n"
-        "Seals name Petra Volk head of player development after a lengthy search.\n"
-        "Final score: Seals 1, Gulls 4.\n"
+        "Whalers name Petra Volk head of player development after a lengthy search.\n"
+        "Final score: Whalers 1, Gulls 4.\n"
         "Season ticket renewals open Friday.\n"
     ),
 )
@@ -270,7 +270,10 @@ SEALS_NEWS = CannedPage(
 # One trade-or-signing per page, among distractors the ask excludes in as many words (a final
 # score) and ones it merely does not ask for (a training camp date, ticket renewals).  Only the
 # score is an EXCLUSION: whether a training-camp date is notable is a judgement, and asserting
-# it would assert one reading of the ask.
+# it would assert one reading of the ask.  The clubs read as real-city teams (Astoria and
+# Newport, Oregon — #2673); the players' names stay invented, so the keeps tokens are facts no
+# real page could hand the model.
+
 TWO_TEAM_NEWS = World(
     name="base",
     pages=(FOXES_NEWS, SEALS_NEWS),
@@ -284,9 +287,9 @@ TWO_TEAM_NEWS = World(
 # consistently-passing learn case in the suite uses.  The page has exactly one controllable
 # field, its price, so "she kept what the page said" is decidable from a single token.
 
-AURORA_LISTING = World(
+POCKET_LISTING = World(
     name="base",
-    pages=(AURORA_LISTING_499,),
+    pages=(POCKET_LISTING_499,),
     keeps=(("499",),),
     excludes=(),
 )

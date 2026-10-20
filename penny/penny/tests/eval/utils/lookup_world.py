@@ -44,18 +44,18 @@ _PENNY = PennyConstants.MessageAuthor.PENNY
 # own ask/read/write/configure/reply, in her logs), then archived — so "not running as any
 # job" stays literally true, the way it was on main.
 
-HARBOUR_PAGE = "https://camberwick.example/harbour-flag"
+HARBOUR_PAGE = "https://www.newportoregon.gov/harbor-flag"
 HARBOUR_WATCH = "whether the storm pennant is flying"
 HARBOUR_DESTINATION = "harbour-flag-checks"
 HARBOUR_ENTRY_KEY = "Oct 12 check"
 HARBOUR_ENTRY_VALUE = f"{HARBOUR_ENTRY_KEY} — the storm pennant was flying at midday."
-HARBOUR_ASK = "can you keep an eye on the camberwick harbour flag for me?"
+HARBOUR_ASK = "can you keep an eye on the Newport harbor flag for me?"
 HARBOUR_REPLY = "done — I'll check whether the storm pennant is flying and let you know."
 
 # The two words the job's own prompt carries verbatim — ``seed_known_routine`` writes a
 # plain ``f"Check {url} for {extract} and save it."`` straight into ``extraction_prompt``,
 # so both anchors land in the one place a "what does it do" read has to reach.
-HARBOUR_PAGE_WORD = "camberwick"
+HARBOUR_PAGE_WORD = "newport"
 HARBOUR_WATCH_WORD = "pennant"
 
 
@@ -66,7 +66,7 @@ def _seed_harbour_job(db: Database) -> None:
     seed_known_routine(
         db,
         collection=HARBOUR_DESTINATION,
-        description="the camberwick harbour flag",
+        description="the Newport harbor flag",
         url=HARBOUR_PAGE,
         extract=HARBOUR_WATCH,
         entry_key=HARBOUR_ENTRY_KEY,
