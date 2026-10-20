@@ -15,7 +15,7 @@ surface:
 | keep one | ``rules-remember-always`` | an entry in ``rules`` carries the asked behaviour |
 | list them | ``rules-list-standing`` | ``rules`` unchanged; the reply states each rule |
 | forget one | ``rules-forget-one`` | the named rule gone; the other two unchanged |
-| honour one | ``rules-honoured-in-chat-reply`` | the reply ends the way the rule says |
+| honour one | ``rules-honoured-in-chat-reply`` | the reply carries the rule's sign-off |
 
 **The empty section is the state the first case is answered from.**  ``rules``
 seeds empty, so the write that keeps the first rule reads its destination off the
@@ -52,7 +52,7 @@ from penny.penny import Penny
 from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import EVAL_MODELS, Preparer, seeded_run_id
 from penny.tests.eval.drivers.chat import ChatEval
-from penny.tests.eval.utils.assertions import Cohort, ends_with
+from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
@@ -60,6 +60,7 @@ from penny.tests.eval.utils.cohort import (
     TOOL_SEQUENCE,
     SampleObservation,
     SpecCategory,
+    token_stands_in,
 )
 from penny.tests.eval.utils.fixtures import SynthCollection
 from penny.tests.eval.utils.worlds import World
@@ -268,13 +269,14 @@ def _rules_unchanged(seeded: tuple[tuple[str, str], ...]):
     return answer
 
 
-def _the_reply_ends_with_the_sign_off(sample: SampleObservation, _world: World) -> tuple[bool, str]:
-    """The reply ends with the sign-off the standing rule names.  The ask never
+def _the_reply_carries_the_sign_off(sample: SampleObservation, _world: World) -> tuple[bool, str]:
+    """The reply carries the sign-off the standing rule names — present in the message
+    (#2684), however her wording or a trailing emoji sits around it.  The ask never
     mentions the rule, so the only place the word can come from is the section
     itself — the whole point of the honour case.  A violating sample is nameable:
     one that answered correctly and never signed off."""
-    ok = ends_with(_SIGNOFF, sample.reply)
-    return ok, f"the reply ends {sample.reply.rstrip()[-60:]!r}"
+    ok = token_stands_in(_SIGNOFF, sample.reply)
+    return ok, f"the reply is {sample.reply!r}"
 
 
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
@@ -463,7 +465,8 @@ async def test_forgotten_rule_is_gone_and_the_others_stand(chat_eval: ChatEval, 
 # the ask never mentions the rule, so the only place the sign-off can come from is the
 # section itself, which is the whole reachability contract of #2633 made behavioural: a
 # rule that renders and is never acted on is not a rule.  The sign-off token is exact
-# and case-sensitive (``ends_with``); how the reply words the answer in front of it is
+# and case-sensitive (``token_stands_in``) and may sit anywhere in the message — a
+# trailing emoji after it is fine (#2684); how the reply words the answer around it is
 # the reply's spread.
 
 _SIGNOFF_KEY = "sign-off"
@@ -512,8 +515,8 @@ _honoured_tokens_stood_down()
 _HONOUR_REPLY = _RuleCase(
     case_id="rules-honoured-in-chat-reply",
     behaviour=(
-        "In the chat agent, when a standing rule says how every message should end, "
-        "Penny's reply ends that way."
+        "In the chat agent, when a standing rule asks for a sign-off on every "
+        "message, Penny's reply carries it."
     ),
     ask="what do I have in the pantry?",
     also_phrased=(
@@ -537,13 +540,13 @@ for _wording in (_HONOUR_REPLY.ask, *_HONOUR_REPLY.also_phrased):
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_the_reply_ends_the_way_a_standing_rule_says(chat_eval: ChatEval, model: str) -> None:
     """One standing rule about how every message ends, and an ordinary question about
-    the pantry — the reply answers the ask AND ends the way the rule says, with the
-    rules exactly as the turn found them."""
+    the pantry — the reply answers the ask AND carries the sign-off the rule asks
+    for, with the rules exactly as the turn found them."""
     cohort = await _drive(chat_eval, model, _HONOUR_REPLY)
     # STORE — the rule honoured on the delivered reply, and the rules untouched.
     cohort.claim(
-        "state: the reply ends with the rule's sign-off",
-        _the_reply_ends_with_the_sign_off,
+        "state: the reply carries the rule's sign-off",
+        _the_reply_carries_the_sign_off,
         SpecCategory.STORE,
     )
     cohort.claim(

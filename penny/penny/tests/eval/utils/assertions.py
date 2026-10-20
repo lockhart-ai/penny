@@ -69,20 +69,6 @@ _NO_GROUND = World(name="no arms", pages=(), keeps=(), excludes=())
 _ABORTED_REPLY_RATIONALE = "the turn ended on a model error — no reply to read"
 
 
-def ends_with(token: str, text: str) -> bool:
-    """Whether one delivered message ends with a token EXACTLY — the shared fold of
-    the standing-rule honour cases (#2633), where the rule under test names how every
-    message must end and the claim reads the message's tail.
-
-    Exact and case-sensitive on purpose: the token is the rule's own words, and a
-    message that ends with anything else — an emoji, a P.S. — no longer ends with
-    the word the rule named.  The one fold is this check's own rstrip: trailing
-    whitespace is not a word, so a newline after the token is still the token's
-    message.  Nothing else about the text is read — this is the tail, not a
-    phrasing match."""
-    return text.rstrip().endswith(token)
-
-
 # How one sample answers one claim: ``(ok, rationale)``.
 Answer = tuple[bool, str | None]
 # How one sample answers one claim, judged against the world ITS OWN ARM ran against.  The

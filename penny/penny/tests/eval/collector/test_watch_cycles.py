@@ -80,7 +80,7 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
 )
 from penny.tests.eval.drivers.collector_cycles import CollectorCyclesEval, CycleArm
-from penny.tests.eval.utils.assertions import Answer, ends_with
+from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
@@ -89,6 +89,7 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
     StoredEntry,
+    token_stands_in,
 )
 from penny.tests.eval.utils.fixtures import LISTING_URL, CannedPage, datum
 from penny.tests.eval.utils.worlds import World
@@ -1199,15 +1200,16 @@ def _sign_off_arms(case: WatchCase) -> list[CycleArm]:
     ]
 
 
-def _notification_ends_with_the_sign_off(sample: SampleObservation, _world: World) -> Answer:
-    """Every message the job put on the send queue ends the way the standing rule
-    says — exact and case-sensitive (``ends_with``), the rule's own words.  False
+def _notification_carries_the_sign_off(sample: SampleObservation, _world: World) -> Answer:
+    """Every message the job put on the send queue carries the sign-off the standing
+    rule asks for — present in the message (#2684), exact and case-sensitive
+    (``token_stands_in``), however her emoji or wording sits around it.  False
     when nothing was sent: a silent cycle did not honour the rule, it sent nothing
     at all, and the told-once claim beside it names that miss on its own."""
     if not sample.notifications:
         return False, "nothing reached the send queue"
-    off = [msg for msg in sample.notifications if not ends_with(_SIGNOFF, msg)]
-    return not off, f"notification(s) not ending with the sign-off: {off!r}"
+    off = [msg for msg in sample.notifications if not token_stands_in(_SIGNOFF, msg)]
+    return not off, f"notification(s) without the sign-off: {off!r}"
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -1215,13 +1217,13 @@ async def test_the_notification_ends_the_way_a_standing_rule_says(
     collector_cycles_eval: CollectorCyclesEval, model: str
 ) -> None:
     """A standing rule about how every message must end, and a job cycle that has news —
-    the write lands as it would without the rule, and the notification it sends ends the
-    way the rule says."""
+    the write lands as it would without the rule, and the notification it sends carries
+    the sign-off the rule asks for."""
     cohort = await collector_cycles_eval(
         case_id="rules-honoured-in-job-notification",
         behaviour=(
-            "In a price-watch collector, when a standing rule says how every message "
-            "must end, the notification the job sends ends that way."
+            "In a price-watch collector, when a standing rule asks for a sign-off "
+            "on every message, the notification the job sends carries it."
         ),
         area=Area.BACKGROUND_COLLECTORS,
         model=model,
@@ -1244,8 +1246,8 @@ async def test_the_notification_ends_the_way_a_standing_rule_says(
     )
     cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
     cohort.claim(
-        "state: the notification ends with the rule's sign-off",
-        _notification_ends_with_the_sign_off,
+        "state: the notification carries the rule's sign-off",
+        _notification_carries_the_sign_off,
         SpecCategory.STORE,
     )
 
