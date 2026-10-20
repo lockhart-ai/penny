@@ -2110,7 +2110,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     Shows exactly what the collector model sees: the system message (date + the
     stored prompt verbatim + the close-with-``done()`` instruction + the fixed
     runtime rules (#2455 naive baseline) + this collector's recent run history) and
-    the bare user turn (empty for a background agent).  Date and run timestamps are
+    the user turn stating the run's situation (#2710).  Date and run timestamps are
     normalised to placeholders; everything else is asserted char-for-char so the
     structure is visible and drift is caught.
 
@@ -2139,7 +2139,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     collector._install_tools(collector.get_tools())
 
     system_prompt = await collector._build_system_prompt(None)
-    messages = collector._build_messages("", None, system_prompt)
+    messages = collector._build_messages(collector._cycle_user_turn(), None, system_prompt)
 
     # ── System message: date + body + runtime-rules tail + run history ─────
     system_text = _normalise_stamps(
@@ -2188,9 +2188,19 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         f"System mismatch:\n{system_text!r}\n\nvs expected:\n{expected_system!r}"
     )
 
-    # ── User turn: bare (empty) — a collector runs with no user message ────
+    # ── User turn: the cycle's own situation sentence (#2710) ──────────────
+    turn = re.sub(
+        r"\w+day, \w+ \d{1,2}, \d{4} at \d{2}:\d{2} [AP]M [A-Z]{2,5}\b",
+        "<LOCAL NOW>",
+        messages[-1].content,
+    )
     assert messages[-1].role == "user"
-    assert messages[-1].content == ""
+    assert turn == (
+        "Scheduled run of `board-games`, <LOCAL NOW>. Nobody is reading this "
+        "conversation — text written here reaches no one. This run acts only "
+        "through its tool calls: what it stores, and its close with "
+        "done(notify=…), which is how the user hears about it."
+    ), f"User turn mismatch:\n{messages[-1].content!r}"
 
 
 def _datetime_line(messages: list[LlmMessage]) -> str:

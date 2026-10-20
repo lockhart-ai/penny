@@ -68,7 +68,12 @@ from penny.constants import (
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
 from penny.database.models import MemoryEntry, MemoryRow
-from penny.datetime_utils import format_log_timestamp, stored_as_utc, user_timezone_name
+from penny.datetime_utils import (
+    format_log_timestamp,
+    format_user_timestamp,
+    stored_as_utc,
+    user_timezone_name,
+)
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.notification import (
@@ -909,6 +914,27 @@ class Collector(BackgroundAgent):
         return "cycle ended with the program unfinished"
 
     # ── Per-cycle prompt + tool scope ─────────────────────────────────────
+
+    def _cycle_user_turn(self) -> str:
+        """The cycle's user turn states the run's true situation (#2710).
+
+        The empty turn read as a conversation with someone waiting for an answer,
+        so a cycle that had assembled its digest wrote it to "the user" as prose
+        instead of calling its tools — and the rerolls on the unchanged context
+        returned the same prose (measured on the LFM2.5-on-Liquid re-run: 11 of 15
+        cycles died with unusable text-instead-of-tool draws).  The turn now says
+        what the situation is — a scheduled run, no reader, action only through
+        the tools and the close — and gives no order.
+
+        The stamp renders on the user's own wall clock, the same way the system
+        prompt's ``Current date and time:`` anchor does (``format_user_timestamp``
+        over ``db.clock.now()`` — the pinned clock in eval), so the two reads of
+        "now" the cycle is shown agree.
+        """
+        return Prompt.COLLECTOR_CYCLE_USER_TURN.format(
+            job=self._require_target().name,
+            now=format_user_timestamp(self.db.clock.now(), user_timezone_name(self.db)),
+        )
 
     async def _build_system_prompt(self, user: str | None) -> str:
         """System prompt for the bound target — re-fetched each cycle.

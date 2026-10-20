@@ -372,7 +372,7 @@ class Agent:
         system_prompt = await self._build_system_prompt(primary_user)
 
         response = await self.run(
-            prompt="",
+            prompt=self._cycle_user_turn(),
             max_steps=self.get_max_steps(),
             call_link=call_link,
             system_prompt=system_prompt,
@@ -433,6 +433,13 @@ class Agent:
     def get_max_steps(self) -> int:
         """Cap on agentic loop iterations — reads the shared runtime config."""
         return int(self.config.runtime.MAX_STEPS)
+
+    def _cycle_user_turn(self) -> str:
+        """The user turn a background cycle opens on — empty by default.
+
+        A subclass states the run's situation here when an empty turn reads to the
+        model as a conversation with someone waiting (#2710)."""
+        return ""
 
     def _record_turn_failure(self, run_id: str, reason: str) -> None:
         """A turn that needed the last-draw-or-account fallback machinery (#2355 part

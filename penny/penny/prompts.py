@@ -368,6 +368,23 @@ class Prompt:
         "told them: a quiet cycle is a normal outcome, not a failure."
     )
 
+    # The cycle's user turn (#2710) — the one message a job's cycle opens on, empty
+    # until now.  Nothing in the cycle's context contradicted the conversation
+    # reading: the system prompt states the situation once, at the end, and the
+    # only user turn said nothing, so the model read the cycle as a chat with
+    # someone waiting and wrote its digest to "the user" as prose instead of
+    # calling its tools (measured: 11 of 15 cycles died with unusable
+    # text-instead-of-tool draws, their rerolls returning the same prose on the
+    # unchanged context).  This states the run's true situation; it gives no order.
+    # ``{job}`` and ``{now}`` are filled per cycle — the stamp the same way the
+    # system prompt renders the current time.
+    COLLECTOR_CYCLE_USER_TURN = (
+        "Scheduled run of `{job}`, {now}. Nobody is reading this conversation — "
+        "text written here reaches no one. This run acts only through its tool "
+        "calls: what it stores, and its close with done(notify=…), which is how "
+        "the user hears about it."
+    )
+
     # The one tools-off draw a run falls back to when it has nothing more to do but
     # hasn't failed outright (#2370, docs/principles.md §2 item 9): the step limit, a
     # spent reroll budget, an empty answer, nothing learned, nothing to configure.
