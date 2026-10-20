@@ -20,7 +20,7 @@ had already asked Penny to sign off, so the job's message honours it); the ask's
 
 **The digest world is the collector case's** — imported, not copied, so the two loci
 of one behaviour read one set of facts: four front pages on real outlets the model
-recognises (CBC News, Reuters, AP News, BBC — served whole from the local fixture
+recognises (The Guardian, NPR, Al Jazeera, DW — served whole from the local fixture
 mechanism, headlines fictional but plausible) carrying twelve constant headlines,
 three per source, wrapped in five masthead voices that form the case's five arms.
 

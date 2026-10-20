@@ -129,98 +129,99 @@ class Voice(NamedTuple):
 
 # Real outlets, served from the same local fixture mechanism — the model recognises
 # these mastheads and URLs, where invented ones read as a private world and measurably
-# change its behaviour (code-owner ruling, Oct 19).  The HEADLINES stay fictional but
-# plausible, each anchored on a real place or body the model knows.
-CBC = Source(
-    masthead="CBC News",
-    url="https://www.cbc.ca",
-    match="cbc.ca",
+# change its behaviour (code-owner ruling, Oct 19).  The outlets are chosen so no real
+# headline of theirs is being simulated: the HEADLINES stay fictional but plausible,
+# each anchored on a real place or body the model knows.
+GUARDIAN = Source(
+    masthead="The Guardian",
+    url="https://www.theguardian.com",
+    match="theguardian.com",
     headlines=(
         Headline(
-            "Halifax ferry terminal reopens a month early after an eighteen-month refit",
-            "https://www.cbc.ca/news/canada/nova-scotia/halifax-ferry-terminal-refit-opens-early",
+            "Portsmouth ferry terminal reopens a month early after an eighteen-month refit",
+            "https://www.theguardian.com/uk-news/portsmouth-ferry-terminal-refit-opens-early",
             "ferry",
         ),
         Headline(
-            "Ottawa council rejects the downtown tunnel toll plan after a heated debate",
-            "https://www.cbc.ca/news/canada/ottawa/ottawa-tunnel-toll-plan-vote",
-            "tunnel",
-        ),
-        Headline(
-            "Nova Scotia kelp farm wins the province's first coastal lease",
-            "https://www.cbc.ca/news/canada/nova-scotia/kelp-farm-first-coastal-lease",
-            "kelp",
-        ),
-    ),
-)
-REUTERS = Source(
-    masthead="Reuters",
-    url="https://www.reuters.com",
-    match="reuters.com",
-    headlines=(
-        Headline(
-            "Songbird atlas passes 40,000 sightings in its first winter",
-            "https://www.reuters.com/science/songbird-atlas-first-winter-count",
-            "songbird",
-        ),
-        Headline(
-            "Otter cameras catch a first litter in the Norfolk marshes",
-            "https://www.reuters.com/world/uk/otter-cameras-first-litter-norfolk-marshes",
-            "otter",
-        ),
-        Headline(
-            "Night-sky survey logs a record meteor count over the Atacama",
-            "https://www.reuters.com/science/night-sky-record-meteor-count-atacama",
-            "meteor",
-        ),
-    ),
-)
-AP_NEWS = Source(
-    masthead="AP News",
-    url="https://apnews.com",
-    match="apnews.com",
-    headlines=(
-        Headline(
-            "Luton stun the league leaders with a late winner",
-            "https://apnews.com/sport/luton-stun-league-leaders",
-            "luton",
-        ),
-        Headline(
-            "Rowing eight retain the head of the river title",
-            "https://apnews.com/sport/rowing-eight-head-of-the-river",
-            "rowing",
-        ),
-        Headline(
-            "Velodrome bids to host next year's national track meeting",
-            "https://apnews.com/sport/velodrome-national-track-meeting-bid",
-            "velodrome",
-        ),
-    ),
-)
-BBC = Source(
-    masthead="BBC News",
-    url="https://www.bbc.com/news",
-    match="bbc.com",
-    headlines=(
-        Headline(
-            "Glasgow distillery doubles its bottling line with a new hall",
-            "https://www.bbc.com/news/uk-scotland-glasgow-distillery-bottling-line",
-            "distillery",
-        ),
-        Headline(
             "Brighton marina hotel wins planning permission after a two-year appeal",
-            "https://www.bbc.com/news/uk-england-brighton-marina-hotel-planning-appeal-win",
+            "https://www.theguardian.com/uk-news/brighton-marina-hotel-planning-appeal-win",
             "marina",
         ),
         Headline(
             "Belfast cannery workers ratify a three-year pay deal",
-            "https://www.bbc.com/news/uk-northern-ireland-belfast-cannery-workers-ratify-pay-deal",
+            "https://www.theguardian.com/uk-news/belfast-cannery-workers-ratify-pay-deal",
             "cannery",
         ),
     ),
 )
+NPR = Source(
+    masthead="NPR",
+    url="https://www.npr.org",
+    match="npr.org",
+    headlines=(
+        Headline(
+            "Seattle council rejects the downtown tunnel toll plan after a heated debate",
+            "https://www.npr.org/seattle-council-tunnel-toll-plan-vote",
+            "tunnel",
+        ),
+        Headline(
+            "Maine kelp farm wins the state's first coastal lease",
+            "https://www.npr.org/maine-kelp-farm-first-coastal-lease",
+            "kelp",
+        ),
+        Headline(
+            "Songbird atlas passes 40,000 sightings in its first winter",
+            "https://www.npr.org/science/songbird-atlas-first-winter-count",
+            "songbird",
+        ),
+    ),
+)
+AL_JAZEERA = Source(
+    masthead="Al Jazeera",
+    url="https://www.aljazeera.com",
+    match="aljazeera.com",
+    headlines=(
+        Headline(
+            "Luton stun the league leaders with a late winner",
+            "https://www.aljazeera.com/sports/luton-stun-league-leaders",
+            "luton",
+        ),
+        Headline(
+            "Rowing eight retain the head of the river title",
+            "https://www.aljazeera.com/sports/rowing-eight-head-of-the-river",
+            "rowing",
+        ),
+        Headline(
+            "Velodrome bids to host next year's national track meeting",
+            "https://www.aljazeera.com/sports/velodrome-national-track-meeting-bid",
+            "velodrome",
+        ),
+    ),
+)
+DW = Source(
+    masthead="DW",
+    url="https://www.dw.com",
+    match="dw.com",
+    headlines=(
+        Headline(
+            "Otter cameras catch a first litter in the Spreewald marshes",
+            "https://www.dw.com/en/otter-cameras-first-litter-spreewald-marshes",
+            "otter",
+        ),
+        Headline(
+            "Night-sky survey logs a record meteor count over the Eifel",
+            "https://www.dw.com/en/night-sky-record-meteor-count-eifel",
+            "meteor",
+        ),
+        Headline(
+            "Cologne distillery doubles its bottling line with a new hall",
+            "https://www.dw.com/en/cologne-distillery-doubles-bottling-line",
+            "distillery",
+        ),
+    ),
+)
 
-SOURCES = (CBC, REUTERS, AP_NEWS, BBC)
+SOURCES = (GUARDIAN, NPR, AL_JAZEERA, DW)
 
 # Every headline's distinctive word — the answer the delivered message owes, all twelve.
 # This is the claim that reproduces the failure: a message drawn from a cut preview can
@@ -236,7 +237,7 @@ _STANDFIRSTS: dict[str, str] = {
         "Crews finished the pier works six weeks ahead of the schedule the council was given."
     ),
     "tunnel": ("The toll proposal fell 7-4 after an hour of submissions from riverside residents."),
-    "kelp": "The lease is the first the harbour board has granted for cultivation.",
+    "kelp": "The lease is the first the state's marine board has granted for cultivation.",
     "songbird": (
         "Volunteers logged sightings from every parish in the valley over the winter months."
     ),
@@ -253,19 +254,19 @@ _STANDFIRSTS: dict[str, str] = {
 # Per-source furniture — constant across arms, like the headline blocks: a weather strip,
 # field notes, fixtures, or a markets line, none of it a headline and none of it linked.
 _FURNITURE: dict[str, tuple[str, str]] = {
-    "cbc.ca": (
+    "theguardian.com": (
         "Weather: low cloud clearing by noon, highs near 14, a southerly breeze on the water.",
         "Tide times: 06:41 high, 13:02 low, 19:20 high.",
     ),
-    "reuters.com": (
+    "npr.org": (
         "Field notes: the reserve's boardwalk closes for repairs after this weekend.",
         "Sky diary: the observatory opens its dome to visitors on the first Friday of the month.",
     ),
-    "apnews.com": (
+    "aljazeera.com": (
         "Fixtures: the cup draw is made on Monday evening.",
         "Club notes: season cards go on sale at the end of the month.",
     ),
-    "bbc.com": (
+    "dw.com": (
         "Markets: the harbour index closed a little firmer, led by the shipping lines.",
         "Briefing: the chamber's trade breakfast is on Thursday; seats are limited.",
     ),
