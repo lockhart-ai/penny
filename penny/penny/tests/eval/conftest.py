@@ -962,6 +962,39 @@ class _BrowseReadError(Exception):
     """
 
 
+def canned_browse_request_fn(
+    pages: list[CannedPage], search_url: str
+) -> Callable[[str, dict], Awaitable[tuple[str, str | None, PageReading]]]:
+    """Build the request function ``install_browse`` wires behind the browse tool —
+    extracted so the matching rules are unit-testable without a Penny (#2680).
+
+    The browse tool turns a plain-text query into ``SEARCH_URL`` + ``quote(query)``
+    and reads a URL verbatim, so ``search_url`` is what tells the two request shapes
+    apart: a URL starting with it is a SEARCH and matches only ``search=True``
+    pages; anything else is a page read and matches only ``search=False`` ones —
+    a search naming a shop gets the results page, never that shop's body.  A search
+    the world has no search page for gets the honest ``_NO_RESULTS_PAGE``.  A
+    ``match=""`` page is the wildcard and answers both shapes (the all-fail world
+    depends on it); page order still decides first match, within a shape.
+    """
+
+    async def request_fn(method: str, params: dict) -> tuple[str, str | None, PageReading]:
+        url = params.get("url", "").lower()
+        is_search = url.startswith(search_url.lower())
+        for page in pages:
+            if page.match and page.search != is_search:
+                continue
+            if page.match.lower() in url:
+                if page.fails:
+                    raise _BrowseReadError(
+                        f"failed to read {url} after 3 attempts: the source could not be read"
+                    )
+                return page.text, page.image, page.reading
+        return _NO_RESULTS_PAGE, None, PageReading.ARTICLE
+
+    return request_fn
+
+
 def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
     """Replace the generic browse mock with query-aware canned pages.
 
@@ -970,25 +1003,15 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
     model browsed.  A real tool-reasoning contract needs to score the model's
     *subsequent* call — did it extract the right fact/URL and chain to the
     correct next tool?  So a case seeds realistic pages, each keyed by a
-    ``match`` substring.  A query the model issues becomes a URL (search →
-    ``SEARCH_URL`` + ``quote(query)``; direct read → the URL itself), so a
-    case-token substring matches both shapes, and a refined follow-up query
-    maps to a different page — supporting multi-hop chains.  A ``fails=True``
-    page raises instead of returning, so the query renders ``## browse error:``
-    (see ``CannedPage``).  Installed on BOTH agents (chat + collector) since the
+    ``match`` substring and a declared shape: a plain-text query becomes a search
+    URL (``SEARCH_URL`` + ``quote(query)``) and lands on the world's ``search``
+    page, or honest no-results; a direct read lands on the page at that URL —
+    never a page body under a search header (#2680, see ``CannedPage``).  A
+    ``fails=True`` page raises instead of returning, so the query renders
+    ``## browse error:``.  Installed on BOTH agents (chat + collector) since the
     generic mock sits on both.
     """
-
-    async def request_fn(method: str, params: dict) -> tuple[str, str | None, PageReading]:
-        url = params.get("url", "").lower()
-        for page in pages:
-            if page.match.lower() in url:
-                if page.fails:
-                    raise _BrowseReadError(
-                        f"failed to read {url} after 3 attempts: the source could not be read"
-                    )
-                return page.text, page.image, page.reading
-        return _NO_RESULTS_PAGE, None, PageReading.ARTICLE
+    request_fn = canned_browse_request_fn(pages, str(penny.config.runtime.SEARCH_URL))
 
     def provider() -> tuple[Callable, MagicMock]:
         return request_fn, MagicMock(check_domain=AsyncMock())

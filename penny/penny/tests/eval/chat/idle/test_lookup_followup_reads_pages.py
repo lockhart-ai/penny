@@ -287,6 +287,7 @@ _SEARCH_PAGE = CannedPage(
         "(https://yelp.com/biz/beaverton-camera-service-beaverton)\n"
         "Precision light-seal cutting to your measurements. Mail-in service.\n"
     ),
+    search=True,
 )
 
 PAGES = (

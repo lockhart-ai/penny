@@ -61,19 +61,24 @@ class SynthCollection:
 class CannedPage:
     """One realistic page the mock browser returns for a matching query/URL.
 
-    ``match`` is a lowercase substring tested against the request URL — a search
-    query becomes ``SEARCH_URL`` + ``quote(query)`` and a direct read is the URL
-    itself, so a single distinctive token (no spaces — URLs are percent-encoded)
-    matches both shapes.  ``text`` must read like a real page: a ``Title:`` first
-    line and the source URL *in the visible body* (the model cites URLs from the
-    text it sees).  For search-shaped pages, put the fact lines adjacent to a
-    solo markdown-link line so search trimming keeps them.  See ``install_browse``.
+    ``match`` is a lowercase substring tested against the request URL, and
+    ``search`` declares which requests the page answers (#2680) — the browse tool
+    turns a plain-text query into ``SEARCH_URL`` + ``quote(query)`` and reads a
+    URL verbatim, so the mock tells the two apart by that prefix and matches
+    SEARCH pages only against searches, CONTENT pages only against URL reads:
+    a real search returns a results page, never some page's body.  ``search=True``
+    is a search-results page (its ``text`` lists links; put the fact lines
+    adjacent to a solo markdown-link line so search trimming keeps them);
+    ``search=False`` (the default) is a page at its own URL.  ``text`` must read
+    like a real page: a ``Title:`` first line and the source URL *in the visible
+    body* (the model cites URLs from the text it sees).  See ``install_browse``.
 
     ``fails=True`` makes a matched read RAISE a *page-level* failure inside the
     browse tool (one bad/blocked URL), so the run renders a ``## browse error:``
     "try a different source" section for that query (the only place a read failure
     is visible — see ``database/memory/objects.py`` run-health tally).  A
-    ``match=""`` page matches every URL (``"" in url`` is always true), so a single
+    ``match=""`` page matches EVERY request — search or URL read (``"" in url`` is
+    always true), regardless of ``search`` — so a single
     ``CannedPage(match="", fails=True)`` makes *every* source unreachable — the
     "browsed a lot, read nothing usable" cycle.  ``text`` is ignored when ``fails`` is set.
 
@@ -90,6 +95,7 @@ class CannedPage:
     image: str | None = None
     fails: bool = False
     reading: PageReading = PageReading.ARTICLE
+    search: bool = False
 
 
 def datum(page: CannedPage, old: str, new: str) -> CannedPage:
@@ -430,6 +436,7 @@ MULTIHOP_PAGES = (
             "(https://www.mobygames.com/forums/into-the-breach-comparison)\n"
             "Forty-one replies, mostly about the co-op campaign's difficulty curve.\n"
         ),
+        search=True,
     ),
 )
 
@@ -465,6 +472,7 @@ RESEARCH_PAGES = (
             "Animal Well launched this week — a hand-drawn metroidvania with a "
             "grappling-hook traversal system and a branching map, priced at $19.\n"
         ),
+        search=True,
     ),
     # The detail page, in case the model reads the linked URL ("read actual pages").
     CannedPage(
@@ -490,6 +498,7 @@ THINKING_PAGES = (
             "A new cooperative board game called Forbidden Island launched this month, "
             "featuring a modular ocean board and a 60-minute play time.\n"
         ),
+        search=True,
     ),
     # The detail page, in case the model reads the linked URL rather than the snippet.
     CannedPage(

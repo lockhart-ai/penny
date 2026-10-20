@@ -227,6 +227,7 @@ _SEARCH_PAGE = CannedPage(
         "(https://www.wikihow.com/Care-for-Leather-Shoes)\n"
         "Six tips for making resoled shoes last, with a short list of conditioners.\n"
     ),
+    search=True,
 )
 
 # ── The five wordings ────────────────────────────────────────────────────────

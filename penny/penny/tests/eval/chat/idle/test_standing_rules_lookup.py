@@ -295,6 +295,7 @@ _SEARCH_PAGE = CannedPage(
         "[stumptownsealworks.com](https://stumptownsealworks.com)\n"
         "Precision light-seal cutting to your measurements. Mail-in service.\n"
     ),
+    search=True,
 )
 
 PAGES = (

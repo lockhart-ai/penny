@@ -457,6 +457,7 @@ _PAGES = (
             "(https://northlightphoto.com/repairs)\n"
             "A SODO bench at 3901 Utah Avenue S handling vintage light-seal kits.\n"
         ),
+        search=True,
     ),
 )
 

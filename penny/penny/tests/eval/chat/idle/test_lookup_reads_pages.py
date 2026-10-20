@@ -238,6 +238,7 @@ _SEARCH_PAGE = CannedPage(
         "(https://en.wikipedia.org/wiki/Piano_tuning)\n"
         "How often to tune, where to put the piano, and what humidity does.\n"
     ),
+    search=True,
 )
 
 # ── The five wordings ────────────────────────────────────────────────────────

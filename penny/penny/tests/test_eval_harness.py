@@ -186,6 +186,7 @@ from penny.tests.eval.conftest import (
     _turn_kind,
     _turns_to_events,
     _write_sample_report,
+    canned_browse_request_fn,
     collection_entries,
     draw_rerolled,
     env_seconds,
@@ -204,6 +205,9 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
     stored_images,
     tool_call_name,
+)
+from penny.tests.eval.conftest import (
+    _BrowseReadError as browse_read_error,
 )
 from penny.tests.eval.conftest import (
     _stated_behaviour as stated_behaviour,
@@ -1197,6 +1201,66 @@ async def test_a_failing_canned_mailbox_raises_on_every_search_and_read() -> Non
         await failing.search_emails(text="rooftop solar quote")
     with pytest.raises(MailboxReadError):
         await failing.read_emails([THE_QUOTE.id])
+
+
+_SEARCH_URL = "https://duckduckgo.com/?q="
+
+_MOCK_SHOP_PAGE = CannedPage(
+    match="bluebird",
+    text="Title: Bluebird Camera Works — services\nSource: https://bluebirdcameraworks.com/services\n",
+)
+_MOCK_SEARCH_PAGE = CannedPage(
+    match="portland",
+    text="Title: camera repair in Portland — search results\n[Bluebird Camera Works](https://bluebirdcameraworks.com/services)\n",
+    search=True,
+)
+
+
+async def _canned_browse(pages: list[CannedPage], url: str) -> str:
+    request_fn = canned_browse_request_fn(pages, _SEARCH_URL)
+    text, _, _ = await request_fn("GET", {"url": url})
+    return text
+
+
+async def test_a_canned_search_names_a_page_and_gets_the_results_page_not_its_body() -> None:
+    """``canned_browse_request_fn`` (#2680) — the shape split the declared ``search`` field
+    buys.  The browse tool turns a plain-text query into ``SEARCH_URL`` + ``quote(query)``
+    and reads a URL verbatim, so a search whose query NAMES a page (its quoted words contain
+    the page's match token) used to return that page's full body under ``## browse search:``.
+    Now: a search matches only ``search=True`` pages — the world's results page, or the
+    honest no-results when the world has none; a URL read matches only ``search=False``
+    pages; and a ``match=""`` wildcard still answers both shapes, the all-fail world's
+    contract."""
+    # A search naming the shop gets the RESULTS page, never the shop's body.
+    search_naming_the_page = f"{_SEARCH_URL}address%20for%20bluebird%20camera%20works%20portland"
+    assert (
+        await _canned_browse([_MOCK_SHOP_PAGE, _MOCK_SEARCH_PAGE], search_naming_the_page)
+        == _MOCK_SEARCH_PAGE.text
+    )
+    # A URL read gets the page at that URL.
+    assert (
+        await _canned_browse(
+            [_MOCK_SHOP_PAGE, _MOCK_SEARCH_PAGE], "https://bluebirdcameraworks.com/services"
+        )
+        == _MOCK_SHOP_PAGE.text
+    )
+    # A search the world has no results page for gets the honest no-results — never a body.
+    world_without_search_page = [_MOCK_SHOP_PAGE]
+    no_results = await _canned_browse(world_without_search_page, search_naming_the_page)
+    assert no_results.startswith("Title: No results")
+    assert "services" not in no_results
+    # A URL read of an address no page owns is no-results, as before.
+    unknown_read = await _canned_browse(
+        [_MOCK_SHOP_PAGE, _MOCK_SEARCH_PAGE], "https://nowhere.example/page"
+    )
+    assert unknown_read.startswith("Title: No results")
+
+    # The wildcard still answers every shape, and ``fails`` still raises page-level.
+    wildcard = CannedPage(match="", text="", fails=True)
+    with pytest.raises(browse_read_error):
+        await _canned_browse([wildcard], search_naming_the_page)
+    with pytest.raises(browse_read_error):
+        await _canned_browse([wildcard], "https://bluebirdcameraworks.com/services")
 
 
 def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_message() -> None:
