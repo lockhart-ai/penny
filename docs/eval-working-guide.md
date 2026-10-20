@@ -42,8 +42,8 @@ The path, in order. Each step says who does it, what it produces, and where the 
 4. **Distil** (the coordinator): the user's goal, the correct end state as facts, the entry
    condition, the smallest input that still shows the failure. §5 below.
 5. **Check what already covers it** (the coordinator), against `docs/eval-catalogue.md`. §5 below.
-6. **Reproduce, then genericise** (the coordinator), replaying the recorded input before inventing
-   values of the same shape. §5 below.
+6. **Reproduce, then genericise** (the coordinator), replaying the recorded input before swapping
+   in real values of the same kind. §5 below.
 7. **Propose the case** (the coordinator) to the code owner, one `ask` card, using the form in §6
    "The case proposal" below — the behaviour sentence, the world, the wordings and the claims are
    his to rule on.
@@ -138,8 +138,8 @@ two kinds, and nothing else is an assertion
   gate answers. A mechanism — a gate, a parser, a bound — is proved separately by a deterministic
   mock test in `make check`, not by an eval case
   ([`docs/principles.md` §4.4](principles.md)).
-- **A reply claim reads a fact, never vocabulary.** A token only one source carries, invented for
-  the case, with no whitespace, since typography folding covers a declared set of spaces and not
+- **A reply claim reads a fact, never vocabulary.** A token only one source carries, swapped in
+  for the recorded one, with no whitespace, since typography folding covers a declared set of spaces and not
   every space. A list of words a reply "should" contain is tuned to whichever model happened to
   be read first — the thing this design replaces.
 - **A claim production already guarantees is not made.** If a validator already re-rolls a draw
@@ -371,10 +371,10 @@ python -m penny.tests.eval.utils.replay --id <promptlog id> --samples 12
 ```
 
 (run inside the penny container; a non-collector prompt, including every chat turn, is replayed
-verbatim automatically). Once it reproduces, genericise: replace every real value with an invented
-one of the same shape, and confirm it still reproduces before it goes into a fixture. If
-genericising kills the repro, the trigger was in the specifics — narrow back to what it actually
-was.
+verbatim automatically). Once it reproduces, genericise: swap every real value for another real
+one of the same kind (topics changed for privacy), and confirm it still reproduces before it goes
+into a fixture. If the swap kills the repro, the trigger was in the specifics — narrow back to
+what it actually was.
 
 ## 6 · The case proposal
 
@@ -386,7 +386,8 @@ is short, and every line is filled or marked empty with the reason it's empty:
 - **Layer and driver; area; edge** (if it moves the machine).
 - **Covered today?** The nearest existing cases, and why they don't cover it.
 - **World:** the sources and what each says; what the store and the machine hold at the start; the
-  invented anchors; a line on how its shape and size match the real input.
+  real anchors swapped in, each of the same kind as the recorded one; a line on how its shape and
+  size match the real input.
 - **Wordings:** the five, and the facts every one of them carries.
 - **Landed / Store / Provenance:** the claims under each, or "empty" with the reason.
 - **Measured:** the features, including any the case declares itself, and the token cost
@@ -397,7 +398,7 @@ is short, and every line is filled or marked empty with the reason it's empty:
 - **Model and provider.**
 - **Rulings needed:** only real open questions, each with a recommendation.
 
-**A filled example**, for an invented failure: asked to watch a listing on a second page, Penny
+**A filled example**, for a genericised failure: asked to watch a listing on a second page, Penny
 confirmed the job against the page named by an earlier, already-called-off round in the same
 conversation, not the page the current ask named.
 
@@ -413,7 +414,7 @@ conversation, not the page the current ask named.
 - **World:** two ordinary listing pages (the called-off one, the new one) and the empty
   collection the job writes to; the store holds nothing from the called-off round, since it was
   never applied; the called-off round is seeded as the conversation's own threaded history, not an
-  invented row. Invented anchors: each page's URL, the job's watched-field token. Shape and size
+  invented row. Real anchors swapped in: each page's URL, the job's watched-field token. Shape and size
   match the idle→apply cases already in the suite — two real-shaped listing pages and one prior
   closed round, not a trimmed single-turn stand-in.
 - **Wordings:** five phrasings of the new ask ("watch this one instead", "actually, track this
@@ -439,7 +440,7 @@ coordinator fills in everything the docs already decide:
 
 - **Settled without asking:** five wordings by three samples; the suite's model; the layer (where
   the wrong decision was made); that claims are facts only and routes are measured; where the file
-  goes; that values are invented.
+  goes; that values are real ones swapped in of the same kind.
 - **Asked, in one card:** whether the behaviour sentence is the behaviour wanted; any claim that
   encodes a product judgement; new case or existing one, when the rule above doesn't settle it;
   anything about the world that changes what "correct" means.
@@ -465,11 +466,12 @@ coordinator fills in everything the docs already decide:
   wording is a case that measures five different behaviours and calls the result one.
 - **The world has the shape and size of the real input, not a trimmed stand-in.** A sparse page
   or a five-link store misleads — it doesn't exercise what a real ninety-link front page or
-  real-sized store does. A world is synthetic in content and faithful in structure: transcribe
-  the shape of a recorded input (its sections, its counts, its odd members) with invented
-  values. This is the genericising step of the log-to-test-to-fix loop (`penny/CLAUDE.md`, the
+  real-sized store does. A world is real in its nouns and faithful in structure: transcribe
+  the shape of a recorded input (its sections, its counts, its odd members) with real values
+  swapped in of the same kind (topics changed for privacy). This is the genericising step of
+  the log-to-test-to-fix loop (`penny/CLAUDE.md`, the
   live eval suite section): pull the real trigger from `promptlog`, confirm it reproduces, swap
-  every real value for a synthetic one of the same shape, and confirm it still reproduces before
+  every real value for another real one of the same kind, and confirm it still reproduces before
   committing the fixture.
 - **Go through the two kinds of check (§3) and say what is claimed under each, or that it is
   empty.** An empty category is a report, not an omission — say which of the two it is.
@@ -523,8 +525,8 @@ ground.
    visible body — transcribed from a recorded input's structure, not a five-link stand-in for
    a ninety-link page. A `SynthCollection` is `(name, description, entries)`, each entry
    written `"<key> — <content>"` (`SYNTH_KEY_SEPARATOR`) the way a real one is stored.
-3. **Invent values that are checkable.** Every fact a claim reads is a token invented for
-   this case, with no whitespace, appearing in exactly one place — so finding it in the store
+3. **Swap in values that are checkable.** Every fact a claim reads is a real value of its kind,
+   swapped for the recorded one, with no whitespace, appearing in exactly one place — so finding it in the store
    or the reply is evidence it came from there and nowhere else. `keeps` names a token **per
    source** (what identifies that source, not what the ask puts in scope); `excludes` names
    tokens that must appear on no source the case keeps; `answers` names what the reply itself
@@ -608,8 +610,8 @@ live model.
 
 **A chat case** — `memory-look-up-and-save`
 (`chat/idle/test_chat_memory_stories.py`). The world is one search-and-detail page pair plus
-one empty collection the ask names; the subject is invented so the model cannot answer from
-what it already knows:
+one empty collection the ask names; the subject is a real game name swapped in for the recorded
+one, chosen so the model cannot answer from what it already knows:
 
 ```python
 world=World(name="mistforge", pages=MULTIHOP_PAGES, keeps=(), excludes=(), stores=(_GAMES,)),

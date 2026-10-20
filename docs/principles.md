@@ -271,3 +271,20 @@ The eval cases are where the code owner states what Penny should do. The contrac
 
 8. **A test exposing a Penny gap is a good test.** A well-formed case that fails because
    Penny falls short stands as written; the gap is fixed in Penny, never by bending the case.
+
+9. **Eval worlds use real proper nouns the model recognises.** *"we must use
+   real proper nouns that the model recognizes we just need to swap them from the ones from
+   my real logs"*
+   - An invented place, person, brand or product reads as a simulation, and the model reasons
+     from that: it doubts a search can find anything, so it offers instead of acting.
+   - When a case is cloned from real use, each real name is swapped for another real one of
+     the same kind, never an invented one.
+   - Topics are still changed for privacy.
+
+10. **Diagnose a case through its failing samples' thinking.** *"always use the
+    thinking to diagnose eval cases. almost always the model is acting rationally, the solution
+    is always the inputs, the prompt, the input data, the tool shape, etc. the thinking often
+    will tell us where the gap is"*
+    - Read the thinking before proposing a lever.
+    - The thinking is where the rational-actor rule (§3.1) meets a case: it is the model's
+      account of the state it saw, so it points at the gap in the inputs, not at the model.
