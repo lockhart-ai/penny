@@ -40,9 +40,10 @@ against a world where every source errors.  The words are identical and the worl
 opposite, so the negative direction is expressed as the world rather than as a clause in a
 sentence.
 
-THE WATCHED VALUE IS ALWAYS INVENTED, and always ONE TOKEN.  A fixture whose fact the model
-already knows measures nothing, so every scored datum here is made up: a posted admission
-price, a maker's name.  Each is a single whitespace-free token — digits or one proper noun —
+THE WATCHED VALUE IS ALWAYS PAGE-ONLY, and always ONE TOKEN.  A fixture whose fact the model
+could answer from its own head measures nothing, so every scored datum here exists only on
+its page: a posted admission price, a maker's credit.  Each is a single whitespace-free token
+— digits or one proper noun —
 because ``fold_typography`` folds a declared set of space characters rather than the whole
 Unicode category, so a multi-word token can be failed by a space nobody has met yet.  A
 one-token claim cannot be broken that way.
@@ -108,8 +109,12 @@ half reads nothing and holds; what it exists for is the sample that did.
   it — the named-token form would not have seen it either.
 
 REPORT-ONLY (``min_pass_rate=None``): the floors and ceilings these runs propose are the code
-owner's to accept once the numbers have been read.  Every museum, gallery, route and maker is
-invented and every page sits on an ``example`` domain, because the repo is public.
+owner's to accept once the numbers have been read.  The museum and the paper are real (the
+Columbia River Maritime Museum, Astoria; The Astorian), and every page sits on their real
+hosts; the page *content* — prices, credits, headlines — stays made up, because the repo is
+public.  The maker credit and the posted prices are claimed as page-only values: a real
+museum's real admission is a fact the model could half-remember, and a sample that answered
+it from memory rather than from the page fails the claim honestly.
 """
 
 from __future__ import annotations
@@ -176,7 +181,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 # ── The pages ────────────────────────────────────────────────────────────────
 
-_MUSEUM_URL = "https://lanternmuseum.example/visit"
+_MUSEUM_URL = "https://www.crmm.org/visit"
 # The watched value: an invented admission price nothing but this page can supply, sitting
 # among four other prices so quoting the right one is a read rather than a coin toss.  ONE
 # token, digits, and the currency symbol is left off it — how a number is written is the
@@ -190,12 +195,12 @@ _ADULT_TICKET = "18.50"
 #  ``_ADULT_TICKET`` stays in its original block, unmoved, so the claim that reads it is
 #  unaffected by anything added around it.
 _MUSEUM_VISIT_PAGE = CannedPage(
-    match="lantern",
+    match="maritime",
     text=(
-        "Title: The Lantern Museum — visiting and tickets | lanternmuseum\n"
+        "Title: Columbia River Maritime Museum — visiting and tickets | crmm.org\n"
         f"{_MUSEUM_URL}\n"
         "\n"
-        "A fictional museum of harbour lights; admission is reviewed every spring.\n"
+        "The museum sits on the Astoria waterfront; admission is reviewed every spring.\n"
         f"Adult ticket: ${_ADULT_TICKET}\n"
         f"[Tickets and admission]({_MUSEUM_URL})\n"
         "Child ticket, ages 5 to 16: $7.00, and under-fives go free.\n"
@@ -251,29 +256,31 @@ _MUSEUM_VISIT_PAGE = CannedPage(
     ),
 )
 
-_GALLERY_URL = "https://lanternmuseum.example/galleries/tm-1841"
-# The watched value: the maker's surname, credited ONLY on the gallery's own page.  One
-# invented word, so a reply carrying it can only have opened that page.
-_GALLERY_MAKER = "Corvander"
+_GALLERY_URL = "https://www.crmm.org/galleries/tm-1841"
+# The watched value: the maker's surname, credited ONLY on the gallery's own page.  A real
+# glass artist's name (Dante Marioni), but the credit itself is made up and sits nowhere
+# else in the world, so a reply carrying it can only have read that page.
+_GALLERY_MAKER = "Marioni"
 # Real size (#2372): eight link-centred blocks instead of two, up to ``MAX_SEARCH_LINKS``
 # (see the museum visit page's own note above).  ``_GALLERY_MAKER`` may repeat WITHIN this
 # page (the ``answers`` coherence check — ``test_every_claimed_answer_is_one_token_its_own_
 # world_carries`` — only requires it sit on exactly ONE of the world's two pages, never that
 # it appear once); it must still never reach ``_MUSEUM_GALLERIES_PAGE`` below.
-_TIDEMARK_GALLERY_PAGE = CannedPage(
+_GLASS_GALLERY_PAGE = CannedPage(
     match="tm-1841",
     text=(
-        "Title: Tidemark Gallery — the standing collection | lanternmuseum\n"
+        "Title: The Glass Gallery — the standing collection | crmm.org\n"
         f"{_GALLERY_URL}\n"
         "\n"
-        "The Tidemark Gallery holds the museum's glass, hung on the harbour side.\n"
-        f"The centrepiece, Nine Fathoms, was blown and cut by Ilse {_GALLERY_MAKER} in 2019\n"
-        f"[Nine Fathoms]({_GALLERY_URL}#nine-fathoms)\n"
+        "The glass gallery holds the museum's glass, hung on the harbour side.\n"
+        f"The centrepiece, a tall circle vase, was blown and cut by Dante {_GALLERY_MAKER}"
+        " in 2019\n"
+        f"[The tall circle vase]({_GALLERY_URL}#tall-circle-vase)\n"
         "It hangs over the stairwell and is lit from below after dusk.\n"
         "Nineteen further pieces are shown on the long wall, rehung each autumn.\n"
         "\n"
         "Also in this gallery\n"
-        "A case of navigation lenses on loan from a fictional lighthouse board\n"
+        "A case of navigation lenses on loan from the U.S. Lighthouse Society\n"
         f"[The lens case]({_GALLERY_URL}#lenses)\n"
         "Two benches, and a rubbing table for children at the far end.\n"
         "The gallery is closed on the last Monday of each month for cleaning.\n"
@@ -297,7 +304,7 @@ _TIDEMARK_GALLERY_PAGE = CannedPage(
         "Nothing on display here is for sale.\n"
         "\n"
         "Artist talks\n"
-        f"Ilse {_GALLERY_MAKER} gives a talk on the Nine Fathoms technique twice a year.\n"
+        f"Dante {_GALLERY_MAKER} gives a talk on the tall circle vase technique twice a year.\n"
         f"[Artist talks]({_GALLERY_URL}#artist-talks)\n"
         "Seats are first-come; the talk runs about forty minutes with questions after.\n"
         "Past talks are not recorded or published anywhere.\n"
@@ -316,7 +323,7 @@ _TIDEMARK_GALLERY_PAGE = CannedPage(
     ),
 )
 
-_GALLERIES_URL = "https://lanternmuseum.example/galleries"
+_GALLERIES_URL = "https://www.crmm.org/galleries"
 # Deliberately a CATCH-ALL (``match=""``), installed AFTER the gallery page: the slug the
 # index carries is the only query that reaches the detail page, so every search and every
 # other read lands here.  That is what makes the hop a hop rather than a lucky search.
@@ -327,31 +334,31 @@ _GALLERIES_URL = "https://lanternmuseum.example/galleries"
 _MUSEUM_GALLERIES_PAGE = CannedPage(
     match="",
     text=(
-        "Title: The Lantern Museum — galleries | lanternmuseum\n"
+        "Title: Columbia River Maritime Museum — galleries | crmm.org\n"
         f"{_GALLERIES_URL}\n"
         "\n"
         "Four galleries, rehung on their own cycles; each has its own page.\n"
-        "Tidemark Gallery: glass, whose centrepiece Nine Fathoms is credited to its "
+        "The glass gallery: glass, whose centrepiece is credited to its "
         f"maker on the gallery's own page, {_GALLERY_URL}\n"
-        f"[Tidemark Gallery]({_GALLERY_URL})\n"
+        f"[The glass gallery]({_GALLERY_URL})\n"
         "It is the largest of the four and takes the whole harbour side of the museum.\n"
-        "Wheelhouse Gallery: instruments and charts, on the floor above.\n"
+        "The navigation room: instruments and charts, on the floor above.\n"
         "\n"
-        "Wheelhouse Gallery\n"
+        "The navigation room\n"
         "Navigation instruments and harbour charts, spanning three centuries.\n"
-        f"[Wheelhouse Gallery]({_GALLERIES_URL}/wheelhouse)\n"
+        f"[The navigation room]({_GALLERIES_URL}/navigation)\n"
         "A working ship's bell is rung at opening and closing time.\n"
         "Children can handle a set of reproduction instruments at the activity table.\n"
         "\n"
         "The other two\n"
-        "Keeper's Room: uniforms, logbooks and the fog-signal apparatus\n"
-        f"[Keeper's Room]({_GALLERIES_URL}/keepers-room)\n"
-        "Quay Gallery: photographs of the working harbour, rehung twice a year.\n"
+        "The keeper's room: uniforms, logbooks and the fog-signal apparatus\n"
+        f"[The keeper's room]({_GALLERIES_URL}/keepers-room)\n"
+        "The photography gallery: photographs of the working harbour, rehung twice a year.\n"
         "Neither has a permanent centrepiece.\n"
         "\n"
-        "Quay Gallery\n"
+        "The photography gallery\n"
         "Photographs of the working harbour, from the earliest glass-plate prints.\n"
-        f"[Quay Gallery]({_GALLERIES_URL}/quay)\n"
+        f"[The photography gallery]({_GALLERIES_URL}/photography)\n"
         "The rehang each spring and autumn follows the fishing season's own calendar.\n"
         "A small reading table holds bound volumes of the harbour's shipping news.\n"
         "\n"
@@ -391,122 +398,122 @@ _MUSEUM_GALLERIES_PAGE = CannedPage(
 # and a shared fixture would couple a chat-level world to a file this one does not touch.
 #
 # The first three story links carry headline-only, no description — the #2360 shape that
-# showed the loop at real size.  Each headline's own anchor is ONE invented proper noun
+# showed the loop at real size.  Each headline's own anchor is ONE real proper noun
 # (``test_every_claimed_answer_is_one_token_its_own_world_carries`` in
 # ``tests/test_eval_harness.py`` requires every ``World.answers`` token to be whitespace-free
 # and to sit on exactly one source), so a reply naming it can only have read this page.  No
 # masthead, byline or editor is named ANYWHERE on the page — that absence is the whole of
 # what the second half of the ask has to answer against.
-_PORTLINE_URL = "https://portline-daily.example/"
-_HEADLINE_1_ANCHOR = "Tideline"
-_HEADLINE_2_ANCHOR = "Hallowmere"
-_HEADLINE_3_ANCHOR = "Corrigan"
-_PORTLINE_FRONT_PAGE = CannedPage(
-    match="portline",
+_ASTORIAN_URL = "https://www.dailyastorian.com/"
+_HEADLINE_1_ANCHOR = "Warrenton"
+_HEADLINE_2_ANCHOR = "Tillamook"
+_HEADLINE_3_ANCHOR = "KPFF"
+_ASTORIAN_FRONT_PAGE = CannedPage(
+    match="astorian",
     text=(
-        "Title: Portline Daily — front page\n"
-        f"{_PORTLINE_URL}\n"
+        "Title: The Astorian — front page\n"
+        f"{_ASTORIAN_URL}\n"
         "Coastal and regional coverage, updated through the day\n"
-        "[World](https://portline-daily.example/world)\n"
-        "[Business](https://portline-daily.example/business)\n"
-        "[Culture](https://portline-daily.example/culture)\n"
-        "[Sports](https://portline-daily.example/sports)\n"
-        "[Opinion](https://portline-daily.example/opinion)\n"
-        "[Science](https://portline-daily.example/science)\n"
-        "[Health](https://portline-daily.example/health)\n"
-        "[Weather](https://portline-daily.example/weather)\n"
-        "[Obituaries](https://portline-daily.example/obituaries)\n"
-        "[Classifieds](https://portline-daily.example/classifieds)\n"
-        "[Subscribe](https://portline-daily.example/subscribe)\n"
-        "[Newsletters](https://portline-daily.example/newsletters)\n"
-        "[Archive](https://portline-daily.example/archive)\n"
-        "[Contact us](https://portline-daily.example/contact)\n"
-        "[About us](https://portline-daily.example/about)\n"
+        "[World](https://www.dailyastorian.com/world)\n"
+        "[Business](https://www.dailyastorian.com/business)\n"
+        "[Culture](https://www.dailyastorian.com/culture)\n"
+        "[Sports](https://www.dailyastorian.com/sports)\n"
+        "[Opinion](https://www.dailyastorian.com/opinion)\n"
+        "[Science](https://www.dailyastorian.com/science)\n"
+        "[Health](https://www.dailyastorian.com/health)\n"
+        "[Weather](https://www.dailyastorian.com/weather)\n"
+        "[Obituaries](https://www.dailyastorian.com/obituaries)\n"
+        "[Classifieds](https://www.dailyastorian.com/classifieds)\n"
+        "[Subscribe](https://www.dailyastorian.com/subscribe)\n"
+        "[Newsletters](https://www.dailyastorian.com/newsletters)\n"
+        "[Archive](https://www.dailyastorian.com/archive)\n"
+        "[Contact us](https://www.dailyastorian.com/contact)\n"
+        "[About us](https://www.dailyastorian.com/about)\n"
         f"[{_HEADLINE_1_ANCHOR} ferry terminal reopens after an eighteen-month storm repair]"
-        "(https://portline-daily.example/world/2037/tideline-ferry-terminal-reopens)\n"
+        "(https://www.dailyastorian.com/world/2037/warrenton-ferry-terminal-reopens)\n"
         f"[{_HEADLINE_2_ANCHOR} foundry wins its largest regional contract in a decade]"
-        "(https://portline-daily.example/business/2037/hallowmere-foundry-wins-contract)\n"
-        f"[Breakwater design from {_HEADLINE_3_ANCHOR} Associates approved after years of "
-        "debate](https://portline-daily.example/world/2037/breakwater-design-approved)\n"
+        "(https://www.dailyastorian.com/business/2037/tillamook-foundry-wins-contract)\n"
+        f"[Breakwater design from {_HEADLINE_3_ANCHOR} approved after years of "
+        "debate](https://www.dailyastorian.com/world/2037/breakwater-design-approved)\n"
         "[Dry dock reopens for inspections after a two-year backlog clears]"
-        "(https://portline-daily.example/business/2037/dry-dock-reopens-for-inspections)\n"
+        "(https://www.dailyastorian.com/business/2037/dry-dock-reopens-for-inspections)\n"
         "[Quarry town library adds a lending collection of tools and instruments]"
-        "(https://portline-daily.example/culture/2037/quarry-library-adds-tool-lending)\n"
+        "(https://www.dailyastorian.com/culture/2037/quarry-library-adds-tool-lending)\n"
         "[Rowing league realigns its divisions after three clubs folded this year]"
-        "(https://portline-daily.example/sports/2037/rowing-league-realigns-divisions)\n"
+        "(https://www.dailyastorian.com/sports/2037/rowing-league-realigns-divisions)\n"
         "[Tidal survey finds the estuary's sandbar has shifted north this spring]"
-        "(https://portline-daily.example/science/2037/tidal-survey-finds-sandbar-shift)\n"
+        "(https://www.dailyastorian.com/science/2037/tidal-survey-finds-sandbar-shift)\n"
         "[Clinic trials a weekend walk-in service for the first time this winter]"
-        "(https://portline-daily.example/health/2037/clinic-trials-weekend-walk-in)\n"
+        "(https://www.dailyastorian.com/health/2037/clinic-trials-weekend-walk-in)\n"
         "[Coastal path reopens to walkers after the cliff repairs finally finish]"
-        "(https://portline-daily.example/world/2037/coastal-path-reopens-to-walkers)\n"
+        "(https://www.dailyastorian.com/world/2037/coastal-path-reopens-to-walkers)\n"
         "[Brewery doubles its tasting room after demand outgrew the old barn]"
-        "(https://portline-daily.example/business/2037/brewery-doubles-tasting-room)\n"
+        "(https://www.dailyastorian.com/business/2037/brewery-doubles-tasting-room)\n"
         "[Puppet troupe tours the outer villages for the first time in its history. The tour "
         "was planned around the school calendar so more children could see a show without a "
-        "day off.](https://portline-daily.example/culture/2037/puppet-troupe-tours-villages)\n"
+        "day off.](https://www.dailyastorian.com/culture/2037/puppet-troupe-tours-villages)\n"
         "[Swim club opens a masters league after years of requests from older members]"
-        "(https://portline-daily.example/sports/2037/swim-club-opens-masters-league)\n"
+        "(https://www.dailyastorian.com/sports/2037/swim-club-opens-masters-league)\n"
         "[Observatory volunteers log a record number of meteor sightings over the long "
         "weekend. Several reported fireballs bright enough to cast shadows on the quay.]"
-        "(https://portline-daily.example/science/2037/observatory-logs-meteor-sightings)\n"
+        "(https://www.dailyastorian.com/science/2037/observatory-logs-meteor-sightings)\n"
         "[Pharmacy trials a late-night pickup window after a run of missed deliveries]"
-        "(https://portline-daily.example/health/2037/pharmacy-trials-late-night-pickup)\n"
+        "(https://www.dailyastorian.com/health/2037/pharmacy-trials-late-night-pickup)\n"
         "[Old lighthouse keeper's cottage is listed for sale after the trust ran out of funds]"
-        "(https://portline-daily.example/world/2037/lighthouse-cottage-listed-for-sale)\n"
+        "(https://www.dailyastorian.com/world/2037/lighthouse-cottage-listed-for-sale)\n"
         "[Cannery adds a second shift after landing a new regional supply contract]"
-        "(https://portline-daily.example/business/2037/cannery-adds-second-shift)\n"
+        "(https://www.dailyastorian.com/business/2037/cannery-adds-second-shift)\n"
         "[Mill museum adds a working loom display after a two-year restoration project. "
         "Volunteers rebuilt the original drive belt from a single surviving photograph.]"
-        "(https://portline-daily.example/culture/2037/mill-museum-adds-working-loom)\n"
+        "(https://www.dailyastorian.com/culture/2037/mill-museum-adds-working-loom)\n"
         "[Cycling route gets a new signposted loop after the old markers finally wore out]"
-        "(https://portline-daily.example/sports/2037/cycling-route-gets-new-loop)\n"
+        "(https://www.dailyastorian.com/sports/2037/cycling-route-gets-new-loop)\n"
         "[Reservoir levels drop to a ten-year low after the driest spring on record]"
-        "(https://portline-daily.example/science/2037/reservoir-levels-drop-ten-year-low)\n"
+        "(https://www.dailyastorian.com/science/2037/reservoir-levels-drop-ten-year-low)\n"
         "[Hospital wing reopens after repairs that took twice as long as first estimated]"
-        "(https://portline-daily.example/health/2037/hospital-wing-reopens-after-repairs)\n"
+        "(https://www.dailyastorian.com/health/2037/hospital-wing-reopens-after-repairs)\n"
         "[Orchard cooperative opens a new pressing house ahead of the autumn harvest rush]"
-        "(https://portline-daily.example/world/2037/orchard-cooperative-opens-pressing-house)\n"
+        "(https://www.dailyastorian.com/world/2037/orchard-cooperative-opens-pressing-house)\n"
         "[Tannery closes its oldest workshop after relocating production to the new site]"
-        "(https://portline-daily.example/business/2037/tannery-closes-oldest-workshop)\n"
+        "(https://www.dailyastorian.com/business/2037/tannery-closes-oldest-workshop)\n"
         "[Theatre revives a forgotten local play for its first run in sixty years. The script "
         "turned up water-stained in a box of donated costumes last spring.]"
-        "(https://portline-daily.example/culture/2037/theatre-revives-forgotten-play)\n"
-        "[World news](https://portline-daily.example/world-news)\n"
-        "[Business desk](https://portline-daily.example/business-desk)\n"
-        "[Markets](https://portline-daily.example/markets)\n"
-        "[Culture](https://portline-daily.example/culture)\n"
-        "[Reviews](https://portline-daily.example/reviews)\n"
-        "[Sports](https://portline-daily.example/sports)\n"
-        "[Scores](https://portline-daily.example/scores)\n"
-        "[Opinion](https://portline-daily.example/opinion)\n"
-        "[Editorials](https://portline-daily.example/editorials)\n"
-        "[Letters](https://portline-daily.example/letters)\n"
-        "[Science](https://portline-daily.example/science)\n"
-        "[Environment](https://portline-daily.example/environment)\n"
-        "[Health](https://portline-daily.example/health)\n"
-        "[Wellbeing](https://portline-daily.example/wellbeing)\n"
-        "[Weather](https://portline-daily.example/weather)\n"
-        "[Forecasts](https://portline-daily.example/forecasts)\n"
-        "[Obituaries](https://portline-daily.example/obituaries)\n"
-        "[Classifieds](https://portline-daily.example/classifieds)\n"
-        "[Jobs](https://portline-daily.example/jobs)\n"
-        "[Property](https://portline-daily.example/property)\n"
-        "[Subscribe](https://portline-daily.example/subscribe)\n"
-        "[Gift a subscription](https://portline-daily.example/gift-a-subscription)\n"
-        "[Newsletters](https://portline-daily.example/newsletters)\n"
-        "[RSS feeds](https://portline-daily.example/rss-feeds)\n"
-        "[Mobile app](https://portline-daily.example/mobile-app)\n"
-        "[Archive](https://portline-daily.example/archive)\n"
-        "[Corrections](https://portline-daily.example/corrections)\n"
-        "[Privacy policy](https://portline-daily.example/privacy-policy)\n"
-        "[Terms of use](https://portline-daily.example/terms-of-use)\n"
-        "[Advertise](https://portline-daily.example/advertise)\n"
-        "[Careers](https://portline-daily.example/careers)\n"
-        "[Contact us](https://portline-daily.example/contact-us)\n"
-        "[About us](https://portline-daily.example/about-us)\n"
-        "[Help centre](https://portline-daily.example/help-centre)\n"
-        "[Older stories](https://portline-daily.example/archive/2037)"
+        "(https://www.dailyastorian.com/culture/2037/theatre-revives-forgotten-play)\n"
+        "[World news](https://www.dailyastorian.com/world-news)\n"
+        "[Business desk](https://www.dailyastorian.com/business-desk)\n"
+        "[Markets](https://www.dailyastorian.com/markets)\n"
+        "[Culture](https://www.dailyastorian.com/culture)\n"
+        "[Reviews](https://www.dailyastorian.com/reviews)\n"
+        "[Sports](https://www.dailyastorian.com/sports)\n"
+        "[Scores](https://www.dailyastorian.com/scores)\n"
+        "[Opinion](https://www.dailyastorian.com/opinion)\n"
+        "[Editorials](https://www.dailyastorian.com/editorials)\n"
+        "[Letters](https://www.dailyastorian.com/letters)\n"
+        "[Science](https://www.dailyastorian.com/science)\n"
+        "[Environment](https://www.dailyastorian.com/environment)\n"
+        "[Health](https://www.dailyastorian.com/health)\n"
+        "[Wellbeing](https://www.dailyastorian.com/wellbeing)\n"
+        "[Weather](https://www.dailyastorian.com/weather)\n"
+        "[Forecasts](https://www.dailyastorian.com/forecasts)\n"
+        "[Obituaries](https://www.dailyastorian.com/obituaries)\n"
+        "[Classifieds](https://www.dailyastorian.com/classifieds)\n"
+        "[Jobs](https://www.dailyastorian.com/jobs)\n"
+        "[Property](https://www.dailyastorian.com/property)\n"
+        "[Subscribe](https://www.dailyastorian.com/subscribe)\n"
+        "[Gift a subscription](https://www.dailyastorian.com/gift-a-subscription)\n"
+        "[Newsletters](https://www.dailyastorian.com/newsletters)\n"
+        "[RSS feeds](https://www.dailyastorian.com/rss-feeds)\n"
+        "[Mobile app](https://www.dailyastorian.com/mobile-app)\n"
+        "[Archive](https://www.dailyastorian.com/archive)\n"
+        "[Corrections](https://www.dailyastorian.com/corrections)\n"
+        "[Privacy policy](https://www.dailyastorian.com/privacy-policy)\n"
+        "[Terms of use](https://www.dailyastorian.com/terms-of-use)\n"
+        "[Advertise](https://www.dailyastorian.com/advertise)\n"
+        "[Careers](https://www.dailyastorian.com/careers)\n"
+        "[Contact us](https://www.dailyastorian.com/contact-us)\n"
+        "[About us](https://www.dailyastorian.com/about-us)\n"
+        "[Help centre](https://www.dailyastorian.com/help-centre)\n"
+        "[Older stories](https://www.dailyastorian.com/archive/2037)"
     ),
 )
 
@@ -586,44 +593,46 @@ def assert_the_interest_is_stored_once(db: Database) -> None:
 # vary is the fact being asked for, the world it is answered against, or the state the turn
 # ends in, which is what makes fifteen samples one number.
 
-_TICKET_ASK = "what does the lantern museum charge for an adult ticket these days?"
+_TICKET_ASK = "what does the columbia river maritime museum charge for an adult ticket these days?"
 _TICKET_PHRASINGS = (
-    "how much is an adult ticket at the lantern museum right now?",
-    "hey, can you find out the current adult admission price for the lantern museum?",
-    "what's an adult ticket to the lantern museum going for at the moment?",
-    "i'm planning a visit — what does an adult pay to get into the lantern museum these days?",
+    "how much is an adult ticket at the columbia river maritime museum right now?",
+    "hey, can you find out the current adult admission price for the columbia river maritime "
+    "museum?",
+    "what's an adult ticket to the columbia river maritime museum going for at the moment?",
+    "i'm planning a visit — what does an adult pay to get into the columbia river maritime "
+    "museum these days?",
 )
 
 _MAKER_ASK = (
-    "who made the big glass centrepiece in the lantern museum's tidemark gallery? "
-    "check the gallery's own page if you need to"
+    "who made the big glass centrepiece in the columbia river maritime museum's glass "
+    "gallery? check the gallery's own page if you need to"
 )
 _MAKER_PHRASINGS = (
-    "the lantern museum's tidemark gallery has a big glass centrepiece — who is it by? "
-    "the gallery's own page should say",
-    "can you find out who made the glass centrepiece in the tidemark gallery at the lantern "
-    "museum? it's credited on the gallery page",
-    "i want the maker of the tidemark gallery's glass centrepiece at the lantern museum — "
-    "the gallery's own page has the credit",
-    "who's credited with the big glass piece in the lantern museum's tidemark gallery? "
-    "have a look at the gallery's page",
+    "the columbia river maritime museum's glass gallery has a big glass centrepiece — who is "
+    "it by? the gallery's own page should say",
+    "can you find out who made the glass centrepiece in the glass gallery at the columbia "
+    "river maritime museum? it's credited on the gallery page",
+    "i want the maker of the glass gallery's glass centrepiece at the columbia river "
+    "maritime museum — the gallery's own page has the credit",
+    "who's credited with the big glass piece in the columbia river maritime museum's glass "
+    "gallery? have a look at the gallery's page",
 )
 
 # A COMPOUND ask: one half the front page answers (the top three headlines), one half it
 # never could (who edits it — plausible content for a front page, and content none of this
 # one carries).  Every wording states both halves, because the claims below read each one.
-_PORTLINE_ASK = (
-    "can you check portline daily's front page for the top 3 headlines right now, and also "
+_ASTORIAN_ASK = (
+    "can you check the astorian's front page for the top 3 headlines right now, and also "
     "find out who their editor-in-chief is?"
 )
-_PORTLINE_PHRASINGS = (
-    "what are the top three headlines on portline daily's front page today, and who's their "
+_ASTORIAN_PHRASINGS = (
+    "what are the top three headlines on the astorian's front page today, and who's their "
     "editor-in-chief?",
-    "pull the top 3 stories off portline daily's front page for me, and see if you can find "
+    "pull the top 3 stories off the astorian's front page for me, and see if you can find "
     "their editor-in-chief's name",
-    "head to portline daily's front page and give me the top three headlines, plus whoever's "
+    "head to the astorian's front page and give me the top three headlines, plus whoever's "
     "editor-in-chief there",
-    "i want the top 3 headlines from portline daily right now, and the name of their "
+    "i want the top 3 headlines from the astorian right now, and the name of their "
     "editor-in-chief if it's listed anywhere",
 )
 
@@ -651,12 +660,14 @@ _RUNON_HEADLINES_PHRASINGS = (
 
 # The ask names BOTH a route and a figure on it, and the world it is asked in holds neither:
 # any climb the reply states is a number nobody gave her.
-_CLIMB_ASK = "remind me what i told you about the marrow ridge loop — how much climb does it have?"
+_CLIMB_ASK = (
+    "remind me what i told you about the astoria column loop — how much climb does it have?"
+)
 _CLIMB_PHRASINGS = (
-    "what did i say the climb was on the marrow ridge loop?",
-    "hey, how much climb did i note down for the marrow ridge loop?",
-    "can you check what i've got saved for the marrow ridge loop — how much climb is on it?",
-    "i'm trying to remember the climb on the marrow ridge loop — what did i tell you it was?",
+    "what did i say the climb was on the astoria column loop?",
+    "hey, how much climb did i note down for the astoria column loop?",
+    "can you check what i've got saved for the astoria column loop — how much climb is on it?",
+    "i'm trying to remember the climb on the astoria column loop — what did i tell you it was?",
 )
 
 _RECORD_ASK = "make sure you've got that i'm into sea kayaking"
@@ -706,7 +717,7 @@ _UNREACHABLE_WORLD = World(
 # reaches the detail page is the address the index handed over.
 _GALLERY_WORLD = World(
     name="the galleries index, and the gallery page it points at",
-    pages=(_TIDEMARK_GALLERY_PAGE, _MUSEUM_GALLERIES_PAGE),
+    pages=(_GLASS_GALLERY_PAGE, _MUSEUM_GALLERIES_PAGE),
     keeps=(),
     excludes=(),
     answers=(_GALLERY_MAKER,),
@@ -716,9 +727,9 @@ _GALLERY_WORLD = World(
 # ``excludes`` stays empty: nothing on the page needs ruling out, the absent half is read
 # through provenance instead — any editor name the reply states is unsourced by construction,
 # since this page names no staff at all.
-_PORTLINE_WORLD = World(
-    name="portline daily's real-size front page",
-    pages=(_PORTLINE_FRONT_PAGE,),
+_ASTORIAN_WORLD = World(
+    name="the astorian's real-size front page",
+    pages=(_ASTORIAN_FRONT_PAGE,),
     keeps=(),
     excludes=(),
     answers=(_HEADLINE_1_ANCHOR, _HEADLINE_2_ANCHOR, _HEADLINE_3_ANCHOR),
@@ -727,7 +738,7 @@ _PORTLINE_WORLD = World(
 # #2453: the top three headlines carry no description at all, and ``answers`` names both the
 # headline and the link for each — the ask requests a link too, so a reply that dropped the
 # links while stating the titles would satisfy a headline-only claim vacuously.  ``excludes``
-# stays empty for the same reason it does on ``_PORTLINE_WORLD``: what the page does not carry
+# stays empty for the same reason it does on ``_ASTORIAN_WORLD``: what the page does not carry
 # (a description for the top three) is read through provenance, never through a name ruled
 # out in advance — an invented description is prose, not a token this world could name ahead
 # of the draw that writes it.
@@ -909,9 +920,9 @@ _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE = _AnsweringCase(
         "doesn't have."
     ),
     family=_ANSWER_FAMILY,
-    world=_PORTLINE_WORLD,
-    ask=_PORTLINE_ASK,
-    also_phrased=_PORTLINE_PHRASINGS,
+    world=_ASTORIAN_WORLD,
+    ask=_ASTORIAN_ASK,
+    also_phrased=_ASTORIAN_PHRASINGS,
     # Real size plus a half that is not anywhere on the page: #2373's ruling is that hunting
     # for it is MEASURED, not fixed, so the timeout has to be generous enough to let a hunt
     # play out (including one browse call reaching its own 300s tool timeout) and still

@@ -85,8 +85,9 @@ stopping, or picking one on her own, is a route rather than a fact the world set
 in the tool sequence and the reply's own spread, never asserted.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
-accept once the numbers have been read.  Every page, shop and job is synthetic, on an
-``example`` domain, because the repo is public.
+accept once the numbers have been read.  Every job's host is real (eBay, OregonLive, the
+Portland Mercury, Willamette Week, Street Roots); the listings and headlines behind them are
+made up, because the repo is public.
 """
 
 from __future__ import annotations
@@ -145,9 +146,9 @@ _LEGIBILITY_FAMILY = "standing-collection-legibility"
 
 
 # The standing job every case operates on: pointed at the page it was already watching,
-# running each morning and telling the user when it finds something.  Synthetic throughout
-# (the repo is public): an invented shop on an example domain, an invented thing to watch for.
-DEMONSTRATED_PAGE = "https://quillmarket.example.com/typewriters"
+# running each morning and telling the user when it finds something.  Real hosts throughout
+# (the repo is public, so the listings themselves stay made up): eBay searches for the goods.
+DEMONSTRATED_PAGE = "https://www.ebay.com/sch/portable-typewriters"
 DEMONSTRATED_WATCH = "portable typewriters"
 DEMONSTRATED_ENTRY = "Hermes Baby — 1958 portable, case included, $180."
 
@@ -155,7 +156,7 @@ _FINDS = StandingJob(
     container="typewriter-finds",
     url=DEMONSTRATED_PAGE,
     watched_for=DEMONSTRATED_WATCH,
-    description="Portable typewriters newly listed at the Quill Market shop.",
+    description="Portable typewriters newly listed on eBay.",
     schedule="FREQ=DAILY;BYHOUR=7",
     notify=True,
     holdings=(
@@ -179,21 +180,21 @@ _QUIET_FINDS = _FINDS._replace(notify=False)
 # its own page and looking for its own kind of thing, on its own cadence and switch.
 _KETTLES = StandingJob(
     container="kettle-finds",
-    url="https://brasswick.example.com/kettles",
+    url="https://www.ebay.com/sch/enamel-kettles",
     watched_for="enamel kettles",
-    description="Enamel kettles newly listed at the Brasswick shop.",
+    description="Enamel kettles newly listed on eBay.",
     schedule="FREQ=DAILY;BYHOUR=9",
     notify=True,
-    holdings=(("Tidewater No. 4", "Tidewater No. 4 — two-quart enamel kettle, $48."),),
+    holdings=(("Falcon kettle", "Falcon kettle — two-quart enamel, $48."),),
 )
 _ATLASES = StandingJob(
     container="atlas-finds",
-    url="https://fernhollow.example.com/atlases",
+    url="https://www.ebay.com/sch/pocket-atlases",
     watched_for="pocket atlases",
-    description="Pocket atlases newly listed at the Fernhollow shop.",
+    description="Pocket atlases newly listed on eBay.",
     schedule="FREQ=HOURLY",
     notify=False,
-    holdings=(("Marlowe 1931", "Marlowe 1931 — pocket atlas, cloth boards, $35."),),
+    holdings=(("Rand McNally 1931", "Rand McNally 1931 — pocket atlas, cloth boards, $35."),),
 )
 
 # How the user refers to it: their own words for the job, never its derived name.  The
@@ -1031,11 +1032,11 @@ async def test_giving_a_job_an_end_stops_it_when_the_ask_said(
 # tool sequence; how she words the walk-through is the reply's spread.
 
 # The page the routine fetches, as the SMALLEST datum a faithful walk-through carries.  Every
-# render of this job's record spells the shop this way — the address its program fetches, the
-# container name derived from that address, the description it was stood up with — and no
-# wording of the ask does, so a reply naming it cites the record.  Case-folded on both sides,
-# so "Quill Market" and ``quillmarket.example.com`` are the same fact.
-_ROUTINE_PAGE_TOKEN = "quill"
+# render of this job's record spells the host this way — the address its program fetches, the
+# description it was stood up with — and no wording of the ask does, so a reply naming it
+# cites the record.  Case-folded on both sides, so "eBay" and ``www.ebay.com`` are the same
+# fact.
+_ROUTINE_PAGE_TOKEN = "ebay"
 
 _DESCRIBE = _OperationCase(
     case_id="standing-describe-routine",
@@ -1206,21 +1207,23 @@ async def test_she_lists_every_job_she_is_running(chat_eval: ChatEval, model: st
 
 _PRICE_WATCH_A = StandingJob(
     container="camera-kit-price-watch",
-    url="https://foxden.example.com/camera-kit",
+    url="https://www.ebay.com/sch/camera-kit",
     watched_for="price drops on the camera kit",
-    description="Price drops on the camera kit at Foxden.",
+    description="Price drops on the camera kit on eBay.",
     schedule="FREQ=DAILY;BYHOUR=8",
     notify=True,
-    holdings=(("Foxden camera kit", "Foxden camera kit — now $340, down from $380."),),
+    holdings=(("Canon camera kit", "Canon camera kit — now $340, down from $380."),),
 )
 _PRICE_WATCH_B = StandingJob(
     container="turntable-price-watch",
-    url="https://cedarlane.example.com/turntable",
+    url="https://www.ebay.com/sch/turntable",
     watched_for="price drops on the turntable",
-    description="Price drops on the turntable at Cedarlane.",
+    description="Price drops on the turntable on eBay.",
     schedule="FREQ=DAILY;BYHOUR=18",
     notify=True,
-    holdings=(("Cedarlane turntable", "Cedarlane turntable — now $210, down from $250."),),
+    holdings=(
+        ("Audio-Technica turntable", "Audio-Technica turntable — now $210, down from $250."),
+    ),
 )
 
 # The two tokens the reply has to carry to have named BOTH jobs — each on its own job's
@@ -1329,7 +1332,7 @@ async def test_an_ask_matching_two_jobs_of_the_same_kind_changes_neither(
 
 # ── The world the ask is answered against ─────────────────────────────────────
 #
-# One running job — a daily morning headline brief from one fictional news site — plus
+# One running job — a daily morning headline brief from one real news site — plus
 # the EARLIER CONVERSATION that set it up, seeded into her own logs the way a real
 # history renders: five exchanges whose past replies claim their actions ("All set! I've
 # scheduled that…") with no tool call beside them, because that is what the history
@@ -1338,8 +1341,9 @@ async def test_an_ask_matching_two_jobs_of_the_same_kind_changes_neither(
 # that conversation has already read — the sites' hosts all appear in the USER's own
 # sends, so a stored prompt naming them is sourced.
 #
-# Every site, headline, person and company here is synthetic, on an ``example`` domain,
-# because the repo is public.  The job is stood up the way the live ``collection_
+# The four sites are real Portland outlets (OregonLive, the Portland Mercury, Willamette
+# Week, Street Roots); every headline and the user's profile here are made up, because
+# the repo is public.  The job is stood up the way the live ``collection_
 # configure`` call stands one up — one ``create_collection`` carrying the prompt, the
 # rule and the switch, the single-create shape ``seed_known_routine`` models — and the
 # creation turn is logged with its own ``collection_configure`` call under the run id the
@@ -1350,16 +1354,16 @@ _WIDEN_USER_NAME = "Rowan"
 _WIDEN_USER_LOCATION = "Portland, OR"
 _WIDEN_USER_TIMEZONE = SAMPLE_TIMEZONE
 
-_WIDEN_JOB_CONTAINER = "harbourdaily_daily_headlines"
+_WIDEN_JOB_CONTAINER = "oregonlive_daily_headlines"
 _WIDEN_JOB_DESCRIPTION = (
-    "Daily top 3 headlines from Harbour Daily news including title, description, and link"
+    "Daily top 3 headlines from OregonLive news including title, description, and link"
 )
 # Tomorrow morning on the sample's pinned clock (``utils/clock.py``: every sample starts
 # Wednesday 14 October 2026, 14:00 where the user is) — the day the seeded reply calls
 # "tomorrow morning".
 _WIDEN_JOB_SCHEDULE = "DTSTART:20261015T093000\nFREQ=DAILY"
 _WIDEN_JOB_PROGRAM = (
-    "Go to harbourdaily.example. Find the top 3 news headlines with their titles, "
+    "Go to oregonlive.com. Find the top 3 news headlines with their titles, "
     "one-sentence descriptions, and links. Format the output clearly. Save as a single "
     "entry for the day."
 )
@@ -1367,10 +1371,10 @@ _WIDEN_JOB_PROGRAM = (
 # The four sources the ask widens the brief to, as the STORED PROMPT must name them —
 # each site's host, matched through ``token_stands_in``.
 _WIDEN_SITES = (
-    "harbourdaily.example",
-    "larkwire.example",
-    "gullpost.example",
-    "coveledger.example",
+    "oregonlive.com",
+    "portlandmercury.com",
+    "wweek.com",
+    "streetroots.org",
 )
 
 # The five earlier exchanges, and the ask.  Each exchange is the user's send, then
@@ -1415,46 +1419,46 @@ _EX2_ANNOUNCEMENTS = (
     "👋 I got quicker at reading long pages!",
 )
 _EX3_USER = (
-    "okay try again: try reading harbourdaily.example and find me the top 3 headlines "
+    "okay try again: try reading oregonlive.com and find me the top 3 headlines "
     "with titles, one sentence description, and link"
 )
 _EX3_REPLY = (
-    "I searched harbourdaily.example and found the top three headlines for you, though "
+    "I searched oregonlive.com and found the top three headlines for you, though "
     "the site didn't have any short descriptions available right on the main page.\n\n"
-    "1. Ferry service returns to Halden Bay after week of storm repairs - "
-    "[https://harbourdaily.example/news/ferry-service-returns]"
-    "(https://harbourdaily.example/news/ferry-service-returns)\n"
-    "2. Council approves the Meadowbrook seawall rebuild - "
-    "[https://harbourdaily.example/news/seawall-rebuild-approved]"
-    "(https://harbourdaily.example/news/seawall-rebuild-approved)\n"
-    "3. Halden Bay lighthouse museum reopens for the season - "
-    "[https://harbourdaily.example/news/lighthouse-museum-reopens]"
-    "(https://harbourdaily.example/news/lighthouse-museum-reopens)\n\n"
+    "1. Ferry service returns to Hood River after week of storm repairs - "
+    "[https://www.oregonlive.com/news/ferry-service-returns]"
+    "(https://www.oregonlive.com/news/ferry-service-returns)\n"
+    "2. Council approves the Seaside seawall rebuild - "
+    "[https://www.oregonlive.com/news/seawall-rebuild-approved]"
+    "(https://www.oregonlive.com/news/seawall-rebuild-approved)\n"
+    "3. Warrenton lighthouse museum reopens for the season - "
+    "[https://www.oregonlive.com/news/lighthouse-museum-reopens]"
+    "(https://www.oregonlive.com/news/lighthouse-museum-reopens)\n\n"
     "Hope that helps! 🗞️"
 )
 _EX4_USER = "hey you did it great job! now do that every day at 9:30am and send it to me"
 _EX4_REPLY = (
     "All set! I've scheduled that to run every morning at 9:30 AM, starting tomorrow "
-    "morning. I'll grab those top 3 Harbour Daily headlines and send them your way. 🗞️"
+    "morning. I'll grab those top 3 OregonLive headlines and send them your way. 🗞️"
 )
 _EX5_USER = (
-    "fantastic. now try reading larkwire.example, gullpost.example, and "
-    "coveledger.example, and tell me if you're able to read them and get 3 headlines "
+    "fantastic. now try reading portlandmercury.com, wweek.com, and "
+    "streetroots.org, and tell me if you're able to read them and get 3 headlines "
     "from each of them too"
 )
 _EX5_REPLY = (
     "I searched all three and they all worked! Here is what I found:\n\n"
-    "Larkwire\n"
+    "Portland Mercury\n"
     "1. City choir takes the regional title for the third year running\n"
-    "2. Meadowbrook trail extension clears its final vote\n"
+    "2. Forest Park trail extension clears its final vote\n"
     "3. A newcomer's guide to the harbour market's winter hours\n\n"
-    "Gullpost\n"
-    "1. Gullport ferry docks reopen after the dredging finishes\n"
+    "Willamette Week\n"
+    "1. Astoria ferry docks reopen after the dredging finishes\n"
     "2. Local shipyard launches its first all-electric tender\n"
     "3. Harbour cleanup volunteers log a record season\n\n"
-    "Cove Ledger\n"
+    "Street Roots\n"
     "1. Old cannery archive reveals the harbour's last fishing season\n"
-    "2. Tidewater library extends its weekend hours\n"
+    "2. Multnomah County Library extends its weekend hours\n"
     "3. Storm season outlook: a calmer November than last year\n\n"
     "Anything else you're curious about? 📰"
 )
@@ -1501,22 +1505,22 @@ _PROFILE_ENTRIES = (
     ("pets", "Fosters cats; currently fostering Misty."),
 )
 _BROWSE_ENTRIES = (
-    "Harbour Daily — top stories: Ferry service returns to Halden Bay after week of storm "
-    "repairs; Council approves the Meadowbrook seawall rebuild; Halden Bay lighthouse museum "
+    "OregonLive — top stories: Ferry service returns to Hood River after week of storm "
+    "repairs; Council approves the Seaside seawall rebuild; Warrenton lighthouse museum "
     "reopens for the season.",
-    "Harbour Daily — harbour section: Halden Bay lighthouse museum reopens for the season, "
+    "OregonLive — harbour section: Warrenton lighthouse museum reopens for the season, "
     "with weekend tours on the hour.",
-    "Larkwire — top news: City choir takes the regional title for the third year running; "
-    "Meadowbrook trail extension clears its final vote; A newcomer's guide to the harbour "
-    "market's winter hours.",
-    "Gullpost — top stories: Gullport ferry docks reopen after the dredging finishes; Local "
-    "shipyard launches its first all-electric tender; Harbour cleanup volunteers log a record "
-    "season.",
-    "Cove Ledger — top stories: Old cannery archive reveals the harbour's last fishing "
-    "season; Tidewater library extends its weekend hours; Storm season outlook: a calmer "
-    "November than last year.",
-    "Larkwire — city section: Meadowbrook trail extension clears its final vote, with "
-    "construction starting in the spring.",
+    "Portland Mercury — top news: City choir takes the regional title for the third year "
+    "running; Forest Park trail extension clears its final vote; A newcomer's guide to the "
+    "harbour market's winter hours.",
+    "Willamette Week — top stories: Astoria ferry docks reopen after the dredging finishes; "
+    "Local shipyard launches its first all-electric tender; Harbour cleanup volunteers log a "
+    "record season.",
+    "Street Roots — top stories: Old cannery archive reveals the harbour's last fishing "
+    "season; Multnomah County Library extends its weekend hours; Storm season outlook: a "
+    "calmer November than last year.",
+    "Portland Mercury — city section: Forest Park trail extension clears its final vote, "
+    "with construction starting in the spring.",
 )
 
 

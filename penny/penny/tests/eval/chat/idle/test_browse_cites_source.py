@@ -17,7 +17,8 @@ replied. Every chat turn that DID reply with an ``extract`` that didn't ask for
 links was search-only, so the verbatim clone is unreachable and this world is
 invented to the same shape: the two standing rules the real turn carried, a
 search page linking three shops plus one distractor, and three real-size shop
-pages. Every shop, place, URL and price is invented.
+pages. The shops are real-style Bellingham, WA businesses on Yelp's real host;
+every body and price is made up.
 
 **What is NOT claimed.** That she called ``browse``, that any call carried
 ``extract``, which pages she opened or in what order — all ROUTE, measured in
@@ -28,8 +29,9 @@ search results' own links — the claim reads a URL is present; which hop
 delivered it is visible in the artifacts, not asserted here.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the
-code owner's to accept once the numbers have been read. Every rule, shop, place
-and URL is invented, because the repo is public.
+code owner's to accept once the numbers have been read. The hosts are real
+(Yelp, WikiHow); every rule, shop body and price is made up, because the repo
+is public.
 """
 
 from __future__ import annotations
@@ -108,7 +110,7 @@ def _premise(penny: Penny) -> None:
 
 # ── The world: one search page, three shop pages ─────────────────────────────
 #
-# The search page's ``match`` is the place name, so any query naming Riverford
+# The search page's ``match`` is the place name, so any query naming Bellingham
 # reaches it; the three shop pages stand BEFORE it, since their own URLs also
 # carry the place name and the slug is the more specific match. Each shop page
 # is real-size — an address section, services with prices, hours — the shape a
@@ -117,25 +119,26 @@ def _premise(penny: Penny) -> None:
 # text it sees — on a read WITHOUT ``extract`` the body reaches her, and on one
 # WITH it the ``## browse:`` header renders the same URL).
 
-_SHOP1_URL = "https://cobblers.example.com/riverford/cobble-bell"
-_SHOP2_URL = "https://cobblers.example.com/riverford/sole-bench"
-_SHOP3_URL = "https://cobblers.example.com/riverford/heelstone"
+_SHOP1_URL = "https://www.yelp.com/biz/fairhaven-shoe-and-leather-bellingham"
+_SHOP2_URL = "https://www.yelp.com/biz/state-street-cobbler-bellingham"
+_SHOP3_URL = "https://www.yelp.com/biz/eldridge-bootworks-bellingham"
 
 # The host-and-path prefix every served source URL shares — the shape a cited
 # URL must carry. A URL token, never a slug: the slugs are the shops' own names
 # and a name-only reply would satisfy a slug check without any URL in it.
-_URL_PREFIX = "cobblers.example.com/riverford/"
+_URL_PREFIX = "yelp.com/biz/"
 
 _SHOP_PAGES = (
     CannedPage(
-        match="cobble-bell",
+        match="fairhaven",
         text=(
-            "Title: Cobble & Bell — shoe repair, Riverford\n"
-            "Cobble & Bell is a family-run cobbler on Merchant Row in Riverford.\n"
+            "Title: Fairhaven Shoe & Leather — shoe repair, Bellingham\n"
+            "Fairhaven Shoe & Leather is a family-run cobbler on Cornwall Avenue in "
+            "Bellingham.\n"
             f"Source: {_SHOP1_URL}\n"
             "\n"
             "Address\n"
-            "41 Merchant Row, Riverford, by the market square.\n"
+            "41 Cornwall Avenue, Bellingham, by the market square.\n"
             "\n"
             "Services and prices\n"
             "Full resoling in leather or rubber, from $45 a pair.\n"
@@ -150,15 +153,15 @@ _SHOP_PAGES = (
         ),
     ),
     CannedPage(
-        match="sole-bench",
+        match="state-street-cobbler",
         text=(
-            "Title: The Sole Bench — repairs and resoling, Riverford\n"
-            "The Sole Bench is a workshop off Fenwick Lane in Riverford, taking "
+            "Title: State Street Cobbler — repairs and resoling, Bellingham\n"
+            "State Street Cobbler is a workshop on State Street in Bellingham, taking "
             "walk-ins all week.\n"
             f"Source: {_SHOP2_URL}\n"
             "\n"
             "Address\n"
-            "7 Fenwick Lane, Riverford, behind the old post office.\n"
+            "7 State Street, Bellingham, behind the old post office.\n"
             "\n"
             "Services and prices\n"
             "Resoling in leather, rubber or wedge soles, from $50 a pair.\n"
@@ -173,15 +176,15 @@ _SHOP_PAGES = (
         ),
     ),
     CannedPage(
-        match="heelstone",
+        match="eldridge",
         text=(
-            "Title: Heelstone Bootmakers — resoling and repairs, Riverford\n"
-            "Heelstone Bootmakers is a bench-made boot shop on Argyle Steps, "
-            "Riverford, working mostly in leather-soled footwear.\n"
+            "Title: Eldridge Bootworks — resoling and repairs, Bellingham\n"
+            "Eldridge Bootworks is a bench-made boot shop on Elm Street, "
+            "Bellingham, working mostly in leather-soled footwear.\n"
             f"Source: {_SHOP3_URL}\n"
             "\n"
             "Address\n"
-            "12 Argyle Steps, Riverford, two doors from the bridge stairs.\n"
+            "12 Elm Street, Bellingham, near the Cornwall Avenue corner.\n"
             "\n"
             "Services and prices\n"
             "Bench resoling with hand-stitched soles, from $70 a pair.\n"
@@ -198,30 +201,30 @@ _SHOP_PAGES = (
 )
 
 _SEARCH_PAGE = CannedPage(
-    match="riverford",
+    match="bellingham",
     text=(
-        "Title: shoe repair and cobblers in Riverford — search results\n"
-        "Cobblers and shoe repair shops in Riverford, with resoling services.\n"
-        "[Cobble & Bell — shoe repair and resoling]"
+        "Title: shoe repair and cobblers in Bellingham — search results\n"
+        "Cobblers and shoe repair shops in Bellingham, with resoling services.\n"
+        "[Fairhaven Shoe & Leather — shoe repair and resoling]"
         f"({_SHOP1_URL})\n"
-        "Family-run cobbler on Merchant Row doing full resoling, heel rebuilds "
+        "Family-run cobbler on Cornwall Avenue doing full resoling, heel rebuilds "
         "and hand stitching.\n"
         "\n"
-        "The Sole Bench — repairs, resoling and fittings\n"
-        "[The Sole Bench — repairs and resoling]"
+        "State Street Cobbler — repairs, resoling and fittings\n"
+        "[State Street Cobbler — repairs and resoling]"
         f"({_SHOP2_URL})\n"
-        "Workshop off Fenwick Lane; resoling in leather and rubber, plus stretch "
+        "Workshop on State Street; resoling in leather and rubber, plus stretch "
         "and fit services.\n"
         "\n"
-        "Heelstone Bootmakers — handmade repairs and resoling\n"
-        "[Heelstone Bootmakers — resoling and repairs]"
+        "Eldridge Bootworks — handmade repairs and resoling\n"
+        "[Eldridge Bootworks — resoling and repairs]"
         f"({_SHOP3_URL})\n"
-        "Bench-made boot repairs on Argyle Steps, with a two-week resoling "
+        "Bench-made boot repairs on Elm Street, with a two-week resoling "
         "turnaround.\n"
         "\n"
         "A guide to caring for leather-soled shoes, with product links\n"
         "[Caring for leather soles — a guide]"
-        "(https://stylenotes.example.com/leather-sole-care)\n"
+        "(https://www.wikihow.com/Care-for-Leather-Shoes)\n"
         "Six tips for making resoled shoes last, with a short list of conditioners.\n"
     ),
 )
@@ -234,17 +237,17 @@ _SEARCH_PAGE = CannedPage(
 # reply is measured against is the collection's, never the ask's.
 
 _ASK = (
-    "can you find me a cobbler in riverford who does resoling? i want names, "
+    "can you find me a cobbler in bellingham who does resoling? i want names, "
     "addresses and what services they offer"
 )
 _ASKS = (
-    "looking for a cobbler in riverford that does resoling — who's good, where "
+    "looking for a cobbler in bellingham that does resoling — who's good, where "
     "are they, and what do they do?",
-    "find me somewhere in riverford to get my boots resoled — shop names, "
+    "find me somewhere in bellingham to get my boots resoled — shop names, "
     "addresses and what they offer",
-    "i need resoling done in riverford. can you look up who does it, where they "
+    "i need resoling done in bellingham. can you look up who does it, where they "
     "are, and what services they run?",
-    "any cobblers in riverford doing resoling? want the names, the addresses "
+    "any cobblers in bellingham doing resoling? want the names, the addresses "
     "and what each one offers",
 )
 
@@ -267,7 +270,7 @@ def _assert_every_wording_carries_the_facts() -> None:
     fails here rather than as a puzzling score after a paid run."""
     for ask in (_ASK, *_ASKS):
         folded = ask.casefold()
-        assert "riverford" in folded, f"this wording names no place — {ask!r}"
+        assert "bellingham" in folded, f"this wording names no place — {ask!r}"
         assert "resol" in folded, f"this wording names no service — {ask!r}"
         assert any(clause in folded for clause in _NAME_CLAUSES), (
             f"this wording asks for no names — {ask!r}"
@@ -316,7 +319,7 @@ def _reply_carries_a_served_url(sample: SampleObservation, _world: World) -> Ans
     own links passes — the rule asks for at least one source URL, and those
     links are the same addresses; whether the URL came off a page she read or
     off the search results is a route, visible in the artifacts, not asserted
-    here. The search's one distractor link (a style blog, under a different
+    here. The search's one distractor link (a how-to guide, under a different
     host) is deliberately NOT accepted: it is a URL the world served, but not a
     source of anything the reply states, so a reply citing it alone would carry
     a URL and none of the answer's provenance."""

@@ -103,8 +103,9 @@ reply that names the neighbouring messages without their figures passes the neig
 which is a finding for a person reading the modal sample.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
-accept once the numbers have been read.  Every sender, address, subject and figure is invented,
-because the repo is public.
+accept once the numbers have been read.  The senders are real Portland organisations
+(Elemental Energy, Energy Trust of Oregon, Multnomah County Library, the Portland Mercury)
+with made-up mail; every figure is invented, because the repo is public.
 """
 
 from __future__ import annotations
@@ -156,7 +157,7 @@ MAILBOX_FIGURES = (QUOTE_FIGURE, *NEIGHBOUR_FIGURES)
 # The sender and the subject the absent-message ask names.  The sender is the quote's own, who
 # sent two of the mailbox's messages.  The subject is one no message carries: none of its words
 # is a word of any message.
-ABSENT_ASK_SENDER = "priya nakamura"
+ABSENT_ASK_SENDER = "priya sharma"
 ABSENT_SUBJECT = "battery storage estimate"
 
 
@@ -166,8 +167,8 @@ ABSENT_SUBJECT = "battery storage estimate"
 # advert shares its subject, and the other two are ordinary mail.  Ids are opaque, as a real
 # backend's are, so no id says which message is which.
 
-_PRIYA = "Priya Nakamura"
-_PRIYA_ADDRESS = "priya@brightleaf-solar.example"
+_PRIYA = "Priya Sharma"
+_PRIYA_ADDRESS = "priya@elementalenergy.net"
 
 THE_QUOTE = CannedEmail(
     id="Mqx7",
@@ -179,7 +180,7 @@ THE_QUOTE = CannedEmail(
         "Hi — thanks again for having us out to look at the roof. Here is the quote for the "
         "rooftop solar install we talked about: 14 panels, a 5.6 kW system, installed price "
         f"$18,{QUOTE_FIGURE} including permits. The quote holds until October 31. Reply here "
-        "when you'd like to book a start date.\n\nPriya Nakamura\nBrightleaf Solar"
+        "when you'd like to book a start date.\n\nPriya Sharma\nElemental Energy"
     ),
 )
 
@@ -191,16 +192,16 @@ _SAME_SENDER = CannedEmail(
     received_at="2026-09-12T18:40:00Z",
     body=(
         "Hi — here is the invoice for Thursday's site assessment visit: $145, already paid by "
-        "card on the day, so nothing is owed. Your quote will follow once our designer has the "
-        "roof measurements.\n\nPriya Nakamura\nBrightleaf Solar"
+        "card on the day, so nothing is owed. Your solar quote will follow once our designer has "
+        "the roof measurements.\n\nPriya Sharma\nElemental Energy"
     ),
 )
 
 _SAME_SUBJECT = CannedEmail(
     id="Mvk9",
     subject="Rooftop solar quotes — this month only",
-    sender="Sunvale Energy",
-    address="offers@sunvale-energy.example",
+    sender="Energy Trust of Oregon",
+    address="offers@energytrust.org",
     received_at="2026-09-25T13:00:00Z",
     body=(
         "Thinking about rooftop solar? Book a free home quote before October 15 and lock in "
@@ -211,24 +212,24 @@ _SAME_SUBJECT = CannedEmail(
 _LIBRARY = CannedEmail(
     id="Mhp4",
     subject="Your hold is ready",
-    sender="Cedar Hill Library",
-    address="holds@cedarhill-library.example",
+    sender="Multnomah County Library",
+    address="holds@multcolib.org",
     received_at="2026-09-27T09:05:00Z",
     body=(
-        "The book you reserved, The Salt Road, is waiting at the front desk. Please pick it "
+        "The book you reserved, The Salt Path, is waiting at the front desk. Please pick it "
         "up within a week."
     ),
 )
 
 _NEWSLETTER = CannedEmail(
     id="Mzd6",
-    subject="Harbor Weekly — this Friday's roundup",
-    sender="Harbor Weekly",
-    address="news@harborweekly.example",
+    subject="Portland Mercury — this Friday's roundup",
+    sender="Portland Mercury",
+    address="news@portlandmercury.com",
     received_at="2026-09-26T11:00:00Z",
     body=(
-        "This week: the ferry timetable changes, a new bakery on Quay Street, and the autumn "
-        "market returns to the square on Saturday."
+        "This week: the ferry timetable changes, a new bakery on Alberta Street, and the "
+        "autumn market returns to the square on Saturday."
     ),
 )
 
@@ -239,8 +240,8 @@ NEWSLETTERS = SynthCollection(
     "newsletters",
     "Newsletters the user is subscribed to and actually reads, with what each one covers.",
     entries=(
-        "Harbor Weekly — local news roundup, every Friday",
-        "The Seedling — gardening tips, every other Tuesday",
+        "Portland Mercury — local news roundup, every Friday",
+        "Gardenista — gardening tips, every other Tuesday",
     ),
 )
 
@@ -252,12 +253,12 @@ NEWSLETTERS = SynthCollection(
 # name the same sender, a subject no message carries and the amount wanted, and each says
 # "email" or "inbox".  The remark's every wording names email and asks nothing of it.
 
-_LOOKUP_ASK = "did priya nakamura send me the rooftop solar quote yet? what does it come to?"
+_LOOKUP_ASK = "did priya sharma send me the rooftop solar quote yet? what does it come to?"
 _LOOKUP_PHRASINGS = (
-    "can you check my email for the rooftop solar quote from priya nakamura and tell me the price?",
-    "what's the total on priya nakamura's rooftop solar quote? it should be in my email",
-    "look through my inbox for the rooftop solar quote priya nakamura sent — how much is it?",
-    "i think priya nakamura emailed me that rooftop solar quote, how much did it come out to?",
+    "can you check my email for the rooftop solar quote from priya sharma and tell me the price?",
+    "what's the total on priya sharma's rooftop solar quote? it should be in my email",
+    "look through my inbox for the rooftop solar quote priya sharma sent — how much is it?",
+    "i think priya sharma emailed me that rooftop solar quote, how much did it come out to?",
 )
 
 # Beyond the sender's name, no word of any wording is a word of any message, so a wording

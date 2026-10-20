@@ -1142,9 +1142,9 @@ async def test_the_email_world_stands_up_through_the_driver(
             )
         ).message
     assert "Your rooftop solar quote" in by_sender and "Site assessment invoice" in by_sender
-    assert "Sunvale" not in by_sender
+    assert "Energy Trust" not in by_sender
     assert NEIGHBOUR_FIGURES[0] in by_sender, "the sender search previews an amount"
-    assert "Your rooftop solar quote" in by_subject and "Sunvale" in by_subject
+    assert "Your rooftop solar quote" in by_subject and "Energy Trust" in by_subject
     assert "Site assessment invoice" not in by_subject
     assert not [email.id for email in MAILBOX if email.subject in absent], absent
 
@@ -1165,7 +1165,7 @@ async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
     async def ids(**filters: str) -> list[str]:
         return [found.id for found in await mailbox.search_emails(**filters)]
 
-    assert await ids(text="Priya Nakamura rooftop solar quote") == ["Mqx7", "Mrt2", "Mvk9"]
+    assert await ids(text="Priya Sharma rooftop solar quote") == ["Mqx7", "Mrt2", "Mvk9"]
     assert await ids(from_addr="priya", subject="quote") == ["Mqx7"]
     assert await ids(from_addr="someone@nowhere.example") == []
     assert await ids(text="solar", after="2026-09-23T00:00:00Z") == ["Mvk9"]
@@ -1222,7 +1222,7 @@ def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_me
         for wording in (case.ask, *case.also_phrased):
             assert not any(token in wording for token in owners), wording
     for wording in (LOOKUP.ask, *LOOKUP.also_phrased):
-        assert "priya nakamura" in wording and "rooftop solar quote" in wording, wording
+        assert "priya sharma" in wording and "rooftop solar quote" in wording, wording
     for wording in (ABSENT.ask, *ABSENT.also_phrased):
         assert ABSENT_ASK_SENDER in wording and ABSENT_SUBJECT in wording, wording
         assert "email" in wording or "inbox" in wording, wording
@@ -1291,13 +1291,13 @@ def test_every_email_claim_can_see_its_failure() -> None:
     value pools as agreement and never as blind."""
     pruned = [
         StoredEntry(
-            collection=NEWSLETTERS.name, key="Harbor Weekly", content=NEWSLETTERS.entries[0]
+            collection=NEWSLETTERS.name, key="Portland Mercury", content=NEWSLETTERS.entries[0]
         )
     ]
     invented_entry = StoredEntry(collection="notes", key="Quote", content="Quote: $21,000")
     samples = [
         _email_sample("good", f"Yes — Priya's quote came to $18,{QUOTE_FIGURE} for 14 panels."),
-        _email_sample("swapped", "Sunvale's quote comes to $14,990."),
+        _email_sample("swapped", "Energy Trust's quote comes to $14,990."),
         _email_sample("invented", "It comes to $19,200."),
         _email_sample("pruned", f"$18,{QUOTE_FIGURE}.", held=pruned),
         _email_sample("noted", f"$18,{QUOTE_FIGURE}.", entries=[invented_entry]),
@@ -1345,11 +1345,11 @@ def test_every_email_claim_can_see_its_failure() -> None:
         ],
         "state: every specific value in the stored entries is sourced": [True, False, True],
     }
-    nothing = "Nothing from Priya Nakamura about a battery storage estimate."
+    nothing = "Nothing from Priya Sharma about a battery storage estimate."
     silent = _email_sample("none", nothing, ask=ABSENT.ask)
     naming = _email_sample(
         "aside",
-        "No battery storage estimate from Priya Nakamura. Her rooftop solar quote is "
+        "No battery storage estimate from Priya Sharma. Her rooftop solar quote is "
         f"$18,{QUOTE_FIGURE} and her site assessment invoice was $145.",
         ask=ABSENT.ask,
     )

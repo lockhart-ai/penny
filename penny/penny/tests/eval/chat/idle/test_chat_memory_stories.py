@@ -143,11 +143,9 @@ _GAMES = SynthCollection(
 
 # The one game the lookup story is about.  Its key is the text before the em dash, the
 # way every seeded entry in this suite is written.
-_MISTFORGE_ENTRY = "Into the Breach — a turn-based strategy game."
+_BREACH_ENTRY = "Into the Breach — a turn-based strategy game."
 
-_GAMES_WITH_MISTFORGE = SynthCollection(
-    _GAMES.name, _GAMES.description, entries=(_MISTFORGE_ENTRY,)
-)
+_GAMES_WITH_BREACH = SynthCollection(_GAMES.name, _GAMES.description, entries=(_BREACH_ENTRY,))
 
 _INTO = SynthCollection(
     "things-im-into",
@@ -800,7 +798,7 @@ _SWEEP = _VerbCase(
         keeps=(),
         excludes=(),
         answers=tuple(token for _, token in _SWEPT),
-        stores=(_INTO, _AVOID, _GAMES_WITH_MISTFORGE),
+        stores=(_INTO, _AVOID, _GAMES_WITH_BREACH),
     ),
     ask="remind me what i'm into, what i'd rather avoid, and what's on my games list",
     also_phrased=(
@@ -1072,7 +1070,7 @@ _NO_FIRE_WISTFUL = _VerbCase(
         "was."
     ),
     world=World(
-        name="a tempting list", pages=(), keeps=(), excludes=(), stores=(_GAMES_WITH_MISTFORGE,)
+        name="a tempting list", pages=(), keeps=(), excludes=(), stores=(_GAMES_WITH_BREACH,)
     ),
     # The temptation IS the setup: a games list holding a strategy game sits in the store while
     # the user muses about finishing a strategy game campaign.  Without it this case measures

@@ -74,8 +74,11 @@ collection source and "what did your last run do" is not a phrasing a user reach
 neither case dispatches it.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
-accept once the numbers have been read.  Every topic, page and job is invented, because the repo
-is public.
+accept once the numbers have been read.  The jobs' hosts are real (MobyGames, AllTrails, The
+Astorian); the topics and pages behind them are made up, because the repo is public.  The
+three one-place answer tokens (``silverleaf``, ``thistledown``, ``driftglass``) stay
+deliberately invented: each must appear in exactly one place in its world, which is the
+mechanism that forces a read.
 """
 
 from __future__ import annotations
@@ -348,10 +351,10 @@ _PATCH_NOTES_JOB = StandingJob(
     notify=True,
 )
 _TRAIL_JOB = StandingJob(
-    container="verdant-hollow-trail",
-    url="https://trails.example.com/verdant-hollow",
+    container="tillamook-head-trail",
+    url="https://www.alltrails.com/explore/trail/oregon/tillamook-head-trail",
     watched_for="trail conditions",
-    description="Current conditions on the Verdant Hollow hiking trail.",
+    description="Current conditions on the Tillamook Head hiking trail.",
     schedule="FREQ=HOURLY",
     notify=False,
 )
@@ -404,8 +407,8 @@ _SEEDED_CYCLES = (
         _TRAIL_JOB,
         "trail-cycle-1",
         RunOutcome.WORKED,
-        "Logged the Verdant Hollow trail status.",
-        wrote=("Verdant Hollow trail status", "Verdant Hollow — muddy after rain."),
+        "Logged the Tillamook Head trail status.",
+        wrote=("Tillamook Head trail status", "Tillamook Head — muddy after rain."),
     ),
     _SeededCycle(
         _PATCH_NOTES_JOB,
@@ -694,11 +697,11 @@ async def test_why_a_job_is_in_trouble_comes_out_of_the_run_record(
 # (`parent_run_id`/`parent_tool_call_id`) is exercised too, so a sample that does look
 # further finds the SAME record `run_get` renders in production, not a thinner stand-in.
 
-_FAILED_PAGE = "https://pemberwick.example/tribune"
+_FAILED_PAGE = "https://www.dailyastorian.com/"
 _FAILED_EXTRACT_ASK = "the day's headlines"
 # The invented word names SPECIFIC CONTENT the extraction got as far as before timing out
-# — never a detail of the SITE or the ASK (the user's own message already names "pemberwick
-# tribune" and "headlines", so a reply that only restates THOSE answers correctly without
+# — never a detail of the SITE or the ASK (the user's own message already names "the
+# astorian" and "headlines", so a reply that only restates THOSE answers correctly without
 # ever having read the record at all — measured: a first draft of this reason put the
 # invented word in the site's own name, and 10 of 15 samples gave a correct, honest account
 # of the cause while never saying it, scoring as a miss for a claim that was testing the
@@ -786,14 +789,14 @@ _FAILED_TURN_CASE = _LogReadCase(
     premise=assert_the_failed_turn_record_is_the_only_route,
     answer=_FAILED_TURN_TOKEN,
     ask=(
-        "hey, earlier i asked you to check the pemberwick tribune's headlines and it never "
+        "hey, earlier i asked you to check the astorian's headlines and it never "
         "worked out — what happened there?"
     ),
     also_phrased=(
-        "what went wrong before when i asked you to pull the headlines off the pemberwick tribune?",
-        "that pemberwick tribune headlines thing didn't work earlier — what happened?",
-        "can you tell me why checking the pemberwick tribune's headlines failed last time?",
-        "i tried to get you to grab the pemberwick tribune's headlines a bit ago and it "
+        "what went wrong before when i asked you to pull the headlines off the astorian?",
+        "that astorian headlines thing didn't work earlier — what happened?",
+        "can you tell me why checking the astorian's headlines failed last time?",
+        "i tried to get you to grab the astorian's headlines a bit ago and it "
         "didn't pan out — why not?",
     ),
 )
