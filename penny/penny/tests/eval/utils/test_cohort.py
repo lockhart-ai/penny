@@ -706,6 +706,37 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
     assert specifics(titled) == []
     trails = "the patch notes for Mistforge Tactics, and the Verdant Hollow trail conditions"
     assert unsourced_specifics(titled, trails) == []
+    # A comma lists a title's words the way `/` and `&` pair them (#2694).  MEASURED on a
+    # notify composer run: every miss was a wholly-bold section heading the reply grouped its
+    # findings under — each word ordinary English Title Case capitalised, every listing
+    # beneath it sourced — and the comma kept the title from reading as one, so the words past
+    # it read as a name phrase and were reported invented.  The title bound is unchanged.
+    grouped = (
+        "**Gear, Accessories & Other Instruments**\n"
+        "- **Roland Juno-106**: $610 on Reverb\n"
+        "**Drum Machines, Sequencers & Controllers**\n"
+        "- **TR-808**: $450 on eBay\n"
+        "**Studio Gear & Accessories**\n"
+        "- **Eventide H9**: $399\n"
+    )
+    listings = (
+        "a Roland Juno-106 synth listed at 610 on Reverb. a TR-808 drum machine at 450 on "
+        "eBay. an Eventide H9 pedal at 399."
+    )
+    assert unsourced_specifics(grouped, listings) == []
+    # The paired guard: an item line gets no heading treatment.  An invented model name on
+    # one is still read whole when the line's bold run is not a label's shape — as the issue's
+    # own `**Roland Juno-106**: $610` example is.
+    assert unsourced_specifics("- **Korg MS-20**: $410", listings) == [
+        "Korg",
+        "MS-",
+        "20",
+        "410",
+    ]
+    # A wholly-alpha bold run before a colon is a label by the rule above, so the name is
+    # skipped and the value after the colon is what is read — the same value every label's
+    # value is.
+    assert unsourced_specifics("- **Moog Matriarch**: $1200", listings) == ["1200"]
     # …and the guard.  A number that opens a line without being a list number is a value; a
     # title's words in a sentence are values; so is a bare list of names, a name after a
     # label, a name with a dash after it, and a list item too long to be a title.

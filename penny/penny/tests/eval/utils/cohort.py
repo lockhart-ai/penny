@@ -1642,8 +1642,14 @@ _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 _LABEL_WORD = rf"[A-Za-z][A-Za-z'{re.escape(_HYPHENS)}]*"
 _LABEL_COUNT = rf"(?:{_GAP}+\d+\b(?:{_GAP}+[{re.escape(_DASHES)}-](?={_GAP}))?)?"
 _LABEL_HEAD = rf"[A-Z][A-Za-z'{re.escape(_HYPHENS)}]*{_LABEL_COUNT}"
-# Label words stand side by side, or either side of the marks that pair them: `Pros/Cons`.
-_LABEL_GAP = r"(?:[ \t]*[/&][ \t]*|[ \t]+)"
+# Label words stand side by side, either side of the marks that pair them (`Pros/Cons`), or
+# across the comma that lists them.  MEASURED (#2694): every miss one notify composer run had
+# was a wholly-bold section heading the reply grouped its findings under — `**Gear, Accessories
+# & Other Instruments**`, `**Drum Machines, Sequencers & Controllers**`,
+# `**Controllers, Sequencers & Modular Gear**` — each word ordinary English that Title Case
+# capitalised, every listing beneath sourced; the comma kept the title from reading as one, so
+# the words past it read as a name phrase and were reported invented.
+_LABEL_GAP = r"(?:[ \t]*[/&,][ \t]*|[ \t]+)"
 _LABEL_MORE_WORDS = 3
 _TITLE_MORE_WORDS = 5
 _LABEL_WORDS_MORE = rf"(?:{_LABEL_GAP}{_LABEL_WORD}){{0,{_LABEL_MORE_WORDS}}}"
