@@ -191,6 +191,8 @@ async def test_the_delivery_turn_reads_the_report_whole(db, test_config, mock_ll
         "It ran just now because the user asked it to run.\n"
         "\n"
         "## What the job wrote this run\n"
+        "These entries are what the job kept for the user this run — the message "
+        "tells them about every one.\n"
         "- into `indie-metroidvanias`, under `Cinder Drift`: Cinder Drift — a hand-drawn "
         "metroidvania. https://ex.example/cd\n"
         "\n"

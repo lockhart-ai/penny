@@ -111,6 +111,10 @@ class JobReport(BaseModel):
 _CADENCE_LINE = "It ran on its own schedule."
 _ON_DEMAND_LINE = "It ran just now because the user asked it to run."
 _WROTE_HEAD = "## What the job wrote this run"
+_WROTE_LEAD = (
+    "These entries are what the job kept for the user this run — the message "
+    "tells them about every one."
+)
 _WROTE_NONE = "It wrote nothing down this run."
 _WRITE_LINE = "- into `{memory}`, under `{key}`: {content}"
 _WRITE_LINE_NO_KEY = "- into `{memory}`: {content}"
@@ -138,6 +142,7 @@ def render_job_report(report: JobReport) -> str:
     if not report.entries:
         lines.append(_WROTE_NONE)
     else:
+        lines.append(_WROTE_LEAD)
         lines.extend(_written_report_line(entry) for entry in report.entries)
     lines.extend(["", _ASK])
     return "\n".join(lines)

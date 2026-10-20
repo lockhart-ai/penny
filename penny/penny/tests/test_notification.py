@@ -65,6 +65,8 @@ def test_a_job_report_renders_whole():
         "It ran on its own schedule.\n"
         "\n"
         "## What the job wrote this run\n"
+        "These entries are what the job kept for the user this run — the message "
+        "tells them about every one.\n"
         "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
         "\n"
         "Write the one message to send the user about this run, from what the job wrote."
