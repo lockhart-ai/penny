@@ -44,6 +44,7 @@ from penny.tests.eval.conftest import (
     _require_ask,
     _require_report_only,
     _run_samples,
+    _seed_sample,
     _stamp_cause,
     given_to_the_model,
     sample_number,
@@ -173,8 +174,11 @@ def job_report_eval(
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
-            # The sample's own seed: the job with THIS arm's description wording, the
-            # entries its cycle wrote, and the report row naming that cycle's run.
+            # The sample's ground (the user among it — the send gate declines without
+            # a registered recipient), then the job with THIS arm's description
+            # wording, the entries its cycle wrote, and the report row naming that
+            # cycle's run.
+            await _seed_sample(penny, world=None, seed=None, browse=[], prepare=None)
             run_id = _seed_job(penny.db, collection, spoken[sample_index], tuple(entries))
             penny.db.send_queue.enqueue_report(collection, CycleTrigger.CADENCE, run_id)
             message: str | None = None
