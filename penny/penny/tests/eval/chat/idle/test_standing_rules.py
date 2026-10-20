@@ -17,13 +17,15 @@ surface:
 | forget one | ``rules-forget-one`` | the named rule gone; the other two unchanged |
 | honour one | ``rules-honoured-in-chat-reply`` | the reply carries the rule's sign-off |
 
-**The empty section is the state the first case is answered from.**  ``rules``
-seeds empty, so the write that keeps the first rule reads its destination off the
-section's own empty line — the anchor is on screen before any rule exists, which
-is the whole reachability contract of #2633.  The two later cases seed three
-fictional rules through the store's own write path (author ``user``), and the
-premise probe asserts the section renders them — a world that stopped showing
-what the reply is answered from would make every sample measure guesswork.
+**The store map is the state the first case is answered from.**  ``rules`` seeds
+empty, so with no rule set the section is omitted entirely (#2686) and the write
+that keeps the first rule reads its destination off the store map, which always
+lists ``rules`` with its description — the anchor is on screen before any rule
+exists, which is the whole reachability contract of #2633.  The two later cases
+seed three fictional rules through the store's own write path (author ``user``),
+and the premise probe asserts the section renders them — a world that stopped
+showing what the reply is answered from would make every sample measure
+guesswork.
 
 **What is NOT claimed.**  That she called ``collection_write`` / ``collection_remove``
 is a ROUTE — a rule is an entry, and nothing here keys to a verb — so it is measured
@@ -44,7 +46,7 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.agents.self_state import SelfStateHeader, standing_rules_section
+from penny.agents.self_state import standing_rules_section
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory.objects import EntryInput
@@ -101,18 +103,16 @@ def _seed_rules(db: Database, entries: tuple[tuple[str, str], ...]) -> None:
 def _premise(rules: tuple[tuple[str, str], ...]) -> Preparer:
     """The case's premise, asserted inside the sample it belongs to: the shared
     standing-rules render shows the state the claims below are answered against —
-    the empty line when nothing is seeded, every rule in full when they are.  Read
-    through the header's own render so the probe and the surface cannot drift into
-    asserting different words for one state; a seeded rule renders as its own
-    sentence — ``- <content>``, no key, no stamp (#2647) — and the line is matched
-    to the content whole (pinned whole in ``test_self_state.py``)."""
+    omitted entirely when nothing is seeded (#2686), every rule in full when they
+    are.  Read through the header's own render so the probe and the surface cannot
+    drift into asserting different words for one state; a seeded rule renders as
+    its own sentence — ``- <content>``, no key, no stamp (#2647) — and the line is
+    matched to the content whole (pinned whole in ``test_self_state.py``)."""
 
     def probe(penny: Penny) -> None:
         rendered = standing_rules_section(penny.db)
         if not rules:
-            assert rendered == (
-                f"{SelfStateHeader.STANDING_RULES_HEADER}\n{SelfStateHeader.EMPTY_STANDING_RULES}"
-            ), f"the section must render the empty state:\n{rendered!r}"
+            assert rendered == "", f"the section must be omitted when no rule stands:\n{rendered!r}"
             return
         lines = rendered.splitlines()[1:]  # drop the section title
         assert len(lines) == len(rules), f"the section must render every rule:\n{rendered!r}"

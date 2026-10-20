@@ -54,9 +54,9 @@ each entry as ``- <key>: <content> (added <date>)``, from ONE shared render
 section).  Only this collection renders this way: another collection's content never
 enters the prompt as standing instructions.  In the chat prompt the rules render in
 the instruction part instead (``standing_rules_instruction``), where she reads
-instructions rather than state, and this header carries the empty-collection anchor
-alone — one line naming ``rules`` so the first rule's write is one guess-free call
-away before any rule exists.
+instructions rather than state.  With no rule set the section is omitted entirely
+(#2686) — the ``rules`` collection stays reachable through the store map, which
+always lists it with its description.
 
 Autonomous-send (emission) rows join the recent-activity block (#1568): each
 delivered mechanism send renders one ``sent · <when> · <mechanism> — "<snippet>"``
@@ -147,13 +147,6 @@ class SelfStateHeader:
     EMPTY_MAP = "(no stores yet)"
     NO_PROFILE = "(no profile set yet)"
 
-    # The standing-rules section's empty form (#2633): the state, not an imperative —
-    # it names the collection the first rule will land in, so the `rules` anchor is on
-    # screen even before any rule exists and the write is one guess-free call away.
-    EMPTY_STANDING_RULES = (
-        "(none yet — when the user asks you to always or never do something, it goes in `rules`)"
-    )
-
     # The overflow tail activity still shows past its cap — the fetch tool named so
     # the remainder is one guess-free call away (nothing is silently dropped; n≤1
     # holds). Mechanisms and the store map carry no cap (#2288): the whole
@@ -181,14 +174,15 @@ class SelfStateHeader:
     def render(self) -> str:
         """The whole ``## Penny's current state`` block — a table of contents of
         Penny's operational situation, each section a deterministic render.  A
-        section that has nothing to show renders nothing (``_standing_rules_section``
-        yields to the instruction part once a rule stands)."""
+        section that has nothing to show renders nothing.  The standing rules do not
+        render here at all: with a rule standing they belong to the chat prompt's
+        instruction part (``standing_rules_instruction``), and with none the section
+        is omitted entirely (#2686) — the store map still names ``rules``."""
         sections = [
             self.HEADER,
             self._mechanisms_section(),
             self._activity_section(),
             self._memory_map_section(),
-            self._standing_rules_section(),
             self._durable_core_section(),
             self.POINTERS,
         ]
@@ -486,16 +480,6 @@ class SelfStateHeader:
 
     # ── Durable user-fact core ───────────────────────────────────────────────
 
-    def _standing_rules_section(self) -> str:
-        """The standing rules' empty-collection anchor, and nothing else.  With a
-        rule standing, the rules render in the chat prompt's instruction part
-        (``standing_rules_instruction``, one shared render), where she reads
-        instructions rather than state.  With none, the anchor line stays so
-        ``rules`` is named somewhere she reads before the first rule exists."""
-        if standing_rules_entries(self.db):
-            return ""
-        return f"{self.STANDING_RULES_HEADER}\n{self.EMPTY_STANDING_RULES}"
-
     def _durable_core_section(self) -> str:
         """The small, stable set of deterministic user facts — name, timezone,
         location — so the personal tone survives without a lookup. These change
@@ -532,13 +516,12 @@ def render_standing_rules(db: Database) -> str:
     and ``collection_keys``/``collection_list`` on ``rules`` read the keys and the
     ``added`` stamps the render leaves out.
 
-    With none — or no collection row at all — the one empty-collection line renders
-    instead, so the ``rules`` anchor is on screen in every state: the write that adds
-    the first rule, and the read that answers "what are my standing rules", are both
-    one guess-free call from this section wherever it appears."""
+    With none — or no collection row at all — empty string (#2686): the section is
+    omitted wherever it appears, and the ``rules`` collection stays reachable through
+    the store map, which always lists it with its description."""
     entries = standing_rules_entries(db)
     if not entries:
-        return SelfStateHeader.EMPTY_STANDING_RULES
+        return ""
     return "\n".join(f"- {entry.content}" for entry in entries)
 
 
@@ -548,8 +531,12 @@ def standing_rules_section(db: Database) -> str:
     cycle's system prompt and the notify composer's document.  Written once so they
     can never disagree about what a rule says.  The chat prompt renders the rules in
     its instruction part instead (``standing_rules_instruction``), where she reads
-    instructions rather than state."""
-    return f"{SelfStateHeader.STANDING_RULES_HEADER}\n{render_standing_rules(db)}"
+    instructions rather than state.  With no rule set the whole section — heading
+    included — is omitted (#2686)."""
+    body = render_standing_rules(db)
+    if not body:
+        return ""
+    return f"{SelfStateHeader.STANDING_RULES_HEADER}\n{body}"
 
 
 # The one line that frames the rules where the chat agent reads INSTRUCTIONS.  Stated
@@ -573,9 +560,9 @@ def standing_rules_instruction(db: Database) -> str | None:
     Carries the SAME section title as the collector/composer data section, so a rule
     is sourced the same wherever it renders (the eval harness's provenance split
     reads the title, not the surface).  ``None`` when there are no rules — the
-    current-state header keeps the empty anchor naming ``rules`` in that state, and
-    an instruction section with nothing to follow would only blur the one rule that
-    later lands."""
+    section is omitted entirely (#2686), and the ``rules`` collection stays named in
+    the store map, which always lists it with its description; an instruction section
+    with nothing to follow would only blur the one rule that later lands."""
     if not standing_rules_entries(db):
         return None
     return (

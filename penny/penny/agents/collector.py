@@ -925,17 +925,15 @@ class Collector(BackgroundAgent):
         The standing rules render between the job's own instructions and the state
         blocks (#2633): the same shared section the chat self-state header shows, so a
         rule about how she speaks or what she uses holds in every cycle without a
-        lookup.
+        lookup.  With no rule set the section is omitted entirely (#2686).
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
-        return (
-            self._compose_prompt(fresh)
-            + "\n\n"
-            + standing_rules_section(self.db)
-            + self._holdings_section(fresh.name)
-            + self._run_history_section(fresh.name)
-        )
+        prompt = self._compose_prompt(fresh)
+        rules = standing_rules_section(self.db)
+        if rules:
+            prompt += f"\n\n{rules}"
+        return prompt + self._holdings_section(fresh.name) + self._run_history_section(fresh.name)
 
     def _holdings_section(self, target_name: str) -> str:
         """A trailing block of what the bound collection HOLDS right now — its entries,
