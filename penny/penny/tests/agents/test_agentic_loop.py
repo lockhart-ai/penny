@@ -3659,7 +3659,93 @@ class TestResponseValidators:
                 _text_response(form), _ctx(source_text=source)
             )
             assert isinstance(outcome, Retry), form
-            assert outcome.note == url_retry_note([invented]), form
+            assert outcome.note == url_retry_note([invented], source), form
+
+        # A miscopy of a URL the source really holds (row 138: a path word dropped)
+        # still fires, and its note hands over the exact source URL.
+        good = (
+            "https://lanternmuseum.org/news/canada/livestory/"
+            "alberta-referendum-results-live-updates-separatism-october-19-2026-9.7387777"
+        )
+        miscopy = (
+            "https://lanternmuseum.org/news/canada/livestory/"
+            "alberta-referendum-results-live-updates-october-19-2026-9.7387777"
+        )
+        miscopied = HallucinatedUrlValidator().check(
+            _text_response(f"Details: {miscopy}"), _ctx(source_text=source + f"\n{good}")
+        )
+        assert isinstance(miscopied, Retry)
+        assert miscopied.note == url_retry_note([miscopy], source + f"\n{good}")
+        assert miscopied.note is not None and good in miscopied.note
+
+
+class TestUrlRetryNote:
+    """The retry note names the flagged URL; when the source text holds a same-host
+    URL the flagged address reads as a miscopy of — a dropped path word, or the same
+    last path segment — it hands her the exact source URL instead.  Nothing is keyed
+    to a host or a path shape: whatever a draft miscopies is matched the same way."""
+
+    def test_one_url_without_a_match_names_the_defect(self):
+        note = url_retry_note(["https://made-up.example/deck"])
+        assert note == (
+            "Your reply links https://made-up.example/deck, which isn't from any page "
+            "you read or anything said in this conversation. Rewrite the reply without "
+            "links you can't source, or read a page that has it."
+        )
+
+    def test_several_without_a_match_use_the_plural_wording(self):
+        note = url_retry_note(["https://a.example/x", "https://b.example/y"])
+        assert note == (
+            "Your reply links https://a.example/x and https://b.example/y, which aren't "
+            "from any page you read or anything said in this conversation. Rewrite the "
+            "reply without links you can't source, or read pages that have them."
+        )
+
+    def test_a_dropped_path_word_hands_over_the_exact_source_url(self):
+        good = (
+            "https://news.example.com/livestory/alberta-vote-live-updates-separatism-oct-19-9.777"
+        )
+        bad = "https://news.example.com/livestory/alberta-vote-live-updates-oct-19-9.777"
+        note = url_retry_note([bad], f"from {good}")
+        assert note == (
+            f"Your reply links {bad}, which isn't in this conversation. The closest "
+            f"link here is {good}: use it exactly, or drop the link."
+        )
+
+    def test_an_equal_last_path_segment_matches_across_directories(self):
+        good = "https://news.example.com/canada/edmonton/alberta-vote"
+        bad = "https://news.example.com/politics/alberta-vote"
+        note = url_retry_note([bad], f"see {good}")
+        assert note == (
+            f"Your reply links {bad}, which isn't in this conversation. The closest "
+            f"link here is {good}: use it exactly, or drop the link."
+        )
+
+    def test_a_different_host_is_not_a_match(self):
+        bad = "https://news.example.com/livestory/alberta-vote-live-updates-oct-19-9.777"
+        other_host = (
+            "https://mirror.example.com/livestory/alberta-vote-live-updates-separatism-oct-19-9.777"
+        )
+        note = url_retry_note([bad], f"from {other_host}")
+        assert "use it exactly" not in note
+        assert note.startswith("Your reply links")
+
+    def test_a_path_too_far_off_is_not_a_match(self):
+        good = "https://news.example.com/section/a-completely-different-story-slug"
+        bad = "https://news.example.com/section/xyz"
+        note = url_retry_note([bad], f"from {good}")
+        assert "use it exactly" not in note
+
+    def test_a_mixed_flagged_set_gets_one_sentence_per_url(self):
+        good = (
+            "https://news.example.com/livestory/alberta-vote-live-updates-separatism-oct-19-9.777"
+        )
+        bad_matched = "https://news.example.com/livestory/alberta-vote-live-updates-oct-19-9.777"
+        bad_unmatched = "https://made-up.example/deck"
+        note = url_retry_note([bad_matched, bad_unmatched], f"from {good}")
+        assert note.startswith(f"Your reply links {bad_matched}, which isn't in this conversation.")
+        assert "use it exactly, or drop the link." in note
+        assert note.rstrip().endswith("read a page that has it.")
 
     def test_hallucinated_tool_call_repair_strips_when_no_tools(self):
         resp = _tool_response("search", {"query": "x"})

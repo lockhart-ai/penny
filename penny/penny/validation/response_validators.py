@@ -244,7 +244,9 @@ def find_hallucinated_urls(text: str, source_text: str) -> list[str]:
 
 # The note the hallucinated-URL retry shows the model (#2698): its draft plus the URL(s)
 # with no source, named, so the redraw can rewrite without them or read a page that has
-# them instead of re-drawing blind.
+# them instead of re-drawing blind.  When a flagged URL reads as a MISCOPY of one the
+# source text really holds (row 138: a path word dropped out of a CBC livelstory URL),
+# the note hands her the exact source URL instead — use it verbatim or drop the link.
 _URL_RETRY_NOTE_ONE = (
     "Your reply links {urls}, which isn't from any page you read or anything said in "
     "this conversation. Rewrite the reply without links you can't source, or read a "
@@ -255,13 +257,78 @@ _URL_RETRY_NOTE_MANY = (
     "this conversation. Rewrite the reply without links you can't source, or read "
     "pages that have them."
 )
+_URL_RETRY_NOTE_NEAR_MATCH = (
+    "Your reply links {bad}, which isn't in this conversation. The closest link here "
+    "is {source}: use it exactly, or drop the link."
+)
+# A source path is a miscopy's match when their edit distance is under this share of
+# the longer path — row 138's dropped word was ~15%.
+_NEAR_MATCH_PATH_SHARE = 0.2
 
 
-def url_retry_note(bad_urls: list[str]) -> str:
-    """The retry note for one or more URLs found in a draft with no source."""
-    urls = " and ".join(bad_urls)
-    template = _URL_RETRY_NOTE_ONE if len(bad_urls) == 1 else _URL_RETRY_NOTE_MANY
-    return template.format(urls=urls)
+def _edit_distance(a: str, b: str) -> int:
+    """The Levenshtein distance of two strings — URL paths are short, so the plain
+    two-row DP table is fine."""
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, 1):
+        current = [i]
+        for j, char_b in enumerate(b, 1):
+            current.append(
+                min(
+                    previous[j] + 1,
+                    current[j - 1] + 1,
+                    previous[j - 1] + (char_a != char_b),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def _nearest_source_url(bad: str, source_text: str) -> str | None:
+    """The source URL the flagged address reads as a miscopy of, or None.
+
+    A match is on the same host, with a path that shares the bad path's last segment
+    or sits within ``_NEAR_MATCH_PATH_SHARE`` edit distance of it; the closest wins,
+    a tie going to the first in source order.  Never keyed to a host or a path shape —
+    whatever URL a draft miscopies is matched the same way."""
+    bad_parsed = urllib.parse.urlparse(bad)
+    bad_path = bad_parsed.path
+    best: tuple[int, str] | None = None
+    for source in _extract_urls(source_text):
+        parsed = urllib.parse.urlparse(source)
+        if parsed.netloc != bad_parsed.netloc:
+            continue
+        path = parsed.path
+        if path.rsplit("/", 1)[-1] == bad_path.rsplit("/", 1)[-1]:
+            distance = 0
+        else:
+            distance = _edit_distance(bad_path, path)
+        if distance < _NEAR_MATCH_PATH_SHARE * max(len(bad_path), len(path), 1) and (
+            best is None or distance < best[0]
+        ):
+            best = (distance, source)
+    return best[1] if best else None
+
+
+def url_retry_note(bad_urls: list[str], source_text: str = "") -> str:
+    """The retry note for one or more URLs found in a draft with no source.
+
+    Without a near match the wording names the defect alone; when the source text
+    holds a same-host URL the flagged address reads as a miscopy of, that URL's
+    sentence hands her the exact link to use instead.  Mixed flagged sets get one
+    sentence per URL, so any mix reads cleanly."""
+    if not any(_nearest_source_url(url, source_text) for url in bad_urls):
+        urls = " and ".join(bad_urls)
+        template = _URL_RETRY_NOTE_ONE if len(bad_urls) == 1 else _URL_RETRY_NOTE_MANY
+        return template.format(urls=urls)
+    sentences = []
+    for url in bad_urls:
+        match = _nearest_source_url(url, source_text)
+        if match:
+            sentences.append(_URL_RETRY_NOTE_NEAR_MATCH.format(bad=url, source=match))
+        else:
+            sentences.append(_URL_RETRY_NOTE_ONE.format(urls=url))
+    return " ".join(sentences)
 
 
 # ── Response-level validators (chat + collector) ─────────────────────────────
@@ -302,9 +369,11 @@ class HallucinatedUrlValidator:
     draft — the URL reads as real to it — so the retry is not blind: it carries
     ``Retry.note``, and the loop shows the draft plus a note naming the URL(s) with
     no source (#2698).  From the note the model may rewrite without them or read a
-    page that has them.  The note also names the URL inside the conversation, so the
-    run's later draws read it as sourced — accepted: the note is the true record of
-    what was flagged."""
+    page that has them.  When a flagged URL is a close miscopy of a URL the source
+    text really holds — a dropped path word (#2698 row 138) — the note hands her the
+    exact source URL to use verbatim instead.  The note also names the URL inside
+    the conversation, so the run's later draws read it as sourced — accepted: the
+    note is the true record of what was flagged."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.HALLUCINATED_URLS in ctx.retried:
@@ -318,7 +387,10 @@ class HallucinatedUrlValidator:
                 "Hallucinated URL(s): %s",
                 ", ".join(url[:80] for url in bad_urls),
             )
-            return Retry(condition=ConditionKey.HALLUCINATED_URLS, note=url_retry_note(bad_urls))
+            return Retry(
+                condition=ConditionKey.HALLUCINATED_URLS,
+                note=url_retry_note(bad_urls, ctx.source_text),
+            )
         return Proceed(response=response)
 
 
