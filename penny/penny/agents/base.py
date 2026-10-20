@@ -973,9 +973,11 @@ class Agent:
         Builds a ``LoopContext`` and runs ``self.response_validators`` via
         ``run_validators`` (XML / refusal / hallucinated-URL, with the no-tools
         tool-call strip as a ``Repair``).  A ``Retry`` discards the bad response and
-        re-draws on the unchanged ``messages`` — once per condition (``retried``).  A
-        ``Proceed`` returns the (possibly-repaired) response.  Tool-call responses with
-        tools available short-circuit unvalidated.
+        re-draws — on the unchanged ``messages``, or on messages extended with the
+        draft plus a note when the retry carries one (the ungrounded-URL retry does,
+        #2698) — once per condition (``retried``).  A ``Proceed`` returns the
+        (possibly-repaired) response.  Tool-call responses with tools available
+        short-circuit unvalidated.
 
         Every draw reaching this chain has already survived ``_invoke_nondegenerate``,
         which discards and re-rolls an UNUSABLE one (a transport artifact, or a draw
@@ -1008,13 +1010,23 @@ class Agent:
             match run_validators(self.response_validators, response, ctx):
                 case Proceed(response=validated):
                     return validated if validated is not None else response
-                case Retry(condition=condition):
+                case Retry(condition=condition, note=note):
                     self._apply_retry(condition, retried, attempt, max_retries)
                     if attempt + 1 == max_retries:
                         # Retries exhausted — the last draw, tool calls stripped when
                         # none were offered, so the loop's text/tool branching matches
                         # the form the chain validated.
                         return self._without_unoffered_calls(response, effective_tools)
+                    if note is not None:
+                        # A retry that carries a note shows the model its draft
+                        # (assistant turn) followed by the note naming what was wrong
+                        # (user turn) before the redraw — the same append shape
+                        # ``NudgeContinue`` applies.  Appended to the run's own list:
+                        # the redraw may answer the note with a tool call, which
+                        # short-circuits back to the loop on these very messages, so
+                        # the note must survive that hop.
+                        messages.append(response.message)
+                        messages.append(LlmMessage(role=MessageRole.USER, content=note))
                     response = await self._invoke_nondegenerate(
                         messages, effective_tools, call_link, prompt_type
                     )
@@ -1048,10 +1060,11 @@ class Agent:
         """Apply a ``Retry`` disposition: record the condition, so the same condition
         cannot retry twice in one call.
 
-        The bad draw is discarded and nothing is written into the conversation, so the
-        next draw re-samples the exact state the discarded one was drawn from.  A draw
-        carries no mark of what was wrong with it, so appending it would only show the
-        model a finished reply with nothing after it to answer."""
+        By default the bad draw is discarded and nothing is written into the
+        conversation, so the next draw re-samples the exact state the discarded one was
+        drawn from.  A retry that carries a ``note`` is the one exception (#2698): the
+        caller then appends the draft plus the note before re-drawing, so the redraw
+        reads what was wrong instead of re-sampling blind."""
         retried.add(condition)
         logger.warning(
             "Invalid response (%s) on attempt %d/%d", condition, attempt + 1, max_retries

@@ -37,14 +37,22 @@ class Retry(BaseModel):
     """Discard the bad draw and re-draw on the unchanged conversation — once per
     ``condition`` (a repeat of the same condition proceeds with what it has).
 
-    A retry re-samples the state the draft was drawn from.  Nothing is written into
-    the conversation: not the draft, and not a note about it.  The conditions this
-    serves — markup, a refusal, an ungrounded URL — are usually not repeated by a
-    fresh draw, and when one is, the second draw proceeds because its condition is
-    spent."""
+    A retry re-samples the state the draft was drawn from.  By default nothing is
+    written into the conversation: not the draft, and not a note about it.  The
+    conditions this serves — markup, a refusal, an ungrounded URL — are usually not
+    repeated by a fresh draw, and when one is, the second draw proceeds because its
+    condition is spent.
+
+    ``note`` is the one exception (#2698): a validator may attach a plain-words note
+    naming what was wrong with the draft, and the loop then shows the model its draft
+    (assistant turn) followed by the note (user turn) before re-drawing — the redraw is
+    no longer blind, and the conversation it re-samples is no longer unchanged.  A
+    condition the model cannot usually see it committed (an ungrounded URL in its own
+    reply) warrants the mark; one a fresh draw sheds on its own (markup) does not."""
 
     model_config = ConfigDict(frozen=True)
     condition: ConditionKey
+    note: str | None = None
 
 
 class Repair(BaseModel):

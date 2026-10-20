@@ -68,6 +68,7 @@ from penny.validation.response_validators import (
     RefusalValidator,
     XmlTagValidator,
     find_hallucinated_urls,
+    url_retry_note,
 )
 
 
@@ -2217,23 +2218,27 @@ class TestLargeToolResults:
 
 
 # One draft per condition the response chain retries: markup, a refusal, and a URL that
-# appears nowhere in what the model was shown.
+# appears nowhere in what the model was shown.  The URL retry is not blind (#2698): it
+# carries a note, so its redraw reads the draft plus the note.
 _RETRIED_DRAFTS = {
     ConditionKey.XML: "<answer>The deck is $499.</answer>",
     ConditionKey.REFUSAL: "I'm sorry, but I can't help with that.",
     ConditionKey.HALLUCINATED_URLS: "It's $499, see https://made-up.example/deck for details.",
 }
 _CLEAN_ANSWER = "The deck is $499."
+_URL_DRAFT_BAD_URL = "https://made-up.example/deck"
 
 
 class TestValidatorRetry:
-    """A response validator's ``Retry`` discards the draft and re-draws on the UNCHANGED
-    conversation (#2160).  The second call reads exactly what the first did, so the model
-    is never shown its own finished reply with nothing after it to answer; the retry budget
-    stays one retry per condition."""
+    """A response validator's ``Retry`` discards the draft and re-draws — on the
+    UNCHANGED conversation (#2160) for markup and a refusal, whose defects a fresh draw
+    sheds on its own.  The ungrounded-URL retry is the one exception (#2698): the model
+    cannot see the defect in its own draft — the URL reads as real to it — so its redraw
+    reads the draft plus a note naming the URL with no source.  The retry budget stays
+    one retry per condition."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("condition", list(_RETRIED_DRAFTS))
+    @pytest.mark.parametrize("condition", [ConditionKey.XML, ConditionKey.REFUSAL])
     async def test_retry_redraws_the_unchanged_conversation_and_ships_the_redraw(
         self, test_db, mock_llm, condition
     ):
@@ -2259,7 +2264,37 @@ class TestValidatorRetry:
         await agent.close()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("condition", list(_RETRIED_DRAFTS))
+    async def test_url_retry_shows_the_draft_and_a_note_naming_the_url(self, test_db, mock_llm):
+        """The ungrounded-URL retry is not blind (#2698): the redraw reads the draft
+        (assistant turn) plus a user note naming the URL with no source — so the model
+        can rewrite without it or read a page that has it."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
+        draft = _RETRIED_DRAFTS[ConditionKey.HALLUCINATED_URLS]
+        note = url_retry_note([_URL_DRAFT_BAD_URL])
+
+        def handler(request, count):
+            return mock_llm._make_text_response(request, draft if count == 1 else _CLEAN_ANSWER)
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run(
+            "what does the deck cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
+        assert response.answer == _CLEAN_ANSWER
+        assert len(mock_llm.requests) == 2
+        redraw = mock_llm.requests[1]["messages"]
+        assert redraw[:-2] == mock_llm.requests[0]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
+        assert note_turn["role"] == "user" and note_turn["content"] == note
+        # The context is no longer a byte-identical re-roll, so the ledger's
+        # same-context-twice read does not fire here (accepted, #2698).
+        assert not draw_rerolled(db)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("condition", [ConditionKey.XML, ConditionKey.REFUSAL])
     async def test_a_redraw_failing_the_same_condition_ships(self, test_db, mock_llm, condition):
         """The condition is spent after one retry, so a second draft with the same defect
         is the answer — two calls, the second on the unchanged conversation."""
@@ -2278,11 +2313,30 @@ class TestValidatorRetry:
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_each_condition_retries_once_all_on_the_same_conversation(
-        self, test_db, mock_llm
-    ):
-        """Three different conditions in a row each spend their own retry, and every one of
-        the four calls reads the same conversation."""
+    async def test_a_url_redraw_failing_the_same_condition_ships(self, test_db, mock_llm):
+        """The URL condition is spent after one retry, so a second draft repeating the
+        same unsourced URL still ships — though the redraw saw the draft and the note."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        draft = _RETRIED_DRAFTS[ConditionKey.HALLUCINATED_URLS]
+
+        mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, draft))
+
+        response = await agent.run(
+            "what does the deck cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
+        assert response.answer == draft
+        assert len(mock_llm.requests) == 2
+        redraw = mock_llm.requests[1]["messages"]
+        assert redraw[:-2] == mock_llm.requests[0]["messages"]
+        assert redraw[-1]["content"] == url_retry_note([_URL_DRAFT_BAD_URL])
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_each_condition_retries_once_on_the_one_conversation(self, test_db, mock_llm):
+        """Three different conditions in a row each spend their own retry: the two blind
+        retries read the same conversation as the first call, and the URL retry's context
+        is the prior one plus its draft and note."""
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
         drafts = [*_RETRIED_DRAFTS.values(), _CLEAN_ANSWER]
 
@@ -2296,8 +2350,12 @@ class TestValidatorRetry:
         )
         assert response.answer == _CLEAN_ANSWER
         assert len(mock_llm.requests) == 4
-        first = mock_llm.requests[0]["messages"]
-        assert all(request["messages"] == first for request in mock_llm.requests)
+        first, second, third, fourth = (request["messages"] for request in mock_llm.requests)
+        assert second == first
+        assert third == second
+        assert fourth[:-2] == third
+        assert fourth[-2]["content"] == drafts[2]
+        assert fourth[-1]["content"] == url_retry_note([_URL_DRAFT_BAD_URL])
 
         await agent.close()
 
@@ -2437,9 +2495,13 @@ class TestUrlValidationSourceContext:
         response = await agent.run("question", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert response.answer == good
-        # Tool call + bad text + retry text = 3 model calls, the retry on the unchanged context
+        # Tool call + bad text + retry text = 3 model calls, the retry shown the bad
+        # draft plus the note naming its URL (#2698).
         assert len(mock_llm.requests) == 3
-        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        redraw = mock_llm.requests[2]["messages"]
+        assert redraw[:-2] == mock_llm.requests[1]["messages"]
+        assert redraw[-2]["content"] == bad
+        assert redraw[-1]["content"] == url_retry_note(["https://totally-fake.example/never-seen"])
 
         await agent.close()
 
@@ -3526,9 +3588,10 @@ class TestResponseValidators:
         resp = _text_response("See https://made-up.example/never for details.")
         # No source text → nothing to check.
         assert isinstance(HallucinatedUrlValidator().check(resp, _ctx(source_text="")), Proceed)
-        # URL absent from source → retry.
+        # URL absent from source → retry, carrying the note that names it (#2698).
         bad = HallucinatedUrlValidator().check(resp, _ctx(source_text="unrelated text"))
         assert isinstance(bad, Retry) and bad.condition == ConditionKey.HALLUCINATED_URLS
+        assert bad.note == url_retry_note(["https://made-up.example/never"])
         # URL present in source → proceed.
         ok = HallucinatedUrlValidator().check(
             resp, _ctx(source_text="ref https://made-up.example/never here")
@@ -3596,6 +3659,7 @@ class TestResponseValidators:
                 _text_response(form), _ctx(source_text=source)
             )
             assert isinstance(outcome, Retry), form
+            assert outcome.note == url_retry_note([invented]), form
 
     def test_hallucinated_tool_call_repair_strips_when_no_tools(self):
         resp = _tool_response("search", {"query": "x"})

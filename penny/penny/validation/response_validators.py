@@ -27,9 +27,10 @@ them and re-rolls the unchanged context (``Agent._unusable_output_condition`` +
 ``invalid_draw_conditions``), so they never enter the conversation at all.  The
 validators that used to append those outputs plus a teaching nudge
 (``TextInsteadOfToolValidator`` / ``DoneJsonBailValidator`` / ``CallAsTextValidator`` /
-``EmptyResponseValidator``) are gone with their nudges — and with them the whole
-user-turn append, since no condition left carries one; their detectors live in
-``penny.text_validity`` beside the other invalid-draw predicates.
+``EmptyResponseValidator``) are gone with their nudges; their detectors live in
+``penny.text_validity`` beside the other invalid-draw predicates.  The one append that
+remains rides ``Retry``'s ``note`` (#2698): the hallucinated-URL retry shows the model
+its draft plus a note naming the URL(s) with no source.
 """
 
 from __future__ import annotations
@@ -241,6 +242,28 @@ def find_hallucinated_urls(text: str, source_text: str) -> list[str]:
     return [url for url in urls if url not in source_text]
 
 
+# The note the hallucinated-URL retry shows the model (#2698): its draft plus the URL(s)
+# with no source, named, so the redraw can rewrite without them or read a page that has
+# them instead of re-drawing blind.
+_URL_RETRY_NOTE_ONE = (
+    "Your reply links {urls}, which isn't from any page you read or anything said in "
+    "this conversation. Rewrite the reply without links you can't source, or read a "
+    "page that has it."
+)
+_URL_RETRY_NOTE_MANY = (
+    "Your reply links {urls}, which aren't from any page you read or anything said in "
+    "this conversation. Rewrite the reply without links you can't source, or read "
+    "pages that have them."
+)
+
+
+def url_retry_note(bad_urls: list[str]) -> str:
+    """The retry note for one or more URLs found in a draft with no source."""
+    urls = " and ".join(bad_urls)
+    template = _URL_RETRY_NOTE_ONE if len(bad_urls) == 1 else _URL_RETRY_NOTE_MANY
+    return template.format(urls=urls)
+
+
 # ── Response-level validators (chat + collector) ─────────────────────────────
 
 
@@ -273,7 +296,15 @@ class RefusalValidator:
 class HallucinatedUrlValidator:
     """The response cites a URL that never appeared in the source material
     (``ctx.source_text``: tool results + system prompt + history) — retry once so
-    the model answers from real sources.  No source text → nothing to check."""
+    the model answers from real sources.  No source text → nothing to check.
+
+    Unlike markup and a refusal, the model cannot usually see the defect in its own
+    draft — the URL reads as real to it — so the retry is not blind: it carries
+    ``Retry.note``, and the loop shows the draft plus a note naming the URL(s) with
+    no source (#2698).  From the note the model may rewrite without them or read a
+    page that has them.  The note also names the URL inside the conversation, so the
+    run's later draws read it as sourced — accepted: the note is the true record of
+    what was flagged."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.HALLUCINATED_URLS in ctx.retried:
@@ -287,7 +318,7 @@ class HallucinatedUrlValidator:
                 "Hallucinated URL(s): %s",
                 ", ".join(url[:80] for url in bad_urls),
             )
-            return Retry(condition=ConditionKey.HALLUCINATED_URLS)
+            return Retry(condition=ConditionKey.HALLUCINATED_URLS, note=url_retry_note(bad_urls))
         return Proceed(response=response)
 
 
