@@ -1009,6 +1009,10 @@ class Agent:
                 case Proceed(response=validated):
                     return validated if validated is not None else response
                 case Retry(condition=condition):
+                    # The discarded draw's own row carries the condition it was
+                    # rejected for (#2702) — the accepted re-draw follows with
+                    # no mark.
+                    self._mark_discarded(response, condition)
                     self._apply_retry(condition, retried, attempt, max_retries)
                     if attempt + 1 == max_retries:
                         # Retries exhausted — the last draw, tool calls stripped when
@@ -1183,10 +1187,12 @@ class Agent:
                     "Model draw cut by its own token budget (finish_reason=length) — "
                     "ending the run for the thinking-off last draw rather than re-rolling"
                 )
+                self._mark_discarded(response, ConditionKey.BUDGET_CUT)
                 raise _budget_exceeded()
             condition = self._unusable_output_condition(response)
             if condition is None:
                 return response
+            self._mark_discarded(response, condition)
             self._log_reroll(condition, attempt, attempts)
             discarded.append(condition)
         logger.error(
@@ -1205,6 +1211,21 @@ class Agent:
             attempt + 1,
             attempts,
         )
+
+    def _mark_discarded(self, response: LlmResponse, condition: ConditionKey) -> None:
+        """Stamp on the draw's own ``promptlog`` row that its output was NOT used,
+        and why (#2702).
+
+        The row went down as ``call_outcome="completed"`` the moment the call
+        returned — the discard is the caller's decision, made after — so the
+        mark is a post-hoc UPDATE by the row id the response carries
+        (``prompt_log_id``, stamped by ``LlmClient``).  ``None`` only where no
+        row was written (a ``db``-less client — a test, a one-off script), or
+        where the call never finished (those rows already say so via
+        ``call_outcome``/``call_error_*`` and need no second mark)."""
+        if response.prompt_log_id is None:
+            return
+        self.db.messages.mark_prompt_discarded(response.prompt_log_id, condition.value)
 
     def _unusable_output_condition(self, response: LlmResponse) -> ConditionKey | None:
         """The condition that makes this raw draw unusable, or ``None`` if it's clean.
@@ -1308,6 +1329,10 @@ class Agent:
                 self._model_client.model,
                 len(tool_call_records),
             )
+            # The empty final answer's own row says why its output was not
+            # used (#2702); the narration draw that answers instead follows
+            # unmarked.
+            self._mark_discarded(response, ConditionKey.EMPTY)
             return await self._empty_content_fallback(
                 tool_call_records, messages, run_id, call_link, prompt_type, logged
             )
@@ -1325,6 +1350,7 @@ class Agent:
 
         if not content:
             logger.error("Model returned empty content after stripping think tags!")
+            self._mark_discarded(response, ConditionKey.EMPTY)
             return await self._empty_content_fallback(
                 tool_call_records, messages, run_id, call_link, prompt_type, logged
             )
@@ -1528,8 +1554,12 @@ class Agent:
         if logged is not None:
             logged.turns = len(messages)
         content = (response.content or "").strip()
-        if content and self._narration_unusable(response) is None:
+        condition = self._narration_unusable(response) if content else None
+        if content and condition is None:
             return content
+        # The unusable narration draw's own row says why its output was not
+        # used (#2702); the deterministic account answers instead, unmarked.
+        self._mark_discarded(response, condition or ConditionKey.EMPTY)
         return None
 
     # ── Tool management ──────────────────────────────────────────────────

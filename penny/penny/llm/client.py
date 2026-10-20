@@ -466,10 +466,13 @@ class LlmClient:
     ) -> LlmResponse:
         """Log the response and this call's ONE completed ``promptlog`` row
         (#2355 part A), then hand the response back to ``chat()``'s caller.
-        """
+
+        The row's id is stamped on the response (#2702) — logging identity only,
+        so a rejection site that discards this draw's output can mark its own
+        row afterwards; ``None`` when no row was written (no ``db``)."""
         thinking = response.thinking or response.message.thinking
         self._log_response(response, thinking)
-        self._log_call(
+        response.prompt_log_id = self._log_call(
             messages_snapshot,
             raw,
             tools,
@@ -1078,8 +1081,11 @@ class LlmClient:
         outcome: CallOutcome,
         *,
         error: Exception | None = None,
-    ) -> None:
+    ) -> int | None:
         """Log this call's ONE ``promptlog`` row, however it ended (#2355 part A).
+
+        Returns the row's id (#2702) — read only by the success path, which
+        stamps it on the returned response so a rejection site can mark it.
 
         ``raw`` is the dumped completion on :attr:`CallOutcome.COMPLETED`, ``None``
         on every other outcome — ``log_prompt`` writes the literal ``"{}"`` for a
@@ -1094,10 +1100,10 @@ class LlmClient:
         re-parsing the free-text message.
         """
         if not self.db:
-            return
+            return None
         response = _dispatched_response(raw.model_dump()) if raw is not None else None
         fault = getattr(error, "fault", None)
-        self.db.messages.log_prompt(
+        return self.db.messages.log_prompt(
             model=self.model,
             messages=messages_snapshot,
             response=response,

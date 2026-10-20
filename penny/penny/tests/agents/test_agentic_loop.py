@@ -888,7 +888,7 @@ class TestToolParseErrorReroll:
         """A clean redraw proceeds as if the invalid one never happened — the reroll
         happens INSIDE the step, so the run still gets its full step budget."""
 
-        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
             if count == 1:
@@ -904,6 +904,13 @@ class TestToolParseErrorReroll:
         )
         assert response.answer == "Here is the info about vitamins!"
         assert len(mock_llm.requests) == 3
+        # A backend parse refusal never gets the discard mark: its own row is a
+        # raised one, already distinguishable via call_outcome (#2702).
+        with Session(db.engine) as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        assert len(rows) == 3
+        assert rows[0].call_outcome == "raised"
+        assert all(row.discard_reason is None for row in rows)
 
         await agent.close()
 
@@ -1042,6 +1049,12 @@ class TestDegenerateOutputGuard:
         # repeat is the only trace it leaves — the eval harness's loop-health advisory reads it
         # (#1841), so the premise is pinned here against a real re-roll, not just seeded rows.
         assert draw_rerolled(db)
+        # The discarded draw's own row carries the reason its output was not
+        # used (#2702); the accepted re-draw reads normally, unmarked.
+        with Session(db.engine) as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        assert len(rows) == 2
+        assert [row.discard_reason for row in rows if row.discard_reason] == ["degenerate_output"]
 
         await agent.close()
 
@@ -1223,7 +1236,7 @@ class TestHarmonyEnvelopeLeakGuard:
         """A leaked Harmony envelope in the text content is discarded and re-rolled
         on the unchanged context — the raw tokens never reach the context (or the
         user), and the fresh draw comes back clean."""
-        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
             if count == 1:
@@ -1240,6 +1253,11 @@ class TestHarmonyEnvelopeLeakGuard:
         assert len(mock_llm.requests) == 2
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
         assert "<|call|>" not in str(mock_llm.requests[-1]["messages"])
+        # The leaked draw's own row carries its condition (#2702).
+        with Session(db.engine) as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        assert len(rows) == 2
+        assert [row.discard_reason for row in rows if row.discard_reason] == ["tool_call_leak"]
 
         await agent.close()
 
@@ -1301,6 +1319,12 @@ class TestEmptyContentFallback:
         )
         # The empty draw, plus the one narrate draw after it (#2370).
         assert len(mock_llm.requests) == 2
+        # Both draws came back empty and both rows say so (#2702): the final
+        # answer's empty draw, and the narration draw the account answered for.
+        with Session(db.engine) as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        assert len(rows) == 2
+        assert all(row.discard_reason == "empty" for row in rows)
 
         await agent.close()
 
@@ -1465,7 +1489,7 @@ class TestBudgetExceeded:
         """The reply IS the thinking-off last draw's own text — not the canned
         ``AGENT_MODEL_ERROR`` (the model was reachable) and not a re-roll of the cut
         draw first (exactly two calls total)."""
-        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
         agent.name = PennyConstants.CHAT_AGENT_NAME
 
@@ -1493,6 +1517,12 @@ class TestBudgetExceeded:
                 message="the draw ran past its token budget before reaching an answer",
             ),
         )
+        # The cut draw's own row says it was set aside for its budget (#2702);
+        # the thinking-off last draw reads normally, unmarked.
+        with Session(db.engine) as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        assert len(rows) == 2
+        assert [row.discard_reason for row in rows if row.discard_reason] == ["budget_cut"]
 
         await agent.close()
 
@@ -2317,6 +2347,12 @@ class TestValidatorRetry:
         assert draft not in str(mock_llm.requests[1]["messages"])
         # So the persisted ledger reads it the way it reads any re-roll: the same context, twice.
         assert draw_rerolled(db)
+        # The rejected draft's own row carries the condition it was rejected
+        # for (#2702); the accepted re-draw carries no mark.
+        with Session(db.engine) as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        assert len(rows) == 2
+        assert [row.discard_reason for row in rows if row.discard_reason] == [condition.value]
 
         await agent.close()
 

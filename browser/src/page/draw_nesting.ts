@@ -109,6 +109,23 @@ export function dedupeDraws(draws: PromptLogEntry[]): PromptLogEntry[] {
   return out;
 }
 
+/** `entries` with `entry` REPLACED in by promptlog `id` — appended when no
+ * row with that id is present.  A live revision of an already-logged row
+ * (#2702 — the runtime re-notifies the same row after stamping why its output
+ * was not used) must update the rendered row, not duplicate it: the newer
+ * copy wins, keeping position and, on the run's own prompts, the run totals
+ * untouched (the caller only adds those on a genuine append). */
+export function upsertPromptEntry(
+  entries: PromptLogEntry[],
+  entry: PromptLogEntry,
+): PromptLogEntry[] {
+  const index = entries.findIndex((existing) => existing.id === entry.id);
+  if (index === -1) return [...entries, entry];
+  const copy = entries.slice();
+  copy[index] = entry;
+  return copy;
+}
+
 /** A readable label for an `agent_name` the caller has no nicer, hand-written
  * entry for (#2435) — the code owner moves, adds and drops micro-contexts at
  * will, so a name this code has never heard of must still read as something,

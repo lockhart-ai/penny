@@ -274,6 +274,14 @@ export interface PromptLogEntry {
   call_outcome: string | null;
   call_error_class: string | null;
   call_error_message: string | null;
+  // Why this COMPLETED call's output was NOT used (#2702) — a machine reason
+  // ("degenerate_output", "xml", "budget_cut", …) the runtime stamped after
+  // the fact, at the rejection site.  Null on every used call and every row
+  // logged before this column existed; a reroll/retry attempt's row reads
+  // call_outcome "completed" exactly like a used call, so this is what
+  // distinguishes it.  discard_detail is the optional detail string.
+  discard_reason: string | null;
+  discard_detail: string | null;
 }
 
 export interface PromptLogRun {

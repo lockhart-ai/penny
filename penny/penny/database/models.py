@@ -76,6 +76,17 @@ class PromptLog(SQLModel, table=True):
     # ``browse``'s extraction); the other micro-context customers run directly in agent
     # code, not nested inside a tool, so they set ``parent_run_id`` alone.
     parent_tool_call_id: str | None = None
+    # Why this COMPLETED call's output was NOT used, set after the fact at the
+    # rejection site (#2702): a ``ConditionKey`` value ("degenerate_output",
+    # "xml", "budget_cut", …) for a draw the loop discarded, a validator
+    # rejected, or a parse refused.  A reroll/retry attempt's row reads
+    # ``call_outcome="completed"`` like a used call — this column is what
+    # distinguishes it.  NULL on every used call and every row logged before
+    # this column existed; ``discard_detail`` carries the optional detail
+    # string.  Additive and never model-facing: only the addon serializers and
+    # the live push read these.
+    discard_reason: str | None = None
+    discard_detail: str | None = None
 
     def get_trailing_messages(self) -> list[dict]:
         """The trailing turns as message dicts — empty when the run round-tripped

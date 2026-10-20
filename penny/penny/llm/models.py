@@ -377,6 +377,13 @@ class LlmResponse(BaseModel):
     # finished one.  What happens on ``"length"`` is the follow-up issues' (#2475/#2476);
     # this is only the read.
     finish_reason: str | None = None
+    # The ``promptlog`` row id the client logged this call under, set by
+    # ``LlmClient`` when the row is written (#2702) — logging identity only,
+    # never model-facing (``LlmResponse`` never enters the model's context).  A
+    # rejection site reads it to mark its own row via
+    # ``db.messages.mark_prompt_discarded``; ``None`` only where no row was
+    # written (a client built without a ``db`` — a test, a one-off script).
+    prompt_log_id: int | None = None
 
     @property
     def content(self) -> str:

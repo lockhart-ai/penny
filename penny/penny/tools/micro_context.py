@@ -37,14 +37,16 @@ from pydantic import BaseModel
 from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
 from penny.llm.call_link import CallLink
-from penny.llm.models import LlmMessage
+from penny.llm.models import LlmMessage, LlmResponse
 from penny.text_validity import (
     has_leaked_harmony_envelope,
     is_degenerate_run,
     is_empty_draw,
 )
+from penny.validation.conditions import ConditionKey
 
 if TYPE_CHECKING:
+    from penny.database import Database
     from penny.llm import LlmClient
 
 logger = logging.getLogger(__name__)
@@ -174,9 +176,15 @@ class MicroContext:
         model_client: LlmClient,
         *,
         reroll_attempts: int = PennyConstants.DEGENERATE_REROLL_ATTEMPTS,
+        db: Database | None = None,
     ) -> None:
         self._model_client = model_client
         self._reroll_attempts = reroll_attempts
+        # The store the discarded draws are marked on (#2702) — read through the
+        # enclosing tool's db (browse).  Optional only because a ``db``-less
+        # construction is legitimate (tests, the eval driver): with none there
+        # is no row to mark, and every draw outcome still resolves honestly.
+        self._db = db
 
     async def extract(
         self,
@@ -294,6 +302,9 @@ class MicroContext:
                     "%s draw was cut at its token budget — one more draw with thinking off",
                     PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
                 )
+                # The cut draw's own row says why it was set aside (#2702);
+                # the thinking-off draw that takes its place follows unmarked.
+                self._mark_discarded(response, ConditionKey.BUDGET_CUT)
                 response = await self._model_client.chat(
                     messages=messages,
                     agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
@@ -304,8 +315,10 @@ class MicroContext:
                     thinking_enabled=False,
                 )
             text = response.content or ""
-            if not self._is_poison(text):
+            condition = self._poison_condition(text)
+            if condition is None:
                 return text
+            self._mark_discarded(response, condition)
             logger.warning(
                 "Micro-context output unusable — discarding and re-rolling %d/%d",
                 attempt + 1,
@@ -318,13 +331,30 @@ class MicroContext:
         return None
 
     @staticmethod
-    def _is_poison(text: str) -> bool:
-        """A degeneration collapse, a leaked Harmony envelope, or a blank draw
-        (#2615: browse-extract has no shape left to catch an empty payload, so
-        it is screened here instead) — the same transport artifacts the
+    def _poison_condition(text: str) -> ConditionKey | None:
+        """The specific condition making this draw poison, or ``None`` if it is
+        clean: a leaked Harmony envelope, a degeneration collapse, or a blank
+        draw (#2615: browse-extract has no shape left to catch an empty payload,
+        so it is screened here instead) — the same transport artifacts the
         agent-loop reroll guard discards, plus the empty-draw check it also
-        uses."""
-        return has_leaked_harmony_envelope(text) or is_degenerate_run(text) or is_empty_draw(text)
+        uses.  The named condition is what a discarded draw's own ``promptlog``
+        row carries (#2702)."""
+        if has_leaked_harmony_envelope(text):
+            return ConditionKey.TOOL_CALL_LEAK
+        if is_degenerate_run(text):
+            return ConditionKey.DEGENERATE_OUTPUT
+        if is_empty_draw(text):
+            return ConditionKey.EMPTY
+        return None
+
+    def _mark_discarded(self, response: LlmResponse, condition: ConditionKey) -> None:
+        """Stamp on the draw's own ``promptlog`` row that its output was not
+        used (#2702) — the same post-hoc mark the agent loop applies, by the
+        row id the response carries; a no-op where no row exists (no ``db``,
+        or the call never got one)."""
+        if self._db is None or response.prompt_log_id is None:
+            return
+        self._db.messages.mark_prompt_discarded(response.prompt_log_id, condition.value)
 
     @staticmethod
     def _messages(

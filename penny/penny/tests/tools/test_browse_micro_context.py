@@ -73,7 +73,7 @@ _NOT_PRESENT_ANSWER = "The page doesn't list a bid amount."
 # separate ``MISSING:`` line (#2615).
 _VALUE_WITH_SHORTFALL = f"{_EXTRACTED_VALUE} The page does not give the seller's name."
 # A blank draw — the empty-draw half of the poison screen (#2615: there is no tagged
-# shape left to catch this, so ``_is_poison`` screens it directly).
+# shape left to catch this, so the screen checks it directly).
 _BLANK_DRAW = "   "
 _LOG_GET_RE = re.compile(r"log='browse-results' id=(\d+)")
 
@@ -1246,18 +1246,37 @@ def test_extract_parameter_description_whole_render(db: Database):
 
 
 @pytest.mark.asyncio
-async def test_micro_context_blank_draw_is_discarded_and_rerolled():
-    """A blank draw (#2615: there is no tag left to catch this, so ``_is_poison``
-    screens it directly via ``is_empty_draw``) is discarded and re-drawn on the
-    unchanged context for the whole budget, then fails honestly — the same
-    patience a garbled collapse gets."""
-    model = _responds(_BLANK_DRAW)
-    result = await MicroContext(cast(Any, model)).extract(
+async def test_micro_context_blank_draw_is_discarded_and_rerolled(tmp_path, mock_llm):
+    """A blank draw (#2615: there is no tag left to catch this, so the poison
+    screen catches it directly via ``is_empty_draw``) is discarded and re-drawn on
+    the unchanged context for the whole budget, then fails honestly — the same
+    patience a garbled collapse gets.  Every discarded attempt's own row carries
+    the reason its output was not used (#2702)."""
+    db = _make_db(tmp_path)
+    # A real LlmClient (patched by mock_llm) so every draw logs its own row the
+    # mark lands on.
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.0,
+    )
+    mock_llm.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(role="assistant", content=_BLANK_DRAW)
+        )
+    )
+    result = await MicroContext(cast(Any, client), reroll_attempts=3, db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
     assert result.value == ""
-    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    assert len(mock_llm.requests) == 3
+    with Session(db.engine) as session:
+        rows = list(session.exec(select(PromptLog)).all())
+    assert len(rows) == 3
+    assert all(row.discard_reason == "empty" for row in rows)
 
 
 @pytest.mark.asyncio
@@ -1299,17 +1318,34 @@ async def test_micro_context_reroll_can_recover():
 
 
 @pytest.mark.asyncio
-async def test_micro_context_poison_is_discarded_and_rerolled():
+async def test_micro_context_poison_is_discarded_and_rerolled(tmp_path, mock_llm):
     """Poison output (a degeneration collapse) is discarded and re-drawn on the
     unchanged context up to the reroll budget, then fails honestly — the one
-    failure outcome left once the tagged shape retired (#2615)."""
-    model = _responds("...???...")
-    result = await MicroContext(cast(Any, model), reroll_attempts=3).extract(
+    failure outcome left once the tagged shape retired (#2615).  Each discarded
+    draw's own row carries the collapse as its reason (#2702)."""
+    db = _make_db(tmp_path)
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.0,
+    )
+    mock_llm.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(role="assistant", content="...???...")
+        )
+    )
+    result = await MicroContext(cast(Any, client), reroll_attempts=3, db=db).extract(
         _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
     assert result.value == ""
-    assert len(model.requests) == 3
+    assert len(mock_llm.requests) == 3
+    with Session(db.engine) as session:
+        rows = list(session.exec(select(PromptLog)).all())
+    assert len(rows) == 3
+    assert all(row.discard_reason == "degenerate_output" for row in rows)
 
 
 @pytest.mark.asyncio
@@ -1362,6 +1398,41 @@ async def test_draw_clean_cut_draw_gets_one_thinking_off_last_draw():
     # The retry is the thinking-off last draw; the first draw keeps the default.
     assert model.requests[0]["thinking_enabled"] is True
     assert model.requests[1]["thinking_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_draw_clean_cut_draw_row_carries_its_reason(tmp_path, mock_llm):
+    """The cut draw's own promptlog row says it was set aside for its budget
+    (#2702); the thinking-off draw that took its place reads normally, unmarked.
+    Driven through a real LlmClient (patched by mock_llm) so each call logs the
+    row the mark lands on — the mock-level test above owns the budget/thinking
+    assertions, which the SDK-level patch this one sits on does not record."""
+    db = _make_db(tmp_path)
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.0,
+    )
+    mock_llm.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content="" if count == 1 else _EXTRACTED_VALUE,
+            ),
+            finish_reason="length" if count == 1 else None,
+        )
+    )
+    text = await MicroContext(cast(Any, client), db=db)._draw_clean(
+        _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=True
+    )
+    assert text == _EXTRACTED_VALUE
+    assert len(mock_llm.requests) == 2
+    with Session(db.engine) as session:
+        rows = list(session.exec(select(PromptLog)).all())
+    assert len(rows) == 2
+    assert [row.discard_reason for row in rows if row.discard_reason] == ["budget_cut"]
 
 
 @pytest.mark.asyncio

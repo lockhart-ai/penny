@@ -54,6 +54,12 @@ class ConditionKey(StrEnum):
     DEGENERATE_OUTPUT = "degenerate_output"
     CALL_FRAGMENT_REPLY = "call_fragment_reply"
     TOOL_CALL_LEAK = "tool_call_leak"
+    # A draw cut by its own token budget (finish_reason="length") — a transport
+    # fact on a single response, caught live wherever the budget is sent (#2475).
+    BUDGET_CUT = "budget_cut"
+    # A structured-JSON draw that failed its Pydantic parse (e.g. a /profile
+    # extraction draw) — the output is rejected at the parse boundary.
+    PARSE_ERROR = "parse_error"
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     HALF_FORMED_SEND = "half_formed_send"
     # ── Run-level: only emergent across a whole run ──────────────────────────
@@ -177,6 +183,16 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     _condition(
         ConditionKey.CALL_FRAGMENT_REPLY,
         "Final text was a bare JSON call fragment, not a reply",
+        live=True,
+    ),
+    _condition(
+        ConditionKey.BUDGET_CUT,
+        "Draw ran past its own token budget before reaching an answer",
+        live=True,
+    ),
+    _condition(
+        ConditionKey.PARSE_ERROR,
+        "Structured draw failed its Pydantic parse and was rejected",
         live=True,
     ),
     # ── Run-level: only emergent across a whole run ──────────────────────────

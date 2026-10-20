@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 122
+        assert count == 123
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 122
+        assert count1 == 123
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 120 migrations
-        assert count == 121
+        # 0001 is skipped; the rest run = 121 migrations
+        assert count == 122
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 122  # all migrations applied
+        assert count == 123  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -305,6 +305,41 @@ class TestMigrate:
         assert "run_id" in columns
         row = conn.execute("SELECT run_id FROM messagelog WHERE id = 1").fetchone()
         assert row is not None and row[0] is None
+        conn.close()
+
+    def test_0123_adds_promptlog_discard_columns(self, tmp_path):
+        """Migration 0123 adds nullable ``promptlog.discard_reason`` /
+        ``discard_detail`` (#2702) — why a COMPLETED call's output was not used,
+        stamped post-hoc at the rejection site — with every pre-existing row
+        left NULL (a used call, or a row logged before the column existed)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE promptlog (id INTEGER PRIMARY KEY, model TEXT, response TEXT)")
+        conn.execute("INSERT INTO promptlog (model, response) VALUES ('m', '{}')")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0123_promptlog_discard_reason.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0123", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(promptlog)").fetchall()}
+        assert {"discard_reason", "discard_detail"} <= columns
+        row = conn.execute("SELECT discard_reason, discard_detail FROM promptlog").fetchone()
+        assert row is not None and row == (None, None)
+        # Idempotent: a second run adds nothing and raises nothing.
+        mod.up(conn)
         conn.close()
 
     def test_0121_strips_the_copied_tool_calls_lines(self, tmp_path):

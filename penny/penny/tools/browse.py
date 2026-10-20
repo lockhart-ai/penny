@@ -283,7 +283,9 @@ class BrowseTool(Tool):
         # ``extract``, and tests that don't exercise it leave this None; an
         # ``extract`` requested without a client wired degrades visibly rather
         # than silently returning the page body.
-        self._micro_context = MicroContext(model_client) if model_client is not None else None
+        self._micro_context = (
+            MicroContext(model_client, db=db) if model_client is not None else None
+        )
         # The terminal move bound into a whole-channel outage error.  Defaults to
         # the chat clause; a collector passes its done()-binding clause so the
         # outage names the recovery its agent can actually perform.

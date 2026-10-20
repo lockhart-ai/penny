@@ -11,10 +11,12 @@ from pydantic import BaseModel, Field
 
 from penny.commands.base import Command
 from penny.commands.models import CommandContext, CommandResult
+from penny.database import Database
 from penny.database.models import UserInfo
 from penny.datetime_utils import current_datetime_line, get_timezone
 from penny.llm.call_link import CallLink
 from penny.responses import PennyResponse
+from penny.validation.conditions import ConditionKey
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +61,7 @@ class ProfileCommand(Command):
     )
 
     async def _parse_profile_create(
-        self, args: str, ollama_client: Any, today: str
+        self, args: str, ollama_client: Any, today: str, db: Database
     ) -> ProfileCreateParse | None:
         """
         Parse profile creation arguments using LLM.
@@ -69,10 +71,13 @@ class ProfileCommand(Command):
             ollama_client: Ollama client for structured parsing
             today: The current date/time anchor, so relative dates ("30 years
                 ago") resolve against the right calendar day
+            db: The database the rejected draw's own row is marked on when the
+                parse fails (#2702)
 
         Returns:
             ProfileCreateParse if parsing succeeded, None otherwise
         """
+        response = None
         try:
             prompt = (
                 f"{today}\n\n"
@@ -97,10 +102,11 @@ class ProfileCommand(Command):
 
         except Exception as e:
             logger.warning("Failed to parse profile creation args: %s", e)
+            self._mark_parse_failure(db, response)
             return None
 
     async def _parse_profile_update(
-        self, args: str, ollama_client: Any, today: str
+        self, args: str, ollama_client: Any, today: str, db: Database
     ) -> ProfileUpdateParse | None:
         """
         Parse profile update arguments using LLM.
@@ -109,10 +115,13 @@ class ProfileCommand(Command):
             args: User input string
             ollama_client: Ollama client for structured parsing
             today: The current date/time anchor for grounding
+            db: The database the rejected draw's own row is marked on when the
+                parse fails (#2702)
 
         Returns:
             ProfileUpdateParse if parsing succeeded, None otherwise
         """
+        response = None
         try:
             prompt = (
                 f"{today}\n\n"
@@ -134,7 +143,19 @@ class ProfileCommand(Command):
 
         except Exception as e:
             logger.warning("Failed to parse profile update args: %s", e)
+            self._mark_parse_failure(db, response)
             return None
+
+    @staticmethod
+    def _mark_parse_failure(db: Database, response: Any) -> None:
+        """Mark the draw's own row that its structured output failed its parse
+        (#2702) — the row went down ``call_outcome="completed"`` but its output
+        was rejected at the parse boundary.  A no-op when the draw itself never
+        came back (its own row already says so via ``call_outcome``) or carried
+        no row id."""
+        if response is None or response.prompt_log_id is None:
+            return
+        db.messages.mark_prompt_discarded(response.prompt_log_id, ConditionKey.PARSE_ERROR.value)
 
     async def execute(self, args: str, context: CommandContext) -> CommandResult:
         """Execute profile command."""
@@ -171,7 +192,7 @@ class ProfileCommand(Command):
     async def _create_profile(self, args: str, context: CommandContext) -> CommandResult:
         """Create a new profile (no existing profile for this user)."""
         parsed = await self._parse_profile_create(
-            args, context.model_client, current_datetime_line(context.db)
+            args, context.model_client, current_datetime_line(context.db), context.db
         )
         if not parsed:
             return CommandResult(text=PennyResponse.PROFILE_CREATE_PARSE_ERROR)
@@ -208,7 +229,7 @@ class ProfileCommand(Command):
     ) -> CommandResult:
         """Update name/location on an existing profile."""
         parsed = await self._parse_profile_update(
-            args, context.model_client, current_datetime_line(context.db)
+            args, context.model_client, current_datetime_line(context.db), context.db
         )
         if not parsed:
             return CommandResult(text=PennyResponse.PROFILE_UPDATE_PARSE_ERROR)

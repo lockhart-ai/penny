@@ -78,6 +78,24 @@ async def test_profile_update_parse_grounded_in_date(
         with penny.db.get_session() as session:
             logged = _prompt_log_for(session, "Extract the user's name and/or location")
             assert logged.run_id is not None
+            assert logged.discard_reason is None
+
+        # A draw whose JSON fails its parse is rejected at the parse boundary —
+        # its own row carries the reason (#2702); the earlier clean parse above
+        # reads normally, unmarked.
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, "not json at all")
+        )
+        await signal_server.push_message(sender=TEST_SENDER, content="/profile Denver")
+        await wait_until(lambda: _has_message(signal_server, "I couldn't understand that"))
+        with penny.db.get_session() as session:
+            parse_rows = session.exec(
+                select(PromptLog).where(
+                    col(PromptLog.messages).contains("Extract the user's name and/or location")
+                )
+            ).all()
+        assert len(parse_rows) == 2
+        assert [row.discard_reason for row in parse_rows if row.discard_reason] == ["parse_error"]
 
 
 @pytest.mark.asyncio

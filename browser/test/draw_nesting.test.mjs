@@ -27,6 +27,7 @@ import {
   runningRunIdClosure,
   runTimingWindow,
   toolCallIds,
+  upsertPromptEntry,
 } from "../dist/test/draw_nesting.mjs";
 
 function prompt(overrides = {}) {
@@ -129,6 +130,29 @@ test("dedupeDraws keeps the first occurrence of a promptlog id", () => {
     [5, "fetched"],
     [6, "other"],
   ]);
+});
+
+test("upsertPromptEntry replaces an existing row in place — the revision wins (#2702)", () => {
+  const original = prompt({ id: 5, agent_name: "original" });
+  const other = prompt({ id: 6, agent_name: "other" });
+  const revised = prompt({ id: 5, agent_name: "original", discard_reason: "degenerate_output" });
+  const result = upsertPromptEntry([original, other], revised);
+  assert.deepEqual(
+    result.map((d) => [d.id, d.discard_reason]),
+    [
+      [5, "degenerate_output"],
+      [6, undefined],
+    ],
+  );
+  // The revised row keeps the original's position.
+  assert.deepEqual(result.map((d) => d.agent_name), ["original", "other"]);
+});
+
+test("upsertPromptEntry appends a row it has never seen", () => {
+  const existing = prompt({ id: 5 });
+  const fresh = prompt({ id: 7 });
+  assert.deepEqual(upsertPromptEntry([existing], fresh).map((d) => d.id), [5, 7]);
+  assert.deepEqual(upsertPromptEntry([], fresh).map((d) => d.id), [7]);
 });
 
 test("agentLabel derives a readable label for an unknown agent_name", () => {

@@ -1847,8 +1847,11 @@ class TestBrowserPromptLogHandlers:
         all (the state classifier / notifier / skill extractor shape, run on
         behalf of the run as a whole rather than from inside a tool call)."""
         channel, db = self._channel(tmp_path)
-        # The run's own top-level call: a browse tool call, keyed "b0".
-        db.messages.log_prompt(
+        # The run's own top-level call: a browse tool call, keyed "b0" — a
+        # completed call whose output the loop threw away anyway (#2702),
+        # marked post-hoc by the row id log_prompt returned, the way the
+        # runtime's rejection sites do.
+        top_level_id = db.messages.log_prompt(
             model="m",
             messages=[],
             response={
@@ -1873,6 +1876,10 @@ class TestBrowserPromptLogHandlers:
             },
             agent_name="chat",
             run_id="run1",
+        )
+        assert top_level_id is not None
+        db.messages.mark_prompt_discarded(
+            top_level_id, "degenerate_output", "collapse in a tool-call argument"
         )
         # A draw browse dispatched on "b0"'s behalf — anchored to that tool call.
         db.messages.log_prompt(
@@ -1911,6 +1918,10 @@ class TestBrowserPromptLogHandlers:
         assert top_level["parent_run_id"] is None
         assert top_level["parent_tool_call_id"] is None
         assert top_level["call_outcome"] is None
+        # The discard mark (#2702) rides the per-prompt record; an unmarked
+        # row (either draw below) carries null.
+        assert top_level["discard_reason"] == "degenerate_output"
+        assert top_level["discard_detail"] == "collapse in a tool-call argument"
 
         draws_by_agent = {d["agent_name"]: d for d in run["child_draws"]}
         anchored = draws_by_agent["browse-extract"]
@@ -1918,6 +1929,7 @@ class TestBrowserPromptLogHandlers:
         assert anchored["parent_tool_call_id"] == "b0"
         assert anchored["call_outcome"] == "cancelled"
         assert anchored["made_tool_call"] is False  # no response at all — cancelled
+        assert anchored["discard_reason"] is None  # an unmarked row serializes null
 
         unanchored = draws_by_agent["state-classifier"]
         assert unanchored["parent_run_id"] == "run1"
@@ -2292,8 +2304,9 @@ class TestBrowserPromptLogHandlers:
         assert len(received) == 0
         assert len(received_second) == 0
 
-        # Prompt with run_id — callback fires for every subscriber
-        db.messages.log_prompt(
+        # Prompt with run_id — callback fires for every subscriber; the row's own
+        # id comes back (#2702), the handle a later discard mark goes by.
+        logged_id = db.messages.log_prompt(
             model="test",
             messages=[{"role": "user", "content": "hi"}],
             response={"usage": {"prompt_tokens": 50, "completion_tokens": 20}},
@@ -2301,6 +2314,7 @@ class TestBrowserPromptLogHandlers:
             run_id="run1",
             duration_ms=200,
         )
+        assert logged_id is not None
         assert len(received) == 1
         assert received[0]["run_id"] == "run1"
         assert received[0]["input_tokens"] == 50
@@ -2341,6 +2355,18 @@ class TestBrowserPromptLogHandlers:
         assert received[1]["call_outcome"] == "raised"
         assert received[1]["call_error_class"] == "ValueError"
         assert received[1]["call_error_message"] == "bad page"
+
+        # A discard mark on an already-logged row (#2702) re-notifies every
+        # subscriber with the revised record — the live tab renders the mark
+        # without a refetch, keyed by the same row id.
+        db.messages.mark_prompt_discarded(logged_id, "xml", "wrapped in <answer>")
+        assert len(received) == 3
+        assert received[2]["id"] == logged_id
+        assert received[2]["discard_reason"] == "xml"
+        assert received[2]["discard_detail"] == "wrapped in <answer>"
+        # The unmarked rows before it carried null.
+        assert received[0]["discard_reason"] is None
+        assert received[0]["discard_detail"] is None
 
 
 def _seed_collector_run(db, run_target: str, run_id: str, outcome: str, reason: str) -> None:

@@ -467,7 +467,7 @@ class MessageStore:
         call_error_class: str | None = None,
         call_error_message: str | None = None,
         call_error_fault: str | None = None,
-    ) -> None:
+    ) -> int | None:
         """Log a prompt/response exchange with Ollama.
 
         ``response`` is ``None`` for a call that never got one — cancelled, timed
@@ -477,7 +477,11 @@ class MessageStore:
         exactly what it already expects; the NEW ``call_outcome`` column is what
         actually distinguishes a call that never got a response from a completed
         one with a genuinely empty body (which never happens — a completed call
-        always has at least one choice)."""
+        always has at least one choice).
+
+        Returns the row's id (#2702) — a rejection site that later discards this
+        call's output marks the row by it (``mark_prompt_discarded``); ``None``
+        only when the write failed."""
         response_payload = response if response is not None else {}
         try:
             with self._session() as session:
@@ -506,8 +510,44 @@ class MessageStore:
                 logger.debug("Logged prompt exchange (model=%s)", model)
                 if self._prompt_logged_listeners and run_id:
                     self._notify_prompt_logged(log, messages, response_payload)
+                return log.id
         except Exception as e:
             logger.error("Failed to log prompt: %s", e)
+            return None
+
+    def mark_prompt_discarded(
+        self,
+        prompt_log_id: int,
+        reason: str,
+        detail: str | None = None,
+    ) -> None:
+        """Stamp why a COMPLETED call's output was not used, on its own row (#2702).
+
+        The row was already written (``call_outcome="completed"``) by the time
+        the caller rejected the output — the discard is a decision the caller
+        makes after the call returns — so this is a post-hoc UPDATE by the row
+        id ``log_prompt`` returned and the response carried out.  ``reason`` is
+        the machine key the code knew at the rejection point (a
+        ``ConditionKey`` value); ``detail`` is optional.
+
+        Re-notifies the prompt-logged listeners with the revised row, so a live
+        tab renders the mark without a refetch."""
+        try:
+            with self._session() as session:
+                log = session.get(PromptLog, prompt_log_id)
+                if log is None:
+                    return
+                log.discard_reason = reason
+                log.discard_detail = detail
+                session.add(log)
+                session.commit()
+                session.refresh(log)
+                if self._prompt_logged_listeners and log.run_id:
+                    self._notify_prompt_logged(
+                        log, json.loads(log.messages or "[]"), json.loads(log.response or "{}")
+                    )
+        except Exception as e:
+            logger.error("Failed to mark prompt %s discarded: %s", prompt_log_id, e)
 
     def _notify_prompt_logged(
         self, log: PromptLog, messages: list[dict], response_payload: dict
@@ -542,6 +582,8 @@ class MessageStore:
                 "call_outcome": log.call_outcome,
                 "call_error_class": log.call_error_class,
                 "call_error_message": log.call_error_message,
+                "discard_reason": log.discard_reason,
+                "discard_detail": log.discard_detail,
             }
         )
 
@@ -2008,6 +2050,8 @@ class MessageStore:
             "call_outcome": p.call_outcome,
             "call_error_class": p.call_error_class,
             "call_error_message": p.call_error_message,
+            "discard_reason": p.discard_reason,
+            "discard_detail": p.discard_detail,
         }
 
     @staticmethod

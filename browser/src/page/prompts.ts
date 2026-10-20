@@ -16,7 +16,7 @@ import {
   type RuntimeToolFinished,
   type RuntimeToolStarted,
 } from "../protocol.js";
-import { callOutcomeLabel } from "./call_outcome.js";
+import { callOutcomeLabel, discardLabel } from "./call_outcome.js";
 import {
   agentLabel,
   attachmentIndex,
@@ -38,6 +38,7 @@ import {
   rowStartedAt,
   runTimingWindow,
   toolCallIds,
+  upsertPromptEntry,
 } from "./draw_nesting.js";
 import {
   earlierMessagesLabel,
@@ -264,13 +265,19 @@ function applyRunTiming(run: PromptLogRun): void {
 }
 
 function updateExistingRun(run: PromptLogRun, prompt: PromptLogEntry): void {
-  run.prompts.push(prompt);
+  // A live REVISION of an already-logged row (#2702 — the runtime re-notifies
+  // the same row after stamping why its output was not used) replaces it in
+  // place; the run's totals only move on a genuine append.
+  const appended = !run.prompts.some((existing) => existing.id === prompt.id);
+  run.prompts = upsertPromptEntry(run.prompts, prompt);
   run.prompt_count = run.prompts.length;
-  // Model time: this run's OWN prompts only — child draws never add to it
-  // (#2438; see wall_duration_ms below for the real elapsed time).
-  run.total_duration_ms += prompt.duration_ms;
-  run.total_input_tokens += prompt.input_tokens;
-  run.total_output_tokens += prompt.output_tokens;
+  if (appended) {
+    // Model time: this run's OWN prompts only — child draws never add to it
+    // (#2438; see wall_duration_ms below for the real elapsed time).
+    run.total_duration_ms += prompt.duration_ms;
+    run.total_input_tokens += prompt.input_tokens;
+    run.total_output_tokens += prompt.output_tokens;
+  }
   applyRunTiming(run);
 
   allRuns = moveToFront(allRuns, run.run_id);
@@ -433,7 +440,9 @@ function attachDraw(draw: PromptLogEntry): void {
     holdByStep(parentId, draw.parent_tool_call_id!, draw);
     return;
   }
-  container.host.child_draws = dedupeDraws([...(container.host.child_draws ?? []), draw]);
+  // An upsert, not dedupe-keep-first: a revision of an already-attached draw
+  // (#2702) must replace its copy, and a genuine new draw appends.
+  container.host.child_draws = upsertPromptEntry(container.host.child_draws ?? [], draw);
   // A draw can extend the host's wall time well past its own last own prompt
   // (reading a page takes real time) — recompute so the header's numbers
   // update the same way a new own prompt's do (#2438).
@@ -1161,6 +1170,33 @@ function createOutcomeBadgeChip(label: string, prompt: PromptLogEntry): HTMLElem
   return chip;
 }
 
+// A completed call whose output the runtime threw away anyway (#2702), as a
+// second chip on the row — amber, distinct from the red outcome chip.  The
+// label itself is generic (`discardLabel`), and the machine reason + the
+// detail string (when the runtime recorded one) ride along as a tooltip, so
+// hovering the chip says WHY it was thrown away without expanding the row.
+function createDiscardBadgeChip(label: string, prompt: PromptLogEntry): HTMLElement {
+  const chip = document.createElement("span");
+  chip.className = "chip chip--warn";
+  chip.textContent = label;
+  const tooltip = [prompt.discard_reason, prompt.discard_detail]
+    .filter((part): part is string => Boolean(part))
+    .join(": ");
+  if (tooltip) chip.title = tooltip;
+  return chip;
+}
+
+/** The discard chip for this row, or null — one read, shared by the step and
+ * draw row-left builders (#2702). */
+function rowDiscardChip(prompt: PromptLogEntry): HTMLElement | null {
+  const discarded = discardLabel(prompt.discard_reason);
+  if (discarded === null) return null;
+  const badge = document.createElement("span");
+  badge.className = "row-badge";
+  badge.appendChild(createDiscardBadgeChip(discarded, prompt));
+  return badge;
+}
+
 function createStepRowLeft(prompt: PromptLogEntry): HTMLElement {
   const left = document.createElement("span");
   left.className = "row-left";
@@ -1187,6 +1223,9 @@ function createStepRowLeft(prompt: PromptLogEntry): HTMLElement {
     badge.appendChild(createOutcomeBadgeChip(outcomeLabel, prompt));
     left.appendChild(badge);
   }
+
+  const discard = rowDiscardChip(prompt);
+  if (discard) left.appendChild(discard);
 
   return left;
 }
@@ -1319,6 +1358,9 @@ function createDrawRowLeft(draw: PromptLogEntry, run: PromptLogRun): HTMLElement
     badge.appendChild(createOutcomeBadgeChip(failed, draw));
     left.appendChild(badge);
   }
+
+  const discard = rowDiscardChip(draw);
+  if (discard) left.appendChild(discard);
 
   return left;
 }
@@ -1625,6 +1667,25 @@ function createPromptDetail(prompt: PromptLogEntry, split: EarlierWindow): HTMLE
           call_outcome: prompt.call_outcome,
           call_error_class: prompt.call_error_class,
           call_error_message: prompt.call_error_message,
+        }),
+      ),
+    );
+  }
+
+  // Why this completed call's output was NOT used (#2702) — the machine reason
+  // the runtime stamped at the rejection site, in plain words, with the
+  // optional detail; the copy button carries the raw pair for lookup.
+  const discarded = discardLabel(prompt.discard_reason);
+  if (discarded) {
+    const reasonText = [prompt.discard_reason, prompt.discard_detail]
+      .filter((part): part is string => Boolean(part))
+      .join(": ");
+    turn.appendChild(
+      createPromptSection("discarded", `${discarded}${reasonText ? ` (${reasonText})` : ""}`, () =>
+        jsonOf({
+          promptlog_id: prompt.id,
+          discard_reason: prompt.discard_reason,
+          discard_detail: prompt.discard_detail,
         }),
       ),
     );
