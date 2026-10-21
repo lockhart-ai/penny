@@ -77,6 +77,7 @@ from penny.tools.collection_instantiation import (
     render_creation_echo,
     render_expiry_update_line,
     render_inert_echo,
+    render_prompt_replacement_diff,
     render_reinstantiation_echo,
     render_tombstone_duplicate,
     sentinel_expiry_note,
@@ -646,6 +647,17 @@ SCHEDULE_PARAM_DESCRIPTION = (
     "as morning=8, afternoon=14, evening=19, night=22. Add COUNT= to run a set "
     "number of times, and a leading 'DTSTART:<time>' line to say when it starts; "
     "a DTSTART stamp ending in Z is an exact moment in UTC."
+)
+
+# The ``prompt`` argument's description — stated ONCE here and read by every surface
+# that declares the argument, the way ``schedule`` / ``expires_at`` do (#2250/#2222):
+# before this, ``collection_configure``'s schema carried a bare ``{"type": "string"}``
+# for it, so the omit-to-keep rule (#2719) lived only in the prose and the arg gate's
+# blank-refusal envelope rendered the field bare.
+PROMPT_PARAM_DESCRIPTION = (
+    "The job's instructions, as free text. Leave it OUT to change only "
+    "schedule / expiry / notify — the stored prompt stays exactly as it is. "
+    "Supplying it REPLACES the whole instructions text."
 )
 
 
@@ -1666,7 +1678,14 @@ class CollectionSetTool(MemoryTool):
         "`description` = what it's for, in the user's words (required the first "
         "time). `prompt` = the instructions this job's cycles follow each time they "
         "run — write it as you would explain the task to someone doing it once: "
-        "what to read, what to do with it, and what to remember. `schedule` says "
+        "what to read, what to do with it, and what to remember. On a job that "
+        "already exists, a schedule, expiry or notify change needs ONLY that field — "
+        "leave `prompt` out and the job's instructions stay exactly as they are "
+        "(e.g. collection_configure(collection='film-finds', "
+        "schedule='FREQ=DAILY;BYHOUR=8') re-times the film job without touching its "
+        "instructions). Pass `prompt` only when you mean to replace the instructions; "
+        "the reply then shows the lines the old prompt had that the new one doesn't. "
+        "`schedule` says "
         "when it runs, as one recurrence rule: "
         '"FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
         '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify` turns THIS '
@@ -1682,7 +1701,10 @@ class CollectionSetTool(MemoryTool):
         "properties": {
             "collection": {"type": "string"},
             "description": {"type": "string"},
-            "prompt": {"type": "string"},
+            "prompt": {
+                "type": "string",
+                "description": PROMPT_PARAM_DESCRIPTION,
+            },
             "schedule": {"type": "string", "description": SCHEDULE_PARAM_DESCRIPTION},
             "expires_at": {"type": "string", "description": EXPIRES_AT_PARAM_DESCRIPTION},
             "notify": {"type": "boolean"},
@@ -1988,6 +2010,7 @@ class CollectionUpdateTool(MemoryTool):
         them, so it's refused and she retries."""
         assert args.prompt is not None
         row = self._db.memories.get(args.name)
+        prompt_before = row.extraction_prompt if row is not None else None
         if row is not None:
             refusal = _summary_as_prompt_refusal(row, args.prompt)
             if refusal is not None:
@@ -1998,9 +2021,14 @@ class CollectionUpdateTool(MemoryTool):
         memory = self._apply_update(args, args.prompt, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
         echo = render_reinstantiation_echo(memory, user_timezone_name(self._db))
+        # A replacement of an EXISTING prompt carries the line diff (#2719): what the old
+        # prompt had that the new one doesn't, verbatim, so a rebuild-from-the-summary sees
+        # the lines it dropped.  Reported, never blocked — the model may rewrite a job.
+        diff = render_prompt_replacement_diff(prompt_before, args.prompt)
+        diff_block = f"\n{diff}" if diff is not None else ""
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(
-            message=f"{echo}{suffix}{self._no_schedule_note(memory)}{expiry_note}",
+            message=f"{echo}{suffix}{diff_block}{self._no_schedule_note(memory)}{expiry_note}",
             mutated=True,
         )
 

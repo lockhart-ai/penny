@@ -885,6 +885,55 @@ def render_reinstantiation_echo(row: MemoryRow, timezone_name: str | None = None
     return _instantiation_echo(row, f"Re-configured collection '{row.name}':", timezone_name)
 
 
+# ── The prompt-replacement diff ───────────────────────────────────────────────
+
+# A configure call that REPLACES an existing prompt is reported, never blocked: the model
+# may legitimately rewrite a job (#2719).  But what it dropped is the one thing the
+# re-render echo cannot show — that echo confirms the NEW prompt verbatim and says nothing
+# about the old one — and a rebuild-from-the-summary drops lines nobody asked it to touch.
+# So the echo carries the change as a line diff: the old prompt's lines the new one no
+# longer has, and the new ones it didn't, both verbatim, with a plain remedy naming how to
+# put a dropped line back.
+_PROMPT_REPLACED_LEAD = "Prompt replaced — the collector now runs the new text:"
+_PROMPT_DIFF_REMOVED = "  removed:"
+_PROMPT_DIFF_ADDED = "  added:"
+_PROMPT_DIFF_REMEDY = (
+    "Put back any removed line the user's ask didn't drop — send them again with a new `prompt`."
+)
+
+
+def render_prompt_replacement_diff(before: str | None, after: str) -> str | None:
+    """The line diff a prompt replacement reports (#2719), or ``None`` when there is
+    nothing to show.
+
+    ``before`` is the prompt the collection held before the call — ``None`` for an adopt,
+    which replaces nothing and so renders no diff.  Removed lines are the old prompt's (in
+    their stored order) whose stripped form the new prompt no longer carries; added lines
+    are the mirror.  A section renders only when it is non-empty, and the whole render is
+    ``None`` when nothing was removed or added — a call that restated the same text reports
+    no change, because there was none."""
+    if before is None or before == after:
+        return None
+    old_lines = before.splitlines()
+    new_lines = after.splitlines()
+    new_stripped = {line.strip() for line in new_lines}
+    old_stripped = {line.strip() for line in old_lines}
+    removed = [line for line in old_lines if line.strip() not in new_stripped]
+    added = [line for line in new_lines if line.strip() not in old_stripped]
+    if not removed and not added:
+        return None
+    lines = [_PROMPT_REPLACED_LEAD]
+    if removed:
+        lines.append(_PROMPT_DIFF_REMOVED)
+        lines.extend(f"    - {line}" for line in removed)
+    if added:
+        lines.append(_PROMPT_DIFF_ADDED)
+        lines.extend(f"    - {line}" for line in added)
+    if removed:
+        lines.append(_PROMPT_DIFF_REMEDY)
+    return "\n".join(lines)
+
+
 # ── Inert creation echo ───────────────────────────────────────────────────────
 
 _INERT_ECHO = (
