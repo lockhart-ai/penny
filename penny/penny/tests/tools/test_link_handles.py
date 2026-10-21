@@ -36,6 +36,47 @@ def test_convert_drops_images():
     assert table.url_for(1) == "https://a.example/p"
 
 
+def test_convert_bare_url_inside_a_line():
+    """A bare URL ANYWHERE in a line converts — the stored-digest form
+    ``Headline - https://…`` is exactly the production path that broke."""
+    table = HandleTable()
+    converted = table.convert("Headline - https://x.com/a.")
+    assert converted == "Headline - [1]."
+    assert table.url_for(1) == "https://x.com/a"
+
+
+def test_convert_bare_url_inside_parens():
+    """A bare URL inside prose parens converts, and the paren the URL never
+    opened stays around the handle."""
+    table = HandleTable()
+    assert table.convert("(see https://x.com/a)") == "(see [1])"
+
+
+def test_convert_keeps_parens_the_url_opened():
+    """A ``)`` that closes a ``(`` the URL itself opened is part of the address —
+    a Wikipedia link keeps its brackets."""
+    table = HandleTable()
+    url = "https://en.wikipedia.org/wiki/Dune_(novel)"
+    converted = table.convert(f"The novel is at {url}, read it.")
+    assert converted == "The novel is at [1], read it."
+    assert table.url_for(1) == url
+
+
+def test_convert_self_link_collapses_to_the_handle():
+    """A link whose text is its own URL carries no readable address at all."""
+    table = HandleTable()
+    assert table.convert("[https://x.com/a](https://x.com/a)") == "[1]"
+
+
+def test_convert_markdown_link_url_is_not_double_converted():
+    """A URL already inside a markdown link's ``(...)`` is gone with that link
+    before the bare pass runs — one handle, no double registration."""
+    table = HandleTable()
+    converted = table.convert("see [the page](https://x.com/a) ok")
+    assert converted == "see [the page][1] ok"
+    assert len(table) == 1
+
+
 def test_convert_is_idempotent():
     table = HandleTable()
     text = "[a](https://a.example/x)\nhttps://b.example/y"

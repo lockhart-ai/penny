@@ -34,11 +34,19 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
 # An image ``![alt](url)`` — dropped before the link pass, so an image is never
 # registered as a link handle.
 _IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-# A line that is nothing but a URL — the form the reply-side source fallback
-# appends and some pages carry.  Only a STANDALONE line converts: a URL inside
-# prose is left alone (the prototype converted markdown links only and measured
-# clean, so the conservative form is what shipped).
-_BARE_URL_LINE_RE = re.compile(r"^(https?://\S+)[ \t]*$", re.MULTILINE)
+# A bare URL anywhere in the text — the run of non-space characters a scheme
+# opens.  The stored-digest path is why this exists: a collector entry reads
+# ``Headline text - https://www.example.com/news/story-9.7387777``, and a URL
+# the model READS must arrive as a handle or the next turn retypes it.
+_BARE_URL_RE = re.compile(r"https?://[^\s]+")
+# Marks that, at a bare URL's END, belong to the prose around it rather than to
+# the address — a sentence's full stop, a comma, emphasis — and the closers
+# decided by PAIRING: a ``)`` stays in the URL when the URL itself opened one
+# (a Wikipedia link like ``/wiki/Dune_(novel)``) and leaves when it did not
+# (``(see https://x.com/a)``).  The same address-reading the hallucinated-URL
+# validator applies to a reply's URLs, declared here for the bare pass.
+_PROSE_TAIL_MARKS = ".,;:!?*_"
+_PAIR_CLOSER = {")": "(", "]": "[", "}": "{"}
 # A handle citation — bare ``[12]`` or the ``[text][12]`` form the page reader
 # itself renders.  ``[12]`` alone is ambiguous with prose ("[12] people said"),
 # so expansion rewrites only numbers the table actually holds, and the dangling
@@ -47,6 +55,22 @@ _HANDLE_RE = re.compile(r"\[([^\]]*)\]\[(\d+)\]|\[(\d+)\]")
 # A browse section's own header line — the page's address (or an error's failed
 # one) after the header text.
 _BROWSE_HEADER_URL_RE = re.compile(r"^(## browse(?: error| dropped)?: )(https?://\S+)\s*$")
+
+
+def _address_only(url: str) -> str:
+    """A bare URL's address without the prose marks it ran into at its end."""
+    while url:
+        last = url[-1]
+        if last in _PROSE_TAIL_MARKS:
+            url = url[:-1]
+            continue
+        opener = _PAIR_CLOSER.get(last)
+        if opener is not None and url.count(last) > url.count(opener):
+            url = url[:-1]
+            continue
+        break
+    return url
+
 
 # The one plain line the page reader renders where handles appear — the exact
 # wording the prototype measured (no dangling handles, zero unsourced URLs).
@@ -96,12 +120,16 @@ class HandleTable:
         """``text`` with every link replaced by its handle — the model-facing form.
 
         Images are dropped first (an image is not a link the model can cite);
-        then ``[text](url)`` becomes ``[text][n]``, and a line that is nothing
-        but a URL becomes ``[n]``.  Every URL converted is registered, so the
-        numbers are the run's."""
+        then every markdown ``[text](url)`` becomes ``[text][n]``, and every bare
+        ``http(s)://`` URL that remains becomes ``[n]`` — anywhere in a line,
+        not only standing alone, with the prose punctuation it ran into (a
+        sentence's full stop, a closing paren the URL never opened) left around
+        the handle.  A URL already inside a markdown link's ``(...)`` is gone
+        with that link before the bare pass runs, so nothing double-converts.
+        Every URL converted is registered, so the numbers are the run's."""
         text = _IMAGE_RE.sub("", text)
         text = _MARKDOWN_LINK_RE.sub(self._link_sub, text)
-        return _BARE_URL_LINE_RE.sub(self._bare_sub, text)
+        return self._convert_bare(text)
 
     def convert_browse_section(self, section: str) -> str:
         """One browse section (a ``## browse …:`` header plus its body) in the
@@ -147,10 +175,23 @@ class HandleTable:
 
     def _link_sub(self, match: re.Match) -> str:
         label, url = match.group(1), match.group(2)
-        return f"[{label}][{self.register(url)}]"
+        number = self.register(url)
+        if not label.strip() or label.strip() == url:
+            # An empty label, or a link whose text is its own URL — the handle
+            # alone: the URL must not survive as readable text.
+            return f"[{number}]"
+        return f"[{self._convert_bare(label)}][{number}]"
+
+    def _convert_bare(self, text: str) -> str:
+        """The bare-URL pass over ``text`` — every scheme-opening run becomes its
+        handle, with prose tail marks left around it."""
+        return _BARE_URL_RE.sub(self._bare_sub, text)
 
     def _bare_sub(self, match: re.Match) -> str:
-        return f"[{self.register(match.group(1))}]"
+        url = _address_only(match.group(0))
+        if not url:
+            return match.group(0)
+        return f"[{self.register(url)}]{match.group(0)[len(url) :]}"
 
     def _header_sub(self, match: re.Match) -> str:
         prefix, url = match.group(1), match.group(2)
