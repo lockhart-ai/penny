@@ -556,6 +556,35 @@ def _digest_holds_every_headline(sample: SampleObservation, _world: World) -> An
     return not missing, f"the entry never states {missing}; the collection holds {held!r}"
 
 
+def _every_headline_carries_its_own_link(sample: SampleObservation, _world: World) -> Answer:
+    """Every stored headline carries its own article's link (#2735): the line holding a
+    headline's distinctive word carries that headline's own URL, never another item's.
+
+    The regression this judges had the page's own address sitting where a headline's
+    link belonged, so the model paired headlines with handles in reading order and
+    every headline of a source stored with the PREVIOUS item's link.  Pairing only —
+    a headline the entry never stored is not judged here; presence is the claim above.
+    The URL compares exactly: the world's own address per headline, no fuzzy span."""
+    bad: list[str] = []
+    for source in SOURCES:
+        for headline in source.headlines:
+            lines = [
+                ln
+                for entry in sample.held
+                for ln in (" ".join(part for part in (entry.key, entry.content) if part)).split(
+                    "\n"
+                )
+                if token_stands_in(headline.token, ln)
+            ]
+            if lines and not any(headline.url in ln for ln in lines):
+                bad.append(f"{headline.token}: {lines[0]!r}")
+    return (
+        not bad,
+        f"headline(s) stored with another item's link: {'; '.join(bad)}; the collection "
+        f"holds {_held_text(sample)!r}",
+    )
+
+
 def _told_once(sample: SampleObservation, _world: World) -> Answer:
     """The user was told, and told once — read over the SEND QUEUE, which is what the
     user will actually receive (a cycle enqueues; the drainer is a separate schedule)."""
@@ -594,6 +623,11 @@ async def test_the_digest_notification_carries_every_item_it_wrote(
     cohort.claim(
         "state: the entry holds every headline the job collected",
         _digest_holds_every_headline,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: every stored headline carries its own article's link",
+        _every_headline_carries_its_own_link,
         SpecCategory.STORE,
     )
     cohort.claim(

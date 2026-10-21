@@ -198,6 +198,34 @@ def _one_entry_holds_every_headline(sample: SampleObservation, _world: World) ->
     return not missing, f"the entry never states {missing}; the job holds {held!r}"
 
 
+def _every_stored_headline_carries_its_own_link(sample: SampleObservation, _world: World) -> Answer:
+    """Every stored headline carries its own article's link (#2735): the line holding a
+    headline's distinctive word carries that headline's own URL, never another item's.
+
+    Pairing only — a headline the entry never stored is not judged here; presence is
+    the claim above.  The URL compares exactly: the world's own address per headline,
+    no fuzzy span.  Read over every cycle's held entries, like the presence claim."""
+    bad: list[str] = []
+    for source in SOURCES:
+        for headline in source.headlines:
+            lines = [
+                ln
+                for snapshot in sample.cycles
+                for entry in snapshot.held
+                for ln in (" ".join(part for part in (entry.key, entry.content) if part)).split(
+                    "\n"
+                )
+                if token_stands_in(headline.token, ln)
+            ]
+            if lines and not any(headline.url in ln for ln in lines):
+                bad.append(f"{headline.token}: {lines[0]!r}")
+    return (
+        not bad,
+        f"headline(s) stored with another item's link: {'; '.join(bad)}; the job holds "
+        f"{_held_digest_text(sample)!r}",
+    )
+
+
 def _told_once(sample: SampleObservation, _world: World) -> Answer:
     """The user was told, and told once — the cycle's report composed into exactly one
     message on the queue."""
@@ -258,6 +286,11 @@ async def test_a_digest_set_up_in_chat_is_delivered_carrying_every_item(
     cohort.claim(
         "state: the job holds one entry carrying every headline the ask asked for",
         _one_entry_holds_every_headline,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: every stored headline carries its own article's link",
+        _every_stored_headline_carries_its_own_link,
         SpecCategory.STORE,
     )
     cohort.claim(

@@ -603,6 +603,31 @@ def _carries(anchor: str) -> WorldClaim:
     return answer
 
 
+def _top_headlines_pair_with_their_own_links(sample: SampleObservation, _world: World) -> Answer:
+    """Each top headline's line in the answer carries THAT headline's own link
+    (#2735) — read off the EXPANDED value, so a cited handle and a typed address
+    judge the same way.  The regression this judges had the answer leading with the
+    page's own address, whose handle sat where the first headline's link belongs,
+    so the headlines paired with handles in reading order one slot late.  Pairing
+    only — a headline the answer never states is not judged here; presence is the
+    ``_carries`` claims.  The link compares exactly: the world's own URL per
+    headline, no fuzzy span."""
+    value = sample.field(EXTRACT_VALUE)
+    bad = []
+    for anchor, link in (
+        (_TOP1_HEADLINE_ANCHOR, _TOP1_LINK_ANCHOR),
+        (_TOP2_HEADLINE_ANCHOR, _TOP2_LINK_ANCHOR),
+        (_TOP3_HEADLINE_ANCHOR, _TOP3_LINK_ANCHOR),
+    ):
+        lines = [ln for ln in value.split("\n") if anchor.casefold() in ln.casefold()]
+        if lines and not any(link in ln for ln in lines):
+            bad.append(f"{anchor}: {lines[0]!r}")
+    return (
+        not bad,
+        f"headline(s) paired with another link: {'; '.join(bad)}; the answer reads: {value!r}",
+    )
+
+
 def _nothing_invented(sample: SampleObservation, _world: World) -> Answer:
     """Every specific value in the answer traces to what the draw was GIVEN — the *nothing
     invented* direction.
@@ -1237,6 +1262,11 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
         SpecCategory.PROVENANCE,
     )
     cohort.claim(
+        "state: each headline's line carries that headline's own link",
+        _top_headlines_pair_with_their_own_links,
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
         "state: every specific value in the answer is on the page",
         _nothing_invented,
         SpecCategory.PROVENANCE,
@@ -1351,6 +1381,11 @@ async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_o
     cohort.claim(
         "state: the answer carries the third headline's link",
         _carries(_TOP3_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: each headline's line carries that headline's own link",
+        _top_headlines_pair_with_their_own_links,
         SpecCategory.PROVENANCE,
     )
     cohort.claim(
