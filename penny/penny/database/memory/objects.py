@@ -1025,6 +1025,15 @@ def render_tool_call(name: str, args: object) -> str:
     if name == PennyConstants.SEND_MESSAGE_TOOL_NAME:
         return f"send_message({fields.get('content', '')!r})"
     if name == PennyConstants.BROWSE_TOOL_NAME:
+        # The items shape (#2718) renders each item's query and its looking-for;
+        # a row recorded before the items shape keeps its old queries render.
+        if "items" in fields:
+            rendered = ", ".join(
+                f"({item.get('query', '')!r} looking for {item.get('looking_for', '')!r})"
+                for item in fields.get("items", [])
+                if isinstance(item, dict)
+            )
+            return f"browse(items=[{rendered}])"
         queries = fields.get("queries", list(fields.values()))
         extract = fields.get("extract")
         if extract:

@@ -42,6 +42,13 @@ def _require_queries(value: list[str]) -> list[str]:
 QueryList = Annotated[list[str], AfterValidator(_require_queries)]
 
 
+def _require_items(value: list[BrowseItem]) -> list[BrowseItem]:
+    """Reject an empty browse ``items`` list with an actionable message."""
+    if not value:
+        raise ValueError("provide at least one item — a search, a link number, or a URL")
+    return value
+
+
 def _require_email_ids(value: list[str]) -> list[str]:
     """Reject an empty ``email_ids`` list, pointing at where IDs come from.
 
@@ -178,6 +185,26 @@ class BrowsePage(BaseModel):
     reading: PageReading = PageReading.ARTICLE
 
 
+class BrowseItem(BaseModel):
+    """One thing to look up (#2718): a search, a link citation, or a URL — each
+    with what it is looking for.
+
+    One item per lookup, each with its OWN ``looking_for``: one shared extract
+    across different searches made the result picker answer "none" on mismatched
+    pairs, so the ask rides the item it belongs to.  ``query`` is a search, a
+    handle citation (``"[12]"``), or a URL; ``looking_for`` is what the page must
+    carry, in plain language — it steers which search result is picked and what
+    is pulled out of the page.
+    """
+
+    query: NonBlankText
+    looking_for: NonBlankText
+
+
+# Browse items: at least one lookup.
+ItemList = Annotated[list[BrowseItem], AfterValidator(_require_items)]
+
+
 class BrowseArgs(ToolArgs):
     """Validated arguments for the browse tool.
 
@@ -185,16 +212,19 @@ class BrowseArgs(ToolArgs):
     silently, so it's rejected at the arg gate with an actionable message rather
     than reaching ``execute`` and no-op'ing.
 
-    ``extract`` is REQUIRED (#1570 — the point of the micro-context, on every
-    surface): the fetched page content is read in a fresh scoped micro-context
-    and only the extracted value (plus a fetch handle) returns to the main loop
-    — bulk page content NEVER enters the run context, chat included.  A blank
-    extract is rejected at the arg gate with the fix (say, in plain language,
-    what to pull out), never silently treated as "return the whole page".
+    ``items`` must carry at least one entry: an empty browse call did nothing
+    silently, so it's rejected at the arg gate with an actionable message rather
+    than reaching ``execute`` and no-op'ing.
+
+    Each item carries its own ``looking_for`` (#2718, carrying #1570's
+    required-extract rule per item): the fetched page content is read in a fresh
+    scoped micro-context and only the extracted value (plus a fetch handle)
+    returns to the main loop — bulk page content NEVER enters the run context,
+    chat included.  A blank ``query`` or ``looking_for`` is rejected at the arg
+    gate with the fix, never silently absorbed.
     """
 
-    queries: QueryList
-    extract: NonBlankText
+    items: ItemList
     reasoning: str | None = None
 
 

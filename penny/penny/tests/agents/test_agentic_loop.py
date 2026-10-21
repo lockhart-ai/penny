@@ -52,9 +52,9 @@ from penny.text_validity import (
     is_empty_draw,
 )
 from penny.tools.base import Tool
-from penny.tools.browse import BrowseTool, _trim_search_result
+from penny.tools.browse import BrowseTool, _parse_search_results, _render_search_list
 from penny.tools.link_handles import HandleTable
-from penny.tools.models import BrowseArgs, ToolArgs, ToolResult
+from penny.tools.models import BrowseArgs, BrowseItem, ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -1866,7 +1866,14 @@ class TestParallelToolCalls:
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(
-                    request, "browse", {"queries": ["https://a.com", "https://b.com"]}
+                    request,
+                    "browse",
+                    {
+                        "items": [
+                            {"query": "https://a.com", "looking_for": "the page content"},
+                            {"query": "https://b.com", "looking_for": "the page content"},
+                        ]
+                    },
                 )
             # Verify both pages present in the tool message
             messages = request["messages"]
@@ -1905,7 +1912,8 @@ class TestParallelToolCalls:
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
         await tool.execute(
-            CallLink.new_top(), queries=["best pizza toronto"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "best pizza toronto", "looking_for": "the page content"}],
         )
 
         assert len(browsed_urls) == 1
@@ -1932,8 +1940,11 @@ class TestParallelToolCalls:
 
         result = await tool.execute(
             CallLink.new_top(),
-            queries=["best pizza toronto", "https://example.test/a", "https://example.test/b"],
-            extract="the page content",
+            items=[
+                {"query": "best pizza toronto", "looking_for": "the page content"},
+                {"query": "https://example.test/a", "looking_for": "the page content"},
+                {"query": "https://example.test/b", "looking_for": "the page content"},
+            ],
         )
 
         assert result.success is False
@@ -1962,7 +1973,7 @@ class TestParallelToolCalls:
         attempts: list[str] = []
 
         async def failing_then_working(tool_call, call_link=None):
-            attempts.append(tool_call.arguments["queries"][0])
+            attempts.append(tool_call.arguments["items"][0]["query"])
             if len(attempts) <= 2:
                 return ToolResult(
                     message=f"{PennyConstants.BROWSE_ERROR_HEADER}q\nCould not read this page.",
@@ -1976,7 +1987,9 @@ class TestParallelToolCalls:
             if count <= 3:
                 # A DIFFERENT query each time — the model correcting, not repeating.
                 return mock_llm._make_tool_call_response(
-                    request, "browse", {"queries": [f"q{count}"]}
+                    request,
+                    "browse",
+                    {"items": [{"query": f"q{count}", "looking_for": "the page content"}]},
                 )
             return mock_llm._make_text_response(request, "here's what the page said")
 
@@ -2006,20 +2019,27 @@ class TestParallelToolCalls:
             handles=HandleTable(),
         )
 
-        result = await tool.run(CallLink.new_top(), queries=[], extract="the page content")
+        result = await tool.run(CallLink.new_top(), items=[])
 
         assert result.success is False
-        assert "queries" in result.message
-        assert "search query or URL" in result.message
+        assert "items" in result.message
+        assert "at least one item" in result.message
 
-        # extract is REQUIRED (#1570 — every browse routes through a micro-context;
-        # the page never enters the main context whole).  A missing or blank extract
-        # is rejected at the same gate with the fix, never treated as "whole page".
-        missing = await tool.run(CallLink.new_top(), queries=["https://x.test"])
-        assert missing.success is False and "extract" in missing.message
-        blank = await tool.run(CallLink.new_top(), queries=["https://x.test"], extract="   ")
-        assert blank.success is False and "extract" in blank.message
-        assert BrowseArgs(queries=["q"], extract="the price").extract == "the price"
+        # Each item's looking_for is REQUIRED (#2718, carrying #1570's rule per
+        # item — every browse routes page content through a micro-context).  A
+        # missing or blank looking_for is rejected at the same gate with the fix.
+        missing = await tool.run(CallLink.new_top(), items=[{"query": "https://x.test"}])
+        assert missing.success is False and "looking_for" in missing.message
+        blank = await tool.run(
+            CallLink.new_top(), items=[{"query": "https://x.test", "looking_for": "   "}]
+        )
+        assert blank.success is False and "looking_for" in blank.message
+        assert BrowseArgs(items=[BrowseItem(query="q", looking_for="the price")])
+        items = [
+            BrowseItem(query="https://a.test", looking_for="one"),
+            BrowseItem(query="https://b.test", looking_for="two"),
+        ]
+        assert [item.looking_for for item in BrowseArgs(items=items).items] == ["one", "two"]
 
     @pytest.mark.asyncio
     async def test_urls_always_route_to_browse(self, test_db, mock_llm):
@@ -2044,8 +2064,10 @@ class TestParallelToolCalls:
 
         await tool.execute(
             CallLink.new_top(),
-            queries=["https://example.com/page", "https://other.com"],
-            extract="the page content",
+            items=[
+                {"query": "https://example.com/page", "looking_for": "the page content"},
+                {"query": "https://other.com", "looking_for": "the page content"},
+            ],
         )
 
         assert len(browsed_urls) == 2
@@ -2080,7 +2102,8 @@ class TestParallelToolCalls:
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
         result = await tool.execute(
-            CallLink.new_top(), queries=["https://slow.example.com"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://slow.example.com", "looking_for": "the page content"}],
         )
 
         assert isinstance(result, ToolResult)
@@ -2107,8 +2130,9 @@ class TestParallelToolCalls:
         assert tool.timeout > PennyConstants.BROWSE_REQUEST_TIMEOUT
 
 
-class TestSearchResultTrimming:
-    """Tests for _trim_search_result: parses a search page to titles + URLs (#2647)."""
+class TestSearchResultParsing:
+    """Tests for _parse_search_results: parses a search page to titles + URLs
+    (#2647, the picker's input — #2718)."""
 
     def test_lists_titles_and_urls(self):
         """Each result is its title and the link's own target; nothing else from the
@@ -2126,18 +2150,10 @@ class TestSearchResultTrimming:
                 "Another snippet",
             ]
         )
-        result = _trim_search_result(content, "artemis mission", "duckduckgo.com", HandleTable())
-        assert 'You searched for "artemis mission"' in result
-        assert "titles and link numbers only" in result
-        assert "1. NASA Article [1]" in result
-        assert "2. Space.com Article [2]" in result
-        assert "https://www.nasa.gov" not in result
-        # Nothing else from the page: the snippets and the preamble are gone, so a
-        # reply cannot be built from them (#2647).
-        assert "Some snippet text" not in result
-        assert "More snippet" not in result
-        assert "Another snippet" not in result
-        assert "Lots of preamble" not in result
+        assert _parse_search_results(content, "duckduckgo.com") == [
+            ("NASA Article", "https://www.nasa.gov/artemis/"),
+            ("Space.com Article", "https://www.space.com/artemis"),
+        ]
 
     def test_title_is_taken_across_blank_separators(self):
         """A blank line between a result's title and its link is skipped; the title
@@ -2150,18 +2166,19 @@ class TestSearchResultTrimming:
                 "Snippet text",
             ]
         )
-        result = _trim_search_result(content, "watches", "duckduckgo.com", HandleTable())
-        assert "1. The Watch Page [1]" in result
-        assert "Snippet text" not in result
+        assert _parse_search_results(content, "duckduckgo.com") == [
+            ("The Watch Page", "https://watch.example.com/")
+        ]
 
-    def test_returns_original_when_no_links(self):
-        """Content with no markdown links passes through unchanged."""
+    def test_returns_nothing_when_no_links(self):
+        """Content with no markdown links yields no results — the "nothing found"
+        path, and the picker has nothing to rank."""
         content = "Just plain text\nwith no links\nat all"
-        result = _trim_search_result(content, "watches", "duckduckgo.com", HandleTable())
-        assert result == content
+        assert _parse_search_results(content, "duckduckgo.com") == []
 
     def test_strips_knowledge_panel_prose_with_inline_links(self):
-        """Wikipedia-style prose with inline links yields no items."""
+        """Wikipedia-style prose with inline links yields only the heading-backed
+        results."""
         content = "\n".join(
             [
                 "A [fantasy](https://x.org/a) [drama](https://x.org/b).",
@@ -2185,23 +2202,16 @@ class TestSearchResultTrimming:
                 "A delightful return to the world.",
             ]
         )
-        result = _trim_search_result(content, "the show", "duckduckgo.com", HandleTable())
-        assert "1. Show Title [1]" in result
-        assert "2. Show - IMDb [2]" in result
-        # Knowledge panel prose, multi-link metadata lines and snippets yield nothing.
-        assert "[fantasy]" not in result
-        assert "[Alice]" not in result
-        assert "Ira [Martin]" not in result
-        assert "An American fantasy drama television series." not in result
-        assert "A delightful return to the world." not in result
-        assert "Genre" not in result
-        assert "Created by" not in result
+        assert _parse_search_results(content, "duckduckgo.com") == [
+            ("Show Title", "https://en.example.org/show"),
+            ("Show - IMDb", "https://imdb.com/title/tt1"),
+        ]
 
     def test_only_heading_backed_links_are_results(self):
         """A Kagi-shaped page — a knowledge-panel paragraph, a bare link, three
         infobox rows each followed by a link, then ordinary heading+link results —
-        renders only the ordinary results, numbered by heading and URL (#2697).
-        The panel prose and infobox rows never render as titles."""
+        yields only the ordinary results (#2697).  The panel prose and infobox
+        rows never become titles the picker ranks."""
         content = "\n".join(
             [
                 "London is the capital and largest city of both England and the United",
@@ -2226,20 +2236,15 @@ class TestSearchResultTrimming:
                 "[visitlondon.example.com](https://www.visitlondon.example.com/)",
             ]
         )
-        result = _trim_search_result(content, "london", "kagi.com", HandleTable())
-        assert result == (
-            'You searched for "london". These are the results, titles and link numbers only. '
-            "You must read them to answer the user:\n"
-            "\n"
-            "1. London - Wikilike [1]\n"
-            "2. Visit London — official guide [2]"
-        )
+        assert _parse_search_results(content, "kagi.com") == [
+            ("London - Wikilike", "https://london.wikilike.org/wiki/London"),
+            ("Visit London — official guide", "https://www.visitlondon.example.com/"),
+        ]
 
     def test_links_without_headings_list_by_link_text(self):
         """A page whose links all sit under non-heading lines — links but no
-        headings at all — still renders the numbered list under the instruction
-        header, each link titled by its own link text (#2697): the raw page must
-        never enter the context under no header."""
+        headings at all — yields those links, each titled by its own link text
+        (#2697): the picker ranks link titles, never raw page prose."""
         content = "\n".join(
             [
                 "London is the capital of England.",
@@ -2250,14 +2255,10 @@ class TestSearchResultTrimming:
                 "[cityoflondon.gov.example](https://www.cityoflondon.gov.example/)",
             ]
         )
-        result = _trim_search_result(content, "london", "kagi.com", HandleTable())
-        assert result == (
-            'You searched for "london". These are the results, titles and link numbers only. '
-            "You must read them to answer the user:\n"
-            "\n"
-            "1. london.wikilike.org [1]\n"
-            "2. cityoflondon.gov.example [2]"
-        )
+        assert _parse_search_results(content, "kagi.com") == [
+            ("london.wikilike.org", "https://london.wikilike.org/wiki/London"),
+            ("cityoflondon.gov.example", "https://www.cityoflondon.gov.example/"),
+        ]
 
     def test_engine_affordance_links_are_not_results(self):
         """A standalone link back at the search engine's own host — its summariser,
@@ -2271,29 +2272,48 @@ class TestSearchResultTrimming:
                 "[See Map](https://kagi.com/maps/search?q=watches)",
             ]
         )
-        result = _trim_search_result(content, "watches", "kagi.com", HandleTable())
-        assert "1. First Result [1]" in result
-        assert "kagi.com/maps" not in result
+        assert _parse_search_results(content, "kagi.com") == [
+            ("First Result", "https://example.com/a")
+        ]
         # The same link is a result when it does not point at the search host.
-        kept = _trim_search_result(content, "watches", "duckduckgo.com", HandleTable())
-        assert "Map Block [2]" in kept
-        assert "kagi.com/maps" not in kept
+        assert _parse_search_results(content, "duckduckgo.com") == [
+            ("First Result", "https://example.com/a"),
+            ("Map Block", "https://kagi.com/maps/search?q=watches"),
+        ]
 
     def test_caps_at_max_search_links(self):
-        """Only the first PennyConstants.MAX_SEARCH_LINKS standalone links are listed."""
+        """Only the first PennyConstants.MAX_SEARCH_LINKS standalone links are parsed."""
         lines: list[str] = []
         for i in range(PennyConstants.MAX_SEARCH_LINKS + 5):
             lines.append(f"### Result {i}")
             lines.append(f"[example.com/page{i}](https://example.com/page{i})")
             lines.append(f"Snippet for result {i}")
         content = "\n".join(lines)
-        result = _trim_search_result(content, "query", "duckduckgo.com", HandleTable())
-        # First 10 listed
-        assert f"Result {PennyConstants.MAX_SEARCH_LINKS - 1}" in result
-        assert f"Result {PennyConstants.MAX_SEARCH_LINKS}" not in result
-        # 11th and beyond dropped
-        assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS}" not in result
-        assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS + 4}" not in result
+        results = _parse_search_results(content, "duckduckgo.com")
+        assert len(results) == PennyConstants.MAX_SEARCH_LINKS
+        assert f"page{PennyConstants.MAX_SEARCH_LINKS}" not in [url for _, url in results]
+
+    def test_escape_render_lists_titles_with_handles(self):
+        """The picker's escape render (#2718) is the trimmed list under the
+        instruction header, each link its handle (#2717) — the one shape where
+        the model still sees titles and numbers."""
+        content = "\n".join(
+            [
+                "### NASA Article",
+                "[nasa.gov/artemis](https://www.nasa.gov/artemis/)",
+                "Some snippet text",
+                "### Space.com Article",
+                "[space.com/artemis](https://www.space.com/artemis)",
+            ]
+        )
+        results = _parse_search_results(content, "duckduckgo.com")
+        rendered = _render_search_list("artemis mission", results, HandleTable())
+        assert 'You searched for "artemis mission"' in rendered
+        assert "titles and link numbers only" in rendered
+        assert "1. NASA Article [1]" in rendered
+        assert "2. Space.com Article [2]" in rendered
+        assert "https://www.nasa.gov" not in rendered
+        assert "Some snippet text" not in rendered
 
 
 class TestLargeToolResults:

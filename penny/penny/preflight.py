@@ -180,8 +180,10 @@ class Preflight:
         Unset is the NAMED degraded mode, never a silent one: entry matching falls
         back to asking the writing model about look-alike entries, and
         collection-name matching narrows to the rules (a near-miss write target
-        is refused with a did-you-mean instead of redirected).  Set-but-
-        unavailable degrades the same way, so both are said out loud."""
+        is refused with a did-you-mean instead of redirected); browse picking
+        falls back to the chat model choosing from the results list (with no
+        second read when a picked page found nothing).  Set-but-unavailable
+        degrades the same way, so both are said out loud."""
         name = PreflightCheck.DECISION_MODEL
         if self.decision_client is None:
             return self._warn(
@@ -191,7 +193,9 @@ class Preflight:
                 "writing model is asked whether it meant an existing one instead. "
                 "Collection-name matching narrows to the rules alone: a write naming a "
                 "near-miss collection is refused with a did-you-mean instead of "
-                "redirected.",
+                "redirected. Browse picking falls back to the chat model choosing from "
+                "the results list, and a picked page that found nothing is not retried "
+                "on the next result.",
             )
         model = self.config.llm_decision_model
         if model is None:  # unreachable: the client exists only when a model is configured
@@ -202,7 +206,9 @@ class Preflight:
                 "writing model is asked whether it meant an existing one instead. "
                 "Collection-name matching narrows to the rules alone: a write naming a "
                 "near-miss collection is refused with a did-you-mean instead of "
-                "redirected.",
+                "redirected. Browse picking falls back to the chat model choosing from "
+                "the results list, and a picked page that found nothing is not retried "
+                "on the next result.",
             )
         url = decision_api_url(self.config)
         try:
@@ -215,7 +221,8 @@ class Preflight:
             name,
             f"decision model {model!r} not available at {url} (or the endpoint is "
             f"unreachable) — pull it (`ollama pull {model}`). Entry matching falls "
-            f"back to asking until then.",
+            f"back to asking until then. Browse picking falls back to the chat model "
+            f"choosing from the results list until then.",
         )
 
     async def _check_llm_endpoint(self) -> CheckResult:

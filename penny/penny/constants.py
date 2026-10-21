@@ -637,6 +637,20 @@ class PennyConstants:
     # bulk page content never enters the parent run's context.
     BROWSE_EXTRACT_AGENT_NAME = "browse-extract"
     BROWSE_MICRO_CONTEXT_PROMPT_TYPE = "browse_micro_context"
+    # The ledger identity of a browse picker draw — the degraded arm's pick
+    # (shared model, thinking off) when no decision model is configured.  The
+    # decision-model arm rides /v1/systemone and has no promptlog row.
+    BROWSE_PICK_AGENT_NAME = "browse-pick"
+    BROWSE_PICK_PROMPT_TYPE = "browse_pick"
+    # How many ranked results one search item reads before it gives up (#2718):
+    # the picker's top pick plus one fall-through read.  A picked page that
+    # carried none of what was asked (or whose extraction never came back
+    # usable) falls through to the next ranked result, up to this.
+    BROWSE_MAX_PICKED_READS = 2
+    # The longest extract value that enters the main loop (#2718).  A longer
+    # value is cut at the last line boundary under this and the render says how
+    # much was left out, with the fetch handle to the stored full page.
+    BROWSE_EXTRACT_MAX_CHARS = 4000
     # How many recent conversational runs ``run_list`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

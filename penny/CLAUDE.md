@@ -36,7 +36,7 @@ flowchart TD
 - **Vision**: Image attachments ride the chat turn's own user message for the chat model to read directly (#2635) — no separate caption call or vision model
 - **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via the `generate_image` chat tool (config-gated on `LLM_IMAGE_MODEL`)
 - **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for memory identity (the ladder's shortlist) and similarity recall — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
-- **Decision Model**: Optional (`LLM_DECISION_MODEL`) small choice-question model on Ollama's `/v1/systemone` for the entry-identity ladder (#2715); unset runs the named degraded mode (preflight-warned)
+- **Decision Model**: Optional (`LLM_DECISION_MODEL`) small choice-question model on Ollama's `/v1/systemone` for the entry-identity ladder (#2715) and browse result picking (#2718); unset runs the named degraded modes (preflight-warned): entry matching falls back to asking, browse picking falls back to the chat model choosing from the results list with no second read on a none
 - **Browser Extension**: Web search and page reading — all web access goes through the connected browser
 - **SQLite**: Logs all prompts and messages; stores the memory framework (collections, logs) and conversation history
 
@@ -93,7 +93,8 @@ penny/
   tools/
     base.py           — Tool ABC (`args_model` + `run()`) + ToolRegistry/ToolExecutor — arg validation, did-you-mean on a missing tool
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls/narration), ToolDefinition, and per-tool arg models
-    browse.py         — BrowseTool: web search and page reading via the browser extension, with optional micro-context extraction (#1588)
+    browse.py         — BrowseTool: web search, result picking, and page reading in ONE call (#2718) — items (search/citation/URL, each with its own looking_for), the picker behind the tool boundary, fall-through while a read finds nothing, the extract cap
+    browse_picker.py  — ResultPicker: which search result to read, decided behind the tool boundary (#2718) — DecisionClient choice question ranked by probabilities, or the named degraded arm (shared model, thinking off); the carry question drives fall-through
     micro_context.py  — MicroContext: single-shot extraction over bulk content (the browse extractor — its one customer since the notify composer retired, #2656)
     link_handles.py   — HandleTable: the run's numbered link table (#2717) — convert (a URL the model reads arrives as `[n]`), expand (a reply's citations back to URLs at send), dangling (the honest rejection); one per run, passed as a parameter
     generate_image.py — GenerateImageTool: image generation via OllamaImageClient; stored to media, delivered deterministically by id to its own reply (ToolResult.media_id → ControllerResponse.generated_media_ids → send_response) (chat-only, gated on LLM_IMAGE_MODEL)

@@ -1764,9 +1764,11 @@ def _micro_batches(rows: list[PromptLog]) -> list[MicroBatch]:
 
 
 def _is_extract_browse(content: str) -> bool:
-    """A ``browse(...)`` call that carried an ``extract`` micro-instruction — the calls that spawn
-    the browse-extract micro-context rows."""
-    return content.startswith("browse(") and '"extract"' in content
+    """A ``browse(...)`` call that carries what to pull out — the calls that spawn
+    the browse-extract micro-context rows.  Both argument shapes occur: the
+    pre-#2718 rows carry ``"extract"``, the items shape carries ``"looking_for"``
+    on every item."""
+    return content.startswith("browse(") and ('"extract"' in content or '"looking_for"' in content)
 
 
 def _splice(

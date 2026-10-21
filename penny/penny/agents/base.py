@@ -271,16 +271,17 @@ class Agent:
         # The identity ladders' decision step, built once from config at startup: a
         # client when LLM_DECISION_MODEL is set, the named degraded mode (entry
         # matching falls back to asking; collection-name matching narrows to the
-        # rules) when not — never read from ambient state, threaded to the write
-        # tools as required parameters.  Entry identity and collection-name
-        # matching share the one client (#2724).
-        decision_client = (
+        # rules; browse picking runs on the shared model) when not — never read
+        # from ambient state, threaded to the write tools and the browse tool as
+        # explicit parameters.  Entry identity, collection-name matching and
+        # browse picking share the one client (#2724, #2718).
+        self._decision_client = (
             DecisionClient(model=config.llm_decision_model, api_url=decision_api_url(config))
             if config.llm_decision_model
             else None
         )
-        self._decider = EntryDecider(decision_client)
-        self._name_decider = CollectionNameDecider(decision_client)
+        self._decider = EntryDecider(self._decision_client)
+        self._name_decider = CollectionNameDecider(self._decision_client)
 
         self._browse_tool: BrowseTool | None = None
         self._browse_provider: Callable[[], Any] | None = None
@@ -1703,6 +1704,7 @@ class Agent:
             db=self.db,
             embedding_client=self._embedding_model_client,
             model_client=self._model_client,
+            decision_client=self._decision_client,
             author=author,
             channel_outage_recovery=self.channel_outage_recovery,
             handles=handles,

@@ -109,31 +109,41 @@ class TestBrowseResultNarration:
     the outcome — while the seam (`format_result`) adds the `(browse result)` tag
     and the per-page `## browse ...:` section headers stay in the body.  The
     override returns ONLY the sentence: the tag is the seam's job, not the tool's.
-    """
+
+    The override answers for synthetic results (arguments only, no dispatched
+    list behind them): a read narrates its query verbatim; the pages a SEARCH
+    opened are named only by the tool-composed narration (#2718)."""
 
     def test_search_success_narrates_searched(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["deepest lake"]}, ToolResult(message="Lake Baikal")
+            {"items": [{"query": "deepest lake", "looking_for": "the depth"}]},
+            ToolResult(message="Lake Baikal"),
         )
         assert narration == 'You searched for "deepest lake"'
         assert "(browse result)" not in narration  # the tag is the seam's job
 
     def test_url_read_success_narrates_opened(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["https://example.com/a"]}, ToolResult(message="page text")
+            {"items": [{"query": "https://example.com/a", "looking_for": "the depth"}]},
+            ToolResult(message="page text"),
         )
         assert narration == "You opened https://example.com/a"
 
     def test_mixed_search_and_read(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["deepest lake", "https://example.com/a"]},
+            {
+                "items": [
+                    {"query": "deepest lake", "looking_for": "the depth"},
+                    {"query": "https://example.com/a", "looking_for": "the depth"},
+                ]
+            },
             ToolResult(message="ok"),
         )
         assert narration == 'You searched for "deepest lake" and opened https://example.com/a'
 
     def test_total_failure_narrates_honestly(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["deepest lake"]},
+            {"items": [{"query": "deepest lake", "looking_for": "the depth"}]},
             ToolResult(message="## browse error: ...", success=False),
         )
         assert narration == (
@@ -143,7 +153,7 @@ class TestBrowseResultNarration:
 
     def test_url_read_failure_narrates_honestly(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["https://example.com/a"]},
+            {"items": [{"query": "https://example.com/a", "looking_for": "the depth"}]},
             ToolResult(message="## browse error: ...", success=False),
         )
         assert narration == (
@@ -151,8 +161,8 @@ class TestBrowseResultNarration:
             "read, so there's nothing current to quote"
         )
 
-    def test_missing_queries_falls_back(self):
-        # No queries in the args (an arg-validation failure still flows the raw dict
+    def test_missing_items_falls_back(self):
+        # No items in the args (an arg-validation failure still flows the raw dict
         # through format_result) — narrate the action generically, honestly.
         assert (
             BrowseTool.to_result_narration({}, ToolResult(message="ok")) == "You looked things up"
@@ -162,17 +172,17 @@ class TestBrowseResultNarration:
             "there's nothing current to quote"
         )
 
-    def test_format_result_wraps_narration_with_tag_and_body(self):
-        """End-to-end through the seam: registry dispatch → browse override →
-        `(browse result)` tag → body, in one framed string the model reads."""
-        framed = Tool.format_result(
-            "browse",
-            {"queries": ["deepest lake"]},
-            ToolResult(message="Lake Baikal is the deepest lake"),
-        )
-        assert (
-            framed
-            == 'You searched for "deepest lake" (browse result)\nLake Baikal is the deepest lake'
+    def test_tool_composed_narration_names_opened_pages_as_handles(self, db: Database):
+        """The narration a real call carries (``ToolResult.narration``, #2661) names
+        the pages the call OPENED, in the handle form the model reads (#2717) —
+        URL reads and picked search reads alike."""
+        tool = BrowseTool(max_calls=3, db=db, embedding_client=MagicMock(), handles=HandleTable())
+        narration = tool._narration(["deepest lake"], ["[3]"], True)
+        assert narration == 'You searched for "deepest lake" and opened [3]'
+        failed = tool._narration(["deepest lake"], [], False)
+        assert failed == (
+            'You searched for "deepest lake" but couldn\'t read anything — no page was '
+            "read, so there's nothing current to quote"
         )
 
 

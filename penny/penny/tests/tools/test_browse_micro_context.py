@@ -46,19 +46,21 @@ from penny.database.memory.objects import render_tool_call
 from penny.database.models import PromptLog
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
+from penny.llm.decision_client import DecisionAnswer, DecisionClient, DecisionError
 from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools import ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.base import Tool
-from penny.tools.browse import BrowseTool
+from penny.tools.browse import _SEARCH_NONE_BODY, BrowseTool
+from penny.tools.browse_picker import PickOutcome, PickResult, ResultPicker
 from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.micro_context import (
     MICRO_CONTEXT_SYSTEM_PROMPT,
     MicroContext,
-    MicroContextResult,
     MicroExtractOutcome,
 )
+from penny.tools.models import BrowseItem
 
 # ── Fictional page + extraction fixtures ──────────────────────────────────────
 
@@ -110,6 +112,20 @@ _TRIMMED_SEARCH_RESULT = (
     "link numbers only. You must read them to answer the user:\n\n"
     "1. antique compass auctions — results [1]"
 )
+
+# A TWO-result search page — the fall-through and ranking tests read both lots.
+_SEARCH_RESULT_LINK_2 = "[Lot 99 — the orrery lot](https://auctions.example/lot/99)"
+_TWO_RESULT_SEARCH_TEXT = (
+    "### antique compass auctions — results\n\n"
+    f"{_SEARCH_RESULT_LINK}\n\n"
+    "### antique compass auctions — more results\n\n"
+    f"{_SEARCH_RESULT_LINK_2}\n"
+)
+_SEARCH_PAGES = {
+    _SEARCH_PAGE_URL: _TWO_RESULT_SEARCH_TEXT,
+    _PAGE_URL: _PAGE_TEXT,
+    _PAGE_URL_2: _PAGE_TEXT_2,
+}
 
 # A PAGE READ carrying standalone markdown links — the anchor a FAILED extraction hands
 # back (#2141), since the body itself never enters the conversation.
@@ -318,6 +334,36 @@ class _OverlapProbe:
         raise AssertionError(f"no route for micro-context content: {content!r}")
 
 
+class _StubPicker:
+    """A picker with a scripted rank/carry outcome — the pipeline tests' stub (#2718).
+    Each ``rank`` call pops the next :class:`PickResult`; each ``carries_any`` pops
+    the next bool (unscripted means "carried" — the stub only answers what its test
+    asked)."""
+
+    def __init__(self, ranks: list, carries: list | None = None) -> None:
+        self._ranks = list(ranks)
+        self._carries = list(carries or [])
+        self.rank_calls: list[dict] = []
+
+    async def rank(self, *, query, looking_for, results, call_link):
+        self.rank_calls.append({"query": query, "looking_for": looking_for})
+        return self._ranks.pop(0)
+
+    async def carries_any(self, *, looking_for, extract_text, call_link):
+        return self._carries.pop(0) if self._carries else True
+
+
+class _StubDecisionClient(DecisionClient):
+    """A decision client with scripted :class:`DecisionAnswer` answers — exercises
+    the picker's primary arm and the carry question without a live /v1/systemone."""
+
+    def __init__(self, answers: list) -> None:
+        self._answers = list(answers)
+
+    async def decide(self, *, state, instructions, criteria):
+        return self._answers.pop(0)
+
+
 # ── Integration: bulk content stays out of the main context ───────────────────
 
 
@@ -349,7 +395,9 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     # built — constructed here directly since this test drives the tool without
     # the agent loop around it.
     dispatched_link = CallLink.top("chat-run-1").for_tool_call("call-browse-1")
-    result = await tool.run(dispatched_link, queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.run(
+        dispatched_link, items=[BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION)]
+    )
 
     # The tool result carries the typed value alone — never the page body, and
     # no fetch-handle tail (success renders the value only; the "saved" clause
@@ -368,7 +416,11 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
 
     # The *built context* — what the agent loop appends as the model-facing tool
     # message — also carries the value, not the body.
-    framed = Tool.format_result("browse", {"queries": [_PAGE_URL], "extract": _INSTRUCTION}, result)
+    framed = Tool.format_result(
+        "browse",
+        {"items": [{"query": _PAGE_URL, "looking_for": _INSTRUCTION}]},
+        result,
+    )
     assert _EXTRACTED_VALUE in framed
     assert _BODY_PHRASE not in framed
 
@@ -417,7 +469,9 @@ async def test_extract_link_list_reading_reaches_the_model_end_to_end(tmp_path, 
     )
     tool = _extract_tool(db, client, reading=PageReading.LINK_LIST)
 
-    result = await tool.run(CallLink.new_top(), queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.run(
+        CallLink.new_top(), items=[BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION)]
+    )
 
     assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
     with Session(db.engine) as session:
@@ -435,17 +489,24 @@ async def test_extract_link_list_reading_reaches_the_model_end_to_end(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_browse_without_extract_is_rejected_at_the_gate(tmp_path):
-    """``extract`` is REQUIRED (#1570 — every browse routes page content through a
-    micro-context; the page never enters the main context whole).  A missing
-    extract is an arg-gate rejection naming the fix, and no fetch happens."""
+    """Each item's ``looking_for`` is REQUIRED (#2718, carrying #1570's
+    required-extract rule per item) — every browse routes page content through a
+    micro-context; the page never enters the main context whole.  A missing or
+    blank ``looking_for``, or an empty ``items`` list, is an arg-gate rejection
+    naming the fix, and no fetch happens."""
     db = _make_db(tmp_path)
     model = MockLlmClient()
     tool = _extract_tool(db, model)
 
-    result = await tool.run(CallLink.new_top(), queries=[_PAGE_URL])
+    result = await tool.run(CallLink.new_top(), items=[{"query": _PAGE_URL}])
 
     assert result.success is False
-    assert "extract" in result.message
+    assert "looking_for" in result.message
+    blank = await tool.run(CallLink.new_top(), items=[{"query": _PAGE_URL, "looking_for": "   "}])
+    assert blank.success is False
+    empty = await tool.run(CallLink.new_top(), items=[])
+    assert empty.success is False
+    assert "at least one item" in empty.message
     assert model.requests == []  # nothing ran
 
 
@@ -465,7 +526,9 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
     )
     tool.set_browse_provider(_provider(_CATALOGUE_TEXT))
 
-    result = await tool.execute(CallLink.new_top(), queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_CATALOGUE_URL, looking_for=_INSTRUCTION)]
+    )
 
     stored_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert stored_log is not None
@@ -490,7 +553,9 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
 async def _execute_extract(tmp_path, name: str, model_content: str):
     db = _make_db(tmp_path, name)
     tool = _extract_tool(db, _responds(model_content))
-    result = await tool.execute(CallLink.new_top(), queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION)]
+    )
     browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert browse_log is not None
     stored = browse_log.read_all()
@@ -578,7 +643,11 @@ async def test_two_page_batch_yields_two_attributed_sections(tmp_path, mock_llm)
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+        CallLink.new_top(),
+        items=[
+            BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_2, looking_for=_INSTRUCTION),
+        ],
     )
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
@@ -659,7 +728,10 @@ async def test_extract_spans_parallel_batches_in_one_call(tmp_path, mock_llm):
     )
 
     urls = [_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3, page_4_url, page_5_url]
-    result = await tool.execute(CallLink.new_top(), queries=urls, extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(),
+        items=[BrowseItem(query=url, looking_for=_INSTRUCTION) for url in urls],
+    )
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 5
@@ -677,7 +749,8 @@ async def test_extract_spans_parallel_batches_in_one_call(tmp_path, mock_llm):
         assert value in sections[slot]
     assert PennyConstants.BROWSE_DROPPED_HEADER not in result.message
     assert result.success is True
-    # The narration names everything that ran — all five pages.
+    # The narration names everything that ran — all five pages, each AS THE
+    # MODEL GAVE IT (#2735): the URLs it wrote in the items.
     assert result.narration is not None
     for url in urls:
         assert url in result.narration
@@ -708,7 +781,11 @@ async def test_a_none_of_it_page_does_not_mask_extracted_page(tmp_path):
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+        CallLink.new_top(),
+        items=[
+            BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_2, looking_for=_INSTRUCTION),
+        ],
     )
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
@@ -740,7 +817,11 @@ async def test_failed_fetch_section_coexists_with_extracted_section(tmp_path):
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+        CallLink.new_top(),
+        items=[
+            BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_2, looking_for=_INSTRUCTION),
+        ],
     )
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
@@ -780,7 +861,12 @@ async def test_failed_fetch_in_the_middle_keeps_its_slot(tmp_path):
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION
+        CallLink.new_top(),
+        items=[
+            BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_2, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_3, looking_for=_INSTRUCTION),
+        ],
     )
 
     # Only the two READ pages were stored; the failed fetch stored nothing.  Each
@@ -805,77 +891,284 @@ async def test_failed_fetch_in_the_middle_keeps_its_slot(tmp_path):
     assert result.source_urls == [_PAGE_URL, _PAGE_URL_3]
 
 
-# ── A search is links; a failed page extraction keeps the page's (#2141) ──────
+# ── A search picks and reads in one call (#2718) ──────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_search_section_is_returned_as_links_and_never_extracted(tmp_path):
-    """A SEARCH query under ``extract`` comes back as its trimmed list of links, and no
-    micro-context is drawn for it (#2141).
+async def test_search_item_picks_and_reads_in_one_call(tmp_path):
+    """A search item runs the whole lookup inside the call: the picker ranks the
+    trimmed results, the top result is read and extracted, and the model gets
+    what the page says — never a list of titles to choose from.
 
-    ``_page_section`` prepends ``Prompt.SEARCH_RESULT_INSTRUCTION`` — an instruction written
-    for the CHAT model, telling it to pick a URL and read it.  Handing that to the
-    extractor had the extractor obey it: its output was a bare URL, which violates the
-    declared ``EXTRACTED:``/``NOT_PRESENT:`` shape, was re-rolled the whole budget, and
-    rendered as "the extractor returned nothing usable" over a page of perfectly good
-    links.  So a search is left exactly as the header says it is — titles and URLs, to
-    be read from — and the call still reports success, since something readable came
-    back even though no draw speaks for it."""
+    The item's own section comes first (what it was looking for, the pages it
+    read), and the page's value renders under the page's own header, attributed
+    to its handle."""
     db = _make_db(tmp_path)
-    model = MockLlmClient()
-    tool = _multi_extract_tool(db, model, _provider(_SEARCH_PAGE_TEXT))
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+    tool._picker = cast("ResultPicker", _StubPicker([PickResult(PickOutcome.RANKED, [1])]))
 
-    result = await tool.execute(CallLink.new_top(), queries=[_SEARCH_QUERY], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
 
     assert result.message == (
-        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}"
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
+        f"Looking for: {_INSTRUCTION}.\nRead: [1]."
+        f"{PennyConstants.SECTION_SEPARATOR}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
         f"\n\n{PAGE_CITATION_LINE}"
     )
-    assert model.requests == []  # the extractor was never asked to read a link list
+    assert cast("_StubPicker", tool._picker).rank_calls == [
+        {"query": _SEARCH_QUERY, "looking_for": _INSTRUCTION}
+    ]
+    assert len(model.requests) == 1  # one read, one extraction draw
     assert result.success is True
-    # A search read nothing, so it contributes no source URL (#2648).
+    assert result.source_urls == [_PAGE_URL]
+    # The narration names the search and the page actually opened — never the
+    # unopened results.
+    assert result.narration == f'You searched for "{_SEARCH_QUERY}" and opened [1]'
+
+
+@pytest.mark.asyncio
+async def test_search_item_falls_through_when_the_pick_carried_none(tmp_path):
+    """The code owner's ruling (#2718): an honest "the page carries none of it"
+    falls through to the next ranked result, up to the cap.  Every page tried
+    still reports what it held — the first page's none-answer renders under its
+    own header beside the second page's value."""
+    db = _make_db(tmp_path)
+    model = _responds_routed({_MARKER_1: _NOT_PRESENT_ANSWER, _MARKER_2: _EXTRACTED_VALUE_2})
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+    tool._picker = cast(
+        "ResultPicker", _StubPicker([PickResult(PickOutcome.RANKED, [1, 2])], carries=[False, True])
+    )
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
+        f"Looking for: {_INSTRUCTION}.\nRead: [1], [2]."
+        f"{PennyConstants.SECTION_SEPARATOR}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
+        f"{PennyConstants.SECTION_SEPARATOR}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}"
+        f"\n\n{PAGE_CITATION_LINE}"
+    )
+    assert result.success is True
+    assert result.source_urls == [_PAGE_URL, _PAGE_URL_2]
+
+
+@pytest.mark.asyncio
+async def test_search_item_stop_when_nothing_falls_throughable(tmp_path):
+    """The cap holds: only ``BROWSE_MAX_PICKED_READS`` ranked results are read,
+    whatever the rank list carries."""
+    db = _make_db(tmp_path)
+    model = _responds_routed({_MARKER_1: _NOT_PRESENT_ANSWER, _MARKER_2: _NOT_PRESENT_ANSWER})
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+    tool._picker = cast(
+        "ResultPicker",
+        _StubPicker([PickResult(PickOutcome.RANKED, [1, 2])], carries=[False, False]),
+    )
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message.count(PennyConstants.BROWSE_PAGE_HEADER) == 2
+    assert "Read: [1], [2]." in result.message
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_search_item_extraction_failure_falls_through(tmp_path):
+    """An extraction that never came back usable falls through exactly like an
+    honest none — the failed page's own failure render (with its links) stands
+    beside the next result's value."""
+    db = _make_db(tmp_path)
+    model = _responds_routed({_MARKER_1: _BLANK_DRAW, _MARKER_2: _EXTRACTED_VALUE_2})
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+    tool._picker = cast("ResultPicker", _StubPicker([PickResult(PickOutcome.RANKED, [1, 2])]))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert "the extractor never produced a usable answer" in result.message
+    assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE_2}" in result.message
+    assert "Read: [1], [2]." in result.message
+
+
+@pytest.mark.asyncio
+async def test_search_item_picker_says_none_reads_nothing(tmp_path):
+    """A "none of these" ranking reads nothing: the search section says so
+    honestly, and no extraction draw is spent on a result the picker rejected."""
+    db = _make_db(tmp_path)
+    model = MockLlmClient()
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+    tool._picker = cast("ResultPicker", _StubPicker([PickResult(PickOutcome.NONE, [])]))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
+        f"Looking for: {_INSTRUCTION}.\n{_SEARCH_NONE_BODY}"
+    )
+    assert model.requests == []
+    assert result.success is True
     assert result.source_urls == []
 
 
 @pytest.mark.asyncio
-async def test_search_beside_a_page_read_extracts_only_the_page(tmp_path):
-    """A batch of a search AND a page read draws ONE micro-context — the page's (#2141).
-
-    The search keeps its slot verbatim beside the extracted page, and the page's own
-    fetch handle is unaffected: only the page read was stored, so the handle iterator
-    the batch consumes has exactly one entry to give it.  The routed mock raises on any
-    draw whose content isn't page 1's, so a draw over the search results would fail the
-    test rather than pass unnoticed."""
+async def test_search_item_picker_escape_renders_the_results_list(tmp_path):
+    """A picker that answered nothing usable renders the trimmed results list as
+    the escape — the one shape where the model still sees titles and link
+    handles, to pick from itself in a follow-up call."""
     db = _make_db(tmp_path)
-    model = _responds_routed({_MARKER_1: _EXTRACTED_VALUE})
-    tool = _multi_extract_tool(
-        db,
-        model,
-        _provider_by_url({_SEARCH_PAGE_URL: _SEARCH_PAGE_TEXT, _PAGE_URL: _PAGE_TEXT}),
+    model = MockLlmClient()
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+    tool._picker = cast("ResultPicker", _StubPicker([PickResult(PickOutcome.FAILED, [])]))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
+        f"Looking for: {_INSTRUCTION}.\n"
+        'You searched for "antique compass auctions". These are the results, titles and '
+        "link numbers only. You must read them to answer the user:\n\n"
+        "1. antique compass auctions — results [1]\n"
+        "2. antique compass auctions — more results [2]"
+        f"\n\n{PAGE_CITATION_LINE}"
+    )
+    assert model.requests == []
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_search_item_no_results_keeps_its_own_shape(tmp_path):
+    """A search page with no standalone links at all renders its own text under
+    the search header — the "nothing found" path, unchanged by the picker."""
+    db = _make_db(tmp_path)
+    model = MockLlmClient()
+    no_results = "Title: No results\nNo relevant results were found for this query."
+    tool = _multi_extract_tool(db, model, _provider_by_url({_SEARCH_PAGE_URL: no_results}))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
+        f"Looking for: {_INSTRUCTION}.\n{no_results}"
+    )
+    assert model.requests == []
+    assert result.success is True
+    assert result.source_urls == []
+
+
+@pytest.mark.asyncio
+async def test_search_item_degraded_picker_draw_picks_from_the_list(tmp_path):
+    """No decision model: the shared text model answers the pick question as one
+    thinking-off draw, and the pipeline reads what it picked — the named degraded
+    mode, end to end."""
+    db = _make_db(tmp_path)
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        content = request["messages"][-1]["content"]
+        if "picking which search result" in content:
+            return LlmResponse(message=LlmMessage(role="assistant", content="1"))
+        return LlmResponse(message=LlmMessage(role="assistant", content=_EXTRACTED_VALUE))
+
+    model = MockLlmClient()
+    model.set_response_handler(handler)
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
+        f"Looking for: {_INSTRUCTION}.\nRead: [1]."
+        f"{PennyConstants.SECTION_SEPARATOR}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"\n\n{PAGE_CITATION_LINE}"
+    )
+    # Two model calls: the pick draw, then the page's extraction draw.
+    assert len(model.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_item_decision_model_ranks_by_probability(tmp_path):
+    """The primary arm: one choice question over the numbered results plus none,
+    the ranking read off the answer's per-option probabilities — and the carry
+    question falls through on a "no"."""
+    db = _make_db(tmp_path)
+    model = _responds_routed({_MARKER_1: _EXTRACTED_VALUE, _MARKER_2: _EXTRACTED_VALUE_2})
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+    tool._picker = ResultPicker(
+        _StubDecisionClient(
+            [
+                # The pick: names result 2; result 1's lower probability ranks it second.
+                DecisionAnswer(choice="2", probabilities={"1": 0.3, "2": 0.9}),
+                # The carry question on result 2's extract: no → fall through.
+                DecisionAnswer(choice="no", probabilities={}),
+                # The carry question on result 1's extract: yes → stop.
+                DecisionAnswer(choice="yes", probabilities={}),
+            ]
+        ),
+        cast(Any, model),
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_SEARCH_QUERY, _PAGE_URL], extract=_INSTRUCTION
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
     )
 
-    assert result.message.split(PennyConstants.SECTION_SEPARATOR) == [
-        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}",
-        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
-        f"\n\n{PAGE_CITATION_LINE}",
-    ]
-    assert len(model.requests) == 1  # one page read, one draw
-    # Only the page read was stored, so the search consumed no handle.
-    browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
-    assert browse_log is not None
-    # Stored entries keep the REAL section — the handle is a rendering, applied
-    # when the entry is shown to the model (#2717).
-    assert [entry.content.partition("\n")[0] for entry in browse_log.read_all()] == [
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}"
-    ]
-    assert result.success is True
-    # Only the PAGE READ counts as read for the reply's source URLs (#2648) —
-    # the search beside it contributes nothing.
-    assert result.source_urls == [_PAGE_URL]
+    # Result 2 read first (higher probability), then result 1 — both reported.
+    # Handles number pages in READ order (#2717), so lot 99 is [1] here.
+    assert "Read: [1], [2]." in result.message
+    assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE_2}" in result.message
+    assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
+    # The page sections render in rank order: lot 99's value before lot 42's.
+    message = result.message
+    assert message.index(_EXTRACTED_VALUE_2) < message.index(_EXTRACTED_VALUE)
+
+
+@pytest.mark.asyncio
+async def test_search_item_unreadable_carry_answer_counts_as_yes(tmp_path):
+    """An unreadable carry answer counts as YES (the ruling): the search stops
+    and reports what the page held, whatever the question's failure was."""
+    db = _make_db(tmp_path)
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+
+    class _FailingCarryDecisionClient(DecisionClient):
+        """Answers the pick question, then fails every carry question — the
+        unreadable-answer-counts-as-yes ruling's own client."""
+
+        def __init__(self) -> None:
+            self._picked = False
+
+        async def decide(self, *, state, instructions, criteria):
+            if not self._picked:
+                self._picked = True
+                return DecisionAnswer(choice="1", probabilities={})
+            raise DecisionError("decision-model call failed: unreachable")
+
+    tool._picker = ResultPicker(_FailingCarryDecisionClient(), cast(Any, model))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert "Read: [1]." in result.message
+    assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
+    assert result.message.count(PennyConstants.BROWSE_PAGE_HEADER) == 1
 
 
 @pytest.mark.asyncio
@@ -895,7 +1188,9 @@ async def test_failed_extraction_hands_back_the_pages_links(tmp_path):
     model = _responds("...???...")
     tool = _multi_extract_tool(db, model, _provider(_CATALOGUE_TEXT))
 
-    result = await tool.execute(CallLink.new_top(), queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_CATALOGUE_URL, looking_for=_INSTRUCTION)]
+    )
 
     browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert browse_log is not None
@@ -940,7 +1235,12 @@ async def test_page_batch_draws_concurrently_and_renders_in_page_order(tmp_path)
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION
+        CallLink.new_top(),
+        items=[
+            BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_2, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_3, looking_for=_INSTRUCTION),
+        ],
     )
 
     assert probe.draws == Counter({_MARKER_1: 1, _MARKER_2: 1, _MARKER_3: 1})
@@ -964,7 +1264,9 @@ async def test_single_page_batch_is_one_draw_rendered_unchanged(tmp_path):
     probe = _OverlapProbe({_MARKER_1: _EXTRACTED_VALUE})
     tool = _multi_extract_tool(db, cast(Any, probe), _provider_by_url({_PAGE_URL: _PAGE_TEXT}))
 
-    result = await tool.execute(CallLink.new_top(), queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION)]
+    )
 
     assert probe.draws == Counter({_MARKER_1: 1})
     assert probe.peak_in_flight == 1
@@ -991,7 +1293,11 @@ async def test_poisoned_draw_rerolls_only_its_own_context(tmp_path):
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+        CallLink.new_top(),
+        items=[
+            BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_2, looking_for=_INSTRUCTION),
+        ],
     )
 
     assert draws[_MARKER_1] == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -1036,7 +1342,11 @@ async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
     )
 
     result = await tool.execute(
-        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+        CallLink.new_top(),
+        items=[
+            BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION),
+            BrowseItem(query=_PAGE_URL_2, looking_for=_INSTRUCTION),
+        ],
     )
 
     assert finished == [_MARKER_2]  # the sibling drew undisturbed
@@ -1085,7 +1395,13 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
 
     result = await executor.execute(
         ToolCall(
-            tool="browse", arguments={"queries": [_PAGE_URL, _PAGE_URL_2], "extract": _INSTRUCTION}
+            tool="browse",
+            arguments={
+                "items": [
+                    {"query": _PAGE_URL, "looking_for": _INSTRUCTION},
+                    {"query": _PAGE_URL_2, "looking_for": _INSTRUCTION},
+                ]
+            },
         ),
         CallLink.new_top(),
     )
@@ -1106,10 +1422,14 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
 def test_render_tool_call_names_the_micro_context_browse_step():
     """The run-trace line for a micro-context browse step names the extract
     instruction; a plain browse is unchanged."""
-    assert (
-        render_tool_call("browse", {"queries": [_PAGE_URL], "extract": _INSTRUCTION})
-        == "browse(queries=['https://auctions.example/lot/42'], extract='the current bid amount')"
+    expected = (
+        "browse(items=[('https://auctions.example/lot/42' looking for 'the current bid amount')])"
     )
+    assert (
+        render_tool_call("browse", {"items": [{"query": _PAGE_URL, "looking_for": _INSTRUCTION}]})
+        == expected
+    )
+    # A row recorded before the items shape keeps its recorded-queries render.
     assert render_tool_call("browse", {"queries": [_PAGE_URL]}) == (
         "browse(['https://auctions.example/lot/42'])"
     )
@@ -1228,40 +1548,19 @@ def test_micro_context_system_prompt_is_plain_text_with_no_tags():
     )
 
 
-def test_extract_parameter_description_whole_render(db: Database):
-    """Whole-render literal of the ``extract`` parameter's description — the ONE line
-    of guidance the calling model reads before it writes an instruction (#1838/#1942).
-
-    It teaches where the instruction comes FROM: the task's own words, broad allowed.
-    "Naming exactly what to pull out" read as *be specific* and was measured inflating
-    a plain ask into a stricter one than the page could satisfy — the extractor then
-    honestly returned NOT_PRESENT and the round died on a fact that was there.  The
-    example of a broad ask is deliberately non-fixture phrasing, so no eval pool lends
-    its own words to the surface under test.
-
-    What #1942 changed is the CONSEQUENCE it states.  It used to warn that naming an
-    extra detail "makes the read come back empty when the page lacks them" — true when a
-    partly-answered instruction flipped the whole page to NOT_PRESENT, and false now that
-    the read degrades per thing asked for.  A description stating a consequence the
-    system no longer has is worse than one stating none.
-
-    #2141 added the SEARCH clause for the same reason: a search is never extracted from,
-    so "only the extracted value is returned here" stopped being true of a search query,
-    and a description that is false about half its own argument's inputs is worse than
-    one that names the exception."""
+def test_looking_for_parameter_description_whole_render(db: Database):
+    """Whole-render literal of each item's ``looking_for`` description — the ONE
+    guidance the calling model reads before it writes an ask (#2718, carrying
+    #1838/#1942's wording discipline).  It teaches where the ask comes FROM: the
+    task's own words, broad allowed.  The example is deliberately non-fixture
+    phrasing, so no eval pool lends its own words to the surface under test."""
     tool = _extract_tool(db, _responds(_EXTRACTED_VALUE))
-    assert tool.parameters["properties"]["extract"]["description"] == (
-        "Optional. One instruction naming what to pull out of the fetched "
-        'pages (e.g. "the current bid amount"). Use the task\'s own words '
-        'for it, and a broad ask like "what the notice says" is fine. An '
-        "instruction naming several things comes back with whatever each "
-        "page has for each of them, so a detail a page lacks costs you "
-        "only that detail. When set, the full page content is read in a "
-        "separate scoped context and only the extracted value is returned "
-        "here — the page body never enters this conversation. A search "
-        "query comes back as its list of links whatever you set here, so "
-        "pick one and read it in a follow-up call. Omit to receive the "
-        "page content itself."
+    assert tool.parameters["properties"]["items"]["items"]["properties"]["looking_for"][
+        "description"
+    ] == (
+        "What the page must carry, in plain language. Steers which search result is "
+        'picked and what is pulled out of the page — "the opening hours" or "anything '
+        'the page says about refunds" are complete asks.'
     )
 
 
@@ -1477,43 +1776,66 @@ async def test_draw_clean_skips_the_cut_retry_when_already_thinking_off(db: Data
     assert all(request["thinking_enabled"] is False for request in model.requests)
 
 
-def test_micro_result_render_by_handle_is_a_typed_id(db: Database):
-    """The fetch handle is a typed ``log='browse-results' id=<id>`` read
-    (rendered directly) — on the FAILURE render, where it is the remedy
-    (#2615: the one failure outcome left).  A successful extraction renders
-    the value alone: the "saved" tail read as the remembering being done at
-    exactly the moment a chat teach round held the value (2026-07-19), so
-    success carries no handle clause, whatever the plain text says.
+@pytest.mark.asyncio
+async def test_extract_body_renders_success_without_handle_and_failure_with(db: Database):
+    """The fetch handle is a typed ``log='browse-results' id=<id>`` read — on the
+    FAILURE render, where it is the remedy (#2615: the one failure outcome left).
+    A successful extraction renders the value alone: the "saved" tail read as the
+    remembering being done at exactly the moment a chat teach round held the value
+    (2026-07-19), so success carries no handle clause, whatever the plain text says.
 
     The page's LINKS follow the same split (#2141): handed to every render, and
     only the FAILURE render appends them."""
-    tool = BrowseTool(
-        max_calls=1, db=db, embedding_client=cast(Any, MockLlmClient()), handles=HandleTable()
-    )
     stored = [cast(Any, SimpleNamespace(id=7))]
     links = f"\n{_LINKS_CLAUSE}"
-    body = tool._render_micro_result(
-        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=_EXTRACTED_VALUE),
-        _INSTRUCTION,
-        stored,
-        links,
+    converted = "## browse: [1]\nwhatever the draw reads"
+
+    ok_tool = BrowseTool(
+        max_calls=1,
+        db=db,
+        embedding_client=cast(Any, MockLlmClient()),
+        model_client=cast(Any, _responds(_EXTRACTED_VALUE)),
+        handles=HandleTable(),
+    )
+    body, text = await ok_tool._extract_body(
+        converted, PageReading.ARTICLE, _INSTRUCTION, stored, CallLink.new_top(), links
     )
     assert body == f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
-    body = tool._render_micro_result(
-        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=_NOT_PRESENT_ANSWER),
-        _INSTRUCTION,
-        stored,
-        links,
+    assert text == _EXTRACTED_VALUE
+
+    dead_tool = BrowseTool(
+        max_calls=1,
+        db=db,
+        embedding_client=cast(Any, MockLlmClient()),
+        model_client=cast(Any, _responds(_BLANK_DRAW)),
+        handles=HandleTable(),
     )
-    assert body == f"{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
-    body = tool._render_micro_result(
-        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTION_FAILED),
-        _INSTRUCTION,
-        stored,
-        links,
+    body, text = await dead_tool._extract_body(
+        converted, PageReading.ARTICLE, _INSTRUCTION, stored, CallLink.new_top(), links
     )
     assert body == (
         "Couldn't extract 'the current bid amount' from the page — the extractor never "
         "produced a usable answer after 3 attempts. Full page content saved as "
         f"log='browse-results' id=7.\n{_LINKS_CLAUSE}"
     )
+    assert text == ""
+
+
+def test_extract_cap_cuts_at_a_line_boundary_and_names_the_omission():
+    """The extract output cap (#2718): a value over ``BROWSE_EXTRACT_MAX_CHARS`` is
+    cut at the last line boundary under the cap, and the render says how much was
+    left out, with the fetch handle to the stored full page (§2.8).  A value under
+    the cap is untouched."""
+    cap = PennyConstants.BROWSE_EXTRACT_MAX_CHARS
+    short = "a short value"
+    assert BrowseTool._cap_extract(short, "handle") == short
+    value = "\n".join(f"line {i} of the page's answer" for i in range(200))
+    assert len(value) > cap
+    capped = BrowseTool._cap_extract(value, "log='browse-results' id=7")
+    assert capped.count("(…cut —") == 1
+    cut_line = capped.rpartition("\n")[2]
+    assert "more characters of the page's answer were left out" in cut_line
+    assert "log='browse-results' id=7" in cut_line
+    # The cut lands on a whole line: the kept text is a line prefix of the value.
+    kept = capped.rpartition("\n")[0]
+    assert value.startswith(kept)

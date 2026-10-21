@@ -222,7 +222,8 @@ class TestBrowseTool:
         )
         tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
-            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://example.com", "looking_for": "the page content"}],
         )
 
         assert isinstance(result, ToolResult)
@@ -254,7 +255,8 @@ class TestBrowseTool:
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(
-            CallLink.new_top(), queries=["https://ex.com/r"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://ex.com/r", "looking_for": "the page content"}],
         )
 
         assert isinstance(result, ToolResult)
@@ -301,8 +303,7 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
             CallLink.new_top(),
-            queries=["https://kagi.com/search?q=test"],
-            extract="the page content",
+            items=[{"query": "https://kagi.com/search?q=test", "looking_for": "the page content"}],
         )
 
         assert isinstance(result, ToolResult)
@@ -336,7 +337,8 @@ class TestBrowseTool:
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(
-            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://example.com", "looking_for": "the page content"}],
         )
 
         assert isinstance(result, ToolResult)
@@ -352,7 +354,8 @@ class TestBrowseTool:
         request_fn = AsyncMock(side_effect=RuntimeError("extraction failed after 10 retries"))
         tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
-            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://example.com", "looking_for": "the page content"}],
         )
 
         assert isinstance(result, ToolResult)
@@ -384,8 +387,10 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn, db=db)
         result = await tool.execute(
             CallLink.new_top(),
-            queries=["https://good.com", "https://bad.com"],
-            extract="the page content",
+            items=[
+                {"query": "https://good.com", "looking_for": "the page content"},
+                {"query": "https://bad.com", "looking_for": "the page content"},
+            ],
         )
 
         assert result.success is True
@@ -408,8 +413,12 @@ class TestBrowseTool:
 
         result = await tool.execute(
             CallLink.new_top(),
-            queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
-            extract="the page content",
+            items=[
+                {"query": "https://a.com", "looking_for": "the page content"},
+                {"query": "https://b.com", "looking_for": "the page content"},
+                {"query": "https://c.com", "looking_for": "the page content"},
+                {"query": "https://d.com", "looking_for": "the page content"},
+            ],
         )
 
         assert result.success is True
@@ -419,7 +428,7 @@ class TestBrowseTool:
         # The recovery is spelled as the exact next call with bound args (canonical
         # call notation), not a bare "browse" mention, and the ceiling is named as
         # the per-call TOTAL (#2662).
-        assert "browse(queries=['https://d.com'])" in result.message
+        assert "browse(items=['https://d.com'])" in result.message
         assert "beyond the 3-per-call total" in result.message
 
         # The narration names only what ran (#2661) — the requested list past the
@@ -428,7 +437,12 @@ class TestBrowseTool:
         framed = Tool.format_result(
             "browse",
             {
-                "queries": ["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
+                "items": [
+                    {"query": "https://a.com", "looking_for": "the page content"},
+                    {"query": "https://b.com", "looking_for": "the page content"},
+                    {"query": "https://c.com", "looking_for": "the page content"},
+                    {"query": "https://d.com", "looking_for": "the page content"},
+                ],
                 "extract": "the page content",
             },
             result,
@@ -477,8 +491,7 @@ class TestBrowseTool:
 
         result = await tool.execute(
             CallLink.new_top(),
-            queries=list(pages),
-            extract="the page content",
+            items=[{"query": url, "looking_for": "the page content"} for url in pages],
         )
 
         assert result.success is True
@@ -515,8 +528,12 @@ class TestBrowseTool:
 
         result = await tool.execute(
             CallLink.new_top(),
-            queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
-            extract="the page content",
+            items=[
+                {"query": "https://a.com", "looking_for": "the page content"},
+                {"query": "https://b.com", "looking_for": "the page content"},
+                {"query": "https://c.com", "looking_for": "the page content"},
+                {"query": "https://d.com", "looking_for": "the page content"},
+            ],
         )
 
         assert result.success is True
@@ -527,7 +544,7 @@ class TestBrowseTool:
         assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://d.com" not in result.message
         assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
         assert "beyond the 3-per-call total" in result.message
-        assert "browse(queries=['https://d.com'])" in result.message
+        assert "browse(items=['https://d.com'])" in result.message
 
     @pytest.mark.asyncio
     async def test_checks_permission_before_browsing(self, db: Database):
@@ -539,7 +556,8 @@ class TestBrowseTool:
         )
         tool = self._make_tool(request_fn, permission_manager=mock_perm, db=db)
         await tool.execute(
-            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://example.com", "looking_for": "the page content"}],
         )
 
         mock_perm.check_domain.assert_called_once_with("https://example.com")
@@ -557,7 +575,8 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn, permission_manager=mock_perm, db=db)
 
         result = await tool.execute(
-            CallLink.new_top(), queries=["https://blocked.com"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://blocked.com", "looking_for": "the page content"}],
         )
 
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.message
@@ -577,7 +596,8 @@ class TestBrowseTool:
 
         tool = self._make_tool(hanging_request_fn, db=db)
         result = await tool.execute(
-            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+            CallLink.new_top(),
+            items=[{"query": "https://example.com", "looking_for": "the page content"}],
         )
 
         assert isinstance(result, ToolResult)
@@ -618,8 +638,10 @@ class TestBrowseToolMediaCapture:
 
         result = await tool.execute(
             CallLink.new_top(),
-            queries=["https://a.com", "https://b.com"],
-            extract="the page content",
+            items=[
+                {"query": "https://a.com", "looking_for": "the page content"},
+                {"query": "https://b.com", "looking_for": "the page content"},
+            ],
         )
         assert isinstance(result, ToolResult)
         rows = sorted(_all_media(db), key=lambda r: r.source_url or "")
@@ -1604,7 +1626,7 @@ class TestFormatToolStatus:
 
     def test_browse_with_url_query(self):
         result = BrowserChannel._format_tool_status(
-            BrowseTool.name, {"queries": ["https://example.com"]}
+            BrowseTool.name, {"items": [{"query": "https://example.com", "looking_for": "x"}]}
         )
         assert result == "Reading example.com"
 
@@ -1612,12 +1634,14 @@ class TestFormatToolStatus:
         # A URL longer than the old 50-char progress-label cap renders whole —
         # no invented truncation (#2642).
         long_url = "https://example.com/" + "segment/" * 8 + "page"
-        result = BrowserChannel._format_tool_status(BrowseTool.name, {"queries": [long_url]})
+        result = BrowserChannel._format_tool_status(
+            BrowseTool.name, {"items": [{"query": long_url, "looking_for": "x"}]}
+        )
         assert result == f"Reading {long_url.removeprefix('https://')}"
 
     def test_browse_with_text_query(self):
         result = BrowserChannel._format_tool_status(
-            BrowseTool.name, {"queries": ["best guitar amps"]}
+            BrowseTool.name, {"items": [{"query": "best guitar amps", "looking_for": "x"}]}
         )
         assert result == 'Searching "best guitar amps"'
 
@@ -1659,7 +1683,9 @@ class TestMakeHandleKwargs:
 
         message = IncomingMessage(sender="firefox-macbook", content="hello")
         kwargs = channel._make_handle_kwargs(message)
-        await kwargs["on_tool_start"]([("browse", {"queries": ["test query"]})])
+        await kwargs["on_tool_start"](
+            [("browse", {"items": [{"query": "test query", "looking_for": "x"}]})]
+        )
 
         channel._send_tool_status.assert_called_once()
         recipient, text = channel._send_tool_status.call_args.args
@@ -1877,7 +1903,14 @@ class TestBrowserPromptLogHandlers:
                                     "function": {
                                         "name": "browse",
                                         "arguments": json.dumps(
-                                            {"queries": ["https://example.test"], "extract": "x"}
+                                            {
+                                                "items": [
+                                                    {
+                                                        "query": "https://example.test",
+                                                        "looking_for": "x",
+                                                    }
+                                                ]
+                                            }
                                         ),
                                     },
                                 }
@@ -2026,7 +2059,14 @@ class TestBrowserPromptLogHandlers:
                                     "function": {
                                         "name": "browse",
                                         "arguments": json.dumps(
-                                            {"queries": ["https://example.test"], "extract": "x"}
+                                            {
+                                                "items": [
+                                                    {
+                                                        "query": "https://example.test",
+                                                        "looking_for": "x",
+                                                    }
+                                                ]
+                                            }
                                         ),
                                     },
                                 }

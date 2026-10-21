@@ -98,7 +98,9 @@ class MockLlmClient:
         def handler(request: dict, count: int) -> LlmResponse:
             if count == 1:
                 return self._make_tool_call_response(
-                    request, "browse", {"queries": [search_query], "extract": "the page content"}
+                    request,
+                    "browse",
+                    {"items": [{"query": search_query, "looking_for": "the page content"}]},
                 )
             return self._make_text_response(request, final_response)
 
