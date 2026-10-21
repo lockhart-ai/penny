@@ -856,7 +856,7 @@ def _seeder(case: WatchCase, reading: Reading):
         if case.stored is not None:
             memory = db.memory(_CONTAINER)
             assert memory is not None, f"the job's container {_CONTAINER!r} must exist to seed"
-            memory.write(
+            memory.write_rule_decided(
                 [EntryInput(key=_KEY, content=case.stored)],
                 author=_SEED_AUTHOR,
                 run_id=_SEED_RUN,
@@ -1171,7 +1171,7 @@ def _sign_off_seeder(case: WatchCase, reading: Reading):
     def seed(db: Database) -> None:
         base = _seeder(case, reading)
         base(db)
-        require_memory(db, _RULES).write(
+        require_memory(db, _RULES).write_rule_decided(
             [EntryInput(key=_SIGNOFF_KEY, content=_SIGNOFF_CONTENT)],
             author="user",
             run_id=seeded_run_id(_RULES),

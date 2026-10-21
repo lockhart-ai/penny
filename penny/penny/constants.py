@@ -80,26 +80,25 @@ class WriteGateOutcome(StrEnum):
     what the write path actually does, one member per reachable state:
 
     ``NEW_KEY`` — the key did not exist; the entry was written (baseline set) ·
-    ``KEY_EXISTS_CHANGED`` — the exact key existed with *different* content: the
-    observed value changed, so the write gate **auto-refreshes the stored baseline
-    itself** in place (through the update path — same validation, degeneracy screen,
-    and ``last_written_by_run_id`` stamp), and the run's only remaining job is to
-    notify.  No further call is needed — the refresh already happened, so
-    the next observation of the same value reads ``KEY_EXISTS_UNCHANGED`` (#1633) ·
+    ``KEY_EXISTS_CHANGED`` — the write resolved to an existing entry whose content
+    DIFFERS from what it held: the observed value changed, so the write gate
+    **auto-refreshes the stored baseline itself** in place (through the update
+    path — same validation, degeneracy screen, and ``last_written_by_run_id``
+    stamp), and the run's only remaining job is to notify.  No further call is
+    needed — the refresh already happened, so the next observation of the same
+    value reads ``KEY_EXISTS_UNCHANGED`` (#1633).  Reached two ways since the
+    identity ladder (#2715): the exact key with different content, and a
+    different key the ladder matched as the same thing — a merge, whose reply
+    shows the prior value and the one call that restores it ·
     ``KEY_EXISTS_UNCHANGED`` — the exact key existed with *identical* content: the
     value has not changed, so there is nothing further to do — the watch's "no
     change" signal.  It carried STOP semantics until #2385 emptied the STOP table:
     the unchanged write now returns normally and the cycle goes on to its close ·
-    ``DUPLICATE_UNCHANGED`` — the dedup disjunction matched a *different* existing key
-    AND the strict CONTENT signal fired: the stored entry already says what this write
-    says, however either is worded, so the cycle observed nothing new.  The same no-news
+    ``DUPLICATE_UNCHANGED`` — the identity ladder matched a *different* existing key
+    AND the stored entry already says what this write says, however either is worded,
+    so the cycle observed nothing new.  The same no-news
     as ``KEY_EXISTS_UNCHANGED``, reached under a different key — likewise no longer
     STOP-worthy since #2385 (#1919's split of the outcome itself stands) ·
-    ``DUPLICATE`` — the content (or a near key) collided with a *different* existing
-    key WITHOUT the content signal firing strictly: the write carries a DIFFERENT value
-    for something already stored, which is news, so it keeps the recoverable rejection
-    that binds the matched key into a ``collection_write`` call on that key and never
-    stops the run ·
     ``DEGENERATE`` — the content was rejected as degenerate (blank, punctuation
     collapse, bare URL, bail-out phrase).
 
@@ -114,7 +113,6 @@ class WriteGateOutcome(StrEnum):
     KEY_EXISTS_CHANGED = "key_exists_changed"
     KEY_EXISTS_UNCHANGED = "key_exists_unchanged"
     DUPLICATE_UNCHANGED = "duplicate_unchanged"
-    DUPLICATE = "duplicate"
     DEGENERATE = "degenerate"
     UNEXPECTED = "unexpected"
 
@@ -139,9 +137,10 @@ class WriteGateOutcome(StrEnum):
 # the declared table) and for the eval cases that read it verbatim.
 #
 # ``NEW_KEY`` / ``KEY_EXISTS_CHANGED`` never stopped (an accumulator keeps going
-# mid-script), and ``DUPLICATE`` / ``DEGENERATE`` stay surfaced-but-recoverable — a
-# divergent-value collision is NEWS about a stored entry, so stopping on it would
-# silence the change it carries.
+# mid-script), and ``DEGENERATE`` stays surfaced-but-recoverable — a rejected
+# entry can be re-written substantively on the next call.  (``DUPLICATE`` retired
+# with the three-signal rule: the identity ladder merges or writes-through a
+# look-alike pair, so there is no divergent-value collision left to reject.)
 WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
     WriteGateOutcome.KEY_EXISTS_UNCHANGED: "the value was unchanged since the last observation",
     WriteGateOutcome.DUPLICATE_UNCHANGED: (

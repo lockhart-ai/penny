@@ -9,12 +9,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal, NamedTuple
+from typing import Literal
 
 from pydantic import BaseModel
 from similarity.embeddings import normalize_unicode
-
-from penny.config_params import RuntimeParams
 
 # The change-gate outcome enum (#1587) lives in ``penny.constants`` beside its peer
 # ``RunOutcome`` (both surface on the run record and want a cycle-free leaf home);
@@ -146,29 +144,6 @@ class MemoryAlreadyExistsError(Exception):
         self.name = name
 
 
-class DedupThresholds(BaseModel):
-    """Per-signal strict + relaxed thresholds for the memory dedup rule."""
-
-    key_tcr_strict: float
-    key_tcr_relaxed: float
-    key_sim_strict: float
-    key_sim_relaxed: float
-    content_sim_strict: float
-    content_sim_relaxed: float
-
-    @classmethod
-    def from_runtime(cls, runtime: RuntimeParams) -> DedupThresholds:
-        """Read the six dedup thresholds from runtime config."""
-        return cls(
-            key_tcr_strict=runtime.MEMORY_DEDUP_KEY_TCR_STRICT,
-            key_tcr_relaxed=runtime.MEMORY_DEDUP_KEY_TCR_RELAXED,
-            key_sim_strict=runtime.MEMORY_DEDUP_KEY_SIM_STRICT,
-            key_sim_relaxed=runtime.MEMORY_DEDUP_KEY_SIM_RELAXED,
-            content_sim_strict=runtime.MEMORY_DEDUP_CONTENT_SIM_STRICT,
-            content_sim_relaxed=runtime.MEMORY_DEDUP_CONTENT_SIM_RELAXED,
-        )
-
-
 class EntryInput(BaseModel):
     """Input row for collection_write — key, content, and optional embeddings."""
 
@@ -197,19 +172,20 @@ class WriteResult(BaseModel):
     entry_id: int | None = None
     # The existing entry's key that this write resolved against — its own key for an
     # exact-key hit (``KEY_EXISTS_CHANGED`` / ``KEY_EXISTS_UNCHANGED``), or the
-    # colliding key for a ``DUPLICATE``.  Surfaces in the result so the model can
-    # pivot to ``update_entry`` when it has fresher info for the existing row.
+    # matched key of a merge the identity ladder decided (``KEY_EXISTS_CHANGED``
+    # reached under a different key).  Surfaces in the result so the model can see
+    # and reverse a wrong match.
     matched_key: str | None = None
+    # The value the matched entry held before a merge replaced it
+    # (``KEY_EXISTS_CHANGED``) — rendered verbatim in the reply alongside the one
+    # call that restores it, so a wrong identity match is reversible in one call.
+    prior_value: str | None = None
+    # The key of a shortlisted candidate the identity ladder was unsure about —
+    # the write proceeded as new, and the reply names this candidate and asks the
+    # writing model honestly whether it meant that entry instead.
+    unsure_candidate: str | None = None
     # Human-readable reason when ``outcome == WriteGateOutcome.DEGENERATE``.
     reason: str | None = None
-
-
-class EntrySide(NamedTuple):
-    """One side of a dedup pair: the key plus its key/content embeddings."""
-
-    key: str | None
-    key_vec: list[float] | None
-    content_vec: list[float] | None
 
 
 class ResolvedKind(StrEnum):

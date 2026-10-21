@@ -26,9 +26,11 @@ from penny.config import Config
 from penny.config_params import token_budget_for
 from penny.constants import PennyConstants
 from penny.database import Database
+from penny.database.memory.identity import EntryDecider
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
+from penny.llm.decision_client import DecisionClient, decision_api_url
 from penny.llm.models import LlmError, LlmMessage, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -265,6 +267,15 @@ class Agent:
 
         self._model_client = model_client
         self._embedding_model_client = embedding_model_client
+        # The entry-identity ladder's decision step, built once from config at
+        # startup: a client when LLM_DECISION_MODEL is set, the named degraded
+        # mode ("entry matching falls back to asking") when not — never read from
+        # ambient state, threaded to the write tools as a required parameter.
+        self._decider = EntryDecider(
+            DecisionClient(model=config.llm_decision_model, api_url=decision_api_url(config))
+            if config.llm_decision_model
+            else None
+        )
 
         self._browse_tool: BrowseTool | None = None
         self._browse_provider: Callable[[], Any] | None = None
@@ -1607,6 +1618,7 @@ class Agent:
             agent_name=scope or self.name,
             scope=scope,
             run_id=run_id,
+            decider=self._decider,
             include_lifecycle=self._include_lifecycle_tools(),
         )
         tools.append(self._build_browse_tool(author=self.name))

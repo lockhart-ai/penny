@@ -93,7 +93,7 @@ _SEEDED_TOKENS = tuple(
 def _seed_rules(db: Database, entries: tuple[tuple[str, str], ...]) -> None:
     """Lay the case's rules down through the store's own write path, under the keys
     the section will render — a rule is an entry like any other."""
-    require_memory(db, RULES).write(
+    require_memory(db, RULES).write_rule_decided(
         [EntryInput(key=key, content=content) for key, content in entries],
         author="user",
         run_id=seeded_run_id(RULES),

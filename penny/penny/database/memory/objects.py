@@ -41,6 +41,7 @@ from typing import Any, cast
 
 import numpy as np
 from pydantic import BaseModel, Field, computed_field
+from similarity.identity import KeyRule, pair_rule_verdict
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
@@ -54,11 +55,15 @@ from penny.constants import (
     WriteGateOutcome,
 )
 from penny.database.memory import _similarity as sim
+from penny.database.memory.identity import (
+    EntryDecision,
+    EntryGiven,
+    plan_entries,
+    rule_only_decisions,
+)
 from penny.database.memory.journal import CycleJournal
 from penny.database.memory.types import (
-    DedupThresholds,
     EntryInput,
-    EntrySide,
     LogEntryInput,
     MemoryNotFoundError,
     MemoryType,
@@ -168,9 +173,24 @@ class Memory:
         self,
         entries: list[EntryInput],
         author: str,
-        thresholds: DedupThresholds | None = None,
         run_id: str | None = None,
+        *,
+        decisions: list[EntryDecision],
     ) -> list[WriteResult]:
+        self._refuse_collection_op()
+        return []
+
+    def identity_givens(self) -> list[EntryGiven]:
+        """Every stored entry as the identity ladder sees it — collection-only
+        (a log's entries are keyless streams, not identity candidates)."""
+        self._refuse_collection_op()
+        return []
+
+    def write_rule_decided(
+        self, entries: list[EntryInput], author: str, run_id: str | None = None
+    ) -> list[WriteResult]:
+        """The manual write path — rules-only identity, no decision model in the
+        loop (collection-only; see ``Collection.write_rule_decided``)."""
         self._refuse_collection_op()
         return []
 
@@ -335,20 +355,6 @@ def _content_unchanged(stored: str, incoming: str) -> bool:
     return stored.strip() == incoming.strip()
 
 
-def _collision_outcome(matched: sim.DuplicateMatch) -> WriteGateOutcome:
-    """Which of the two collision outcomes a dedup match is (#1919).
-
-    The dedup disjunction fires on the key as readily as on the value, so a match alone
-    says only that this write lands on an entry that already exists — the question the
-    gate has to answer is whether it says anything NEW about it.  A strict CONTENT match
-    says it does not, and that is the same no-news the exact-key path reads, reached
-    under a different key.  Anything else is a stored entry this write has a different
-    value for, which is news and keeps the recoverable rejection."""
-    if matched.same_value:
-        return WriteGateOutcome.DUPLICATE_UNCHANGED
-    return WriteGateOutcome.DUPLICATE
-
-
 class Collection(Memory):
     """A keyed collection — similarity-deduped writes, exact-key lookup.
 
@@ -449,31 +455,70 @@ class Collection(Memory):
         self,
         entries: list[EntryInput],
         author: str,
-        thresholds: DedupThresholds | None = None,
         run_id: str | None = None,
+        *,
+        decisions: list[EntryDecision],
     ) -> list[WriteResult]:
-        """Write entries with per-entry similarity dedup.  One ``WriteResult``
-        per input; dedup runs against the existing corpus using the configured
-        (or default) thresholds.
+        """Write entries through the change-gate, applying the identity ladder's
+        decisions — one ``WriteResult`` per input.
 
-        ``run_id`` (the writing run, threaded as a parameter — no ambient state)
-        stamps ``created_by_run_id`` and ``last_written_by_run_id`` on each new
-        row, so an entry cites the run that produced it (#1560).  A ``KEY_EXISTS_CHANGED``
-        entry auto-refreshes its stored baseline in place through the same update
-        path (#1633) — so it too advances ``last_written_by_run_id`` and counts as a
-        change for the notify below."""
-        thresholds = thresholds or DedupThresholds.from_runtime(self._runtime)
-        existing = self._entries_with_vectors()
+        ``decisions`` (from ``penny.database.memory.identity``, one per entry, in
+        order) are a REQUIRED parameter: the caller ran the ladder — rules,
+        shortlist, decision model or its named degraded mode — and this write
+        only applies what was decided.  ``run_id`` (the writing run, threaded as
+        a parameter — no ambient state) stamps ``created_by_run_id`` and
+        ``last_written_by_run_id`` on each new row, so an entry cites the run
+        that produced it (#1560).  A ``KEY_EXISTS_CHANGED`` entry — an exact-key
+        change or a ladder merge — auto-refreshes the stored baseline in place
+        through the same update path (#1633) — so it too advances
+        ``last_written_by_run_id`` and counts as a change for the notify below.
+        """
+        if len(decisions) != len(entries):
+            raise ValueError(
+                f"one identity decision per entry required: {len(decisions)} for {len(entries)}"
+            )
         results: list[WriteResult] = []
+        written: list[EntryGiven] = []
         with self._session() as session:
-            for entry in entries:
-                results.append(
-                    self._write_one(session, entry, author, existing, thresholds, run_id)
-                )
+            for entry, decision in zip(entries, decisions, strict=True):
+                results.append(self._write_one(session, entry, author, decision, written, run_id))
             session.commit()
         if any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results):
             self._notify()
         return results
+
+    def identity_givens(self) -> list[EntryGiven]:
+        """Every stored entry as the identity ladder sees it, oldest first so the
+        rules' first match is deterministic across runs."""
+        with self._session() as session:
+            rows = list(
+                session.exec(
+                    select(MemoryEntry)
+                    .where(MemoryEntry.memory_name == self.name)
+                    .order_by(col(MemoryEntry.created_at).asc())
+                ).all()
+            )
+        return [
+            EntryGiven(
+                row.key,
+                row.content,
+                sim.maybe_deserialize(row.key_embedding),
+                sim.maybe_deserialize(row.content_embedding),
+            )
+            for row in rows
+        ]
+
+    def write_rule_decided(
+        self, entries: list[EntryInput], author: str, run_id: str | None = None
+    ) -> list[WriteResult]:
+        """The manual write path (the addon and iOS entry writes): identity by
+        the deterministic rules only, no decision model in the loop.  What the
+        rules cannot settle is written as new — a human is driving the UI and
+        will see both entries on refresh."""
+        givens = self.identity_givens()
+        plans = plan_entries(entries, givens)
+        decisions = rule_only_decisions(plans, entries, givens)
+        return self.write(entries, author, run_id=run_id, decisions=decisions)
 
     def update(
         self, key: str, content: str, author: str, run_id: str | None = None
@@ -559,53 +604,22 @@ class Collection(Memory):
             ).all()
         )
 
-    def _entries_with_vectors(self) -> list[EntrySide]:
-        """Every entry as an ``EntrySide`` (key + key/content vectors) for dedup."""
-        with self._session() as session:
-            rows = list(
-                session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == self.name)).all()
-            )
-        return [
-            EntrySide(
-                row.key,
-                sim.maybe_deserialize(row.key_embedding),
-                sim.maybe_deserialize(row.content_embedding),
-            )
-            for row in rows
-        ]
-
     def _write_one(
         self,
         session: Session,
         entry: EntryInput,
         author: str,
-        existing: list[EntrySide],
-        thresholds: DedupThresholds,
-        run_id: str | None = None,
+        decision: EntryDecision,
+        written: list[EntryGiven],
+        run_id: str | None,
     ) -> WriteResult:
         """Classify one write into the closed ``WriteGateOutcome`` union — the
-        change-gate at the write chokepoint (#1587).  The comparison is
-        deterministic and total; nothing here is a model judgment.  The gate decides
-        the non-write outcomes; only a genuinely new key is persisted."""
-        gated = self._gate_outcome(session, entry, author, existing, thresholds, run_id)
-        if gated is not None:
-            return gated
-        return self._insert_new_entry(session, entry, author, existing, run_id)
-
-    def _gate_outcome(
-        self,
-        session: Session,
-        entry: EntryInput,
-        author: str,
-        existing: list[EntrySide],
-        thresholds: DedupThresholds,
-        run_id: str | None,
-    ) -> WriteResult | None:
-        """The change-gate itself: the non-NEW_KEY outcome for an entry that is NOT
-        newly inserted — DEGENERATE, KEY_EXISTS_CHANGED/UNCHANGED (an exact-key hit
-        compared by value: same value → never news, different value → news, decided
-        deterministically, not by an embedding threshold), or DUPLICATE — or ``None``
-        when it's a genuinely new key to persist.
+        change-gate at the write chokepoint (#1587).  Degenerate content and the
+        exact-key path are the gate's own deterministic comparisons; everything
+        else APPLIES the identity decision the caller's ladder produced
+        (``penny.database.memory.identity``) — merge into the matched entry,
+        report the value unchanged, or insert — with the in-batch rules guard
+        catching a later entry that collides with one this batch just wrote.
 
         SINGLE-FIELD DISCIPLINE: the compared content must be one value per key;
         cramming a volatile sibling (a countdown, a timestamp) into the same body
@@ -620,15 +634,120 @@ class Collection(Memory):
         stored = self._rows_by_key(session, self.name, entry.key)
         if stored:
             return self._exact_key_outcome(session, stored, entry, author, run_id)
-        candidate = EntrySide(entry.key, entry.key_embedding, entry.content_embedding)
-        matched = sim.is_duplicate(candidate, existing, thresholds)
-        if matched is not None:
+        if decision.action == "merge":
+            return self._apply_merge(session, entry, author, decision, written, run_id)
+        if decision.action == "unchanged":
+            return self._apply_unchanged(session, entry, author, decision, run_id)
+        return self._apply_new(session, entry, author, decision, written, run_id)
+
+    def _apply_merge(
+        self,
+        session: Session,
+        entry: EntryInput,
+        author: str,
+        decision: EntryDecision,
+        written: list[EntryGiven],
+        run_id: str | None,
+    ) -> WriteResult:
+        """The merge: the ladder matched this write to an existing entry holding a
+        DIFFERENT value — replace that value in place through the shared update
+        path (#1633), the prior journaled so a wrong match is reversible.  A
+        merge target that vanished between the ladder's read and this write
+        (a concurrent write) degrades honestly to a fresh insert, logged."""
+        matched = decision.matched_key
+        assert matched is not None  # a merge decision always names its target
+        rows = self._rows_by_key(session, self.name, matched)
+        if not rows:
+            logger.warning(
+                "collection write: merge target '%s' vanished; writing '%s' as new",
+                matched,
+                entry.key,
+            )
+            return self._apply_new(session, entry, author, decision, written, run_id)
+        self._journal_prior(matched, rows)
+        prior = rows[0].content
+        self._apply_content(session, rows, entry.content, author, run_id)
+        return WriteResult(
+            key=entry.key,
+            outcome=WriteGateOutcome.KEY_EXISTS_CHANGED,
+            matched_key=matched,
+            prior_value=prior,
+        )
+
+    def _apply_unchanged(
+        self,
+        session: Session,
+        entry: EntryInput,
+        author: str,
+        decision: EntryDecision,
+        run_id: str | None,
+    ) -> WriteResult:
+        """The no-news outcome: the ladder matched an entry that already says what
+        this write says.  Under the write's own key that is ``KEY_EXISTS_UNCHANGED``
+        (the watch's signal); under a different key, ``DUPLICATE_UNCHANGED``
+        (#1919).  A match that vanished between the ladder's read and this write
+        degrades honestly to a fresh insert, logged."""
+        matched = decision.matched_key
+        assert matched is not None  # an unchanged decision always names its match
+        rows = self._rows_by_key(session, self.name, matched)
+        if not rows:
+            logger.warning(
+                "collection write: unchanged target '%s' vanished; writing '%s' as new",
+                matched,
+                entry.key,
+            )
+            return self._apply_new(session, entry, author, decision, [], run_id)
+        outcome = (
+            WriteGateOutcome.KEY_EXISTS_UNCHANGED
+            if matched == entry.key
+            else WriteGateOutcome.DUPLICATE_UNCHANGED
+        )
+        return WriteResult(key=entry.key, outcome=outcome, matched_key=matched)
+
+    def _apply_new(
+        self,
+        session: Session,
+        entry: EntryInput,
+        author: str,
+        decision: EntryDecision,
+        written: list[EntryGiven],
+        run_id: str | None,
+    ) -> WriteResult:
+        """Write-through: the ladder settled this entry as new (or was unsure —
+        the write proceeds and the reply asks honestly).  The in-batch rules
+        guard re-runs the deterministic rules against what THIS batch already
+        wrote, so a look-alike arriving later in the same batch still merges or
+        reads as unchanged — the decisions were planned against the pre-batch
+        store."""
+        for prior in written:
+            prior_key = prior.key or ""
+            rule = pair_rule_verdict(entry.key, prior_key, entry.content, prior.content)
+            if rule is KeyRule.DIFFERENT or rule is None:
+                continue
+            rows = self._rows_by_key(session, self.name, prior_key)
+            if not rows:
+                continue
+            if _content_unchanged(rows[0].content, entry.content):
+                outcome = (
+                    WriteGateOutcome.KEY_EXISTS_UNCHANGED
+                    if prior_key == entry.key
+                    else WriteGateOutcome.DUPLICATE_UNCHANGED
+                )
+                return WriteResult(key=entry.key, outcome=outcome, matched_key=prior_key)
+            self._journal_prior(prior_key, rows)
+            prior = rows[0].content
+            self._apply_content(session, rows, entry.content, author, run_id)
             return WriteResult(
                 key=entry.key,
-                outcome=_collision_outcome(matched),
-                matched_key=matched.side.key,
+                outcome=WriteGateOutcome.KEY_EXISTS_CHANGED,
+                matched_key=prior_key,
+                prior_value=prior,
             )
-        return None
+        result = self._insert_new_entry(session, entry, author, run_id, decision)
+        written.append(
+            EntryGiven(entry.key, entry.content, entry.key_embedding, entry.content_embedding)
+        )
+        return result
 
     def _exact_key_outcome(
         self,
@@ -639,10 +758,11 @@ class Collection(Memory):
         run_id: str | None,
     ) -> WriteResult:
         """The exact-key hit — compared by value, not embedding.  Identical value →
-        KEY_EXISTS_UNCHANGED (the watch's "no change" signal, STOP-worthy).  Different
+        KEY_EXISTS_UNCHANGED (the watch's "no change" signal).  Different
         value → KEY_EXISTS_CHANGED: the gate **auto-refreshes the stored baseline
         itself** in place through the shared update path (#1633), so the model runs no
-        further call.  A degenerate new value never
+        further call — the reply shows the prior and the one call that restores it.
+        A degenerate new value never
         reaches here — it classified DEGENERATE upstream — so the refresh only ever
         stores screened content."""
         if _content_unchanged(stored[0].content, entry.content):
@@ -650,9 +770,13 @@ class Collection(Memory):
                 key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_UNCHANGED, matched_key=entry.key
             )
         self._journal_prior(entry.key, stored)
+        prior = stored[0].content
         self._apply_content(session, stored, entry.content, author, run_id)
         return WriteResult(
-            key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_CHANGED, matched_key=entry.key
+            key=entry.key,
+            outcome=WriteGateOutcome.KEY_EXISTS_CHANGED,
+            matched_key=entry.key,
+            prior_value=prior,
         )
 
     def _insert_new_entry(
@@ -660,11 +784,12 @@ class Collection(Memory):
         session: Session,
         entry: EntryInput,
         author: str,
-        existing: list[EntrySide],
         run_id: str | None,
+        decision: EntryDecision,
     ) -> WriteResult:
-        """Persist a genuinely new key (NEW_KEY) and record it for in-batch dedup so
-        a later entry in the same batch dedups against it.
+        """Persist a genuinely new key (NEW_KEY) — the ladder settled it as new,
+        or was unsure and the write proceeds (the reply carries the honest
+        question via ``unsure_candidate``).
 
         Its prior state is the EMPTY one — the gate only reaches here when the key had
         no rows — so an unhealthy end deletes what this write inserted (#1936)."""
@@ -682,7 +807,12 @@ class Collection(Memory):
         )
         session.add(row)
         session.flush()
-        existing.append(EntrySide(entry.key, entry.key_embedding, entry.content_embedding))
+        return WriteResult(
+            key=entry.key,
+            outcome=WriteGateOutcome.NEW_KEY,
+            entry_id=row.id,
+            unsure_candidate=decision.unsure_candidate,
+        )
         return WriteResult(key=entry.key, outcome=WriteGateOutcome.NEW_KEY, entry_id=row.id)
 
 

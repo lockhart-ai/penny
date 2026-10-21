@@ -72,7 +72,7 @@ async def test_basic_message_flow(
         # collections this test made.
         # Active memories rendered in alphabetical order: "playlists" < "tips".
         penny.db.memories.create_collection("playlists", "favorite playlists")
-        penny.db.memory("playlists").write(
+        penny.db.memory("playlists").write_rule_decided(
             [EntryInput(key="morning", content="prog rock")],
             author="user",
         )
@@ -83,12 +83,12 @@ async def test_basic_message_flow(
         # Off and archived memories are seeded with entries so the verbatim
         # prompt assertion below proves they are filtered out of ambient recall.
         penny.db.memories.create_collection("secrets", "hidden")
-        penny.db.memory("secrets").write(
+        penny.db.memory("secrets").write_rule_decided(
             [EntryInput(key="do-not-share", content="classified")],
             author="user",
         )
         penny.db.memories.create_collection("old-facts", "archived")
-        penny.db.memory("old-facts").write(
+        penny.db.memory("old-facts").write_rule_decided(
             [EntryInput(key="stale", content="no longer relevant")],
             author="user",
         )
@@ -424,7 +424,7 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
 
     async with running_penny(test_config) as penny:
         penny.db.memories.create_collection("lantern-prices", "lantern prices")
-        require_memory(penny.db, "lantern-prices").write(
+        require_memory(penny.db, "lantern-prices").write_rule_decided(
             [EntryInput(key="keel lantern", content="$18")], author="user"
         )
 
@@ -1061,7 +1061,7 @@ async def test_startup_backfill_fills_missing_key_vector(
         # A non-seeded collection so the gap row is the only pending entry.
         penny.db.memories.create_collection("backfill-gap", "gap fixture")
         # Content vector present, key vector NULL (the gap state).
-        penny.db.memory("backfill-gap").write(
+        penny.db.memory("backfill-gap").write_rule_decided(
             [EntryInput(key="dark roast", content="loves dark roast", content_embedding=match_vec)],
             author="system",
         )

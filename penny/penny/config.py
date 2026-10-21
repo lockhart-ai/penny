@@ -165,6 +165,8 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_embedding_model": os.getenv("LLM_EMBEDDING_MODEL"),
         "llm_embedding_api_url": os.getenv("LLM_EMBEDDING_API_URL"),
         "llm_embedding_api_key": os.getenv("LLM_EMBEDDING_API_KEY"),
+        "llm_decision_model": os.getenv("LLM_DECISION_MODEL"),
+        "llm_decision_api_url": os.getenv("LLM_DECISION_API_URL"),
         "image_api_url": os.getenv("LLM_IMAGE_API_URL", "http://host.docker.internal:11434"),
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "db_path": os.getenv("DB_PATH", "/penny/data/penny/penny.db"),
@@ -246,6 +248,11 @@ class Config:
     llm_image_model: str | None = None  # Image generation model (e.g., x/z-image-turbo)
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model
+    # Decision model for the entry-identity ladder (#2715) — optional; unset runs
+    # the NAMED degraded mode ("entry matching falls back to asking"), decided at
+    # the construction site, never silently.
+    llm_decision_model: str | None = None
+    llm_decision_api_url: str | None = None  # Defaults to the embedding endpoint's host
     # Which upstream to PIN when the chat endpoint is a routing gateway serving one model
     # from several providers. A hard pin, fallbacks off: every call goes to exactly this
     # provider, and which provider answered is still recorded per call.

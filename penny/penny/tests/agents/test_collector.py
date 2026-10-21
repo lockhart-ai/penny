@@ -46,6 +46,7 @@ from penny.constants import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
+from penny.database.memory.identity import EntryDecider
 from penny.database.models import MemoryRow, SendQueueItem
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
@@ -363,9 +364,14 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
     """The chat-style surface keeps the lifecycle tier; the collector surface
     drops it.  The distinction is a single declared flag, not a per-tool branch."""
     _, db = _make_collector(test_config, tmp_path)
-    chat_names = {t.name for t in build_memory_tools(db, _llm_client(), "chat")}
+    chat_names = {
+        t.name for t in build_memory_tools(db, _llm_client(), "chat", decider=EntryDecider(None))
+    }
     collector_names = {
-        t.name for t in build_memory_tools(db, _llm_client(), "collector", include_lifecycle=False)
+        t.name
+        for t in build_memory_tools(
+            db, _llm_client(), "collector", decider=EntryDecider(None), include_lifecycle=False
+        )
     }
     assert chat_names >= _LIFECYCLE_TOOL_NAMES
     assert collector_names.isdisjoint(_LIFECYCLE_TOOL_NAMES)
@@ -968,7 +974,7 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
     reads its own past keys and files a new one, which is the same read."""
     collector, db = _make_collector(test_config, tmp_path)
     await _configure_timetable_collection(db)
-    require_memory(db, "ferry-departures").write(
+    require_memory(db, "ferry-departures").write_rule_decided(
         [
             EntryInput(key="dawn sailing", content="06:40 from the north pier"),
             EntryInput(key="last return", content="21:15 from the island"),
@@ -1043,7 +1049,7 @@ async def test_holdings_beyond_the_budget_state_how_many_are_not_shown(test_conf
     collection = require_memory(db, "ferry-departures")
     limit = PennyConstants.COLLECTOR_HOLDINGS_LIMIT
     for index in range(1, limit + 3):
-        collection.write(
+        collection.write_rule_decided(
             [EntryInput(key=f"day-{index:02d}", content=f"reading {index}")], author="collector"
         )
 
@@ -1125,7 +1131,7 @@ def _seed_notify_collection(
         schedule="FREQ=HOURLY",
         notify=notify,
     )
-    require_memory(db, "indie-metroidvanias").write(
+    require_memory(db, "indie-metroidvanias").write_rule_decided(
         [
             EntryInput(
                 key=_NOTIFY_SEED_KEY,

@@ -86,7 +86,7 @@ _SEEDED_RULES = (_SOURCE_URL_RULE, _READ_FIRST_RULE)
 def _seed_rules(db: Database) -> None:
     """Lay the case's rules down through the store's own write path — a rule is
     an entry like any other (``test_standing_rules.py``'s seeding, two rules)."""
-    require_memory(db, RULES).write(
+    require_memory(db, RULES).write_rule_decided(
         [EntryInput(key=key, content=content) for key, content in _SEEDED_RULES],
         author="user",
         run_id=seeded_run_id(RULES),

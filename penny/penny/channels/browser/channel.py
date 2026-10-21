@@ -1186,8 +1186,9 @@ class BrowserChannel(MessageChannel):
     def _handle_entry_create(self, data: dict) -> None:
         """Manually add a single entry to a collection (bypasses the
         collector — useful when the user wants to record something the
-        auto-extractor missed).  Dedup still runs; duplicates are silently
-        dropped — the addon will see the existing entry on refresh."""
+        auto-extractor missed).  Identity runs by the deterministic rules only —
+        no decision model in this loop — so a rules-same entry is merged or
+        reported unchanged, and the addon will see the stored entry on refresh."""
         try:
             req = BrowserEntryCreate(**data)
         except ValidationError:
@@ -1198,7 +1199,7 @@ class BrowserChannel(MessageChannel):
             logger.warning("entry_create on missing memory %s", req.memory)
             return
         try:
-            memory.write(
+            memory.write_rule_decided(
                 [EntryInput(key=req.key, content=req.content)],
                 author=self._ADDON_ENTRY_AUTHOR,
             )

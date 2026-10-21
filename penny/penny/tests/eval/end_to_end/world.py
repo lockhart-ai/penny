@@ -214,7 +214,7 @@ def seed_known_routine(
         notify=notify,
         created_by_run_id=run_id,
     )
-    require_memory(db, collection).write(
+    require_memory(db, collection).write_rule_decided(
         [EntryInput(key=entry_key, content=entry_value)], author="chat", run_id=run_id
     )
     db.memories.link_source_message(run_id, ask_id)
@@ -362,7 +362,7 @@ def _stand_up(db: Database, job: StandingJob) -> None:
         run_id=_STOOD_UP_RUN,
     )
     if job.holdings:
-        require_memory(db, job.container).write(
+        require_memory(db, job.container).write_rule_decided(
             [EntryInput(key=key, content=content) for key, content in job.holdings],
             author=PennyConstants.MessageAuthor.COLLECTOR,
             run_id=_STOOD_UP_RUN,
@@ -401,7 +401,7 @@ def seed_job_cycle(
     db.messages.set_run_outcome(run_id, outcome.value, summary)
     if wrote is not None:
         key, content = wrote
-        require_memory(db, container).write(
+        require_memory(db, container).write_rule_decided(
             [EntryInput(key=key, content=content)],
             author=PennyConstants.MessageAuthor.COLLECTOR,
             run_id=run_id,

@@ -14,6 +14,7 @@ import pytest
 
 from penny.config import Config
 from penny.llm.client import LlmClient
+from penny.llm.decision_client import DecisionClient
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmConnectionError, LlmFault, LlmResponseError, LlmTimeoutError
 from penny.preflight import CheckStatus, Preflight, PreflightCheck, PreflightReport
@@ -75,6 +76,7 @@ def _build_preflight(
     embed_specific_available: list[str] | None = None,
     embed_specific_error: Exception | None = None,
     image_available: list[str] | None = None,
+    decision_client: DecisionClient | None = None,
     browser_enabled: bool = False,
     browser_connected: bool = False,
     resolved_channel_type: str | None = None,
@@ -110,6 +112,7 @@ def _build_preflight(
         config=config,
         model_client=model_client,
         embedding_client=embedding_client,
+        decision_client=decision_client,
         image_client=image_client,
         browser_enabled=browser_enabled,
         browser_connected=browser_connected,

@@ -280,13 +280,13 @@ def seed_long_recipe_list(db: Database) -> None:
         created_by_run_id=seeded_run_id(RECIPE_LIST),
     )
     memory = require_memory(db, RECIPE_LIST)
-    memory.write(
+    memory.write_rule_decided(
         [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in LIME_ENTRIES],
         author="user",
         run_id=seeded_run_id(RECIPE_LIST),
     )
     filler = [_filler_recipe(index, dish) for index, dish in enumerate(_FILLER_DISHES)]
-    memory.write(
+    memory.write_rule_decided(
         [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in filler],
         author="user",
         run_id=seeded_run_id(f"{RECIPE_LIST}-filler"),

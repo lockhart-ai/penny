@@ -70,7 +70,7 @@ def _seed_job(db: Database, name: str, description: str, entries: Sequence[Entry
     what the case wrote and nothing a neighbour run left."""
     run_id = seeded_run_id(name)
     db.memories.create_collection(name, description, notify=True)
-    require_memory(db, name).write(list(entries), author="user", run_id=run_id)
+    require_memory(db, name).write_rule_decided(list(entries), author="user", run_id=run_id)
     return run_id
 
 

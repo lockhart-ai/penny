@@ -23,7 +23,7 @@ from penny.constants import (
 )
 from penny.database import Database
 from penny.database.memory import (
-    DedupThresholds,
+    EntryDecision,
     EntryInput,
     LogEntryInput,
     MemoryNotFoundError,
@@ -362,7 +362,7 @@ Recent changes (newest first):
         assert db.memories.get("board‑games").name == "board-games"
 
         # Write via unicode name lands in the same collection — no duplicate created
-        db.memories.memory("board‑games").write(
+        db.memories.memory("board‑games").write_rule_decided(
             [EntryInput(key="catan", content="Catan is a gateway classic")],
             author="test",
         )
@@ -430,7 +430,7 @@ class TestCollectionWrites:
     def test_write_returns_entry_ids(self, db):
         db.memories.create_collection("likes", "positive prefs")
 
-        results = db.memories.memory("likes").write(
+        results = db.memories.memory("likes").write_rule_decided(
             [
                 EntryInput(
                     key="dark roast coffee",
@@ -451,37 +451,50 @@ class TestCollectionWrites:
         assert all(r.entry_id is not None for r in results)
         assert {r.key for r in results} == {"dark roast coffee", "cold brew"}
 
-    def test_write_dedups_on_key_embedding(self, db):
+    def test_write_merges_when_the_decider_says_new_value(self, db):
+        """A look-alike pair the rules cannot settle goes to the decision model; a
+        ``new_value`` verdict MERGES — the stored value replaced in place, the
+        prior reported (``matched_key`` is the entry's OWN key, ``prior_value``
+        what it held), so a wrong match is visible and reversible (#2715)."""
         db.memories.create_collection("likes", "positive prefs")
-        shared_key_vec = _unit_vec(0)
 
-        db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="dark roast",
-                    content="dark roast",
-                    key_embedding=shared_key_vec,
-                    content_embedding=_unit_vec(1),
-                )
-            ],
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="dark roast", content="dark roast")],
             author="preference-extractor",
         )
         results = db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="dark roast coffee",
-                    content="totally different body",
-                    key_embedding=shared_key_vec,
-                    content_embedding=_unit_vec(5),
-                )
+            [EntryInput(key="dark roast coffee", content="totally different body")],
+            author="preference-extractor",
+            decisions=[
+                EntryDecision(key="dark roast coffee", action="merge", matched_key="dark roast")
             ],
+        )
+        assert results[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
+        assert results[0].entry_id is None
+        assert results[0].matched_key == "dark roast"
+        assert results[0].prior_value == "dark roast"
+        entries = db.memories.memory("likes").read_all()
+        assert len(entries) == 1
+        assert entries[0].key == "dark roast"
+        assert entries[0].content == "totally different body"
+
+    def test_write_reports_unchanged_when_the_decider_says_same_value(self, db):
+        """A ``same_value`` verdict is the no-news twin under a different key —
+        the value is already recorded, nothing is written (#1919's split, now
+        decided by the ladder instead of the strict content signal)."""
+        db.memories.create_collection("likes", "positive prefs")
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="dark roast", content="dark roast")],
             author="preference-extractor",
         )
-        assert results[0].outcome == WriteGateOutcome.DUPLICATE
-        assert results[0].entry_id is None
-        # ``matched_key`` is the *existing* entry's key — what the model
-        # should pivot to when calling ``update_entry``, not the rejected
-        # candidate's own key.
+        results = db.memories.memory("likes").write(
+            [EntryInput(key="dark roast coffee", content="dark roast")],
+            author="preference-extractor",
+            decisions=[
+                EntryDecision(key="dark roast coffee", action="unchanged", matched_key="dark roast")
+            ],
+        )
+        assert results[0].outcome == WriteGateOutcome.DUPLICATE_UNCHANGED
         assert results[0].matched_key == "dark roast"
         assert len(db.memories.memory("likes").read_all()) == 1
 
@@ -495,7 +508,7 @@ class TestCollectionWrites:
         db.memories.create_collection("likes", "positive prefs")
         shared_content = _unit_vec(4)
 
-        db.memories.memory("likes").write(
+        db.memories.memory("likes").write_rule_decided(
             [
                 EntryInput(
                     key="first key",
@@ -506,7 +519,7 @@ class TestCollectionWrites:
             ],
             author="preference-extractor",
         )
-        results = db.memories.memory("likes").write(
+        results = db.memories.memory("likes").write_rule_decided(
             [
                 EntryInput(
                     key="different key entirely",
@@ -523,55 +536,61 @@ class TestCollectionWrites:
         assert results[0].matched_key == "first key"
         assert len(db.memories.memory("likes").read_all()) == 1
 
-    def test_write_on_a_near_key_with_a_different_value_stays_recoverable(self, db):
-        """The other side of the #1919 split: the key collides but the CONTENT signal
-        does not fire strictly, so this write carries a DIFFERENT value for something
-        already stored — news about that entry, not an absence of news.
-
-        It must stay ``DUPLICATE`` (recoverable, never STOP-worthy): "the release moved
-        to June" arriving under a reworded key is exactly this shape, and stopping the
-        cycle on it would silence the change it carries."""
+    def test_write_on_an_unsettled_pair_without_a_model_writes_through_and_asks(self, db):
+        """The named degraded mode (no decision model configured): a pair the
+        rules cannot settle — "the release moved to June" arriving under a reworded
+        key — is WRITTEN as new (unsure is treated as different; a wrong
+        "different" leaves a visible duplicate, a wrong "same" loses a write),
+        and the result names the shortlisted candidate so the reply can ask the
+        writing model honestly whether it meant that entry (#2715)."""
         db.memories.create_collection("watch", "a page watch")
-        shared_key_vec = _unit_vec(2)
 
-        db.memories.memory("watch").write(
+        db.memories.memory("watch").write_rule_decided(
             [
                 EntryInput(
                     key="mistforge release",
                     content="Mistforge ships in March",
-                    key_embedding=shared_key_vec,
+                    key_embedding=_unit_vec(0),
                     content_embedding=_unit_vec(1),
                 )
             ],
             author="collector",
         )
-        results = db.memories.memory("watch").write(
+        results = db.memories.memory("watch").write_rule_decided(
             [
                 EntryInput(
                     key="mistforge release date",
                     content="Mistforge delayed to June",
-                    key_embedding=shared_key_vec,
-                    content_embedding=_unit_vec(5),
+                    key_embedding=_unit_vec(0),
+                    content_embedding=_unit_vec(1),
                 )
             ],
             author="collector",
         )
-        assert results[0].outcome == WriteGateOutcome.DUPLICATE
-        assert results[0].outcome not in WRITE_GATE_STOP_REASONS
-        assert results[0].matched_key == "mistforge release"
+        assert results[0].outcome == WriteGateOutcome.NEW_KEY
+        assert results[0].unsure_candidate == "mistforge release"
+        assert len(db.memories.memory("watch").read_all()) == 2
 
-    def test_write_without_embeddings_always_accepts(self, db):
+    def test_write_without_embeddings_settles_by_the_rules(self, db):
+        """No embeddings at all: the rules still run — identical content is a
+        repeat (no-news), a genuinely different entry is written as new."""
         db.memories.create_collection("likes", "positive prefs")
 
-        first = db.memories.memory("likes").write(
+        first = db.memories.memory("likes").write_rule_decided(
             [EntryInput(key="a", content="hello")],
             author="chat",
         )
-        second = db.memories.memory("likes").write(
+        repeat = db.memories.memory("likes").write_rule_decided(
             [EntryInput(key="b", content="hello")],
             author="chat",
         )
+        second = db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="b", content="a different thing")],
+            author="chat",
+        )
         assert first[0].outcome == WriteGateOutcome.NEW_KEY
+        assert repeat[0].outcome == WriteGateOutcome.DUPLICATE_UNCHANGED
+        assert repeat[0].matched_key == "a"
         assert second[0].outcome == WriteGateOutcome.NEW_KEY
         assert len(db.memories.memory("likes").read_all()) == 2
 
@@ -582,10 +601,10 @@ class TestCollectionWrites:
         (a collection is new-keys-only); ``matched_key`` binds the existing key.
         Whitespace around the value doesn't count as a change."""
         db.memories.create_collection("watch", "x")
-        db.memories.memory("watch").write(
+        db.memories.memory("watch").write_rule_decided(
             [EntryInput(key="price", content="$42")], author="collector"
         )
-        again = db.memories.memory("watch").write(
+        again = db.memories.memory("watch").write_rule_decided(
             [EntryInput(key="price", content="  $42 ")], author="collector"
         )
         assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
@@ -602,10 +621,10 @@ class TestCollectionWrites:
         existing key.  This kills the last prose gate: no dangling ``update_entry``
         for the model to run."""
         db.memories.create_collection("watch", "x")
-        db.memories.memory("watch").write(
+        db.memories.memory("watch").write_rule_decided(
             [EntryInput(key="price", content="$42")], author="collector", run_id="run-baseline"
         )
-        changed = db.memories.memory("watch").write(
+        changed = db.memories.memory("watch").write_rule_decided(
             [EntryInput(key="price", content="$40")], author="refresh", run_id="run-refresh"
         )
         assert changed[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
@@ -619,14 +638,14 @@ class TestCollectionWrites:
         assert rows[0].created_by_run_id == "run-baseline"
         assert rows[0].last_written_by_run_id == "run-refresh"
         # The refreshed value now reads as UNCHANGED — changed once, then quiet.
-        again = db.memories.memory("watch").write(
+        again = db.memories.memory("watch").write_rule_decided(
             [EntryInput(key="price", content="$40")], author="refresh", run_id="run-again"
         )
         assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
 
     def test_update_replaces_content(self, db):
         db.memories.create_collection("likes", "positive prefs")
-        db.memories.memory("likes").write(
+        db.memories.memory("likes").write_rule_decided(
             [EntryInput(key="k", content="old body")],
             author="chat",
             run_id="run-create",
@@ -658,7 +677,7 @@ class TestCollectionWrites:
         db.memories.create_collection("likes", "positive prefs")
         # A key that genuinely contains enclosing brackets resolves by exact
         # match — lookups are literal, so the brackets are part of the key.
-        db.memories.memory("likes").write(
+        db.memories.memory("likes").write_rule_decided(
             [EntryInput(key="[lit]", content="bracketed body")], author="chat"
         )
         assert db.memories.memory("likes").get("[lit]")[0].content == "bracketed body"
@@ -672,21 +691,25 @@ class TestCollectionWrites:
 
     def test_delete_removes_all_matching(self, db):
         db.memories.create_collection("likes", "positive prefs")
-        db.memories.memory("likes").write([EntryInput(key="k", content="a")], author="chat")
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="k", content="a")], author="chat"
+        )
         assert db.memories.memory("likes").delete("k") == 1
         assert db.memories.memory("likes").get("k") == []
 
         # Deletion is strictly exact too — a bracket-wrapped key deletes nothing
         # (the tool boundary rejects it with a teaching error; the data layer
         # never absorbs the display form).
-        db.memories.memory("likes").write([EntryInput(key="k", content="b")], author="chat")
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="k", content="b")], author="chat"
+        )
         assert db.memories.memory("likes").delete("[k]") == 0
         assert db.memories.memory("likes").get("k")[0].content == "b"
 
     def test_move_transfers_entry(self, db):
         db.memories.create_collection("unnotified", "pending")
         db.memories.create_collection("notified", "done")
-        db.memories.memory("unnotified").write(
+        db.memories.memory("unnotified").write_rule_decided(
             [EntryInput(key="thought-1", content="x")], author="thinking-agent"
         )
 
@@ -697,7 +720,7 @@ class TestCollectionWrites:
 
         # Move is strictly exact too — a bracket-wrapped key is a not_found, never
         # silently normalized to the bare key.
-        db.memories.memory("unnotified").write(
+        db.memories.memory("unnotified").write_rule_decided(
             [EntryInput(key="thought-2", content="y")], author="thinking-agent"
         )
         assert (
@@ -709,8 +732,12 @@ class TestCollectionWrites:
     def test_move_collision(self, db):
         db.memories.create_collection("a", "src")
         db.memories.create_collection("b", "dst")
-        db.memories.memory("a").write([EntryInput(key="k", content="src")], author="chat")
-        db.memories.memory("b").write([EntryInput(key="k", content="dst")], author="chat")
+        db.memories.memory("a").write_rule_decided(
+            [EntryInput(key="k", content="src")], author="chat"
+        )
+        db.memories.memory("b").write_rule_decided(
+            [EntryInput(key="k", content="dst")], author="chat"
+        )
 
         assert db.memories.memory("a").move("k", "b", author="chat") == "collision"
 
@@ -730,7 +757,7 @@ class TestDegenerateContentRejection:
 
     def test_pure_punctuation_rejected(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="https://example.com", content="?")],
             author="collector",
         )
@@ -740,7 +767,7 @@ class TestDegenerateContentRejection:
 
     def test_ellipsis_rejected(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="https://example.com", content="…")],
             author="collector",
         )
@@ -749,7 +776,7 @@ class TestDegenerateContentRejection:
 
     def test_bare_url_rejected(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="https://example.com", content="https://example.com/path/to/page")],
             author="collector",
         )
@@ -758,7 +785,7 @@ class TestDegenerateContentRejection:
 
     def test_bailout_phrase_rejected(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="https://example.com", content="Not sure")],
             author="collector",
         )
@@ -768,7 +795,7 @@ class TestDegenerateContentRejection:
 
     def test_bailout_phrase_case_insensitive(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="url", content="NOT SURE")],
             author="collector",
         )
@@ -780,7 +807,7 @@ class TestDegenerateContentRejection:
         entry, so the notifier drained it and delivered a confusing non-find to the
         user — the bail-phrase filter stops it at write time."""
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="We can't find that page", content="No summary available")],
             author="collector",
         )
@@ -790,7 +817,7 @@ class TestDegenerateContentRejection:
 
     def test_short_but_valid_content_accepted(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="anime", content="anime")],
             author="collector",
         )
@@ -798,7 +825,7 @@ class TestDegenerateContentRejection:
 
     def test_substantive_content_accepted(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [
                 EntryInput(
                     key="https://example.com",
@@ -811,7 +838,7 @@ class TestDegenerateContentRejection:
 
     def test_mixed_batch_partial_rejection(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [
                 EntryInput(key="good", content="A detailed summary of the article content."),
                 EntryInput(key="bad", content="?"),
@@ -827,7 +854,7 @@ class TestDegenerateContentRejection:
 
     def test_rejection_does_not_count_as_written_for_notify(self, tmp_path):
         db = self._make_collection(tmp_path)
-        results = db.memories.memory("knowledge").write(
+        results = db.memories.memory("knowledge").write_rule_decided(
             [EntryInput(key="url", content="…")],
             author="collector",
         )
@@ -848,7 +875,7 @@ class TestCycleUndoJournal:
     @staticmethod
     def _seed(db: Database) -> None:
         db.memories.create_collection("watch", "a page watch")
-        require_memory(db, "watch").write(
+        require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="price", content="$42")], author="collector", run_id="run-baseline"
         )
 
@@ -863,7 +890,7 @@ class TestCycleUndoJournal:
         """
         self._seed(db)
         db.memories.begin_cycle("watch")
-        changed = require_memory(db, "watch").write(
+        changed = require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="price", content="$40")], author="cycle", run_id="run-cycle"
         )
         assert changed[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
@@ -879,7 +906,7 @@ class TestCycleUndoJournal:
         assert rows[0].last_written_by_run_id == "run-baseline"
         # And the retry meets the same world the dead cycle did: still NEWS.
         db.memories.begin_cycle("watch")
-        again = require_memory(db, "watch").write(
+        again = require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="price", content="$40")], author="cycle", run_id="run-retry"
         )
         assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
@@ -913,14 +940,16 @@ class TestCycleUndoJournal:
         (SQLite hands the freed rowid straight back when the deleted row was the only
         one), so the case under test is the one the id matching exists for."""
         self._seed(db)
-        require_memory(db, "watch").write(
+        require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="stock", content="in stock")], author="collector", run_id="run-baseline"
         )
         original = require_memory(db, "watch").get("price")[0].id
         db.memories.begin_cycle("watch")
         watch = require_memory(db, "watch")
         assert watch.delete("price") == 1
-        watch.write([EntryInput(key="price", content="$40")], author="cycle", run_id="run-cycle")
+        watch.write_rule_decided(
+            [EntryInput(key="price", content="$40")], author="cycle", run_id="run-cycle"
+        )
         assert require_memory(db, "watch").get("price")[0].id != original
 
         db.memories.end_cycle(revert=True)
@@ -933,7 +962,7 @@ class TestCycleUndoJournal:
 
         # A key the cycle merely ADDED had no prior at all, so reverting deletes it.
         db.memories.begin_cycle("watch")
-        require_memory(db, "watch").write(
+        require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="mood", content="hopeful")], author="cycle", run_id="run-cycle"
         )
         db.memories.end_cycle(revert=True)
@@ -955,7 +984,9 @@ class TestCycleUndoJournal:
         db.memories.begin_cycle("watch")
         watch = require_memory(db, "watch")
         assert watch.delete("price") == 1
-        watch.write([EntryInput(key="stock", content="in stock")], author="cycle", run_id="run-x")
+        watch.write_rule_decided(
+            [EntryInput(key="stock", content="in stock")], author="cycle", run_id="run-x"
+        )
         assert require_memory(db, "watch").get("stock")[0].id == original  # the freed id
 
         db.memories.end_cycle(revert=True)
@@ -968,7 +999,7 @@ class TestCycleUndoJournal:
         and all — a committed cycle is byte-identical to one that never had a journal."""
         self._seed(db)
         db.memories.begin_cycle("watch")
-        require_memory(db, "watch").write(
+        require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="stock", content="in stock")], author="cycle", run_id="run-cycle"
         )
 
@@ -991,12 +1022,12 @@ class TestCycleUndoJournal:
         self._seed(db)
         db.memories.create_collection("notes", "somewhere else")
         db.memories.begin_cycle("watch")
-        require_memory(db, "notes").write(
+        require_memory(db, "notes").write_rule_decided(
             [EntryInput(key="aside", content="the user asked about this")],
             author="chat",
             run_id="run-chat",
         )
-        require_memory(db, "watch").write(
+        require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="stock", content="in stock")], author="cycle", run_id="run-cycle"
         )
 
@@ -1005,7 +1036,7 @@ class TestCycleUndoJournal:
         assert require_memory(db, "notes").get("aside")[0].content == "the user asked about this"
         assert require_memory(db, "watch").get("stock") == []
         # With no cycle bound, nothing is recorded at all, so a settle finds nothing.
-        require_memory(db, "watch").write(
+        require_memory(db, "watch").write_rule_decided(
             [EntryInput(key="stock", content="in stock")], author="chat", run_id="run-chat"
         )
         db.memories.end_cycle(revert=True)
@@ -1036,7 +1067,7 @@ class TestLogAppend:
     def test_write_to_log_raises(self, db):
         db.memories.create_log("events", "x")
         with pytest.raises(MemoryTypeError):
-            db.memories.memory("events").write(
+            db.memories.memory("events").write_rule_decided(
                 [EntryInput(key="k", content="v")],
                 author="chat",
             )
@@ -1086,8 +1117,12 @@ class TestReads:
 
     def test_read_random_returns_all_when_k_exceeds(self, db):
         db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write([EntryInput(key="a", content="1")], author="chat")
-        db.memories.memory("likes").write([EntryInput(key="b", content="2")], author="chat")
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="a", content="1")], author="chat"
+        )
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="b", content="2")], author="chat"
+        )
         picked = db.memories.memory("likes").read_random(5)
         assert {e.key for e in picked} == {"a", "b"}
 
@@ -1099,7 +1134,7 @@ class TestReads:
         assert db.memories.memory("likes").entry_count() == 0
 
         for index in range(3):
-            db.memories.memory("likes").write(
+            db.memories.memory("likes").write_rule_decided(
                 [EntryInput(key=f"k{index}", content=f"value {index}")], author="chat"
             )
 
@@ -1119,14 +1154,18 @@ class TestReads:
 
     def test_read_random_no_k_returns_all(self, db):
         db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write([EntryInput(key="a", content="1")], author="chat")
-        db.memories.memory("likes").write([EntryInput(key="b", content="2")], author="chat")
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="a", content="1")], author="chat"
+        )
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="b", content="2")], author="chat"
+        )
         assert {e.key for e in db.memories.memory("likes").read_random()} == {"a", "b"}
 
     def test_read_random_samples_subset_deterministically(self, db, monkeypatch):
         db.memories.create_collection("likes", "x")
         for letter in ("a", "b", "c", "d"):
-            db.memories.memory("likes").write(
+            db.memories.memory("likes").write_rule_decided(
                 [EntryInput(key=letter, content=letter)], author="chat"
             )
 
@@ -1148,7 +1187,7 @@ class TestReads:
     def test_read_similar_orders_by_cosine(self, db):
         db.memories.create_collection("likes", "x")
         anchor = [1.0, 0.0, 0.0, 0.0]
-        db.memories.memory("likes").write(
+        db.memories.memory("likes").write_rule_decided(
             [
                 EntryInput(
                     key="orth",
@@ -1175,7 +1214,7 @@ class TestReads:
     def test_read_similar_respects_floor(self, db):
         db.memories.create_collection("likes", "x")
         anchor = [1.0, 0.0]
-        db.memories.memory("likes").write(
+        db.memories.memory("likes").write_rule_decided(
             [
                 EntryInput(
                     key="off-topic",
@@ -1230,50 +1269,13 @@ class TestReads:
 
     def test_keys_returns_unique_in_insertion_order(self, db):
         db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write([EntryInput(key="first", content="1")], author="chat")
-        db.memories.memory("likes").write([EntryInput(key="second", content="2")], author="chat")
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="first", content="1")], author="chat"
+        )
+        db.memories.memory("likes").write_rule_decided(
+            [EntryInput(key="second", content="2")], author="chat"
+        )
         assert db.memories.memory("likes").keys() == ["first", "second"]
-
-
-class TestExists:
-    def test_exists_by_exact_key(self, db):
-        db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write(
-            [EntryInput(key="dark roast", content="body")], author="chat"
-        )
-
-        assert db.memories.exists(["likes"], "dark roast", None, None) is True
-        assert db.memories.exists(["likes"], "not seen", None, None) is False
-
-        # An unknown name is a misspelled probe, not an empty (always-False)
-        # memory: it raises so the caller can't misread "no" as "safe to write".
-        with pytest.raises(MemoryNotFoundError, match="lieks"):
-            db.memories.exists(["lieks"], "dark roast", None, None)
-
-    def test_exists_by_similarity_across_stores(self, db):
-        db.memories.create_collection("unnotified", "pending")
-        db.memories.create_collection("notified", "done")
-        shared = _unit_vec(2)
-        db.memories.memory("notified").write(
-            [
-                EntryInput(
-                    key="t1",
-                    content="already notified",
-                    content_embedding=shared,
-                )
-            ],
-            author="notifier",
-        )
-
-        assert (
-            db.memories.exists(
-                ["unnotified", "notified"],
-                key="t2",
-                key_embedding=None,
-                content_embedding=shared,
-            )
-            is True
-        )
 
 
 class TestCursorStore:
@@ -1402,131 +1404,14 @@ class TestWriteTypeEnforcement:
         # The wrong-shape refusal speaks the single house wording — names the value,
         # its actual shape, and binds the read tool that shape supports.
         with pytest.raises(MemoryTypeError, match="'events' is a log, not a collection"):
-            db.memories.memory("events").write([EntryInput(key="k", content="v")], author="chat")
+            db.memories.memory("events").write_rule_decided(
+                [EntryInput(key="k", content="v")], author="chat"
+            )
 
     def test_write_on_missing_store_raises(self, db):
         # Dispatch surfaces a missing memory as ``None`` — there is no object to
         # write through, which is how callers detect 'not found'.
         assert db.memories.memory("nope") is None
-
-    def test_dedup_thresholds_configurable(self, db):
-        db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="a",
-                    content="body",
-                    key_embedding=_unit_vec(0),
-                    content_embedding=_unit_vec(1),
-                )
-            ],
-            author="chat",
-        )
-
-        strict = DedupThresholds(
-            key_tcr_strict=0.99,
-            key_tcr_relaxed=0.99,
-            key_sim_strict=0.99,
-            key_sim_relaxed=0.99,
-            content_sim_strict=0.99,
-            content_sim_relaxed=0.99,
-        )
-        result = db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="b",
-                    content="slightly different body",
-                    key_embedding=_unit_vec(7),
-                    content_embedding=_unit_vec(6),
-                )
-            ],
-            author="chat",
-            thresholds=strict,
-        )
-        assert result[0].outcome == WriteGateOutcome.NEW_KEY
-
-
-class TestDedupSignals:
-    """The three-signal rule: any strict hit OR any two relaxed hits → duplicate."""
-
-    def test_tcr_strict_alone_rejects(self, db):
-        """Full token-subset on keys fires without any embeddings."""
-        db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write(
-            [EntryInput(key="dark roast", content="first body")],
-            author="chat",
-        )
-        result = db.memories.memory("likes").write(
-            [EntryInput(key="dark roast coffee", content="second body")],
-            author="chat",
-        )
-        assert result[0].outcome == WriteGateOutcome.DUPLICATE
-
-    def test_tcr_relaxed_alone_does_not_fire(self, db):
-        """TCR 2/3 with no other signal is not enough on its own."""
-        db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write(
-            [EntryInput(key="applied ai conference", content="first")],
-            author="chat",
-        )
-        result = db.memories.memory("likes").write(
-            [EntryInput(key="applied ai conf", content="second")],
-            author="chat",
-        )
-        assert result[0].outcome == WriteGateOutcome.NEW_KEY
-
-    def test_two_relaxed_signals_reject(self, db):
-        """TCR 2/3 plus a relaxed content-cosine hit (~0.80) → duplicate."""
-        db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="applied ai conference",
-                    content="first body",
-                    content_embedding=[1.0, 0.0],
-                )
-            ],
-            author="chat",
-        )
-        # cos([1, 0], [0.80, 0.60]) = 0.80 → relaxed content hit, not strict.
-        # TCR("applied ai conf", "applied ai conference") = 2/3 → relaxed key hit.
-        # Two relaxed hits → duplicate.
-        result = db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="applied ai conf",
-                    content="second body",
-                    content_embedding=[0.80, 0.60],
-                )
-            ],
-            author="chat",
-        )
-        assert result[0].outcome == WriteGateOutcome.DUPLICATE
-
-    def test_single_relaxed_signal_passes(self, db):
-        """One signal at relaxed level only (no second signal) is not enough."""
-        db.memories.create_collection("likes", "x")
-        db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="coffee roast",
-                    content="first",
-                    content_embedding=[1.0, 0.0],
-                )
-            ],
-            author="chat",
-        )
-        result = db.memories.memory("likes").write(
-            [
-                EntryInput(
-                    key="tea brewing",
-                    content="second",
-                    content_embedding=[0.80, 0.60],
-                )
-            ],
-            author="chat",
-        )
-        assert result[0].outcome == WriteGateOutcome.NEW_KEY
 
 
 class TestEmbeddingBackfill:
@@ -1541,7 +1426,7 @@ class TestEmbeddingBackfill:
     def test_scopes_to_unarchived_and_persists(self, db):
         # A non-archived collection: entries SHOULD be embedded.
         db.memories.create_collection("skills", "workflow patterns")
-        db.memories.memory("skills").write(
+        db.memories.memory("skills").write_rule_decided(
             [EntryInput(key="Do X when Y", content="TRIGGER ... STEPS ...")],
             author="system",
         )
@@ -1553,7 +1438,7 @@ class TestEmbeddingBackfill:
         )
         # An archived collection: never surfaces → must be skipped.
         db.memories.create_collection("old-trip", "archived")
-        db.memories.memory("old-trip").write(
+        db.memories.memory("old-trip").write_rule_decided(
             [EntryInput(key="spot", content="some place")],
             author="chat",
         )
@@ -1587,7 +1472,7 @@ class TestEmbeddingBackfill:
         """
         db.memories.create_collection("likes", "positive prefs")
         # Content vector present, key vector NULL (key present) — no dedup neighbour.
-        db.memories.memory("likes").write(
+        db.memories.memory("likes").write_rule_decided(
             [
                 EntryInput(
                     key="dark roast", content="loves dark roast", content_embedding=_unit_vec(1)
@@ -1701,7 +1586,7 @@ class TestResolveEntries:
         """A collection's entry surfaces alongside the collection object, carrying its
         container, key, and content — one fused list, both families present."""
         db.memories.create_collection("knowledge", "d", description_embedding=_unit_vec(0))
-        db.memories.memory("knowledge").write(
+        db.memories.memory("knowledge").write_rule_decided(
             [
                 EntryInput(
                     key="deck price",
@@ -1728,7 +1613,7 @@ class TestResolveEntries:
         """The key facet alone surfaces an entry whose content is orthogonal to the
         query (and vice versa) — the max-of-facets disjunction."""
         db.memories.create_collection("notes", "d", description_embedding=_unit_vec(5))
-        db.memories.memory("notes").write(
+        db.memories.memory("notes").write_rule_decided(
             [
                 EntryInput(
                     key="target",
@@ -1758,11 +1643,11 @@ class TestResolveEntries:
         """Entries in an archived collection never surface — only non-archived
         containers contribute."""
         db.memories.create_collection("live", "d", description_embedding=_unit_vec(5))
-        db.memories.memory("live").write(
+        db.memories.memory("live").write_rule_decided(
             [EntryInput(key="a", content="x", content_embedding=_unit_vec(0))], author="test"
         )
         db.memories.create_collection("dead", "d", description_embedding=_unit_vec(5))
-        db.memories.memory("dead").write(
+        db.memories.memory("dead").write_rule_decided(
             [EntryInput(key="b", content="y", content_embedding=_unit_vec(0))], author="test"
         )
         db.memories.archive("dead")
@@ -1773,7 +1658,7 @@ class TestResolveEntries:
         """An object and its entry both surface in the SAME unfiltered list — the
         search spans every family, never narrowing up front (#1643)."""
         db.memories.create_collection("watch", "d", description_embedding=_unit_vec(0))
-        db.memories.memory("watch").write(
+        db.memories.memory("watch").write_rule_decided(
             [EntryInput(key="k", content="c", content_embedding=_unit_vec(0))], author="test"
         )
         hits = db.memories.resolve_objects(_unit_vec(0), 10)

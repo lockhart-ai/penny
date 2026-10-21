@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from penny.config import Config
 from penny.llm.client import LlmClient
+from penny.llm.decision_client import DecisionClient, DecisionError, decision_api_url
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmConnectionError, LlmError, LlmFault
 
@@ -54,6 +55,7 @@ class PreflightCheck(StrEnum):
 
     LLM_ENDPOINT = "llm-endpoint"
     EMBEDDING_MODEL = "embedding-model"
+    DECISION_MODEL = "decision-model"
     IMAGE_MODEL = "image-model"
     BROWSER_ADDON = "browser-addon"
     PRIMARY_CHANNEL = "primary-channel"
@@ -141,6 +143,7 @@ class Preflight:
         config: Config,
         model_client: LlmClient,
         embedding_client: LlmClient,
+        decision_client: DecisionClient | None,
         image_client: OllamaImageClient | None,
         browser_enabled: bool,
         browser_connected: bool,
@@ -150,6 +153,7 @@ class Preflight:
         self.config = config
         self.model_client = model_client
         self.embedding_client = embedding_client
+        self.decision_client = decision_client
         self.image_client = image_client
         self.browser_enabled = browser_enabled
         self.browser_connected = browser_connected
@@ -161,6 +165,7 @@ class Preflight:
         candidates: list[CheckResult | None] = [
             await self._check_llm_endpoint(),
             await self._check_embedding_model(),
+            await self._check_decision_model(),
             await self._check_image_model(),
             self._check_browser_addon(),
             self._check_primary_channel(),
@@ -168,6 +173,42 @@ class Preflight:
         return PreflightReport(results=[result for result in candidates if result is not None])
 
     # ── Hard-fail checks ─────────────────────────────────────────────────
+
+    async def _check_decision_model(self) -> CheckResult:
+        """The entry-identity ladder's decision model (soft warn, always reported).
+
+        Unset is the NAMED degraded mode, never a silent one: entry matching falls
+        back to asking the writing model about look-alike entries.  Set-but-
+        unavailable degrades the same way, so both are said out loud."""
+        name = PreflightCheck.DECISION_MODEL
+        if self.decision_client is None:
+            return self._warn(
+                name,
+                "no decision model configured (set LLM_DECISION_MODEL) — entry matching "
+                "falls back to asking: look-alike entries are written as new and the "
+                "writing model is asked whether it meant an existing one instead.",
+            )
+        model = self.config.llm_decision_model
+        if model is None:  # unreachable: the client exists only when a model is configured
+            return self._warn(
+                name,
+                "no decision model configured (set LLM_DECISION_MODEL) — entry matching "
+                "falls back to asking: look-alike entries are written as new and the "
+                "writing model is asked whether it meant an existing one instead.",
+            )
+        url = decision_api_url(self.config)
+        try:
+            available = await self.decision_client.list_models()
+        except DecisionError:
+            available = []
+        if model_available(model, available):
+            return self._ok(name, f"decision model {model!r} available at {url}")
+        return self._warn(
+            name,
+            f"decision model {model!r} not available at {url} (or the endpoint is "
+            f"unreachable) — pull it (`ollama pull {model}`). Entry matching falls "
+            f"back to asking until then.",
+        )
 
     async def _check_llm_endpoint(self) -> CheckResult:
         """LLM endpoint reachable + configured chat model resolves (hard fail)."""

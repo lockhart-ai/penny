@@ -25,11 +25,13 @@ from penny.database.memory import (
     WriteResult,
     render_run_calls,
 )
+from penny.database.memory.identity import EntryDecider
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
+from penny.llm.decision_client import DecisionAnswer, DecisionClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
 from penny.llm.similarity import embed_text
@@ -79,12 +81,32 @@ from penny.tools.memory_tools import (
     LogReadTool,
     MemoryMetadataTool,
     ReadRunCallsTool,
-    _format_duplicate,
+    _format_unsure,
+    _format_updated,
     build_memory_tools,
     format_entries,
     render_nothing_landed,
     render_writes_landed,
 )
+
+# The named degraded mode for tool tests: rules settle what they can, the rest
+# is written as new with the honest question.
+_NO_MODEL = EntryDecider(None)
+
+
+class _StubDecisionClient(DecisionClient):
+    """A decision model that answers each question with the next canned choice."""
+
+    def __init__(self, *choices: str) -> None:
+        self._choices = list(choices)
+
+    async def decide(self, **_: object) -> DecisionAnswer:
+        return DecisionAnswer(choice=self._choices.pop(0))
+
+
+def _decider_saying(*choices: str) -> EntryDecider:
+    return EntryDecider(_StubDecisionClient(*choices))
+
 
 pytestmark = pytest.mark.bare_db
 
@@ -1329,7 +1351,9 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         result = await write.execute(
             CallLink.new_top(),
             collection="likes",
@@ -1391,7 +1415,11 @@ class TestCollectionWritesAndReads:
         write is never materialized."""
         _seed_collection(db, name="gear-notes", description="gear notes")
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", run_id="run-materialize"
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            run_id="run-materialize",
         )
         # Typo (char leg): 'gear-ntoes' → 'gear-notes'.
         result = await write.execute(
@@ -1437,7 +1465,11 @@ class TestCollectionWritesAndReads:
         assert row.extraction_prompt is None
         # A collector-scoped write is pinned — no materialization, plain refusal.
         scoped = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="collector", scope="gear-notes"
+            db,
+            _make_llm_client(mock_llm),
+            author="collector",
+            decider=_NO_MODEL,
+            scope="gear-notes",
         )
         result = await scoped.execute(
             CallLink.new_top(), collection="something-else", entries=[{"key": "x", "content": "y"}]
@@ -1450,7 +1482,9 @@ class TestCollectionWritesAndReads:
         """An empty ``entries`` batch gets a named, actionable rejection through the
         arg-validation envelope — not Pydantic's bare "List should have at least 1
         item" (the house wording-unification pass)."""
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         result = await write.run(CallLink.new_top(), collection="likes", entries=[])
         assert result.success is False
         assert "at least one entry" in result.message
@@ -1461,7 +1495,9 @@ class TestCollectionWritesAndReads:
         """A misspelled/extraneous key INSIDE a batch entry surfaces the nested loc
         path and suggests the valid sibling, rather than being silently dropped or
         mis-rendered as the whole ``entries`` field (#1416)."""
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         result = await write.run(
             CallLink.new_top(),
             collection="likes",
@@ -1471,42 +1507,70 @@ class TestCollectionWritesAndReads:
         assert "entries.0.contnt" in result.message
         assert "did you mean 'content'" in result.message
 
-    def test_format_duplicate_states_the_situation_and_the_one_call(self):
-        """The keyed arm states three facts and offers nothing (#1919): the collection
-        already holds this subject under a key it NAMES, any other key collides with that
-        same entry, and here is the call that lands the new value.
-
-        The wording it replaced ("…to refresh it if you have richer info") read as advice
-        to weigh — measured, 4 of 5 samples filed the new value under a fresh key instead
-        — so what is pinned here is that the render presents a SITUATION rather than an
-        option.  The keyless arm has no key to address, so it names no call at all rather
-        than dangling an imperative the model cannot act on."""
-        keyed = _format_duplicate(
+    def test_format_updated_shows_the_prior_and_the_restore_call(self):
+        """The merge reply (#2715) shows the PRIOR value verbatim plus the one call
+        that restores it and writes the new value under its own key — a wrong
+        identity match is visible and reversible in a single call.  A cross-key
+        merge names the match; an exact-key change does not."""
+        merged = _format_updated(
             "likes",
             WriteResult(
-                key="cold brew coffee",
-                outcome=WriteGateOutcome.DUPLICATE,
-                matched_key="cold brew",
+                key="Genesis (band)",
+                outcome=WriteGateOutcome.KEY_EXISTS_CHANGED,
+                matched_key="genesis",
+                prior_value="Genesis, the prog band",
             ),
         )
-        assert "'cold brew coffee' was not written" in keyed
-        assert "stored under the key 'cold brew'" in keyed
-        assert "collides with that same entry again" in keyed
+        assert "Updated 'genesis'" in merged
+        assert "matched as the same thing as 'Genesis (band)'" in merged
+        assert 'It held: "Genesis, the prog band"' in merged
         assert (
             "collection_write(collection='likes', "
-            "entries=[{'key': 'cold brew', 'content': <the new value>}])" in keyed
+            "entries=[{'key': 'genesis', 'content': \"Genesis, the prog band\"}])" in merged
         )
-        # No hedge: nothing here makes landing the value conditional on anything.
-        assert "if you have" not in keyed
-        keyless = _format_duplicate(
-            "likes",
-            WriteResult(key="cold brew", outcome=WriteGateOutcome.DUPLICATE, matched_key=None),
+        assert "write yours under its own key ('Genesis (band)')" in merged
+        exact = _format_updated(
+            "watch",
+            WriteResult(
+                key="price",
+                outcome=WriteGateOutcome.KEY_EXISTS_CHANGED,
+                matched_key="price",
+                prior_value="$219",
+            ),
         )
-        assert "cannot replace a keyless entry" in keyless
-        assert "collection_write(" not in keyless
+        assert "Updated 'price'" in exact
+        assert "matched as the same thing" not in exact
+        assert 'It held: "$219"' in exact
+
+    def test_format_unsure_names_the_candidate_and_both_calls(self):
+        """The honest question (#2715) names the candidate key and what each call
+        would do — update it if the write is the same thing, or let the new entry
+        stand if it is a different thing.  It never tells the model to overwrite
+        an entry the write is not about: the update call is conditioned."""
+        asked = _format_unsure(
+            "daily_headlines",
+            WriteResult(
+                key="2026-10-21",
+                outcome=WriteGateOutcome.NEW_KEY,
+                unsure_candidate="2026-10-20",
+            ),
+        )
+        assert "'2026-10-21' was written as a new entry" in asked
+        assert "also holds '2026-10-20'" in asked
+        assert (
+            "collection_write(collection='daily_headlines', "
+            "entries=[{'key': '2026-10-20', 'content': <the value>}])" in asked
+        )
+        assert "if it is a different thing, the new entry stands as written" in asked
 
     @pytest.mark.asyncio
-    async def test_write_reports_duplicate_via_tcr(self, db, mock_llm):
+    async def test_write_unsettled_pair_without_a_model_writes_through_and_asks(self, db, mock_llm):
+        """The named degraded mode (#2715): a look-alike pair the rules cannot
+        settle is WRITTEN as new — unsure is treated as different — and the reply
+        asks the writing model honestly whether it meant the shortlisted
+        candidate, naming that key and what each call would do.  The motivating
+        production failure (a rejection telling the model to overwrite yesterday's
+        digest) cannot recur: nothing is rejected, nothing is overwritten."""
         _seed_collection(
             db,
             name="likes",
@@ -1514,7 +1578,9 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         await write.execute(
             CallLink.new_top(),
             collection="likes",
@@ -1525,29 +1591,56 @@ class TestCollectionWritesAndReads:
             collection="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
-        # A fully rejected batch wrote nothing — it must read as a no-op so the
-        # collector's work/no-work split sees the truth rather than counting the
-        # rejected write as "work".
-        assert result.mutated is False
-        # The candidate's own key is named, the existing key it collided with is
-        # named, *and* the matched key is BOUND straight into the collection_write call
-        # (not a <existing key> placeholder) — so the model lands the value on
-        # 'dark roast' rather than re-using its own rejected 'dark roast coffee' key
-        # and ping-ponging on key-not-found (#1405).
-        assert "'dark roast coffee' was not written" in result.message
-        assert "stored under the key 'dark roast'" in result.message
+        # The write landed (the entry exists), so it counts as work.
+        assert result.mutated is True
+        assert "'dark roast coffee' was written as a new entry" in result.message
+        assert "also holds 'dark roast'" in result.message
         assert (
             "collection_write(collection='likes', "
-            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in result.message
+            "entries=[{'key': 'dark roast', 'content': <the value>}])" in result.message
         )
-        # Whole batch collided → the nothing-landed close fires.  This is a chat-scope
-        # write (scope=None), which has no ``done`` tool, so the close must NOT name it
-        # — chat and collector share this tool surface.
-        assert "Nothing in this batch landed" in result.message
-        assert "done()" not in result.message
+        assert "if it is a different thing, the new entry stands as written" in result.message
+        assert len(db.memories.memory("likes").read_all()) == 2
 
     @pytest.mark.asyncio
-    async def test_write_all_duplicates_close_names_no_call(self, db, mock_llm):
+    async def test_write_merges_when_the_decider_says_new_value(self, db, mock_llm):
+        """The decision step (#2715): a rules-unsettled look-alike goes to the
+        decision model; ``new_value`` MERGES — the stored value replaced in place,
+        and the reply shows the prior verbatim plus the one call that restores it."""
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_decider_saying("new_value")
+        )
+        await write.execute(
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
+        )
+        result = await write.execute(
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast coffee", "content": "a fresher value"}],
+        )
+        assert result.mutated is True
+        assert "Updated 'dark roast'" in result.message
+        assert "matched as the same thing as 'dark roast coffee'" in result.message
+        assert 'It held: "first body"' in result.message
+        assert (
+            "collection_write(collection='likes', "
+            "entries=[{'key': 'dark roast', 'content': \"first body\"}])" in result.message
+        )
+        entries = db.memories.memory("likes").read_all()
+        assert len(entries) == 1
+        assert entries[0].content == "a fresher value"
+
+    @pytest.mark.asyncio
+    async def test_write_unchanged_and_already_recorded_prescribe_no_call(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -1556,26 +1649,13 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         # A collector binds its writes to one collection via ``scope``.
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="likes")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL, scope="likes"
+        )
         await write.execute(
             CallLink.new_top(),
             collection="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
-        )
-        all_duplicates = await write.execute(
-            CallLink.new_top(),
-            collection="likes",
-            entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
-        )
-        # THE WATCHED DELETION (#1911): the whole batch collided, and the close names NO
-        # call to make — no surface carries a terminator any more, so telling the model
-        # to close would be an instruction it could not follow.  The per-entry rejection
-        # still binds the matched key into the write call, which it DOES have.
-        assert "Nothing in this batch landed" in all_duplicates.message
-        assert "done" not in all_duplicates.message
-        assert (
-            "collection_write(collection='likes', "
-            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in all_duplicates.message
         )
         # A re-write under the SAME key with the SAME value is the change-gate's
         # UNCHANGED outcome (#1587) — the watch's "no change" signal, reported as
@@ -1591,10 +1671,9 @@ class TestCollectionWritesAndReads:
         assert "Unchanged: 'dark roast' already holds the same value" in same_key.message
         assert same_key.mutated is False
         assert same_key.stop is None
-        # A batch with a genuinely new entry alongside a collision gets the per-entry
-        # bound call + the some-of-the-batch close, never the nothing-landed one.
-        # The colliding half carries a DIFFERENT value (#1919) — a same-value collision
-        # is the no-news branch below and prescribes no call at all.
+        # A batch with a genuinely new entry alongside a look-alike lands the new
+        # one and asks honestly about the other — the ladder's unsure outcome,
+        # never a rejection that leaves a write stranded (#2715).
         partial = await write.execute(
             CallLink.new_top(),
             collection="likes",
@@ -1603,41 +1682,14 @@ class TestCollectionWritesAndReads:
                 {"key": "dark roast blend", "content": "roasted longer this season"},
             ],
         )
-        assert "Wrote 1 entry" in partial.message
-        assert (
-            "collection_write(collection='likes', "
-            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in partial.message
-        )
-        assert "The rest of the batch landed" in partial.message
-        assert "Nothing in this batch landed" not in partial.message
+        assert "Wrote 2 entries" in partial.message
+        assert "'dark roast blend' was written as a new entry" in partial.message
+        assert "also holds 'dark roast'" in partial.message
         assert partial.mutated is True
-        # A batch whose entries each duplicate a DIFFERENT existing key must bind
-        # EVERY matched key into its own collection_write call — not just the first
-        # (#1405: resolve a match for every rejected key in the batch).  'cold brew'
-        # now exists (written above), so both entries collide on distinct keys — each
-        # with its own fresher value, so both take the recoverable branch.
-        multi = await write.execute(
-            CallLink.new_top(),
-            collection="likes",
-            entries=[
-                {"key": "dark roast blend", "content": "roasted longer this season"},
-                {"key": "cold brew coffee", "content": "steeped overnight now"},
-            ],
-        )
-        assert (
-            "collection_write(collection='likes', "
-            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in multi.message
-        )
-        assert (
-            "collection_write(collection='likes', "
-            "entries=[{'key': 'cold brew', 'content': <the new value>}])" in multi.message
-        )
-        assert multi.mutated is False
         # A collision on the VALUE under a DIFFERENT key is the other branch (#1919):
-        # the same no-news the exact key reads, so it carries the STOP and its own
-        # render, and it prescribes NO call — there is nothing to do about a value that
-        # is already stored.  The mock embeds bag-of-words, so re-writing 'first body'
-        # verbatim under a fresh key matches on content while the key does not.
+        # the same no-news the exact key reads, so it prescribes NO call — there is
+        # nothing to do about a value that is already stored.  The identical-content
+        # rule settles it without a model.
         same_value = await write.execute(
             CallLink.new_top(),
             collection="likes",
@@ -1653,9 +1705,6 @@ class TestCollectionWritesAndReads:
         )
         assert "collection_write(" not in same_value.message
         assert "was not written" not in same_value.message
-        # …and no write outcome stops at all now, so a change arriving
-        # under a reworded key is never silenced as no-news.
-        assert multi.stop is None
 
     @pytest.mark.asyncio
     async def test_chat_scope_already_recorded_write_has_no_stop(self, db, mock_llm):
@@ -1669,7 +1718,9 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         await write.execute(
             CallLink.new_top(),
             collection="likes",
@@ -1696,7 +1747,9 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         # No scope → chat surface.
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         await write.execute(
             CallLink.new_top(),
             collection="likes",
@@ -1727,7 +1780,9 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="watch")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL, scope="watch"
+        )
         await write.execute(
             CallLink.new_top(), collection="watch", entries=[{"key": "price", "content": "$42"}]
         )
@@ -1735,7 +1790,10 @@ class TestCollectionWritesAndReads:
             CallLink.new_top(), collection="watch", entries=[{"key": "price", "content": "$40"}]
         )
         assert changed.message == (
-            "Changed: 'price' — the stored baseline was refreshed to the new value (entry)."
+            "Updated 'price'. It held: \"$42\". If they are different things, "
+            "restore it with collection_write(collection='watch', "
+            "entries=[{'key': 'price', 'content': \"$42\"}]) and write yours "
+            "under its own key ('price')."
         )
         assert changed.mutated is True
         assert changed.stop is None
@@ -1744,7 +1802,9 @@ class TestCollectionWritesAndReads:
         assert len(refreshed) == 1
         assert refreshed[0].content == "$40"
         # The gate is shared: a chat-surface write auto-refreshes identically, never STOPs.
-        chat_write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
+        chat_write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="chat", decider=_NO_MODEL
+        )
         await chat_write.execute(
             CallLink.new_top(), collection="watch", entries=[{"key": "note", "content": "v1"}]
         )
@@ -1752,7 +1812,10 @@ class TestCollectionWritesAndReads:
             CallLink.new_top(), collection="watch", entries=[{"key": "note", "content": "v2"}]
         )
         assert chat_changed.message == (
-            "Changed: 'note' — the stored baseline was refreshed to the new value (entry)."
+            "Updated 'note'. It held: \"v1\". If they are different things, "
+            "restore it with collection_write(collection='watch', "
+            "entries=[{'key': 'note', 'content': \"v1\"}]) and write yours "
+            "under its own key ('note')."
         )
         assert chat_changed.mutated is True
         assert chat_changed.stop is None
@@ -1881,7 +1944,9 @@ class TestEmbedFailureRefusesWrite:
     @pytest.mark.asyncio
     async def test_collection_write_refuses_when_embedding_fails(self, db):
         await self._make_relevant_collection(db)
-        write = CollectionWriteTool(db, cast(Any, _FailingEmbedClient()), author="test")
+        write = CollectionWriteTool(
+            db, cast(Any, _FailingEmbedClient()), author="test", decider=_NO_MODEL
+        )
         result = await write.execute(
             CallLink.new_top(),
             collection="likes",
@@ -1907,7 +1972,10 @@ class TestEmbedFailureRefusesWrite:
         # key-null row, #1468, but the write path won't persist one to begin with.)
         await self._make_relevant_collection(db)
         write = CollectionWriteTool(
-            db, cast(Any, _KeyOnlyFailingEmbedClient("dark roast")), author="test"
+            db,
+            cast(Any, _KeyOnlyFailingEmbedClient("dark roast")),
+            author="test",
+            decider=_NO_MODEL,
         )
         result = await write.execute(
             CallLink.new_top(),
@@ -1949,7 +2017,9 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+        await CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        ).execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "hello"}]
         )
         assert (
@@ -1963,7 +2033,9 @@ class TestEmbedFailureRefusesWrite:
         )
         assert "not found" in missing.message
         # A key one typo away from a stored one is named in the miss, so the retry is a copy.
-        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+        await CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        ).execute(
             CallLink.new_top(),
             collection="likes",
             entries=[{"key": "sea kayaking", "content": "weekends"}],
@@ -2004,7 +2076,9 @@ class TestEmbedFailureRefusesWrite:
         assert "Key '[absent]' not found" in double_miss.message
         assert "Retry with" not in double_miss.message
         # A key that genuinely contains brackets exact-matches with no rejection.
-        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+        await CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        ).execute(
             CallLink.new_top(),
             collection="likes",
             entries=[{"key": "[lit]", "content": "bracket literal body"}],
@@ -2024,7 +2098,9 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "first", "content": "1"}]
         )
@@ -2057,7 +2133,9 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "a", "content": "1"}]
         )
@@ -2080,14 +2158,17 @@ class TestCollectionMutations:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "old"}]
         )
         result = await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "new"}]
         )
-        assert "Changed: 'k' — the stored baseline was refreshed to the new value" in result.message
+        assert "Updated 'k'. It held: \"old\"." in result.message
+        assert "restore it with collection_write" in result.message
         assert db.memory("likes").get("k")[0].content == "new"
         # A bracket-wrapped key (display form copied from an entry list) on the
         # delete path is rejected with a teaching error naming the bare key —
@@ -2185,7 +2266,9 @@ class TestDidYouMeanSuggestions:
         """Same key suggestion on collection_remove — the nearest key leads,
         the existing 'nothing to delete' guidance follows."""
         _seed_collection(db, name="notes")
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         await write.execute(
             CallLink.new_top(),
             collection="notes",
@@ -2344,7 +2427,9 @@ class TestLogTools:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+        await CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        ).execute(
             CallLink.new_top(), collection="notes", entries=[{"key": "a", "content": "first"}]
         )
         rejected = await CollectionListTool(db).run(CallLink.new_top(), collection="notes", k=0)
@@ -2976,7 +3061,9 @@ class TestMemoryNameNormalization:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+        )
         # Non-breaking hyphen U+2011 in the collection name — model output
         # observed in the wild.
         result = await write.execute(
@@ -2999,7 +3086,7 @@ class TestAuthorAttribution:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="preference-extractor"
+            db, _make_llm_client(mock_llm), author="preference-extractor", decider=_NO_MODEL
         ).execute(CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "v"}])
 
         rows = db.memory("likes").get("k")
@@ -3040,7 +3127,9 @@ class TestFactory:
         """A tool's schema is what the model is shown; its args model is what the call
         is validated against.  They must name the same arguments, or the model is told
         to pass one name and refused for not passing another."""
-        tools = build_memory_tools(db, _make_llm_client(mock_llm), agent_name="chat")
+        tools = build_memory_tools(
+            db, _make_llm_client(mock_llm), agent_name="chat", decider=_NO_MODEL
+        )
         for tool in tools:
             advertised = set(tool.parameters.get("properties", {}))
             validated = set(tool.args_model.model_fields)
@@ -3052,14 +3141,16 @@ class TestFactory:
     def test_chat_surface_is_the_full_set(self, db, mock_llm):
         """Chat (scope=None) gets every memory tool — entry mutations included,
         unrestricted, since edits are user-directed."""
-        tools = build_memory_tools(db, _make_llm_client(mock_llm), agent_name="chat")
+        tools = build_memory_tools(
+            db, _make_llm_client(mock_llm), agent_name="chat", decider=_NO_MODEL
+        )
         assert {tool.name for tool in tools} == self._FULL_SURFACE
 
     def test_collector_surface_is_the_same_full_set(self, db, mock_llm):
         """A bound collector (scope=X) gets the identical surface — scope binds
         its entry mutations to X but does not strip lifecycle/other tools."""
         tools = build_memory_tools(
-            db, _make_llm_client(mock_llm), agent_name="collector", scope="likes"
+            db, _make_llm_client(mock_llm), agent_name="collector", decider=_NO_MODEL, scope="likes"
         )
         assert {tool.name for tool in tools} == self._FULL_SURFACE
 
@@ -3090,7 +3181,11 @@ class TestScopedFactory:
         )
 
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
+            db,
+            _make_llm_client(mock_llm),
+            author="collector:likes",
+            decider=_NO_MODEL,
+            scope="likes",
         )
         result = await write.execute(
             CallLink.new_top(), collection="dislikes", entries=[{"key": "k", "content": "v"}]
@@ -3113,7 +3208,11 @@ class TestScopedFactory:
         )
 
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
+            db,
+            _make_llm_client(mock_llm),
+            author="collector:likes",
+            decider=_NO_MODEL,
+            scope="likes",
         )
         result = await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "v"}]
@@ -3142,7 +3241,11 @@ class TestScopedFactory:
             schedule=None,
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
+            db,
+            _make_llm_client(mock_llm),
+            author="collector:likes",
+            decider=_NO_MODEL,
+            scope="likes",
         )
         result = await write.execute(
             CallLink.new_top(), collection="rules", entries=[{"key": "k", "content": "v"}]
@@ -3162,7 +3265,7 @@ class TestScopedFactory:
             extraction_prompt=None,
             schedule=None,
         )
-        seed = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
+        seed = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat", decider=_NO_MODEL)
         await seed.execute(
             CallLink.new_top(),
             collection=PennyConstants.MEMORY_RULES_COLLECTION,
@@ -3187,7 +3290,9 @@ class TestScopedFactory:
             extraction_prompt=None,
             schedule=None,
         )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="chat", decider=_NO_MODEL
+        )
         result = await write.execute(
             CallLink.new_top(),
             collection=PennyConstants.MEMORY_RULES_COLLECTION,
@@ -3529,7 +3634,7 @@ class TestFind:
         container was not guessed)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
-        await CollectionWriteTool(db, client, author="test").execute(
+        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
             CallLink.new_top(),
             collection="knowledge-notes",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
@@ -3551,7 +3656,7 @@ class TestFind:
         pattern (#1640)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        await CollectionWriteTool(db, client, author="test").execute(
+        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
             CallLink.new_top(),
             collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
@@ -3725,7 +3830,7 @@ class TestFind:
         never another store's hit even when it would also match the query."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        await CollectionWriteTool(db, client, author="test").execute(
+        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
             CallLink.new_top(),
             collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta echo foxtrot"}],
@@ -3770,7 +3875,7 @@ class TestFind:
         name the self-state header's archived line already names."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
-        await CollectionWriteTool(db, client, author="test").execute(
+        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
             CallLink.new_top(),
             collection="aurora-archive",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],

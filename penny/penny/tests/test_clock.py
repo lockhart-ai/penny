@@ -133,7 +133,7 @@ def _write_through_every_store(db: Database) -> None:
     """One write down each store path that stamps a time, the inserts and the updates both —
     the paths a single chat turn does not reach on its own."""
     db.memories.create_collection("playlists", "favorite playlists", schedule="FREQ=HOURLY")
-    require_memory(db, "playlists").write(
+    require_memory(db, "playlists").write_rule_decided(
         [EntryInput(key="morning", content="prog rock")], author="user"
     )
     db.memories.create_log("tips", "useful tips")

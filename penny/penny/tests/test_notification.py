@@ -125,7 +125,7 @@ def test_a_built_report_carries_the_full_written_entries(db):
     from penny.tests.conftest import require_memory
 
     db.memories.create_collection("harbour-watch", "the pier lanterns on the harbour front")
-    require_memory(db, "harbour-watch").write(
+    require_memory(db, "harbour-watch").write_rule_decided(
         [EntryInput(key="lanterns", content="pier 4 went dark overnight")],
         author="producer",
         run_id="cycle-run-9",

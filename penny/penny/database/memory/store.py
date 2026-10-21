@@ -2,7 +2,8 @@
 
 The store owns everything that is *about the set of memories* rather than the
 contents of one: create/list/archive, metadata edits, the cross-memory dedup
-probe (``exists``), the startup embedding backfill, and the bulk entry counts
+probe (``exists``, retired with the three-signal rule — the identity ladder owns
+entry identity now), the startup embedding backfill, and the bulk entry counts
 for the addon list.
 
 It is also the single dispatch the rest of the system asks for a memory:
@@ -32,8 +33,6 @@ from penny.database.memory import _similarity as sim
 from penny.database.memory.journal import CycleJournal
 from penny.database.memory.objects import Collection, Log, Memory, MessageLogMemory, RunLog
 from penny.database.memory.types import (
-    DedupThresholds,
-    EntrySide,
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
     MemoryType,
@@ -220,7 +219,6 @@ class MemoryStore:
           mark_collected
         * inventory: entry_counts, names_with_entry_match
         * resolve by meaning: resolve_objects
-        * dedup probe: exists
         * embedding backfill: get_entries_without_embeddings,
           get_memories_without_description_embedding, set_description_embedding,
           set_entry_embeddings
@@ -238,7 +236,7 @@ class MemoryStore:
         # The clock every row this store writes is stamped from, and the one it hands
         # each ``Memory`` object it builds (``penny/clock.py``).
         self._clock = clock if clock is not None else Clock()
-        # /config-tunable dedup thresholds; tests get vanilla defaults.
+        # Runtime params handed to each ``Memory`` object this store builds.
         self._runtime = runtime if runtime is not None else RuntimeParams()
         # The registry-mutation ledger (#1560).  Create/update/archive/unarchive
         # of a collection each write a durable event here, at this Python
@@ -364,9 +362,6 @@ class MemoryStore:
         if self._journal is not None and self._journal.collection == name:
             return self._journal
         return None
-
-    def _default_thresholds(self) -> DedupThresholds:
-        return DedupThresholds.from_runtime(self._runtime)
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -1195,37 +1190,6 @@ class MemoryStore:
 
     # ── Dedup probe ───────────────────────────────────────────────────────────
 
-    def exists(
-        self,
-        names: list[str],
-        key: str | None,
-        key_embedding: list[float] | None,
-        content_embedding: list[float] | None,
-        thresholds: DedupThresholds | None = None,
-    ) -> bool:
-        """Whether an equivalent entry already exists in any of the named memories.
-
-        Runs the same similarity-based dedup as ``Collection.write``, plus an
-        exact key-match shortcut when a key is supplied.  True on the first hit.
-
-        Every name must resolve to a real memory: an unknown name raises
-        ``MemoryNotFoundError`` naming the offending value, rather than reading
-        as an empty (and therefore always-``False``) memory — a misspelled probe
-        must not misreport ``no`` and green-light the write it was checking for.
-        """
-        names = [slug(n) for n in names]
-        for name in names:
-            if self.get(name) is None:
-                raise MemoryNotFoundError(name)
-        thresholds = thresholds or self._default_thresholds()
-        candidate = EntrySide(key, key_embedding, content_embedding)
-        for name in names:
-            if key is not None and self._rows_by_key(name, key):
-                return True
-            if sim.is_duplicate(candidate, self._entries_with_vectors(name), thresholds):
-                return True
-        return False
-
     def _rows_by_key(self, name: str, key: str) -> list[MemoryEntry]:
         with self._session() as session:
             return list(
@@ -1235,20 +1199,6 @@ class MemoryStore:
                     )
                 ).all()
             )
-
-    def _entries_with_vectors(self, name: str) -> list[EntrySide]:
-        with self._session() as session:
-            rows = list(
-                session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == name)).all()
-            )
-        return [
-            EntrySide(
-                row.key,
-                sim.maybe_deserialize(row.key_embedding),
-                sim.maybe_deserialize(row.content_embedding),
-            )
-            for row in rows
-        ]
 
     def _require_collection(self, name: str) -> None:
         memory = self.get(name)

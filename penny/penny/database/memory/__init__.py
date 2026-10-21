@@ -2,11 +2,21 @@
 
 Import surface: callers ask ``db.memory(name)`` for a ``Memory`` and call methods
 on it (the object refuses ops that don't fit its shape / read-only-ness), and
-``db.memories`` for registry operations (create/list/archive, ``exists``,
-backfill).  The shapes and facades live in :mod:`objects`; the registry and
-dispatch in :mod:`store`; shared value types in :mod:`types`.
+``db.memories`` for registry operations (create/list/archive, backfill).  The
+shapes and facades live in :mod:`objects`; the registry and
+dispatch in :mod:`store`; shared value types in :mod:`types`; the entry-identity
+ladder (rules, shortlist, decision model, honest question) in :mod:`identity`.
 """
 
+from penny.database.memory.identity import (
+    CandidateVerdict,
+    EntryDecider,
+    EntryDecision,
+    EntryGiven,
+    EntryPlan,
+    plan_entries,
+    rule_only_decisions,
+)
 from penny.database.memory.objects import (
     Collection,
     Log,
@@ -22,9 +32,7 @@ from penny.database.memory.objects import (
 )
 from penny.database.memory.store import MemoryStore
 from penny.database.memory.types import (
-    DedupThresholds,
     EntryInput,
-    EntrySide,
     LogEntryInput,
     MemoryAccessError,
     MemoryAlreadyExistsError,
@@ -56,13 +64,18 @@ from penny.text_validity import (
 )
 
 __all__ = [
+    "CandidateVerdict",
     "Collection",
-    "DedupThresholds",
     "degenerate_reason",
     "half_formed_send_reason",
+    "EntryDecision",
+    "EntryDecider",
+    "EntryGiven",
     "EntryInput",
-    "EntrySide",
+    "EntryPlan",
     "is_blank",
+    "plan_entries",
+    "rule_only_decisions",
     "Log",
     "LoggedToolCall",
     "LogEntryInput",

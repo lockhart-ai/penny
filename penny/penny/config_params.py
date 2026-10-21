@@ -240,67 +240,15 @@ ConfigParam(
     group=GROUP_BACKGROUND,
 )
 
-# ── Memory tool — collection dedup thresholds ────────────────────────────────
+# ── Memory tool — fuzzy-name match gate ─────────────────────────────────
 #
-# A candidate write is a duplicate if ANY signal hits its strict threshold,
-# OR if any TWO signals hit their relaxed thresholds.  Three signals:
-#   1. key TCR (token-containment ratio; lexical)
-#   2. key embedding cosine (paraphrase)
-#   3. content embedding cosine
-# Strict catches obvious matches on one axis; relaxed catches weak-on-every-
-# axis matches a single-signal gate would miss.
-
-ConfigParam(
-    key="MEMORY_DEDUP_KEY_TCR_STRICT",
-    description="Strict key token-containment threshold for memory dedup",
-    type=float,
-    default=1.0,
-    validator=_validate_unit_float,
-    group=GROUP_MEMORY,
-)
-
-ConfigParam(
-    key="MEMORY_DEDUP_KEY_TCR_RELAXED",
-    description=(
-        "Relaxed key token-containment threshold (catches abbreviation pairs "
-        "like 'applied ai conference' / 'applied ai conf' at exactly 2/3)"
-    ),
-    type=float,
-    default=0.65,
-    validator=_validate_unit_float,
-    group=GROUP_MEMORY,
-)
-
-ConfigParam(
-    key="MEMORY_DEDUP_KEY_SIM_STRICT",
-    description="Strict key embedding cosine threshold for memory dedup",
-    type=float,
-    default=0.90,
-    validator=_validate_unit_float,
-    group=GROUP_MEMORY,
-)
-
-ConfigParam(
-    key="MEMORY_DEDUP_KEY_SIM_RELAXED",
-    description="Relaxed key embedding cosine threshold for memory dedup",
-    type=float,
-    default=0.75,
-    validator=_validate_unit_float,
-    group=GROUP_MEMORY,
-)
-
-ConfigParam(
-    key="MEMORY_DEDUP_CONTENT_SIM_STRICT",
-    description="Strict content embedding cosine threshold for memory dedup",
-    type=float,
-    default=0.90,
-    validator=_validate_unit_float,
-    group=GROUP_MEMORY,
-)
-
+# The meaning leg of a did-you-mean suggestion (a mistyped collection/log name
+# resolved against stored description embeddings) clears this cosine; the
+# entry-identity ladder does not read it — identity is decided by rules, a
+# shortlist, and the decision model (#2715), not by a similarity threshold.
 ConfigParam(
     key="MEMORY_DEDUP_CONTENT_SIM_RELAXED",
-    description="Relaxed content embedding cosine threshold for memory dedup",
+    description="Cosine a fuzzy-name meaning match must clear for a did-you-mean suggestion",
     type=float,
     default=0.75,
     validator=_validate_unit_float,

@@ -771,7 +771,7 @@ class IosChannel(MessageChannel):
             logger.warning("entry_create on missing memory %s", req.memory)
             return
         try:
-            memory.write(
+            memory.write_rule_decided(
                 [EntryInput(key=req.key, content=req.content)],
                 author=self._IOS_ENTRY_AUTHOR,
             )

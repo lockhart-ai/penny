@@ -35,7 +35,8 @@ flowchart TD
 - **Ollama**: Local LLM inference (default model: gpt-oss:20b)
 - **Vision**: Image attachments ride the chat turn's own user message for the chat model to read directly (#2635) — no separate caption call or vision model
 - **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via the `generate_image` chat tool (config-gated on `LLM_IMAGE_MODEL`)
-- **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for memory dedup and similarity recall — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
+- **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for memory identity (the ladder's shortlist) and similarity recall — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
+- **Decision Model**: Optional (`LLM_DECISION_MODEL`) small choice-question model on Ollama's `/v1/systemone` for the entry-identity ladder (#2715); unset runs the named degraded mode (preflight-warned)
 - **Browser Extension**: Web search and page reading — all web access goes through the connected browser
 - **SQLite**: Logs all prompts and messages; stores the memory framework (collections, logs) and conversation history
 
@@ -69,7 +70,7 @@ penny/
   prompts.py          — LLM prompt templates (chat conversation, email-summarize).  Collector prompts live on memory rows (extraction_prompt) instead
   responses.py        — All user-facing response strings (PennyResponse class)
   startup.py          — Startup announcement message generation (git commit info)
-  preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on image/browser/channel issues
+  preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on the decision model/image/browser/channel issues
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
   notification.py     — The finished cycle's report hand-off (#1911, reshaped #2656): the report row the cycle enqueues, the typed JobReport + its deterministic render, the outcome vocabulary the run record is stamped from, and the send gate
   agents/
@@ -124,7 +125,7 @@ penny/
     message_store.py  — MessageStore: log_message, log_prompt, log_command, threads
     send_queue_store.py — SendQueueStore: durable outbound queue — enqueue, `next_pending` (by origin lane), mark_sent (#1939)
     user_store.py     — UserStore: get_info, save_info, mute/unmute
-    memory/           — The memory layer: `Memory`/`Collection`/`Log`, `MemoryStore`, the message-log/run-log facades, the undo journal
+    memory/           — The memory layer: `Memory`/`Collection`/`Log`, `MemoryStore`, the message-log/run-log facades, the undo journal, the entry-identity ladder (`identity.py`)
     mutation_store.py — `MutationStore`: the registry-mutation event ledger, with before/after field priors (#1946)
     cursor_store.py   — CursorStore: per-agent read cursors into log-shaped memories
     media_store.py    — MediaStore: browsed images, matched to outgoing text by embedding at egress (generated images deliver by id to their own reply, then join this pool)
@@ -135,6 +136,7 @@ penny/
     client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one. `chat` takes a required `call_link: CallLink` and reads `run_id`/`parent_run_id`/`parent_tool_call_id` straight off it — no ambient state, no default
     call_link.py      — `CallLink` (#2458): the frozen, explicit run/tool-call linkage every model call and every dispatched tool call carries — `run_id`/`parent_run_id`/`parent_tool_call_id` (logged identity) plus `tool_call_id` (position: the tool call this link is presently inside, consumed only by `child()`). Constructors: `top(run_id)` / `new_top()` for a run starter, `for_tool_call(id)` for the dispatcher, `child()` for a micro-context's own draw — required everywhere, no ambient reads, no fallback
     image_client.py   — OllamaImageClient: Ollama-specific HTTP client for image generation and model listing
+    decision_client.py — DecisionClient: async client for Ollama's `/v1/systemone` choice-question endpoint (the entry-identity ladder's decision model, #2715)
     models.py         — LlmMessage, LlmResponse, LlmToolCall, LlmError hierarchy (SDK-decoupled Pydantic types)
     embeddings.py     — Re-exports serialize/deserialize/cosine from shared similarity/ package
     similarity.py     — Penny-specific: embed_text (safe single-text embedding helper)
@@ -216,7 +218,7 @@ There are no conditional (config-gated) commands — email retired onto the chat
 - `RuntimeParams` class provides attribute access: `config.runtime.IDLE_SECONDS`
 - Three-tier lookup chain: DB override → env override → ConfigParam.default
 - Config values are read on each use (not cached), so changes take effect immediately
-- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS, dedup thresholds), Email (body max length, search/list limits, request timeout), Browse (parallel fetch cap `MAX_QUERIES`, per-call total query ceiling `BROWSE_MAX_QUERIES_PER_CALL`), Token budgets (one `TOKEN_BUDGET_*` param per model-call kind — chat, collector, browse-extract — read by `token_budget_for(runtime, agent_name)` and sent as `LlmClient.chat()`'s `token_budget`, #2474)
+- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS), Memory (the fuzzy-name match gate `MEMORY_DEDUP_CONTENT_SIM_RELAXED`), Email (body max length, search/list limits, request timeout), Browse (parallel fetch cap `MAX_QUERIES`, per-call total query ceiling `BROWSE_MAX_QUERIES_PER_CALL`), Token budgets (one `TOKEN_BUDGET_*` param per model-call kind — chat, collector, browse-extract — read by `token_budget_for(runtime, agent_name)` and sent as `LlmClient.chat()`'s `token_budget`, #2474)
 
 ## Data Model
 

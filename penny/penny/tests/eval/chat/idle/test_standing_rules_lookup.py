@@ -749,7 +749,7 @@ def _seed_world(db: Database) -> None:
     db.memories.create_collection(
         "user_profile", "auto-created to hold 'career'", created_by_run_id=profile_run
     )
-    require_memory(db, "user_profile").write(
+    require_memory(db, "user_profile").write_rule_decided(
         [EntryInput(key=key, content=content) for key, content in _PROFILE_ENTRIES],
         author="chat",
         run_id=profile_run,
@@ -771,7 +771,7 @@ def _seed_world(db: Database) -> None:
 
     # The rules, written by the chat run that kept them (the recorded rule turn).
     rule_run = seeded_run_id("turn-rule")
-    require_memory(db, RULES).write(
+    require_memory(db, RULES).write_rule_decided(
         [EntryInput(key=key, content=content) for key, content in _RULES],
         author="chat",
         run_id=rule_run,

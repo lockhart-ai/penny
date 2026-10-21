@@ -29,6 +29,7 @@ from penny.database.migrate import migrate
 from penny.database.models import MemoryEntry
 from penny.email.protocol import EmailClient
 from penny.llm.client import LlmClient
+from penny.llm.decision_client import DecisionClient, decision_api_url
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmError, ProviderPin
@@ -145,6 +146,14 @@ class Penny:
                 retry_delay=config.llm_retry_delay,
             )
             if config.llm_image_model
+            else None
+        )
+        # The entry-identity ladder's decision model (#2715).  Optional: unset
+        # runs the named degraded mode ("entry matching falls back to asking"),
+        # reported by the preflight — never a silent no-op.
+        self.decision_client = (
+            DecisionClient(model=config.llm_decision_model, api_url=decision_api_url(config))
+            if config.llm_decision_model
             else None
         )
 
@@ -404,6 +413,7 @@ class Penny:
             config=self.config,
             model_client=self.model_client,
             embedding_client=self.embedding_model_client,
+            decision_client=self.decision_client,
             image_client=self.image_client,
             browser_enabled=self.config.browser_enabled,
             browser_connected=bool(browser and browser.has_browser_connection),

@@ -130,7 +130,7 @@ def _seed(db: Database) -> None:
     store's own write path into ``rules``, and the render probed out loud, so a world
     that stopped showing the rule fails in the seed rather than after GPU time.  No
     job exists yet — the ask stands it up."""
-    require_memory(db, _RULES).write(
+    require_memory(db, _RULES).write_rule_decided(
         [EntryInput(key=_SIGNOFF_KEY, content=_SIGNOFF_CONTENT)],
         author="user",
         run_id=seeded_run_id(_RULES),

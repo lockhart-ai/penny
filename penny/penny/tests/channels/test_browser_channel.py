@@ -2408,7 +2408,7 @@ class TestBrowserMemoryHandlers:
             extraction_prompt="extract games",
             schedule="FREQ=MINUTELY;INTERVAL=5",
         )
-        db.memory("board-games").write(
+        db.memory("board-games").write_rule_decided(
             [EntryInput(key="catan", content="Gateway strategy game")],
             author="user",
         )
@@ -2453,7 +2453,7 @@ class TestBrowserMemoryHandlers:
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("board-games", "tabletop strategy")
         db.memories.create_collection("espresso-gear", "coffee equipment")
-        require_memory(db, "espresso-gear").write(
+        require_memory(db, "espresso-gear").write_rule_decided(
             [EntryInput(key="grinder", content="Niche Zero burr grinder")],
             author="test",
         )
@@ -2477,7 +2477,7 @@ class TestBrowserMemoryHandlers:
         entries section to matches — but metadata keeps the full count."""
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("espresso-gear", "coffee")
-        require_memory(db, "espresso-gear").write(
+        require_memory(db, "espresso-gear").write_rule_decided(
             [
                 EntryInput(key="grinder", content="Niche Zero burr grinder"),
                 EntryInput(key="machine", content="Gaggia Classic espresso machine"),
@@ -2665,7 +2665,7 @@ class TestBrowserMemoryHandlers:
         received: list[str | None] = []
         db.memories.subscribe_memory_changed(lambda name: received.append(name))
 
-        require_memory(db, "board-games").write(
+        require_memory(db, "board-games").write_rule_decided(
             [EntryInput(key="catan", content="A classic")],
             author="user",
         )
@@ -3149,7 +3149,7 @@ class TestBrowserMemoryHandlers:
 
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("board-games", "x")
-        require_memory(db, "board-games").write(
+        require_memory(db, "board-games").write_rule_decided(
             [EntryInput(key="catan", content="old")],
             author="user",
         )
@@ -3168,7 +3168,7 @@ class TestBrowserMemoryHandlers:
 
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("board-games", "x")
-        require_memory(db, "board-games").write(
+        require_memory(db, "board-games").write_rule_decided(
             [EntryInput(key="catan", content="A classic")],
             author="user",
         )

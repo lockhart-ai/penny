@@ -747,7 +747,7 @@ def _seed_collector_cycle(
     db.messages.set_run_outcome(run_id, outcome.value, summary)
     if wrote is not None:
         key, content = wrote
-        require_memory(db, _JOB_CONTAINER).write(
+        require_memory(db, _JOB_CONTAINER).write_rule_decided(
             [EntryInput(key=key, content=content)],
             author=PennyConstants.MessageAuthor.COLLECTOR,
             run_id=run_id,
@@ -769,7 +769,7 @@ def _seed_world(db: Database) -> None:
     db.memories.create_collection(
         "user_profile", "auto-created to hold 'career'", created_by_run_id=profile_run
     )
-    require_memory(db, "user_profile").write(
+    require_memory(db, "user_profile").write_rule_decided(
         [EntryInput(key=key, content=content) for key, content in _PROFILE_ENTRIES],
         author="chat",
         run_id=profile_run,
@@ -777,7 +777,7 @@ def _seed_world(db: Database) -> None:
     # The rules collection is migration-seeded (a standing default); its entries are
     # the user's own, written the way the runtime writes them.
     rules_run = seeded_run_id("rules")
-    require_memory(db, "rules").write(
+    require_memory(db, "rules").write_rule_decided(
         [EntryInput(key=key, content=content) for key, content in _RULES_ENTRIES],
         author="chat",
         run_id=rules_run,

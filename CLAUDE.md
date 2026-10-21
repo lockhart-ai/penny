@@ -115,8 +115,12 @@ similarity/                     — Similarity primitives (embeddings, dedup)
   embeddings.py                 — Pure math: cosine similarity, TCR, serialization; job-name
                                   normalisation (`tokenize_job_name` / `singularize` /
                                   `JOB_ROLE_WORDS`) + strict token containment (#1775)
-  dedup.py                      — Dedup strategies: entry dedup (TCR + embedding) and the
-                                  two-tier job identity rule `is_same_job` (#1775)
+  dedup.py                      — Job identity rule `is_same_job` (#1775) — the
+                                  collection_configure duplicate check (entry identity is the
+                                  ladder in `penny/penny/database/memory/identity.py`, #2715)
+  identity.py                   — Pure entry-identity rules: key normalisation, the
+                                  number-token rule, `pair_rule_verdict`, the embedding
+                                  shortlist (#2715)
 browser/                        — Firefox browser extension
   src/                          — TypeScript source
     protocol.ts                 — Typed WebSocket + runtime messaging protocol
@@ -260,6 +264,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., embeddinggemma) — backs Penny's memory (preference dedup and similarity recall). Penny fails fast at startup if it is unset; there is no degraded, embedding-less mode
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override endpoint for embedding model
 - `LLM_IMAGE_MODEL`: Image generation model (e.g., x/z-image-turbo). Optional; enables the `generate_image` chat tool. Uses Ollama's native REST API at `LLM_IMAGE_API_URL`
+- `LLM_DECISION_MODEL` / `LLM_DECISION_API_URL`: Optional decision model for the entry-identity ladder (#2715) — Ollama's `/v1/systemone` choice-question endpoint (`LLM_DECISION_API_URL` defaults to the embedding endpoint's host). Unset runs the named degraded mode: entry matching falls back to asking (look-alike entries are written as new and the writing model is asked whether it meant an existing one); the startup preflight names the mode
 - `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: http://host.docker.internal:11434)
 
 **Eval suite** (read from the primary checkout's `.env` by `make eval-remote`):

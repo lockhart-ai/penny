@@ -566,7 +566,7 @@ def seed_collection(
         notify=notify,
         created_by_run_id=seeded_by,
     )
-    require_memory(db, synth.name).write(
+    require_memory(db, synth.name).write_rule_decided(
         [EntryInput(key=key, content=content) for key, content in synth.keyed],
         author="user",
         run_id=seeded_by,

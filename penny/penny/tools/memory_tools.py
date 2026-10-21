@@ -6,8 +6,9 @@ string the model can reason over.
 
 Author attribution is passed explicitly: write-capable tools take an
 ``author: str`` at construction time (the agent that owns the tool).
-``build_memory_tools(db, embedding_client, author)`` is the factory each
-agent calls with its own ``self.name`` so writes are attributed correctly.
+``build_memory_tools(db, embedding_client, author, decider)`` is the factory each
+agent calls with its own ``self.name`` so writes are attributed correctly; the
+``decider`` is the entry-identity ladder's decision step (#2715).
 
 Tools that need embeddings (writes, similarity reads) take an
 ``LlmClient`` in ``__init__``. On a transient embed failure at write time the
@@ -53,11 +54,13 @@ from penny.database.memory import (
     ResolvedMessage,
     RunLog,
     WriteResult,
+    plan_entries,
     render_key,
     render_memory_not_found,
     render_run_calls,
     strip_display_brackets,
 )
+from penny.database.memory.identity import EntryDecider
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.database.mutation_store import render_mutation
 from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
@@ -1209,66 +1212,59 @@ def _is_name_variant(asked: str, existing: str) -> bool:
     )
 
 
-# The DIVERGENT-VALUE rejection (#1405, restated by #1919).  Every ``DUPLICATE`` is a
-# collision whose CONTENT differs now — the same-value case has its own outcome and its
-# own STOP — so what this write carries is NEWS about an entry that already exists, and
-# there is exactly one call that lands it.
-#
-# It states three facts and offers nothing: the collection already holds this subject
-# under a key it NAMES, any other key collides with that same entry again, and here is
-# the call.  What it replaced ended "…to refresh it if you have richer info", which reads
-# as advice to weigh rather than as the situation — measured, 4 of 5 samples filed the
-# new value under a fresh key instead of landing it on the matched one.  The matched key
-# is rendered VERBATIM inside the call, so the recovery is a copy rather than a guess.
-_DUPLICATE_REJECTION = (
-    "'{key}' was not written — this collection already holds an entry about that, stored "
-    "under the key '{matched}', and what you wrote is a different value from what that "
-    "entry holds. Any other key you write it under collides with that same entry again. "
-    "To land the new value: collection_write(collection='{collection}', entries=[{{'key': "
-    "'{matched}', 'content': <the new value>}}]) — the store replaces the content of the "
-    "key you name."
-)
-# The matched entry has no key, so no keyed write can address it — named as
-# such rather than dangling an imperative the model cannot act on.
-_DUPLICATE_REJECTION_KEYLESS = (
-    "'{key}' was not written — it collides with an existing entry that has no key, and a "
-    "keyed write cannot replace a keyless entry. Leave it out, or write content that does "
-    "not collide"
+# The merge reply (#2715): the identity ladder matched this write to an existing
+# entry holding a DIFFERENT value, so the store replaced that value in place and
+# the reply says so — the PRIOR value verbatim, plus the one call that restores it
+# and writes the new value under its own key, so a wrong match is visible and
+# reversible in a single call.  Reached for the exact-key change (#1633) and for
+# a cross-key merge the ladder decided alike.
+_UPDATED_REPLY = (
+    "Updated '{matched}'{matched_as}. It held: \"{prior}\". If they are different "
+    "things, restore it with collection_write(collection='{collection}', entries=[{{'key': "
+    "'{matched}', 'content': \"{prior}\"}}]) and write yours under its own key ('{key}')."
 )
 
-# The trailing framing after the per-entry rejections.  Each one already names its own
-# call, so the close says only how much of the batch is in that position — and neither
-# line hedges, because since #1919 there is no "only if you have richer info" case left
-# for a DUPLICATE to be in.
-_DUPLICATE_CLOSE_ALL = "Nothing in this batch landed — each one belongs on the entry named above."
-_DUPLICATE_CLOSE_SOME = "The rest of the batch landed; these belong on the entries named above."
+
+def _format_updated(collection: str, result: WriteResult) -> str:
+    """One merge: what was updated, what it held, and the one call that undoes it.
+
+    ``collection`` is the write's resolved target, so the restore call is copyable
+    verbatim whatever redirect produced it."""
+    matched_as = (
+        f" — matched as the same thing as '{result.key}'"
+        if result.matched_key != result.key
+        else ""
+    )
+    prior = result.prior_value or ""
+    return _UPDATED_REPLY.format(
+        matched=result.matched_key,
+        matched_as=matched_as,
+        prior=prior,
+        collection=collection,
+        key=result.key,
+    )
 
 
-def _format_duplicate(collection: str, result: WriteResult) -> str:
-    """One self-contained rejection for a rejected candidate: what this collection already
-    holds it under, that no other key escapes the collision, and the exact call that lands
-    the new value.
+# The honest question (#2715): the ladder was unsure (or no decision model is
+# configured — the named degraded mode), so the write went through as new AND the
+# reply names the shortlisted candidate key and what each call would do — update
+# that entry if this write is the same thing, or let the new entry stand if it is
+# a different thing.  It never tells the model to overwrite an entry the write is
+# not about; the update call is conditioned on the model's own judgment.
+_UNSURE_REPLY = (
+    "'{key}' was written as a new entry. This collection also holds '{candidate}', "
+    "which looks similar — if what you wrote is the same thing as that entry, update it "
+    "with collection_write(collection='{collection}', entries=[{{'key': '{candidate}', "
+    "'content': <the value>}}]); if it is a different thing, the new entry stands as "
+    "written."
+)
 
-    Self-contained because the recovery has to be readable without the lines around it —
-    the failure this addresses was the model treating the matched key as one option among
-    several and filing its value somewhere new.  ``collection`` is the write's resolved
-    target, so the recovery call is copyable verbatim whatever redirect produced it."""
-    if result.matched_key:
-        return _DUPLICATE_REJECTION.format(
-            key=result.key, matched=result.matched_key, collection=collection
-        )
-    return _DUPLICATE_REJECTION_KEYLESS.format(key=result.key)
 
-
-def _format_changed(results: list[WriteResult]) -> str:
-    """The change-gate CHANGED part (#1587/#1633): the exact key already existed with
-    a DIFFERENT value — the observed value changed, so the write gate auto-refreshed
-    the stored baseline IN PLACE (through the shared update path, stamping the writing
-    run).  Nothing further is needed — the refresh already happened; the next
-    observation of the same value reads as UNCHANGED."""
-    keys = ", ".join(f"'{r.key}'" for r in results)
-    noun = "entry" if len(results) == 1 else "entries"
-    return f"Changed: {keys} — the stored baseline was refreshed to the new value ({noun})."
+def _format_unsure(collection: str, result: WriteResult) -> str:
+    """One honest question for a written-as-new entry with an unsure candidate."""
+    return _UNSURE_REPLY.format(
+        key=result.key, candidate=result.unsure_candidate, collection=collection
+    )
 
 
 def _format_unchanged(results: list[WriteResult]) -> str:
@@ -1401,12 +1397,17 @@ class CollectionWriteTool(MemoryTool):
         db: Database,
         llm_client: LlmClient,
         author: str,
+        decider: EntryDecider,
         scope: str | None = None,
         run_id: str | None = None,
     ) -> None:
         self._db = db
         self._llm = llm_client
         self._author = author
+        # The identity ladder's decision step — a required parameter threaded from
+        # the agent, never ambient state.  Holds the decision client, or None for
+        # the named degraded mode (entry matching falls back to asking).
+        self._decider = decider
         self._scope = scope
         # The writing run — stamped on each new entry (created/last-written) so a
         # stored value cites the run that produced it (#1560).
@@ -1434,7 +1435,22 @@ class CollectionWriteTool(MemoryTool):
         embed_failure = self._embed_failure(target, entries)
         if embed_failure is not None:
             return embed_failure
-        results = collection.write(entries, author=self._author, run_id=self._run_id)
+        # The identity ladder, its three parts in order: read what the collection
+        # holds, settle it (rules + shortlist here, decision model on the async
+        # path that just embedded), then hand the decisions to the write —
+        # ``identity`` owns the decision, the store only applies it (#2715).
+        givens = collection.identity_givens()
+        plans = plan_entries(entries, givens)
+        decisions = await self._decider.decide(
+            plans=plans,
+            entries=entries,
+            existing=givens,
+            collection_name=collection.name,
+            collection_description=collection.row.description,
+        )
+        results = collection.write(
+            entries, author=self._author, run_id=self._run_id, decisions=decisions
+        )
         result = self._format_results(target, results)
         if note:
             return result.model_copy(update={"message": note + result.message})
@@ -1508,8 +1524,8 @@ class CollectionWriteTool(MemoryTool):
         Each entry carries one ``WriteGateOutcome`` (#1587); this buckets them, logs
         the rejections, and renders one part per non-empty bucket.  ``mutated`` is
         true when any entry changed durable state — a NEW_KEY write OR a
-        KEY_EXISTS_CHANGED baseline auto-refresh (#1633); an all-duplicate /
-        unchanged / degenerate batch changed nothing, so it reads as no-work for the
+        KEY_EXISTS_CHANGED merge/baseline-refresh (#1633); an all-unchanged /
+        degenerate batch changed nothing, so it reads as no-work for the
         throttle."""
         by = self._bucket(results)
         self._log_rejections(memory, by)
@@ -1531,13 +1547,6 @@ class CollectionWriteTool(MemoryTool):
 
     @staticmethod
     def _log_rejections(memory: str, by: dict[WriteGateOutcome, list[WriteResult]]) -> None:
-        if duplicates := by[WriteGateOutcome.DUPLICATE]:
-            logger.info(
-                "collection_write: %d duplicate(s) rejected in %s: %s",
-                len(duplicates),
-                memory,
-                ", ".join(r.key for r in duplicates),
-            )
         if degenerate := by[WriteGateOutcome.DEGENERATE]:
             logger.info(
                 "collection_write: %d degenerate entry(ies) rejected in %s: %s",
@@ -1551,53 +1560,31 @@ class CollectionWriteTool(MemoryTool):
     ) -> list[str]:
         """One part per non-empty outcome bucket, composed in a fixed order — a
         table of contents over the per-outcome formatters."""
-        written = [r.key for r in by[WriteGateOutcome.NEW_KEY]]
+        new_keys = by[WriteGateOutcome.NEW_KEY]
+        unsure = [r for r in new_keys if r.unsure_candidate]
+        written = [r.key for r in new_keys]
         changed = by[WriteGateOutcome.KEY_EXISTS_CHANGED]
         unchanged = by[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
         already = by[WriteGateOutcome.DUPLICATE_UNCHANGED]
-        duplicates = by[WriteGateOutcome.DUPLICATE]
         degenerate = by[WriteGateOutcome.DEGENERATE]
-        # "Nothing landed" = the batch was ONLY divergent-value duplicates: the close then
-        # names there is nothing new, not just per-entry refreshes.  An already-recorded
-        # entry landed nothing either, so it does not count as something having happened.
-        nothing_landed = not (written or changed or unchanged or degenerate)
         unexpected = by[WriteGateOutcome.UNEXPECTED]
-        parts = [
+        parts: list[str | None] = [
             _format_written(memory, written) if written else None,
-            _format_changed(changed) if changed else None,
-            _format_unchanged(unchanged) if unchanged else None,
-            _format_duplicate_unchanged(already) if already else None,
-            self._duplicate_part(memory, duplicates, all_duplicates=nothing_landed)
-            if duplicates
-            else None,
-            _format_degenerate(degenerate) if degenerate else None,
-            _format_unexpected(unexpected) if unexpected else None,
         ]
+        # one merge part per changed entry — each names the prior and its restore call.
+        parts.extend(_format_updated(memory, r) for r in changed)
+        # one honest question per written-as-new entry with an unsure candidate,
+        # on its own line — each names a key and a call.
+        parts.extend(_format_unsure(memory, r) for r in unsure)
+        parts.extend(
+            [
+                _format_unchanged(unchanged) if unchanged else None,
+                _format_duplicate_unchanged(already) if already else None,
+                _format_degenerate(degenerate) if degenerate else None,
+                _format_unexpected(unexpected) if unexpected else None,
+            ]
+        )
         return [part for part in parts if part]
-
-    def _duplicate_part(
-        self, memory: str, duplicates: list[WriteResult], *, all_duplicates: bool
-    ) -> str:
-        """The DUPLICATE part: one self-contained rejection per entry + the trailing close.
-
-        One per LINE rather than joined into a sentence: each rejection names a key, a call
-        and an argument, and running several of them together is what makes a matched key
-        hard to pick out and copy.  There is no "rejected as duplicates" lead-in any more
-        (#1919) — these are not duplicates, they are different values for entries that
-        exist, and calling them duplicates is the framing that had the model write them
-        somewhere else."""
-        rejections = "\n".join(_format_duplicate(memory, result) for result in duplicates)
-        return f"{rejections}\n{self._duplicate_close(all_duplicates=all_duplicates)}"
-
-    @staticmethod
-    def _duplicate_close(*, all_duplicates: bool) -> str:
-        """The trailing framing after the per-entry rejections (each already names its
-        own ``collection_write`` call).  It says how much of the batch is in that
-        position and names no call of its own — the actionable one is per entry, where
-        the key it needs is."""
-        if all_duplicates:
-            return _DUPLICATE_CLOSE_ALL
-        return _DUPLICATE_CLOSE_SOME
 
 
 # An adopt that attached a prompt but no schedule: the collection has a job yet
@@ -3070,6 +3057,7 @@ def build_memory_tools(
     db: Database,
     llm_client: LlmClient,
     agent_name: str,
+    decider: EntryDecider,
     scope: str | None = None,
     run_id: str | None = None,
     include_lifecycle: bool = True,
@@ -3162,7 +3150,9 @@ def build_memory_tools(
         LogCreateTool(db, llm_client),
     ]
     mutations: list[Tool] = [
-        CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),
+        CollectionWriteTool(
+            db, llm_client, agent_name, decider=decider, scope=scope, run_id=run_id
+        ),
         CollectionRemoveTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name, run_id=run_id),
     ]

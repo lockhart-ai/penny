@@ -86,7 +86,7 @@ def _seed_cycle_writes(db, run_id: str) -> None:
     """A job plus the entry its cycle wrote — the report's whole payload."""
     _register_user(db)
     db.memories.create_collection("indie-metroidvanias", "Indie metroidvania releases", notify=True)
-    require_memory(db, "indie-metroidvanias").write(
+    require_memory(db, "indie-metroidvanias").write_rule_decided(
         [
             EntryInput(
                 key="Cinder Drift",
