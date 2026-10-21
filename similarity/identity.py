@@ -7,8 +7,8 @@ stored one, before any model is asked:
     case, accents, punctuation, underscore/hyphen separators, a leading ``the``,
     a trailing parenthetical (``(band)``), and surrounding brackets.  The
     trailing parenthetical is split OFF first and normalised separately, so the
-    number rule can read it: ``Kino's Journey (2003)`` is not ``Kino's Journey
-    (2017)``, but ``Texhnolyze`` is still ``Texhnolyze (2003 anime)``.
+    number rule can read it: ``Solaris (1972)`` is not ``Solaris
+    (2002)``, but ``Twin Peaks`` is still ``Twin Peaks (1990 series)``.
   * ``pair_rule_verdict`` — the rules themselves, each settling only what it is
     sure of: keys whose MAIN part differs in a number token (digits, Roman
     numerals) are different entries; two parentheticals that both carry number
@@ -92,7 +92,7 @@ def normalise_key(key: str) -> str:
 def key_parts(key: str) -> tuple[str, str | None]:
     """A key split into its normalised MAIN part and its normalised trailing
     parenthetical, when it carries one — the two surfaces the number rule reads
-    separately (``Kino's Journey (2003)`` → ``("kino s journey", "2003")``)."""
+    separately (``Solaris (1972)`` → ``("solaris", "1972")``)."""
     main, paren = _split_parenthetical(key)
     return _base_normalise(main), (_base_normalise(paren) if paren is not None else None)
 
@@ -178,8 +178,8 @@ def pair_rule_verdict(
     number token are DIFFERENT — decisively, since a date key is exactly what
     makes two digest entries different — read on the main part, and on the
     trailing parenthetical only when BOTH keys carry one with numbers in it (a
-    number on just one side is a qualifier, not an identity: ``Texhnolyze`` is
-    still ``Texhnolyze (2003 anime)``); keys equal after normalising are the
+    number on just one side is a qualifier, not an identity: ``Twin Peaks`` is
+    still ``Twin Peaks (1990 series)``); keys equal after normalising are the
     SAME entry.  Content settles nothing here: identical content under a
     different key is the decision model's question, which sees both keys — a
     deterministic repeat rule would block two genuinely different things that
