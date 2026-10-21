@@ -178,7 +178,9 @@ class Preflight:
         """The entry-identity ladder's decision model (soft warn, always reported).
 
         Unset is the NAMED degraded mode, never a silent one: entry matching falls
-        back to asking the writing model about look-alike entries.  Set-but-
+        back to asking the writing model about look-alike entries, and
+        collection-name matching narrows to the rules (a near-miss write target
+        is refused with a did-you-mean instead of redirected).  Set-but-
         unavailable degrades the same way, so both are said out loud."""
         name = PreflightCheck.DECISION_MODEL
         if self.decision_client is None:
@@ -186,7 +188,10 @@ class Preflight:
                 name,
                 "no decision model configured (set LLM_DECISION_MODEL) — entry matching "
                 "falls back to asking: look-alike entries are written as new and the "
-                "writing model is asked whether it meant an existing one instead.",
+                "writing model is asked whether it meant an existing one instead. "
+                "Collection-name matching narrows to the rules alone: a write naming a "
+                "near-miss collection is refused with a did-you-mean instead of "
+                "redirected.",
             )
         model = self.config.llm_decision_model
         if model is None:  # unreachable: the client exists only when a model is configured
@@ -194,7 +199,10 @@ class Preflight:
                 name,
                 "no decision model configured (set LLM_DECISION_MODEL) — entry matching "
                 "falls back to asking: look-alike entries are written as new and the "
-                "writing model is asked whether it meant an existing one instead.",
+                "writing model is asked whether it meant an existing one instead. "
+                "Collection-name matching narrows to the rules alone: a write naming a "
+                "near-miss collection is refused with a did-you-mean instead of "
+                "redirected.",
             )
         url = decision_api_url(self.config)
         try:

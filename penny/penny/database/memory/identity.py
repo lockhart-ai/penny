@@ -31,9 +31,11 @@ from enum import StrEnum
 from typing import Literal, NamedTuple
 
 from pydantic import BaseModel
+from similarity.embeddings import singularize
 from similarity.identity import (
     KeyRule,
     ShortlistSide,
+    key_parts,
     pair_rule_verdict,
     shortlist,
 )
@@ -385,3 +387,163 @@ def rule_only_decisions(
         unsure = next((existing[index].key for index in plan.candidates), None)
         decisions.append(EntryDecision(key=entry.key, action="new", unsure_candidate=unsure))
     return decisions
+
+
+# ── Collection-name identity (#2724) ─────────────────────────────────────────
+#
+# Whether a write's collection name is an existing collection's under a
+# different spelling, decided by the same ladder as entry identity — rules
+# first, then an embedding shortlist, then the decision model, with unsure
+# falling back to the honest did-you-mean refusal.  Unlike entries, the
+# SHORTLIST's ranking runs in the write tool (the embedding client lives
+# there, and a candidate's name vector is worth embedding only on a miss), so
+# this module owns the rules and the question, and the tool owns the ranking
+# and the outcomes.
+
+
+def normalise_collection_name(name: str) -> str:
+    """A collection name reduced to the form identity is decided on: the entry
+    key's normalisation (case, accents, punctuation, underscore/hyphen
+    separators, a leading ``the``, surrounding brackets) with every token
+    singularized — ``gear-notes`` is ``gear-note``.  The trailing
+    parenthetical is kept AS a parenthetical (re-singularized inside), so the
+    number rule can still read it: ``Dune (1984)`` is not ``Dune (2021)``."""
+    main, paren = key_parts(name)
+
+    def _singular(text: str) -> str:
+        return " ".join(singularize(token) for token in text.split())
+
+    if paren is None:
+        return _singular(main)
+    return f"{_singular(main)} ({_singular(paren)})"
+
+
+def collection_name_rule(asked: str, existing: str) -> KeyRule | None:
+    """The deterministic verdict for one asked/existing collection-name pair,
+    or ``None`` when the rules do not settle it.
+
+    The rules are the entry-identity pair rules declared once in
+    :mod:`similarity.identity`, read over the singularized normalisations:
+    names equal after normalising are the same collection; names differing in
+    a number token are different collections (``aurora-deck-2`` is not
+    ``aurora-deck-3``).  Everything else — a typo, a role-word extension, a
+    rewording — is undecided and left to the shortlist and the decision
+    model.  Content is passed equal on both sides because content settles
+    nothing in the rules: a collection-name pair has no content to compare,
+    and the shared declaration must not be given one."""
+    return pair_rule_verdict(
+        normalise_collection_name(asked),
+        normalise_collection_name(existing),
+        "",
+        "",
+    )
+
+
+class CollectionCandidate(NamedTuple):
+    """One existing collection as the name ladder sees it — display name,
+    description, and the two embeddings it was ranked on (its name, embedded
+    per miss; its stored description anchor)."""
+
+    name: str
+    description: str | None
+    name_vec: list[float] | None
+    description_vec: list[float] | None
+
+
+class CollectionNameVerdict(NamedTuple):
+    """The name ladder's outcome for one write.
+
+    ``name`` set is the redirect target — the collection the rules or the
+    decision model settled as the same one.  With ``name`` None, ``unsure``
+    true means the ladder could not settle the match (the caller falls through
+    to the honest did-you-mean refusal); ``unsure`` false means every
+    candidate was decisively not it — nothing close, the caller auto-creates."""
+
+    name: str | None
+    unsure: bool
+
+
+# The identity question for collections, framed like the entry ladder's (#2715):
+# what separates the two surfaces is named in the question itself — each
+# collection is its own store — so a wording match is not read as a same-store
+# entry collision.  No fixture words: the question must fit any write, not the
+# cases that motivated it.
+_COLLECTION_IDENTITY_INSTRUCTIONS = (
+    "A write names a collection by one spelling, and one existing collection "
+    "is shown beside it.  Each collection is its own store, holding its own "
+    "entries, kept apart from every other collection's.  Is the asked name the "
+    "same collection as the existing one, merely spelled or worded differently?"
+)
+_COLLECTION_IDENTITY_CRITERIA = {
+    "yes": "the same collection, under another spelling or wording",
+    "no": "two different collections, each its own store",
+}
+
+
+def _collection_question_state(asked: str, candidate: CollectionCandidate) -> str:
+    return (
+        f"Asked name: '{asked}'\n"
+        f"Existing collection: '{candidate.name}' — {candidate.description or 'no description'}"
+    )
+
+
+class CollectionNameDecider:
+    """The decision-model step of the collection-name ladder (#2724).
+
+    Holds the :class:`DecisionClient`, or ``None`` for the named degraded mode
+    (collection-name matching narrows to the rules alone, and every near-miss
+    falls back to the honest did-you-mean refusal).  Constructed once, from
+    config, at startup beside :class:`EntryDecider`, sharing its client — a
+    required value threaded to the write tool, never read from ambient state."""
+
+    def __init__(self, client: DecisionClient | None) -> None:
+        self._client = client
+
+    async def decide(
+        self, *, asked: str, candidates: list[CollectionCandidate]
+    ) -> CollectionNameVerdict:
+        """Ask the decision model about each shortlisted candidate in rank
+        order — the first ``yes`` redirects; a decisive ``no`` moves on
+        quietly; any ``unsure`` makes the ladder unsure (recorded, and a later
+        ``yes`` still wins).  With no candidates at all the verdict is
+        ``none`` — nothing close, the caller auto-creates."""
+        unsure = False
+        for candidate in candidates:
+            answer = await self._ask(asked, candidate)
+            if answer is IdentityAnswer.YES:
+                return CollectionNameVerdict(name=candidate.name, unsure=False)
+            if answer is IdentityAnswer.UNSURE:
+                unsure = True
+            # a decided NO moves on to the next candidate quietly
+        return CollectionNameVerdict(name=None, unsure=unsure)
+
+    async def _ask(self, asked: str, candidate: CollectionCandidate) -> IdentityAnswer:
+        """One identity question about one candidate.  No client at all is the
+        named degraded mode; a failed or malformed call degrades to
+        ``unsure`` — both logged as named modes, never silently settled."""
+        if self._client is None:
+            return IdentityAnswer.UNSURE
+        try:
+            answer = await self._client.decide(
+                state=_collection_question_state(asked, candidate),
+                instructions=_COLLECTION_IDENTITY_INSTRUCTIONS,
+                criteria=_COLLECTION_IDENTITY_CRITERIA,
+            )
+        except DecisionError as error:
+            logger.warning(
+                "collection name: decision model unavailable for '%s' vs '%s': %s",
+                asked,
+                candidate.name,
+                error,
+            )
+            return IdentityAnswer.UNSURE
+        verdict = _IDENTITY_BY_CHOICE.get(answer.choice.strip().lower())
+        if verdict is None:
+            logger.warning(
+                "collection name: decision model chose unknown option %r for '%s' vs '%s'",
+                answer.choice,
+                asked,
+                candidate.name,
+            )
+            return IdentityAnswer.UNSURE
+        return verdict

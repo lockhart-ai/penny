@@ -4,17 +4,22 @@ Import surface: callers ask ``db.memory(name)`` for a ``Memory`` and call method
 on it (the object refuses ops that don't fit its shape / read-only-ness), and
 ``db.memories`` for registry operations (create/list/archive, backfill).  The
 shapes and facades live in :mod:`objects`; the registry and
-dispatch in :mod:`store`; shared value types in :mod:`types`; the entry-identity
-ladder (rules, shortlist, decision model, honest question) in :mod:`identity`.
+dispatch in :mod:`store`; shared value types in :mod:`types`; the identity
+ladders — entry identity (#2715) and collection-name matching (#2724), each
+rules, shortlist, decision model, honest question — in :mod:`identity`.
 """
 
 from penny.database.memory.identity import (
+    CollectionCandidate,
+    CollectionNameDecider,
+    CollectionNameVerdict,
     EntryDecider,
     EntryDecision,
     EntryGiven,
     EntryPlan,
     IdentityAnswer,
     ValueAnswer,
+    collection_name_rule,
     plan_entries,
     rule_only_decisions,
 )
@@ -68,6 +73,10 @@ __all__ = [
     "IdentityAnswer",
     "ValueAnswer",
     "Collection",
+    "CollectionCandidate",
+    "CollectionNameDecider",
+    "CollectionNameVerdict",
+    "collection_name_rule",
     "degenerate_reason",
     "half_formed_send_reason",
     "EntryDecision",

@@ -25,7 +25,7 @@ from penny.database.memory import (
     WriteResult,
     render_run_calls,
 )
-from penny.database.memory.identity import EntryDecider
+from penny.database.memory.identity import CollectionNameDecider, EntryDecider
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp
@@ -92,17 +92,22 @@ from penny.tools.memory_tools import (
 )
 
 # The named degraded mode for tool tests: rules settle what they can, the rest
-# is written as new with the honest question.
+# is written as new with the honest question (entries) or refused with a
+# did-you-mean (collection names).
 _NO_MODEL = EntryDecider(None)
+_NO_NAME_MODEL = CollectionNameDecider(None)
 
 
 class _StubDecisionClient(DecisionClient):
-    """A decision model that answers each question with the next canned choice."""
+    """A decision model that answers each question with the next canned choice,
+    recording the states it was shown."""
 
     def __init__(self, *choices: str) -> None:
         self._choices = list(choices)
+        self.states: list[str] = []
 
-    async def decide(self, **_: object) -> DecisionAnswer:
+    async def decide(self, **kwargs: object) -> DecisionAnswer:
+        self.states.append(str(kwargs.get("state")))
         return DecisionAnswer(choice=self._choices.pop(0))
 
 
@@ -1354,7 +1359,11 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         result = await write.execute(
             CallLink.new_top(),
@@ -1378,7 +1387,12 @@ class TestCollectionWritesAndReads:
         table = HandleTable()
         table.register("https://roasts.example/dark")
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL, handles=table
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+            handles=table,
         )
         result = await write.execute(
             CallLink.new_top(),
@@ -1432,48 +1446,83 @@ class TestCollectionWritesAndReads:
 
     @pytest.mark.asyncio
     async def test_write_target_materialization(self, db, mock_llm):
-        """A chat write never dies on a name miss (#1570): a near-certain name
-        variant REDIRECTS — narrated, never silent — (typo/char leg AND the
-        same-intent full-token-containment leg), the ambiguous middle band keeps
-        the did-you-mean refusal, and nothing-close AUTO-CREATES the collection
-        (placeholder description + created_by_run_id stamp).  A collector-scoped
-        write is never materialized."""
+        """A chat write never dies on a name miss (#1570): the name match runs
+        the identity ladder (#2724) — a rules-same name (plural/spacing variant)
+        and a decision-model-same name (a true typo) REDIRECT — narrated, never
+        silent; what the model cannot settle keeps the did-you-mean refusal;
+        a decisive NO across the shortlist AUTO-CREATES the collection
+        (placeholder description + created_by_run_id stamp); and a collector-
+        scoped write is never materialized."""
         _seed_collection(db, name="gear-notes", description="gear notes")
         write = CollectionWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
             decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
             run_id="run-materialize",
         )
-        # Typo (char leg): 'gear-ntoes' → 'gear-notes'.
+        # Rules-same (plural variant, folded by singularize): 'gear-note' → 'gear-notes'.
         result = await write.execute(
             CallLink.new_top(),
-            collection="gear-ntoes",
+            collection="gear-note",
             entries=[{"key": "tent", "content": "3kg tent"}],
         )
         assert result.mutated is True
         assert result.message.startswith(
-            "Note: no collection named 'gear-ntoes' exists — 'gear-notes' is the same "
+            "Note: no collection named 'gear-note' exists — 'gear-notes' is the same "
             "name in a different spelling, so this write went there.\n"
         )
-        assert db.memories.get("gear-ntoes") is None
+        assert db.memories.get("gear-note") is None
         assert (
             "tent"
             in (
                 await CollectionListTool(db).execute(CallLink.new_top(), collection="gear-notes")
             ).message
         )
-        # Same-intent extension (TCR leg): 'gear' ⊂ 'gear-notes'.
-        result = await write.execute(
+        # Model-same (a true typo, below the rules): the decider's YES redirects.
+        typo_stub = _StubDecisionClient("yes")
+        typo_decider = CollectionNameDecider(typo_stub)
+        write_with_model = CollectionWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=typo_decider,
+        )
+        result = await write_with_model.execute(
             CallLink.new_top(),
-            collection="gear",
+            collection="gear-ntoes",
             entries=[{"key": "stove", "content": "canister stove"}],
         )
         assert result.mutated is True and "'gear-notes'" in result.message
-        assert db.memories.get("gear") is None
-        # Nothing close → auto-create, narrated, provenance stamped.
+        assert db.memories.get("gear-ntoes") is None
+        # The question showed the asked name beside the existing collection.
+        assert "gear-ntoes" in typo_stub.states[0]
+        assert "gear-notes" in typo_stub.states[0]
+        # Unsettled (degraded mode, no decision model): the did-you-mean refusal
+        # owns the near-miss — nothing is written and nothing is created.
         result = await write.execute(
+            CallLink.new_top(),
+            collection="gear-ntoes",
+            entries=[{"key": "tent", "content": "3kg tent"}],
+        )
+        assert result.success is False
+        assert result.message.startswith(
+            "Memory 'gear-ntoes' not found — did you mean 'gear-notes'?"
+        )
+        assert db.memories.get("gear-ntoes") is None
+        # A decisive NO across the shortlist → auto-create, narrated, provenance stamped.
+        no_decider = CollectionNameDecider(_StubDecisionClient("no"))
+        write_no_match = CollectionWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=no_decider,
+            run_id="run-materialize",
+        )
+        result = await write_no_match.execute(
             CallLink.new_top(),
             collection="trail-recipes",
             entries=[{"key": "oats", "content": "overnight oats"}],
@@ -1488,12 +1537,35 @@ class TestCollectionWritesAndReads:
         assert row is not None and row.created_by_run_id == "run-materialize"
         assert row.description == "auto-created to hold 'oats'"
         assert row.extraction_prompt is None
+        # A number-token difference is settled by the rules as a DIFFERENT
+        # collection, so the decider is never consulted and the write
+        # auto-creates its own deck.
+        deck_stub = _StubDecisionClient("yes")
+        deck_decider = CollectionNameDecider(deck_stub)
+        write_deck = CollectionWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=deck_decider,
+        )
+        _seed_collection(db, name="aurora-deck-2", description="aurora deck 2")
+        result = await write_deck.execute(
+            CallLink.new_top(),
+            collection="aurora-deck-3",
+            entries=[{"key": "price", "content": "$4.20"}],
+        )
+        assert result.mutated is True
+        assert db.memories.get("aurora-deck-3") is not None
+        assert db.memories.get("aurora-deck-2").name == "aurora-deck-2"
+        assert deck_stub.states == []
         # A collector-scoped write is pinned — no materialization, plain refusal.
         scoped = CollectionWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="collector",
             decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
             scope="gear-notes",
         )
         result = await scoped.execute(
@@ -1508,7 +1580,11 @@ class TestCollectionWritesAndReads:
         arg-validation envelope — not Pydantic's bare "List should have at least 1
         item" (the house wording-unification pass)."""
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         result = await write.run(CallLink.new_top(), collection="likes", entries=[])
         assert result.success is False
@@ -1521,7 +1597,11 @@ class TestCollectionWritesAndReads:
         path and suggests the valid sibling, rather than being silently dropped or
         mis-rendered as the whole ``entries`` field (#1416)."""
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         result = await write.run(
             CallLink.new_top(),
@@ -1604,7 +1684,11 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(),
@@ -1644,6 +1728,7 @@ class TestCollectionWritesAndReads:
             _make_llm_client(mock_llm),
             author="test",
             decider=_decider_saying("yes", "new_value"),
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(),
@@ -1678,7 +1763,12 @@ class TestCollectionWritesAndReads:
         )
         # A collector binds its writes to one collection via ``scope``.
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL, scope="likes"
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+            scope="likes",
         )
         await write.execute(
             CallLink.new_top(),
@@ -1724,6 +1814,7 @@ class TestCollectionWritesAndReads:
             _make_llm_client(mock_llm),
             author="test",
             decider=_decider_saying("yes", "same_value"),
+            name_decider=_NO_NAME_MODEL,
             scope="likes",
         )
         same_value = await decider_write.execute(
@@ -1755,7 +1846,11 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(),
@@ -1770,6 +1865,7 @@ class TestCollectionWritesAndReads:
             _make_llm_client(mock_llm),
             author="test",
             decider=_decider_saying("yes", "same_value"),
+            name_decider=_NO_NAME_MODEL,
         )
         already = await decider_write.execute(
             CallLink.new_top(),
@@ -1793,7 +1889,11 @@ class TestCollectionWritesAndReads:
         )
         # No scope → chat surface.
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(),
@@ -1826,7 +1926,12 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL, scope="watch"
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+            scope="watch",
         )
         await write.execute(
             CallLink.new_top(), collection="watch", entries=[{"key": "price", "content": "$42"}]
@@ -1848,7 +1953,11 @@ class TestCollectionWritesAndReads:
         assert refreshed[0].content == "$40"
         # The gate is shared: a chat-surface write auto-refreshes identically, never STOPs.
         chat_write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="chat", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="chat",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await chat_write.execute(
             CallLink.new_top(), collection="watch", entries=[{"key": "note", "content": "v1"}]
@@ -1990,7 +2099,11 @@ class TestEmbedFailureRefusesWrite:
     async def test_collection_write_refuses_when_embedding_fails(self, db):
         await self._make_relevant_collection(db)
         write = CollectionWriteTool(
-            db, cast(Any, _FailingEmbedClient()), author="test", decider=_NO_MODEL
+            db,
+            cast(Any, _FailingEmbedClient()),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         result = await write.execute(
             CallLink.new_top(),
@@ -2021,6 +2134,7 @@ class TestEmbedFailureRefusesWrite:
             cast(Any, _KeyOnlyFailingEmbedClient("dark roast")),
             author="test",
             decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         result = await write.execute(
             CallLink.new_top(),
@@ -2063,7 +2177,11 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         ).execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "hello"}]
         )
@@ -2079,7 +2197,11 @@ class TestEmbedFailureRefusesWrite:
         assert "not found" in missing.message
         # A key one typo away from a stored one is named in the miss, so the retry is a copy.
         await CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         ).execute(
             CallLink.new_top(),
             collection="likes",
@@ -2122,7 +2244,11 @@ class TestEmbedFailureRefusesWrite:
         assert "Retry with" not in double_miss.message
         # A key that genuinely contains brackets exact-matches with no rejection.
         await CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         ).execute(
             CallLink.new_top(),
             collection="likes",
@@ -2144,7 +2270,11 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "first", "content": "1"}]
@@ -2179,7 +2309,11 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "a", "content": "1"}]
@@ -2204,7 +2338,11 @@ class TestCollectionMutations:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "old"}]
@@ -2312,7 +2450,11 @@ class TestDidYouMeanSuggestions:
         the existing 'nothing to delete' guidance follows."""
         _seed_collection(db, name="notes")
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
             CallLink.new_top(),
@@ -2473,7 +2615,11 @@ class TestLogTools:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         ).execute(
             CallLink.new_top(), collection="notes", entries=[{"key": "a", "content": "first"}]
         )
@@ -3107,7 +3253,11 @@ class TestMemoryNameNormalization:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         # Non-breaking hyphen U+2011 in the collection name — model output
         # observed in the wild.
@@ -3131,7 +3281,11 @@ class TestAuthorAttribution:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="preference-extractor", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="preference-extractor",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         ).execute(CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "v"}])
 
         rows = db.memory("likes").get("k")
@@ -3173,7 +3327,11 @@ class TestFactory:
         is validated against.  They must name the same arguments, or the model is told
         to pass one name and refused for not passing another."""
         tools = build_memory_tools(
-            db, _make_llm_client(mock_llm), agent_name="chat", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            agent_name="chat",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         for tool in tools:
             advertised = set(tool.parameters.get("properties", {}))
@@ -3187,7 +3345,11 @@ class TestFactory:
         """Chat (scope=None) gets every memory tool — entry mutations included,
         unrestricted, since edits are user-directed."""
         tools = build_memory_tools(
-            db, _make_llm_client(mock_llm), agent_name="chat", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            agent_name="chat",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         assert {tool.name for tool in tools} == self._FULL_SURFACE
 
@@ -3195,7 +3357,12 @@ class TestFactory:
         """A bound collector (scope=X) gets the identical surface — scope binds
         its entry mutations to X but does not strip lifecycle/other tools."""
         tools = build_memory_tools(
-            db, _make_llm_client(mock_llm), agent_name="collector", decider=_NO_MODEL, scope="likes"
+            db,
+            _make_llm_client(mock_llm),
+            agent_name="collector",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+            scope="likes",
         )
         assert {tool.name for tool in tools} == self._FULL_SURFACE
 
@@ -3230,6 +3397,7 @@ class TestScopedFactory:
             _make_llm_client(mock_llm),
             author="collector:likes",
             decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
             scope="likes",
         )
         result = await write.execute(
@@ -3257,6 +3425,7 @@ class TestScopedFactory:
             _make_llm_client(mock_llm),
             author="collector:likes",
             decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
             scope="likes",
         )
         result = await write.execute(
@@ -3290,6 +3459,7 @@ class TestScopedFactory:
             _make_llm_client(mock_llm),
             author="collector:likes",
             decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
             scope="likes",
         )
         result = await write.execute(
@@ -3310,7 +3480,13 @@ class TestScopedFactory:
             extraction_prompt=None,
             schedule=None,
         )
-        seed = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat", decider=_NO_MODEL)
+        seed = CollectionWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="chat",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
         await seed.execute(
             CallLink.new_top(),
             collection=PennyConstants.MEMORY_RULES_COLLECTION,
@@ -3336,7 +3512,11 @@ class TestScopedFactory:
             schedule=None,
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="chat", decider=_NO_MODEL
+            db,
+            _make_llm_client(mock_llm),
+            author="chat",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
         )
         result = await write.execute(
             CallLink.new_top(),
@@ -3679,7 +3859,9 @@ class TestFind:
         container was not guessed)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
-        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
             CallLink.new_top(),
             collection="knowledge-notes",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
@@ -3701,7 +3883,9 @@ class TestFind:
         pattern (#1640)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
             CallLink.new_top(),
             collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
@@ -3875,7 +4059,9 @@ class TestFind:
         never another store's hit even when it would also match the query."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
             CallLink.new_top(),
             collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta echo foxtrot"}],
@@ -3920,7 +4106,9 @@ class TestFind:
         name the self-state header's archived line already names."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
-        await CollectionWriteTool(db, client, author="test", decider=_NO_MODEL).execute(
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
             CallLink.new_top(),
             collection="aurora-archive",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],

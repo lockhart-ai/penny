@@ -46,7 +46,7 @@ from penny.constants import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.memory.identity import EntryDecider
+from penny.database.memory.identity import CollectionNameDecider, EntryDecider
 from penny.database.models import MemoryRow, SendQueueItem
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
@@ -365,12 +365,24 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
     drops it.  The distinction is a single declared flag, not a per-tool branch."""
     _, db = _make_collector(test_config, tmp_path)
     chat_names = {
-        t.name for t in build_memory_tools(db, _llm_client(), "chat", decider=EntryDecider(None))
+        t.name
+        for t in build_memory_tools(
+            db,
+            _llm_client(),
+            "chat",
+            decider=EntryDecider(None),
+            name_decider=CollectionNameDecider(None),
+        )
     }
     collector_names = {
         t.name
         for t in build_memory_tools(
-            db, _llm_client(), "collector", decider=EntryDecider(None), include_lifecycle=False
+            db,
+            _llm_client(),
+            "collector",
+            decider=EntryDecider(None),
+            name_decider=CollectionNameDecider(None),
+            include_lifecycle=False,
         )
     }
     assert chat_names >= _LIFECYCLE_TOOL_NAMES

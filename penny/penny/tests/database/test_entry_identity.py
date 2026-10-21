@@ -13,11 +13,15 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from similarity.identity import KeyRule
 
 from penny.database.memory.identity import (
     SHORTLIST_K,
+    CollectionCandidate,
+    CollectionNameDecider,
     EntryDecider,
     EntryGiven,
+    collection_name_rule,
     plan_entries,
     rule_only_decisions,
 )
@@ -241,3 +245,89 @@ async def test_the_date_rule_never_reaches_the_decision_model() -> None:
     assert decisions[0].action == "new"
     assert decisions[0].unsure_candidate is None
     assert stub.states == []
+
+
+# ── The collection-name ladder (#2724) ──────────────────────────────────────
+
+
+def test_collection_name_rules_settle_the_names_they_are_sure_of() -> None:
+    """The rules settle what they are sure of and leave the rest: equal after
+    normalising (case, separators, punctuation, a leading ``the``, singular/
+    plural) is the SAME collection; a differing number token (main part or two
+    numeric parentheticals) is DIFFERENT; a typo, a rewording, or a role-word
+    extension is undecided."""
+    assert collection_name_rule("gear-notes", "gear-note") is KeyRule.SAME
+    assert collection_name_rule("Gear_Notes", "gear notes") is KeyRule.SAME
+    assert collection_name_rule("the gear notes", "gear-notes") is KeyRule.SAME
+    assert collection_name_rule("aurora deck 2", "aurora-deck-2") is KeyRule.SAME
+    assert collection_name_rule("aurora-deck-2", "aurora-deck-3") is KeyRule.DIFFERENT
+    assert collection_name_rule("Dune (1984)", "Dune (2021)") is KeyRule.DIFFERENT
+    assert collection_name_rule("gear-ntoes", "gear-notes") is None
+    assert collection_name_rule("trip-plans", "trip-planning") is None
+    assert collection_name_rule("team-news", "team-news-alerts") is None
+
+
+def _candidate(name: str, description: str = "a collection") -> CollectionCandidate:
+    return CollectionCandidate(
+        name=name, description=description, name_vec=[1.0, 0.0], description_vec=[1.0, 0.0]
+    )
+
+
+async def _decide_name(stub: DecisionClient, asked: str, *candidates: CollectionCandidate):
+    return await CollectionNameDecider(stub).decide(asked=asked, candidates=list(candidates))
+
+
+@pytest.mark.asyncio
+async def test_collection_name_yes_redirects_to_the_candidate() -> None:
+    """A ``yes`` on the first shortlisted candidate redirects to it."""
+    verdict = await _decide_name(_StubDecisionClient("yes"), "gear-ntoes", _candidate("gear-notes"))
+    assert verdict.name == "gear-notes"
+    assert verdict.unsure is False
+
+
+@pytest.mark.asyncio
+async def test_collection_name_no_exhausts_to_nothing_close() -> None:
+    """A decisive NO on every candidate is ``none`` — nothing close; the caller
+    auto-creates."""
+    verdict = await _decide_name(
+        _StubDecisionClient("no", "no"),
+        "trail-recipes",
+        _candidate("gear-notes"),
+        _candidate("likes"),
+    )
+    assert verdict.name is None
+    assert verdict.unsure is False
+
+
+@pytest.mark.asyncio
+async def test_collection_name_unsure_falls_through_to_the_refusal() -> None:
+    """An unsure answer (or a failed call) marks the ladder unsure — the caller
+    keeps the did-you-mean refusal — but a later decisive YES still wins."""
+    verdict = await _decide_name(
+        _StubDecisionClient("unsure", "yes"),
+        "aurora-dek",
+        _candidate("aurora-deck-2"),
+        _candidate("likes"),
+    )
+    assert verdict.name == "likes"
+    assert verdict.unsure is False
+    unsure_only = await _decide_name(
+        _StubDecisionClient("unsure"), "aurora-dek", _candidate("aurora-deck-2")
+    )
+    assert unsure_only.name is None
+    assert unsure_only.unsure is True
+    failed = await _decide_name(_FailingDecisionClient(), "aurora-dek", _candidate("aurora-deck-2"))
+    assert failed.name is None and failed.unsure is True
+
+
+@pytest.mark.asyncio
+async def test_collection_name_degraded_mode_is_unsure_with_candidates() -> None:
+    """No decision client is the named degraded mode: every candidate is
+    unsure — the refusal — while no candidates at all is ``none`` (nothing
+    close, the caller auto-creates)."""
+    with_candidates = await CollectionNameDecider(None).decide(
+        asked="gear-ntoes", candidates=[_candidate("gear-notes")]
+    )
+    assert with_candidates.name is None and with_candidates.unsure is True
+    no_candidates = await CollectionNameDecider(None).decide(asked="trail-recipes", candidates=[])
+    assert no_candidates.name is None and no_candidates.unsure is False

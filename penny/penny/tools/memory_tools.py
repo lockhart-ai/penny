@@ -6,9 +6,11 @@ string the model can reason over.
 
 Author attribution is passed explicitly: write-capable tools take an
 ``author: str`` at construction time (the agent that owns the tool).
-``build_memory_tools(db, embedding_client, author, decider)`` is the factory each
-agent calls with its own ``self.name`` so writes are attributed correctly; the
-``decider`` is the entry-identity ladder's decision step (#2715).
+``build_memory_tools(db, embedding_client, author, decider, name_decider)`` is the
+factory each agent calls with its own ``self.name`` so writes are attributed
+correctly; the ``decider`` is the entry-identity ladder's decision step (#2715)
+and the ``name_decider`` the collection-name ladder's (#2724), sharing one
+decision client.
 
 Tools that need embeddings (writes, similarity reads) take an
 ``LlmClient`` in ``__init__``. On a transient embed failure at write time the
@@ -27,7 +29,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from similarity.embeddings import is_name_variant
+from similarity.identity import KeyRule, ShortlistSide, shortlist
 
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
@@ -60,7 +62,14 @@ from penny.database.memory import (
     render_run_calls,
     strip_display_brackets,
 )
-from penny.database.memory.identity import EntryDecider
+from penny.database.memory._similarity import maybe_deserialize
+from penny.database.memory.identity import (
+    SHORTLIST_K,
+    CollectionCandidate,
+    CollectionNameDecider,
+    EntryDecider,
+    collection_name_rule,
+)
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.database.mutation_store import render_mutation
 from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
@@ -1204,11 +1213,12 @@ def _rules_guard(scope: str | None, collection: str) -> ToolResult | None:
     return ToolResult(message=_RULES_GUARD_REFUSAL, success=False)
 
 
-# Write-target materialization (#1570): a chat write never dies on a name miss.
-# A near-certain name variant REDIRECTS (narrated, never silent); nothing close
-# AUTO-CREATES the collection (narrated).  The middle band keeps the
-# did-you-mean refusal.  Gates calibrated in ``PennyConstants`` (see the
-# MEMORY_NAME_REDIRECT_* comment for the archive-derived table).
+# Write-target materialization (#1570, ladder #2724): a chat write never dies
+# on a name miss.  The name match runs the identity ladder — the rules settle
+# the names they are sure of, the shortlist ranks the rest, the decision model
+# answers the rest — and a settled SAME REDIRECTS (narrated, never silent);
+# nothing close AUTO-CREATES the collection (narrated); what the ladder cannot
+# settle keeps the did-you-mean refusal.
 _WRITE_REDIRECT_NOTE = (
     "Note: no collection named '{asked}' exists — '{match}' is the same name in a "
     "different spelling, so this write went there.\n"
@@ -1218,18 +1228,6 @@ _WRITE_AUTOCREATE_NOTE = (
     "created (storage only, no job) and your entries went in.\n"
 )
 _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '{key}'"
-
-
-def _is_name_variant(asked: str, existing: str) -> bool:
-    """Near-certain 'same collection, different spelling' (#2270) — ``is_name_variant``
-    lives in the dependency-light ``similarity`` package, over the one pair of
-    thresholds, so the near-match rule is declared once rather than copied."""
-    return is_name_variant(
-        asked,
-        existing,
-        char_ratio=PennyConstants.MEMORY_NAME_REDIRECT_CHAR_RATIO,
-        tcr=PennyConstants.MEMORY_NAME_REDIRECT_TCR,
-    )
 
 
 # The merge reply (#2715): the identity ladder matched this write to an existing
@@ -1418,6 +1416,7 @@ class CollectionWriteTool(MemoryTool):
         llm_client: LlmClient,
         author: str,
         decider: EntryDecider,
+        name_decider: CollectionNameDecider,
         scope: str | None = None,
         run_id: str | None = None,
         handles: HandleTable | None = None,
@@ -1425,10 +1424,12 @@ class CollectionWriteTool(MemoryTool):
         self._db = db
         self._llm = llm_client
         self._author = author
-        # The identity ladder's decision step — a required parameter threaded from
-        # the agent, never ambient state.  Holds the decision client, or None for
-        # the named degraded mode (entry matching falls back to asking).
+        # The identity ladders' decision steps — required parameters threaded
+        # from the agent, never ambient state.  Each holds the shared decision
+        # client, or None for the named degraded mode (entry matching falls
+        # back to asking; collection-name matching narrows to the rules).
         self._decider = decider
+        self._name_decider = name_decider
         self._scope = scope
         # The writing run — stamped on each new entry (created/last-written) so a
         # stored value cites the run that produced it (#1560).
@@ -1481,28 +1482,36 @@ class CollectionWriteTool(MemoryTool):
         return result
 
     async def _materialize_target(self, args: CollectionWriteArgs) -> tuple[str, str]:
-        """Resolve the write target, materializing on a miss (#1570): a
-        near-certain name variant REDIRECTS to the existing collection; nothing
-        close AUTO-CREATES it (chat surface only — a scoped write is pinned to a
-        collection that exists).  Both narrate; the middle band re-raises into
-        the did-you-mean refusal.  Returns (actual target, note-or-empty)."""
+        """Resolve the write target, materializing on a miss (#1570): the name
+        match runs the identity ladder (#2724) — the rules settle the names
+        they are sure of, the shortlist ranks the rest by embedding, the
+        decision model answers each ranked candidate — and a settled SAME
+        REDIRECTS to the existing collection.  Nothing close AUTO-CREATES it;
+        what the ladder cannot settle re-raises into the did-you-mean refusal
+        (chat surface only — a scoped write is pinned to a collection that
+        exists).  Both narrate.  Returns (actual target, note-or-empty)."""
         if self._scope is not None or self._db.memories.get(args.collection) is not None:
             return args.collection, ""
-        variants = [
-            row.name
+        rows = [
+            row
             for row in self._db.memories.list_all()
-            if row.type == MemoryType.COLLECTION.value
-            and not row.archived
-            and _is_name_variant(args.collection, row.name)
+            if row.type == MemoryType.COLLECTION.value and not row.archived
         ]
-        if len(variants) == 1:
-            logger.info("collection_write: redirected '%s' → '%s'", args.collection, variants[0])
-            return variants[0], _WRITE_REDIRECT_NOTE.format(
-                asked=args.collection, match=variants[0]
-            )
-        if variants:
-            # Two-plus near-variants is genuine ambiguity — the did-you-mean
-            # refusal (raised by _resolve on the original name) owns it.
+        if (settled := self._rules_match(args.collection, rows)) is not None:
+            return self._redirect(args.collection, settled)
+        if self._rules_ambiguous(args.collection, rows):
+            # Two-plus names the rules settle as the same collection is genuine
+            # ambiguity — the did-you-mean refusal owns it.
+            return args.collection, ""
+        candidates = await self._shortlist(
+            args.collection, self._rules_eligible(args.collection, rows)
+        )
+        verdict = await self._name_decider.decide(asked=args.collection, candidates=candidates)
+        if verdict.name is not None:
+            return self._redirect(args.collection, verdict.name)
+        if verdict.unsure:
+            # The ladder could not settle the match — the did-you-mean refusal
+            # (raised by _resolve on the original name) owns it.
             return args.collection, ""
         description = _AUTO_CREATED_DESCRIPTION.format(key=args.entries[0].key)
         self._db.memories.create_collection(
@@ -1513,6 +1522,75 @@ class CollectionWriteTool(MemoryTool):
         )
         logger.info("collection_write: auto-created collection '%s'", args.collection)
         return args.collection, _WRITE_AUTOCREATE_NOTE.format(name=args.collection)
+
+    @staticmethod
+    def _rules_match(asked: str, rows: list[MemoryRow]) -> str | None:
+        """The rules' redirect target, if any: the first active collection whose
+        name the rules settle as the same one (equal after normalising)."""
+        for row in rows:
+            if collection_name_rule(asked, row.name) is KeyRule.SAME:
+                return row.name
+        return None
+
+    @staticmethod
+    def _rules_ambiguous(asked: str, rows: list[MemoryRow]) -> bool:
+        """Whether MORE than one active collection's name the rules settle as
+        the same one — two display names normalising identically can coexist as
+        separate rows, and choosing between them is not the rules' to make."""
+        matches = sum(1 for row in rows if collection_name_rule(asked, row.name) is KeyRule.SAME)
+        return matches > 1
+
+    @staticmethod
+    def _rules_eligible(asked: str, rows: list[MemoryRow]) -> list[MemoryRow]:
+        """The rows left for the shortlist: pairs the rules settle as
+        DIFFERENT (a number-token difference) are removed — decisively not the
+        same collection, so the decision model is never asked about them."""
+        return [
+            row for row in rows if collection_name_rule(asked, row.name) is not KeyRule.DIFFERENT
+        ]
+
+    async def _shortlist(self, asked: str, rows: list[MemoryRow]) -> list[CollectionCandidate]:
+        """The candidates the decision model is asked about: the asked name
+        embedded once, every active collection ranked on the best cosine its
+        name (embedded per miss — a placeholder description must not win the
+        rank) and description anchor offer, top ``SHORTLIST_K``.  An asked
+        name that lost its embedding to an outage shortlists nothing when any
+        candidate exists — the caller reads the empty rank as unsure and
+        refuses, never auto-creates on a half-blind ladder (visible
+        degradation)."""
+        if not rows:
+            return []
+        asked_vec = await embed_text(self._llm, asked)
+        if asked_vec is None:
+            logger.warning(
+                "collection_write: no embedding for '%s' — refusing rather than "
+                "matching blind (an embed outage never auto-creates)",
+                asked,
+            )
+            return []
+        sides = [
+            ShortlistSide(
+                await embed_text(self._llm, row.name),
+                maybe_deserialize(row.description_embedding),
+            )
+            for row in rows
+        ]
+        ranked = shortlist(asked_vec, asked_vec, sides, SHORTLIST_K)
+        return [
+            CollectionCandidate(
+                name=rows[index].name,
+                description=rows[index].description,
+                name_vec=sides[index].key_vec,
+                description_vec=sides[index].content_vec,
+            )
+            for index in ranked
+        ]
+
+    @staticmethod
+    def _redirect(asked: str, match: str) -> tuple[str, str]:
+        """The narrated redirect: write to the matched collection, note says so."""
+        logger.info("collection_write: redirected '%s' → '%s'", asked, match)
+        return match, _WRITE_REDIRECT_NOTE.format(asked=asked, match=match)
 
     def _embed_failure(self, collection: str, entries: list[EntryInput]) -> ToolResult | None:
         """Refuse the write, atomically, if any entry lost a vector to a transient
@@ -3109,6 +3187,7 @@ def build_memory_tools(
     llm_client: LlmClient,
     agent_name: str,
     decider: EntryDecider,
+    name_decider: CollectionNameDecider,
     scope: str | None = None,
     run_id: str | None = None,
     include_lifecycle: bool = True,
@@ -3207,6 +3286,7 @@ def build_memory_tools(
             llm_client,
             agent_name,
             decider=decider,
+            name_decider=name_decider,
             scope=scope,
             run_id=run_id,
             handles=handles,
