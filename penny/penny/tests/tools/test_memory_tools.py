@@ -1351,10 +1351,13 @@ class TestCollectionUpdateScheduleAtApply:
         """A configure call that REPLACES an existing prompt reports the change as a
         line diff (#2719): the old prompt's lines the new one doesn't carry, and the new
         ones it didn't have, verbatim — so a rebuild-from-the-summary sees the rules and
-        formatting it dropped.  Reported, never blocked: the row holds the new prompt."""
+        formatting it dropped.  Reported, never blocked: the row holds the new prompt.
+        A call that leaves `description` alone also re-shows it after the diff (#2720);
+        one that sets `description` too stays quiet."""
         _seed_collection(
             db,
             name="film-finds",
+            description="weekly documentary picks",
             extraction_prompt=(
                 "Read the coming-soon page and pick the films worth seeing this week.\n"
                 "Documentaries only, no TV series.\n"
@@ -1373,7 +1376,27 @@ class TestCollectionUpdateScheduleAtApply:
         assert "  added:" in result.message
         assert f"    - {new_prompt}" in result.message
         assert "Put back any removed line the user's ask didn't drop" in result.message
+        # The description was left alone, so the reply re-shows it after the diff (#2720).
+        unchanged_note = (
+            'Its description is unchanged: "weekly documentary picks". '
+            "This is what the store map shows for it."
+        )
+        assert unchanged_note in result.message
+        assert result.message.index("Put back any removed line") < result.message.index(
+            unchanged_note
+        )
         assert db.memories.get("film-finds").extraction_prompt == new_prompt
+        # A call that also sets `description` renders no such line.
+        later_prompt = "Read the coming-soon page and list new releases each Friday."
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            name="film-finds",
+            prompt=later_prompt,
+            description="new releases worth seeing",
+        )
+        assert result.success
+        assert "Its description is unchanged" not in result.message
+        assert db.memories.get("film-finds").description == "new releases worth seeing"
 
     @pytest.mark.asyncio
     async def test_adopting_a_prompt_renders_no_diff(self, db):
@@ -1572,6 +1595,13 @@ class TestCollectionWritesAndReads:
             "matched, so it was created (storage only, no job) and your entries "
             "went in.\n"
         )
+        # The auto-created description is only a placeholder — the reply names it as
+        # such, renders it verbatim, and gives the call that sets a real one (#2720).
+        assert (
+            "Its description is only a placeholder (\"auto-created to hold 'oats'\"). "
+            "Give it one that says what the collection is for: "
+            "collection_configure(collection='trail-recipes', description=<what it holds>)."
+        ) in result.message
         row = db.memories.get("trail-recipes")
         assert row is not None and row.created_by_run_id == "run-materialize"
         assert row.description == "auto-created to hold 'oats'"
