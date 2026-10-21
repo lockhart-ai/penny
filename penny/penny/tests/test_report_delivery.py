@@ -33,6 +33,7 @@ from penny.database.memory import EntryInput
 from penny.database.models import PromptLog, SendQueueItem
 from penny.llm.client import LlmClient
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
+from penny.tools.link_handles import CITATION_LINE
 from penny.tests.conftest import require_memory
 
 
@@ -193,8 +194,10 @@ async def test_the_delivery_turn_reads_the_report_whole(db, test_config, mock_ll
         "## What the job wrote this run\n"
         "These entries are what the job kept for the user this run — the message "
         "tells them about every one.\n"
+        # The entry's stored URL renders as the delivery turn's handle (#2717), and
+        # the one plain line telling the model how to cite rides after the entries.
         "- into `indie-metroidvanias`, under `Cinder Drift`: Cinder Drift — a hand-drawn "
-        "metroidvania. https://ex.example/cd\n"
+        f"metroidvania. [1]\n{CITATION_LINE}\n"
         "\n"
         "Write the one message to send the user about this run, from what the job wrote. It "
         "can be as long as it takes to cover every entry — a job's report isn't a quick "
