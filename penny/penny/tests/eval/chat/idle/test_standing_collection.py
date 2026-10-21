@@ -13,6 +13,7 @@ right for one is wrong for another, and each action is a case with its own sente
 | switch it on | ``standing-notify-on`` | ``notify`` on, the rest of the row as it was |
 | retire it | ``standing-archive`` | ``archived``, and what it gathered still readable |
 | re-time it | ``standing-schedule-fix-prior`` | the rule fires at the hour they asked for |
+| re-time, long prompt | ``standing-retime-keeps-prompt`` | the hour asked for; prompt kept |
 | give it an end | ``standing-end-changed`` | it stops when the ask said, firing when it was due |
 | widen it | ``standing-widen-sources`` | the prompt names every source; the row else as it was |
 | read one back | ``standing-describe-routine`` | the row as it was; the reply names its page |
@@ -25,6 +26,17 @@ right for one is wrong for another, and each action is a case with its own sente
 which its own seed holds the other way.  The OFF direction is where the wrong levers are — a
 measured sample asked to stop one watch's pings read the state as offering no granularity and
 retired the whole job, or reached for the global mute.
+
+**The re-time action has TWO cases, because the job's own prompt is two sizes.**
+``standing-schedule-fix-prior`` runs on the derived one-line program the other cases share;
+``standing-retime-keeps-prompt`` (#2719) runs on a job whose instructions are several lines
+of rules, per-item fields and formatting — long enough that the self-state's Jobs section
+shows only its first sentence, with the rest cut behind a ``memory_get`` hop.  The observed
+failure lived in exactly that gap: a re-time turn rebuilt the job's prompt from the
+one-sentence render and its own earlier reply, dropping a rule and the formatting, because it
+believed a configure call needed a prompt.  So this case's claim is that every line of the
+STORED prompt survives a schedule change — a claim the one-line job could not carry, since a
+paraphrase of one line still contains it.
 
 **No claim reads where the machine landed, or a run's outcome (#2496, naive baseline).**  There
 is no conversation machine left to land on this branch, so every landing claim is dropped
@@ -196,6 +208,55 @@ _ATLASES = StandingJob(
     notify=False,
     holdings=(("Rand McNally 1931", "Rand McNally 1931 — pocket atlas, cloth boards, $35."),),
 )
+
+# The re-time case's own job (#2719): a daily film-recommendation watch whose instructions are
+# the multi-line shape a real configured job carries — several rules, per-item fields, a
+# formatting rule — long enough that the self-state's Jobs section shows only its first
+# sentence.  The host is real (Rotten Tomatoes); the films behind it are made up, because the
+# repo is public.  Its entries are written in the format its own prompt asks for, so the world
+# coheres with the state it claims.
+_FILMS_PROMPT = (
+    "Read the coming-soon page and pick the films worth seeing this week.\n"
+    "Documentaries only, no TV series.\n"
+    "For each film save the title, its release date, and a one-line reason it's worth "
+    "seeing.\n"
+    'Write every entry as "Title — <date>: <reason>".\n'
+    "Skip anything already in the collection."
+)
+_FILMS = StandingJob(
+    container="film-finds",
+    url="https://www.rottentomatoes.com/coming-soon",
+    watched_for="documentaries worth seeing",
+    description="Documentaries worth seeing this week.",
+    schedule="FREQ=DAILY;BYHOUR=7",
+    notify=True,
+    holdings=(
+        (
+            "The Light Around",
+            "The Light Around — 2026-10-23: Anna Bergman's year with a fishing village's "
+            "last boats.",
+        ),
+        (
+            "Deep Currents",
+            "Deep Currents — 2026-10-25: follows a whale-research crew for a season off the "
+            "Oregon coast.",
+        ),
+    ),
+    prompt=_FILMS_PROMPT,
+)
+
+# The job's prompt must actually be longer than the self-state's character budget, or the
+# whole case measures nothing: a prompt that renders whole gives a re-time turn everything it
+# needs, and the failure this case guards would have no gap to live in.
+assert len(_FILMS.program) > PennyConstants.SELF_STATE_JOB_PROMPT_CHARS, (
+    "the film job's prompt must exceed the self-state budget, or it renders uncut"
+)
+
+_FILM_HELD_KEYS = tuple(key for key, _ in _FILMS.holdings)
+
+# How the user refers to IT: their own words for the job, never its derived name — the same
+# read the other cases expect, over this job.
+_FILM_WORDS = "the film watch"
 
 # How the user refers to it: their own words for the job, never its derived name.  The
 # derived name renders on the ambient mechanisms line, so resolving those words to that
@@ -579,16 +640,18 @@ def _the_rule_fires_at(container: str, hour: int) -> _ClaimFn:
     return answer
 
 
-def _it_kept_what_it_gathered(container: str) -> _ClaimFn:
+def _it_kept_what_it_gathered(container: str, *, held: tuple[str, ...] = _HELD_KEYS) -> _ClaimFn:
     """Everything the job had already collected is still readable.
 
     None of these operations is a licence to clear a job out — a watch silenced by quietly
     emptying its collection, or retired by deleting it, has taken something the user can still
-    read.  A violating sample is nameable: one that drops the entries along with the job."""
+    read.  A violating sample is nameable: one that drops the entries along with the job.
+    ``held`` is the keys the operated-on job was seeded with — the shared fixture's by
+    default, the case's own job's where the case runs on another."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
-        held = {entry.key or "" for entry in sample.held if entry.collection == container}
-        missing = sorted(set(_HELD_KEYS) - held)
+        gathered = {entry.key or "" for entry in sample.held if entry.collection == container}
+        missing = sorted(set(held) - gathered)
         return not missing, f"{container} no longer holds {missing}"
 
     return answer
@@ -881,6 +944,150 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
         SpecCategory.PROVENANCE,
         kind="reply",
     )
+
+    cohort.measure(*_MEASURED)
+
+
+# ═══ re-time it (a long prompt must survive) ═════════════════════════════════
+#
+# The same action over the job whose instructions run several lines (#2719).  The self-state's
+# Jobs section renders that prompt cut to its first sentence, with the rest behind a
+# ``memory_get`` hop — so a turn that rebuilds a prompt from what it was shown, rather than
+# leaving it alone, drops lines nobody asked it to touch.  The observed failure did exactly
+# that: a re-time whose call passed a one-paragraph paraphrase that lost a rule, the per-item
+# fields and the formatting, none of it visible in the echo that confirmed the edit back.
+# The claim is the STORE state — every line of the stored prompt survives, read line-verbatim
+# off the row — because the paraphrase failure is a prompt REWRITE, not a schedule miss, and
+# the schedule claim alone calls it a pass.
+_RETIME_KEEPS_PROMPT = _OperationCase(
+    case_id="standing-retime-keeps-prompt",
+    behaviour=(
+        "In the chat agent, when the user asks to re-time a running job whose instructions "
+        "are longer than the self-state shows, Penny moves the schedule and every line of "
+        "those instructions survives."
+    ),
+    job=_FILMS,
+    renders=_FILMS.schedule,
+    ask=f"{_FILM_WORDS} goes off too early — move it to 2 in the afternoon",
+    also_phrased=(
+        f"can you push {_FILM_WORDS} back to 2 in the afternoon? it fires too early",
+        f"{_FILM_WORDS} runs too early for me, make it 2 in the afternoon instead",
+        f"move {_FILM_WORDS} to 2 in the afternoon — it comes round too early as it is",
+        f"shift {_FILM_WORDS} to 2 in the afternoon, it's going off too early",
+    ),
+)
+
+_FILMS_SEEDED_HOUR = _the_hour_it_runs_at(_FILMS)
+_FILMS_FIXED_HOUR = 14
+
+assert _FILMS_SEEDED_HOUR != _FILMS_FIXED_HOUR, (
+    f"the film job must not already run at the hour the ask asks for — both are {_FILMS_FIXED_HOUR}"
+)
+
+# The ask must lend the claims NOTHING about the hour the job has NOW, on every wording — the
+# same leak guard the one-line re-time case runs, over this job's seed.
+for _wording in (_RETIME_KEEPS_PROMPT.ask, *_RETIME_KEEPS_PROMPT.also_phrased):
+    assert _FILMS_SEEDED_HOUR not in _hours_named(_wording), (
+        f"the long-prompt re-timing wording must not name the hour the job already runs at: "
+        f"{_wording!r}"
+    )
+
+
+def _assert_the_long_prompt_renders_cut(db: Database, container: str) -> None:
+    """The job's own prompt renders CUT in the self-state — the whole premise of this case.
+
+    Read through the header's own render, the way ``_assert_the_row_renders`` reads the
+    schedule clause: the cut note names the ``memory_get`` hop, and a world whose prompt
+    rendered whole would measure the model's restraint rather than the gap the failure
+    lived in."""
+    rendered = SelfStateHeader(db, TEST_SENDER).render()
+    assert f"more sentences cut — memory_get('{container}') shows the whole prompt" in rendered, (
+        f"{container}'s prompt must render cut in the self-state:\n{rendered}"
+    )
+
+
+def _premise_prompt_survives(case: _OperationCase) -> Preparer:
+    """The prepare hook: this case's premise, asserted inside the sample it belongs to —
+    the operation world as every case sees it, PLUS the cut the case exists for."""
+
+    def probe(penny: Penny) -> None:
+        assert_the_operation_world(penny.db, case)
+        _assert_the_long_prompt_renders_cut(penny.db, case.job.container)
+
+    return probe
+
+
+def _every_prompt_line_survives(container: str, job: StandingJob) -> _ClaimFn:
+    """Every line of the job's STORED prompt is still there, line-verbatim.
+
+    The claim the one-line job could not carry: a paraphrase of a single line still contains
+    it, so only a multi-line prompt makes "the rules, the per-item fields and the formatting
+    are all still there" a checkable fact.  Read off the row the sample left, as whole lines
+    — a rewrite that merged or reworded a line fails naming the lines it dropped.  A
+    violating sample is nameable, and is the measured one: the re-time that passed a fresh
+    paraphrase built from the state's one-sentence render."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        row = _job_row(sample, container)
+        if row is None:
+            return False, f"{container!r} is no longer in the registry"
+        if row.program is None:
+            return False, "the job's prompt is gone entirely"
+        kept = set(row.program.splitlines())
+        missing = [line for line in job.program.splitlines() if line not in kept]
+        return not missing, f"the stored prompt no longer carries {missing}"
+
+    return answer
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_re_timing_keeps_every_line_of_a_long_prompt(chat_eval: ChatEval, model: str) -> None:
+    """The schedule moves; the job's own instructions do not.
+
+    The premise is asserted twice over: the world as every operation case sees it, and the
+    cut itself — the prompt renders truncated in the state the turn reads, which is what
+    makes a rebuild plausible and the survival claim worth stating."""
+    cohort = await chat_eval(
+        case_id=_RETIME_KEEPS_PROMPT.case_id,
+        behaviour=_RETIME_KEEPS_PROMPT.behaviour,
+        area=Area.STANDING_JOBS,
+        model=model,
+        seed=seed_standing_jobs(_RETIME_KEEPS_PROMPT.job),
+        prepare=_premise_prompt_survives(_RETIME_KEEPS_PROMPT),
+        world=_RETIME_KEEPS_PROMPT.ground,
+        ask=_RETIME_KEEPS_PROMPT.ask,
+        also_phrased=_RETIME_KEEPS_PROMPT.also_phrased,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_OPERATIONS_FAMILY,
+        timeout=240.0,
+    )
+    # STORE
+    cohort.claim(
+        "state: the job now runs at the hour they asked for",
+        _the_rule_fires_at(_FILMS.container, _FILMS_FIXED_HOUR),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: every line of the job's stored prompt is still there",
+        _every_prompt_line_survives(_FILMS.container, _FILMS),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FILMS.container), SpecCategory.STORE)
+    cohort.claim(
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_FILMS.container, asked=_SCHEDULE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        _KEPT_ITS_ENTRIES,
+        _it_kept_what_it_gathered(_FILMS.container, held=_FILM_HELD_KEYS),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     cohort.measure(*_MEASURED)
 

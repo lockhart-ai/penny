@@ -318,7 +318,11 @@ class StandingJob(NamedTuple):
     find on it.
 
     ``container`` is explicit rather than derived — there is no skill name and no bound-values
-    tuple left to derive one from, so a case names the collection a job lands on directly."""
+    tuple left to derive one from, so a case names the collection a job lands on directly.
+
+    ``prompt`` seeds a job whose instructions are the case's own free text — the multi-line
+    shape a real configured job carries (rules, per-item fields, formatting) — instead of the
+    derived one-liner; the derived shape stays the default, so existing jobs are unchanged."""
 
     container: str
     url: str
@@ -327,11 +331,15 @@ class StandingJob(NamedTuple):
     schedule: str
     notify: bool
     holdings: tuple[tuple[str, str], ...] = ()
+    prompt: str | None = None
 
     @property
     def program(self) -> str:
-        """The job's own prompt — the plain naive shape ``seed_known_routine`` writes, so a
-        job built here and one built there read as the same production shape."""
+        """The job's own prompt — the case's own free text when one was written for it, else
+        the plain naive shape ``seed_known_routine`` writes, so a job built here and one built
+        there read as the same production shape."""
+        if self.prompt is not None:
+            return self.prompt
         return f"Check {self.url} for {self.watched_for} and save it."
 
 
