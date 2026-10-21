@@ -11,7 +11,7 @@ import pytest
 
 from penny.config import Config
 from penny.database import Database
-from penny.database.memory.identity import EntryDecider
+from penny.database.memory.identity import CollectionNameDecider, EntryDecider
 from penny.llm.call_link import CallLink
 from penny.llm.decision_client import (
     DecisionAnswer,
@@ -213,6 +213,7 @@ def _collection_tool(penny: Penny) -> tuple[Tool, _RecordingDecisionClient]:
         penny.embedding_model_client,
         penny.chat_agent.name,
         decider=EntryDecider(recording),
+        name_decider=CollectionNameDecider(recording),
         include_lifecycle=False,
     )
     return next(tool for tool in tools if tool.name == "collection_write"), recording
