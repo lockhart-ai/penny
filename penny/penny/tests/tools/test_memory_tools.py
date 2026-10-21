@@ -1498,6 +1498,41 @@ class TestCollectionWritesAndReads:
         assert "[the roaster][1]" in get.message
         assert "https://roasts.example/dark" not in get.message
 
+        # A citation the run's table does NOT hold refuses that entry alone
+        # (#2736): the note names the dangling handle, the rest of the batch
+        # (a held-citation entry and a no-handles entry) lands unaffected.
+        result = await write.execute(
+            CallLink.new_top(),
+            collection="likes",
+            entries=[
+                {"key": "espresso", "content": "raves about the crema [2]"},
+                {"key": "light roast", "content": "likes light roast — [the roaster][1]"},
+                {"key": "instant", "content": "keeps instant in the cupboard"},
+            ],
+        )
+        assert result.mutated is True
+        assert result.message.startswith(
+            "There is no link [2] in this turn; the links you have are [1]–[1]. "
+        )
+        assert "Wrote 2 entries to 'likes'" in result.message
+        stored = require_memory(db, "likes")
+        assert [e.key for e in stored.get("light roast")] == ["light roast"]
+        assert "https://roasts.example/dark" in stored.get("light roast")[0].content
+        assert [e.key for e in stored.get("instant")] == ["instant"]
+        assert stored.get("espresso") == []
+        # The same dangling citation with nothing else in the batch: nothing
+        # lands, and the refusal is the whole reply.
+        result = await write.execute(
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "espresso", "content": "raves about the crema [2]"}],
+        )
+        assert result.success is False and result.mutated is False
+        assert result.message == (
+            "There is no link [2] in this turn; the links you have are [1]–[1]."
+        )
+        assert stored.get("espresso") == []
+
     @pytest.mark.asyncio
     async def test_collection_configure_dispatches_on_existence(self, db, mock_llm):
         """The ONE idempotent entry point (the code-owner fusion): a missing name
