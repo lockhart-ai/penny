@@ -133,10 +133,10 @@ def _plan_one(entry: EntryInput, existing: list[EntryGiven]) -> EntryPlan:
 
 def _pair_rule(entry: EntryInput, side: EntryGiven) -> KeyRule | None:
     """The rules for one candidate/stored pair.  A stored entry without a key
-    cannot take the key rules — only identical content says anything about it."""
+    cannot take the key rules and settles nothing deterministically — content
+    settles nothing by rule either, so a keyless entry only ever reaches the
+    shortlist and the decision model."""
     if side.key is None:
-        if entry.content.strip() == side.content.strip():
-            return KeyRule.SAME
         return None
     return pair_rule_verdict(entry.key, side.key, entry.content, side.content)
 

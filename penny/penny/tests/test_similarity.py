@@ -9,6 +9,7 @@ from similarity.dedup import DedupStrategy, JobSide, is_embedding_duplicate, is_
 from similarity.identity import (
     KeyRule,
     ShortlistSide,
+    key_parts,
     normalise_key,
     number_tokens,
     pair_rule_verdict,
@@ -300,10 +301,41 @@ class TestIdentityRules:
     ) -> None:
         assert pair_rule_verdict(candidate, existing, "x", "y") is None
 
-    def test_identical_content_is_a_repeat_whatever_the_keys_say(self) -> None:
-        assert pair_rule_verdict("kino's journey", "ghost in the shell", "2003", " 2003 ") is (
+    @pytest.mark.parametrize(
+        ("candidate", "existing"),
+        [
+            ("Kino's Journey (2003)", "Kino's Journey (2017)"),
+            ("Dune (1984)", "Dune (2021)"),
+            ("Ghost in the Shell (1995)", "Ghost in the Shell (2007)"),
+        ],
+    )
+    def test_parentheticals_that_both_carry_numbers_and_differ_are_different_entries(
+        self, candidate: str, existing: str
+    ) -> None:
+        # The dangerous direction the parenthetical split exists for: the OLD
+        # number rule ran after the parenthetical was stripped, so two films
+        # keyed by year normalised to the same entry and MERGED.
+        assert pair_rule_verdict(candidate, existing, "x", "y") is KeyRule.DIFFERENT
+
+    def test_a_number_in_only_one_parenthetical_does_not_decide(self) -> None:
+        # A qualifier on one side is not an identity: the normalised comparison
+        # still runs and the pair is the same entry.
+        assert pair_rule_verdict("Texhnolyze", "Texhnolyze (2003 anime)", "x", "y") is (
             KeyRule.SAME
         )
+        assert pair_rule_verdict("Kino's Journey", "Kino's Journey (2003)", "x", "y") is (
+            KeyRule.SAME
+        )
+
+    def test_vitamin_b6_normalises_to_the_same_key(self) -> None:
+        # A digit inside a word is a main-part token, and equal on both sides.
+        assert pair_rule_verdict("vitamin-B6", "Vitamin B6", "x", "y") is KeyRule.SAME
+
+    def test_identical_content_settles_nothing(self) -> None:
+        # The repeat rule retired: identical content under different keys is the
+        # decision model's question, which sees both keys — a deterministic
+        # repeat would block two products that happen to share a price.
+        assert pair_rule_verdict("switch lite", "analogue pocket", "$219", "$219") is None
 
     def test_the_number_token_rule_beats_identical_content(self) -> None:
         # The production regression: a daily-digest job could not write
@@ -316,18 +348,27 @@ class TestIdentityRules:
     def test_normalise_key_strips_framing(self) -> None:
         assert normalise_key("Pink Floyd (band)") == "pink floyd"
         assert normalise_key("[dune]") == "dune"
+        assert normalise_key("(dune)") == "dune"  # a whole-paren key unwraps
         assert normalise_key("The_Big-O") == "big o"
         assert normalise_key("portugal. the man!") == "portugal the man"
 
     def test_number_tokens_read_dates_and_roman_numerals(self) -> None:
         assert number_tokens("2026-10-21") == ["10", "2026", "21"]
-        assert number_tokens("Final Fantasy VII") == ["vii"]
-        assert number_tokens("The Big O II (season 2)") == ["ii"]
+        assert number_tokens("final fantasy vii") == ["vii"]
         assert number_tokens("dune messiah") == []
         # A token that merely looks Roman is not read as a number — the round
         # trip back to the canonical form rejects it.
         assert number_tokens("vim editor") == []
         assert number_tokens("im planning") == []
+        # The main part and the parenthetical are read separately.
+        main, paren = key_parts("The Big O II (season 2)")
+        assert number_tokens(main) == ["ii"]
+        assert paren is not None and number_tokens(paren) == ["2"]
+
+    def test_key_parts_split_the_trailing_parenthetical(self) -> None:
+        assert key_parts("Kino's Journey (2003)") == ("kino s journey", "2003")
+        assert key_parts("Dune") == ("dune", None)
+        assert key_parts("[dune (2021)]") == ("dune", "2021")
 
     def test_shortlist_ranks_by_the_best_surface_and_takes_the_top_k(self) -> None:
         existing = [

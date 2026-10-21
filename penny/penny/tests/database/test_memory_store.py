@@ -498,13 +498,14 @@ class TestCollectionWrites:
         assert results[0].matched_key == "dark roast"
         assert len(db.memories.memory("likes").read_all()) == 1
 
-    def test_write_dedups_on_content_embedding(self, db):
-        """A collision on the VALUE is DUPLICATE_UNCHANGED (#1919) — the stored entry
-        already says what this write says, however either is worded, so the cycle
-        observed nothing new.  It is ``KEY_EXISTS_UNCHANGED``'s twin for the
-        reworded-key path and carries the declared reason for a stamped stop row;
-        since #2385 it no longer STOPS a cycle — the write returns normally and the
-        cycle records the quiet close itself."""
+    def test_write_reports_unchanged_when_the_decider_says_same_value_on_identical_content(
+        self, db
+    ):
+        """Identical content under a different key is no longer a deterministic
+        repeat — content settles nothing by rule (#2715 review).  The pair goes
+        to the shortlist and the decision model, which sees BOTH keys; a
+        ``same_value`` verdict is the no-news twin under a different key
+        (#1919), and the entry that HOLDS the value is named."""
         db.memories.create_collection("likes", "positive prefs")
         shared_content = _unit_vec(4)
 
@@ -519,7 +520,7 @@ class TestCollectionWrites:
             ],
             author="preference-extractor",
         )
-        results = db.memories.memory("likes").write_rule_decided(
+        results = db.memories.memory("likes").write(
             [
                 EntryInput(
                     key="different key entirely",
@@ -529,12 +530,50 @@ class TestCollectionWrites:
                 )
             ],
             author="preference-extractor",
+            decisions=[
+                EntryDecision(
+                    key="different key entirely", action="unchanged", matched_key="first key"
+                )
+            ],
         )
         assert results[0].outcome == WriteGateOutcome.DUPLICATE_UNCHANGED
         assert results[0].outcome in WRITE_GATE_STOP_REASONS  # the declared reason table
-        # The entry that HOLDS the value is named, not the key this write proposed.
         assert results[0].matched_key == "first key"
         assert len(db.memories.memory("likes").read_all()) == 1
+
+    def test_two_products_at_the_same_price_both_land(self, db):
+        """The motivating loss the retired repeat rule caused: a collection
+        holding ``analogue pocket: $219`` must not block a write of
+        ``switch lite: $219`` — identical values are not identical entries.
+        Both products land, unsettled by the rules and without a decision
+        model in the loop (the honest-question degraded mode writes through)."""
+        db.memories.create_collection("price-watch", "what things cost")
+        db.memories.memory("price-watch").write_rule_decided(
+            [
+                EntryInput(
+                    key="analogue pocket",
+                    content="$219",
+                    key_embedding=_unit_vec(0),
+                    content_embedding=_unit_vec(1),
+                )
+            ],
+            author="chat",
+        )
+        results = db.memories.memory("price-watch").write_rule_decided(
+            [
+                EntryInput(
+                    key="switch lite",
+                    content="$219",
+                    key_embedding=_unit_vec(2),
+                    content_embedding=_unit_vec(1),
+                )
+            ],
+            author="chat",
+        )
+        assert results[0].outcome == WriteGateOutcome.NEW_KEY
+        assert results[0].unsure_candidate == "analogue pocket"
+        keys = {row.key for row in db.memories.memory("price-watch").read_all()}
+        assert keys == {"analogue pocket", "switch lite"}
 
     def test_write_on_an_unsettled_pair_without_a_model_writes_through_and_asks(self, db):
         """The named degraded mode (no decision model configured): a pair the
@@ -572,8 +611,10 @@ class TestCollectionWrites:
         assert len(db.memories.memory("watch").read_all()) == 2
 
     def test_write_without_embeddings_settles_by_the_rules(self, db):
-        """No embeddings at all: the rules still run — identical content is a
-        repeat (no-news), a genuinely different entry is written as new."""
+        """No embeddings at all: the rules still run — equal keys settle, and a
+        genuinely different entry is written as new.  Identical content under a
+        different key settles NOTHING now (content is not a rule), and with no
+        vectors there is no shortlist either, so it writes through plainly."""
         db.memories.create_collection("likes", "positive prefs")
 
         first = db.memories.memory("likes").write_rule_decided(
@@ -585,14 +626,14 @@ class TestCollectionWrites:
             author="chat",
         )
         second = db.memories.memory("likes").write_rule_decided(
-            [EntryInput(key="b", content="a different thing")],
+            [EntryInput(key="c", content="a different thing")],
             author="chat",
         )
         assert first[0].outcome == WriteGateOutcome.NEW_KEY
-        assert repeat[0].outcome == WriteGateOutcome.DUPLICATE_UNCHANGED
-        assert repeat[0].matched_key == "a"
+        assert repeat[0].outcome == WriteGateOutcome.NEW_KEY
+        assert repeat[0].unsure_candidate is None
         assert second[0].outcome == WriteGateOutcome.NEW_KEY
-        assert len(db.memories.memory("likes").read_all()) == 2
+        assert len(db.memories.memory("likes").read_all()) == 3
 
     def test_change_gate_unchanged_on_exact_key_identical_content(self, db):
         """The change-gate (#1587): re-writing an EXACT key with the SAME value is

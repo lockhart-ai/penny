@@ -1688,9 +1688,17 @@ class TestCollectionWritesAndReads:
         assert partial.mutated is True
         # A collision on the VALUE under a DIFFERENT key is the other branch (#1919):
         # the same no-news the exact key reads, so it prescribes NO call — there is
-        # nothing to do about a value that is already stored.  The identical-content
-        # rule settles it without a model.
-        same_value = await write.execute(
+        # nothing to do about a value that is already stored.  Identical content
+        # settles NOTHING by rule now — the decision model sees both keys and its
+        # ``same_value`` verdict reports the no-news.
+        decider_write = CollectionWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_decider_saying("same_value"),
+            scope="likes",
+        )
+        same_value = await decider_write.execute(
             CallLink.new_top(),
             collection="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
@@ -1726,7 +1734,13 @@ class TestCollectionWritesAndReads:
             collection="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
-        already = await write.execute(
+        # Identical content settles nothing by rule now (#2715 review) — the
+        # decision model sees both keys and its ``same_value`` verdict reports
+        # the no-news the exact-key read produces.
+        decider_write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_decider_saying("same_value")
+        )
+        already = await decider_write.execute(
             CallLink.new_top(),
             collection="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],

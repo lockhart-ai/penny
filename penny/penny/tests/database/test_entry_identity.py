@@ -183,7 +183,8 @@ async def test_the_degraded_mode_asks_about_the_shortlist_head() -> None:
 @pytest.mark.asyncio
 async def test_the_degraded_mode_still_settles_by_the_rules() -> None:
     """The rules run identically without a model: normalised keys equal → merge
-    (the store replaces the value), identical content → unchanged."""
+    (the store replaces the value).  Identical content settles NOTHING by rule
+    any more, so the look-alike goes to the honest question."""
     entries = [_entry("Genesis (band)", "a different description"), _entry("gybe", "same text")]
     existing = [
         _given("genesis", "the prog band"),
@@ -191,9 +192,41 @@ async def test_the_degraded_mode_still_settles_by_the_rules() -> None:
     ]
     plans = plan_entries(entries, existing)
     decisions = rule_only_decisions(plans, entries, existing)
-    assert [d.action for d in decisions] == ["merge", "unchanged"]
+    assert [d.action for d in decisions] == ["merge", "new"]
     assert decisions[0].matched_key == "genesis"
-    assert decisions[1].matched_key == "godspeed you black emperor"
+    # Ties keep store order: both stored entries share the content, so the
+    # older one (genesis) heads the shortlist.
+    assert decisions[1].unsure_candidate == "genesis"
+
+
+@pytest.mark.asyncio
+async def test_the_parenthetical_year_rule_never_reaches_the_decision_model() -> None:
+    """Two films keyed by year — the pair the parenthetical split exists for:
+    the number rule reads BOTH parentheticals when both carry numbers, so
+    ``Kino's Journey (2003)`` and ``(2017)`` are settled DIFFERENT by the rules
+    and never merged, whatever a decision model would say."""
+    entries = [_entry("Kino's Journey (2017)", "The Beautiful World, the 2017 remake")]
+    existing = [_given("Kino's Journey (2003)", "the 2003 series")]
+    stub = _StubDecisionClient("same_value")  # would wrongly merge if consulted
+    decisions = await _decide(stub, entries, existing)
+    assert decisions[0].action == "new"
+    assert decisions[0].unsure_candidate is None
+    assert stub.states == []
+
+
+@pytest.mark.asyncio
+async def test_identical_content_is_a_question_the_model_sees_both_keys_for() -> None:
+    """Content settles nothing by rule: two products at the same price are two
+    entries.  The pair goes to the decision model, which sees both keys; its
+    ``different`` verdict writes the second product through quietly."""
+    entries = [_entry("switch lite", "$219")]
+    existing = [_given("analogue pocket", "$219")]
+    stub = _StubDecisionClient("different")
+    decisions = await _decide(stub, entries, existing)
+    assert decisions[0].action == "new"
+    assert decisions[0].unsure_candidate is None
+    assert "analogue pocket" in stub.states[0]
+    assert "switch lite" in stub.states[0]
 
 
 @pytest.mark.asyncio
