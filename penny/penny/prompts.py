@@ -95,10 +95,10 @@ class Prompt:
         "queries array. Do NOT search for a site the user already linked.\n"
         "2. If the user gave you a topic (no URLs), call browse to discover "
         "relevant pages.\n"
-        "3. Read the most promising pages by passing their URLs in the queries "
-        'array (e.g., queries: ["https://example.com/page"]). '
-        "A search gives you titles and URLs only — the details live on the pages "
-        "themselves.\n"
+        "3. Read the most promising pages by passing their link numbers in the "
+        'queries array (e.g., queries: ["[3]"]). '
+        "A search gives you titles and link numbers only — the details live on "
+        "the pages themselves.\n"
         "4. The `extract` argument is REQUIRED on every browse — say, in plain "
         "language, exactly what to pull out. A description in ordinary words IS "
         'the whole specification — "the opening hours" or "anything the page '
@@ -116,15 +116,16 @@ class Prompt:
         "If a page had limited content, report what was there.\n\n"
     )
     CONVERSATION_TAIL_CLOSE = (
-        "A search gives you titles and URLs only — that is never enough to answer "
+        "A search gives you titles and link numbers only — that is never enough "
+        "to answer "
         "the user. Read the pages before you answer, and let the answer come from "
         "the pages you read.\n\n"
         "Every fact, name, and detail in your response must come from the pages "
         "you read or your memory — not from a search result list.\n\n"
-        "The search result list carries real URLs. When you reference something "
-        "from a search, use ONLY the URLs in that list. Copy them exactly — "
-        "character for character. If a topic has no matching URL there, mention "
-        "it without a URL.\n\n"
+        "The search result list carries numbered links. When you reference "
+        "something from a search, cite its number in brackets, like [3] — never "
+        "an address. Links you were shown this turn are the only links there "
+        "are.\n\n"
         "When the user changes topics, just go with it.\n\n"
         "Open your reply with the story of what you just did:\n"
         "1. Each tool result you got this turn opens with a line addressed to "
@@ -145,7 +146,7 @@ class Prompt:
         "3. Then give the answer.\n"
         "On a plain reply with no tool calls, skip the recap and just respond.\n\n"
         "Always include specific details (specs, dates, prices) and at least one "
-        "source URL so the user can follow up."
+        "source link (its number in brackets) so the user can follow up."
     )
 
     # The whole chat prompt (#2455 naive baseline): there is no conversation machine
@@ -154,12 +155,13 @@ class Prompt:
     CONVERSATION_PROMPT = CONVERSATION_HEAD + IDLE_INSTRUCTION + CONVERSATION_TAIL
 
     # Search result instruction — the first line of a search section (#2647): a
-    # numbered list of titles and URLs follows, and the details live on the pages.
+    # numbered list of titles and link handles follows, and the details live on
+    # the pages.
     # #2653: the instruction says outright that the list is not an answer — the
     # pages must be read for the reply to have anything to stand on.
     SEARCH_RESULT_INSTRUCTION = (
-        'You searched for "{query}". These are the results, titles and URLs only. '
-        "You must read them to answer the user:"
+        'You searched for "{query}". These are the results, titles and link numbers '
+        "only. You must read them to answer the user:"
     )
 
     # Browse channel-outage recovery clauses — the terminal move bound into a

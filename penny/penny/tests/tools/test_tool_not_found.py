@@ -12,6 +12,7 @@ from penny.llm.call_link import CallLink
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
+from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import DoneTool
 from penny.tools.models import ToolArgs, ToolCall
 
@@ -260,7 +261,9 @@ def _stub_browse_tool(db: Database) -> BrowseTool:
     every other test that dispatches through it (progress-emoji reactions,
     result narration, status text). Constructing the real tool, as other
     suites already do, carries its real name without ever re-registering it."""
-    return BrowseTool(max_calls=3, db=db, embedding_client=cast(Any, MockLlmClient()))
+    return BrowseTool(
+        max_calls=3, db=db, embedding_client=cast(Any, MockLlmClient()), handles=HandleTable()
+    )
 
 
 class TestToolNotFoundSuggestion:

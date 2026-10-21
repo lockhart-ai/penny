@@ -23,6 +23,7 @@ from penny.llm.call_link import CallLink
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import IMAGE_GENERATION_FAILED, GenerateImageTool
+from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
     CollectionCreateTool,
@@ -88,7 +89,7 @@ class TestToolReasoningSchema:
     def test_tool_declared_reasoning_not_overwritten(self, db: Database):
         """A tool that declares reasoning in its OWN parameters (browse) keeps
         its hand-written description — injection never overwrites it."""
-        tool = BrowseTool(max_calls=3, db=db, embedding_client=MagicMock())
+        tool = BrowseTool(max_calls=3, db=db, embedding_client=MagicMock(), handles=HandleTable())
         own_description = tool.parameters["properties"]["reasoning"]["description"]
         schema = tool.to_ollama_tool()
         props = schema["function"]["parameters"]["properties"]

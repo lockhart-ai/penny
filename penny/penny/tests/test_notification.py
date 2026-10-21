@@ -35,6 +35,7 @@ from penny.notification import (
     render_job_report,
     withheld_reason,
 )
+from penny.tools.link_handles import CITATION_LINE, HandleTable
 
 pytestmark = pytest.mark.bare_db
 
@@ -72,6 +73,38 @@ def test_a_job_report_renders_whole():
         "Write the one message to send the user about this run, from what the job wrote. It "
         "can be as long as it takes to cover every entry — a job's report isn't a quick "
         "text."
+    )
+
+
+def test_a_job_report_renders_entry_urls_as_handles():
+    """With the delivery turn's link table (#2717), an entry's stored URLs render as
+    that turn's handles, and the one plain line telling the model how to cite rides
+    after the entries — a URL the model READS always arrives as a handle."""
+    report = JobReport(
+        collection="tech-news",
+        description="the morning's tech headlines",
+        trigger=CycleTrigger.CADENCE,
+        run_id="cycle-run-1",
+        entries=(
+            WrittenEntry(
+                memory="tech-news",
+                key="lead story",
+                content="Fusion milestone — [the report](https://example.com/fusion-report)",
+            ),
+        ),
+    )
+    handles = HandleTable()
+    rendered = render_job_report(report, handles)
+    assert "- into `tech-news`, under `lead story`: Fusion milestone — [the report][1]" in rendered
+    assert "https://example.com/fusion-report" not in rendered
+    assert CITATION_LINE in rendered
+    # The same handle expands back to the URL on the reply that cites it.
+    assert handles.expand("See [1] for the report.") == (
+        "See https://example.com/fusion-report for the report."
+    )
+    # No table → the entries render verbatim (the whole-render test's shape).
+    assert render_job_report(report).endswith(
+        "can be as long as it takes to cover every entry — a job's report isn't a quick text."
     )
 
 

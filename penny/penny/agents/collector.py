@@ -79,6 +79,7 @@ from penny.notification import (
 from penny.prompts import Prompt
 from penny.text_validity import check_extraction_prompt
 from penny.tools.collection_instantiation import next_occurrence
+from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import CursorReadTool, format_entries
 
 if TYPE_CHECKING:
@@ -910,7 +911,9 @@ class Collector(BackgroundAgent):
 
     # ── Per-cycle prompt + tool scope ─────────────────────────────────────
 
-    async def _build_system_prompt(self, user: str | None) -> str:
+    async def _build_system_prompt(
+        self, user: str | None, *, handles: HandleTable | None = None
+    ) -> str:
         """System prompt for the bound target — re-fetched each cycle.
 
         Reading from the DB instead of caching means a chat-side
@@ -933,9 +936,13 @@ class Collector(BackgroundAgent):
         rules = standing_rules_section(self.db)
         if rules:
             prompt += f"\n\n{rules}"
-        return prompt + self._holdings_section(fresh.name) + self._run_history_section(fresh.name)
+        return (
+            prompt
+            + self._holdings_section(fresh.name, handles)
+            + self._run_history_section(fresh.name)
+        )
 
-    def _holdings_section(self, target_name: str) -> str:
+    def _holdings_section(self, target_name: str, handles: HandleTable | None = None) -> str:
         """A trailing block of what the bound collection HOLDS right now — its entries,
         newest first, each with the key it is stored under (#1914).
 
@@ -956,20 +963,24 @@ class Collector(BackgroundAgent):
             logger.warning(_HOLDINGS_GONE, target_name)
             return ""
         limit = PennyConstants.COLLECTOR_HOLDINGS_LIMIT
-        body = self._holdings_body(memory.read_latest(limit), memory.entry_count())
+        body = self._holdings_body(memory.read_latest(limit), memory.entry_count(), handles)
         return f"\n\n{_HOLDINGS_HEAD}\n{body}"
 
     @staticmethod
-    def _holdings_body(newest: list[MemoryEntry], total: int) -> str:
+    def _holdings_body(
+        newest: list[MemoryEntry], total: int, handles: HandleTable | None = None
+    ) -> str:
         """The holdings block's body: the plain empty line, or the newest entries plus
         an honest count of the ones the budget left out.
 
         The overflow is a stated number rather than a silent cut — a collection deep
         enough to overflow is one whose older entries the cycle can still reason about
-        the existence of."""
+        the existence of.  Entries keep real URLs, so the render converts them through
+        the cycle's link table (#2717) — ``format_entries`` appends the citation line
+        itself when the render rendered a link."""
         if not newest:
             return _HOLDINGS_EMPTY
-        shown = f"{_HOLDINGS_LEAD}\n{format_entries(newest)}"
+        shown = f"{_HOLDINGS_LEAD}\n{format_entries(newest, handles=handles)}"
         rest = total - len(newest)
         if rest <= 0:
             return shown

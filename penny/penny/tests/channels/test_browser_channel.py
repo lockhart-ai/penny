@@ -27,6 +27,7 @@ from penny.tests.schema_template import migrated_db
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.collection_instantiation import describe_schedule
+from penny.tools.link_handles import HandleTable
 from penny.tools.models import ToolResult
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
@@ -204,6 +205,7 @@ class TestBrowseTool:
             max_queries_per_call=max_queries_per_call,
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, perm))
         return tool
@@ -248,6 +250,7 @@ class TestBrowseTool:
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
             author="penny",
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(
@@ -329,6 +332,7 @@ class TestBrowseTool:
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
             author="penny",
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(
@@ -356,7 +360,7 @@ class TestBrowseTool:
         # visible to structural accounting (record.failed / tool_failures), not just
         # the rendered error text.
         assert result.success is False
-        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "[1]" in result.message
         assert "extraction failed" in result.message
         assert PennyConstants.BROWSE_PAGE_HEADER + "https://example.com" not in result.message
 
@@ -385,8 +389,8 @@ class TestBrowseTool:
         )
 
         assert result.success is True
-        assert PennyConstants.BROWSE_PAGE_HEADER + "https://good.com" in result.message
-        assert PennyConstants.BROWSE_ERROR_HEADER + "https://bad.com" in result.message
+        assert PennyConstants.BROWSE_PAGE_HEADER + "[1]" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "[2]" in result.message
 
     @pytest.mark.asyncio
     async def test_queries_past_cap_are_named_not_dropped(self, db: Database):
@@ -503,6 +507,7 @@ class TestBrowseTool:
             max_queries_per_call=3,
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
 
@@ -514,8 +519,8 @@ class TestBrowseTool:
 
         assert result.success is True
         assert request_fn.call_count == 3
-        assert "https://a.com" in result.message
-        assert "https://c.com" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1]" in result.message
+        assert "https://c.com" not in result.message
         assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
         assert "beyond the 3-per-call total" in result.message
         assert "browse(queries=['https://d.com'])" in result.message
@@ -551,7 +556,7 @@ class TestBrowseTool:
             CallLink.new_top(), queries=["https://blocked.com"], extract="the page content"
         )
 
-        assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "[1]" in result.message
         assert "blocked" in result.message
         request_fn.assert_not_called()
 
@@ -572,7 +577,7 @@ class TestBrowseTool:
         )
 
         assert isinstance(result, ToolResult)
-        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "[1]" in result.message
 
 
 class TestBrowseToolMediaCapture:
@@ -603,6 +608,7 @@ class TestBrowseToolMediaCapture:
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
             author="penny",
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
 

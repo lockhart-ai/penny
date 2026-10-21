@@ -45,6 +45,7 @@ from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseTool
 from penny.tools.choose import ChooseTool
+from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
 from penny.validation import (
     ConditionKey,
@@ -375,12 +376,15 @@ class Agent:
         calls this cycle makes.  Returning the response alongside ``success``
         keeps the call chain explicit; no per-cycle state lives on ``self``.
         """
-        tools = self.get_tools(run_id=run_id)
+        # One numbered link table per cycle (#2717) — created here, beside the
+        # run identity, and passed to the tool surface and the loop alike.
+        handles = HandleTable()
+        tools = self.get_tools(run_id=run_id, handles=handles)
         cursor_tools = tuple(t for t in tools if isinstance(t, CursorReadTool))
         self._install_tools(tools)
 
         primary_user = self.db.users.get_primary_sender()
-        system_prompt = await self._build_system_prompt(primary_user)
+        system_prompt = await self._build_system_prompt(primary_user, handles=handles)
 
         response = await self.run(
             prompt="",
@@ -389,6 +393,7 @@ class Agent:
             system_prompt=system_prompt,
             prompt_type=self.name,
             on_progress=on_progress,
+            handles=handles,
             progress_scope="background",
         )
         return CycleResult(
@@ -477,6 +482,7 @@ class Agent:
         on_progress: ProgressCallback | None = None,
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
+        handles: HandleTable | None = None,
     ) -> ControllerResponse:
         """Run the agentic loop — prompt in, response out.
 
@@ -492,6 +498,11 @@ class Agent:
         """
         run_id = call_link.run_id
         self._tool_result_text = []
+        # The run's numbered link table (#2717) — ``None`` is the honest empty
+        # registry for a run whose surfaces render no handles; the run starters
+        # that do (chat turns, collector cycles, the delivery turn) always pass
+        # one, the same table their tools were built with.
+        table = handles if handles is not None else HandleTable()
         messages = self._build_messages(prompt, history, system_prompt, images=images)
         tools = self._tool_registry.get_ollama_tools()
         return await self._run_agentic_loop(
@@ -504,6 +515,7 @@ class Agent:
             call_link,
             prompt_type,
             progress_scope,
+            table,
         )
 
     # ── Agentic loop internals ───────────────────────────────────────────
@@ -519,6 +531,7 @@ class Agent:
         call_link: CallLink,
         prompt_type: str | None,
         progress_scope: str,
+        handles: HandleTable,
     ) -> ControllerResponse:
         """Run the loop while guaranteeing a terminal progress event and a complete
         run record (the trailing turns no model call carried, #1778)."""
@@ -539,6 +552,7 @@ class Agent:
                 prompt_type,
                 progress_scope,
                 logged,
+                handles,
             )
             outcome = self._run_outcome(response)
             return response
@@ -675,6 +689,7 @@ class Agent:
         prompt_type: str | None,
         progress_scope: str,
         logged: _LoggedBoundary | None = None,
+        handles: HandleTable | None = None,
     ) -> ControllerResponse:
         """Execute the step loop: call model, process tool calls, or return final answer.
 
@@ -682,6 +697,10 @@ class Agent:
         model call has just carried, so whatever sits beyond it when the loop leaves
         (by return OR by exception) is the tail the caller stamps onto the record."""
         logged = logged if logged is not None else _LoggedBoundary()
+        # The run's link table (#2717) — the validator's dangling-citation check
+        # reads it; defaulted here only because this method is also the direct
+        # entry some callers use without one.
+        table = handles if handles is not None else HandleTable()
         source_urls: list[str] = []
         called_tools: set[tuple[str, ...]] = set()
         tool_call_records: list[ToolCallRecord] = []
@@ -701,7 +720,7 @@ class Agent:
 
             try:
                 response = await self._call_model_validated(
-                    messages, step_tools, call_link, prompt_type
+                    messages, step_tools, call_link, prompt_type, handles=table
                 )
             except ModelCallAbortedError as aborted:
                 # A call that came back with nothing still carried every turn so far, so
@@ -722,7 +741,9 @@ class Agent:
             # record already holds them — the tail restarts from here.
             logged.turns = len(messages)
 
-            ctx = self._loop_context(step, is_final_step, step_tools, messages, tool_call_records)
+            ctx = self._loop_context(
+                step, is_final_step, step_tools, messages, tool_call_records, handles=table
+            )
             if response.has_tool_calls:
                 if self._reject_premature_terminator(response, messages, ctx):
                     continue
@@ -788,6 +809,7 @@ class Agent:
         step_tools: list[dict],
         messages: list[LlmMessage],
         records: list[ToolCallRecord],
+        handles: HandleTable | None = None,
     ) -> LoopContext:
         """Snapshot the run state a validator reads — built fresh per branch so
         ``records`` reflects the work done before this response.  ``retried`` is
@@ -799,6 +821,7 @@ class Agent:
             tools_available=bool(step_tools),
             source_text=self._get_source_text(messages),
             records=list(records),
+            handles=handles if handles is not None else HandleTable(),
         )
 
     def _reject_premature_terminator(
@@ -978,6 +1001,7 @@ class Agent:
         tools: list[dict],
         call_link: CallLink,
         prompt_type: str | None,
+        handles: HandleTable | None = None,
     ) -> LlmResponse:
         """Call the model, driving the response-validation chain on each output.
 
@@ -1590,7 +1614,9 @@ class Agent:
         """
         return None
 
-    def get_tools(self, run_id: str | None = None) -> list[Tool]:
+    def get_tools(
+        self, run_id: str | None = None, handles: HandleTable | None = None
+    ) -> list[Tool]:
         """Tool surface — memory + browse, dispatched by ``_memory_scope``.
 
         Builds fresh each cycle so runtime config changes take effect
@@ -1604,6 +1630,7 @@ class Agent:
         mutation records it as the change's cause.  Passed as an explicit
         parameter, never ambient state.
         """
+        table = handles if handles is not None else HandleTable()
         scope = self._memory_scope()
         # Key the memory tools (read cursors + entry author) on the bound
         # collection, not the constant agent identity.  The Collector drives
@@ -1620,8 +1647,9 @@ class Agent:
             run_id=run_id,
             decider=self._decider,
             include_lifecycle=self._include_lifecycle_tools(),
+            handles=table,
         )
-        tools.append(self._build_browse_tool(author=self.name))
+        tools.append(self._build_browse_tool(author=self.name, handles=table))
         # ``choose`` — the fair random picker — is on every agent surface, like
         # browse: chat dispatches it from the user's "pick one at random", and a
         # collector needs it at runtime so a demonstrated ``choose`` step captured
@@ -1649,7 +1677,7 @@ class Agent:
         """
         return True
 
-    def _build_browse_tool(self, author: str) -> BrowseTool:
+    def _build_browse_tool(self, author: str, handles: HandleTable) -> BrowseTool:
         """Build a fresh BrowseTool from config, updating self._browse_tool.
 
         Any extraction draw it makes links back to the enclosing run (and, when
@@ -1667,6 +1695,7 @@ class Agent:
             model_client=self._model_client,
             author=author,
             channel_outage_recovery=self.channel_outage_recovery,
+            handles=handles,
         )
         if self._browse_provider:
             tool.set_browse_provider(self._browse_provider)
@@ -2023,6 +2052,7 @@ class Agent:
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
         images: list[str] | None = None,
+        handles: HandleTable | None = None,
     ) -> list[LlmMessage]:
         """Build message list for Ollama chat API.
 
@@ -2048,7 +2078,9 @@ class Agent:
 
     # ── System prompt building (template method pattern) ─────────────────
 
-    async def _build_system_prompt(self, user: str | None) -> str:
+    async def _build_system_prompt(
+        self, user: str | None, *, handles: HandleTable | None = None
+    ) -> str:
         """Build the full system prompt body — used by background agents.
 
         Envelope: identity + (profile + memory inventory) + task instructions.
@@ -2277,8 +2309,10 @@ class BackgroundAgent(Agent):
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
 
-    def get_tools(self, run_id: str | None = None) -> list[Tool]:
+    def get_tools(
+        self, run_id: str | None = None, handles: HandleTable | None = None
+    ) -> list[Tool]:
         """The chat-style surface minus the lifecycle tier (a background cycle
         cannot create, reconfigure, or archive a mechanism, #1556) plus the
         terminator every background cycle closes with (#1916)."""
-        return [*super().get_tools(run_id), DoneTool()]
+        return [*super().get_tools(run_id, handles), DoneTool()]

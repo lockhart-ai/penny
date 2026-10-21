@@ -95,6 +95,7 @@ penny/
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls/narration), ToolDefinition, and per-tool arg models
     browse.py         — BrowseTool: web search and page reading via the browser extension, with optional micro-context extraction (#1588)
     micro_context.py  — MicroContext: single-shot extraction over bulk content (the browse extractor — its one customer since the notify composer retired, #2656)
+    link_handles.py   — HandleTable: the run's numbered link table (#2717) — convert (a URL the model reads arrives as `[n]`), expand (a reply's citations back to URLs at send), dangling (the honest rejection); one per run, passed as a parameter
     generate_image.py — GenerateImageTool: image generation via OllamaImageClient; stored to media, delivered deterministically by id to its own reply (ToolResult.media_id → ControllerResponse.generated_media_ids → send_response) (chat-only, gated on LLM_IMAGE_MODEL)
     content_cleaning.py — Post-processing for browse results (strips navigation, proxy images, boilerplate)
     search_emails.py  — SearchEmailsTool (JMAP + Zoho) — chat surface, config-gated on a mailbox

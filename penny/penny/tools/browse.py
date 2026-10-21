@@ -25,6 +25,7 @@ from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
 from penny.tools.base import Tool
 from penny.tools.content_cleaning import clean_browser_content
+from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.micro_context import MicroContext, MicroContextResult, MicroExtractOutcome
 from penny.tools.models import BrowseArgs, BrowsePage, ToolResult
 
@@ -53,6 +54,16 @@ class BrowseChannelUnavailableError(Exception):
 
 
 _URL_PATTERN = re.compile(r"^https?://")
+
+# A query that is nothing but a link citation (#2717) — read as the URL its
+# handle stands for, never searched for literally.
+_HANDLE_QUERY_RE = re.compile(r"^\[(\d+)\]$")
+
+
+def _is_read_query(query: str) -> bool:
+    """Whether a query names a page to read: a URL, or a link citation."""
+    return bool(_URL_PATTERN.match(query) or _HANDLE_QUERY_RE.match(query))
+
 
 _LINK_RE = re.compile(r"^\s*\[([^\]]*)\]\((https?://(?:[^)\\]|\\.)*)\)\s*$")
 
@@ -154,8 +165,10 @@ _TIMEOUT_EXTRACT_WAITING = "Still waiting on: {labels}."
 RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None, PageReading]]]
 
 
-def _trim_search_result(text: str, query: str, search_host: str | None) -> str:
-    """Parse a search result page into a numbered list of titles and URLs (#2647).
+def _trim_search_result(
+    text: str, query: str, search_host: str | None, handles: HandleTable
+) -> str:
+    """Parse a search result page into a numbered list of titles and link handles (#2647).
 
     A result's summary snippet often carries the answer itself, and a reply built
     from snippets is built from pages never opened — so the render is a clean list
@@ -203,8 +216,11 @@ def _trim_search_result(text: str, query: str, search_host: str | None) -> str:
     if not results:
         return text
 
+    # Each result's link renders as its handle (#2717) — the model opens one by
+    # citing the number back in a follow-up query, never by retyping the URL.
     listed = "\n".join(
-        f"{number}. {title} ({url})" for number, (title, url) in enumerate(results, 1)
+        f"{number}. {title} [{handles.register(url)}]"
+        for number, (title, url) in enumerate(results, 1)
     )
     instruction = Prompt.SEARCH_RESULT_INSTRUCTION.format(query=query)
     return f"{instruction}\n\n{listed}"
@@ -216,18 +232,19 @@ def _url_host(url: str) -> str:
     return urllib.parse.urlparse(url).hostname or ""
 
 
-def _links_clause(text: str) -> str:
+def _links_clause(text: str, handles: HandleTable) -> str:
     """The standalone markdown links in ``text``, capped at MAX_SEARCH_LINKS, as the
     tail a failed extraction appends — empty when the page carries none.
 
     Same solo-link detection the search trim uses (``_LINK_RE``): a line that is
     nothing but a link is a link the model can open, and prose merely containing one
-    is not.
+    is not.  Each link renders as its handle (#2717) — the only form the model can
+    cite it in.
     """
     links = [line.strip() for line in text.split("\n") if _LINK_RE.match(line)]
     if not links:
         return ""
-    listed = "\n".join(links[: PennyConstants.MAX_SEARCH_LINKS])
+    listed = "\n".join(handles.convert(link) for link in links[: PennyConstants.MAX_SEARCH_LINKS])
     return f"\n{_EXTRACT_LINKS_HEADER}\n{listed}"
 
 
@@ -263,7 +280,15 @@ class BrowseTool(Tool):
         model_client: LlmClient | None = None,
         channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT,
         max_queries_per_call: int | None = None,
+        handles: HandleTable,
     ):
+        # The run's numbered link table (#2717) — REQUIRED, no default: every URL
+        # this tool renders to the model is registered here as a handle, and the
+        # queries the model cites back are resolved through it.  One table per
+        # run, owned by the run starter and passed explicitly — never ambient
+        # state — so a handle the model read from one tool result is the same
+        # number it cites in its reply.
+        self._handles = handles
         self._max_calls = max_calls
         # The per-call TOTAL ceiling (#2662): every requested query up to this runs
         # in this call, in parallel batches of ``max_calls``.  Unwired constructions
@@ -372,9 +397,9 @@ class BrowseTool(Tool):
 
     @classmethod
     def to_progress_emoji(cls, arguments: dict) -> ProgressEmoji:
-        """Pick 📖 if any query is a URL (reading), 🔍 otherwise (searching)."""
+        """Pick 📖 if any query is a URL or a link citation (reading), 🔍 otherwise."""
         for q in arguments.get("queries", []):
-            if _URL_PATTERN.match(q):
+            if _is_read_query(q):
                 return ProgressEmoji.READING
         return ProgressEmoji.SEARCHING
 
@@ -404,9 +429,10 @@ class BrowseTool(Tool):
         """The narration line for ``queries`` — the ONE place the action clause and
         the failure suffix meet.  Callers pass the list to NARRATE: the dispatched
         queries for a result the tool built, the requested ones for a synthetic
-        result with no dispatched list behind it."""
-        searches = [q for q in queries if not _URL_PATTERN.match(q)]
-        reads = [q for q in queries if _URL_PATTERN.match(q)]
+        result with no dispatched list behind it.  A link citation (#2717) narrates
+        as the read it was dispatched as, in the handle form the model reads."""
+        searches = [q for q in queries if not _is_read_query(q)]
+        reads = [q for q in queries if _is_read_query(q)]
         action = cls._browse_action_clause(searches, reads)
         if success:
             return action
@@ -445,7 +471,11 @@ class BrowseTool(Tool):
         args = BrowseArgs(**kwargs)
         self._read_log, self._extract_log, self._extracting = [], [], False
         total = self._max_queries_per_call
-        to_run, dropped = args.queries[:total], args.queries[total:]
+        requested, dropped = args.queries[:total], args.queries[total:]
+        # Handles resolve here (#2717): a query that is a bare citation is read as
+        # the URL its handle stands for, and a handle the table does not hold is
+        # refused honestly instead of searched for literally.
+        resolved, dangling = self._resolve_queries(requested)
 
         sections: list[str] = []
         page_sections: list[str] = []
@@ -458,9 +488,9 @@ class BrowseTool(Tool):
         # go through in batches of ``max_calls``, one batch after another, so a
         # four-site job pays no extra model round trip.  Order is preserved: each
         # batch's sections append in request order, and the batches run in order.
-        for start in range(0, len(to_run), self._max_calls):
-            batch = to_run[start : start + self._max_calls]
-            tasks = self._build_tasks(batch)
+        for start in range(0, len(resolved), self._max_calls):
+            batch = resolved[start : start + self._max_calls]
+            tasks = self._build_tasks([dispatch for _, dispatch in batch])
             batch_results = await asyncio.gather(
                 *[coro for _, _, coro in tasks], return_exceptions=True
             )
@@ -483,9 +513,17 @@ class BrowseTool(Tool):
         stored = await self._append_pages_to_browse_results(page_sections)
         await self._store_media(captures)
         self._record_read_log(page_sections, stored)
+        # Register this call's pages in READ order before any concurrent
+        # extraction draw converts them (#2717): a handle's number is the page's
+        # read order, deterministic whatever order the draws finish in.  The
+        # conversion is idempotent, so every later render reuses these numbers.
+        for page_section in page_sections:
+            self._handles.convert_browse_section(page_section)
 
         if dropped:
             sections.append(self._dropped_section(total, dropped))
+        for original in dangling:
+            sections.append(self._dangling_query_section(original))
         # Browse is a *read* for work-accounting (its browse-results log write is
         # incidental), so ``mutated`` stays False.  But when EVERY dispatched query
         # errored the call did nothing, so it reports ``success=False`` — making the
@@ -493,16 +531,17 @@ class BrowseTool(Tool):
         # ``tool_failures`` count → run-health), not just to the error text.  A
         # partial failure keeps ``success=True``: the model works from what succeeded.
         all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
+        ran = [original for original, _ in resolved]
         if args.extract is not None and not all_failed:
             self._extracting = True
             return await self._extract_result(
-                sections, stored, page_readings, args.extract, call_link, ran=to_run
+                sections, stored, page_readings, args.extract, call_link, ran=ran
             )
         return ToolResult(
-            message=PennyConstants.SECTION_SEPARATOR.join(sections),
+            message=self._model_message(sections),
             success=not all_failed,
             source_urls=self._read_urls(sections),
-            narration=self._result_narration(to_run, not all_failed),
+            narration=self._result_narration(ran, not all_failed),
         )
 
     @staticmethod
@@ -513,12 +552,63 @@ class BrowseTool(Tool):
         (``## browse error:``) read nothing and a search section (``## browse
         search:``) is links, not a page read, so neither contributes (#2648):
         these ride ``ToolResult.source_urls`` to the reply-side fallback, which
-        appends the first one when the composed reply carries no URL."""
+        appends the first one when the composed reply carries no URL.
+
+        Read off the REAL sections — the sections this call renders to the model
+        carry handles (#2717), so the URL lives here and in the table, never in
+        the model-facing text."""
         return [
             section[len(PennyConstants.BROWSE_PAGE_HEADER) :].partition("\n")[0]
             for section in sections
             if section.startswith(PennyConstants.BROWSE_PAGE_HEADER)
         ]
+
+    def _resolve_queries(self, queries: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
+        """Split the requested queries into what dispatches and what dangles.
+
+        A bare-citation query (``"[12]"``) dispatches as the URL its handle
+        stands for; anything else dispatches as itself.  A citation the run's
+        table does not hold returns in the dangling list, to be refused with the
+        honest note naming the links that DO exist — searched for literally, a
+        ``"[12]"`` would be a garbage query about the number 12."""
+        resolved: list[tuple[str, str]] = []
+        dangling: list[str] = []
+        for query in queries:
+            match = _HANDLE_QUERY_RE.match(query)
+            if match is None:
+                resolved.append((query, query))
+                continue
+            url = self._handles.url_for(int(match.group(1)))
+            if url is None:
+                dangling.append(query)
+            else:
+                resolved.append((query, url))
+        return resolved, dangling
+
+    def _dangling_query_section(self, query: str) -> str:
+        """The honest refusal of a citation this run's table does not hold —
+        which numbers don't exist and which do, so the re-draw cites a real one."""
+        match = _HANDLE_QUERY_RE.match(query)
+        if match is None:  # only reachable from _resolve_queries' own match
+            return ""
+        number = int(match.group(1))
+        return (
+            f"{PennyConstants.BROWSE_ERROR_HEADER}{query}\n{self._handles.dangling_note([number])}"
+        )
+
+    def _model_message(self, sections: list[str]) -> str:
+        """The model-facing join of this call's sections — every URL arrives as
+        its handle (#2717).  The real sections (whose headers and bodies carry
+        the URLs the table, the browse-results log and ``source_urls`` read)
+        convert at this one boundary; conversion is idempotent, so an
+        already-converted extract render passes through unchanged.  The one
+        plain line telling the model how to cite rides once, at the end, when
+        this call rendered any link at all."""
+        converted = [self._handles.convert_browse_section(section) for section in sections]
+        body = PennyConstants.SECTION_SEPARATOR.join(converted)
+        if self._handles:
+            body = f"{body}\n\n{PAGE_CITATION_LINE}"
+        return body
 
     def timeout_report(self, timeout: float) -> str:
         """Override of ``Tool.timeout_report`` (#2367): what THIS call had
@@ -538,9 +628,11 @@ class BrowseTool(Tool):
 
     def _read_clause(self) -> str:
         """The pages fetched before the timeout, each with its own stored handle
-        (or a note that it wasn't stored)."""
+        (or a note that it wasn't stored) — labels converted to their handles,
+        the same model-facing form the live sections render (#2717)."""
         listed = "; ".join(
-            f"{label} ({self._entry_handle(entry) if entry else _TIMEOUT_NOT_STORED})"
+            f"{self._handles.convert_browse_section(label)} "
+            f"({self._entry_handle(entry) if entry else _TIMEOUT_NOT_STORED})"
             for label, entry in self._read_log
         )
         return _TIMEOUT_READ_CLAUSE.format(listed=listed)
@@ -554,10 +646,15 @@ class BrowseTool(Tool):
         waiting = [label for label, _ in self._read_log if label not in finished_labels]
         parts = []
         if self._extract_log:
-            rendered = PennyConstants.SECTION_SEPARATOR.join(r for _, r in self._extract_log)
+            rendered = PennyConstants.SECTION_SEPARATOR.join(
+                self._handles.convert_browse_section(r) for _, r in self._extract_log
+            )
             parts.append(_TIMEOUT_EXTRACT_FINISHED.format(rendered=rendered))
         if waiting:
-            parts.append(_TIMEOUT_EXTRACT_WAITING.format(labels="; ".join(waiting)))
+            waiting_labels = "; ".join(
+                self._handles.convert_browse_section(label) for label in waiting
+            )
+            parts.append(_TIMEOUT_EXTRACT_WAITING.format(labels=waiting_labels))
         return "\n\n".join(parts)
 
     @staticmethod
@@ -638,9 +735,7 @@ class BrowseTool(Tool):
         extracted = self._drawn_pages(drawn)
         success = self._read_anything(sections, extracted)
         return ToolResult(
-            message=PennyConstants.SECTION_SEPARATOR.join(
-                self._merge_extracted(sections, batch, extracted)
-            ),
+            message=self._model_message(self._merge_extracted(sections, batch, extracted)),
             success=success,
             source_urls=self._read_urls(sections),
             narration=self._result_narration(ran, success),
@@ -735,10 +830,10 @@ class BrowseTool(Tool):
         before a later sibling's draw stalls out the whole tool's timeout has
         already been captured."""
         stored = [entry] if entry is not None else []
-        links = _links_clause(section)
+        links = _links_clause(section, self._handles)
         try:
             micro = await micro_context.extract(
-                section,
+                self._handles.convert_browse_section(section),
                 instruction,
                 call_link=call_link,
                 run_target=self._author,
@@ -823,9 +918,7 @@ class BrowseTool(Tool):
         ]
         success = self._read_anything(sections, unavailable)
         return ToolResult(
-            message=PennyConstants.SECTION_SEPARATOR.join(
-                self._merge_extracted(sections, batch, unavailable)
-            ),
+            message=self._model_message(self._merge_extracted(sections, batch, unavailable)),
             success=success,
             source_urls=self._read_urls(sections),
             narration=self._result_narration(ran, success),
@@ -839,7 +932,7 @@ class BrowseTool(Tool):
         body = _EXTRACT_UNAVAILABLE.format(
             instruction=instruction, handle_clause=self._handle_clause(stored)
         )
-        return self._under_page_header(section, f"{body}{_links_clause(section)}")
+        return self._under_page_header(section, f"{body}{_links_clause(section, self._handles)}")
 
     @staticmethod
     def _under_page_header(section: str, body: str) -> str:
@@ -899,7 +992,7 @@ class BrowseTool(Tool):
             if isinstance(result, BaseException):
                 sections.append(self._error_section(header, value, result))
                 continue
-            section = self._page_section(header, value, result, self._search_host)
+            section = self._page_section(header, value, result)
             sections.append(section)
             if header == PennyConstants.BROWSE_PAGE_HEADER:
                 page_sections.append(section)
@@ -936,13 +1029,14 @@ class BrowseTool(Tool):
             f"won't help. {self._channel_outage_recovery}"
         )
 
-    @staticmethod
-    def _page_section(header: str, value: str, result: BrowsePage, search_host: str) -> str:
+    def _page_section(self, header: str, value: str, result: BrowsePage) -> str:
         """Render one successful sub-call; a search page parses to its titles and
-        URLs (#2647)."""
+        link handles (#2647).  The REAL section — the header and body carry the
+        URLs the table, the browse-results log and ``source_urls`` read; the
+        model-facing handle form is applied at the message boundary (#2717)."""
         text = result.text
         if header == PennyConstants.BROWSE_SEARCH_HEADER:
-            text = _trim_search_result(text, value, search_host)
+            text = _trim_search_result(text, value, self._search_host, self._handles)
         return f"{header}{value}\n{text}"
 
     @staticmethod

@@ -53,6 +53,7 @@ from penny.text_validity import (
 )
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
+from penny.tools.link_handles import HandleTable
 from penny.tools.models import BrowseArgs, ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
@@ -1899,6 +1900,7 @@ class TestParallelToolCalls:
             db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
@@ -1925,6 +1927,7 @@ class TestParallelToolCalls:
             db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
 
         result = await tool.execute(
@@ -2000,6 +2003,7 @@ class TestParallelToolCalls:
             db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
 
         result = await tool.run(CallLink.new_top(), queries=[], extract="the page content")
@@ -2034,6 +2038,7 @@ class TestParallelToolCalls:
             db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
@@ -2070,6 +2075,7 @@ class TestParallelToolCalls:
             db=Database(test_db),
             embedding_client=cast(Any, MockLlmClient()),
             model_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
@@ -2080,7 +2086,8 @@ class TestParallelToolCalls:
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
-        assert "slow.example.com" in result.message
+        assert f"{PennyConstants.BROWSE_ERROR_HEADER}[1]" in result.message
+        assert "slow.example.com" not in result.message
 
     def test_browse_tool_timeout_exceeds_request_timeout(self, test_db):
         """BrowseTool.timeout must exceed the per-URL BROWSE_REQUEST_TIMEOUT.
@@ -2090,7 +2097,10 @@ class TestParallelToolCalls:
         cancelling the entire tool call.
         """
         tool = BrowseTool(
-            max_calls=3, db=Database(test_db), embedding_client=cast(Any, MockLlmClient())
+            max_calls=3,
+            db=Database(test_db),
+            embedding_client=cast(Any, MockLlmClient()),
+            handles=HandleTable(),
         )
         assert tool.timeout is not None
         assert tool.timeout > PennyConstants.BROWSE_REQUEST_TIMEOUT
@@ -2115,11 +2125,12 @@ class TestSearchResultTrimming:
                 "Another snippet",
             ]
         )
-        result = _trim_search_result(content, "artemis mission", "duckduckgo.com")
+        result = _trim_search_result(content, "artemis mission", "duckduckgo.com", HandleTable())
         assert 'You searched for "artemis mission"' in result
-        assert "titles and URLs only" in result
-        assert "1. NASA Article (https://www.nasa.gov/artemis/)" in result
-        assert "2. Space.com Article (https://www.space.com/artemis)" in result
+        assert "titles and link numbers only" in result
+        assert "1. NASA Article [1]" in result
+        assert "2. Space.com Article [2]" in result
+        assert "https://www.nasa.gov" not in result
         # Nothing else from the page: the snippets and the preamble are gone, so a
         # reply cannot be built from them (#2647).
         assert "Some snippet text" not in result
@@ -2138,14 +2149,14 @@ class TestSearchResultTrimming:
                 "Snippet text",
             ]
         )
-        result = _trim_search_result(content, "watches", "duckduckgo.com")
-        assert "1. The Watch Page (https://watch.example.com/)" in result
+        result = _trim_search_result(content, "watches", "duckduckgo.com", HandleTable())
+        assert "1. The Watch Page [1]" in result
         assert "Snippet text" not in result
 
     def test_returns_original_when_no_links(self):
         """Content with no markdown links passes through unchanged."""
         content = "Just plain text\nwith no links\nat all"
-        result = _trim_search_result(content, "watches", "duckduckgo.com")
+        result = _trim_search_result(content, "watches", "duckduckgo.com", HandleTable())
         assert result == content
 
     def test_strips_knowledge_panel_prose_with_inline_links(self):
@@ -2173,9 +2184,9 @@ class TestSearchResultTrimming:
                 "A delightful return to the world.",
             ]
         )
-        result = _trim_search_result(content, "the show", "duckduckgo.com")
-        assert "1. Show Title (https://en.example.org/show)" in result
-        assert "2. Show - IMDb (https://imdb.com/title/tt1)" in result
+        result = _trim_search_result(content, "the show", "duckduckgo.com", HandleTable())
+        assert "1. Show Title [1]" in result
+        assert "2. Show - IMDb [2]" in result
         # Knowledge panel prose, multi-link metadata lines and snippets yield nothing.
         assert "[fantasy]" not in result
         assert "[Alice]" not in result
@@ -2214,13 +2225,13 @@ class TestSearchResultTrimming:
                 "[visitlondon.example.com](https://www.visitlondon.example.com/)",
             ]
         )
-        result = _trim_search_result(content, "london", "kagi.com")
+        result = _trim_search_result(content, "london", "kagi.com", HandleTable())
         assert result == (
-            'You searched for "london". These are the results, titles and URLs only. '
+            'You searched for "london". These are the results, titles and link numbers only. '
             "You must read them to answer the user:\n"
             "\n"
-            "1. London - Wikilike (https://london.wikilike.org/wiki/London)\n"
-            "2. Visit London — official guide (https://www.visitlondon.example.com/)"
+            "1. London - Wikilike [1]\n"
+            "2. Visit London — official guide [2]"
         )
 
     def test_links_without_headings_list_by_link_text(self):
@@ -2238,13 +2249,13 @@ class TestSearchResultTrimming:
                 "[cityoflondon.gov.example](https://www.cityoflondon.gov.example/)",
             ]
         )
-        result = _trim_search_result(content, "london", "kagi.com")
+        result = _trim_search_result(content, "london", "kagi.com", HandleTable())
         assert result == (
-            'You searched for "london". These are the results, titles and URLs only. '
+            'You searched for "london". These are the results, titles and link numbers only. '
             "You must read them to answer the user:\n"
             "\n"
-            "1. london.wikilike.org (https://london.wikilike.org/wiki/London)\n"
-            "2. cityoflondon.gov.example (https://www.cityoflondon.gov.example/)"
+            "1. london.wikilike.org [1]\n"
+            "2. cityoflondon.gov.example [2]"
         )
 
     def test_engine_affordance_links_are_not_results(self):
@@ -2259,12 +2270,13 @@ class TestSearchResultTrimming:
                 "[See Map](https://kagi.com/maps/search?q=watches)",
             ]
         )
-        result = _trim_search_result(content, "watches", "kagi.com")
-        assert "1. First Result (https://example.com/a)" in result
+        result = _trim_search_result(content, "watches", "kagi.com", HandleTable())
+        assert "1. First Result [1]" in result
         assert "kagi.com/maps" not in result
         # The same link is a result when it does not point at the search host.
-        kept = _trim_search_result(content, "watches", "duckduckgo.com")
-        assert "kagi.com/maps" in kept
+        kept = _trim_search_result(content, "watches", "duckduckgo.com", HandleTable())
+        assert "Map Block [2]" in kept
+        assert "kagi.com/maps" not in kept
 
     def test_caps_at_max_search_links(self):
         """Only the first PennyConstants.MAX_SEARCH_LINKS standalone links are listed."""
@@ -2274,9 +2286,10 @@ class TestSearchResultTrimming:
             lines.append(f"[example.com/page{i}](https://example.com/page{i})")
             lines.append(f"Snippet for result {i}")
         content = "\n".join(lines)
-        result = _trim_search_result(content, "query", "duckduckgo.com")
+        result = _trim_search_result(content, "query", "duckduckgo.com", HandleTable())
         # First 10 listed
-        assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS - 1}" in result
+        assert f"Result {PennyConstants.MAX_SEARCH_LINKS - 1}" in result
+        assert f"Result {PennyConstants.MAX_SEARCH_LINKS}" not in result
         # 11th and beyond dropped
         assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS}" not in result
         assert f"example.com/page{PennyConstants.MAX_SEARCH_LINKS + 4}" not in result
@@ -3592,6 +3605,7 @@ def _ctx(
     source_text: str = "",
     records: list[ToolCallRecord] | None = None,
     retried: set[ConditionKey] | None = None,
+    handles: HandleTable | None = None,
 ) -> LoopContext:
     return LoopContext(
         step=step,
@@ -3599,6 +3613,7 @@ def _ctx(
         tools_available=tools_available,
         source_text=source_text,
         records=records if records is not None else [],
+        handles=handles if handles is not None else HandleTable(),
         retried=retried if retried is not None else set(),
     )
 
@@ -3634,6 +3649,34 @@ class TestResponseValidators:
         # URL absent from source → retry.
         bad = HallucinatedUrlValidator().check(resp, _ctx(source_text="unrelated text"))
         assert isinstance(bad, Retry) and bad.condition == ConditionKey.HALLUCINATED_URLS
+
+        # A link citation the run's table does not hold is rejected with a note
+        # naming which links DO exist (#2717) — the action-space repair beside the
+        # raw-URL branch, which never fires for a handle-cited link.
+        table = HandleTable()
+        for i in range(1, 25):
+            table.register(f"https://source.example/page-{i}")
+        cited = _text_response("Read all about it, see [27].")
+        dangling = HallucinatedUrlValidator().check(
+            cited, _ctx(source_text="some source", handles=table)
+        )
+        assert isinstance(dangling, Retry) and dangling.condition == ConditionKey.HALLUCINATED_URLS
+        assert dangling.note == (
+            "There is no link [27] in this turn; the links you have are [1]–[24]."
+        )
+        # A citation the table holds proceeds — even with no raw URL in the source.
+        ok_cite = _text_response("Read all about it, see [3].")
+        assert isinstance(
+            HallucinatedUrlValidator().check(
+                ok_cite, _ctx(source_text="some source", handles=table)
+            ),
+            Proceed,
+        )
+        # With no links rendered this run, a bracketed number is prose, not a
+        # failed citation — nothing to check.
+        assert isinstance(
+            HallucinatedUrlValidator().check(cited, _ctx(source_text="some source")), Proceed
+        )
         # URL present in source → proceed.
         ok = HallucinatedUrlValidator().check(
             resp, _ctx(source_text="ref https://made-up.example/never here")

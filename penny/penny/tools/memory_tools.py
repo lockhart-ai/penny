@@ -85,6 +85,7 @@ from penny.tools.collection_instantiation import (
     sentinel_expiry_note,
 )
 from penny.tools.job_summary import job_summary_line
+from penny.tools.link_handles import CITATION_LINE, HandleTable
 from penny.tools.memory_args import (
     CollectionCreateArgs,
     CollectionEntrySpec,
@@ -125,6 +126,7 @@ def format_entries(
     source: str | None = None,
     ordering: str | None = None,
     show_ids: bool = False,
+    handles: HandleTable | None = None,
 ) -> str:
     """Render a list of entries as a numbered string the model can read.
 
@@ -161,6 +163,12 @@ def format_entries(
         if source is None:
             return "(no entries)"
         return f"No entries in `{source}` — it's empty or nothing matched (not an error)."
+    # Links travel as handles (#2717): a stored entry keeps real URLs, so the
+    # render converts each one through the run's table — and the one plain line
+    # telling the model how to cite rides once, when this render rendered a link
+    # that had not been rendered before (the unmarked case stays the quiet
+    # default).
+    size_before = len(handles) if handles is not None else 0
     lines = []
     for index, entry in enumerate(entries, start=1):
         prefix = f"{render_key(entry.key)} " if entry.key else ""
@@ -169,8 +177,11 @@ def format_entries(
             # read accepts — the mirror of the keyed entry's ``key=`` prefix.
             prefix = f"id={entry.id} "
         stamp = f"[{format_log_timestamp(entry.created_at)}] "
-        lines.append(f"{index}. {stamp}{prefix}{entry.content}")
+        content = handles.convert(entry.content) if handles is not None else entry.content
+        lines.append(f"{index}. {stamp}{prefix}{content}")
     body = "\n".join(lines)
+    if handles is not None and len(handles) > size_before:
+        body = f"{body}\n{CITATION_LINE}"
     if source is None:
         return body
     noun = "entry" if len(entries) == 1 else "entries"
@@ -1024,14 +1035,20 @@ class CollectionListTool(MemoryTool):
             return f"You tried to look up your {collection} but it didn't work:"
         return f"You looked up your {collection}:"
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, handles: HandleTable | None = None) -> None:
         self._db = db
+        self._handles = handles if handles is not None else HandleTable()
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionListArgs(**kwargs)
         entries = _resolve(self._db, args.collection).read_latest(args.k)
         return ToolResult(
-            message=format_entries(entries, source=args.collection, ordering="most recent first")
+            message=format_entries(
+                entries,
+                source=args.collection,
+                ordering="most recent first",
+                handles=self._handles,
+            )
         )
 
 
@@ -1064,8 +1081,9 @@ class CollectionGetTool(MemoryTool):
             return f"You tried to look up {entry} in {collection} but it didn't work:"
         return f"You looked up {entry} in {collection}:"
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, handles: HandleTable | None = None) -> None:
         self._db = db
+        self._handles = handles if handles is not None else HandleTable()
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionGetArgs(**kwargs)
@@ -1086,7 +1104,9 @@ class CollectionGetTool(MemoryTool):
                 f"entries=[{{'key': <the key you found>, 'content': <the new content>}}]) — "
                 f"the store replaces the content of the key you name."
             )
-        return ToolResult(message=format_entries(rows, source=args.collection))
+        return ToolResult(
+            message=format_entries(rows, source=args.collection, handles=self._handles)
+        )
 
 
 class CollectionSampleTool(MemoryTool):
@@ -1400,6 +1420,7 @@ class CollectionWriteTool(MemoryTool):
         decider: EntryDecider,
         scope: str | None = None,
         run_id: str | None = None,
+        handles: HandleTable | None = None,
     ) -> None:
         self._db = db
         self._llm = llm_client
@@ -1412,6 +1433,9 @@ class CollectionWriteTool(MemoryTool):
         # The writing run — stamped on each new entry (created/last-written) so a
         # stored value cites the run that produced it (#1560).
         self._run_id = run_id
+        # The run's link table (#2717) — handles are a rendering, so an entry is
+        # expanded back to its URLs BEFORE the write: the store keeps real URLs.
+        self._handles = handles if handles is not None else HandleTable()
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         # This tool embeds, so a write to a mistyped collection gets the MEANING
@@ -1513,7 +1537,7 @@ class CollectionWriteTool(MemoryTool):
     async def _build_entry(self, spec: CollectionEntrySpec) -> EntryInput:
         return EntryInput(
             key=spec.key,
-            content=spec.content,
+            content=self._handles.expand(spec.content),
             key_embedding=await embed_text(self._llm, spec.key),
             content_embedding=await embed_text(self._llm, spec.content),
         )
@@ -2273,8 +2297,13 @@ class LogReadTool(CursorReadTool):
             return f"You tried to read {log} but it didn't work:"
         return f"You read {log}:"
 
-    def __init__(self, db: Database, agent_name: str, scope: str | None) -> None:
+    def __init__(
+        self, db: Database, agent_name: str, scope: str | None, handles: HandleTable | None = None
+    ) -> None:
         super().__init__(db, agent_name)
+        # The run's link table (#2717) — a stored log entry (browse-results
+        # above all) keeps real URLs, so the render converts through it.
+        self._handles = handles if handles is not None else HandleTable()
         self._cursor_mode = scope is not None
         self.description = (
             _LOG_READ_CURSOR_DESCRIPTION if self._cursor_mode else _LOG_READ_WINDOW_DESCRIPTION
@@ -2290,6 +2319,7 @@ class LogReadTool(CursorReadTool):
                 source=args.log,
                 ordering="oldest first",
                 show_ids=self._shows_ids(memory),
+                handles=self._handles,
             )
         )
 
@@ -2758,10 +2788,12 @@ def _entry_addressing(entry: ResolvedEntry) -> str:
     return f"collection_get(collection='{entry.memory_name}', key='{entry.key}')"
 
 
-def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
+def _render_entry_hit(index: int, entry: ResolvedEntry, handles: HandleTable | None = None) -> str:
     """One stored-entry hit (#1640): its identity + the value it carries, then how to
-    read it back — mirroring the object hit's two-line shape."""
-    head = f'{index}. {_entry_identity(entry)} — "{_entry_preview(entry.content)}"'
+    read it back — mirroring the object hit's two-line shape.  The value converts
+    through the run's link table (#2717): a stored entry keeps real URLs."""
+    content = handles.convert(entry.content) if handles is not None else entry.content
+    head = f'{index}. {_entry_identity(entry)} — "{_entry_preview(content)}"'
     return f"{head}\n   read it: {_entry_addressing(entry)}"
 
 
@@ -2774,15 +2806,17 @@ def _render_object_hit(index: int, match: ResolvedMatch) -> str:
     return "\n".join([head, f"   how to use it: {_find_addressing(match)}"])
 
 
-def _render_find_hit(index: int, hit: ResolvedHit) -> str:
+def _render_find_hit(index: int, hit: ResolvedHit, handles: HandleTable | None = None) -> str:
     """One fused hit, best-first ranked — dispatched by family: a stored entry
     renders its value + how to read it, an object its state/type + how to use it."""
     if isinstance(hit, ResolvedEntry):
-        return _render_entry_hit(index, hit)
+        return _render_entry_hit(index, hit, handles)
     return _render_object_hit(index, hit)
 
 
-def _render_message_hit(index: int, message: ResolvedMessage) -> str:
+def _render_message_hit(
+    index: int, message: ResolvedMessage, handles: HandleTable | None = None
+) -> str:
     """One message hit (#2289) — the message itself, read back exactly as
     ``read_similar`` used to show it on that log: who said it (``memory_name`` names
     which log it's from — ``user-messages`` or ``penny-messages``), when
@@ -2791,10 +2825,13 @@ def _render_message_hit(index: int, message: ResolvedMessage) -> str:
     carries one (#1568).  No preview cap and no addressing line — the message IS
     the answer."""
     stamp = format_log_timestamp(message.created_at)
-    return f"{index}. {message.memory_name} [{stamp}]: {message.content}"
+    content = handles.convert(message.content) if handles is not None else message.content
+    return f"{index}. {message.memory_name} [{stamp}]: {content}"
 
 
-def _render_scoped_memory(memory: Memory, entries: list[MemoryEntry]) -> str:
+def _render_scoped_memory(
+    memory: Memory, entries: list[MemoryEntry], handles: HandleTable | None = None
+) -> str:
     """``find(query, memory=<name>)`` (#2289) — one named memory's own entries,
     ranked by closeness to the query (``Memory.read_similar``), read back in
     full rather than the 120-char preview: naming the list IS the answer.  A
@@ -2805,7 +2842,12 @@ def _render_scoped_memory(memory: Memory, entries: list[MemoryEntry]) -> str:
     (``_render_message_hit``) instead — a plain ``format_entries`` line has no
     way to say who said it."""
     if not isinstance(memory, MessageLogMemory):
-        return format_entries(entries, source=memory.name, ordering="closest to the query first")
+        return format_entries(
+            entries,
+            source=memory.name,
+            ordering="closest to the query first",
+            handles=handles,
+        )
     if not entries:
         return format_entries(entries, source=memory.name)
     body = "\n".join(
@@ -2814,6 +2856,7 @@ def _render_scoped_memory(memory: Memory, entries: list[MemoryEntry]) -> str:
             ResolvedMessage(
                 memory_name=memory.name, content=entry.content, created_at=entry.created_at
             ),
+            handles,
         )
         for i, entry in enumerate(entries, start=1)
     )
@@ -2919,9 +2962,14 @@ class FindTool(MemoryTool):
             return f"You tried to find something of your own{label} but it didn't work:"
         return f"You looked for something of your own{label}:"
 
-    def __init__(self, db: Database, llm_client: LlmClient) -> None:
+    def __init__(
+        self, db: Database, llm_client: LlmClient, handles: HandleTable | None = None
+    ) -> None:
         self._db = db
         self._llm = llm_client
+        # The run's link table (#2717) — a hit's stored value or message keeps
+        # real URLs, so the render converts through it.
+        self._handles = handles if handles is not None else HandleTable()
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         # A scoped find (`memory=`, #2289) is a name-dispatch call too, so a miss
@@ -2952,17 +3000,20 @@ class FindTool(MemoryTool):
         catches and re-renders with the did-you-mean suggestion."""
         memory = _resolve(self._db, name)
         entries = memory.read_similar(vec, PennyConstants.FIND_MATCH_LIMIT)
-        return ToolResult(message=_render_scoped_memory(memory, entries))
+        return ToolResult(message=_render_scoped_memory(memory, entries, handles=self._handles))
 
     def _format(self, query: str, hits: list[ResolvedHit], messages: list[ResolvedMessage]) -> str:
         if not hits and not messages:
             return _FIND_EMPTY.format(query=query)
+        size_before = len(self._handles)
         parts = [self._format_store(query, hits)]
         if messages:
             message_body = "\n".join(
-                _render_message_hit(i, m) for i, m in enumerate(messages, start=1)
+                _render_message_hit(i, m, self._handles) for i, m in enumerate(messages, start=1)
             )
             parts.append(f"{_FIND_MESSAGES_HEADING}\n{message_body}")
+        if len(self._handles) > size_before:
+            parts.append(CITATION_LINE)
         return "\n\n".join(parts)
 
     def _format_store(self, query: str, hits: list[ResolvedHit]) -> str:
@@ -2974,7 +3025,7 @@ class FindTool(MemoryTool):
         matched" instead (``_FIND_EMPTY_STORE``)."""
         if not hits:
             return _FIND_EMPTY_STORE.format(query=query)
-        body = "\n".join(_render_find_hit(i, h) for i, h in enumerate(hits, start=1))
+        body = "\n".join(_render_find_hit(i, h, self._handles) for i, h in enumerate(hits, start=1))
         if len(hits) == 1:
             return f'Found 1 thing matching "{query}":\n{body}'
         return (
@@ -3061,6 +3112,7 @@ def build_memory_tools(
     scope: str | None = None,
     run_id: str | None = None,
     include_lifecycle: bool = True,
+    handles: HandleTable | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -3132,16 +3184,16 @@ def build_memory_tools(
     `find` has never needed before.
     """
     reads: list[Tool] = [
-        CollectionListTool(db),
-        CollectionGetTool(db),
+        CollectionListTool(db, handles),
+        CollectionGetTool(db, handles),
         CollectionSampleTool(db),
         CollectionKeysTool(db),
         MemoryMetadataTool(db),
-        LogReadTool(db, agent_name, scope),
+        LogReadTool(db, agent_name, scope, handles),
         LogGetTool(db),
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
-        FindTool(db, llm_client),
+        FindTool(db, llm_client, handles),
     ]
     lifecycle: list[Tool] = [
         CollectionSetTool(db, llm_client, run_id=run_id),
@@ -3151,7 +3203,13 @@ def build_memory_tools(
     ]
     mutations: list[Tool] = [
         CollectionWriteTool(
-            db, llm_client, agent_name, decider=decider, scope=scope, run_id=run_id
+            db,
+            llm_client,
+            agent_name,
+            decider=decider,
+            scope=scope,
+            run_id=run_id,
+            handles=handles,
         ),
         CollectionRemoveTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name, run_id=run_id),

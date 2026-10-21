@@ -52,6 +52,7 @@ from penny.tests.schema_template import migrated_db
 from penny.tools import ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
+from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.micro_context import (
     MICRO_CONTEXT_SYSTEM_PROMPT,
     MicroContext,
@@ -106,8 +107,8 @@ _SEARCH_PAGE_TEXT = (
 )
 _TRIMMED_SEARCH_RESULT = (
     'You searched for "antique compass auctions". These are the results, titles and '
-    "URLs only. You must read them to answer the user:\n\n"
-    "1. antique compass auctions — results (https://auctions.example/lot/42)"
+    "link numbers only. You must read them to answer the user:\n\n"
+    "1. antique compass auctions — results [1]"
 )
 
 # A PAGE READ carrying standalone markdown links — the anchor a FAILED extraction hands
@@ -119,7 +120,7 @@ _CATALOGUE_LINK_2 = "[Lot 99 — the orrery lot](https://auctions.example/lot/99
 _CATALOGUE_TEXT = (
     f"Title: Spring catalogue\n{_CATALOGUE_BODY}\n{_CATALOGUE_LINK_1}\n{_CATALOGUE_LINK_2}"
 )
-_LINKS_CLAUSE = f"Links on the page:\n{_CATALOGUE_LINK_1}\n{_CATALOGUE_LINK_2}"
+_LINKS_CLAUSE = "Links on the page:\n[Lot 42 — the compass lot][2]\n[Lot 99 — the orrery lot][3]"
 
 # The grace window a probe draw waits on its gate before giving up.  It is only ever
 # SPENT on the failure path — in a concurrent batch every gate is already set and
@@ -167,6 +168,7 @@ def _extract_tool(
         embedding_client=cast(Any, MockLlmClient()),
         model_client=cast(Any, model),
         author="widget-watch",
+        handles=HandleTable(),
     )
     tool.set_browse_provider(_provider(_PAGE_TEXT, reading))
     return tool
@@ -221,6 +223,7 @@ def _multi_extract_tool(
         embedding_client=cast(Any, MockLlmClient()),
         model_client=cast(Any, model),
         author="widget-watch",
+        handles=HandleTable(),
     )
     tool.set_browse_provider(provider)
     return tool
@@ -359,7 +362,7 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     # Byte-identical: the extracted value renders verbatim UNDER this page's own
     # section header (per-page extraction, #1682) — no re-transcription by the parent.
     assert result.message.startswith(
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     )
 
     # The *built context* — what the agent loop appends as the model-facing tool
@@ -457,6 +460,7 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
         db=db,
         embedding_client=cast(Any, MockLlmClient()),
         author="widget-watch",
+        handles=HandleTable(),
     )
     tool.set_browse_provider(_provider(_CATALOGUE_TEXT))
 
@@ -466,10 +470,11 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
     assert stored_log is not None
     stored = stored_log.read_all()  # content still stored
     assert result.message == (
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_CATALOGUE_URL}\n"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n"
         "Couldn't extract 'the current bid amount' — no extraction model is configured "
         f"for this browse. Full page content saved as "
         f"log='browse-results' id={stored[-1].id}.\n{_LINKS_CLAUSE}"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert result.success is False
     assert _CATALOGUE_BODY not in result.message
@@ -498,13 +503,13 @@ async def test_micro_result_render_forms(tmp_path):
     extracted answer, an answer stating its own shortfall, an answer saying the
     page carries none of it, and failed-after-reroll (#2615: one failure render
     now, whatever kind of draw never came back usable)."""
-    header = f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n"
+    header = f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n"
 
     # Success renders the VALUE ALONE — no fetch-handle tail (the "saved"
     # clause read as the remembering being done on the chat teach round; the
     # failure render below keeps the log_get read as its remedy).
     result, _handle_id = await _execute_extract(tmp_path, "ok", _EXTRACTED_VALUE)
-    assert result.message == f"{header}{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    assert result.message == f"{header}{_INSTRUCTION}: {_EXTRACTED_VALUE}\n\n{PAGE_CITATION_LINE}"
     assert result.success is True
 
     # A stated shortfall (#2360) is now said INSIDE the plain-text value itself
@@ -513,14 +518,18 @@ async def test_micro_result_render_forms(tmp_path):
     result, _handle_id = await _execute_extract(
         tmp_path, "ok-with-shortfall", _VALUE_WITH_SHORTFALL
     )
-    assert result.message == f"{header}{_INSTRUCTION}: {_VALUE_WITH_SHORTFALL}"
+    assert result.message == (
+        f"{header}{_INSTRUCTION}: {_VALUE_WITH_SHORTFALL}\n\n{PAGE_CITATION_LINE}"
+    )
     assert result.success is True
 
     # A page carrying none of what was asked is still a SUCCESSFUL draw (#2615):
     # the plain text says so, and the render is the same success form — no
     # handle clause, because the page was read and the answer stands on its own.
     result, _handle_id = await _execute_extract(tmp_path, "absent", _NOT_PRESENT_ANSWER)
-    assert result.message == f"{header}{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
+    assert (
+        result.message == f"{header}{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}\n\n{PAGE_CITATION_LINE}"
+    )
     assert result.success is True
 
     # Every unusable draw — garbled or blank alike — reads the same failure form
@@ -531,6 +540,7 @@ async def test_micro_result_render_forms(tmp_path):
         "Couldn't extract 'the current bid amount' from the page — the extractor never "
         "produced a usable answer after 3 attempts. Full page content saved as "
         f"log='browse-results' id={handle_id}."
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert result.success is False
 
@@ -540,6 +550,7 @@ async def test_micro_result_render_forms(tmp_path):
         "Couldn't extract 'the current bid amount' from the page — the extractor never "
         "produced a usable answer after 3 attempts. Full page content saved as "
         f"log='browse-results' id={handle_id}."
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert result.success is False
 
@@ -575,9 +586,9 @@ async def test_two_page_batch_yields_two_attributed_sections(tmp_path, mock_llm)
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
     # Each page renders under its OWN header with its OWN value...
-    assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n")
+    assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n")
     assert _EXTRACTED_VALUE in sections[0]
-    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n")
+    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n")
     assert _EXTRACTED_VALUE_2 in sections[1]
     # ...and no value bleeds across sources; success sections carry the value
     # alone (no fetch-handle tail).
@@ -661,8 +672,10 @@ async def test_extract_spans_parallel_batches_in_one_call(tmp_path, mock_llm):
         value_4,
         value_5,
     ]
-    for slot, (url, value) in enumerate(zip(urls, values, strict=True)):
-        assert sections[slot].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n")
+    for slot, (_url, value) in enumerate(zip(urls, values, strict=True)):
+        # The section header carries the page's handle — read order is handle
+        # order (#2717) — and the real URL lives on the table, not the render.
+        assert sections[slot].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[{slot + 1}]\n")
         assert value in sections[slot]
     assert PennyConstants.BROWSE_DROPPED_HEADER not in result.message
     assert result.success is True
@@ -703,10 +716,10 @@ async def test_a_none_of_it_page_does_not_mask_extracted_page(tmp_path):
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
     # Page 1 renders its own honest "none of it" text under its own header.
-    assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n")
+    assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n")
     assert _NOT_PRESENT_ANSWER in sections[0]
     # Page 2's extracted value renders under ITS header — not masked, not leaked.
-    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n")
+    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n")
     assert _EXTRACTED_VALUE_2 in sections[1]
     assert _EXTRACTED_VALUE_2 not in sections[0]
     # Both are successful reads (an extracted answer + an honest "none of it" one).
@@ -735,11 +748,13 @@ async def test_failed_fetch_section_coexists_with_extracted_section(tmp_path):
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
     # The failed fetch keeps its verbatim error section — no extraction ran on it.
-    assert sections[0].startswith(f"{PennyConstants.BROWSE_ERROR_HEADER}{_PAGE_URL}")
+    assert sections[0].startswith(f"{PennyConstants.BROWSE_ERROR_HEADER}[2]")
     assert "Could not read this page" in sections[0]
     assert _LOG_GET_RE.search(sections[0]) is None
     # The successful page still extracts, under its own header — value alone.
-    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n")
+    # Only THIS page was read, so it holds handle [1]; the failed fetch's URL
+    # converts last, at the message boundary, as [2] (#2717).
+    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n")
     assert _EXTRACTED_VALUE_2 in sections[1]
     assert _LOG_GET_RE.search(sections[1]) is None
     assert result.success is True
@@ -779,12 +794,13 @@ async def test_failed_fetch_in_the_middle_keeps_its_slot(tmp_path):
     assert any(_MARKER_1 in entry.content for entry in stored)
     assert any(_MARKER_3 in entry.content for entry in stored)
     assert result.message.split(PennyConstants.SECTION_SEPARATOR) == [
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
-        f"{PennyConstants.BROWSE_ERROR_HEADER}{_PAGE_URL_2}\n"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+        f"{PennyConstants.BROWSE_ERROR_HEADER}[3]\n"
         "Could not read this page: page unavailable. Try a different source or a "
         "reworded query; if other queries in this batch succeeded, work from those "
         "instead of retrying this one.",
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_3}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_3}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_3}"
+        f"\n\n{PAGE_CITATION_LINE}",
     ]
     assert result.success is True
     # The two pages that actually read carry their URLs, in read order; the
@@ -816,6 +832,7 @@ async def test_search_section_is_returned_as_links_and_never_extracted(tmp_path)
 
     assert result.message == (
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert model.requests == []  # the extractor was never asked to read a link list
     assert result.success is True
@@ -846,12 +863,15 @@ async def test_search_beside_a_page_read_extracts_only_the_page(tmp_path):
 
     assert result.message.split(PennyConstants.SECTION_SEPARATOR) == [
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}",
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"\n\n{PAGE_CITATION_LINE}",
     ]
     assert len(model.requests) == 1  # one page read, one draw
     # Only the page read was stored, so the search consumed no handle.
     browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert browse_log is not None
+    # Stored entries keep the REAL section — the handle is a rendering, applied
+    # when the entry is shown to the model (#2717).
     assert [entry.content.partition("\n")[0] for entry in browse_log.read_all()] == [
         f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}"
     ]
@@ -884,10 +904,11 @@ async def test_failed_extraction_hands_back_the_pages_links(tmp_path):
     assert browse_log is not None
     handle_id = browse_log.read_all()[-1].id
     assert result.message == (
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_CATALOGUE_URL}\n"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n"
         "Couldn't extract 'the current bid amount' from the page — the extractor never "
         "produced a usable answer after 3 attempts. Full page content saved as "
         f"log='browse-results' id={handle_id}.\n{_LINKS_CLAUSE}"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert result.success is False
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -930,9 +951,10 @@ async def test_page_batch_draws_concurrently_and_renders_in_page_order(tmp_path)
     assert probe.completion_order == [_MARKER_3, _MARKER_2, _MARKER_1]
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert sections == [
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}",
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_3}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_3}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[3]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_3}"
+        f"\n\n{PAGE_CITATION_LINE}",
     ]
     assert result.success is True
 
@@ -951,7 +973,8 @@ async def test_single_page_batch_is_one_draw_rendered_unchanged(tmp_path):
     assert probe.draws == Counter({_MARKER_1: 1})
     assert probe.peak_in_flight == 1
     assert result.message == (
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert result.success is True
 
@@ -980,8 +1003,9 @@ async def test_poisoned_draw_rerolls_only_its_own_context(tmp_path):
     assert draws[_MARKER_2] == 1  # the clean sibling was never re-drawn
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert sections == [
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}"
+        f"\n\n{PAGE_CITATION_LINE}",
     ]
     assert result.success is True
 
@@ -1024,9 +1048,9 @@ async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
     assert finished == [_MARKER_2]  # the sibling drew undisturbed
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
-    assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n")
+    assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n")
     assert "the extraction call errored: model call timed out" in sections[0]
-    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n")
+    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n")
     assert _EXTRACTED_VALUE_2 in sections[1]
     # Page 2 still succeeded, so the call as a whole did too.
     assert result.success is True
@@ -1074,11 +1098,14 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
 
     assert result.success is False
     assert result.narration == "You tried to use `browse` but it timed out."
-    # Page 1's finished extraction carries its full content, not just a label.
-    assert _PAGE_URL in result.message
+    # Page 1's finished extraction carries its full content, not just a label —
+    # in the handle form the model reads (#2717); the real URLs live on the table.
+    assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1]" in result.message
     assert _EXTRACTED_VALUE in result.message
-    # Page 2 is named only as still waiting — never as extracted or not-present.
-    assert _PAGE_URL_2 in result.message
+    # Page 2 is named only as still waiting — never as extracted or not-present —
+    # also by its handle, not its URL.
+    assert f"{PennyConstants.BROWSE_PAGE_HEADER}[2]" in result.message
+    assert _PAGE_URL_2 not in result.message
     assert "still waiting" in result.message.lower()
     assert _EXTRACTED_VALUE_2 not in result.message
 
@@ -1174,8 +1201,9 @@ def test_micro_context_system_prompt_is_plain_text_with_no_tags():
     reasoning task, so the draw answers in plain text, as a list when several
     things are asked for, naming a shortfall or a total absence in a plain
     sentence, never a separate tagged line.  The value leads with the page's
-    own address (#2648): the URL the content is headed by is part of the value,
-    not scaffolding, so the enclosing turn can cite its source."""
+    own address (#2648): the address — written as its link handle (#2717) — is
+    part of the value, not scaffolding, so the enclosing turn can cite its
+    source by number."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
@@ -1183,11 +1211,12 @@ def test_micro_context_system_prompt_is_plain_text_with_no_tags():
         "line when the instruction asks for several, and never a value the page "
         "doesn't state.\n"
         "\n"
-        "Each page's content begins with that page's own address — the URL the page "
-        "was read at — and the address is part of the value: begin every answer with "
-        "the URL of the page it came from, so the person reading the answer knows "
-        "where it came from and can go back to it, whatever the instruction asked "
-        "for.\n"
+        "Links travel as numbers: every link in the content — each page's own "
+        "address included — is written as its number in brackets, like [7]. The "
+        "address is part of the value: begin every answer with the number of the "
+        "page it came from, so the person reading the answer knows where it came "
+        "from and can go back to it, whatever the instruction asked for. When a "
+        "value names a link, write its number in brackets instead of the address.\n"
         "\n"
         "An instruction often names several things at once, and a page rarely "
         "carries all of them. Give what the page has for each thing named, in the "
@@ -1467,7 +1496,9 @@ def test_micro_result_render_by_handle_is_a_typed_id(db: Database):
 
     The page's LINKS follow the same split (#2141): handed to every render, and
     only the FAILURE render appends them."""
-    tool = BrowseTool(max_calls=1, db=db, embedding_client=cast(Any, MockLlmClient()))
+    tool = BrowseTool(
+        max_calls=1, db=db, embedding_client=cast(Any, MockLlmClient()), handles=HandleTable()
+    )
     stored = [cast(Any, SimpleNamespace(id=7))]
     links = f"\n{_LINKS_CLAUSE}"
     body = tool._render_micro_result(

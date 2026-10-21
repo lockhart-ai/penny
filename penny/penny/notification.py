@@ -38,6 +38,7 @@ from pydantic import BaseModel
 
 from penny.constants import CycleEnd, CycleTrigger
 from penny.llm.refusal import is_refusal
+from penny.tools.link_handles import CITATION_LINE, HandleTable
 
 if TYPE_CHECKING:
     from penny.database import Database
@@ -127,7 +128,7 @@ _REPORT_LEAD = 'Your job "{collection}" just finished a run and asked to tell th
 _REPORT_ABOUT = "What the job is for: {description}"
 
 
-def render_job_report(report: JobReport) -> str:
+def render_job_report(report: JobReport, handles: HandleTable | None = None) -> str:
     """The whole delivery turn's input, rendered from framework-assembled facts alone.
 
     Pure and deterministic — no database, no model — so the exact text the chat agent
@@ -135,7 +136,12 @@ def render_job_report(report: JobReport) -> str:
     to produce.  Every written entry renders FULL and in the order the cycle wrote
     them, with the key it is stored under: the key is the anchor a follow-up
     (``collection_get``) needs, and the content is the payload the message is written
-    from.  Nothing is condensed and nothing is capped."""
+    from.  Nothing is condensed and nothing is capped.
+
+    ``handles`` is the delivery turn's own link table (#2717): a stored entry keeps
+    real URLs, so the render converts them to that turn's handles — a URL the model
+    READS always arrives as a handle, and the message it writes cites numbers the
+    send path expands.  ``None`` renders the entries verbatim (the test shape)."""
     lines = [
         _REPORT_LEAD.format(collection=report.collection),
         _REPORT_ABOUT.format(description=report.description),
@@ -147,15 +153,19 @@ def render_job_report(report: JobReport) -> str:
         lines.append(_WROTE_NONE)
     else:
         lines.append(_WROTE_LEAD)
-        lines.extend(_written_report_line(entry) for entry in report.entries)
+        size_before = len(handles) if handles is not None else 0
+        lines.extend(_written_report_line(entry, handles) for entry in report.entries)
+        if handles is not None and len(handles) > size_before:
+            lines.append(CITATION_LINE)
     lines.extend(["", _ASK])
     return "\n".join(lines)
 
 
-def _written_report_line(entry: WrittenEntry) -> str:
+def _written_report_line(entry: WrittenEntry, handles: HandleTable | None = None) -> str:
+    content = handles.convert(entry.content) if handles is not None else entry.content
     if entry.key is None:
-        return _WRITE_LINE_NO_KEY.format(memory=entry.memory, content=entry.content)
-    return _WRITE_LINE.format(memory=entry.memory, key=entry.key, content=entry.content)
+        return _WRITE_LINE_NO_KEY.format(memory=entry.memory, content=content)
+    return _WRITE_LINE.format(memory=entry.memory, key=entry.key, content=content)
 
 
 def build_job_report(

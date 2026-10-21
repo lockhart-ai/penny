@@ -9,6 +9,7 @@ from penny.constants import PennyConstants
 from penny.database.models import MessageLog, PromptLog
 from penny.llm.models import LlmMessage
 from penny.tests.conftest import TEST_SENDER
+from penny.tools.link_handles import HandleTable
 
 # ── Conversation building ────────────────────────────────────────────────
 
@@ -212,21 +213,20 @@ def test_page_context_injected_as_synthetic_tool_call():
         LlmMessage(role="system", content="system prompt"),
         LlmMessage(role="user", content="what is this page?"),
     ]
-    ChatAgent._inject_page_context(messages, page_context)
+    ChatAgent._inject_page_context(messages, page_context, HandleTable())
 
     assert len(messages) == 4
     # The stored/logged shape (what ``to_log_dict`` renders): the injected call's
     # ``arguments`` is a JSON string like every other tool call (#2604).
     rendered = [message.to_log_dict() for message in messages]
-    # Assistant tool call uses BrowseTool format (name="browse", URL in queries)
-    # and carries the standard id/type so the result can reference it.
+    # Assistant tool call uses BrowseTool format (name="browse", the page's own
+    # handle in queries — a URL the model reads arrives as a handle, #2717) and
+    # carries the standard id/type so the result can reference it.
     assert rendered[2]["role"] == "assistant"
     assert rendered[2]["tool_calls"][0]["id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
     assert rendered[2]["tool_calls"][0]["type"] == "function"
     assert rendered[2]["tool_calls"][0]["function"]["name"] == "browse"
-    assert json.loads(rendered[2]["tool_calls"][0]["function"]["arguments"])["queries"] == [
-        "https://example.com/product"
-    ]
+    assert json.loads(rendered[2]["tool_calls"][0]["function"]["arguments"])["queries"] == ["[1]"]
     # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the same
     # tagged first-person envelope every real tool result gets, but with BESPOKE
     # narration (#1485) naming this as the page the user is viewing — NOT BrowseTool's
@@ -241,9 +241,12 @@ def test_page_context_injected_as_synthetic_tool_call():
     assert "the page the user is currently viewing" in rendered[3]["content"]
     # The retained machine tag keeps the model parsing this as a tool result.
     assert "(browse result)" in rendered[3]["content"]
-    # The page body (title + content) is preserved after the framing.
+    # The page body (title + content) is preserved after the framing; the page's
+    # own address renders as its handle, never a raw URL (#2717).
     assert "$49.99" in rendered[3]["content"]
     assert "Example Product Page" in rendered[3]["content"]
+    assert "https://example.com/product" not in rendered[3]["content"]
+    assert "URL: [1]" in rendered[3]["content"]
 
 
 def test_page_context_not_injected_when_empty():
@@ -252,7 +255,9 @@ def test_page_context_not_injected_when_empty():
     from penny.channels.base import PageContext
 
     messages: list[LlmMessage] = [LlmMessage(role="user", content="hi")]
-    ChatAgent._inject_page_context(messages, PageContext(title="T", url="U", text=""))
+    ChatAgent._inject_page_context(
+        messages, PageContext(title="T", url="U", text=""), HandleTable()
+    )
     assert len(messages) == 1  # unchanged
 
 

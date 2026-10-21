@@ -35,6 +35,7 @@ from penny.llm.decision_client import DecisionAnswer, DecisionClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
 from penny.llm.similarity import embed_text
+from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
@@ -48,6 +49,7 @@ from penny.tools.collection_instantiation import (
     render_schedule_clause,
 )
 from penny.tools.job_summary import job_summary_line
+from penny.tools.link_handles import HandleTable
 from penny.tools.memory_args import (
     OPTIONAL_ARG_FORMS,
     CollectionCreateArgs,
@@ -1370,6 +1372,29 @@ class TestCollectionWritesAndReads:
         # Each rendered entry carries an absolute UTC timestamp so the model can
         # place it in time — read-tool output was previously timeless.
         assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", latest.message)
+
+        # Handles are a rendering: an entry written with a citation the run's table
+        # holds is EXPANDED before the write, so the store keeps real URLs (#2717).
+        table = HandleTable()
+        table.register("https://roasts.example/dark")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", decider=_NO_MODEL, handles=table
+        )
+        result = await write.execute(
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "loves dark roast — [the roaster][1]"}],
+        )
+        assert result.mutated is True
+        # The STORE keeps the real URL; the read render converts it back to a
+        # handle — a URL the model reads always arrives as a handle (#2717).
+        stored = require_memory(db, "likes").get("dark roast")[0]
+        assert "https://roasts.example/dark" in stored.content
+        get = await CollectionGetTool(db).execute(
+            CallLink.new_top(), collection="likes", key="dark roast"
+        )
+        assert "[the roaster][1]" in get.message
+        assert "https://roasts.example/dark" not in get.message
 
     @pytest.mark.asyncio
     async def test_collection_configure_dispatches_on_existence(self, db, mock_llm):

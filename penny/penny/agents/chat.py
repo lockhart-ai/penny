@@ -24,6 +24,7 @@ from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply, is
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
+from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.memory_tools import render_nothing_landed, render_writes_landed
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.validation import ConditionKey
@@ -124,8 +125,10 @@ class ChatAgent(Agent):
         # the store a second time (chat turns are sequential, so one field suffices).
         self._extraction_run_id: str | None = None
 
-    def get_tools(self, run_id: str | None = None) -> list[Tool]:
-        tools = super().get_tools(run_id)
+    def get_tools(
+        self, run_id: str | None = None, handles: HandleTable | None = None
+    ) -> list[Tool]:
+        tools = super().get_tools(run_id, handles)
         # Notification mute/unmute is a chat-driven action over the MuteState row
         # (the retired /mute + /unmute commands), so both tools live on the chat
         # surface — the model dispatches to them from natural language.
@@ -307,7 +310,12 @@ class ChatAgent(Agent):
         The reply is NOT delivered here — the caller (the send-queue drainer) gates
         it and queues it, so it is logged and delivered exactly like any other
         autonomous send."""
-        prompt = render_job_report(report)
+        # The delivery turn's own link table (#2717): the report's entries keep
+        # real URLs, so the render converts them to THIS turn's handles — the
+        # same table the turn is dispatched with, so a number the model cites
+        # back expands to its URL at send time.
+        handles = HandleTable()
+        prompt = render_job_report(report, handles)
         logger.info("Handling job report for %s (delivery turn)", report.collection)
         return await self._dispatch_turn(
             prompt,
@@ -315,6 +323,7 @@ class ChatAgent(Agent):
             call_link=call_link,
             prompt_type=ChatPromptType.JOB_REPORT,
             progress_scope="background",
+            handles=handles,
         )
 
     async def _dispatch_turn(
@@ -330,6 +339,7 @@ class ChatAgent(Agent):
         thread_parent_id: int | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
+        handles: HandleTable | None = None,
     ) -> ControllerResponse:
         """The one turn both entry points ride — the template method under
         ``handle`` and ``handle_job_report``: per-turn state held for the span of
@@ -344,12 +354,27 @@ class ChatAgent(Agent):
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
+        # One numbered link table per turn (#2717) — created here, beside the run
+        # identity, and passed to the history render, the tool surface and the
+        # loop alike; the reply is expanded through it before it is returned.
+        table = handles if handles is not None else HandleTable()
         try:
             self._current_message = prompt
             history = self.get_history(sender, thread_parent_id=thread_parent_id)
-            self._install_tools(self.get_tools(run_id=run_id))
+            # Past replies are stored with real URLs — converted to this turn's
+            # handles here, so a URL the model READS always arrives as a handle
+            # (#2717).  User turns are the user's own words and stay as typed.
+            if history:
+                history = [
+                    (
+                        role,
+                        table.convert(content) if role == str(MessageRole.ASSISTANT) else content,
+                    )
+                    for role, content in history
+                ]
+            self._install_tools(self.get_tools(run_id=run_id, handles=table))
             system_prompt = await self._build_system_prompt(sender)
-            return await self.run(
+            response = await self.run(
                 prompt=prompt,
                 max_steps=self.get_max_steps(),
                 call_link=call_link,
@@ -360,7 +385,13 @@ class ChatAgent(Agent):
                 on_progress=on_progress,
                 progress_scope=progress_scope,
                 prompt_type=prompt_type,
+                handles=table,
             )
+            # Send-time expansion (#2717): every handle the reply cites becomes
+            # its URL, so the conversation record and the wire carry real links.
+            if response.answer:
+                response = response.model_copy(update={"answer": table.expand(response.answer)})
+            return response
         finally:
             self._current_user = None
             self._pending_page_context = None
@@ -385,15 +416,22 @@ class ChatAgent(Agent):
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
         images: list[str] | None = None,
+        handles: HandleTable | None = None,
     ) -> list[LlmMessage]:
         """Build messages, injecting page context as a synthetic tools result."""
         messages = super()._build_messages(prompt, history, system_prompt, images=images)
         if self._pending_page_context:
-            self._inject_page_context(messages, self._pending_page_context)
+            self._inject_page_context(
+                messages,
+                self._pending_page_context,
+                handles if handles is not None else HandleTable(),
+            )
         return messages
 
     @staticmethod
-    def _inject_page_context(messages: list[LlmMessage], page_context: PageContext) -> None:
+    def _inject_page_context(
+        messages: list[LlmMessage], page_context: PageContext, handles: HandleTable
+    ) -> None:
         """Inject a synthetic search call + result for page context.
 
         Uses the BrowseTool format so the synthetic history matches the tool
@@ -408,13 +446,19 @@ class ChatAgent(Agent):
         if not page_context.text:
             return
 
+        # A URL the model READS always arrives as a handle (#2717): the page's
+        # own address and every link in its text render as this turn's handles,
+        # so the model cites the page — or re-reads it — by number.
+        number = handles.register(page_context.url)
         page_content = (
-            f"Title: {page_context.title}\nURL: {page_context.url}\n\n{page_context.text}"
+            f"Title: {page_context.title}\nURL: [{number}]\n\n"
+            f"{handles.convert(page_context.text)}\n\n{PAGE_CITATION_LINE}"
         )
 
-        # Assistant "called" fetch with the URL in queries — built through the typed
-        # models like every other tool call, so its ``arguments`` wire-encodes as a
-        # JSON string (#2604; it was a bare dict before this stage).
+        # Assistant "called" fetch with the page's handle in queries — built
+        # through the typed models like every other tool call, so its
+        # ``arguments`` wire-encodes as a JSON string (#2604; it was a bare dict
+        # before this stage).
         messages.append(
             LlmMessage(
                 role=MessageRole.ASSISTANT,
@@ -424,7 +468,7 @@ class ChatAgent(Agent):
                         id=ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
                         function=LlmToolCallFunction(
                             name=BrowseTool.name,
-                            arguments={"queries": [page_context.url]},
+                            arguments={"queries": [f"[{number}]"]},
                         ),
                     )
                 ],
@@ -451,6 +495,8 @@ class ChatAgent(Agent):
         self,
         user: str | None,
         instructions: str | None = None,
+        *,
+        handles: HandleTable | None = None,
     ) -> str:
         """Identity + standing rules + (page hint) + instructions + self-state
         header (#1555).

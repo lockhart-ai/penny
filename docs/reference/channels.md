@@ -8,6 +8,8 @@ Covers the channel abstraction and each concrete channel (Signal, Discord, the b
 
 ### MessageChannel ABC (`penny/channels/base.py`)
 
+    A reply is finalised BEFORE it reaches the channel: ChatAgent._dispatch_turn expands every link handle ([n], #2717) in the answer to its URL, so send_response logs and delivers real links — the conversation record keeps the URL-expanded text, and each channel renders it in its own form (Signal the bare URL; browser and Discord as a link). Nothing channel-side knows handles exist.
+
 ### MessageChannel ABC (`channels/base.py`)
 - Defines interface: `listen()`, `wait_until_ready()`, `_send_raw()`, `send_typing()`, `extract_message()`
 - Implements shared logic: `handle_message()`, `send_message()`, `send_response()`, `_log_and_send()`, `_typing_loop()`

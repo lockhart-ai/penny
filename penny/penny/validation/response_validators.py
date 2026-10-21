@@ -273,7 +273,14 @@ class RefusalValidator:
 class HallucinatedUrlValidator:
     """The response cites a URL that never appeared in the source material
     (``ctx.source_text``: tool results + system prompt + history) — retry once so
-    the model answers from real sources.  No source text → nothing to check."""
+    the model answers from real sources.  No source text → nothing to check.
+
+    The handle branch beside it (#2717): a link citation ``[n]`` the run's table
+    does not hold is rejected with a note naming which links DO exist — the model
+    cannot usually see a miscounted handle in its own draft (the number reads as
+    real to it), so the re-draw is shown the draft plus the note.  Links that came
+    through handles never reach the raw-URL check: the model cites ``[n]``, not an
+    address, so the raw-URL branch only fires for a URL still typed outright."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.HALLUCINATED_URLS in ctx.retried:
@@ -281,6 +288,12 @@ class HallucinatedUrlValidator:
         effective_content, _ = strip_think_tags(response.content.strip())
         if not (ctx.source_text and effective_content):
             return Proceed(response=response)
+        if ctx.handles:
+            dangling = ctx.handles.dangling(effective_content)
+            if dangling:
+                note = ctx.handles.dangling_note(dangling)
+                logger.warning("Dangling link handle(s): %s", note)
+                return Retry(condition=ConditionKey.HALLUCINATED_URLS, note=note)
         bad_urls = find_hallucinated_urls(effective_content, ctx.source_text)
         if bad_urls:
             logger.warning(

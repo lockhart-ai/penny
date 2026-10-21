@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.llm.models import LlmResponse
+from penny.tools.link_handles import HandleTable
 from penny.validation.conditions import ConditionKey
 
 
@@ -41,10 +42,17 @@ class Retry(BaseModel):
     the conversation: not the draft, and not a note about it.  The conditions this
     serves — markup, a refusal, an ungrounded URL — are usually not repeated by a
     fresh draw, and when one is, the second draw proceeds because its condition is
-    spent."""
+    spent.
+
+    ``note`` is the one exception: when a retry carries a note, the loop shows the
+    model its draft (assistant turn) plus the note (user turn) before re-drawing —
+    for a defect the model cannot usually see in its own draft.  The dangling-link
+    rejection (#2717) is one: the note names which numbered links exist, so the
+    re-draw cites a real one."""
 
     model_config = ConfigDict(frozen=True)
     condition: ConditionKey
+    note: str | None = None
 
 
 class Repair(BaseModel):
@@ -104,6 +112,11 @@ class LoopContext(BaseModel):
     # Concatenated source material (tool results + prompt + history) a response's
     # URLs must be grounded in — empty when there's nothing to check against.
     source_text: str = ""
+    # The run's numbered link table (#2717) — what a ``[n]`` citation in the
+    # response must resolve against.  Defaults to an empty registry, the honest
+    # value for a run whose surfaces rendered no handles: with no links rendered,
+    # no citation can dangle.
+    handles: HandleTable = Field(default_factory=HandleTable)
     # Every tool-call record accumulated this run so far (for run-shape guards
     # like premature-done: "has any non-done work happened yet?").
     records: list[ToolCallRecord] = Field(default_factory=list)
