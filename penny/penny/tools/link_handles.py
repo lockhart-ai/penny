@@ -91,17 +91,23 @@ def _address_only(url: str) -> str:
     return url
 
 
-# The one plain line the page reader renders where handles appear — the exact
-# wording the prototype measured (no dangling handles, zero unsourced URLs).
+# The one plain line rendered where handles appear.  It states the number's
+# COMPLETENESS, not just the form: a stored-digest sample read "[2]" as a
+# reference without the address the ask demanded and browsed one site root
+# eighteen times hunting for literal URLs that the write-side expansion would
+# have supplied — the state never told her the number carries the address.
 PAGE_CITATION_LINE = (
-    "Links on this page are numbered, like [12]. When you give a link, "
-    "write its number in brackets instead of the address."
+    "Links on this page are numbered, like [12]. The number is the link "
+    "itself: when your message is sent or an entry is stored, [12] becomes "
+    "the full address. So write [12] wherever the link belongs, and never "
+    "look for the address."
 )
-# The same instruction for seams that are not a page: history, memory read
-# renders, the job-report render.
+# The same line for seams that are not a page: history, memory read renders,
+# the job-report render.
 CITATION_LINE = (
-    "Links are numbered, like [12]. When you give a link, write its number "
-    "in brackets instead of the address."
+    "Links are numbered, like [12]. The number is the link itself: when your "
+    "message is sent or an entry is stored, [12] becomes the full address. So "
+    "write [12] wherever the link belongs, and never look for the address."
 )
 
 
