@@ -1512,7 +1512,8 @@ class TestCollectionWritesAndReads:
         )
         assert result.mutated is True
         assert result.message.startswith(
-            "There is no link [2] in this turn; the links you have are [1]–[1]. "
+            "'espresso' was not written: There is no link [2] in this turn; "
+            "the links you have are [1]–[1].\n"
         )
         assert "Wrote 2 entries to 'likes'" in result.message
         stored = require_memory(db, "likes")
@@ -1520,16 +1521,23 @@ class TestCollectionWritesAndReads:
         assert "https://roasts.example/dark" in stored.get("light roast")[0].content
         assert [e.key for e in stored.get("instant")] == ["instant"]
         assert stored.get("espresso") == []
-        # The same dangling citation with nothing else in the batch: nothing
-        # lands, and the refusal is the whole reply.
+        # Dangling citations with nothing else in the batch: nothing lands, and
+        # the refusal — one line per refused entry, named by key — is the
+        # whole reply.
         result = await write.execute(
             CallLink.new_top(),
             collection="likes",
-            entries=[{"key": "espresso", "content": "raves about the crema [2]"}],
+            entries=[
+                {"key": "espresso", "content": "raves about the crema [2]"},
+                {"key": "pour over", "content": "brews pour over at [3]"},
+            ],
         )
         assert result.success is False and result.mutated is False
         assert result.message == (
-            "There is no link [2] in this turn; the links you have are [1]–[1]."
+            "'espresso' was not written: There is no link [2] in this turn; "
+            "the links you have are [1]–[1].\n"
+            "'pour over' was not written: There is no link [3] in this turn; "
+            "the links you have are [1]–[1]."
         )
         assert stored.get("espresso") == []
 
