@@ -90,8 +90,8 @@ async def test_same_value_reports_no_news() -> None:
 
 @pytest.mark.asyncio
 async def test_different_writes_through_quietly() -> None:
-    entries = [_entry("Ghost in the Shell", "the 1995 film")]
-    existing = [_given("ghost hound", "the 2007 series")]
+    entries = [_entry("the shining girls", "the 2022 series")]
+    existing = [_given("the shining", "the 1980 film")]
     decisions = await _decide(_StubDecisionClient("no"), entries, existing)
     assert decisions[0].action == "new"
     assert decisions[0].unsure_candidate is None
@@ -203,10 +203,10 @@ async def test_the_degraded_mode_still_settles_by_the_rules() -> None:
 async def test_the_parenthetical_year_rule_never_reaches_the_decision_model() -> None:
     """Two films keyed by year — the pair the parenthetical split exists for:
     the number rule reads BOTH parentheticals when both carry numbers, so
-    ``Kino's Journey (2003)`` and ``(2017)`` are settled DIFFERENT by the rules
+    ``Solaris (1972)`` and ``(2002)`` are settled DIFFERENT by the rules
     and never merged, whatever a decision model would say."""
-    entries = [_entry("Kino's Journey (2017)", "The Beautiful World, the 2017 remake")]
-    existing = [_given("Kino's Journey (2003)", "the 2003 series")]
+    entries = [_entry("Solaris (2002)", "the 2002 remake")]
+    existing = [_given("Solaris (1972)", "the 1972 film")]
     stub = _StubDecisionClient("yes", "same_value")  # would wrongly merge if consulted
     decisions = await _decide(stub, entries, existing)
     assert decisions[0].action == "new"

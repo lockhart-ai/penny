@@ -238,9 +238,9 @@ class TestIsSameJob:
 _RULES_SAME_KEYS = [
     ("Pink Floyd (band)", "pink floyd"),
     ("The Beatles", "beatles"),
-    ("Texhnolyze (2003 anime)", "texhnolyze"),
-    ("Ryūtarō Nakamura", "ryutaro nakamura"),
-    ("chiaki j. konaka", "Chiaki J. Konaka"),
+    ("Twin Peaks (1990 series)", "twin peaks"),
+    ("Zoë Kravitz", "zoe kravitz"),
+    ("philip k. dick", "Philip K. Dick"),
     ("Into the Breach (video game)", "into the breach"),
     ("analogue pocket price", "analogue_pocket_price"),
     ("sea kayaking", "sea kayaking"),
@@ -254,7 +254,7 @@ _RULES_DIFFERENT_KEYS = [
     ("2026-10-21", "2026-10-20"),
     ("final fantasy vi", "final fantasy vii"),
     ("blade runner", "blade runner 2049"),
-    ("kino's journey", "kino's journey 2017"),
+    ("solaris", "solaris 2002"),
     ("the big o", "the big o season 2"),
     ("The Big O II (season 2)", "the big o"),
 ]
@@ -265,10 +265,10 @@ _RULES_UNSETTLED_KEYS = [
     ("genesis", "genesis p-orridge"),
     ("pink floyd", "pink"),
     ("portishead", "portugal. the man"),
-    ("ghost hound", "ghost in the shell"),
-    ("mei and the kittenbus", "my neighbor totoro"),
+    ("the shining", "the shining girls"),
+    ("the hobbit", "the lord of the rings"),
     ("instant coffee", "decaf coffee"),
-    ("toronto raptors", "toronto blue jays"),
+    ("boston celtics", "boston red sox"),
     ("godspeed you! black emperor", "gybe"),
     ("sea kayaking", "kayaking on the ocean"),
     ("nyc", "New York City"),
@@ -304,7 +304,7 @@ class TestIdentityRules:
     @pytest.mark.parametrize(
         ("candidate", "existing"),
         [
-            ("Kino's Journey (2003)", "Kino's Journey (2017)"),
+            ("Solaris (1972)", "Solaris (2002)"),
             ("Dune (1984)", "Dune (2021)"),
             ("Ghost in the Shell (1995)", "Ghost in the Shell (2007)"),
         ],
@@ -320,12 +320,10 @@ class TestIdentityRules:
     def test_a_number_in_only_one_parenthetical_does_not_decide(self) -> None:
         # A qualifier on one side is not an identity: the normalised comparison
         # still runs and the pair is the same entry.
-        assert pair_rule_verdict("Texhnolyze", "Texhnolyze (2003 anime)", "x", "y") is (
+        assert pair_rule_verdict("Twin Peaks", "Twin Peaks (1990 series)", "x", "y") is (
             KeyRule.SAME
         )
-        assert pair_rule_verdict("Kino's Journey", "Kino's Journey (2003)", "x", "y") is (
-            KeyRule.SAME
-        )
+        assert pair_rule_verdict("Solaris", "Solaris (1972)", "x", "y") is (KeyRule.SAME)
 
     def test_vitamin_b6_normalises_to_the_same_key(self) -> None:
         # A digit inside a word is a main-part token, and equal on both sides.
@@ -366,7 +364,7 @@ class TestIdentityRules:
         assert paren is not None and number_tokens(paren) == ["2"]
 
     def test_key_parts_split_the_trailing_parenthetical(self) -> None:
-        assert key_parts("Kino's Journey (2003)") == ("kino s journey", "2003")
+        assert key_parts("Solaris (1972)") == ("solaris", "1972")
         assert key_parts("Dune") == ("dune", None)
         assert key_parts("[dune (2021)]") == ("dune", "2021")
 
