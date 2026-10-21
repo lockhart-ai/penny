@@ -33,8 +33,8 @@ from penny.database.memory import EntryInput
 from penny.database.models import PromptLog, SendQueueItem
 from penny.llm.client import LlmClient
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
-from penny.tools.link_handles import CITATION_LINE
 from penny.tests.conftest import require_memory
+from penny.tools.link_handles import CITATION_LINE
 
 
 class _StubChannel:
