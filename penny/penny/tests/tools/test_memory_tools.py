@@ -1369,12 +1369,34 @@ class TestCollectionUpdateScheduleAtApply:
 
     def test_the_prompt_diff_render_holds_its_edges(self):
         """The pure render's edges: an adopt (no before) renders nothing; identical
-        text renders nothing; a whitespace-only re-indentation counts as unchanged."""
+        text renders nothing; a whitespace-only re-indentation counts as unchanged;
+        a blank line counts on neither side, so it never renders as a removed
+        ``    - `` item."""
         assert render_prompt_replacement_diff(None, "new text") is None
         assert render_prompt_replacement_diff("same", "same") is None
         assert render_prompt_replacement_diff("same", " same ") is None
+        blank_before = render_prompt_replacement_diff("\n\n", "still just blank")
+        # A before of nothing but blank lines has nothing removed, so only the
+        # added section renders.
+        assert blank_before == (
+            "Prompt replaced — the collector now runs the new text:\n"
+            "  added:\n"
+            "    - still just blank"
+        )
         diff = render_prompt_replacement_diff("keep\n drop me", "keep\n add me")
         assert diff == (
+            "Prompt replaced — the collector now runs the new text:\n"
+            "  removed:\n"
+            "    -  drop me\n"
+            "  added:\n"
+            "    -  add me\n"
+            "Put back any removed line the user's ask didn't drop — send them again "
+            "with a new `prompt`."
+        )
+        blank = render_prompt_replacement_diff("keep\n\n drop me", "keep\n add me\n\n")
+        # The dropped and added blank lines render nothing — no ``    - `` item,
+        # no section, just the two real lines.
+        assert blank == (
             "Prompt replaced — the collector now runs the new text:\n"
             "  removed:\n"
             "    -  drop me\n"

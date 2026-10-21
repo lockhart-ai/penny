@@ -909,13 +909,14 @@ def render_prompt_replacement_diff(before: str | None, after: str) -> str | None
     ``before`` is the prompt the collection held before the call — ``None`` for an adopt,
     which replaces nothing and so renders no diff.  Removed lines are the old prompt's (in
     their stored order) whose stripped form the new prompt no longer carries; added lines
-    are the mirror.  A section renders only when it is non-empty, and the whole render is
-    ``None`` when nothing was removed or added — a call that restated the same text reports
-    no change, because there was none."""
+    are the mirror.  Blank lines count on neither side, so a dropped or added empty line
+    never renders as a removed `    - ` item.  A section renders only when it is
+    non-empty, and the whole render is ``None`` when nothing was removed or added — a call
+    that restated the same text reports no change, because there was none."""
     if before is None or before == after:
         return None
-    old_lines = before.splitlines()
-    new_lines = after.splitlines()
+    old_lines = [line for line in before.splitlines() if line.strip()]
+    new_lines = [line for line in after.splitlines() if line.strip()]
     new_stripped = {line.strip() for line in new_lines}
     old_stripped = {line.strip() for line in old_lines}
     removed = [line for line in old_lines if line.strip() not in new_stripped]
