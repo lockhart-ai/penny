@@ -126,14 +126,30 @@ test("a JS-rendered homepage yields its headlines and where they point", () => {
       `missing headline link: ${headline}`,
     );
   }
-  // The fixture's story cards carry the timestamps a front page renders for an
-  // empty or zero timestamp — the epoch glued beside the headline (a <time> and
-  // a <span> variant), an empty <time>, and a zero datetime.  None of them may
-  // reach the read: every headline above extracts as a clean `[headline](url)`
-  // link, which alone would fail if an epoch date were still glued into any
-  // label, and the read carries no epoch date anywhere.
+  // The fixture's story cards carry the <time> shapes a front page renders for
+  // an empty or zero timestamp — the epoch glued beside the headline, with a
+  // datetime attribute, text-only, and a zero datetime — plus an empty <time>.
+  // None of them may reach the read: every headline above extracts as a clean
+  // `[headline](url)` link, which alone would fail if an epoch date were still
+  // glued into any label, and the read carries no epoch date anywhere.
   assert.ok(!text.includes("1970"), "the read carries a rendered epoch date");
   assert.ok(!text.includes("1969"), "the read carries a rendered epoch date");
+});
+
+test("a span styled as a timestamp is left alone — the drop is pinned to time elements", () => {
+  const doc = documentFrom(fixture("news-homepage.html"), HOMEPAGE_URL);
+  // The measured page also styles a <span> as a timestamp, though its own is
+  // empty.  A span's text is free text, whose parsing is engine-specific, so
+  // the epoch drop stays on <time> — and this span's date must survive the read.
+  const anchor = doc.querySelector(".sc-lead a");
+  const span = doc.createElement("span");
+  span.className = "media-timestamp";
+  span.textContent = "January 1, 1970";
+  anchor.append(span);
+
+  const { text } = readPage(doc, HOMEPAGE_URL);
+
+  assert.ok(text.includes("January 1, 1970"), "a span's epoch date was dropped with the times");
 });
 
 test("the article-only reading kept the links and dropped their text", () => {
@@ -146,10 +162,10 @@ test("the article-only reading kept the links and dropped their text", () => {
   // the URLs of links whose headline Defuddle's trailing-heading cleanup
   // deleted.  This is the deceptive shape #1942 opened on.
   assert.ok(before.markdown.length > MIN_CONTENT_LENGTH);
-  // The four cards that also carry a timestamp shape (#2723) keep their
-  // headlines — a timestamp after the heading means the heading is no longer
-  // the last thing in its card, so the cleanup spares it.  The other 21 are
-  // gone, which is why the words stay in the dozens against 25 headlines.
+  // Which cards Defuddle's trailing-heading cleanup spares on this fixture is
+  // its own walk's business — measured, it keeps these four and deletes the
+  // other 21, timestamps or not — which is why the words stay in the dozens
+  // against 25 headlines offered.
   assert.ok(before.words < 100, `article-only reading carried ${before.words} words`);
   const kept = HOMEPAGE_HEADLINES.filter(([headline]) => before.markdown.includes(headline));
   assert.deepEqual(

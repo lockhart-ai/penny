@@ -76,11 +76,17 @@ const WEB_URL = /^https?:\/\//;
 const WHITESPACE_RUN = /\s+/g;
 const WHITESPACE = /\s+/;
 
-/** How far from the Unix epoch a timestamp may sit and still be one.  A page
- *  renders its own empty timestamp as the epoch in the viewer's timezone —
- *  "December 31, 1969" west of UTC, "January 1, 1970" east of it — so the
- *  window spans a day each way. */
+/** How far from the Unix epoch a timestamp may sit and still be one — a day
+ *  each way, because which side of midnight UTC the epoch lands on depends on
+ *  the timezone that rendered it. */
 const EPOCH_WINDOW_MS = 86_400_000;
+
+/** The date-time string format the language standard defines `Date.parse` for.
+ *  Only a string of this shape reaches `Date.parse` — the one parse every
+ *  engine agrees on; anything else is engine-specific territory (V8 parses a
+ *  bare `0` as the year 2000, SpiderMonkey refuses it), so it never decides. */
+const ISO_DATETIME =
+  /^\d{4}(-\d{2}(-\d{2})?)?(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
 /** How a reading won — ARTICLE (Defuddle's own extraction) or LINK_LIST (the page's
  *  own index of other pages).  Wire-level name is `PageReading` (`protocol.ts`,
@@ -181,42 +187,39 @@ function readableBody(doc: Document): HTMLElement {
  *  news front page, where every story card is one anchor carrying
  *  `<time class="timeStamp" dateTime="1970-01-01T00:00:00.001Z">January 1,
  *  1970</time>` beside the headline, so the date glued itself onto every link
- *  label.  The rule is structural, not a format list: an element whose ENTIRE
- *  text parses as a date within a day of the epoch is dropped, whatever its tag
- *  (a `<span>` carries the same timestamp on the same page), so a sentence that
- *  merely mentions 1970 is untouched.  A `<time>` also matches on its raw
- *  `datetime` attribute, which stays exact where the rendered text reads under
- *  the viewer's timezone.  Runs on the clones; the live page is untouched. */
+ *  label.  `<time>` is the element HTML gives timestamps, so it is the only one
+ *  dropped, and it is decided machine-readably: by its raw `datetime`
+ *  attribute when it is the standardised ISO shape (the one form every engine
+ *  parses the same) — or, when the attribute is absent, a zero, or some other
+ *  shape, by the element's own text, which a `<time>` holds only its date of.
+ *  A `<span>` styled as a timestamp is left alone: its text is free text,
+ *  whose parsing is engine-specific, and reading every element's whole subtree
+ *  to find dates would be quadratic on a big page.  Runs on the clones; the
+ *  live page is untouched. */
 function stripEpochTimestamps(root: ParentNode): void {
-  for (const element of root.querySelectorAll("*")) {
-    if (isEpochTimestamp(element)) element.remove();
+  for (const element of root.querySelectorAll("time")) {
+    if (isEpochTime(element)) element.remove();
   }
 }
 
-/** Does this element contribute nothing but an epoch timestamp?  Empty elements
- *  contribute nothing at all and are left alone. */
-function isEpochTimestamp(element: Element): boolean {
-  const text = (element.textContent ?? "").trim();
-  if (text === "") return false;
-  if (isEpochInstant(text)) return true;
+/** Does this `<time>` contribute nothing but an epoch timestamp?  Empty
+ *  elements contribute nothing at all and are left alone. */
+function isEpochTime(element: Element): boolean {
   const stamp = element.getAttribute("datetime");
-  return stamp !== null && isEpochInstant(stamp);
+  // A machine-written ISO attribute decides outright; anything else — absent,
+  // zero, or not the standardised shape — falls through to the element's own
+  // text, which a `<time>` holds only its date of.
+  if (stamp !== null && ISO_DATETIME.test(stamp)) return isEpochInstant(Date.parse(stamp));
+  const text = (element.textContent ?? "").trim();
+  return text !== "" && isEpochInstant(Date.parse(text));
 }
 
-/** Does this string, entire, parse as a date within a day of the epoch?  A
- *  JavaScript date parser tolerates LEADING garbage — "Harbour bridge reopens
- *  after a two-year refit January 1, 1970" parses, to the trailing date — so
- *  the headline a timestamp sits beside would parse too, and be dropped with
- *  it.  A whole-text parse does not survive dropping the string's first token:
- *  the probe repeats the parse without it, and only a string that stops parsing
- *  to the same instant is a date all the way through.  (Trailing garbage fails
- *  the parse on its own; a weekday-prefixed date fails the probe and stays —
- *  the cost of never dropping a headline.) */
-function isEpochInstant(text: string): boolean {
-  const parsed = Date.parse(text);
-  if (Number.isNaN(parsed) || Math.abs(parsed) > EPOCH_WINDOW_MS) return false;
-  const withoutFirstToken = text.replace(/^\s*\S+\s*/, "");
-  return withoutFirstToken === "" || Date.parse(withoutFirstToken) !== parsed;
+/** Is this parsed instant within a day of the Unix epoch?  A page renders its
+ *  own empty timestamp as the epoch in the viewer's timezone — "December 31,
+ *  1969" west of UTC, "January 1, 1970" east of it — so the window spans a day
+ *  each way. */
+function isEpochInstant(parsed: number): boolean {
+  return !Number.isNaN(parsed) && Math.abs(parsed) <= EPOCH_WINDOW_MS;
 }
 
 /** How many words of plain text an HTML fragment carries.  Parsed into an INERT

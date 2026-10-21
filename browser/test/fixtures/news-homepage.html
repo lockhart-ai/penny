@@ -10,10 +10,12 @@
       drop before it measures the page's link share
     * every headline is a heading INSIDE an anchor, which is what Defuddle's
       trailing-heading cleanup deletes
-    * story cards carry the timestamp shapes a front page renders for an empty
-      or zero timestamp: the epoch date glued beside the headline inside the
-      card's anchor (a <time> and a <span> variant), an empty <time>, and a
-      <time> whose datetime attribute is zero — none of which may reach the read
+    * story cards carry the <time> shapes a front page renders for an empty or
+      zero timestamp, glued beside the headline inside the card's anchor: the
+      measured epoch shape with a datetime attribute, a text-only epoch <time>,
+      an empty <time>, and a <time> whose datetime attribute is zero — none of
+      which may reach the read.  A <span> timestamp is left alone, pinned by a
+      test, so the drop stays on <time>
     * almost no prose: one standfirst, and otherwise nothing but links
 -->
 <html lang="en">
@@ -53,16 +55,16 @@
 
           <section class="sc-grid" aria-label="Top stories">
             <article class="sc-card">
-              <a href="/business/2036/dockside-market-changes-hands"><h3>Dockside market changes hands after eighty years</h3><span class="media-timestamp">December 31, 1969</span></a>
+              <a href="/business/2036/dockside-market-changes-hands"><h3>Dockside market changes hands after eighty years</h3></a>
             </article>
             <article class="sc-card">
-              <a href="/world/2036/lantern-festival-draws-record-crowd"><h3>Lantern festival draws a record crowd to the old quarter</h3><time class="timeStamp"></time></a>
+              <a href="/world/2036/lantern-festival-draws-record-crowd"><h3>Lantern festival draws a record crowd to the old quarter</h3><time class="timeStamp">January 1, 1970</time></a>
             </article>
             <article class="sc-card">
               <a href="/culture/2036/museum-returns-borrowed-mosaics"><h3>Museum returns the borrowed mosaics a decade early</h3><time class="timeStamp" dateTime="0">January 1, 1970</time></a>
             </article>
             <article class="sc-card">
-              <a href="/sport/2036/rowing-club-wins-on-a-restart"><h3>Rowing club takes the estuary title on a restart</h3></a>
+              <a href="/sport/2036/rowing-club-wins-on-a-restart"><h3>Rowing club takes the estuary title on a restart</h3><time class="timeStamp"></time></a>
             </article>
             <article class="sc-card">
               <a href="/business/2036/ferry-operator-adds-a-night-sailing"><h3>Ferry operator adds a night sailing for the winter</h3></a>
