@@ -420,9 +420,11 @@ class MessageStore:
         send — NULL for a direct reply.  ``run_id`` (#2630) carries the opposite
         side: the run whose reply a direct reply delivers — stamped by the
         framework on the chat reply path, so the history pairs a run with the
-        message that answered for it by identity.  NULL for an autonomous send."""
-        if direction == PennyConstants.MessageDirection.OUTGOING:
-            content = self.strip_formatting(content)
+        message that answered for it by identity.  NULL for an autonomous send.
+
+        The record keeps an outgoing message's text as the model wrote it
+        (#2722) — the channel conversion is a send-time concern, so no
+        formatting is stripped here."""
         try:
             with self._session() as session:
                 log = MessageLog(
@@ -709,7 +711,12 @@ class MessageStore:
             ).first()
 
     def find_outgoing_by_content(self, content: str) -> MessageLog | None:
-        """Find the most recent outgoing message matching the given content prefix."""
+        """Find the most recent outgoing message matching the given content prefix.
+
+        The fallback quote matcher: the quote text arriving over the wire is the
+        channel-converted form, so this resolves only quotes on messages the
+        channel never reformats. A quote that carries the quoted message's own
+        platform id resolves by that anchor first (``find_by_external_id``)."""
         content = self.strip_formatting(content)
         with self._session() as session:
             return session.exec(

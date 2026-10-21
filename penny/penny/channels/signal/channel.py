@@ -849,6 +849,7 @@ class SignalChannel(MessageChannel):
         logger.info("Extracted - sender: %s, content: '%s'", sender, content)
 
         quoted_text = self._extract_quoted_text(data_message)
+        quoted_external_id = self._extract_quoted_external_id(data_message)
         signal_timestamp = data_message.timestamp
 
         return IncomingMessage(
@@ -857,6 +858,7 @@ class SignalChannel(MessageChannel):
             channel_type=ChannelType.SIGNAL,
             device_identifier=sender,
             quoted_text=quoted_text,
+            quoted_external_id=quoted_external_id,
             signal_timestamp=signal_timestamp,
         )
 
@@ -867,6 +869,18 @@ class SignalChannel(MessageChannel):
             quoted_text = data_message.quote.text
             logger.info("Message includes quote: '%s'", quoted_text[:100])
             return quoted_text
+        return None
+
+    @staticmethod
+    def _extract_quoted_external_id(data_message: DataMessage) -> str | None:
+        """Extract the quoted message's own Signal timestamp, when carried.
+
+        ``Quote.id`` is the timestamp the quoted message was sent under — the
+        same value stamped as our outgoing row's ``external_id`` — so a
+        quote-reply's thread parent resolves by that anchor instead of
+        matching the quote's converted text against the record (#2722)."""
+        if data_message.quote and data_message.quote.id:
+            return str(data_message.quote.id)
         return None
 
     async def _fetch_attachments(self, message: IncomingMessage, raw_data: dict) -> IncomingMessage:

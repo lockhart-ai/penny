@@ -833,11 +833,12 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
     await channel.close()
 
 
-def _text_envelope(config, sender: str, content: str) -> dict:
+def _text_envelope(config, sender: str, content: str, quote: dict | None = None) -> dict:
     """A plain Signal text-message envelope, built directly rather than pushed
     through the mock server's websocket — ``handle_message`` is the same entry
     point the receive loop calls with the parsed envelope (mirrors
-    ``_reaction_envelope`` in test_signal_reactions.py)."""
+    ``_reaction_envelope`` in test_signal_reactions.py). ``quote`` is the raw
+    Signal quote object (``id``/``text``) the reply quotes with."""
     ts = int(time.time() * 1000)
     return {
         "account": config.signal_number,
@@ -856,7 +857,7 @@ def _text_envelope(config, sender: str, content: str) -> dict:
                 "expiresInSeconds": 0,
                 "isExpirationUpdate": False,
                 "viewOnce": False,
-                "quote": None,
+                "quote": quote,
             },
         },
     }
@@ -975,5 +976,87 @@ async def test_handle_message_never_raises_even_when_the_account_also_fails(
     await channel.handle_message(_text_envelope(test_config, TEST_SENDER, "hi"))
 
     assert signal_server.outgoing_messages == []
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_send_response_stores_model_text_and_sends_converted(
+    signal_server, test_config, mock_llm
+):
+    """The conversation record keeps a reply as the model wrote it (#2722), and
+    the channel conversion applies only on the way out: a markdown reply sent
+    through the Signal channel is stored with its headings and bullets intact
+    (so the model's own formatting is visible in its history), while the text
+    on the wire is the Signal-converted form."""
+    from penny.constants import PennyConstants
+
+    db = Database(test_config.db_path)
+    channel, _ = _build_signal_world(test_config, db)
+
+    model_text = "# Server choices\n\n- **Pro**: fastest\n- Standard: fine\n"
+    await channel.send_response(TEST_SENDER, model_text, parent_id=None, author="penny")
+
+    conversation = db.messages.recent_conversation(5)
+    direction, stored = conversation[-1]
+    assert direction == PennyConstants.MessageDirection.OUTGOING
+    # The record holds the model's own markdown, byte for byte.
+    assert stored == model_text
+
+    # The wire carries the converted form: heading bolded, bullets Signal-style.
+    sent = signal_server.outgoing_messages[-1]
+    assert "**Server choices**" in sent["message"]
+    assert "• **Pro**: fastest" in sent["message"]
+    assert "#" not in sent["message"]
+    assert "- " not in sent["message"]
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_quote_reply_resolves_parent_by_signal_quote_id(
+    signal_server, test_config, mock_llm, test_user_info, monkeypatch
+):
+    """A quote-reply's thread parent resolves by the quoted message's own
+    Signal timestamp (``Quote.id`` — the outgoing row's ``external_id``), not
+    by matching the quote's converted text against the record: the record now
+    keeps the reply as the model wrote it (#2722), so the converted quote text
+    arriving over the wire no longer content-matches. The quote in this test
+    carries exactly that converted form — it would fail content matching —
+    and the parent still resolves."""
+    from datetime import datetime
+
+    from penny.agents.models import ControllerResponse
+    from penny.constants import PennyConstants
+
+    db = Database(test_config.db_path)
+    channel, message_agent = _build_signal_world(test_config, db)
+
+    model_text = "# Server choices\n\n- **Pro**: fastest\n- Standard: fine\n"
+    await channel.send_response(TEST_SENDER, model_text, parent_id=None, author="penny")
+    rows = db.messages.get_messages_since(TEST_SENDER, since=datetime.min, limit=10)
+    sent_rows = [r for r in rows if r.direction == PennyConstants.MessageDirection.OUTGOING]
+    reply_row = sent_rows[-1]
+    assert reply_row.id is not None and reply_row.external_id is not None
+
+    monkeypatch.setattr(
+        message_agent,
+        "handle",
+        AsyncMock(return_value=ControllerResponse(answer="right — the Pro tier it is")),
+    )
+    # The quote text is what Signal echoes back: the converted form, which does
+    # not prefix-match the stored model text. Its id is the quoted message's
+    # own Signal timestamp — the external id stamped on the reply row.
+    quote = {
+        "id": int(reply_row.external_id),
+        "author": test_config.signal_number,
+        "text": "**Server choices**\n\n• **Pro**: fastest",
+    }
+    await channel.handle_message(_text_envelope(test_config, TEST_SENDER, "the Pro one", quote))
+
+    rows = db.messages.get_messages_since(TEST_SENDER, since=datetime.min, limit=10)
+    incoming = [r for r in rows if r.direction == PennyConstants.MessageDirection.INCOMING]
+    newest_incoming = max(incoming, key=lambda r: r.timestamp)
+    assert newest_incoming.parent_id == reply_row.id
 
     await channel.close()

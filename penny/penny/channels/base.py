@@ -54,6 +54,10 @@ class IncomingMessage(BaseModel):
     channel_type: str | None = None  # ChannelType enum value
     device_identifier: str | None = None  # Device identifier for routing
     quoted_text: str | None = None
+    # The quoted message's own platform id when the channel carries it (Signal's
+    # ``Quote.id`` — the timestamp stamped as our outgoing row's ``external_id``),
+    # so a quote-reply's parent is a read, not a content guess.
+    quoted_external_id: str | None = None
     signal_timestamp: int | None = None  # Original Signal timestamp (ms since epoch)
     is_reaction: bool = False  # True if this is a reaction message
     reacted_to_external_id: str | None = None  # External ID of message being reacted to
@@ -224,8 +228,9 @@ class MessageChannel(ABC):
         Prepare text for sending via this channel.
 
         Override in subclasses to apply channel-specific formatting.
-        The result is both logged to the database and sent to the recipient,
-        so quote matching works correctly.
+        The result is what goes on the wire; the conversation record keeps
+        the text as the model wrote it (#2722), so the channel conversion is
+        applied only at send time, never stored.
 
         Args:
             text: Raw text from the agent
@@ -332,9 +337,10 @@ class MessageChannel(ABC):
         Returns the platform external id (or None on failure).
         """
         prepared = self.prepare_outgoing(content)
-        embedding = await self._embed_message(prepared) if prepared.strip() else None
+        embedding = await self._embed_message(content) if content.strip() else None
         _, external_id = await self._log_and_send(
             recipient,
+            content,
             prepared,
             attachments,
             quote_message,
@@ -387,11 +393,14 @@ class MessageChannel(ABC):
         """
         prepared = self.prepare_outgoing(content)
         # Embed once: stored on the messagelog row (the penny-messages facade's
-        # read_similar ranks on it) and reused for nearest-image matching.
-        embedding = await self._embed_message(prepared)
-        attachments = self._resolve_media(attachments, prepared, embedding, media_ids)
+        # read_similar ranks on it) and reused for nearest-image matching. The
+        # embedding is of the model's own text — the content stored on the row —
+        # so recall and the startup backfill rank on the same words.
+        embedding = await self._embed_message(content)
+        attachments = self._resolve_media(attachments, content, embedding, media_ids)
         message_id, external_id = await self._log_and_send(
             recipient,
+            content,
             prepared,
             attachments,
             quote_message,
@@ -407,6 +416,7 @@ class MessageChannel(ABC):
     async def _log_and_send(
         self,
         recipient: str,
+        content: str,
         prepared: str,
         attachments: list[str] | None,
         quote_message: MessageLog | None,
@@ -421,11 +431,13 @@ class MessageChannel(ABC):
 
         The single funnel both ``send_message`` and ``send_response`` pass
         through, so logging happens exactly once immediately before the raw
-        platform send and no outgoing message can bypass the record. We log the
-        prepared content so quote matching works correctly. ``mechanism`` (#1568)
-        is stamped for an autonomous send and NULL for a direct reply;
-        ``run_id`` (#2630) the opposite side — the run whose reply a direct
-        reply delivers, NULL for an autonomous send. Returns
+        platform send and no outgoing message can bypass the record. The
+        conversation record keeps ``content`` — the reply as the model wrote
+        it (#2722), so history shows the model its own formatting — while
+        ``prepared`` (the channel-converted form) is what goes on the wire.
+        ``mechanism`` (#1568) is stamped for an autonomous send and NULL for
+        a direct reply; ``run_id`` (#2630) the opposite side — the run whose
+        reply a direct reply delivers, NULL for an autonomous send. Returns
         ``(message_id, external_id)``.
         """
         if (not prepared or not prepared.strip()) and not attachments:
@@ -436,7 +448,7 @@ class MessageChannel(ABC):
         message_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
             self.sender_id,
-            prepared,
+            content,
             parent_id=parent_id,
             recipient=recipient,
             device_id=device_id,
@@ -699,6 +711,26 @@ class MessageChannel(ABC):
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
+    def _resolve_quoted_parent(self, message: IncomingMessage) -> int | None:
+        """The parent a quote-reply continues, most-authoritative first.
+
+        When the channel carries the quoted message's own id (Signal's
+        ``Quote.id`` — the timestamp stamped as our outgoing row's
+        ``external_id``), the parent is a read by that anchor. Content
+        matching stays the fallback: the quote text arriving over the wire is
+        the channel-converted form, while the conversation record keeps the
+        reply as the model wrote it (#2722), so matching is reliable only for
+        quotes on messages the channel never reformats — the user's own.
+        """
+        if message.quoted_external_id:
+            parent = self._db.messages.find_by_external_id(message.quoted_external_id)
+            if parent is not None and parent.id is not None:
+                return parent.id
+        if message.quoted_text:
+            parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
+            return parent_id
+        return None
+
     async def _run_message_through_agent(
         self,
         message: IncomingMessage,
@@ -726,9 +758,7 @@ class MessageChannel(ABC):
         # ``user-messages`` is a read facade over ``messagelog`` — no separate append.
         run_id = uuid.uuid4().hex
         call_link = CallLink.top(run_id)
-        parent_id: int | None = None
-        if message.quoted_text:
-            parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
+        parent_id = self._resolve_quoted_parent(message)
         response = await self._message_agent.handle(
             content=message.content,
             sender=user_sender,

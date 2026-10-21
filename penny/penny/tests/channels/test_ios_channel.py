@@ -584,7 +584,7 @@ async def test_outbox_record_links_to_message_log_id(db):
     )
 
     message_id, outbox_id = await channel._log_and_send(
-        "ios-keychain-id", "linked message", None, None
+        "ios-keychain-id", "linked message", "linked message", None, None
     )
 
     assert message_id is not None and outbox_id is not None
