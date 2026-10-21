@@ -126,6 +126,14 @@ test("a JS-rendered homepage yields its headlines and where they point", () => {
       `missing headline link: ${headline}`,
     );
   }
+  // The fixture's story cards carry the timestamps a front page renders for an
+  // empty or zero timestamp — the epoch glued beside the headline (a <time> and
+  // a <span> variant), an empty <time>, and a zero datetime.  None of them may
+  // reach the read: every headline above extracts as a clean `[headline](url)`
+  // link, which alone would fail if an epoch date were still glued into any
+  // label, and the read carries no epoch date anywhere.
+  assert.ok(!text.includes("1970"), "the read carries a rendered epoch date");
+  assert.ok(!text.includes("1969"), "the read carries a rendered epoch date");
 });
 
 test("the article-only reading kept the links and dropped their text", () => {
@@ -138,9 +146,21 @@ test("the article-only reading kept the links and dropped their text", () => {
   // the URLs of links whose headline Defuddle's trailing-heading cleanup
   // deleted.  This is the deceptive shape #1942 opened on.
   assert.ok(before.markdown.length > MIN_CONTENT_LENGTH);
-  assert.ok(before.words < 30, `article-only reading carried ${before.words} words`);
+  // The four cards that also carry a timestamp shape (#2723) keep their
+  // headlines — a timestamp after the heading means the heading is no longer
+  // the last thing in its card, so the cleanup spares it.  The other 21 are
+  // gone, which is why the words stay in the dozens against 25 headlines.
+  assert.ok(before.words < 100, `article-only reading carried ${before.words} words`);
   const kept = HOMEPAGE_HEADLINES.filter(([headline]) => before.markdown.includes(headline));
-  assert.ok(kept.length <= 1, `article-only reading kept ${kept.length} headlines`);
+  assert.deepEqual(
+    kept.map(([headline]) => headline).sort(),
+    [
+      "Dockside market changes hands after eighty years",
+      "Harbour bridge reopens after a two-year refit",
+      "Lantern festival draws a record crowd to the old quarter",
+      "Museum returns the borrowed mosaics a decade early",
+    ],
+  );
   const [, strippedPath] = HOMEPAGE_HEADLINES[HOMEPAGE_HEADLINES.length - 1];
   assert.ok(before.markdown.includes(`](${SITE}${strippedPath})`));
 });
