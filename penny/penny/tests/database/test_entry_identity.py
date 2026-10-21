@@ -73,7 +73,7 @@ async def test_new_value_merges_into_the_matched_entry() -> None:
     the stored one; the decision names the matched key."""
     entries = [_entry("genesis p-orridge", "Genesis P-Orridge of Throbbing Gristle")]
     existing = [_given("genesis", "Genesis, the prog band")]
-    decisions = await _decide(_StubDecisionClient("new_value"), entries, existing)
+    decisions = await _decide(_StubDecisionClient("yes", "new_value"), entries, existing)
     assert decisions[0].action == "merge"
     assert decisions[0].matched_key == "genesis"
     assert decisions[0].unsure_candidate is None
@@ -83,7 +83,7 @@ async def test_new_value_merges_into_the_matched_entry() -> None:
 async def test_same_value_reports_no_news() -> None:
     entries = [_entry("Pink Floyd (band)", "Pink Floyd, the prog band")]
     existing = [_given("pink floyd", "Pink Floyd, the prog band")]
-    decisions = await _decide(_StubDecisionClient("same_value"), entries, existing)
+    decisions = await _decide(_StubDecisionClient("yes", "same_value"), entries, existing)
     assert decisions[0].action == "unchanged"
     assert decisions[0].matched_key == "pink floyd"
 
@@ -92,7 +92,7 @@ async def test_same_value_reports_no_news() -> None:
 async def test_different_writes_through_quietly() -> None:
     entries = [_entry("Ghost in the Shell", "the 1995 film")]
     existing = [_given("ghost hound", "the 2007 series")]
-    decisions = await _decide(_StubDecisionClient("different"), entries, existing)
+    decisions = await _decide(_StubDecisionClient("no"), entries, existing)
     assert decisions[0].action == "new"
     assert decisions[0].unsure_candidate is None
 
@@ -117,7 +117,7 @@ async def test_an_unsure_candidate_does_not_stop_a_later_decisive_answer() -> No
         _given("genesis p-orridge", "Genesis P-Orridge of Throbbing Gristle"),
         _given("genesis the band", "Genesis, the prog band"),
     ]
-    decisions = await _decide(_StubDecisionClient("unsure", "new_value"), entries, existing)
+    decisions = await _decide(_StubDecisionClient("unsure", "yes", "new_value"), entries, existing)
     assert decisions[0].action == "merge"
     assert decisions[0].matched_key == "genesis the band"
 
@@ -150,7 +150,7 @@ async def test_the_shortlist_bounds_the_questions_asked() -> None:
     ]
     entries = [_entry("a new topic", "something unrelated")]
     existing = [_given(f"topic {word}", f"stored thing about {word}") for word in words]
-    stub = _StubDecisionClient(*(["different"] * SHORTLIST_K))
+    stub = _StubDecisionClient(*(["no"] * SHORTLIST_K))
     decisions = await _decide(stub, entries, existing)
     assert decisions[0].action == "new"
     assert len(stub.states) == SHORTLIST_K
@@ -207,7 +207,7 @@ async def test_the_parenthetical_year_rule_never_reaches_the_decision_model() ->
     and never merged, whatever a decision model would say."""
     entries = [_entry("Kino's Journey (2017)", "The Beautiful World, the 2017 remake")]
     existing = [_given("Kino's Journey (2003)", "the 2003 series")]
-    stub = _StubDecisionClient("same_value")  # would wrongly merge if consulted
+    stub = _StubDecisionClient("yes", "same_value")  # would wrongly merge if consulted
     decisions = await _decide(stub, entries, existing)
     assert decisions[0].action == "new"
     assert decisions[0].unsure_candidate is None
@@ -221,7 +221,7 @@ async def test_identical_content_is_a_question_the_model_sees_both_keys_for() ->
     ``different`` verdict writes the second product through quietly."""
     entries = [_entry("switch lite", "$219")]
     existing = [_given("analogue pocket", "$219")]
-    stub = _StubDecisionClient("different")
+    stub = _StubDecisionClient("no")
     decisions = await _decide(stub, entries, existing)
     assert decisions[0].action == "new"
     assert decisions[0].unsure_candidate is None
@@ -236,7 +236,7 @@ async def test_the_date_rule_never_reaches_the_decision_model() -> None:
     decision model is never asked and nothing is ever merged across dates."""
     entries = [_entry("2026-10-21", "the October 21 digest")]
     existing = [_given("2026-10-20", "the October 20 digest")]
-    stub = _StubDecisionClient("same_value")  # would wrongly merge if consulted
+    stub = _StubDecisionClient("yes", "same_value")  # would wrongly merge if consulted
     decisions = await _decide(stub, entries, existing)
     assert decisions[0].action == "new"
     assert decisions[0].unsure_candidate is None

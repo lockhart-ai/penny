@@ -1615,7 +1615,10 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_decider_saying("new_value")
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_decider_saying("yes", "new_value"),
         )
         await write.execute(
             CallLink.new_top(),
@@ -1695,7 +1698,7 @@ class TestCollectionWritesAndReads:
             db,
             _make_llm_client(mock_llm),
             author="test",
-            decider=_decider_saying("same_value"),
+            decider=_decider_saying("yes", "same_value"),
             scope="likes",
         )
         same_value = await decider_write.execute(
@@ -1738,7 +1741,10 @@ class TestCollectionWritesAndReads:
         # decision model sees both keys and its ``same_value`` verdict reports
         # the no-news the exact-key read produces.
         decider_write = CollectionWriteTool(
-            db, _make_llm_client(mock_llm), author="test", decider=_decider_saying("same_value")
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_decider_saying("yes", "same_value"),
         )
         already = await decider_write.execute(
             CallLink.new_top(),

@@ -9,11 +9,12 @@ ladder (rules, shortlist, decision model, honest question) in :mod:`identity`.
 """
 
 from penny.database.memory.identity import (
-    CandidateVerdict,
     EntryDecider,
     EntryDecision,
     EntryGiven,
     EntryPlan,
+    IdentityAnswer,
+    ValueAnswer,
     plan_entries,
     rule_only_decisions,
 )
@@ -64,7 +65,8 @@ from penny.text_validity import (
 )
 
 __all__ = [
-    "CandidateVerdict",
+    "IdentityAnswer",
+    "ValueAnswer",
     "Collection",
     "degenerate_reason",
     "half_formed_send_reason",

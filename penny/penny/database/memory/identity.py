@@ -8,8 +8,10 @@ moving parts, split so no blocking HTTP ever runs on the event loop:
     (:mod:`similarity.identity`) settle every pair they are sure of, and the
     embedding shortlist ranks the few stored entries a candidate still needs to
     be asked about.
-  * :class:`EntryDecider.decide` — the async part: one choice question per
-    shortlisted candidate to the decision model (``penny.llm.decision_client``).
+  * :class:`EntryDecider.decide` — the async part: per shortlisted candidate,
+    an identity question (the same specific thing, or two items side by side)
+    and — only on yes — a value question, to the decision model
+    (``penny.llm.decision_client``).
     No client configured is the *named* degraded mode — the decision step is
     skipped and every shortlisted candidate becomes ``unsure`` — and a failed
     call degrades the same way, logged, never silently settled.
@@ -60,12 +62,21 @@ class EntryGiven(NamedTuple):
     content_vec: list[float] | None
 
 
-class CandidateVerdict(StrEnum):
-    """What the decision model says about one candidate/new-entry pair."""
+class IdentityAnswer(StrEnum):
+    """The decision model's identity answer for one candidate/new-entry pair:
+    is the new entry the same specific thing as the stored one?"""
+
+    YES = "yes"
+    NO = "no"
+    UNSURE = "unsure"
+
+
+class ValueAnswer(StrEnum):
+    """The decision model's value answer, asked only when identity said yes:
+    does the stored entry already say everything the new entry says?"""
 
     SAME_VALUE = "same_value"
     NEW_VALUE = "new_value"
-    DIFFERENT = "different"
     UNSURE = "unsure"
 
 
@@ -141,18 +152,33 @@ def _pair_rule(entry: EntryInput, side: EntryGiven) -> KeyRule | None:
     return pair_rule_verdict(entry.key, side.key, entry.content, side.content)
 
 
-_QUESTION_INSTRUCTIONS = (
-    "Decide how the new entry relates to the stored entry in this collection, "
-    "and choose the option that describes that relationship."
+# Two questions, asked in order (framing measured in the #2715 review probe:
+# a single 4-way "how does the new write relate to the stored entry" question
+# reads as "is this new information for the collection" and merges unrelated
+# entries; separating IDENTITY from VALUE keeps distinct items apart).
+_IDENTITY_INSTRUCTIONS = (
+    "Two entries from the same collection are shown.  Each entry in a collection "
+    "is its own item: a collection holds many separate things, side by side.  "
+    "Is the new entry the same specific thing as the stored entry, merely named "
+    "or worded differently?"
 )
-_QUESTION_CRITERIA = {
-    "same_value": "the stored entry already records the same value as the new entry",
-    "new_value": "the same thing, but the new entry carries a different or fresher "
-    "value that should replace the stored one",
-    "different": "two different things that merely look alike",
-    "unsure": "you cannot tell whether they are the same thing",
+_IDENTITY_CRITERIA = {
+    "yes": "the same specific thing, under another name or wording",
+    "no": "two different specific things that both belong in the collection",
 }
-_VERDICT_BY_CHOICE = {verdict.value: verdict for verdict in CandidateVerdict}
+_VALUE_INSTRUCTIONS = (
+    "The stored entry and the new entry are the same specific thing.  Compare "
+    "what each one says.  If the new entry says anything the stored entry does "
+    "not already say — an added detail, a changed number, a newer observation — "
+    "the value is new.  The value is the same only when the stored entry already "
+    "says everything the new entry says, even in different words."
+)
+_VALUE_CRITERIA = {
+    "same_value": "the stored entry already says everything the new entry says",
+    "new_value": "the new entry adds, changes, or updates something the stored entry does not say",
+}
+_IDENTITY_BY_CHOICE = {answer.value: answer for answer in IdentityAnswer}
+_VALUE_BY_CHOICE = {answer.value: answer for answer in ValueAnswer}
 
 
 def _question_state(
@@ -195,9 +221,9 @@ class EntryDecider:
         collection_description: str | None,
     ) -> list[EntryDecision]:
         """Settle each planned entry: a rules-same pair settles outright; the
-        shortlisted candidates go to the decision model in rank order, first
-        decisive answer wins, and every unsure candidate is recorded for the
-        honest question."""
+        shortlisted candidates go to the decision model in rank order — identity
+        first, value only on yes — and the first decisive answer wins; every
+        candidate left unsure is recorded for the honest question."""
         if self._client is None:
             return rule_only_decisions(plans, entries, existing)
         decisions: list[EntryDecision] = []
@@ -223,56 +249,117 @@ class EntryDecider:
                 action="unchanged" if plan.value_identical else "merge",
                 matched_key=plan.matched_key,
             )
-        action: Literal["new", "merge", "unchanged"] = "new"
-        matched_key: str | None = None
         unsure_candidate: str | None = None
         for index in plan.candidates:
             side = existing[index]
-            verdict = await self._ask(entry, side, collection_name, collection_description)
-            if verdict in (CandidateVerdict.SAME_VALUE, CandidateVerdict.NEW_VALUE):
-                action = "unchanged" if verdict is CandidateVerdict.SAME_VALUE else "merge"
-                matched_key = side.key
-                break
-            if verdict is CandidateVerdict.UNSURE and unsure_candidate is None:
+            identity = await self._ask_identity(
+                entry, side, collection_name, collection_description
+            )
+            if identity is IdentityAnswer.YES:
+                value = await self._ask_value(entry, side, collection_name, collection_description)
+                if value is ValueAnswer.SAME_VALUE:
+                    return EntryDecision(key=entry.key, action="unchanged", matched_key=side.key)
+                if value is ValueAnswer.NEW_VALUE:
+                    return EntryDecision(key=entry.key, action="merge", matched_key=side.key)
+                if unsure_candidate is None:
+                    unsure_candidate = side.key
+                continue
+            if identity is IdentityAnswer.UNSURE and unsure_candidate is None:
                 unsure_candidate = side.key
-        return EntryDecision(
-            key=entry.key, action=action, matched_key=matched_key, unsure_candidate=unsure_candidate
-        )
+            # a decided NO moves on to the next candidate quietly
+        return EntryDecision(key=entry.key, action="new", unsure_candidate=unsure_candidate)
 
-    async def _ask(
+    async def _ask_identity(
         self,
         entry: EntryInput,
         existing: EntryGiven,
         collection_name: str,
         collection_description: str | None,
-    ) -> CandidateVerdict:
-        """One choice question about one candidate.  A failed or malformed call
-        degrades to ``unsure`` — logged, never silently settled."""
+    ) -> IdentityAnswer:
+        """The identity question about one candidate — the same specific thing,
+        or two items that both belong in the collection.  A failed or malformed
+        call degrades to ``unsure`` — logged, never silently settled."""
+        answer = await self._ask_raw(
+            entry,
+            existing,
+            collection_name,
+            collection_description,
+            _IDENTITY_INSTRUCTIONS,
+            _IDENTITY_CRITERIA,
+            "identity",
+        )
+        verdict = _IDENTITY_BY_CHOICE.get(answer)
+        if verdict is None:
+            logger.warning(
+                "entry identity: decision model chose unknown option %r for '%s' vs '%s'",
+                answer,
+                entry.key,
+                existing.key,
+            )
+            return IdentityAnswer.UNSURE
+        return verdict
+
+    async def _ask_value(
+        self,
+        entry: EntryInput,
+        existing: EntryGiven,
+        collection_name: str,
+        collection_description: str | None,
+    ) -> ValueAnswer:
+        """The value question, asked only after identity said yes: does the
+        stored entry already say everything the new entry says?"""
+        answer = await self._ask_raw(
+            entry,
+            existing,
+            collection_name,
+            collection_description,
+            _VALUE_INSTRUCTIONS,
+            _VALUE_CRITERIA,
+            "value",
+        )
+        verdict = _VALUE_BY_CHOICE.get(answer)
+        if verdict is None:
+            logger.warning(
+                "entry identity: decision model chose unknown option %r for the value "
+                "question on '%s' vs '%s'",
+                answer,
+                entry.key,
+                existing.key,
+            )
+            return ValueAnswer.UNSURE
+        return verdict
+
+    async def _ask_raw(
+        self,
+        entry: EntryInput,
+        existing: EntryGiven,
+        collection_name: str,
+        collection_description: str | None,
+        instructions: str,
+        criteria: dict[str, str],
+        question: str,
+    ) -> str:
+        """One choice question to the decision model, answered with the raw
+        choice string.  A failed call returns ``""`` — unreadable, and every
+        caller treats that as unsure."""
         assert self._client is not None  # decide() routes the degraded mode elsewhere
         try:
             answer = await self._client.decide(
                 state=_question_state(entry, existing, collection_name, collection_description),
-                instructions=_QUESTION_INSTRUCTIONS,
-                criteria=_QUESTION_CRITERIA,
+                instructions=instructions,
+                criteria=criteria,
             )
         except DecisionError as error:
             logger.warning(
-                "entry identity: decision model unavailable for '%s' vs '%s': %s",
+                "entry identity: decision model unavailable for the %s question on "
+                "'%s' vs '%s': %s",
+                question,
                 entry.key,
                 existing.key,
                 error,
             )
-            return CandidateVerdict.UNSURE
-        verdict = _VERDICT_BY_CHOICE.get(answer.choice.strip().lower())
-        if verdict is None:
-            logger.warning(
-                "entry identity: decision model chose unknown option %r for '%s' vs '%s'",
-                answer.choice,
-                entry.key,
-                existing.key,
-            )
-            return CandidateVerdict.UNSURE
-        return verdict
+            return ""
+        return answer.choice.strip().lower()
 
 
 def rule_only_decisions(
