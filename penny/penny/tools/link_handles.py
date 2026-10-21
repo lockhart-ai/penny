@@ -28,6 +28,7 @@ is ever mistaken for one.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 # A markdown link ``[text](url)`` — the form the page reader renders links in.
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
@@ -47,14 +48,32 @@ _BARE_URL_RE = re.compile(r"https?://[^\s]+")
 # validator applies to a reply's URLs, declared here for the bare pass.
 _PROSE_TAIL_MARKS = ".,;:!?*_"
 _PAIR_CLOSER = {")": "(", "]": "[", "}": "{"}
-# A handle citation — bare ``[12]`` or the ``[text][12]`` form the page reader
-# itself renders.  ``[12]`` alone is ambiguous with prose ("[12] people said"),
-# so expansion rewrites only numbers the table actually holds, and the dangling
+# A handle citation — four forms: bare ``[12]``; the ``[text][12]`` form the
+# page reader itself renders; and the two hybrids a model composes when it
+# treats the handle as a markdown link — ``[12](https://site.example)`` (the
+# number as link text, a site root it knows as the target — the stored-digest
+# sample that stored ``story-url(site-root)``) and ``[text](12)`` (the number
+# written as the target).  The handle IS the address, so a parenthesized or
+# bracketed rest glued to a citation is part of the citation and expands away
+# with it.  ``[12]`` alone is ambiguous with prose ("[12] people said"), so
+# expansion rewrites only numbers the table actually holds, and the dangling
 # check only fires while the table holds at least one link.
-_HANDLE_RE = re.compile(r"\[([^\]]*)\]\[(\d+)\]|\[(\d+)\]")
+_HANDLE_RE = re.compile(
+    r"\[([^\]]*)\]\[(\d+)\]"
+    r"|\[(\d+)\]\(([^)]*)\)"
+    r"|\[([^\]]+)\]\((\d+)\)"
+    r"|\[(\d+)\]"
+)
 # A browse section's own header line — the page's address (or an error's failed
 # one) after the header text.
 _BROWSE_HEADER_URL_RE = re.compile(r"^(## browse(?: error| dropped)?: )(https?://\S+)\s*$")
+
+
+def _cited_number(match: re.Match) -> int:
+    """The handle a citation form cites — the number in its brackets or its
+    target, never a link's label text or a discarded hybrid target."""
+    text, linked, hybrid_num, _target, label, target_num, bare = match.groups()
+    return int(next(g for g in (linked, hybrid_num, target_num, bare) if g is not None))
 
 
 def _address_only(url: str) -> str:
@@ -112,6 +131,24 @@ class HandleTable:
         self._by_url[url] = number
         return number
 
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[int, str]) -> HandleTable:
+        """A table rebuilt from a recorded ``{number: url}`` mapping — the shape
+        ``mapping`` snapshots and the run record stores.  The harness expands a
+        run's given text through the run's own recorded table, so a handle the
+        model read from one surface expands to the URL it stood for."""
+        table = cls()
+        for number, url in sorted(mapping.items()):
+            table._by_number[int(number)] = url
+            table._by_url[url] = int(number)
+        return table
+
+    def mapping(self) -> dict[int, str]:
+        """The table as ``{number: url}`` — a snapshot read for a run-record
+        stamp (``MessageStore.set_run_link_handles``) and the harness's given
+        expansion; mutating the copy changes nothing here."""
+        return dict(self._by_number)
+
     def url_for(self, number: int) -> str | None:
         """The URL a handle stands for, or ``None`` when it dangles."""
         return self._by_number.get(number)
@@ -149,13 +186,15 @@ class HandleTable:
 
     def dangling(self, text: str) -> list[int]:
         """The handle numbers ``text`` cites that the table does not hold, in
-        order, without repeats.  Empty while the table itself is empty — with
-        no links rendered, a bracketed number is prose, not a failed citation."""
+        order, without repeats.  Every citation form counts — including the
+        hybrids, where the number stands in the brackets or the target alike.
+        Empty while the table itself is empty — with no links rendered, a
+        bracketed number is prose, not a failed citation."""
         if not self._by_number:
             return []
         seen: list[int] = []
         for match in _HANDLE_RE.finditer(text):
-            number = int(match.group(2) or match.group(3))
+            number = _cited_number(match)
             if number not in self._by_number and number not in seen:
                 seen.append(number)
         return seen
@@ -198,7 +237,15 @@ class HandleTable:
         return f"{prefix}[{self.register(url)}]"
 
     def _expand_sub(self, match: re.Match) -> str:
-        text, linked, bare = match.group(1), match.group(2), match.group(3)
+        text, linked, hybrid_num, _hybrid_target, label, target_num, bare = match.groups()
+        if hybrid_num is not None:
+            # ``[12](target)`` — the whole citation expands to the URL: the
+            # handle is the address, and a target glued after it (a site root
+            # the model knew) must not survive beside the expansion.
+            return self._by_number.get(int(hybrid_num)) or match.group(0)
+        if target_num is not None:
+            # ``[text](12)`` — the number written as the target; same rule.
+            return self._by_number.get(int(target_num)) or match.group(0)
         url = self._by_number.get(int(linked or bare))
         if url is None:
             return match.group(0)

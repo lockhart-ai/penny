@@ -87,6 +87,13 @@ class PromptLog(SQLModel, table=True):
     # the live push read these.
     discard_reason: str | None = None
     discard_detail: str | None = None
+    # The run's numbered link table (#2717), stamped as JSON ("{n: url}") on the
+    # run's LAST prompt row by ``MessageStore.set_run_link_handles`` at run
+    # close.  A run-record field the model never sees: the eval harness expands
+    # the given text through it, because the run was given every URL — as its
+    # handle.  NULL on rows logged before this column existed and on runs whose
+    # surfaces rendered no handles.
+    link_handles: str | None = None
 
     def get_trailing_messages(self) -> list[dict]:
         """The trailing turns as message dicts — empty when the run round-tripped

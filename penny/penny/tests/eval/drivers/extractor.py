@@ -54,6 +54,7 @@ from penny.tests.eval.utils.catalogue import Area, Layer
 from penny.tests.eval.utils.fixtures import CannedPage
 from penny.tests.eval.utils.worlds import World
 from penny.tests.mocks.signal_server import MockSignalServer
+from penny.tools.link_handles import HandleTable
 from penny.tools.micro_context import MicroContext, MicroContextResult, MicroExtractOutcome
 
 # ── Browse EXTRACTION: what a page half-carries (#1942) ───────────────────────
@@ -204,14 +205,19 @@ EXTRACT_VALUE = "value"
 _EXTRACT_FAILURES = frozenset({MicroExtractOutcome.EXTRACTION_FAILED})
 
 
-def _extraction_output(result: MicroContextResult) -> list[eval_cohort.OutputField]:
+def _extraction_output(
+    result: MicroContextResult, handles: HandleTable
+) -> list[eval_cohort.OutputField]:
     """One extraction draw's STRUCTURED ANSWER, field by field.
 
     Both fields, always — including the empty one on a failure — so the cohort's field
-    comparison reads the same set of axes per sample whatever the outcome."""
+    comparison reads the same set of axes per sample whatever the outcome.  The value is
+    expanded through the case's own link table (#2717) before it is observed: the draw
+    answers in handles (the page arrives as them), the user-visible fact is the URL behind
+    each one, and the claims read that fact — so the field holds the expanded form."""
     return [
         eval_cohort.OutputField(name=EXTRACT_OUTCOME, value=result.outcome.value),
-        eval_cohort.OutputField(name=EXTRACT_VALUE, value=result.value),
+        eval_cohort.OutputField(name=EXTRACT_VALUE, value=handles.expand(result.value)),
     ]
 
 
@@ -222,6 +228,7 @@ def _observe_extraction(
     name: str,
     phrasing: str,
     arm: int,
+    handles: HandleTable,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE extraction sample answered — its own observer, not the chat one.
 
@@ -233,7 +240,8 @@ def _observe_extraction(
     ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the page
     and the instruction under the extraction contract, so a provenance claim compares the
     answer against the whole of what the draw was handed, a plain "none of it" answer
-    included."""
+    included.  It is expanded through the case's own link table (#2717), the same one the
+    document was rendered with, so the answer's expanded URLs trace to the page as given."""
     answer = "" if result is None or result.outcome in _EXTRACT_FAILURES else result.outcome.value
     exclusion = _draw_exclusion(db, answer)
     if result is None or exclusion is not None:
@@ -244,8 +252,8 @@ def _observe_extraction(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        given=given_to_the_model(db),
-        output=_extraction_output(result),
+        given=given_to_the_model(db, handles),
+        output=_extraction_output(result, handles),
     )
 
 
@@ -331,7 +339,14 @@ def extractor_eval(
             samples,
         )
         spoken = arms.spoken
-        content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
+        # The document production hands a draw: built through the run's link table
+        # (#2717) — the section header and every link in the page arrive as
+        # handles — and expanded back through the SAME table when the answer is
+        # observed, so a claim's URL anchor traces to the page as given.
+        handles = HandleTable()
+        content = handles.convert_browse_section(
+            f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
+        )
         pending = _cohorts.setdefault(
             case_id,
             _PendingCase(
@@ -374,6 +389,7 @@ def extractor_eval(
                 name=f"{case_id}-{sample_number(sample_index)} ({phrasing})",
                 phrasing=phrasing,
                 arm=arms.index_of(sample_index),
+                handles=handles,
             )
             _write_classifier_report(
                 penny.db,

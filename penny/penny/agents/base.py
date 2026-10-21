@@ -567,6 +567,11 @@ class Agent:
             self.db.messages.set_run_trailing_messages(
                 run_id, [message.to_log_dict() for message in logged.tail(messages)]
             )
+            # The run's numbered link table, stamped as a run-record field the
+            # model never sees (#2717): the logged turns carry handles, the
+            # artefacts built from the run carry the expanded URLs, and the
+            # provenance reads need the one fact joining them.
+            self.db.messages.set_run_link_handles(run_id, handles.mapping())
             await self._notify_progress(
                 on_progress,
                 AgentProgressEvent(

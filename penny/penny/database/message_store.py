@@ -1152,6 +1152,32 @@ class MessageStore:
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
 
+    def set_run_link_handles(self, run_id: str, handles: dict[int, str]) -> None:
+        """Stamp the run's numbered link table (#2717) — number → URL, as JSON —
+        onto the last prompt row for ``run_id``.
+
+        Links travel as handles: the logged turns carry ``[n]``, while the
+        artefacts built from the run (stored entries, the outgoing reply) carry
+        the expanded real URLs.  Stamping the table beside the trailing turns
+        keeps the record whole however the run ended, and gives the eval
+        harness's provenance reads the one fact they need: the run was given
+        every URL, as its handle.  A run-record field the model never sees.
+        An empty table writes nothing — a run whose surfaces rendered no
+        handles has nothing to expand."""
+        if not handles:
+            return
+        try:
+            with self._session() as session:
+                last_prompt = self._last_run_prompt(session, run_id)
+                if last_prompt:
+                    last_prompt.link_handles = json.dumps(
+                        {str(number): url for number, url in sorted(handles.items())}
+                    )
+                    session.add(last_prompt)
+                    session.commit()
+        except Exception as e:
+            logger.error("Failed to stamp link handles for run %s: %s", run_id, e)
+
     def set_run_trailing_messages(self, run_id: str, messages: list[dict]) -> None:
         """Stamp the run's TRAILING turns — the conversation the agent loop appended
         after its final model call — onto the last prompt row for ``run_id`` (#1778).

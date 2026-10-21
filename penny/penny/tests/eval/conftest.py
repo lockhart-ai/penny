@@ -82,6 +82,9 @@ from penny.text_validity import (
     is_degenerate_run,
     is_degenerate_tool_name,
 )
+from penny.tools.link_handles import HandleTable
+
+logger = logging.getLogger(__name__)
 
 # A new eval DRIVER (a ``*_eval`` pytest fixture) lives in its own module under
 # ``drivers/``, never appended here (#2395) — two case PRs that each add a driver no
@@ -702,11 +705,43 @@ def _row_turns(row: PromptLog) -> list[dict]:
     return [*carried, *row.get_trailing_messages()]
 
 
-def _iter_prompt_messages(db: Database):
+def _iter_prompt_messages(db: Database, tables: dict[str, HandleTable] | None = None):
     """Every message across the run's promptlog (accumulated history + tool results, incl. the
-    trailing tail no model call carried — so a terminal rejection is visible, #1778)."""
+    trailing tail no model call carried — so a terminal rejection is visible, #1778).
+
+    ``tables`` maps run id → that run's recorded handle table (#2717): a turn's handles
+    expand through the table of the run that rendered them, never a neighbour's."""
     for row in live_prompts(db):
-        yield from _row_turns(row)
+        table = tables.get(row.run_id) if tables else None
+        for turn in _row_turns(row):
+            if table is not None and turn.get("content"):
+                turn = {**turn, "content": table.expand(str(turn["content"]))}
+            yield turn
+
+
+def _link_tables(db: Database, handles: HandleTable | None = None) -> dict[str, HandleTable]:
+    """The handle table per run, read off the sample's promptlog rows.
+
+    ``MessageStore.set_run_link_handles`` stamps a run's table on its LAST row;
+    grouping by ``run_id`` and taking whichever row carries one reads the same
+    value either way.  ``handles`` — a driver-held table for a path that never
+    runs the agent loop (the extractor draw, whose run is the driver's own
+    ``CallLink.new_top()``) — is stamped under that path's run id by the caller
+    passing it here, and overrides any stamped value for the same id."""
+    tables: dict[str, HandleTable] = {}
+    if handles is not None:
+        # A driver-held table is the ONE table this path rendered with — a
+        # driver db holds the runs it drove itself, so it expands them all.
+        return {row.run_id: handles for row in live_prompts(db) if row.run_id}
+    for row in live_prompts(db):
+        if row.link_handles and row.run_id:
+            try:
+                tables[row.run_id] = HandleTable.from_mapping(
+                    {int(k): v for k, v in json.loads(row.link_handles).items()}
+                )
+            except ValueError, TypeError:
+                logger.warning("Unreadable link_handles stamp on run %s", row.run_id)
+    return tables
 
 
 # Tool-result fragments that mean a call the model made was refused: the two
@@ -2411,7 +2446,7 @@ def measured_turn_ran(db: Database) -> bool:
     return bool(live_prompts(db))
 
 
-def given_to_the_model(db: Database) -> eval_cohort.Given:
+def given_to_the_model(db: Database, handles: HandleTable | None = None) -> eval_cohort.Given:
     """Everything this sample's turn was GIVEN — the world a provenance claim reads against
     (#1994), split into what was stated and what the framework wrapped it in (#2203).
 
@@ -2431,8 +2466,15 @@ def given_to_the_model(db: Database) -> eval_cohort.Given:
 
     The contract stays in the text for exactly that reason, and is scaffolding for the reason
     #2203 measured: a NAME is sourced by anything the round was handed, a NUMBER only by what
-    was stated to it.  ``read_given`` draws that line where the turns still have their roles."""
-    return read_given(_iter_prompt_messages(db))
+    was stated to it.  ``read_given`` draws that line where the turns still have their roles.
+
+    Links travel as handles (#2717): the logged turns carry ``[n]``, while the artefacts a
+    provenance claim reads — stored entries, the outgoing reply — carry the real URLs Python
+    expanded at write/send time.  So the given is expanded back through the run's OWN recorded
+    table (``promptlog.link_handles``, stamped at run close): the URL was given, as its
+    handle, and what she stored traces to it.  ``handles`` is a driver-held table for a path
+    that never runs the agent loop (the extractor draw), merged over the stamped ones."""
+    return read_given(_iter_prompt_messages(db, tables=_link_tables(db, handles)))
 
 
 def reply_embedding(db: Database, reply: str) -> list[float] | None:

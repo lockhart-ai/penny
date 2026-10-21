@@ -191,6 +191,7 @@ from penny.tests.eval.conftest import (
     draw_rerolled,
     env_seconds,
     eval_penny,
+    given_to_the_model,
     is_seeded_run,
     live_prompt_perf,
     measured_turn_ran,
@@ -286,6 +287,7 @@ from penny.tools import micro_context as micro_context_module
 from penny.tools.base import Tool
 from penny.tools.choose import CHOSE_MESSAGE
 from penny.tools.collection_instantiation import _LINE_ESCAPE
+from penny.tools.link_handles import HandleTable
 from penny.tools.micro_context import (
     _USER_TEMPLATE,
     MICRO_CONTEXT_SYSTEM_PROMPT,
@@ -3615,6 +3617,40 @@ def test_the_rendered_ground_is_the_store_the_sample_was_actually_given(db) -> N
     assert _CLIMB_ANCHOR in rendered, "the anchor the reply owes must be visible in the ground"
 
 
+def test_the_given_expands_through_the_runs_recorded_handle_table(db) -> None:
+    """Links travel as handles: the logged turns carry ``[n]``, the artefacts a provenance
+    claim reads carry the expanded real URLs — so the given is expanded back through the
+    run's OWN recorded table (``promptlog.link_handles``, stamped at run close), because the
+    run was given every URL, as its handle (#2717).
+
+    A handle from ANOTHER run's table must not expand here: the stamp is read per run, and a
+    run with no stamp (or an empty table) leaves its handles as written."""
+    _log_prompt(
+        db,
+        run_id="r1",
+        messages=[
+            {"role": "user", "content": "the headlines from [1] and [2]"},
+            {"role": "assistant", "content": "", "tool_calls": []},
+        ],
+    )
+    _log_prompt(
+        db,
+        run_id="r2",
+        messages=[{"role": "user", "content": "the other run saw [1] here"}],
+    )
+    # Stamped at run close, the way production does — after the rows exist.
+    db.messages.set_run_link_handles(
+        "r1", {1: "https://news.example/story-1", 2: "https://news.example/story-2"}
+    )
+
+    given = given_to_the_model(db)
+    # r1's turn: the handle expands to the URL its table holds.
+    assert "https://news.example/story-1" in given.content
+    assert "https://news.example/story-2" in given.content
+    # r2's turn: no stamp on that run, so its handle stays a literal.
+    assert "[1]" in given.content
+
+
 def test_an_agent_turn_nothing_delivered_renders_as_an_aside_not_as_a_reply():
     """🤖 meant two opposite things, and the fold could not say which.
 
@@ -3858,12 +3894,16 @@ def test_a_case_states_the_behaviour_it_checks() -> None:
 
 
 def _extraction_observation(db: Database) -> SampleObservation:
+    # The driver's own table: the observation expands the value through the same
+    # table the document was rendered with (#2717).  With an empty table the
+    # value passes through unchanged, as on a page with no links.
     return _observe_extraction(
         db,
         MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=EXTRACT_PLAIN_ANSWER),
         name="draw-1 (the ask)",
         phrasing="the ask",
         arm=0,
+        handles=HandleTable(),
     )
 
 

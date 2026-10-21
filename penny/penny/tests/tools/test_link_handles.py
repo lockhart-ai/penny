@@ -107,6 +107,49 @@ def test_expand_leaves_dangling_handles_as_written():
     assert table.expand("see [1] and [9]") == "see https://a.example/x and [9]"
 
 
+def test_expand_consumes_a_target_glued_after_the_handle():
+    """``[12](https://site.example)`` — the hybrid the model composes when it
+    treats the handle as a markdown link: the whole citation expands to the
+    URL, and the site root it knew must not survive beside the expansion (the
+    stored-digest sample that stored ``story-url(site-root)``)."""
+    table = HandleTable()
+    table.register("https://news.example/story-1")
+    table.register("https://news.example/story-2")
+    assert table.expand("see [2](https://site.example)") == "see https://news.example/story-2"
+    assert table.dangling("cite [3](https://site.example)") == [3]
+
+
+def test_expand_consumes_a_handle_written_as_the_target():
+    """``[text](12)`` — the number written as the target — is the same citation
+    in the other order: the whole form expands to the URL."""
+    table = HandleTable()
+    table.register("https://news.example/story-1")
+    assert table.expand("the [harbour story](1) leads") == (
+        "the https://news.example/story-1 leads"
+    )
+    assert table.dangling("the [harbour story](7) leads") == [7]
+
+
+def test_expand_leaves_a_genuine_markdown_link_alone():
+    """A markdown link whose bracket is not a number and whose target is not a
+    number is a real link — expansion never touches it."""
+    table = HandleTable()
+    table.register("https://news.example/story-1")
+    text = "read [the report](https://real.example/report) today"
+    assert table.expand(text) == text
+
+
+def test_from_mapping_roundtrips():
+    table = HandleTable()
+    table.register("https://a.example/x")
+    table.register("https://b.example/y")
+    rebuilt = HandleTable.from_mapping(table.mapping())
+    assert rebuilt.expand("see [1] and [the y page][2]") == (
+        "see https://a.example/x and [the y page](https://b.example/y)"
+    )
+    assert rebuilt.dangling("[3]") == [3]
+
+
 def test_dangling_reports_only_unknown_numbers_and_only_when_links_exist():
     empty = HandleTable()
     assert empty.dangling("[27] people said") == []
