@@ -510,6 +510,11 @@ def _real_model_config(
         llm_model=model or os.environ.get("LLM_MODEL", "gpt-oss:20b"),
         llm_api_url=os.environ.get("LLM_API_URL", "http://localhost:11434"),
         llm_embedding_model=os.environ.get("LLM_EMBEDDING_MODEL", "embeddinggemma"),
+        # The identity ladder's decision step (#2715) — env-configured like every
+        # other model here; unset runs the named degraded mode and the preflight
+        # says so in the sample's log.
+        llm_decision_model=os.environ.get("LLM_DECISION_MODEL"),
+        llm_decision_api_url=os.environ.get("LLM_DECISION_API_URL"),
         llm_max_retries=_EVAL_LLM_MAX_RETRIES,
         llm_retry_delay=_EVAL_LLM_RETRY_DELAY,
         llm_timeout=_EVAL_LLM_TIMEOUT,

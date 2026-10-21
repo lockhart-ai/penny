@@ -395,6 +395,8 @@ eval-remote: $(if $(LOCAL),,build)
 		LLM_EMBEDDING_API_URL="$$embed_url" \
 		LLM_EMBEDDING_API_KEY="$$embed_key" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
+		LLM_DECISION_MODEL="$${LLM_DECISION_MODEL:-$$(from_env LLM_DECISION_MODEL)}" \
+		LLM_DECISION_API_URL="$${LLM_DECISION_API_URL:-$$(from_env LLM_DECISION_API_URL)}" \
 		LLM_TIMEOUT="$${LLM_TIMEOUT}" \
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
 		EVAL_CONCURRENCY="$$concurrency" \
