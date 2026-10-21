@@ -340,9 +340,10 @@ def extractor_eval(
         )
         spoken = arms.spoken
         # The document production hands a draw: built through the run's link table
-        # (#2717) — the section header and every link in the page arrive as
-        # handles — and expanded back through the SAME table when the answer is
-        # observed, so a claim's URL anchor traces to the page as given.
+        # (#2717) — every link in the page arrives as a handle, and the page's own
+        # address stands verbatim in the section header (#2735: the page itself
+        # takes no number) — and expanded back through the SAME table when the
+        # answer is observed, so a claim's URL anchor traces to the page as given.
         handles = HandleTable()
         content = handles.convert_browse_section(
             f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"

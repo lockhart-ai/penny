@@ -2086,8 +2086,9 @@ class TestParallelToolCalls:
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
-        assert f"{PennyConstants.BROWSE_ERROR_HEADER}[1]" in result.message
-        assert "slow.example.com" not in result.message
+        # The error header shows the address as the model gave it (#2735) — no
+        # number is spent on a page that was never read.
+        assert f"{PennyConstants.BROWSE_ERROR_HEADER}https://slow.example.com" in result.message
 
     def test_browse_tool_timeout_exceeds_request_timeout(self, test_db):
         """BrowseTool.timeout must exceed the per-URL BROWSE_REQUEST_TIMEOUT.

@@ -74,10 +74,16 @@ logger = logging.getLogger(__name__)
 # page's own ``## browse: <url>`` line, but that header reads as scaffolding, not
 # as part of the answer: measured on a source-URL standing rule, every extraction
 # came back a bare value with no URL, and 8 of 9 page-reading replies carried no
-# source at all.  So the value itself now leads with the page's address, whatever
-# the instruction asked for — the person reading the answer (the enclosing chat
-# turn, the collector writing it into the store) can cite where it came from
-# without re-deriving which page it was.
+# source at all.  So the value itself led with the page's address, whatever the
+# instruction asked for.
+#
+# #2735 retired the leading address: the section header above the content names
+# the page, so the echo was scaffolding the value carried twice — and worse, the
+# address took the run's FIRST link number, so on a list page the value's
+# headlines and numbers met in reading order one slot late and a digest stored
+# every headline with its neighbour's link.  The value now carries only the
+# links it names; the enclosing turn (which reads the whole section, header
+# included) cites the page from the header.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
@@ -85,12 +91,11 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     "line when the instruction asks for several, and never a value the page "
     "doesn't state.\n"
     "\n"
-    "Links travel as numbers: every link in the content — each page's own "
-    "address included — is written as its number in brackets, like [7]. The "
-    "address is part of the value: begin every answer with the number of the "
-    "page it came from, so the person reading the answer knows where it came "
-    "from and can go back to it, whatever the instruction asked for. When a "
-    "value names a link, write its number in brackets instead of the address.\n"
+    "Links travel as numbers: every link in the content is written as its "
+    "number in brackets, like [7]. When a value names a link, write its number "
+    "in brackets instead of the address. The page you are reading is named in "
+    "the header line above the content — never repeat the page's own address "
+    "in the answer; carry only the links the values name.\n"
     "\n"
     "An instruction often names several things at once, and a page rarely "
     "carries all of them. Give what the page has for each thing named, in the "
@@ -106,8 +111,7 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     "sentence and stop there.\n"
     "\n"
     "Write only the answer — no preamble, no restating the instruction, and "
-    "nothing about how you are answering. The address the answer begins with is "
-    "part of the answer, not a preamble."
+    "nothing about how you are answering."
 )
 
 # The structural reading-mode note (#2388).  The extension already knows whether it

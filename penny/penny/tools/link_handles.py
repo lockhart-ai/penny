@@ -65,7 +65,8 @@ _HANDLE_RE = re.compile(
     r"|\[(\d+)\]"
 )
 # A browse section's own header line — the page's address (or an error's failed
-# one) after the header text.
+# one) after the header text.  Looked up, never registered (#2735): the page
+# itself takes no number, so its first content link keeps the next one.
 _BROWSE_HEADER_URL_RE = re.compile(r"^(## browse(?: error| dropped)?: )(https?://\S+)\s*$")
 
 
@@ -176,8 +177,13 @@ class HandleTable:
 
     def convert_browse_section(self, section: str) -> str:
         """One browse section (a ``## browse …:`` header plus its body) in the
-        model-facing form: the section header's own URL becomes its handle too —
-        the model never reads a raw URL anywhere in the section."""
+        model-facing form.  The header shows the page as the model gave it
+        (#2735): the address it typed stays written out, and a page it cited by
+        number comes back as the handle it already holds.  The page itself never
+        takes a NEW number — one would sit where the page's first content link
+        belongs, and the model pairs what it reads in order, so a headline's
+        link lands on its neighbour.  Only links found INSIDE the page content
+        get handles."""
         header, _, body = section.partition("\n")
         converted = _BROWSE_HEADER_URL_RE.sub(self._header_sub, header)
         return f"{converted}\n{self.convert(body)}" if body else converted
@@ -240,7 +246,10 @@ class HandleTable:
 
     def _header_sub(self, match: re.Match) -> str:
         prefix, url = match.group(1), match.group(2)
-        return f"{prefix}[{self.register(url)}]"
+        number = self._by_url.get(url)
+        # A page the model cited by number already has its handle; one it asked
+        # for by address stays written out.  Never a new registration.
+        return f"{prefix}[{number}]" if number is not None else match.group(0)
 
     def _expand_sub(self, match: re.Match) -> str:
         text, linked, hybrid_num, _hybrid_target, label, target_num, bare = match.groups()

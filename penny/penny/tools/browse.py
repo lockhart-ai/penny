@@ -513,10 +513,11 @@ class BrowseTool(Tool):
         stored = await self._append_pages_to_browse_results(page_sections)
         await self._store_media(captures)
         self._record_read_log(page_sections, stored)
-        # Register this call's pages in READ order before any concurrent
-        # extraction draw converts them (#2717): a handle's number is the page's
-        # read order, deterministic whatever order the draws finish in.  The
-        # conversion is idempotent, so every later render reuses these numbers.
+        # Convert this call's pages in READ order before any concurrent
+        # extraction draw touches them (#2717): the pages' own addresses take no
+        # number (#2735), so their content links register in page read order,
+        # deterministic whatever order the draws finish in.  The conversion is
+        # idempotent, so every later render reuses these numbers.
         for page_section in page_sections:
             self._handles.convert_browse_section(page_section)
 

@@ -360,7 +360,7 @@ class TestBrowseTool:
         # visible to structural accounting (record.failed / tool_failures), not just
         # the rendered error text.
         assert result.success is False
-        assert PennyConstants.BROWSE_ERROR_HEADER + "[1]" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
         assert "extraction failed" in result.message
         assert PennyConstants.BROWSE_PAGE_HEADER + "https://example.com" not in result.message
 
@@ -389,8 +389,10 @@ class TestBrowseTool:
         )
 
         assert result.success is True
+        # The read page's own URL stands in its body too, so it holds the handle that
+        # URL was given; the failed fetch's address stays written out (#2735).
         assert PennyConstants.BROWSE_PAGE_HEADER + "[1]" in result.message
-        assert PennyConstants.BROWSE_ERROR_HEADER + "[2]" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://bad.com" in result.message
 
     @pytest.mark.asyncio
     async def test_queries_past_cap_are_named_not_dropped(self, db: Database):
@@ -519,8 +521,10 @@ class TestBrowseTool:
 
         assert result.success is True
         assert request_fn.call_count == 3
-        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1]" in result.message
-        assert "https://c.com" not in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://a.com" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://b.com" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://c.com" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://d.com" not in result.message
         assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
         assert "beyond the 3-per-call total" in result.message
         assert "browse(queries=['https://d.com'])" in result.message
@@ -556,7 +560,7 @@ class TestBrowseTool:
             CallLink.new_top(), queries=["https://blocked.com"], extract="the page content"
         )
 
-        assert PennyConstants.BROWSE_ERROR_HEADER + "[1]" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.message
         assert "blocked" in result.message
         request_fn.assert_not_called()
 
@@ -577,7 +581,7 @@ class TestBrowseTool:
         )
 
         assert isinstance(result, ToolResult)
-        assert PennyConstants.BROWSE_ERROR_HEADER + "[1]" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
 
 
 class TestBrowseToolMediaCapture:

@@ -83,13 +83,36 @@ def test_convert_is_idempotent():
     assert table.convert(table.convert(text)) == table.convert(text)
 
 
-def test_convert_browse_section_includes_the_header_url():
+def test_convert_browse_section_leaves_the_page_address_written_out():
+    """The page itself takes no number (#2735): its own address stays written out
+    in its section header, and the FIRST content link is what gets [1] — a new
+    number for the page would sit where the first headline's link belongs and
+    pair a digest's headlines with their neighbours."""
     table = HandleTable()
+    section = (
+        "## browse: https://a.example/page\n"
+        "Headline one [link](https://b.example/l)\n"
+        "Headline two [other](https://b.example/m)"
+    )
+    converted = table.convert_browse_section(section)
+    assert converted.startswith("## browse: https://a.example/page\n")
+    assert "[link][1]" in converted
+    assert "[other][2]" in converted
+    assert len(table) == 2
+
+
+def test_convert_browse_section_cites_a_registered_page_by_its_handle():
+    """A page the model asked for by number comes back by that number — the
+    handle it cited is the page as it gave it (#2735); the address never re-enters
+    the model-facing text and no second number is assigned."""
+    table = HandleTable()
+    table.register("https://a.example/page")
     section = "## browse: https://a.example/page\nBody [link](https://b.example/l) text"
     converted = table.convert_browse_section(section)
     assert converted.startswith("## browse: [1]\n")
     assert "[link][2]" in converted
     assert "https://" not in converted
+    assert len(table) == 2
 
 
 def test_expand_bare_and_text_forms():
