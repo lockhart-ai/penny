@@ -241,7 +241,7 @@ All tables are SQLModel classes in `database/models.py` — the prompt/message l
 
 - Quote-replying continues a conversation thread
 - `MessageLog.parent_id` creates a chain of messages
-- `db.messages.get_thread_context()` walks the chain (up to 20 messages)
+- `db.messages.get_thread_history()` walks the chain (up to 20 messages); the thread a quote-reply shows is selected by the parent id the channel resolved from the quote's own anchor
 
 ## Key Design Decisions
 

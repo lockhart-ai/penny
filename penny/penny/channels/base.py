@@ -721,14 +721,17 @@ class MessageChannel(ABC):
         the channel-converted form, while the conversation record keeps the
         reply as the model wrote it (#2722), so matching is reliable only for
         quotes on messages the channel never reformats — the user's own.
+        The resolved id is what the thread link and the turn's history both
+        read; the quote's text is never re-matched downstream.
         """
         if message.quoted_external_id:
             parent = self._db.messages.find_by_external_id(message.quoted_external_id)
             if parent is not None and parent.id is not None:
                 return parent.id
         if message.quoted_text:
-            parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
-            return parent_id
+            parent = self._db.messages.find_outgoing_by_content(message.quoted_text)
+            if parent is not None and parent.id is not None:
+                return parent.id
         return None
 
     async def _run_message_through_agent(
@@ -765,7 +768,7 @@ class MessageChannel(ABC):
             call_link=call_link,
             images=message.images or None,
             page_context=message.page_context,
-            quoted_text=message.quoted_text,
+            thread_parent_id=parent_id,
             **self._make_handle_kwargs(message, progress),
         )
         try:

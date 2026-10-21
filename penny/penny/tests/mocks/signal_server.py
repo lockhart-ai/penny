@@ -13,6 +13,7 @@ class MockSignalServer:
 
     def __init__(self) -> None:
         self.outgoing_messages: list[dict] = []
+        self._last_send_ts = 0  # Last minted send timestamp — kept monotonic
         self.typing_events: list[tuple[str, str]] = []  # (action, recipient)
         # Append-only log of every reaction op the channel sent. Each entry is
         # ``{"op": "send"|"remove", "reaction": ..., "target_author": ...,
@@ -226,7 +227,13 @@ class MockSignalServer:
             status, body = self._send_response_queue.pop(0)
             return web.json_response(body, status=status)
         self.outgoing_messages.append(data)
-        return web.json_response({"timestamp": int(time.time() * 1000)})
+        # Monotonic per-server timestamp: real Signal timestamps are unique per
+        # message, and two sends inside one wall-clock millisecond would mint
+        # the same external id — a quote anchoring on it could then resolve the
+        # wrong row.
+        ts = max(int(time.time() * 1000), self._last_send_ts + 1)
+        self._last_send_ts = ts
+        return web.json_response({"timestamp": ts})
 
     async def _handle_reaction_send(self, request: web.Request) -> web.Response:
         """Handle POST /v1/reactions/{phone_number}."""

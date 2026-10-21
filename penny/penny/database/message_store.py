@@ -234,7 +234,7 @@ class MessageStore:
     (``set_signal_timestamp``, ``set_external_id``) · embedding backfill
     (``messages_without_embeddings``, ``set_embedding``) · message lookup
     (``get_by_id``, ``get_by_ids``, ``find_by_external_id``,
-    ``find_outgoing_by_content``) · thread context (``get_thread_context``) ·
+    ``find_outgoing_by_content``) · thread context (``get_thread_history``) ·
     conversation queries (``get_conversation_leaves``, ``get_user_messages``,
     ``get_messages_since``, the iOS history page via ``ios_history_page``/
     ``ios_history_count``, ``get_unprocessed``, ``get_user_reactions``,
@@ -730,16 +730,13 @@ class MessageStore:
 
     # --- Thread context ---
 
-    def get_thread_context(
-        self, quoted_text: str
-    ) -> tuple[int | None, list[tuple[str, str]] | None]:
-        """Look up a quoted message and return its id and conversation context."""
-        parent_msg = self.find_outgoing_by_content(quoted_text)
-        if not parent_msg or parent_msg.id is None:
-            logger.warning("Could not find quoted message in database")
-            return None, None
+    def get_thread_history(self, message_id: int) -> list[tuple[str, str]]:
+        """The thread a message ends, oldest-first, as ``(role, content)`` turns.
 
-        thread = self._walk_thread(parent_msg.id)
+        The conversation history a quote-reply turn is shown: the quoted message
+        (whose row already holds the reply as the model wrote it, #2722) and
+        everything behind it on the ``parent_id`` chain."""
+        thread = self._walk_thread(message_id)
         history: list[tuple[str, str]] = [
             (
                 str(
@@ -752,7 +749,7 @@ class MessageStore:
             for m in thread
         ]
         logger.info("Built thread history with %d messages", len(history))
-        return parent_msg.id, history
+        return history
 
     def _walk_thread(self, message_id: int, limit: int = 20) -> list[MessageLog]:
         """Walk up the parent chain. Returns messages oldest-first."""

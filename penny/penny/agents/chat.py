@@ -250,7 +250,7 @@ class ChatAgent(Agent):
         call_link: CallLink,
         images: list[str] | None = None,
         page_context: PageContext | None = None,
-        quoted_text: str | None = None,
+        thread_parent_id: int | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> ControllerResponse:
@@ -265,6 +265,10 @@ class ChatAgent(Agent):
         mutation purposes — stamped on every promptlog row, recorded on any
         collection the turn creates via ``created_by_run_id``, #1566) is read off it.
 
+        ``thread_parent_id`` is the quote-reply's resolved parent row id — resolved
+        by the channel from the quote's own anchor, never re-guessed here — and
+        selects the thread history for the turn (``get_history``).
+
         There is no conversation machine (#2455 naive baseline): every turn runs the
         same ``Prompt.CONVERSATION_PROMPT`` — there is no second state to pick an
         instruction for.
@@ -278,7 +282,7 @@ class ChatAgent(Agent):
             progress_scope="foreground",
             images=images,
             page_context=page_context,
-            quoted_text=quoted_text,
+            thread_parent_id=thread_parent_id,
             on_tool_start=on_tool_start,
             on_progress=on_progress,
         )
@@ -323,14 +327,15 @@ class ChatAgent(Agent):
         progress_scope: str,
         images: list[str] | None = None,
         page_context: PageContext | None = None,
-        quoted_text: str | None = None,
+        thread_parent_id: int | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> ControllerResponse:
         """The one turn both entry points ride — the template method under
         ``handle`` and ``handle_job_report``: per-turn state held for the span of
         the turn and cleared in its ``finally``, context built (thread history when
-        quoted, the ambient self-state header always), tools installed, loop run.
+        a quoted parent resolves, the ambient self-state header always), tools
+        installed, loop run.
 
         The two entry points differ only in what they hand in: a user turn carries
         its attachments, its page context and its progress plumbing and runs in the
@@ -341,7 +346,7 @@ class ChatAgent(Agent):
         run_id = call_link.run_id
         try:
             self._current_message = prompt
-            history = self.get_history(sender, quoted_text=quoted_text)
+            history = self.get_history(sender, thread_parent_id=thread_parent_id)
             self._install_tools(self.get_tools(run_id=run_id))
             system_prompt = await self._build_system_prompt(sender)
             return await self.run(
@@ -484,15 +489,16 @@ class ChatAgent(Agent):
         return f"### Current Browser Page\n{context.title}\n{context.url}"
 
     def get_history(
-        self, user: str, quoted_text: str | None = None
+        self, user: str, thread_parent_id: int | None = None
     ) -> list[tuple[str, str]] | None:
         """Recent conversation messages for chat continuity.
 
-        When a quote-reply is present, walks the parent chain for that
+        When a quote-reply's thread parent is known (resolved by the channel
+        from the quote's own anchor, never re-guessed here), walks that
         specific thread. Falls back to the standard recent-message window.
         """
-        if quoted_text:
-            _, thread_history = self.db.messages.get_thread_context(quoted_text)
+        if thread_parent_id is not None:
+            thread_history = self.db.messages.get_thread_history(thread_parent_id)
             if thread_history:
                 return thread_history
         return self._build_conversation(user)
