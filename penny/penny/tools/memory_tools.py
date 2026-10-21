@@ -77,6 +77,7 @@ from penny.tools.collection_instantiation import (
     has_schedule,
     parse_expires_at,
     parse_schedule,
+    render_autocreate_placeholder_note,
     render_creation_echo,
     render_expiry_update_line,
     render_inert_echo,
@@ -1230,15 +1231,10 @@ _WRITE_AUTOCREATE_NOTE = (
     "created (storage only, no job) and your entries went in.\n"
 )
 _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '{key}'"
-# The auto-created collection's description is the placeholder above — a key holder, not
-# a statement of purpose — so the reply names it as such and gives the one call that sets
-# a real one (#2720).  Rendered beside the auto-create note, never a block: the write
-# succeeded either way.
-_WRITE_AUTOCREATE_PLACEHOLDER_NOTE = (
-    'Its description is only a placeholder ("{description}"). Give it one that says '
-    "what the collection is for: "
-    "collection_configure(collection='{name}', description=<what it holds>)."
-)
+# The auto-created collection's description is only the placeholder above, and the reply
+# says so (#2720).  The placeholder note itself renders from the ``collection_configure``
+# front door's module (``render_autocreate_placeholder_note``) — it names that lifecycle
+# tool, which only the chat surface carries, and auto-create happens only there.
 
 
 def _is_name_variant(asked: str, existing: str) -> bool:
@@ -1534,7 +1530,7 @@ class CollectionWriteTool(MemoryTool):
         )
         logger.info("collection_write: auto-created collection '%s'", args.collection)
         note = _WRITE_AUTOCREATE_NOTE.format(name=args.collection) + (
-            _WRITE_AUTOCREATE_PLACEHOLDER_NOTE.format(name=args.collection, description=description)
+            render_autocreate_placeholder_note(collection=args.collection, description=description)
         )
         return args.collection, note
 

@@ -935,6 +935,27 @@ def render_prompt_replacement_diff(before: str | None, after: str) -> str | None
     return "\n".join(lines)
 
 
+def render_autocreate_placeholder_note(collection: str, description: str) -> str:
+    """The auto-created collection's placeholder-description note (#2720): the reply
+    names the description as a placeholder — rendered verbatim — and gives the one
+    call that sets a real one.
+
+    This render lives HERE, in the ``collection_configure`` front door's module, and
+    not beside the auto-create path in ``memory_tools``: the note names
+    ``collection_configure``, a lifecycle tool a scoped surface structurally lacks
+    (#1556).  That surface can never render it — a scoped write is pinned to a
+    collection that exists and never auto-creates — but the advice-coherence scan
+    reads every string a tool's class can reach, so keeping the literal beside
+    ``collection_write`` would read as an off-surface instruction.  Beside the front
+    door it names, the render is only ever composed where the tool it points at is
+    carried."""
+    return (
+        f'Its description is only a placeholder ("{description}"). Give it one that '
+        f"says what the collection is for: collection_configure(collection='{collection}', "
+        "description=<what it holds>)."
+    )
+
+
 # ── Inert creation echo ───────────────────────────────────────────────────────
 
 _INERT_ECHO = (
