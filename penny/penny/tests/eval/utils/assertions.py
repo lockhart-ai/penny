@@ -597,7 +597,14 @@ def _new_jobs(sample: SampleObservation) -> list[MechanismRecord]:
     read, never by a name the case expects.  An end-to-end round names its own container (the
     routine it mints names it, or a later variant puts the same routine's job somewhere else
     entirely), so a claim that found the job by name would be asserting that naming draw
-    rather than the terms it ran on (#2375)."""
+    rather than the terms it ran on (#2375).
+
+    Birth is the SELECTION only; the terms each record carries are the row's END-of-sample
+    state (``_mechanism_records`` reads the row when the sample ends).  A round that created
+    a collection by a plain write — it comes into being inert, no schedule, no notify — and
+    then configured it in the same sample is read at the terms the configure set: the job
+    the ask asked for is the job that exists at the end, not the container the write happened
+    to stand up first (#2742)."""
     return [one for one in sample.mechanisms if one.born_this_run]
 
 

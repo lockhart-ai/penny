@@ -21,7 +21,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -42,6 +42,7 @@ from penny.constants import (
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.database.models import PromptLog
+from penny.datetime_utils import stored_as_utc
 from penny.llm.call_link import CallLink
 from penny.llm.models import (
     LlmMessage,
@@ -247,7 +248,10 @@ from penny.tests.eval.utils.artifacts import (
 )
 from penny.tests.eval.utils.assertions import (
     Cohort,
+    _a_new_job_ends_when_asked,
     _a_new_job_fires_every,
+    _a_new_job_notifies,
+    _new_jobs,
 )
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import (
@@ -3165,6 +3169,81 @@ def test_an_end_to_end_sample_with_no_transitions_still_reads_a_turn_at(tmp_path
 
     assert observation.turn_at == asked_row.timestamp
     assert _last_scripted_turn_at(db) == asked_row.timestamp
+
+
+def test_a_job_born_by_a_write_and_configured_later_is_read_at_its_configured_terms(
+    tmp_path,
+) -> None:
+    """``_new_jobs`` selects the mechanisms BORN during the sample and reads each one's terms
+    off its END-of-sample state (#2742): a job a round created by a plain write — the
+    collection comes into being inert, no schedule, no notify — and then configured in the
+    same sample is read with the schedule, notify flag and end the configure set, never with
+    the inert state it was born in.  The selection stays birth: a mechanism the sample did
+    not create is not on it, whatever terms it carries."""
+    db = migrated_db(str(tmp_path / "end-to-end-write-then-configure.db"))
+    _log_prompt(db, agent_name=PennyConstants.CHAT_AGENT_NAME, run_id="r1")
+    asked_id = db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content="watch this page every hour and tell me when it changes",
+    )
+    assert asked_id is not None
+    turn_at = _last_scripted_turn_at(db)
+    assert turn_at is not None
+
+    # Born BEFORE the observation's before-set: the sample did not create this one.
+    db.memories.create_collection("already-running", "One the world stood up first.")
+    before = memory_names_now(db)
+
+    # The round's write: the collection comes into being inert — storage only, no job.
+    db.memories.create_collection("price-watch", "Storage the write created.")
+
+    # ... and the round's configure, a later call in the SAME sample: the terms land.
+    # The end reads on the user's clock at whole minutes — the minute the turn's
+    # own clock names, one hour on.
+    ends_at = stored_as_utc(turn_at).replace(second=0, microsecond=0) + timedelta(hours=1)
+    db.memories.update_collection_metadata(
+        "price-watch",
+        extraction_prompt="Check the page for the price and save it.",
+        schedule="FREQ=HOURLY",
+        replace_schedule=True,
+        notify=True,
+        expires_at=ends_at,
+        run_id="r2",
+    )
+
+    observation = _observe_end_to_end(
+        db,
+        name="probe-1",
+        phrasing="probe",
+        arm=0,
+        reply="watching it",
+        before=before,
+        jobs=["price-watch"],
+        per_job=[],
+        cycles=[],
+        seeded_replies=0,
+        turns_driven=1,
+    )
+
+    created = _new_jobs(observation)
+    assert [one.name for one in created] == ["price-watch"], (
+        "born-this-sample is the selection — the pre-sample mechanism is not on it"
+    )
+    world = World(name="probe", pages=(), keeps=(), excludes=())
+    ok, rationale = _a_new_job_fires_every(3600)(observation, world)
+    assert ok, f"the configured schedule is what the claim reads, got {rationale!r}"
+    ok, rationale = _a_new_job_notifies()(observation, world)
+    assert ok, f"the configured notify flag is what the claim reads, got {rationale!r}"
+    an_hour_on = AskedEnd(
+        "until an hour after the turn",
+        lambda turn: (
+            turn.replace(second=0, microsecond=0) + timedelta(hours=1),
+            turn.replace(second=0, microsecond=0) + timedelta(hours=2),
+        ),
+    )
+    ok, rationale = _a_new_job_ends_when_asked(an_hour_on)(observation, world)
+    assert ok, f"the configured end is what the claim reads, got {rationale!r}"
 
 
 def test_a_seeded_known_routines_entry_is_not_counted_as_written_this_run(tmp_path) -> None:
