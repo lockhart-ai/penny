@@ -1096,7 +1096,7 @@ _BASIC_FLOW_EXPECTED = (
     "- Finish every message with an emoji.\n"
     "\n"
     "## Instructions\n"
-    "The user is talking to you — no greetings, no sign-offs, just pick up the thread.\n"
+    "It's fine to greet them back when they greet you; otherwise just pick up the thread.\n"
     "\n"
     "Every tool call has a `reasoning` field — use it to think out loud. Explain what "
     "you're looking for, what you already know, and what you'll do with the result.\n"

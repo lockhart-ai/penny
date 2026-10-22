@@ -35,8 +35,8 @@ class Prompt:
     # discipline, sources.  True under every state, so they never move.
 
     CONVERSATION_HEAD = (
-        "The user is talking to you — no greetings, no sign-offs, just pick up "
-        "the thread.\n\n"
+        "It's fine to greet them back when they greet you; otherwise just pick "
+        "up the thread.\n\n"
         "Every tool call has a `reasoning` field — use it to think out loud. "
         "Explain what you're looking for, what you already know, "
         "and what you'll do with the result.\n\n"
