@@ -73,22 +73,12 @@ _MULTI_CITATION_SEPARATOR = ", "
 _BROWSE_HEADER_URL_RE = re.compile(r"^(## browse(?: error| dropped)?: )(https?://\S+)\s*$")
 
 
-def _cited_number(match: re.Match) -> int:
-    """The handle a citation form cites — the number in its brackets or its
-    target, never a link's label text or a discarded hybrid target."""
-    text, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = match.groups()
-    return int(next(g for g in (linked, hybrid_num, target_num, bare) if g is not None))
-
-
-def _get_cited_numbers(match: re.Match) -> list[int]:
+def _cited_numbers(match: re.Match) -> list[int]:
     """All handle numbers a citation form cites — a list of numbers, one for
     single citation forms, multiple for the list form ``[4, 6]``."""
     text, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = match.groups()
     if multi_numbers is not None:
-        # [4, 6, 8] form — parse comma-separated numbers
-        number_strs = [n.strip() for n in multi_numbers.split(",")]
-        return [int(n) for n in number_strs]
-    # Single number forms
+        return [int(n) for n in multi_numbers.split(",")]
     num = int(next(g for g in (linked, hybrid_num, target_num, bare) if g is not None))
     return [num]
 
@@ -223,7 +213,7 @@ class HandleTable:
             return []
         seen: list[int] = []
         for match in _HANDLE_RE.finditer(text):
-            for number in _get_cited_numbers(match):
+            for number in _cited_numbers(match):
                 if number not in self._by_number and number not in seen:
                     seen.append(number)
         return seen
@@ -268,27 +258,28 @@ class HandleTable:
         # for by address stays written out.  Never a new registration.
         return f"{prefix}[{number}]" if number is not None else match.group(0)
 
+    def _expand_list(self, match: re.Match) -> str:
+        """Expand a list-form citation ``[4, 6]`` to its held URLs joined by
+        the separator, or leave it unchanged when none are held."""
+        expanded_parts = []
+        has_any_held = False
+        for num in _cited_numbers(match):
+            url = self._by_number.get(num)
+            if url is not None:
+                expanded_parts.append(url)
+                has_any_held = True
+            else:
+                expanded_parts.append(f"[{num}]")
+        if not has_any_held:
+            return match.group(0)
+        return _MULTI_CITATION_SEPARATOR.join(expanded_parts)
+
     def _expand_sub(self, match: re.Match) -> str:
-        text, linked, hybrid_num, _hybrid_target, label, target_num, multi_numbers, bare = match.groups()
+        text, linked, hybrid_num, _hybrid_target, label, target_num, multi_numbers, bare = (
+            match.groups()
+        )
         if multi_numbers is not None:
-            # ``[4, 6]`` — a list of handles. Each held number becomes its URL,
-            # joined by the separator; unheld numbers stay as ``[n]``. If none are
-            # held, the list is left unchanged.
-            number_strs = [n.strip() for n in multi_numbers.split(",")]
-            expanded_parts = []
-            has_any_held = False
-            for num_str in number_strs:
-                num = int(num_str)
-                url = self._by_number.get(num)
-                if url is not None:
-                    expanded_parts.append(url)
-                    has_any_held = True
-                else:
-                    expanded_parts.append(f"[{num}]")
-            # If no numbers are held, return the original unchanged.
-            if not has_any_held:
-                return match.group(0)
-            return _MULTI_CITATION_SEPARATOR.join(expanded_parts)
+            return self._expand_list(match)
         if hybrid_num is not None:
             # ``[12](target)`` — the whole citation expands to the URL: the
             # handle is the address, and a target glued after it (a site root
