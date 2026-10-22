@@ -541,12 +541,14 @@ class ChatAgent(Agent):
 
         When a quote-reply's thread parent is known (resolved by the channel
         from the quote's own anchor, never re-guessed here), walks that
-        specific thread. Falls back to the standard recent-message window.
+        specific thread, capped like the standard window — the last
+        ``CHAT_HISTORY_TURNS`` user turns with their replies (#2746).
+        Falls back to the standard recent-message window.
         """
         if thread_parent_id is not None:
             thread_history = self.db.messages.get_thread_history(thread_parent_id)
             if thread_history:
-                return thread_history
+                return self._trim_history_window(thread_history)
         return self._build_conversation(user)
 
     # ── Memory description embedding ──────────────────────────────────────

@@ -172,9 +172,26 @@ ConfigParam(
 
 ConfigParam(
     key="MESSAGE_CONTEXT_LIMIT",
-    description="Max recent conversation messages injected into chat context",
+    description=(
+        "Raw recent-conversation messages fetched as the pool behind the chat "
+        "history window (HISTORY_WINDOW_TURNS user turns are then kept). Set "
+        "well above the window so multi-message replies never starve it."
+    ),
     type=int,
-    default=20,
+    default=60,
+    validator=_validate_positive_int,
+    group=GROUP_CHAT,
+)
+
+ConfigParam(
+    key="CHAT_HISTORY_TURNS",
+    description=(
+        "How many recent exchanges a chat turn sees as conversation history — "
+        "the last N of the user's turns, each with its reply. Older turns stay "
+        "reachable through log_read, find, and the self-state's recent activity."
+    ),
+    type=int,
+    default=5,
     validator=_validate_positive_int,
     group=GROUP_CHAT,
 )

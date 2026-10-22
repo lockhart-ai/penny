@@ -167,6 +167,118 @@ async def test_conversation_carries_the_replies_and_their_run_ids(
         ]
 
 
+@pytest.mark.asyncio
+async def test_conversation_window_keeps_last_five_user_turns(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """The history window is the last CHAT_HISTORY_TURNS user turns with their
+    replies (#2746), oldest first — a turn no longer carries days of earlier
+    conversation."""
+    config = make_config()
+
+    async with running_penny(config) as penny:
+        for n in range(1, 8):  # 7 exchanges — two more than the default window
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+            )
+
+        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        # Five exchanges, each one user turn + its reply, oldest first.
+        assert [content for _, content in conversation] == [
+            "user message 3",
+            "reply 3",
+            "user message 4",
+            "reply 4",
+            "user message 5",
+            "reply 5",
+            "user message 6",
+            "reply 6",
+            "user message 7",
+            "reply 7",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_conversation_window_follows_config_value(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """CHAT_HISTORY_TURNS is a runtime config param: a changed value changes the
+    window on the next build."""
+    config = make_config(chat_history_turns=2)
+
+    async with running_penny(config) as penny:
+        for n in range(1, 5):
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+            )
+
+        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        assert [content for _, content in conversation] == [
+            "user message 3",
+            "reply 3",
+            "user message 4",
+            "reply 4",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_thread_history_follows_window_cap(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """A quote-reply's thread history follows the same cap (#2746): it walks
+    back at most CHAT_HISTORY_TURNS exchanges."""
+    config = make_config()
+
+    async with running_penny(config) as penny:
+        previous_id = None
+        for n in range(1, 9):  # an 8-exchange chain — three more than the window
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+                parent_id=previous_id,
+            )
+            previous_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+            )
+
+        thread_history = penny.chat_agent.get_history(TEST_SENDER, thread_parent_id=previous_id)
+        assert [content for _, content in thread_history] == [
+            "user message 4",
+            "reply 4",
+            "user message 5",
+            "reply 5",
+            "user message 6",
+            "reply 6",
+            "user message 7",
+            "reply 7",
+            "user message 8",
+            "reply 8",
+        ]
+
+
 # ── Profile context ──────────────────────────────────────────────────────
 
 

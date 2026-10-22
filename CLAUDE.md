@@ -290,6 +290,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 
 **Behavior**:
 - `MAX_STEPS`: Max agent loop steps per message (default: 20 — equal to the background budget, so a flow taught in chat is never longer than a collector could run; runtime-configurable via `/config`)
+- `CHAT_HISTORY_TURNS`: How many recent exchanges a chat turn sees as conversation history (default: 5 — the last N of the user's turns, each with its reply, for both the standard window and a quote-reply's thread history; older turns stay reachable via `log_read`, `find`, and the self-state's recent activity; runtime-configurable via `/config`)
 - `IDLE_SECONDS`: Global idle threshold for all background tasks (default: 60, runtime-configurable via `/config`)
 - `TOOL_TIMEOUT`: Tool execution timeout in seconds (default: 60)
 

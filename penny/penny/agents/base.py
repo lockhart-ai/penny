@@ -2183,8 +2183,10 @@ class Agent:
     def _build_conversation(self, sender: str) -> list[tuple[str, str]]:
         """Build conversation history as strict user/assistant alternation.
 
-        Fetches the last N messages (no time boundary). Consecutive same-role
-        messages are merged with newlines to maintain valid turn structure.
+        Fetches a raw pool of recent messages (``MESSAGE_CONTEXT_LIMIT``, no
+        time boundary), merges consecutive same-role messages with newlines
+        into turns, then trims to the history window — the last
+        ``CHAT_HISTORY_TURNS`` user turns with their replies (#2746).
 
         The history carries the replies as the user received them and nothing
         else (#2646): the per-run tool line this method used to append (#2630)
@@ -2209,11 +2211,31 @@ class Agent:
                     conversation[-1] = (prev_role, f"{prev_content}\n{msg.content}")
                 else:
                     conversation.append((role, msg.content))
+            conversation = self._trim_history_window(conversation)
             if conversation:
                 logger.debug("Built conversation (%d turns)", len(conversation))
         except Exception:
             logger.warning("Conversation building failed, proceeding without")
         return conversation
+
+    def _trim_history_window(self, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Keep the last ``CHAT_HISTORY_TURNS`` user turns, with their replies (#2746).
+
+        Both the standard window (``_build_conversation``) and a quote-reply's
+        thread history (``ChatAgent.get_history``) pass through here.  A user
+        turn means an incoming message: everything from the window's oldest
+        user turn onward stays, so the replies in between and any autonomous
+        sends after the last user message ride along.  Fewer user turns in the
+        history than the window asks for leaves the history whole.
+        """
+        window = int(self.config.runtime.CHAT_HISTORY_TURNS)
+        seen = 0
+        for start in range(len(history) - 1, -1, -1):
+            if history[start][0] == MessageRole.USER:
+                seen += 1
+                if seen == window:
+                    return history[start:]
+        return history
 
     # ── Utilities ────────────────────────────────────────────────────────
 
