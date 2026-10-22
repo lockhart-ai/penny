@@ -11,13 +11,14 @@ Test organization:
 
 import base64
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
 from sqlmodel import select
 
+from penny.agents.chat import ChatAgent
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
@@ -122,30 +123,42 @@ async def test_basic_message_flow(
         tool_messages = [m for m in messages if m.get("role") == "tool"]
         assert len(tool_messages) >= 1, "Second request should include tool result"
 
-        # Full system prompt structure assertion.  Per-entry timestamps are
-        # normalised to a placeholder so the verbatim assertion stays stable
-        # across runs without freezing the clock.
-        system_text = [
-            m.get("content", "") for m in first_request["messages"] if m.get("role") == "system"
-        ][0]
-        lines = system_text.split("\n")
-        # The date/time anchor opens the prompt, and it is rendered in the user's
-        # PROFILE timezone, never a bare UTC — otherwise the model reasons from a UTC
-        # clock under a non-UTC profile and, for the hours around local midnight, from
-        # the wrong calendar day.  The zone is read off the profile row rather than
-        # restated here, so the fixture's timezone and the expectation cannot drift
-        # apart.  The collector side of the same shared renderer
-        # (``datetime_utils.current_datetime_line``) is pinned in test_collector.py.
+        # Full system-prompt structure assertion, over BOTH system messages
+        # (#2745): the static one (identity + instructions — the reused prefix,
+        # byte-identical across turns) and the dynamic one (the clock + Penny's
+        # current state).  Per-entry timestamps are normalised to a placeholder
+        # so the verbatim assertion stays stable across runs without freezing
+        # the clock.
+        system_messages = [m for m in first_request["messages"] if m.get("role") == "system"]
+        assert len(system_messages) == 2, (
+            "Expected the static and the dynamic system messages (#2745), "
+            f"got {len(system_messages)}"
+        )
+        static_text = system_messages[0]["content"]
+        assert static_text == _BASIC_FLOW_STATIC_EXPECTED, (
+            f"Static system message mismatch:\n{static_text!r}"
+        )
+        dynamic_text = system_messages[1]["content"]
+        lines = dynamic_text.split("\n")
+        # The date/time anchor opens the DYNAMIC message, and it is rendered in
+        # the user's PROFILE timezone, never a bare UTC — otherwise the model
+        # reasons from a UTC clock under a non-UTC profile and, for the hours
+        # around local midnight, from the wrong calendar day.  The zone is read
+        # off the profile row rather than restated here, so the fixture's
+        # timezone and the expectation cannot drift apart.  The collector side
+        # of the same shared renderer (``datetime_utils.current_datetime_line``)
+        # is pinned in test_collector.py.
         profile = penny.db.users.get_info(TEST_SENDER)
         assert profile is not None, "The test user profile should exist"
         local_abbrev = datetime.now(ZoneInfo(profile.timezone)).strftime("%Z")
         assert lines[0].startswith("Current date and time: ")
         assert lines[0].endswith(f" {local_abbrev}"), lines[0]
         assert "UTC" not in lines[0], lines[0]
-        rest = "\n".join(lines[1:])
-        rest = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", rest)
-        expected = _BASIC_FLOW_EXPECTED
-        assert rest == expected, f"System prompt mismatch:\n{rest!r}\n\nvs expected:\n{expected!r}"
+        state_text = "\n".join(lines[1:])
+        state_text = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", state_text)
+        assert state_text == _BASIC_FLOW_STATE_EXPECTED, (
+            f"Dynamic system message mismatch:\n{state_text!r}"
+        )
 
         # Verify typing indicators were sent
         assert len(signal_server.typing_events) >= 1, "Should have sent typing indicator"
@@ -181,6 +194,48 @@ async def test_basic_message_flow(
         # Mock browse provider is wired in conftest; the tool was invoked once.
         assert len(browse_entries) >= 1
         assert all(e.author == "chat" for e in browse_entries)
+
+
+# ── 1a. The static/dynamic system split (#2745) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_static_system_prefix_byte_identical_across_turns(db, monkeypatch):
+    """The FIRST system message is the prefix the model server reuses across
+    turns (#2745), so nothing per-turn — the clock, entry counts, job rows — may
+    leak into it.  Two renders with a shifted clock and a changed registry must
+    produce a byte-identical first message, while the dynamic second message
+    DID move (so the guard cannot pass vacuously)."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    agent._pending_page_context = None
+    agent._current_user = TEST_SENDER
+
+    class _FixedClock:
+        def __init__(self, when: datetime) -> None:
+            self._when = when
+
+        def now(self) -> datetime:
+            return self._when
+
+    monkeypatch.setattr(db, "clock", _FixedClock(datetime(2026, 1, 1, 12, 0, tzinfo=UTC)))
+    first = agent._build_messages("hi", None, await agent._build_system_prompt(TEST_SENDER))
+
+    monkeypatch.setattr(db, "clock", _FixedClock(datetime(2026, 1, 1, 12, 5, tzinfo=UTC)))
+    db.memories.create_collection("late-addition", "created between the two renders")
+    second = agent._build_messages("hi", None, await agent._build_system_prompt(TEST_SENDER))
+
+    # Both system messages present, static first, dynamic second.
+    assert [m.role for m in first[:2]] == ["system", "system"]
+    assert [m.role for m in second[:2]] == ["system", "system"]
+    # The reused prefix: byte-identical across a shifted clock and new state.
+    assert second[0].content == first[0].content
+    # The dynamic message carries the clock and moved between the renders.
+    assert first[1].content.startswith("Current date and time: ")
+    assert second[1].content != first[1].content
+    # And the history + the bare user turn close the array.
+    assert second[-1].role == "user"
+    assert second[-1].content == "hi"
 
 
 # ── 1b. Provenance stamping ─────────────────────────────────
@@ -1079,8 +1134,7 @@ async def test_startup_backfill_fills_missing_key_vector(
         assert penny.db.memories.get_entries_without_embeddings(limit=100) == []
 
 
-_BASIC_FLOW_EXPECTED = (
-    "\n"
+_BASIC_FLOW_STATIC_EXPECTED = (
     "## Identity\n"
     "You are Penny. You and the user are friends who text regularly. This is "
     "mid-conversation — not a fresh chat.\n"
@@ -1181,7 +1235,12 @@ _BASIC_FLOW_EXPECTED = (
     "On a plain reply with no tool calls, skip the recap and just respond.\n"
     "\n"
     "Always include specific details (specs, dates, prices) and at least one source "
-    "link (its number in brackets) so the user can follow up.\n"
+    "link (its number in brackets) so the user can follow up."
+)
+
+# The dynamic system message's state header, everything after the clock line —
+# the leading "\n" is the blank line that separated it from the clock.
+_BASIC_FLOW_STATE_EXPECTED = (
     "\n"
     "## Penny's current state\n"
     "\n"

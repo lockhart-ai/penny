@@ -1096,22 +1096,28 @@ def _seed_mutation_matrix(db: Database, *, detail_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_full_chat_system_prompt_composition(db):
-    """The whole chat system prompt: Identity + the standing rules (the instruction
-    part, right after the voice) + Instructions + self-state header (the dynamic
-    tail), with the speculative recall / profile / inventory gone.  The rules render
-    here, not in the header below — where she reads instructions rather than state."""
+    """The whole chat request's system side (#2745): the STATIC message —
+    Identity + the standing rules (the instruction part, right after the voice)
+    + Instructions, the prefix the server reuses across turns — and the DYNAMIC
+    message — the clock, then the self-state header.  The rules render in the
+    static message, not the header: where she reads instructions rather than
+    state.  The speculative recall / profile / inventory are gone."""
     _seed_kitchen_sink(db)
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent._pending_page_context = None
-    prompt = await agent._build_system_prompt(USER)
-    expected = (
+    agent._current_user = USER
+    static = await agent._build_system_prompt(USER)
+    expected_static = (
         f"## Identity\n{Prompt.PENNY_IDENTITY}\n\n"
         f"{_STANDING_RULES_INSTRUCTION}\n\n"
-        f"## Instructions\n{Prompt.CONVERSATION_PROMPT}\n\n"
-        f"{_KITCHEN_SINK}"
+        f"## Instructions\n{Prompt.CONVERSATION_PROMPT}"
     )
-    assert prompt == expected
+    assert static == expected_static
+    dynamic = agent._dynamic_system_section()
+    clock_line, _, state = dynamic.partition("\n\n")
+    assert clock_line.startswith("Current date and time: "), clock_line
+    assert state == _KITCHEN_SINK
 
 
 # ── Frozen render literals (filled from the captured actual) ──────────────

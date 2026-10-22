@@ -194,12 +194,15 @@ async def test_a_running_penny_tells_and_records_the_time_on_its_configs_clock(
         await signal_server.push_message(sender=TEST_SENDER, content="what's the weather today?")
         await signal_server.wait_for_message(timeout=10.0)
 
-        system_text = next(
+        system_texts = [
             message["content"]
             for message in mock_llm.requests[0]["messages"]
             if message["role"] == "system"
-        )
-        assert system_text.split("\n", 1)[0] == (
+        ]
+        # The clock rides the DYNAMIC system message — the request's second
+        # system message, behind the static prompt (#2745).
+        assert len(system_texts) == 2, "expected the static and the dynamic system messages (#2745)"
+        assert system_texts[1].split("\n", 1)[0] == (
             "Current date and time: Wednesday, March 05, 2031 at 11:30 PM PST"
         )
 

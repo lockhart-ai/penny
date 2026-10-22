@@ -40,20 +40,22 @@ class ChatAgent(Agent):
 
     Two context mechanisms, kept independent:
 
-    - Operational self-state → the dynamic tail of the system prompt: a
-      deterministic ``SelfStateHeader`` (active mechanisms · recent activity ·
-      the store map · durable user facts), rendered from the registry + ledger,
-      never a relevance guess.  The speculative user-content recall is gone (the
-      ambient inversion, #1555): user content is fetched on demand via the tools
-      the header's pointers name.
+    - Operational self-state → the DYNAMIC system message (the second of the
+      request's two system messages, #2745): a deterministic ``SelfStateHeader``
+      (active mechanisms · recent activity · the store map · durable user
+      facts), rendered from the registry + ledger, never a relevance guess.
+      The speculative user-content recall is gone (the ambient inversion,
+      #1555): user content is fetched on demand via the tools the header's
+      pointers name.
     - Chat turns → messages array as alternating user/assistant turns
       via ``_build_conversation`` and ``history=``.
 
-    The system prompt is identity + the user's standing rules + (page hint) +
-    instructions + the self-state header — the rules render in the instruction
-    part, right after her voice, where she reads instructions rather than state.
-    Every turn — image or not — runs the standard agentic loop; an image rides
-    the turn's own user message (#2635) for the chat model to read.
+    The request is two system messages, static first (#2745): the first carries
+    identity + the user's standing rules + instructions (never changes between
+    turns, so the server reuses it and the tool schemas rendered after it); the
+    second carries the clock, the page hint and the self-state header.  Every
+    turn — image or not — runs the standard agentic loop; an image rides the
+    turn's own user message (#2635) for the chat model to read.
     """
 
     name: str = "chat"
@@ -498,31 +500,46 @@ class ChatAgent(Agent):
         *,
         handles: HandleTable | None = None,
     ) -> str:
-        """Identity + standing rules + (page hint) + instructions + self-state
-        header (#1555).
+        """Identity + standing rules + instructions — the STATIC system message
+        (#2745).
 
-        The chat prompt opens with Penny's persona/voice, then the user's standing
-        rules — in the instruction part, right after the voice sections, where she
-        reads instructions.  It closes with a deterministic **self-state header** —
-        the dynamic tail — rendering her own operational situation (active
-        mechanisms · recent activity · the store map · durable user facts) purely
-        from the registry (#1566) + ledger (#1560), never a relevance guess.
+        This message is the prefix the model server reuses across turns, so it
+        carries only what never changes between them: Penny's persona/voice, then
+        the user's standing rules — in the instruction part, right after the voice
+        sections, where she reads instructions — then the instructions.  Everything
+        per-turn — the clock, the current browser page, and the deterministic
+        **self-state header** (active mechanisms · recent activity · the store map ·
+        durable user facts, rendered from the registry (#1566) + ledger (#1560),
+        never a relevance guess) — rides the SECOND system message
+        (``_dynamic_system_section``).
 
-        The ambient inversion (#1555): the chat prompt no longer injects
+        The ambient inversion (#1555): the chat prompt injects no
         **speculative user-content recall** at all.  User content is fetched on
         demand via the tools the header's pointers name (anchored by the user's
-        message).
-        Background agents keep the base envelope (profile + inventory) and never
-        see this header — it is the chat entry point's opening state.
+        message).  Background agents keep the base envelope (profile + inventory)
+        and never see the header — it is the chat entry point's opening state.
         """
         return "\n\n".join(
             section
             for section in [
                 self._identity_section(),
                 standing_rules_instruction(self.db),
-                self._context_block(self._page_hint_section()),
                 self._instructions_section(instructions),
-                SelfStateHeader(self.db, user).render(),
+            ]
+            if section
+        )
+
+    def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
+        """The per-turn system message's content (#2745): the clock, the page
+        hint, then Penny's own state — in that order, everything that may change
+        between turns, none of it able to touch the reused static prefix ahead
+        of it."""
+        return "\n\n".join(
+            section
+            for section in [
+                current_datetime_line(self.db),
+                self._page_hint_section(),
+                SelfStateHeader(self.db, self._current_user).render(),
             ]
             if section
         )

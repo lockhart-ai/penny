@@ -68,7 +68,12 @@ from penny.constants import (
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
 from penny.database.models import MemoryEntry, MemoryRow
-from penny.datetime_utils import format_log_timestamp, stored_as_utc, user_timezone_name
+from penny.datetime_utils import (
+    current_datetime_line,
+    format_log_timestamp,
+    stored_as_utc,
+    user_timezone_name,
+)
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.notification import (
@@ -914,21 +919,22 @@ class Collector(BackgroundAgent):
     async def _build_system_prompt(
         self, user: str | None, *, handles: HandleTable | None = None
     ) -> str:
-        """System prompt for the bound target — re-fetched each cycle.
+        """Static system prompt for the bound target — re-fetched each cycle.
 
         Reading from the DB instead of caching means a chat-side
         ``collection_configure`` call that changes ``extraction_prompt`` is
         picked up on the very next collector cycle, no restart needed.
 
-        The two trailing blocks are the cycle's own STATE, read the same way: what the
-        collection holds now (#1914) and what this collector's recent runs did (#1569).
-        Holdings first — the entries are what the prompt acts ON, so they sit next to
-        it, and the run outcomes close the prompt as they always have.
+        The standing rules render after the job's own instructions (#2633): the
+        same shared section the chat self-state header shows, so a rule about how
+        she speaks or what she uses holds in every cycle without a lookup.  With
+        no rule set the section is omitted entirely (#2686).
 
-        The standing rules render between the job's own instructions and the state
-        blocks (#2633): the same shared section the chat self-state header shows, so a
-        rule about how she speaks or what she uses holds in every cycle without a
-        lookup.  With no rule set the section is omitted entirely (#2686).
+        The cycle's own STATE — what the collection holds now (#1914), what this
+        collector's recent runs did (#1569), and the clock — rides the SECOND
+        system message (``_dynamic_system_section``, #2745): it churns per cycle,
+        so it must not sit inside the message the model server reuses across
+        cycles (the job prompt, the rules, and the tool schemas are that prefix).
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
@@ -936,10 +942,22 @@ class Collector(BackgroundAgent):
         rules = standing_rules_section(self.db)
         if rules:
             prompt += f"\n\n{rules}"
-        return (
-            prompt
-            + self._holdings_section(fresh.name, handles)
-            + self._run_history_section(fresh.name)
+        return prompt
+
+    def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
+        """The per-cycle system message's content (#2745): the clock, then what
+        the collection holds (#1914), then this collector's recent runs (#1569)
+        — holdings first, the entries being what the prompt acts ON."""
+        target = self._require_target()
+        fresh = self.db.memories.get(target.name) or target
+        return "\n\n".join(
+            section
+            for section in [
+                current_datetime_line(self.db),
+                self._holdings_section(fresh.name, handles),
+                self._run_history_section(fresh.name),
+            ]
+            if section
         )
 
     def _holdings_section(self, target_name: str, handles: HandleTable | None = None) -> str:
@@ -955,8 +973,9 @@ class Collector(BackgroundAgent):
         The window is bounded in the QUERY and the remainder is a COUNT, so a deep
         collection is never materialized to render twenty lines of it.  A collection
         that vanished between binding and composing has nothing to state: the block is
-        absent and the prompt is byte-identical to what it was, said out loud rather
-        than swallowed.
+        absent and the dynamic message is byte-identical to what it was, said out
+        loud rather than swallowed.  Returns the section WITHOUT a leading
+        separator — the dynamic message's join adds it (#2745).
         """
         memory = self.db.memory(target_name)
         if memory is None:
@@ -964,7 +983,7 @@ class Collector(BackgroundAgent):
             return ""
         limit = PennyConstants.COLLECTOR_HOLDINGS_LIMIT
         body = self._holdings_body(memory.read_latest(limit), memory.entry_count(), handles)
-        return f"\n\n{_HOLDINGS_HEAD}\n{body}"
+        return f"{_HOLDINGS_HEAD}\n{body}"
 
     @staticmethod
     def _holdings_body(
@@ -1017,7 +1036,7 @@ class Collector(BackgroundAgent):
                 f"{lines}"
             )
         blocks.append(self._last_told_line(target_name))
-        return "\n\n" + "\n\n".join(blocks)
+        return "\n\n".join(blocks)
 
     def _last_told_line(self, target_name: str) -> str:
         """What this mechanism last sent the user, or the plain never-sent line

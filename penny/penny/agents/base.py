@@ -508,7 +508,9 @@ class Agent:
         # that do (chat turns, collector cycles, the delivery turn) always pass
         # one, the same table their tools were built with.
         table = handles if handles is not None else HandleTable()
-        messages = self._build_messages(prompt, history, system_prompt, images=images)
+        messages = self._build_messages(
+            prompt, history, system_prompt, images=images, handles=table
+        )
         tools = self._tool_registry.get_ollama_tools()
         return await self._run_agentic_loop(
             messages,
@@ -2068,18 +2070,32 @@ class Agent:
     ) -> list[LlmMessage]:
         """Build message list for Ollama chat API.
 
-        The system_prompt is the full prompt body (identity, context,
-        instructions) built by each agent's _build_system_prompt method.
-        This method only prepends the timestamp.
+        Two system messages, static first (#2745): the static system prompt
+        (identity, instructions — everything that never changes per turn) rides
+        the FIRST system message, and each agent's per-turn section (the clock;
+        chat's page hint and self-state, the collector's holdings and run
+        history) rides a SECOND system message placed after it, before the
+        history.  Ollama's gemma4 renderer puts the tool schemas inside the
+        first system turn, after its content — so with the per-turn parts out
+        of that message, the static text AND the tool schemas are one reused
+        prefix across turns instead of being re-read on every one.  The old
+        shape opened the prompt with the timestamp line, so nothing after
+        char 0 could ever be reused.
+
+        The per-turn content stays in a SYSTEM-role turn — never in or before
+        the user turn: the #1296/#1304 revert measured that recalled context
+        riding beside the live message reads as the live ask.
 
         ``images`` ride the current turn's user message (#2635) — data URIs,
         translated to ``image_url`` content parts on the wire.  History never
         carries them: a past turn reads only its text.
         """
         effective = system_prompt or self.system_prompt
-        system_content = f"{current_datetime_line(self.db)}\n\n{effective}"
 
-        messages = [LlmMessage(role=MessageRole.SYSTEM, content=system_content)]
+        messages = [LlmMessage(role=MessageRole.SYSTEM, content=effective)]
+        dynamic = self._dynamic_system_section(handles=handles)
+        if dynamic:
+            messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
 
         if history:
             for role, content in history:
@@ -2087,6 +2103,18 @@ class Agent:
 
         messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
         return messages
+
+    def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
+        """The per-turn section — the SECOND system message's content (#2745).
+
+        Everything here may change between turns without touching the reused
+        prefix: it rides its own system message behind the static one, never
+        inside it and never in the user turn.  The default is the datetime
+        anchor alone; ChatAgent adds its page hint and self-state header, the
+        Collector its holdings and run history.  ``handles`` is the run's own
+        link table, for sections that render URLs as numbered handles (#2717).
+        """
+        return current_datetime_line(self.db)
 
     # ── System prompt building (template method pattern) ─────────────────
 
@@ -2110,8 +2138,10 @@ class Agent:
 
         ``user`` is ``None`` on a fresh install where no primary sender
         is configured yet — the profile section is just omitted in that
-        case.  The timestamp is prepended by ``_build_messages`` — don't
-        include it here.
+        case.  Everything per-turn — the timestamp, and any agent's own
+        state — renders in ``_dynamic_system_section``, never here: this
+        method's output is the reused prefix (#2745) and must carry
+        nothing that changes between turns.
         """
         sections = [
             self._identity_section(),

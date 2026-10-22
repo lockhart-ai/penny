@@ -959,12 +959,14 @@ async def _configure_timetable_collection(db: Database) -> None:
     assert result.success, result.message
 
 
-async def _composed_for(collector: Collector, db: Database, name: str) -> str:
-    """The per-cycle system prompt the collector really builds for ``name`` — bound and
-    with its tools installed, exactly as ``_run_cycle`` does."""
+async def _composed_for(collector: Collector, db: Database, name: str) -> tuple[str, str]:
+    """The per-cycle system messages the collector really builds for ``name`` —
+    bound and with its tools installed, exactly as ``_run_cycle`` does.  Returns
+    (static, dynamic): the reused prefix and the per-cycle state (#2745)."""
     collector._bind(_get(db, name))
     collector._install_tools(collector.get_tools())
-    return await collector._build_system_prompt(None)
+    static = await collector._build_system_prompt(None)
+    return static, collector._dynamic_system_section()
 
 
 @pytest.mark.asyncio
@@ -994,9 +996,15 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         author="collector",
     )
 
-    composed = _normalise_stamps(await _composed_for(collector, db, "ferry-departures"))
+    static, dynamic = await _composed_for(collector, db, "ferry-departures")
+    static = _normalise_stamps(static)
+    dynamic = re.sub(
+        r"Current date and time: [^\n]*", "Current date and time: DATE", _normalise_stamps(dynamic)
+    )
 
-    assert composed == (
+    # The STATIC message — the reused prefix: the job's own words + the close
+    # instruction + the runtime rules, and nothing per-cycle (#2745).
+    assert static == (
         "You are the collector for the `ferry-departures` collection.\n"
         "Description: the dawn sailing on the north pier timetable\n"
         "\n"
@@ -1012,7 +1020,12 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         "told them: a quiet cycle is a normal outcome, not a failure.\n"
         "\n"
         f"{Collector._runtime_rules()}"
-        "\n"
+    ), f"Static system message mismatch:\n{static!r}"
+
+    # The DYNAMIC message — the clock, then the holdings (#1914), then the
+    # last-told line (#2385).
+    assert dynamic == (
+        "Current date and time: DATE\n"
         "\n"
         "## What this collection holds (newest first)\n"
         "The entries it holds right now, and the key each one is stored under.\n"
@@ -1022,7 +1035,7 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         "\n"
         "## What you last told the user\n"
         "You have never sent them anything about this collection."
-    ), f"Holdings render mismatch:\n{composed!r}"
+    ), f"Dynamic system message mismatch:\n{dynamic!r}"
 
 
 def _expected_holdings(newest_first: range, tail: str) -> str:
@@ -1034,8 +1047,6 @@ def _expected_holdings(newest_first: range, tail: str) -> str:
         for position, index in enumerate(newest_first, start=1)
     )
     return (
-        "\n"
-        "\n"
         "## What this collection holds (newest first)\n"
         "The entries it holds right now, and the key each one is stored under.\n"
         f"{body}\n"
@@ -2036,7 +2047,7 @@ async def test_run_history_section_shows_timestamped_outcomes(test_config, tmp_p
     # and the last-told line in its NEVER form: nothing this mechanism sent exists.
     section = _normalise_stamps(section)
     assert section == (
-        "\n\n## Your recent runs (newest first)\n"
+        "## Your recent runs (newest first)\n"
         "What your previous cycles did, and when — context to avoid repeating "
         "work or re-sending, not an instruction to repeat.\n"
         "1. [YYYY-MM-DD HH:MM UTC] the value was unchanged since the last observation\n"
@@ -2113,11 +2124,15 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
     collector._current_target = db.memories.get("board-games")
 
     prompt = await collector._build_system_prompt(None)
+    # The state blocks ride the DYNAMIC system message now (#2745), not the
+    # static one this test used to read.
+    dynamic = collector._dynamic_system_section()
 
     assert "## Your recent runs" not in prompt
+    assert "## Your recent runs" not in dynamic
     assert (
         "## What you last told the user\n"
-        "You have never sent them anything about this collection." in prompt
+        "You have never sent them anything about this collection." in dynamic
     )
 
 
@@ -2125,15 +2140,18 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
 async def test_collector_message_array_verbatim(test_config, tmp_path):
     """Full verbatim dump of the collector's on-wire message array.
 
-    Shows exactly what the collector model sees: the system message (date + the
+    Shows exactly what the collector model sees: the STATIC system message (the
     stored prompt verbatim + the close-with-``done()`` instruction + the fixed
-    runtime rules (#2455 naive baseline) + this collector's recent run history) and
-    the bare user turn (empty for a background agent).  Date and run timestamps are
-    normalised to placeholders; everything else is asserted char-for-char so the
-    structure is visible and drift is caught.
+    runtime rules (#2455 naive baseline) — the prefix reused across cycles) and
+    the DYNAMIC one (the clock + what the collection holds + this collector's
+    recent run history, #2745), then the bare user turn (empty for a background
+    agent).  Date and run timestamps are normalised to placeholders; everything
+    else is asserted char-for-char so the structure is visible and drift is
+    caught.
 
-    The two trailing state blocks sit in their fixed order (#1914): what the collection
-    holds — nothing, here, said plainly — then what its recent runs did."""
+    The state blocks sit in their fixed order (#1914): the clock, what the
+    collection holds — nothing, here, said plainly — then what its recent runs
+    did."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "board-games",
@@ -2159,13 +2177,9 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     system_prompt = await collector._build_system_prompt(None)
     messages = collector._build_messages("", None, system_prompt)
 
-    # ── System message: date + body + runtime-rules tail + run history ─────
-    system_text = _normalise_stamps(
-        re.sub(r"Current date and time: [^\n]*", "Current date and time: DATE", messages[0].content)
-    )
-    expected_system = (
-        "Current date and time: DATE\n"
-        "\n"
+    # ── Static system message: the reused prefix, no per-cycle content ─────
+    static_text = _normalise_stamps(messages[0].content)
+    expected_static = (
         "You are the collector for the `board-games` collection.\n"
         "Description: Strategy board games worth buying\n"
         "\n"
@@ -2188,7 +2202,18 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "be removed instead: `collection_remove(key=<key>)`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
-        "- Don't dedup manually — the store rejects duplicates on write automatically.\n"
+        "- Don't dedup manually — the store rejects duplicates on write automatically."
+    )
+    assert static_text == expected_static, (
+        f"Static system message mismatch:\n{static_text!r}\n\nvs expected:\n{expected_static!r}"
+    )
+
+    # ── Dynamic system message: clock + holdings + run history ─────────────
+    dynamic_text = _normalise_stamps(
+        re.sub(r"Current date and time: [^\n]*", "Current date and time: DATE", messages[1].content)
+    )
+    expected_dynamic = (
+        "Current date and time: DATE\n"
         "\n"
         "## What this collection holds (newest first)\n"
         "It holds nothing yet.\n"
@@ -2202,8 +2227,8 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "## What you last told the user\n"
         "You have never sent them anything about this collection."
     )
-    assert system_text == expected_system, (
-        f"System mismatch:\n{system_text!r}\n\nvs expected:\n{expected_system!r}"
+    assert dynamic_text == expected_dynamic, (
+        f"Dynamic system message mismatch:\n{dynamic_text!r}\n\nvs expected:\n{expected_dynamic!r}"
     )
 
     # ── User turn: bare (empty) — a collector runs with no user message ────
@@ -2212,8 +2237,9 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
 
 
 def _datetime_line(messages: list[LlmMessage]) -> str:
-    """The rendered 'Current date and time:' anchor line from a message array."""
-    return messages[0].content.split("\n", 1)[0]
+    """The rendered 'Current date and time:' anchor line from a message array —
+    the first line of the DYNAMIC system message (#2745)."""
+    return messages[1].content.split("\n", 1)[0]
 
 
 def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
@@ -2222,6 +2248,10 @@ def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
     — otherwise the model is handed a UTC time under a non-UTC profile and, near
     local midnight, the wrong calendar day."""
     collector, db = _make_collector(test_config, tmp_path)
+    # The clock rides the dynamic system message, whose state sections need a
+    # bound target — bind one, the way a real cycle does (#2745).
+    db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
+    collector._bind(db.memories.get("board-games"))
     db.users.save_info(
         sender="+15550001111",
         name="Ada",
@@ -2246,7 +2276,11 @@ def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
 
 def test_datetime_anchor_falls_back_to_utc_without_profile(test_config, tmp_path):
     """No profile / timezone (fresh install) → the anchor stays UTC."""
-    collector, _ = _make_collector(test_config, tmp_path)
+    collector, db = _make_collector(test_config, tmp_path)
+    # The clock rides the dynamic system message, whose state sections need a
+    # bound target — bind one, the way a real cycle does (#2745).
+    db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
+    collector._bind(db.memories.get("board-games"))
 
     line = _datetime_line(collector._build_messages("", None, "body"))
 
