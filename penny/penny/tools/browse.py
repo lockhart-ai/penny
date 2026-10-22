@@ -884,6 +884,14 @@ class BrowseTool(Tool):
         outage = False
         for number in ranked[: PennyConstants.BROWSE_MAX_PICKED_READS]:
             url = results[number - 1][1]
+            # The run itself cites the page it is about to open: the handle is
+            # assigned at pick time, before the fetch, so the page's section
+            # header carries the number the table already holds (#2735's
+            # "as it was cited" arm — the run is the one doing the citing), and
+            # the model reads a stable anchor for the page its value came from.
+            # The page's number precedes its content links, so none of theirs is
+            # displaced; the echo inside the value stays gone (#2740).
+            opened.append(f"[{self._handles.register(url)}]")
             try:
                 page = await self._read_page(url)
             except BrowseChannelUnavailableError:
@@ -894,11 +902,6 @@ class BrowseTool(Tool):
                 continue
             rendered, text = await self._extract_and_render(page, item.looking_for, call_link)
             sections.append(rendered)
-            # The picked page is one the model never named: the section header
-            # above its value names it by its ADDRESS (#2735 — the page takes no
-            # handle number), so the address is the reference the reply cites it
-            # by.  Never a newly assigned handle.
-            opened.append(page.url or url)
             if text and await self._picker.carries_any(
                 looking_for=item.looking_for, extract_text=text, call_link=call_link
             ):

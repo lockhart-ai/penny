@@ -127,6 +127,19 @@ _SEARCH_PAGES = {
     _PAGE_URL_2: _PAGE_TEXT_2,
 }
 
+# A picked page whose BODY carries a content link — the numbering test's fixture:
+# the page's own handle takes one number, its first content link the next.
+_LINKED_TARGET_TEXT = (
+    "Title: Lot 42 — provenance notes\n"
+    "The lot's paperwork is catalogued separately.\n"
+    "[Lot 42 catalogue](https://auctions.example/catalogue)\n"
+)
+_SEARCH_PAGES_LINKED_TARGET = {
+    _SEARCH_PAGE_URL: _TWO_RESULT_SEARCH_TEXT,
+    _PAGE_URL: _LINKED_TARGET_TEXT,
+    _PAGE_URL_2: _PAGE_TEXT_2,
+}
+
 # A PAGE READ carrying standalone markdown links — the anchor a FAILED extraction hands
 # back (#2141), since the body itself never enters the conversation.
 _CATALOGUE_URL = "https://auctions.example/catalogue"
@@ -928,7 +941,8 @@ async def test_search_item_picks_and_reads_in_one_call(tmp_path):
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
         f"Looking for: {_INSTRUCTION}."
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert cast("_StubPicker", tool._picker).rank_calls == [
         {"query": _SEARCH_QUERY, "looking_for": _INSTRUCTION}
@@ -938,8 +952,36 @@ async def test_search_item_picks_and_reads_in_one_call(tmp_path):
     assert result.source_urls == [_PAGE_URL]
     # The narration names the search and the page actually opened — never the
     # unopened results.  The page is one the model never named, so it narrates
-    # as the address its section header carries (#2735), never a new handle.
-    assert result.narration == f'You searched for "{_SEARCH_QUERY}" and opened {_PAGE_URL}'
+    # as the handle the run assigned it at pick time — the same number the
+    # section header carries.
+    assert result.narration == f'You searched for "{_SEARCH_QUERY}" and opened [1]'
+
+
+@pytest.mark.asyncio
+async def test_picked_page_takes_its_handle_before_its_content_links(tmp_path):
+    """A picked page is registered at pick time: its section header carries the
+    handle the table already holds — the run's own citation of the page it is
+    about to open — and its first content link takes the NEXT number, so no
+    content link's number is displaced (#2735's as-cited arm; #2740's pairing).
+    The model reads a stable anchor for the page its value came from."""
+    db = _make_db(tmp_path)
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES_LINKED_TARGET))
+    tool._picker = cast("ResultPicker", _StubPicker([PickResult(PickOutcome.RANKED, [1])]))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1]" in result.message
+    # The page's content link took the next number, not the page's own.  (The
+    # successful extract render carries the value alone; the content links show
+    # in the table and on a failure render's links clause.)
+    assert tool._handles.mapping() == {
+        1: _PAGE_URL,
+        2: "https://auctions.example/catalogue",
+    }
+    assert result.narration == f'You searched for "{_SEARCH_QUERY}" and opened [1]'
 
 
 @pytest.mark.asyncio
@@ -963,9 +1005,10 @@ async def test_search_item_falls_through_when_the_pick_carried_none(tmp_path):
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
         f"Looking for: {_INSTRUCTION}."
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert result.success is True
     assert result.source_urls == [_PAGE_URL, _PAGE_URL_2]
@@ -1109,7 +1152,8 @@ async def test_search_item_degraded_picker_draw_picks_from_the_list(tmp_path):
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
         f"Looking for: {_INSTRUCTION}."
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     # Two model calls: the pick draw, then the page's extraction draw.
     assert len(model.requests) == 2
