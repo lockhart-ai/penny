@@ -48,12 +48,13 @@ _BARE_URL_RE = re.compile(r"https?://[^\s]+")
 # validator applies to a reply's URLs, declared here for the bare pass.
 _PROSE_TAIL_MARKS = ".,;:!?*_"
 _PAIR_CLOSER = {")": "(", "]": "[", "}": "{"}
-# A handle citation — four forms: bare ``[12]``; the ``[text][12]`` form the
-# page reader itself renders; and the two hybrids a model composes when it
+# A handle citation — five forms: bare ``[12]``; the ``[text][12]`` form the
+# page reader itself renders; the two hybrids a model composes when it
 # treats the handle as a markdown link — ``[12](https://site.example)`` (the
 # number as link text, a site root it knows as the target — the stored-digest
 # sample that stored ``story-url(site-root)``) and ``[text](12)`` (the number
-# written as the target).  The handle IS the address, so a parenthesized or
+# written as the target); and a list form ``[4, 6]`` citing several handles in
+# one bracket.  The handle IS the address, so a parenthesized or
 # bracketed rest glued to a citation is part of the citation and expands away
 # with it.  ``[12]`` alone is ambiguous with prose ("[12] people said"), so
 # expansion rewrites only numbers the table actually holds, and the dangling
@@ -62,8 +63,10 @@ _HANDLE_RE = re.compile(
     r"\[([^\]]*)\]\[(\d+)\]"
     r"|\[(\d+)\]\(([^)]*)\)"
     r"|\[([^\]]+)\]\((\d+)\)"
+    r"|\[(\d+(?:,\s*\d+)+)\]"
     r"|\[(\d+)\]"
 )
+_MULTI_CITATION_SEPARATOR = ", "
 # A browse section's own header line — the page's address (or an error's failed
 # one) after the header text.  Looked up, never registered (#2735): the page
 # itself takes no number, so its first content link keeps the next one.
@@ -73,8 +76,21 @@ _BROWSE_HEADER_URL_RE = re.compile(r"^(## browse(?: error| dropped)?: )(https?:/
 def _cited_number(match: re.Match) -> int:
     """The handle a citation form cites — the number in its brackets or its
     target, never a link's label text or a discarded hybrid target."""
-    text, linked, hybrid_num, _target, label, target_num, bare = match.groups()
+    text, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = match.groups()
     return int(next(g for g in (linked, hybrid_num, target_num, bare) if g is not None))
+
+
+def _get_cited_numbers(match: re.Match) -> list[int]:
+    """All handle numbers a citation form cites — a list of numbers, one for
+    single citation forms, multiple for the list form ``[4, 6]``."""
+    text, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = match.groups()
+    if multi_numbers is not None:
+        # [4, 6, 8] form — parse comma-separated numbers
+        number_strs = [n.strip() for n in multi_numbers.split(",")]
+        return [int(n) for n in number_strs]
+    # Single number forms
+    num = int(next(g for g in (linked, hybrid_num, target_num, bare) if g is not None))
+    return [num]
 
 
 def _address_only(url: str) -> str:
@@ -199,16 +215,17 @@ class HandleTable:
     def dangling(self, text: str) -> list[int]:
         """The handle numbers ``text`` cites that the table does not hold, in
         order, without repeats.  Every citation form counts — including the
-        hybrids, where the number stands in the brackets or the target alike.
-        Empty while the table itself is empty — with no links rendered, a
-        bracketed number is prose, not a failed citation."""
+        hybrids, where the number stands in the brackets or the target alike,
+        and every number in a list form.  Empty while the table itself is empty
+        — with no links rendered, a bracketed number is prose, not a failed
+        citation."""
         if not self._by_number:
             return []
         seen: list[int] = []
         for match in _HANDLE_RE.finditer(text):
-            number = _cited_number(match)
-            if number not in self._by_number and number not in seen:
-                seen.append(number)
+            for number in _get_cited_numbers(match):
+                if number not in self._by_number and number not in seen:
+                    seen.append(number)
         return seen
 
     def dangling_note(self, numbers: list[int]) -> str:
@@ -252,7 +269,26 @@ class HandleTable:
         return f"{prefix}[{number}]" if number is not None else match.group(0)
 
     def _expand_sub(self, match: re.Match) -> str:
-        text, linked, hybrid_num, _hybrid_target, label, target_num, bare = match.groups()
+        text, linked, hybrid_num, _hybrid_target, label, target_num, multi_numbers, bare = match.groups()
+        if multi_numbers is not None:
+            # ``[4, 6]`` — a list of handles. Each held number becomes its URL,
+            # joined by the separator; unheld numbers stay as ``[n]``. If none are
+            # held, the list is left unchanged.
+            number_strs = [n.strip() for n in multi_numbers.split(",")]
+            expanded_parts = []
+            has_any_held = False
+            for num_str in number_strs:
+                num = int(num_str)
+                url = self._by_number.get(num)
+                if url is not None:
+                    expanded_parts.append(url)
+                    has_any_held = True
+                else:
+                    expanded_parts.append(f"[{num}]")
+            # If no numbers are held, return the original unchanged.
+            if not has_any_held:
+                return match.group(0)
+            return _MULTI_CITATION_SEPARATOR.join(expanded_parts)
         if hybrid_num is not None:
             # ``[12](target)`` — the whole citation expands to the URL: the
             # handle is the address, and a target glued after it (a site root

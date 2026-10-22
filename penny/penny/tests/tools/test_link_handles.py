@@ -206,3 +206,61 @@ def test_empty_table_is_falsy():
     assert not table
     table.register("https://a.example/x")
     assert table
+
+
+def test_expand_multi_cite_two_numbers_both_held():
+    """A list citation [1, 2] with both numbers held expands each to its URL
+    joined by the separator."""
+    table = HandleTable()
+    table.register("https://example.com/story-vancouver")
+    table.register("https://example.com/story-transit")
+    assert table.expand("The ferry strike in Vancouver [1, 2].") == (
+        "The ferry strike in Vancouver https://example.com/story-vancouver, https://example.com/story-transit."
+    )
+
+
+def test_expand_multi_cite_three_numbers_all_held():
+    """A three-number list citation with all numbers held expands each to its
+    URL, joined by the separator."""
+    table = HandleTable()
+    table.register("https://example.com/article-background")
+    table.register("https://example.com/article-context")
+    table.register("https://example.com/article-analysis")
+    assert table.expand("Read [1, 2, 3] for background.") == (
+        "Read https://example.com/article-background, https://example.com/article-context, https://example.com/article-analysis for background."
+    )
+
+
+def test_expand_multi_cite_mixed_held_and_unheld():
+    """A list citation with one held number and one unheld expands the held one
+    and keeps the unheld as [n]."""
+    table = HandleTable()
+    table.register("https://example.com/story-details")
+    assert table.expand("See [1, 6] for details.") == "See https://example.com/story-details, [6] for details."
+    assert table.dangling("[1, 6]") == [6]
+
+
+def test_expand_multi_cite_none_held_unchanged():
+    """A list citation with no held numbers is left exactly as written."""
+    table = HandleTable()
+    table.register("https://example.com/story-transit")
+    assert table.expand("The transit report [4, 6] shows trends.") == (
+        "The transit report [4, 6] shows trends."
+    )
+    assert table.dangling("[4, 6]") == [4, 6]
+
+
+def test_dangling_multi_cite_all_unheld_in_order():
+    """dangling() reports all unheld numbers in a list, in order, without
+    repeats."""
+    table = HandleTable()
+    table.register("https://example.com/story-transit")
+    assert table.dangling("[4, 6, 8]") == [4, 6, 8]
+
+
+def test_dangling_multi_cite_with_repeats_deduplicated():
+    """dangling() on a list with repeats reports each unheld number only once,
+    in first-appearance order."""
+    table = HandleTable()
+    table.register("https://example.com/story-transit")
+    assert table.dangling("[4, 6, 4]") == [4, 6]
