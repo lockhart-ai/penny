@@ -1434,7 +1434,13 @@ def test_render_tool_call_names_the_micro_context_browse_step():
         render_tool_call("browse", {"items": [{"query": _PAGE_URL, "looking_for": _INSTRUCTION}]})
         == expected
     )
-    # A row recorded before the items shape keeps its recorded-queries render.
+    # A row recorded before the items shape renders in the CURRENT dialect: the
+    # old queries+extract call IS one item per query with looking_for=extract.
+    expected = (
+        "browse(items=[('https://auctions.example/lot/42' looking for 'the current bid amount')])"
+    )
+    assert render_tool_call("browse", {"queries": [_PAGE_URL], "extract": _INSTRUCTION}) == expected
+    # A bare queries row (older than the required extract) keeps its plain render.
     assert render_tool_call("browse", {"queries": [_PAGE_URL]}) == (
         "browse(['https://auctions.example/lot/42'])"
     )

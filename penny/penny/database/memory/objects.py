@@ -1025,8 +1025,15 @@ def render_tool_call(name: str, args: object) -> str:
     if name == PennyConstants.SEND_MESSAGE_TOOL_NAME:
         return f"send_message({fields.get('content', '')!r})"
     if name == PennyConstants.BROWSE_TOOL_NAME:
-        # The items shape (#2718) renders each item's query and its looking-for;
-        # a row recorded before the items shape keeps its old queries render.
+        # The items shape (#2718) renders each item's query and its looking-for.
+        # A row recorded before the items shape renders in the CURRENT dialect
+        # too — the old queries+extract call IS one item per query with
+        # looking_for=extract, and rendering it in the dead dialect taught the
+        # reading model to emit the dead shape: measured on #2718's scoped run,
+        # 90 of 455 browse calls arrived in the old shape, each an arg-gate
+        # rejection plus a recovery round trip.  A bare queries row (older than
+        # the required extract) keeps its plain render — it has no looking-for
+        # to translate.
         if "items" in fields:
             rendered = ", ".join(
                 f"({item.get('query', '')!r} looking for {item.get('looking_for', '')!r})"
@@ -1037,7 +1044,8 @@ def render_tool_call(name: str, args: object) -> str:
         queries = fields.get("queries", list(fields.values()))
         extract = fields.get("extract")
         if extract:
-            return f"browse(queries={queries!r}, extract={extract!r})"
+            rendered = ", ".join(f"({q!r} looking for {extract!r})" for q in queries)
+            return f"browse(items=[{rendered}])"
         return f"browse({queries!r})"
     # A dict (incl. the empty dict of an argless call, e.g. ``done()``, #1569)
     # renders its fields; a non-dict / malformed args string shows its repr so the
