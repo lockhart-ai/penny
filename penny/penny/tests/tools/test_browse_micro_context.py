@@ -52,7 +52,7 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools import ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.base import Tool
-from penny.tools.browse import _SEARCH_NONE_BODY, BrowseTool
+from penny.tools.browse import BrowseTool
 from penny.tools.browse_picker import PickOutcome, PickResult, ResultPicker
 from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.micro_context import (
@@ -1053,30 +1053,67 @@ async def test_search_item_extraction_failure_falls_through(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_search_item_picker_says_none_reads_nothing(tmp_path):
-    """A "none of these" ranking reads nothing: the search section says so
-    honestly, and no extraction draw is spent on a result the picker rejected."""
+async def test_search_item_none_answer_still_reads_the_top_ranked(tmp_path):
+    """A "none of these" ANSWER never skips reading: the result options' own
+    probabilities rank them, the top one is read, and the carry question decides
+    the fall-through.  A page's title cannot show what only its page carries —
+    an address, a district — so reading nothing on a none left the ask the flow
+    exists to answer unanswered (measured: four samples told the user no shop
+    was in the district while one was)."""
     db = _make_db(tmp_path)
-    model = MockLlmClient()
+    model = _responds_routed({_MARKER_1: _EXTRACTED_VALUE, _MARKER_2: _EXTRACTED_VALUE_2})
     tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
-    tool._picker = cast("ResultPicker", _StubPicker([PickResult(PickOutcome.NONE, [])]))
+    # The picker answered none, but result 2's probability outranks result 1's.
+    tool._picker = ResultPicker(
+        _StubDecisionClient(
+            [
+                # The pick: none — but result 2's probability outranks result 1's.
+                DecisionAnswer(choice="none", probabilities={"1": 0.2, "2": 0.8}),
+                # The carry question on result 2's extract: yes → stop.
+                DecisionAnswer(choice="yes", probabilities={}),
+            ]
+        ),
+        cast(Any, model),
+    )
 
     result = await tool.execute(
         CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
     )
 
-    assert result.message == (
-        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
-        f"Looking for: {_INSTRUCTION}.\n{_SEARCH_NONE_BODY}\n"
-        'You searched for "antique compass auctions". These are the results, titles and '
-        "link numbers only. You must read them to answer the user:\n\n"
-        "1. antique compass auctions — results [1]\n"
-        "2. antique compass auctions — more results [2]"
-        f"\n\n{PAGE_CITATION_LINE}"
+    # Result 2 read first (higher probability) — its handle is [1], read order.
+    assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}" in (
+        result.message
     )
-    assert model.requests == []
     assert result.success is True
-    assert result.source_urls == []
+    assert result.source_urls == [_PAGE_URL_2]
+    assert result.narration == f'You searched for "{_SEARCH_QUERY}" and opened [1]'
+
+
+@pytest.mark.asyncio
+async def test_search_item_degraded_none_reads_the_declared_order(tmp_path):
+    """The degraded arm's none answer reads the top result too: no probabilities
+    ride a plain draw, so the declared order — the search page's own ranking —
+    is the ranking."""
+    db = _make_db(tmp_path)
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        content = request["messages"][-1]["content"]
+        if "picking which search result" in content:
+            return LlmResponse(message=LlmMessage(role="assistant", content="none"))
+        return LlmResponse(message=LlmMessage(role="assistant", content=_EXTRACTED_VALUE))
+
+    model = MockLlmClient()
+    model.set_response_handler(handler)
+    tool = _multi_extract_tool(db, model, _provider_by_url(_SEARCH_PAGES))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
+    )
+
+    assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}" in (
+        result.message
+    )
+    assert result.source_urls == [_PAGE_URL]
 
 
 @pytest.mark.asyncio

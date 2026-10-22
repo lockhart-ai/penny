@@ -122,7 +122,6 @@ _DEAD_DIALECT_TRANSLATION = (
     "That call, translated, is: browse(items={items}) — pass it like that."
 )
 _SEARCH_LOOKING_LINE = "Looking for: {looking_for}."
-_SEARCH_NONE_BODY = "None of the results looked likely to carry it, so nothing was read."
 # The picker's honest escape (no usable answer) renders the trimmed results list
 # under the search section's own header — the one shape where the model still
 # sees titles and link handles, to pick from itself in a follow-up call.
@@ -809,11 +808,15 @@ class BrowseTool(Tool):
     async def _run_search_item(self, item: BrowseItem, call_link: CallLink) -> _ItemOutcome:
         """One search item: run the search, rank its results behind the tool
         boundary, and read the ranked results — falling through while a read
-        finds nothing it was asked for, up to ``BROWSE_MAX_PICKED_READS``.  The
-        item's section comes first (what it was looking for, what the call did);
-        each read's page section follows it, carrying what that page held.  A
-        picker that answered nothing usable renders the results list as the
-        escape — the one shape where the model still sees titles and handles."""
+        finds nothing it was asked for, up to ``BROWSE_MAX_PICKED_READS``.  A
+        "none" ANSWER reads the top-ranked result anyway (a page's title cannot
+        show what only its page carries — an address, a district — so reading
+        nothing on a none left the ask the flow exists to answer unanswered);
+        the carry question decides the fall-through.  The item's section comes
+        first (what it was looking for); each read's page section follows it,
+        carrying what that page held.  A picker that answered nothing usable
+        renders the results list as the escape — the one shape where the model
+        still sees titles and handles."""
         search_url = f"{self._search_url}{urllib.parse.quote(item.query)}"
         try:
             page = await self._read_page(search_url)
@@ -841,17 +844,6 @@ class BrowseTool(Tool):
         )
         if pick.outcome is PickOutcome.FAILED:
             body = f"{looking_line}\n{_render_search_list(item.query, results, self._handles)}"
-            return _ItemOutcome(sections=[f"{header}\n{body}"])
-        if pick.outcome is PickOutcome.NONE:
-            # "None of these" reads nothing — but the model is still left the
-            # results list: the picker's none is one model's judgement, and the
-            # measured alternative was a follow-up search reworded until the
-            # same page came back with no anchor to act on (n≤1).  The list is
-            # the honest state: nothing was read, and here is what exists.
-            body = (
-                f"{looking_line}\n{_SEARCH_NONE_BODY}\n"
-                f"{_render_search_list(item.query, results, self._handles)}"
-            )
             return _ItemOutcome(sections=[f"{header}\n{body}"])
         sections, opened, outage = await self._read_ranked(item, results, pick.ranked, call_link)
         # No "Read:" line here: each page tried renders its own section directly

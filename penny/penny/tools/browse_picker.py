@@ -94,8 +94,11 @@ _ANSWER_NONE_RE = re.compile(r"^\W*none\W*$", re.IGNORECASE)
 
 class PickOutcome(StrEnum):
     """The enumerated outcome of one ranking — a closed set the tool renders one
-    way each.  ``FAILED`` is the honest escape (no usable answer): the tool then
-    renders the results list itself, so the model keeps the anchors."""
+    way each.  ``NONE`` is an empty result list outright — nothing to rank,
+    nothing read.  ``FAILED`` is the honest escape (no usable answer): the tool
+    then renders the results list itself, so the model keeps the anchors.  A
+    "none" ANSWER is neither: it ranks the results by their probabilities and
+    reads the top one (a page's title cannot show what only its page carries)."""
 
     RANKED = "ranked"
     NONE = "none"
@@ -136,7 +139,8 @@ class ResultPicker:
         """Rank one search's results.  ``results`` is ``(number, title, url)``
         in declared order; the returned numbers index that order.  An empty
         result list is :attr:`PickOutcome.NONE` outright — there is nothing to
-        ask about."""
+        ask about, and nothing was read.  A "none" ANSWER never lands here:
+        it reads the top-ranked result like any other answer."""
         if not results:
             return PickResult(PickOutcome.NONE, [])
         if self._decision_client is not None:
@@ -189,9 +193,18 @@ class ResultPicker:
         except DecisionError as error:
             logger.warning("browse picker ranking failed: %s", error)
             return PickResult(PickOutcome.FAILED, [])
-        if answer.choice == _NONE_OPTION:
-            return PickResult(PickOutcome.NONE, [])
         known = {number for number, _, _ in results}
+        if answer.choice == _NONE_OPTION:
+            # A "none" answer never skips reading (measured, #2718: for
+            # "camera shops in Pearl District Portland" the picker answered
+            # none — the result titles don't name a district, and a page's
+            # title can't show what only its page carries, like an address —
+            # so reading nothing left the ask unanswered that the flow exists
+            # to answer).  The result options' own probabilities rank them;
+            # the carry question decides the fall-through.  No probabilities
+            # reported: the declared order, the search page's own ranking.
+            declared = [n for n, _, _ in results]
+            return PickResult(PickOutcome.RANKED, _probability_rank(answer, known, declared))
         try:
             chosen = int(answer.choice)
         except ValueError:
@@ -237,6 +250,12 @@ class ResultPicker:
             )
             pick = _parse_pick_answer(response.content or "", {n for n, _, _ in results})
             if pick is not None:
+                if pick.outcome is PickOutcome.NONE:
+                    # Same ruling as the primary arm: a none answer reads the
+                    # top result anyway.  The degraded draw carries no
+                    # probabilities, so the declared order — the search page's
+                    # own ranking — is the ranking.
+                    return PickResult(PickOutcome.RANKED, [n for n, _, _ in results])
                 return pick
             logger.warning(
                 "browse picker draw unusable — discarding and re-rolling %d/%d",
@@ -244,6 +263,14 @@ class ResultPicker:
                 _DEGRADED_PICK_ATTEMPTS,
             )
         return PickResult(PickOutcome.FAILED, [])
+
+
+def _probability_rank(answer: DecisionAnswer, known: set[int], declared: list[int]) -> list[int]:
+    """Every result option ranked by its own probability, best first — the
+    ranking a "none" answer reads from.  An option the endpoint gave no
+    probability for ranks after the ones it did, in declared order."""
+    probabilities = answer.probabilities or {}
+    return sorted(known, key=lambda n: (-probabilities.get(str(n), 0.0), declared.index(n)))
 
 
 def _ranked_numbers(answer: DecisionAnswer, chosen: int, known: set[int]) -> list[int]:
