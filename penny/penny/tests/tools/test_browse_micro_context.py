@@ -1015,7 +1015,12 @@ async def test_search_item_picker_says_none_reads_nothing(tmp_path):
 
     assert result.message == (
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
-        f"Looking for: {_INSTRUCTION}.\n{_SEARCH_NONE_BODY}"
+        f"Looking for: {_INSTRUCTION}.\n{_SEARCH_NONE_BODY}\n"
+        'You searched for "antique compass auctions". These are the results, titles and '
+        "link numbers only. You must read them to answer the user:\n\n"
+        "1. antique compass auctions — results [1]\n"
+        "2. antique compass auctions — more results [2]"
+        f"\n\n{PAGE_CITATION_LINE}"
     )
     assert model.requests == []
     assert result.success is True
@@ -1596,6 +1601,35 @@ async def test_micro_context_blank_draw_is_discarded_and_rerolled(tmp_path, mock
         rows = list(session.exec(select(PromptLog)).all())
     assert len(rows) == 3
     assert all(row.discard_reason == "empty" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_micro_context_letterless_value_is_not_poison(db: Database):
+    """A letterless numeric value is a valid extraction, not an empty draw: the
+    chat loop's letter-counting emptiness rule is a reply rule, and an
+    extraction's short numeric answer (a price read off a handle-rendered page:
+    ``[1] $129``) carries none — measured on #2718's scoped run, such a draw was
+    discarded three times as "empty".  A blank draw is still poison; a value
+    that says what it found in numbers is a value."""
+    model = _responds("[1] $129")
+    tool = BrowseTool(
+        max_calls=1,
+        db=db,
+        embedding_client=cast(Any, MockLlmClient()),
+        model_client=cast(Any, model),
+        author="widget-watch",
+        handles=HandleTable(),
+    )
+    tool.set_browse_provider(_provider(_PAGE_TEXT))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION)]
+    )
+
+    assert f"{_INSTRUCTION}: [1] $129" in result.message
+    assert "Couldn't extract" not in result.message
+    # One draw, no rerolls: the answer was accepted first time.
+    assert len(model.requests) == 1
 
 
 @pytest.mark.asyncio

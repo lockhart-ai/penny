@@ -41,7 +41,6 @@ from penny.llm.models import LlmMessage, LlmResponse
 from penny.text_validity import (
     has_leaked_harmony_envelope,
     is_degenerate_run,
-    is_empty_draw,
 )
 from penny.validation.conditions import ConditionKey
 
@@ -341,14 +340,23 @@ class MicroContext:
         clean: a leaked Harmony envelope, a degeneration collapse, or a blank
         draw (#2615: browse-extract has no shape left to catch an empty payload,
         so it is screened here instead) — the same transport artifacts the
-        agent-loop reroll guard discards, plus the empty-draw check it also
-        uses.  The named condition is what a discarded draw's own ``promptlog``
-        row carries (#2702)."""
+        agent-loop reroll guard discards.  The named condition is what a
+        discarded draw's own ``promptlog`` row carries (#2702).
+
+        The blank check is BLANK-ONLY, deliberately narrower than the chat
+        loop's ``is_empty_draw``: that one counts LETTERS (a reply carrying
+        fewer than ``MIN_RESPONSE_LETTERS`` is not a conversational answer),
+        which an extraction's short numeric value is not bound by — measured
+        (#2718's scoped run), a handle-rendered page's price read drew back
+        ``[1] $129``: a perfectly good answer with no letters in it, discarded
+        three times as "empty" because the page's URL the draw once echoed
+        (#2648) had been rendered as a handle.  A draw that says nothing is
+        ``text.strip()`` empty; a value that says it in numbers is a value."""
         if has_leaked_harmony_envelope(text):
             return ConditionKey.TOOL_CALL_LEAK
         if is_degenerate_run(text):
             return ConditionKey.DEGENERATE_OUTPUT
-        if is_empty_draw(text):
+        if not text.strip():
             return ConditionKey.EMPTY
         return None
 

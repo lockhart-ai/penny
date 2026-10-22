@@ -643,10 +643,12 @@ class PennyConstants:
     BROWSE_PICK_AGENT_NAME = "browse-pick"
     BROWSE_PICK_PROMPT_TYPE = "browse_pick"
     # How many ranked results one search item reads before it gives up (#2718):
-    # the picker's top pick plus one fall-through read.  A picked page that
-    # carried none of what was asked (or whose extraction never came back
-    # usable) falls through to the next ranked result, up to this.
-    BROWSE_MAX_PICKED_READS = 2
+    # the picker's picks, falling through while a read finds nothing it was
+    # asked for.  Sized to the lookup cases' own shape — a search page carries
+    # up to four results and the requirement can sit on a lower-ranked one
+    # (the settling page ranked third on the measured lookup), so two reads
+    # stopped short of the answer the list held.
+    BROWSE_MAX_PICKED_READS = 4
     # The longest extract value that enters the main loop (#2718).  A longer
     # value is cut at the last line boundary under this and the render says how
     # much was left out, with the fetch handle to the stored full page.

@@ -815,7 +815,16 @@ class BrowseTool(Tool):
             body = f"{looking_line}\n{_render_search_list(item.query, results, self._handles)}"
             return _ItemOutcome(sections=[f"{header}\n{body}"])
         if pick.outcome is PickOutcome.NONE:
-            return _ItemOutcome(sections=[f"{header}\n{looking_line}\n{_SEARCH_NONE_BODY}"])
+            # "None of these" reads nothing — but the model is still left the
+            # results list: the picker's none is one model's judgement, and the
+            # measured alternative was a follow-up search reworded until the
+            # same page came back with no anchor to act on (n≤1).  The list is
+            # the honest state: nothing was read, and here is what exists.
+            body = (
+                f"{looking_line}\n{_SEARCH_NONE_BODY}\n"
+                f"{_render_search_list(item.query, results, self._handles)}"
+            )
+            return _ItemOutcome(sections=[f"{header}\n{body}"])
         sections, opened, outage = await self._read_ranked(item, results, pick.ranked, call_link)
         # ``opened`` already holds the pages' handle refs (assigned at each
         # read's render) — the same form the narration names them in.
