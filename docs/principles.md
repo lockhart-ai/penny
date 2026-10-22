@@ -33,6 +33,12 @@ Quotes are the code owner's own words.
   slower than an eval provider: every thousand thinking tokens is tens of seconds of the
   user waiting. A step that isn't reasoning, such as reading a page, runs without thinking,
   and a token budget only bounds the waste; it never makes minutes acceptable.
+- **Gemma is the commander; the tools do the reasoning.** Gemma holds a light context and a
+  small set of well-laid-out tools, and passes small pieces of information between them. The
+  tools carry the work: deterministic logic first, then fast micro-contexts (a decision model,
+  or the model with thinking off). The commander is the slowest step on the machine, so every
+  token in its context earns its place, and a step it shouldn't have to coordinate is combined
+  inside a tool.
 - **Single user, security first.** One person, many devices, one conversation. Permissions
   start at zero, and untrusted content never shares a context with tools and sensitive data.
 - **The whole design in one sentence:** *"the model chooses the next tool stochastically
@@ -299,3 +305,18 @@ The eval cases are where the code owner states what Penny should do. The contrac
    - A reproducing case that passes once the fix lands stays in the suite and is never deleted
      for being green.
    - A case whose failure an earlier change already fixed still lands as the guard.
+
+## 5. How a change is judged
+
+Four questions, all of them, for every change to Penny:
+
+1. **Does the model keep its freedom to choose its actions?**
+2. **Does it remove a failure, or a whole class of them?**
+3. **Is it faster?**
+4. **Does the user get what they asked for?**
+
+**Judge the outcome, not the route.** *"i asked gemma for something, did i get what i want
+back, regardless of the internal sequencing. if i did get what i asked for back, then gemma
+succeeded."* When the user gets what they asked for (a true answer from real sources, the
+store as they meant it, fast enough to chat), the turn succeeded, whatever tools ran in
+whatever order. The route is read to diagnose a bad outcome, never to grade a good one.
