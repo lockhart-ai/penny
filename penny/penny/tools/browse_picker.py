@@ -51,12 +51,25 @@ _NONE_OPTION = "none"
 _NONE_CRITERION = "none of these results is likely to carry it"
 
 # The fall-through question (#2718, the code owner's ruling): after each picked
-# read, does the extract carry any of what was looked for?  A "no" (or an
+# read, did the page turn out to have any of what was looked for?  A "no" (or an
 # extraction that never came back usable) reads the next ranked result.
-_CARRIES_INSTRUCTIONS = "Does this extract carry any of what was looked for?"
+#
+# The wording asks the decider to READ THE EXTRACT and report what it says,
+# with criteria that name the two things an extract can say (found it / the
+# page does not have it).  The first cut asked "does this extract carry any of
+# what was looked for?" — on the measured failing state (looking for an adult
+# ticket price, the extract answering "[1] — no current price for an adult
+# ticket on the page.") the small decision model answered YES at 0.69: it keyed
+# on the words the two texts share, not on what the extract says.  This wording
+# answers no at 0.98 on that state and holds all four replayed controls (a
+# carrying price extract 0.97, a carrying service extract 0.95, two none
+# extracts 0.95/0.98).
+_CARRIES_INSTRUCTIONS = (
+    "Read what the extract says. Did the page turn out to have any of what was looked for?"
+)
 _CARRIES_CRITERIA = {
-    "yes": "the extract carries some of what was looked for",
-    "no": "the extract carries none of what was looked for",
+    "yes": "the extract reports finding it",
+    "no": "the extract reports the page does not have it",
 }
 
 # The degraded arm's draw prompt — the same question in plain words, answered
