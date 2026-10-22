@@ -81,6 +81,8 @@ from penny.tools.base import Tool
 from penny.tools.memory_tools import MemoryMetadataTool, format_entries
 from penny.tools.models import ToolResult
 
+_HEADLINES_ASK = "the top 3 news headlines with their titles and URLs"
+
 pytestmark = pytest.mark.eval
 
 _FAMILY = "standing-collection-operations"
@@ -822,8 +824,16 @@ def _seed_world(db: Database) -> None:
             (
                 "browse",
                 {
-                    "queries": ["https://www.npr.org", "https://www.theguardian.com"],
-                    "extract": "the top 3 news headlines with their titles and URLs",
+                    "items": [
+                        {
+                            "query": "https://www.npr.org",
+                            "looking_for": _HEADLINES_ASK,
+                        },
+                        {
+                            "query": "https://www.theguardian.com",
+                            "looking_for": _HEADLINES_ASK,
+                        },
+                    ]
                 },
                 ToolResult(
                     message=_BROWSE_LOG_ENTRIES[1],
@@ -834,8 +844,12 @@ def _seed_world(db: Database) -> None:
             (
                 "browse",
                 {
-                    "queries": ["https://www.aljazeera.com"],
-                    "extract": "the top 3 news headlines with their titles and URLs",
+                    "items": [
+                        {
+                            "query": "https://www.aljazeera.com",
+                            "looking_for": _HEADLINES_ASK,
+                        }
+                    ]
                 },
                 ToolResult(
                     message=_BROWSE_LOG_ENTRIES[2],
@@ -855,13 +869,24 @@ def _seed_world(db: Database) -> None:
             (
                 "browse",
                 {
-                    "queries": [
-                        "https://www.npr.org",
-                        "https://www.theguardian.com",
-                        "https://www.aljazeera.com",
-                        "https://www.dw.com",
-                    ],
-                    "extract": "the top 3 news headlines with their titles and URLs",
+                    "items": [
+                        {
+                            "query": "https://www.npr.org",
+                            "looking_for": _HEADLINES_ASK,
+                        },
+                        {
+                            "query": "https://www.theguardian.com",
+                            "looking_for": _HEADLINES_ASK,
+                        },
+                        {
+                            "query": "https://www.aljazeera.com",
+                            "looking_for": _HEADLINES_ASK,
+                        },
+                        {
+                            "query": "https://www.dw.com",
+                            "looking_for": _HEADLINES_ASK,
+                        },
+                    ]
                 },
                 ToolResult(
                     message=_BROWSE_LOG_ENTRIES[0],
@@ -872,8 +897,12 @@ def _seed_world(db: Database) -> None:
             (
                 "browse",
                 {
-                    "queries": ["https://www.dw.com"],
-                    "extract": "the top 3 news headlines with their titles and URLs",
+                    "items": [
+                        {
+                            "query": "https://www.dw.com",
+                            "looking_for": _HEADLINES_ASK,
+                        }
+                    ]
                 },
                 ToolResult(
                     message=_BROWSE_LOG_ENTRIES[3],
@@ -905,13 +934,22 @@ def _seed_world(db: Database) -> None:
         call_id="call-seeded-search",
         tool="browse",
         arguments={
-            "queries": [
-                "RX 9070 XT specifications VRAM",
-                "running local LLMs on RX 9070 XT dual cards",
-            ],
-            "extract": (
-                "the two cards' memory sizes and what running large models on a pair of them takes"
-            ),
+            "items": [
+                {
+                    "query": "RX 9070 XT specifications VRAM",
+                    "looking_for": (
+                        "the two cards' memory sizes and what running large models on a pair "
+                        "of them takes"
+                    ),
+                },
+                {
+                    "query": "running local LLMs on RX 9070 XT dual cards",
+                    "looking_for": (
+                        "the two cards' memory sizes and what running large models on a pair "
+                        "of them takes"
+                    ),
+                },
+            ]
         },
         result=ToolResult(
             message=_EX0_BROWSE_BODY,
@@ -927,8 +965,14 @@ def _seed_world(db: Database) -> None:
         call_id="call-seeded-bench",
         tool="browse",
         arguments={
-            "queries": [_EX1_BROWSE_URL],
-            "extract": ("the token-per-second rates and the models they were measured on"),
+            "items": [
+                {
+                    "query": _EX1_BROWSE_URL,
+                    "looking_for": (
+                        "the token-per-second rates and the models they were measured on"
+                    ),
+                }
+            ]
         },
         result=ToolResult(message=_EX1_BROWSE_BODY, success=True, source_urls=[_EX1_BROWSE_URL]),
         reply=_EX1_REPLY,

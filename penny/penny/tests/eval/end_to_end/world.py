@@ -221,7 +221,7 @@ def seed_known_routine(
 
     conversation: list[dict] = [{"role": "user", "content": ask}]
 
-    browse_args = {"queries": [url], "extract": extract}
+    browse_args = {"items": [{"query": url, "looking_for": extract}]}
     browse_id = "call-seeded-browse"
     _log_chat_step(
         db,

@@ -507,6 +507,19 @@ async def test_browse_without_extract_is_rejected_at_the_gate(tmp_path):
     empty = await tool.run(CallLink.new_top(), items=[])
     assert empty.success is False
     assert "at least one item" in empty.message
+    # A call in the dead dialect (the pre-#2718 queries+extract shape, which
+    # recorded history still carries) is rejected with the exact items call
+    # built from its own arguments — the fix is a copy, not another guess.
+    dead = await tool.run(
+        CallLink.new_top(),
+        queries=["https://x.test", "https://y.test"],
+        extract="the price",
+    )
+    assert dead.success is False
+    assert (
+        'browse(items=[{"query": "https://x.test", "looking_for": "the price"}, '
+        '{"query": "https://y.test", "looking_for": "the price"}])' in dead.message
+    )
     assert model.requests == []  # nothing ran
 
 
@@ -911,13 +924,11 @@ async def test_search_item_picks_and_reads_in_one_call(tmp_path):
     result = await tool.execute(
         CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
     )
-
     assert result.message == (
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
-        f"Looking for: {_INSTRUCTION}.\nRead: [1]."
+        f"Looking for: {_INSTRUCTION}."
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
-        f"\n\n{PAGE_CITATION_LINE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     )
     assert cast("_StubPicker", tool._picker).rank_calls == [
         {"query": _SEARCH_QUERY, "looking_for": _INSTRUCTION}
@@ -926,8 +937,9 @@ async def test_search_item_picks_and_reads_in_one_call(tmp_path):
     assert result.success is True
     assert result.source_urls == [_PAGE_URL]
     # The narration names the search and the page actually opened — never the
-    # unopened results.
-    assert result.narration == f'You searched for "{_SEARCH_QUERY}" and opened [1]'
+    # unopened results.  The page is one the model never named, so it narrates
+    # as the address its section header carries (#2735), never a new handle.
+    assert result.narration == f'You searched for "{_SEARCH_QUERY}" and opened {_PAGE_URL}'
 
 
 @pytest.mark.asyncio
@@ -949,12 +961,11 @@ async def test_search_item_falls_through_when_the_pick_carried_none(tmp_path):
 
     assert result.message == (
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
-        f"Looking for: {_INSTRUCTION}.\nRead: [1], [2]."
+        f"Looking for: {_INSTRUCTION}."
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_NOT_PRESENT_ANSWER}"
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}[2]\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}"
-        f"\n\n{PAGE_CITATION_LINE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}"
     )
     assert result.success is True
     assert result.source_urls == [_PAGE_URL, _PAGE_URL_2]
@@ -977,7 +988,6 @@ async def test_search_item_stop_when_nothing_falls_throughable(tmp_path):
     )
 
     assert result.message.count(PennyConstants.BROWSE_PAGE_HEADER) == 2
-    assert "Read: [1], [2]." in result.message
     assert result.success is True
 
 
@@ -997,7 +1007,6 @@ async def test_search_item_extraction_failure_falls_through(tmp_path):
 
     assert "the extractor never produced a usable answer" in result.message
     assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE_2}" in result.message
-    assert "Read: [1], [2]." in result.message
 
 
 @pytest.mark.asyncio
@@ -1096,13 +1105,11 @@ async def test_search_item_degraded_picker_draw_picks_from_the_list(tmp_path):
     result = await tool.execute(
         CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
     )
-
     assert result.message == (
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n"
-        f"Looking for: {_INSTRUCTION}.\nRead: [1]."
+        f"Looking for: {_INSTRUCTION}."
         f"{PennyConstants.SECTION_SEPARATOR}"
-        f"{PennyConstants.BROWSE_PAGE_HEADER}[1]\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
-        f"\n\n{PAGE_CITATION_LINE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     )
     # Two model calls: the pick draw, then the page's extraction draw.
     assert len(model.requests) == 2
@@ -1134,9 +1141,8 @@ async def test_search_item_decision_model_ranks_by_probability(tmp_path):
         CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
     )
 
-    # Result 2 read first (higher probability), then result 1 — both reported.
-    # Handles number pages in READ order (#2717), so lot 99 is [1] here.
-    assert "Read: [1], [2]." in result.message
+    # Result 2 read first (higher probability), then result 1 — both reported,
+    # each named by the address its section header carries (#2735).
     assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE_2}" in result.message
     assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
     # The page sections render in rank order: lot 99's value before lot 42's.
@@ -1171,7 +1177,6 @@ async def test_search_item_unreadable_carry_answer_counts_as_yes(tmp_path):
         CallLink.new_top(), items=[BrowseItem(query=_SEARCH_QUERY, looking_for=_INSTRUCTION)]
     )
 
-    assert "Read: [1]." in result.message
     assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
     assert result.message.count(PennyConstants.BROWSE_PAGE_HEADER) == 1
 

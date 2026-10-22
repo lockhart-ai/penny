@@ -98,6 +98,10 @@ from penny.tests.eval.utils.cohort import (
 from penny.tests.eval.utils.fixtures import CannedPage
 from penny.tests.eval.utils.worlds import World
 
+_SEALED_DIMENSIONS_ASK = "the light seal channel width and the original seal's thickness"
+_LIGHT_SEAL_SHOPS_ASK = "shops that can replace light seals, with what they offer"
+_HOUSEPLANT_LIGHT_ASK = "why houseplants grow toward light and whether turning the pot helps"
+
 pytestmark = pytest.mark.eval
 
 _FAMILY = "lookup-reads-pages"
@@ -595,11 +599,16 @@ _RECORDED_TURNS: tuple[_Turn, ...] = (
         call=(
             "browse",
             {
-                "queries": [
-                    f"{_CAMERA} light seal dimensions",
-                    "vintage camera light seal thickness",
-                ],
-                "extract": "the light seal channel width and the original seal's thickness",
+                "items": [
+                    {
+                        "query": f"{_CAMERA} light seal dimensions",
+                        "looking_for": _SEALED_DIMENSIONS_ASK,
+                    },
+                    {
+                        "query": "vintage camera light seal thickness",
+                        "looking_for": _SEALED_DIMENSIONS_ASK,
+                    },
+                ]
             },
         ),
         result=_search_result(f"{_CAMERA} light seal dimensions"),
@@ -611,11 +620,16 @@ _RECORDED_TURNS: tuple[_Turn, ...] = (
         call=(
             "browse",
             {
-                "queries": [
-                    f"camera repair {_CITY} light seal replacement",
-                    f"vintage camera service {_CITY}",
-                ],
-                "extract": "shops that can replace light seals, with what they offer",
+                "items": [
+                    {
+                        "query": f"camera repair {_CITY} light seal replacement",
+                        "looking_for": _LIGHT_SEAL_SHOPS_ASK,
+                    },
+                    {
+                        "query": f"vintage camera service {_CITY}",
+                        "looking_for": _LIGHT_SEAL_SHOPS_ASK,
+                    },
+                ]
             },
         ),
         result=_search_result(f"camera repair {_CITY} light seal replacement"),
@@ -643,8 +657,12 @@ _RECORDED_TURNS: tuple[_Turn, ...] = (
         call=(
             "browse",
             {
-                "queries": ["why do houseplants lean toward the light"],
-                "extract": "why houseplants grow toward light and whether turning the pot helps",
+                "items": [
+                    {
+                        "query": "why do houseplants lean toward the light",
+                        "looking_for": _HOUSEPLANT_LIGHT_ASK,
+                    }
+                ]
             },
         ),
         result=_search_result("why do houseplants lean toward the light"),

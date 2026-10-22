@@ -341,7 +341,9 @@ def _seed_one_run(db: Database, job: StandingJob, run_seed: _RunSeed) -> None:
     run_id = seeded_run_id(run_seed.run_name)
     calls = [
         _wire_tool_call(
-            f"{run_id}-0", "browse", {"queries": [job.url], "extract": job.watched_for}
+            f"{run_id}-0",
+            "browse",
+            {"items": [{"query": job.url, "looking_for": job.watched_for}]},
         ),
         _wire_tool_call(
             f"{run_id}-1",

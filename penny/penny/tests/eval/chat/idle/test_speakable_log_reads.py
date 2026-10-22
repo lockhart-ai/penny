@@ -434,7 +434,7 @@ def _cycle_calls(cycle: _SeededCycle) -> list[dict]:
         _wire_tool_call(
             f"{run_id}-0",
             _BROWSE,
-            {"queries": [cycle.job.url], "extract": cycle.job.watched_for},
+            {"items": [{"query": cycle.job.url, "looking_for": cycle.job.watched_for}]},
         )
     ]
     if cycle.wrote is not None:
@@ -720,7 +720,7 @@ def _seed_the_failed_turn(db: Database) -> None:
     `parent_tool_call_id`, exactly as production links one), and the run stamped FAILED
     with the reason the header's activity line — and `run_get` — both carry."""
     run_id = seeded_run_id("failed-browse-turn")
-    browse_args = {"queries": [_FAILED_PAGE], "extract": _FAILED_EXTRACT_ASK}
+    browse_args = {"items": [{"query": _FAILED_PAGE, "looking_for": _FAILED_EXTRACT_ASK}]}
     call_id = f"{run_id}-0"
     db.messages.log_prompt(
         model="seed",

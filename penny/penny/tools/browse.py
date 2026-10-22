@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
 import re
 import urllib.parse
@@ -111,9 +112,17 @@ NARRATION_FAILURE_SUFFIX = (
 # A search item's own section: what the item was looking for, then what the call
 # did with it — the pages it read (each page's own section follows, carrying its
 # value), or the honest dead ends.
+# A call recorded in the DEAD dialect (``queries`` + one shared ``extract``,
+# pre-#2718) is rejected at the arg gate — and the rejection carries the exact
+# ``items`` call that would succeed, built from its own arguments: the model
+# copies the fix instead of guessing at the shape.  History recorded in the old
+# dialect ages out; the rejection teaches the new one in one round trip.
+_DEAD_DIALECT_TRANSLATION = (
+    "browse takes items now, one per lookup, each with what it is looking for. "
+    "That call, translated, is: browse(items={items}) — pass it like that."
+)
 _SEARCH_LOOKING_LINE = "Looking for: {looking_for}."
 _SEARCH_NONE_BODY = "None of the results looked likely to carry it, so nothing was read."
-_SEARCH_READ_LINE = "Read: {pages}."
 # The picker's honest escape (no usable answer) renders the trimmed results list
 # under the search section's own header — the one shape where the model still
 # sees titles and link handles, to pick from itself in a follow-up call.
@@ -442,6 +451,25 @@ class BrowseTool(Tool):
             },
             "required": ["items"],
         }
+
+    async def run(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
+        """Override of ``Tool.run``: a call in the dead dialect (``queries`` +
+        one shared ``extract``, the pre-#2718 shape history still carries) is
+        rejected with the exact ``items`` call built from its own arguments —
+        before the generic validation error, which would name unknown fields
+        but not show the call that would succeed (actionable-failure: the fix
+        is a copy, not another guess)."""
+        if isinstance(kwargs.get("queries"), list) and "items" not in kwargs:
+            items = [
+                {"query": query, "looking_for": kwargs.get("extract", "")}
+                for query in kwargs["queries"]
+                if isinstance(query, str)
+            ]
+            return ToolResult(
+                success=False,
+                message=_DEAD_DIALECT_TRANSLATION.format(items=json.dumps(items)),
+            )
+        return await super().run(call_link, **kwargs)
 
     def set_browse_provider(
         self,
@@ -826,11 +854,14 @@ class BrowseTool(Tool):
             )
             return _ItemOutcome(sections=[f"{header}\n{body}"])
         sections, opened, outage = await self._read_ranked(item, results, pick.ranked, call_link)
-        # ``opened`` already holds the pages' handle refs (assigned at each
-        # read's render) — the same form the narration names them in.
-        read_clause = _SEARCH_READ_LINE.format(pages=", ".join(opened)) if opened else ""
-        body = looking_line + (f"\n{read_clause}" if read_clause else "")
-        return _ItemOutcome(sections=[f"{header}\n{body}", *sections], opened=opened, outage=outage)
+        # No "Read:" line here: each page tried renders its own section directly
+        # below, and its header names the page by its address (#2735 — a page's
+        # own address takes no handle number, so a bare address line here would
+        # be handle-converted into exactly the number the page must not take).
+        # ``opened`` feeds the narration, which names pages un-converted.
+        return _ItemOutcome(
+            sections=[f"{header}\n{looking_line}", *sections], opened=opened, outage=outage
+        )
 
     async def _read_ranked(
         self,
@@ -863,9 +894,11 @@ class BrowseTool(Tool):
                 continue
             rendered, text = await self._extract_and_render(page, item.looking_for, call_link)
             sections.append(rendered)
-            # The picked page is one the model never named — its handle (assigned
-            # at the render above) is the only reference it can cite.
-            opened.append(f"[{self._handles.register(page.url or url)}]")
+            # The picked page is one the model never named: the section header
+            # above its value names it by its ADDRESS (#2735 — the page takes no
+            # handle number), so the address is the reference the reply cites it
+            # by.  Never a newly assigned handle.
+            opened.append(page.url or url)
             if text and await self._picker.carries_any(
                 looking_for=item.looking_for, extract_text=text, call_link=call_link
             ):
