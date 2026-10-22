@@ -227,7 +227,9 @@ def test_expand_multi_cite_three_numbers_all_held():
     table.register("https://example.com/article-context")
     table.register("https://example.com/article-analysis")
     assert table.expand("Read [1, 2, 3] for background.") == (
-        "Read https://example.com/article-background, https://example.com/article-context, https://example.com/article-analysis for background."
+        "Read https://example.com/article-background, "
+        "https://example.com/article-context, "
+        "https://example.com/article-analysis for background."
     )
 
 
@@ -236,7 +238,10 @@ def test_expand_multi_cite_mixed_held_and_unheld():
     and keeps the unheld as [n]."""
     table = HandleTable()
     table.register("https://example.com/story-details")
-    assert table.expand("See [1, 6] for details.") == "See https://example.com/story-details, [6] for details."
+    assert (
+        table.expand("See [1, 6] for details.")
+        == "See https://example.com/story-details, [6] for details."
+    )
     assert table.dangling("[1, 6]") == [6]
 
 
