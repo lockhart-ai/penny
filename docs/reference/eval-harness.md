@@ -234,10 +234,12 @@ persists anything, so that one re-roll leaves no row and no promptlog read can s
 
 **Presenting eval runs on a PR (the report-as-comment process).** The harness emits a
 verbatim per-case markdown report when `EVAL_REPORT_DIR` is set (`make eval-remote` passes it
-through). The **PR body stays a stable description**; **every tweak + re-run pushes the
-commit and ADDS A NEW COMMENT** with that run's report — never rewrite the body, never
-overwrite a prior comment — so the iteration history (each review round's before/after)
-survives. See `docs/agent-task-workflow.md` §4.
+through). The **PR body stays a stable description**; every tweak + re-run pushes the
+commit and posts a fresh report with `make eval-report` — which now **replaces** the PR's
+earlier marked report rather than adding beside it (mark-and-replace, #2734, below), so the
+PR always shows the one latest run. A review round's before/after is read through
+`BASELINE=<run-dir>`'s comparison table instead of by scrolling a stack of old reports. See
+`docs/agent-task-workflow.md` §4 and §8, and "One latest report per PR" below.
 
 ### Per-run artifacts + the required lever (#1692)
 
@@ -431,7 +433,7 @@ report is a **one-shot**, and the debt of *not* posting is made **structural** (
 model-judgment, applied to the eval loop). Every run's report belongs on its PR, and posting is a step
 separate from running, so skipping it would leave no visible debt and nothing would interrupt the next
 run (one session ran 4+ sequential report-runs without posting any). Two mechanisms:
-`make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]` assembles the named run — default: **the run
+`make eval-report PR=<n> [RUN=<run-dir-name>] [BASELINE=<run-dir-name>] [FORCE=1] [DRY_RUN=1]` assembles the named run — default: **the run
 THIS TREE measured** (see the next paragraph) in the durable home — captures the
 containerized `python -m penny.tests.eval.utils.assemble` stdout **cleanly** (never `make assemble` piped
 through stripping), posts it **verbatim** to PR `<n>` via `GH_TOKEN=$(make token) gh pr comment`, then
@@ -490,3 +492,41 @@ byte-identical to before); the run header opens the document so it lands on part
 64K (the header, and GitHub counting differently from `wc -c`). One loud refusal guards what is posted:
 a body **opening with build noise** (`docker compose`, `GIT_COMMIT=`, `#1 [internal]` — what a hand-piped
 `make assemble` publishes; it happened, and eight comments had to be deleted).
+
+### One latest report per PR, and a comparison against main (#2734)
+
+**One latest report per PR, and a comparison against main (#2734).** A rerun used to **stack**: every
+`make eval-report` added a fresh set of per-case/summary comments on top of the last, so a PR that saw
+three or four runs carried three or four full reports and a reviewer had to scroll to find the current
+one, with no comparison against `main` unless someone wrote one by hand. Every comment `eval-report`
+posts now carries a hidden HTML-comment marker naming its kind — `<!-- penny-eval-report -->` on a
+per-case/summary report, `<!-- penny-eval-compare -->` on the comparison table below — and **before
+posting**, the recipe lists the PR's existing comments (`gh api repos/{owner}/{repo}/issues/<pr>/comments
+--paginate`), keeps only the ones carrying that run's marker **and** authored by the token's own login
+(resolved via `gh api graphql -f query='query { viewer { login } }'` — the REST `/user` endpoint 403s for
+an App **installation** token, "Resource not accessible by integration"), and deletes exactly those
+(`gh api -X DELETE .../issues/comments/<id>`) — so a PR always shows **one** report, never a stack, and a
+reviewer's own comment is never a candidate. The pure decision (which ids qualify) is
+`penny/tests/eval/utils/pr_comments.py`'s `select_marked_comments`, plain-tested with no network.
+
+`BASELINE=<run-dir-name>` additionally builds and posts (or **replaces**, same mark-and-delete, its own
+marker) **one** comparison comment against that run — read as `main`, though mechanically it is just a
+second completed run: one row per case, the branch's passing checks against the baseline's (`k/N` and
+`%`), any case that moved **5 points or more** marked `⚠`, and a totals row summed only over the cases
+each side actually drove (a case present on only one side renders `—` on the other, never a silent zero).
+It **refuses** when the two runs were pinned to different providers (`ProviderMismatchError` — a
+comparison across upstreams measures neither one's behaviour) and **warns inside the comment** when the
+branch's merge base with the baseline's commit is not that commit — computed **host-side** with plain
+`git merge-base`, because the eval container never mounts a worktree's `.git` (the same reason
+`HEAD_COMMIT_CMD` runs host-side, above). Without `BASELINE`, the comparison comment is left exactly as
+it was — no `BASELINE`, no touch. The comparison builder (`CaseComparison`, `build_case_comparisons`,
+`totals_row`, `render_comparison`) lives in `penny/tests/eval/utils/compare.py`, plain-tested over
+hand-built artifacts; it reuses `comment_split.split_run_summary` for its own over-cap split, since a
+comparison table has the same legal seam (a row boundary) the run summary does.
+
+`DRY_RUN=1` runs every read (the existing-comments listing, the assemble/compare build) but skips every
+write (`gh api -X DELETE`, `gh pr comment`) — it prints what would be deleted and the comparison table
+that would post, so a kitten can preview the whole thing against a real PR with no risk of touching it.
+A failure-driven case's "before"/"after" (above) now rides this mechanism too: post the **after** run
+with `BASELINE=<before-run-dir>`, and the PR carries the fix's own report plus one table showing the
+delta, instead of two stacked reports a reviewer diffs by eye.

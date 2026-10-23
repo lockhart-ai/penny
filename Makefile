@@ -15,7 +15,7 @@ EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 # pytest — each in its OWN interpreter, because the module the graph is entered through
 # is what decides whether a cycle closes, and importing them together would only ever
 # exercise the first one's order.
-EVAL_COLD_IMPORTS = penny.tests.eval.utils.assemble penny.tests.eval.utils.checkpoint penny.tests.eval.utils.report
+EVAL_COLD_IMPORTS = penny.tests.eval.utils.assemble penny.tests.eval.utils.checkpoint penny.tests.eval.utils.report penny.tests.eval.utils.compare penny.tests.eval.utils.pr_comments
 # The catalogue of supported behaviours, generated ON DEMAND from the eval cases by
 # `penny.tests.eval.utils.catalogue` (#2395: gitignored, never committed, so a case PR never
 # edits it). `catalogue` writes it for a local look; `check` just validates the declarations
@@ -93,6 +93,15 @@ EVAL_REMOTE_API_KEY_VAR := OPENROUTER_API_KEY
 # The marker `make eval-report` stamps into a posted run dir (#1757). Must match
 # `penny.tests.eval.utils.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
 POSTED_MARKER := .posted
+# The hidden HTML-comment markers every comment `eval-report` posts carries (#2734) —
+# mark-and-replace, so a re-run deletes the PR's own earlier marked comments of that one
+# kind before posting fresh ones, and a PR never carries a stack of old reports. Two
+# markers because the per-case/summary report and the branch-vs-main comparison are
+# replaced independently (no `BASELINE` → the comparison is left exactly as it was). Must
+# match `penny.tests.eval.utils.pr_comments.REPORT_MARKER` / `.COMPARE_MARKER` — the recipe
+# passes the literal text to that module, it never greps for it itself.
+EVAL_REPORT_MARKER := <!-- penny-eval-report -->
+EVAL_COMPARE_MARKER := <!-- penny-eval-compare -->
 # How the invoking tree's HEAD is derived — ONE definition, expanded into BOTH eval recipes.
 # `eval-remote` records it in the run manifest as EVAL_COMMIT; `eval-report` matches a bare RUN against
 # that recorded value (#2098), so the two derivations must agree byte-for-byte or every bare
@@ -456,9 +465,21 @@ assemble: $(if $(LOCAL),,build)
 # posted in order, and `.posted` stamped with the FIRST part's URL so idempotency + the unreviewed-run
 # banner stay honest. The splitter also REFUSES a body opening with build noise (`docker compose`,
 # `GIT_COMMIT=`, `#1 [internal]`) — the pollution a hand-piped `make assemble` publishes.
+# MARK-AND-REPLACE (#2734): every comment this recipe posts carries a hidden marker
+# (`$(EVAL_REPORT_MARKER)` on a report, `$(EVAL_COMPARE_MARKER)` on a comparison). Before
+# posting, it lists the PR's existing comments (`gh api .../issues/<pr>/comments`), keeps
+# only the ones carrying that run's marker AND authored by the token's own login (the App —
+# `penny.tests.eval.utils.pr_comments` makes that one decision, pure and unit-tested), and
+# deletes them — so a PR always shows exactly one report. `BASELINE=<run>` additionally
+# builds and posts (or replaces) ONE comparison comment against that main run
+# (`penny.tests.eval.utils.compare`): refused if the two runs were pinned to different
+# providers, and a merge-base warning (computed HOST-side — the container has no git) rides
+# inside the comment when the baseline commit is not an ancestor of the branch's. Without
+# `BASELINE`, no comparison is touched at all. `DRY_RUN=1` prints what would be deleted and
+# posted on both fronts and stops — no `gh` write of any kind runs.
 eval-report: $(if $(LOCAL),,build)
 	@if [ -z "$(PR)" ]; then \
-		echo "eval-report: PR is required — usage: make eval-report PR=<n> [RUN=\"<run-dir> [<run-dir>...]\"] [FORCE=1]" >&2; \
+		echo "eval-report: PR is required — usage: make eval-report PR=<n> [RUN=\"<run-dir> [<run-dir>...]\"] [BASELINE=<run-dir>] [FORCE=1] [DRY_RUN=1]" >&2; \
 		exit 1; \
 	fi; \
 	run="$(if $(filter command line,$(origin RUN)),$(RUN),)"; \
@@ -504,18 +525,84 @@ eval-report: $(if $(LOCAL),,build)
 		echo "eval-report: make token returned empty — run from the primary checkout with a real .env" >&2; \
 		exit 1; \
 	fi; \
-	first=""; \
-	for name in $$names; do \
-		url="$$(GH_TOKEN=$$tok gh pr comment "$(PR)" --body-file "$$host_parts/$$name")"; \
-		if [ -z "$$url" ]; then \
-			echo "eval-report: gh pr comment returned no URL for $$name$${first:+ (already posted: $$first)}" >&2; \
-			exit 1; \
+	app_login="$$(GH_TOKEN=$$tok gh api graphql -f query='query { viewer { login } }' --jq .data.viewer.login 2>/dev/null)"; \
+	if [ -z "$$app_login" ]; then \
+		echo "eval-report: could not resolve the token's own login — needed to find its own earlier comments" >&2; \
+		exit 1; \
+	fi; \
+	existing="$$(GH_TOKEN=$$tok gh api repos/{owner}/{repo}/issues/$(PR)/comments --paginate 2>/dev/null)"; \
+	[ -n "$$existing" ] || existing="[]"; \
+	to_delete="$$(printf '%s' "$$existing" | $(EVAL_RUN) python -m penny.tests.eval.utils.pr_comments "$(EVAL_REPORT_MARKER)" "$$app_login")"; \
+	if [ -n "$(DRY_RUN)" ]; then \
+		echo "eval-report: DRY RUN — nothing is posted or deleted"; \
+		echo "eval-report: would delete $$(printf '%s\n' "$$to_delete" | grep -c .) earlier marked report comment(s) on PR #$(PR):"; \
+		printf '%s\n' "$$to_delete" | grep . | sed 's/^/  - /'; \
+		echo "eval-report: would post $$(printf '%s\n' $$names | wc -l | tr -d ' ') report comment(s) for $$run: $$names"; \
+	else \
+		printf '%s\n' "$$to_delete" | grep . | cut -f1 | while read -r cid; do \
+			GH_TOKEN=$$tok gh api -X DELETE "repos/{owner}/{repo}/issues/comments/$$cid" >/dev/null \
+				&& echo "eval-report: deleted earlier report comment $$cid"; \
+		done; \
+		first=""; \
+		for name in $$names; do \
+			url="$$(GH_TOKEN=$$tok gh pr comment "$(PR)" --body-file "$$host_parts/$$name")"; \
+			if [ -z "$$url" ]; then \
+				echo "eval-report: gh pr comment returned no URL for $$name$${first:+ (already posted: $$first)}" >&2; \
+				exit 1; \
+			fi; \
+			echo "eval-report: posted $$name → $$url"; \
+			if [ -z "$$first" ]; then first="$$url"; fi; \
+		done; \
+		for one in $$run; do printf '%s\n' "$$first" > "$(EVAL_ARTIFACTS_HOST)/$$one/$(POSTED_MARKER)"; done; \
+		echo "eval-report: posted $$run → PR #$(PR) as $$(printf '%s\n' $$names | wc -l | tr -d ' ') comment(s); marker → $$first"; \
+	fi; \
+	if [ -z "$(BASELINE)" ]; then exit 0; fi; \
+	baseline_host_dir="$(EVAL_ARTIFACTS_HOST)/$(BASELINE)"; \
+	if [ ! -d "$$baseline_host_dir" ]; then \
+		echo "eval-report: baseline run dir not found: $$baseline_host_dir" >&2; \
+		exit 1; \
+	fi; \
+	branch_commit="$$(sed -n 's/^[[:space:]]*\"commit\": \"\([^\"]*\)\".*/\1/p' "$$host_dir/manifest.json" | head -1)"; \
+	baseline_commit="$$(sed -n 's/^[[:space:]]*\"commit\": \"\([^\"]*\)\".*/\1/p' "$$baseline_host_dir/manifest.json" | head -1)"; \
+	merge_base_ok=""; \
+	if [ -n "$$branch_commit" ] && [ -n "$$baseline_commit" ]; then \
+		mb="$$(git merge-base "$$branch_commit" "$$baseline_commit" 2>/dev/null)"; \
+		if [ -n "$$mb" ]; then \
+			if [ "$$mb" = "$$baseline_commit" ]; then merge_base_ok=1; else merge_base_ok=0; fi; \
 		fi; \
-		echo "eval-report: posted $$name → $$url"; \
-		if [ -z "$$first" ]; then first="$$url"; fi; \
-	done; \
-	for one in $$run; do printf '%s\n' "$$first" > "$(EVAL_ARTIFACTS_HOST)/$$one/$(POSTED_MARKER)"; done; \
-	echo "eval-report: posted $$run → PR #$(PR) as $$(printf '%s\n' $$names | wc -l | tr -d ' ') comment(s); marker → $$first"
+	fi; \
+	host_compare_dir="$$host_parts/compare"; \
+	mount_compare_dir="$$mount_parts/compare"; \
+	mkdir -p "$$host_compare_dir"; \
+	if ! compare_names="$$($(EVAL_RUN) python -m penny.tests.eval.utils.compare "$$mount_compare_dir" "$(EVAL_ARTIFACTS_MOUNT)/$$primary" "$(EVAL_ARTIFACTS_MOUNT)/$(BASELINE)" "$$merge_base_ok")"; then \
+		echo "eval-report: could not build the comparison against $(BASELINE)" >&2; \
+		exit 1; \
+	fi; \
+	if [ -z "$$compare_names" ]; then \
+		echo "eval-report: compare produced no comment for $(BASELINE) — is it a completed run?" >&2; \
+		exit 1; \
+	fi; \
+	to_delete_compare="$$(printf '%s' "$$existing" | $(EVAL_RUN) python -m penny.tests.eval.utils.pr_comments "$(EVAL_COMPARE_MARKER)" "$$app_login")"; \
+	if [ -n "$(DRY_RUN)" ]; then \
+		echo "eval-report: would delete $$(printf '%s\n' "$$to_delete_compare" | grep -c .) earlier marked comparison comment(s) on PR #$(PR):"; \
+		printf '%s\n' "$$to_delete_compare" | grep . | sed 's/^/  - /'; \
+		echo "eval-report: would post the comparison against $(BASELINE): $$compare_names"; \
+		echo "eval-report: ----- comparison table -----"; \
+		for name in $$compare_names; do cat "$$host_compare_dir/$$name"; done; \
+	else \
+		printf '%s\n' "$$to_delete_compare" | grep . | cut -f1 | while read -r cid; do \
+			GH_TOKEN=$$tok gh api -X DELETE "repos/{owner}/{repo}/issues/comments/$$cid" >/dev/null \
+				&& echo "eval-report: deleted earlier comparison comment $$cid"; \
+		done; \
+		for name in $$compare_names; do \
+			url="$$(GH_TOKEN=$$tok gh pr comment "$(PR)" --body-file "$$host_compare_dir/$$name")"; \
+			if [ -z "$$url" ]; then \
+				echo "eval-report: gh pr comment returned no URL for comparison $$name" >&2; \
+				exit 1; \
+			fi; \
+			echo "eval-report: posted comparison $$name → $$url"; \
+		done; \
+	fi
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test

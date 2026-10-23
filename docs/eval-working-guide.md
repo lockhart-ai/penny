@@ -730,8 +730,11 @@ look that gates nothing; a PR's evidence is the suite's model.
   directory before re-running — a re-run against a run that actually completed wastes the
   provider's capacity on both.
 - **Post with `make eval-report PR=<n>`** (optionally `RUN=<run-dir>` to name a specific run),
-  run from the worktree that produced the run, after the PR exists. Each re-run adds a new PR
-  comment — never rewrite or overwrite a prior one; the comment stream is the durable record
+  run from the worktree that produced the run, after the PR exists. A re-run **replaces** the
+  prior report — every comment it posts carries a hidden marker, and it deletes the PR's own
+  earlier marked comments before posting, so the PR always shows the one latest report rather
+  than a stack. Add `BASELINE=<main-run-dir>` to post (or replace) one table comparing this run
+  against a main run, case by case; `DRY_RUN=1` previews both without touching the PR
   ([`docs/agent-task-workflow.md` §8](agent-task-workflow.md)).
 
 ## 10 · Reading a run

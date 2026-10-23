@@ -412,3 +412,24 @@ ASSEMBLE time over the case document already on disk — the same seam `summaris
 up with **no re-run**. With every fold bounded, a part over the cap is an INVARIANT VIOLATION rather than
 a case: `comment_split.enforce_part_cap` raises `OversizedPartError` as the renderer bug it is instead of
 refusing the caller.
+
+**A PR shows ONE latest report, and a comparison against main (#2734).** Every rerun used to stack: a
+PR that saw three or four reports carried three or four, and comparing one against `main` meant a kitten
+writing one by hand. Mark-and-replace fixed the first half: every comment `eval-report` posts carries a
+hidden HTML-comment marker — `<!-- penny-eval-report -->` on a per-case/summary report,
+`<!-- penny-eval-compare -->` on a comparison — and before posting, the recipe lists the PR's existing
+comments, keeps only the ones carrying that marker AND authored by the token's own login, and deletes
+them (`penny/tests/eval/utils/pr_comments.py`'s `select_marked_comments`, the one pure decision, unit-
+tested with no network). Resolving "the token's own login" needed its own small fix: the obvious
+`gh api user` 403s for a GitHub App **installation** token ("Resource not accessible by integration") —
+only `gh api graphql -f query='query { viewer { login } }'` answers it. `BASELINE=<run-dir>` builds and
+posts (or replaces) the second half, ONE comparison comment against a named run — one row per case, the
+branch's passing checks against the baseline's, a case moved 5 points or more marked `⚠`, a totals row
+summed only over the cases each side actually drove. It refuses across providers (a comparison measures
+neither one's behaviour otherwise) and warns inside the comment when the branch's merge base with the
+baseline's commit is not that commit — checked HOST-side with plain `git merge-base`, the same reason
+`HEAD_COMMIT_CMD` already runs there rather than in the eval container. `penny/tests/eval/utils/compare.py`
+holds the builder (`CaseComparison`/`build_case_comparisons`/`totals_row`/`render_comparison`), reusing
+`comment_split.split_run_summary` for its own over-cap split — a comparison table has the same row-
+boundary seam the run summary does. `DRY_RUN=1` runs every read and skips every write, so the whole thing
+previews against a real PR with nothing touched.

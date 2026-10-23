@@ -51,6 +51,7 @@ from penny.tests.eval.utils.artifacts import (
     render_manifest_header,
 )
 from penny.tests.eval.utils.baseline import Baseline, resolve_baseline
+from penny.tests.eval.utils.pr_comments import REPORT_MARKER
 
 # ── Section literals (no magic strings) ──────────────────────────────────────
 FLIPS_LABEL = "flips:"
@@ -479,6 +480,10 @@ def _write_comments(argv: list[str]) -> int:
         for part in comment_split.split_run_comment(document, artifact_file=artifact_file)
     ]
     parts += comment_split.split_run_summary(summary_document)
+    # Mark-and-replace (#2734): every comment this recipe posts carries the hidden marker, so
+    # a re-run can find and delete its own earlier ones. Appended AFTER splitting — each part
+    # becomes its own GitHub comment, and every one of them needs the marker, not just the last.
+    parts = [f"{part}\n\n{REPORT_MARKER}" for part in parts]
     comment_split.enforce_part_cap(parts)
     for name in comment_split.write_parts(parts, out_dir):
         print(name)

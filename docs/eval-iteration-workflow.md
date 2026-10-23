@@ -55,7 +55,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 ## 5. Report
 
-- **Every run posts its verbatim report to the PR** (`make eval-report PR=<n>`) — the comment stream **is** the durable record of the iteration. What a ported case's report says: [`docs/eval-case-design.md`](eval-case-design.md); how it gets posted: [`docs/agent-task-workflow.md`](agent-task-workflow.md) §8.
+- **Every run posts its verbatim report to the PR** (`make eval-report PR=<n>`) — a rerun **replaces** the prior report rather than stacking on top of it, so the PR always shows the latest round; `BASELINE=<run-dir>` additionally posts a comparison table against a named prior round. What a ported case's report says: [`docs/eval-case-design.md`](eval-case-design.md); how it gets posted: [`docs/agent-task-workflow.md`](agent-task-workflow.md) §8.
 - **The chat summary follows one shape, in this order:**
   1. **Overall** — claims passed of claims checked, per model, with the baseline beside them.
   2. **Per-case table** — each claim's passing count, each row naming the case's behaviour, plus run health and any variance feature that rose.
