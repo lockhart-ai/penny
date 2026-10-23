@@ -114,6 +114,33 @@ async def test_read_emails_tool_falls_back_on_empty_summary():
 
 
 @pytest.mark.asyncio
+async def test_read_emails_tool_names_an_id_it_could_not_open():
+    """A requested id the backend silently dropped (``ZohoClient.read_emails`` logs
+    a warning and omits a failed id rather than raising) is named in the body, and
+    ``read_email_ids`` carries only what actually came back — so the headline built
+    from it (``to_result_narration``) counts the fetch, not the request (#2768)."""
+    mock_client = AsyncMock()
+    mock_client.read_emails.return_value = [SAMPLE_DETAIL]
+
+    mock_llm = AsyncMock()
+    mock_llm.chat.return_value = MagicMock(
+        content="Shipping Co shipped order #123-456, arriving Feb 12."
+    )
+
+    tool = ReadEmailsTool(
+        mock_client,
+        mock_llm,
+        "what packages am I expecting",
+        "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
+    )
+    result = await tool.execute(CallLink.new_top(), email_ids=["M001", "M404"])
+
+    assert result.read_email_ids == ["M001"]
+    assert "Shipping Co shipped order #123-456, arriving Feb 12." in result.message
+    assert "Couldn't open 1 of the requested id: M404." in result.message
+
+
+@pytest.mark.asyncio
 async def test_read_emails_tool_no_ids():
     """An empty ``email_ids`` is rejected by the ``args_model`` at the ``run`` gate
     — ``execute`` is never reached, so the client/model are never called, and the
@@ -260,6 +287,22 @@ async def test_list_folders_tool_reports_a_raised_listing():
     assert result.message == MAILBOX_FOLDERS_FAILED.format(e="connection refused")
 
 
+@pytest.mark.asyncio
+async def test_list_folders_tool_reports_an_empty_list_as_a_failure():
+    """Every real mailbox has at least Inbox/Sent/Drafts, so an empty list is the
+    account being unreachable, not a legitimately empty one (#2768) — ``success``
+    must agree with what the message already said, or the narration reads this
+    as a completed listing rather than the outage it is."""
+    mock_client = AsyncMock()
+    mock_client.get_folders.return_value = []
+    tool = ListFoldersTool(mock_client)
+
+    result = await tool.run(CallLink.new_top())
+
+    assert result.success is False
+    assert "mail account isn't reachable" in result.message
+
+
 # ── Result narration (epic #1478) ─────────────────────────────────────────────
 # Each tool's ``to_result_narration`` leads its result with a first-person recap
 # of the action; the seam adds the ``(<tool> result)`` tag and the body, so these
@@ -285,14 +328,23 @@ def test_search_emails_narration_branches():
 
 def test_read_emails_narration_branches():
     one = ReadEmailsTool.to_result_narration(
-        {"email_ids": ["M001"]}, ToolResult(message="A summary")
+        {"email_ids": ["M001"]}, ToolResult(message="A summary", read_email_ids=["M001"])
     )
     assert one == "You read 1 email:"
 
     several = ReadEmailsTool.to_result_narration(
-        {"email_ids": ["M001", "M002"]}, ToolResult(message="A summary")
+        {"email_ids": ["M001", "M002"]},
+        ToolResult(message="A summary", read_email_ids=["M001", "M002"]),
     )
     assert several == "You read 2 emails:"
+
+    # The headline counts what was ACTUALLY read, not the request — a partial fetch
+    # (one id the backend silently dropped) is never claimed as a full one (#2768).
+    partial = ReadEmailsTool.to_result_narration(
+        {"email_ids": ["M001", "M404"]},
+        ToolResult(message="A summary", read_email_ids=["M001"]),
+    )
+    assert partial == "You read 1 email:"
 
     nothing = ReadEmailsTool.to_result_narration(
         {"email_ids": ["M404"]}, ToolResult(message=NO_EMAILS_TO_READ)

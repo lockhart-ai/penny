@@ -33,6 +33,7 @@ from similarity.identity import KeyRule, ShortlistSide, shortlist
 
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
+    CollectionConfigureOutcome,
     MutationEntityType,
     PennyConstants,
     WriteGateOutcome,
@@ -1837,6 +1838,13 @@ def _summary_as_prompt_refusal(row: MemoryRow, prompt: str) -> str | None:
     return None
 
 
+def _with_configure_outcome(result: ToolResult, outcome: CollectionConfigureOutcome) -> ToolResult:
+    """Stamp which path a ``collection_configure`` dispatch took onto the inner
+    tool's result (#2768) — the dispatcher is the only place that knows which of
+    the two ran, so it is the one place this gets set."""
+    return result.model_copy(update={"configure_outcome": outcome})
+
+
 class CollectionSetTool(MemoryTool):
     """The ONE idempotent create-or-update entry point for a collection (the
     code-owner fusion): identity is dispatched HERE, in python — the model never
@@ -1851,8 +1859,10 @@ class CollectionSetTool(MemoryTool):
     this class is a dispatcher, not a re-implementation."""
 
     name = "collection_configure"
-    # The creation echo points at the metadata read for what was configured.
-    advises = ("memory_get",)
+    # The creation echo points at the metadata read for what was configured; the
+    # same-job redirect (#1775, ``_SAME_JOB_UPDATED``) points at ``collection_list``
+    # for the collection the call actually landed on.
+    advises = ("memory_get", "collection_list")
     description = (
         "Create or reconfigure a collection in ONE idempotent call. If `collection` "
         "doesn't exist it comes into being with this config; if it does, only "
@@ -1897,10 +1907,17 @@ class CollectionSetTool(MemoryTool):
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """The headline names which path ran — created or updated — read off
+        ``result.configure_outcome`` (#2768), never guessed from the call's own
+        arguments: the same collection name reaches this call whether it was just
+        born or has run for months, so only the dispatcher that chose the path
+        knows which one happened."""
         name = _named(arguments, "collection", "a collection")
         if not result.success:
             return f"You tried to set up {name} but it didn't work:"
-        return f"You set up {name}:"
+        if result.configure_outcome == CollectionConfigureOutcome.UPDATED:
+            return f"You updated {name}'s settings:"
+        return f"You created {name}:"
 
     def __init__(
         self,
@@ -1932,7 +1949,7 @@ class CollectionSetTool(MemoryTool):
             return ToolResult(
                 message=_SET_BIRTH_NEEDS_DESCRIPTION.format(name=args.collection), success=False
             )
-        return await self._create._run(
+        result = await self._create._run(
             name=args.collection,
             description=args.description,
             prompt=args.prompt,
@@ -1940,11 +1957,12 @@ class CollectionSetTool(MemoryTool):
             expires_at=args.expires_at,
             notify=bool(args.notify),
         )
+        return _with_configure_outcome(result, CollectionConfigureOutcome.CREATED)
 
     async def _apply_to(self, args: CollectionSetArgs, name: str) -> ToolResult:
         """Apply this call's fields to the EXISTING collection ``name`` — the update
         path, with the target's own name substituted for the one the call used."""
-        return await self._update._run(
+        result = await self._update._run(
             name=name,
             description=args.description,
             notify=args.notify,
@@ -1952,6 +1970,7 @@ class CollectionSetTool(MemoryTool):
             schedule=args.schedule,
             expires_at=args.expires_at,
         )
+        return _with_configure_outcome(result, CollectionConfigureOutcome.UPDATED)
 
     async def _same_job(self, args: CollectionSetArgs, duplicate: MemoryRow) -> ToolResult:
         """A new name for a job we already have (#1775).  An ARCHIVED match stays a
@@ -2288,6 +2307,22 @@ class CollectionUpdateTool(MemoryTool):
         if has_schedule(memory):
             return ""
         return _NO_SCHEDULE_NOTE.format(name=memory.name)
+
+
+# ``CollectionCreateTool``, ``CollectionSetTool`` and ``CollectionUpdateTool`` all
+# declare ``name = "collection_configure"`` — on purpose: each is a genuine path a real
+# ``collection_configure`` call can take, and ``CollectionCreateTool``/``CollectionUpdateTool``
+# build their own result/validation text (``self.name`` in ``_validation_error_message``,
+# narration test fixtures) AS that name, which direct unit tests on them rely on staying
+# byte-identical.  But ``Tool.__init_subclass__`` keys the CLASS registry by ``name``, last
+# definition wins — so without this line, whichever of the three is defined LAST in this
+# file silently answers for every ``Tool.format_result("collection_configure", ...)`` call,
+# create included (#2768: that collision made a brand-new job's result narrate as "You
+# updated ... settings:", above a body that said "Created collection ...").  Only
+# ``CollectionSetTool`` is ever actually DISPATCHED to by that name (``build_memory_tools``
+# registers no instance of the other two) — it is the one true front door — so it is the
+# one explicitly re-asserted here, after all three class bodies have run.
+Tool._registry["collection_configure"] = CollectionSetTool
 
 
 class MemoryMetadataTool(MemoryTool):

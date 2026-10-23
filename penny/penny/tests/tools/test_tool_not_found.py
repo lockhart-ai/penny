@@ -13,7 +13,7 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
 from penny.tools.link_handles import HandleTable
-from penny.tools.memory_tools import DoneTool
+from penny.tools.memory_tools import CollectionSetTool, DoneTool
 from penny.tools.models import ToolArgs, ToolCall
 
 
@@ -218,23 +218,6 @@ class StubMemoryGetTool(Tool):
         return "metadata"
 
 
-class StubCollectionConfigureTool(Tool):
-    """Stub for collection_configure — registered alongside ``memory_get`` because it is
-    the character-NEAREST name to the retired ``collection_metadata`` and therefore the
-    wrong answer the string leg gives on its own (#1944)."""
-
-    name = "collection_configure"
-    description = "Create or reconfigure a collection"
-    parameters = {
-        "type": "object",
-        "properties": {"name": {"type": "string", "description": "Collection name."}},
-        "required": ["name"],
-    }
-
-    async def execute(self, call_link: CallLink, **kwargs):
-        return "set"
-
-
 class StubSkillGetTool(Tool):
     """Stub for skill_get — the tool the retired ``skill_read`` became (#2305)."""
 
@@ -266,6 +249,13 @@ def _stub_browse_tool(db: Database) -> BrowseTool:
     )
 
 
+def _real_collection_configure_tool(db: Database) -> CollectionSetTool:
+    """A real ``CollectionSetTool``, not a same-named stub subclass — same reason as
+    ``_stub_browse_tool`` above (#2768: a ``name = "collection_configure"`` stub here
+    would re-clobber the registry entry the dispatcher fix relies on)."""
+    return CollectionSetTool(db, cast(Any, MockLlmClient()))
+
+
 class TestToolNotFoundSuggestion:
     """Error message includes a 'did you mean' suggestion for close tool names."""
 
@@ -295,7 +285,7 @@ class TestToolNotFoundSuggestion:
         assert "Read the latest entries from a memory collection" in result.message
 
     @pytest.mark.asyncio
-    async def test_retired_name_suggests_the_tool_it_became(self):
+    async def test_retired_name_suggests_the_tool_it_became(self, db: Database):
         """A name this project RENAMED resolves through the rename table, not through
         character distance (#1944).
 
@@ -306,7 +296,7 @@ class TestToolNotFoundSuggestion:
         answer is available and the assertion is that meaning wins."""
         registry = ToolRegistry()
         registry.register(StubMemoryGetTool())
-        registry.register(StubCollectionConfigureTool())
+        registry.register(_real_collection_configure_tool(db))
         executor = ToolExecutor(registry, timeout=30.0)
 
         result = await executor.execute(

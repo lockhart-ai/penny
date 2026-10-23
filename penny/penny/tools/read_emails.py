@@ -25,6 +25,12 @@ NO_EMAILS_TO_READ = (
 # model reads the state and reasons from it, same as every other tool result.
 MAILBOX_READ_FAILED = "That email couldn't be opened ({e}), so nothing was read from it."
 
+# Named, not silent (#2768): the backend read some of the requested ids but not all of
+# them (``ZohoClient.read_emails`` logs a warning and drops a failed id rather than
+# raising), so the body says exactly which ones didn't open rather than letting the
+# summary quietly cover a subset while the headline claims the full request.
+_SOME_IDS_NOT_OPENED = "\n\n(Couldn't open {count} of the requested {noun}: {ids}.)"
+
 
 class ReadEmailsTool(Tool):
     """Read the full body of one or more emails by ID."""
@@ -59,13 +65,16 @@ class ReadEmailsTool(Tool):
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
         """First-person recap of the read (part of epic #1478).  Names how many
-        emails were opened from the call's ``email_ids``; ``NO_EMAILS_TO_READ`` is
-        the tool's own empty body (no matching ids)."""
+        emails were ACTUALLY opened (``result.read_email_ids``, #2768) — never the
+        call's requested ``email_ids``, which the backend can silently drop one of
+        (the client logs a warning and omits it rather than raising) — so a partial
+        fetch is never claimed as a full one.  ``NO_EMAILS_TO_READ`` is the tool's
+        own empty body (no matching ids)."""
         if not result.success:
             return "You tried to read your email but it didn't work:"
         if result.message == NO_EMAILS_TO_READ:
             return "You tried to open some email but there was nothing to read:"
-        count = len(arguments.get("email_ids") or [])
+        count = len(result.read_email_ids)
         noun = "email" if count == 1 else "emails"
         return f"You read {count} {noun}:"
 
@@ -92,6 +101,7 @@ class ReadEmailsTool(Tool):
         if not emails:
             return ToolResult(message=NO_EMAILS_TO_READ)
 
+        read_ids = [e.id for e in emails]
         raw_content = PennyConstants.SECTION_SEPARATOR.join(str(e) for e in emails)
         prompt = Prompt.EMAIL_SUMMARIZE_PROMPT.format(
             today=self._today,
@@ -101,4 +111,18 @@ class ReadEmailsTool(Tool):
         response = await self._ollama.chat(
             [LlmMessage(role="user", content=prompt)], call_link=call_link.child()
         )
-        return ToolResult(message=response.content or raw_content)
+        message = (response.content or raw_content) + self._not_opened_note(
+            args.email_ids, read_ids
+        )
+        return ToolResult(message=message, read_email_ids=read_ids)
+
+    @staticmethod
+    def _not_opened_note(requested: list[str], read: list[str]) -> str:
+        """Which of the requested ids never came back from the backend — ``""``
+        when every id was read, so the common full-fetch case renders byte-identical
+        to before."""
+        missing = [i for i in requested if i not in read]
+        if not missing:
+            return ""
+        noun = "id" if len(missing) == 1 else "ids"
+        return _SOME_IDS_NOT_OPENED.format(count=len(missing), noun=noun, ids=", ".join(missing))

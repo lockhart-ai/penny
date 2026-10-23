@@ -605,18 +605,17 @@ class UpdateTaskTool(Tool):
                 )
 
             tasks = await self._client.get_tasks(project.id)
-            task = next(
-                (t for t in tasks if t.name.lower() == args.task_name.lower()),
-                None,
-            )
+            matching_tasks = [t for t in tasks if t.name.lower() == args.task_name.lower()]
 
-            if not task:
+            if not matching_tasks:
                 return ToolResult(
                     message=(
                         f"Task not found: {args.task_name}. Check the task name and try again."
                     ),
                     success=False,
                 )
+            task = matching_tasks[0]
+            ambiguity_note = self._ambiguous_match_note(matching_tasks)
 
             updated = await self._client.update_task(
                 project_id=project.id,
@@ -631,23 +630,45 @@ class UpdateTaskTool(Tool):
             logger.exception("Updating task failed")
             return ToolResult(message=UPDATE_TASK_FAILED.format(e=e), success=False)
 
-        if updated:
-            changes = []
-            if args.new_name:
-                changes.append(f"name -> '{args.new_name}'")
-            if args.priority:
-                changes.append(f"priority -> {args.priority}")
-            if args.completion_percentage is not None:
-                changes.append(f"progress -> {args.completion_percentage}%")
-            if args.description:
-                changes.append("description updated")
+        return self._build_update_result(args, updated, ambiguity_note)
 
-            change_str = ", ".join(changes) if changes else "no changes"
-            return ToolResult(
-                message=f"Task '{task.name}' updated: {change_str}",
-                mutated=True,
-            )
-        return ToolResult(message=f"Failed to update task: {args.task_name}", success=False)
+    @staticmethod
+    def _ambiguous_match_note(matching_tasks: list[Any]) -> str:
+        """``""`` for an unambiguous match (the common case, byte-identical to
+        before); otherwise names how many tasks share the name, since a silent
+        first-match pick (#2768) would read as unambiguous."""
+        if len(matching_tasks) <= 1:
+            return ""
+        return (
+            f"\n\n(Heads up: {len(matching_tasks)} tasks named '{matching_tasks[0].name}' "
+            "in this project — updated the first one; the others weren't touched.)"
+        )
+
+    @staticmethod
+    def _build_update_result(args: UpdateTaskArgs, updated: Any, ambiguity_note: str) -> ToolResult:
+        """Render the update from the state the backend CONFIRMS in its response
+        (#2768), never the call's own args: the backend can reject a field within
+        an otherwise-successful call, so echoing the request would claim a value
+        that didn't land.  Mirrors ``CreateTaskTool``'s own render, which already
+        reads the returned task rather than its own args."""
+        if not updated:
+            return ToolResult(message=f"Failed to update task: {args.task_name}", success=False)
+
+        changes = []
+        if args.new_name is not None:
+            changes.append(f"name -> '{updated.name}'")
+        if args.priority is not None:
+            changes.append(f"priority -> {updated.priority}")
+        if args.completion_percentage is not None:
+            changes.append(f"progress -> {updated.completion_percentage}%")
+        if args.description is not None:
+            changes.append(f"description -> {updated.description}")
+
+        change_str = ", ".join(changes) if changes else "no changes"
+        return ToolResult(
+            message=f"Task '{updated.name}' updated: {change_str}{ambiguity_note}",
+            mutated=True,
+        )
 
 
 def project_tools(projects_client: Any) -> list[Tool]:

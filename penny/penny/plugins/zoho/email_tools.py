@@ -151,10 +151,11 @@ class MoveEmailsTool(Tool):
             logger.exception("Moving emails failed")
             return ToolResult(message=MOVE_EMAILS_FAILED.format(e=e), success=False)
         if success:
+            # The Zoho endpoint moves the whole batch in one call and answers with a
+            # single aggregate status, not a per-message confirmation (#2768) — so the
+            # count in the request is never stated as a count the backend confirmed.
             return ToolResult(
-                message=(
-                    f"Successfully moved {len(args.message_ids)} email(s) to '{args.folder_path}'"
-                ),
+                message=f"Moved the email(s) to '{args.folder_path}'.",
                 mutated=True,
             )
         return ToolResult(
@@ -281,11 +282,10 @@ class ApplyLabelTool(Tool):
             logger.exception("Applying label failed")
             return ToolResult(message=APPLY_LABEL_FAILED.format(e=e), success=False)
         if success:
+            # Same bulk-endpoint shape as move_messages (#2768): one aggregate status
+            # for the whole batch, no per-message confirmation to count.
             return ToolResult(
-                message=(
-                    f"Successfully applied label '{args.label_name}' to "
-                    f"{len(args.message_ids)} email(s)"
-                ),
+                message=f"Applied label '{args.label_name}' to the email(s).",
                 mutated=True,
             )
         return ToolResult(

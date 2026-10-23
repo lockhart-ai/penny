@@ -149,6 +149,20 @@ WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
 }
 
 
+class CollectionConfigureOutcome(StrEnum):
+    """Which path a ``collection_configure`` call took — set by the dispatcher
+    (``CollectionSetTool``), never re-derived from the call's own arguments or
+    guessed from which inner class happened to answer the tool's registered name
+    (#2768).  Three classes in ``tools/memory_tools.py`` once all declared
+    ``name = "collection_configure"``, so the class registry's last-defined-wins
+    collision made every call — create included — narrate as an update.  Now
+    ``CollectionSetTool`` alone owns the name, and it stamps this field on the
+    result it returns so its own ``to_result_narration`` names the real outcome."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+
+
 # ``COLLECTOR_COVERED_REASON`` is RETIRED (#1916, with the coverage exit it named).  A
 # cycle closes on ``done()`` again, and the render tells a clean close from an abandoned
 # one by the ledger's own ``done`` record rather than by a stamped phrase — so a clean

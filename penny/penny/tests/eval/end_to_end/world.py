@@ -15,7 +15,7 @@ from typing import NamedTuple
 from sqlalchemy import update
 from sqlmodel import col
 
-from penny.constants import ChatPromptType, PennyConstants, RunOutcome
+from penny.constants import ChatPromptType, CollectionConfigureOutcome, PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.models import MemoryEntry, PromptLog
@@ -284,7 +284,11 @@ def seed_known_routine(
     )
     echo = render_creation_echo(row, user_timezone_name(db))
     configure_result = Tool.format_result(
-        "collection_configure", configure_args, ToolResult(message=echo, mutated=True)
+        "collection_configure",
+        configure_args,
+        ToolResult(
+            message=echo, mutated=True, configure_outcome=CollectionConfigureOutcome.CREATED
+        ),
     )
     conversation = [
         *conversation,

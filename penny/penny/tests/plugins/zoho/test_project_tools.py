@@ -78,6 +78,72 @@ async def test_update_task_reports_missing_task_as_failure():
 
 
 @pytest.mark.asyncio
+async def test_update_task_renders_from_the_confirmed_response():
+    """The change summary is built from what the backend CONFIRMS it did (the
+    returned task's own fields), never the call's own args (#2768) — a field the
+    backend rejects within an otherwise-successful call would otherwise be
+    claimed as landed."""
+    task = MagicMock(id="T1")
+    task.name = "Ship it"
+    updated = MagicMock()
+    updated.name = "Ship it v2"
+    updated.priority = "high"
+    updated.completion_percentage = 50
+    updated.description = "Now with more detail"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=MagicMock(id="P1"))
+    client.get_tasks = AsyncMock(return_value=[task])
+    client.update_task = AsyncMock(return_value=updated)
+
+    result = await UpdateTaskTool(client).execute(
+        CallLink.new_top(),
+        project_name="Acme",
+        task_name="Ship it",
+        new_name="Ship it v2",
+        priority="high",
+        completion_percentage=50,
+        description="Now with more detail",
+    )
+
+    assert result.success is True
+    assert result.mutated is True
+    assert result.message == (
+        "Task 'Ship it v2' updated: name -> 'Ship it v2', priority -> high, "
+        "progress -> 50%, description -> Now with more detail"
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_task_names_other_matches_when_the_name_is_ambiguous():
+    """More than one task sharing the name picks the first, but says so (#2768) —
+    a silent pick would read as an unambiguous update when it wasn't."""
+    first = MagicMock(id="T1")
+    first.name = "Ship it"
+    second = MagicMock(id="T2")
+    second.name = "Ship it"
+    updated = MagicMock()
+    updated.name = "Ship it"
+    updated.priority = "high"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=MagicMock(id="P1"))
+    client.get_tasks = AsyncMock(return_value=[first, second])
+    client.update_task = AsyncMock(return_value=updated)
+
+    result = await UpdateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", task_name="Ship it", priority="high"
+    )
+
+    assert result.success is True
+    await_args = client.update_task.await_args
+    assert await_args is not None
+    assert await_args.kwargs["task_id"] == "T1"
+    assert (
+        "Heads up: 2 tasks named 'Ship it' in this project — updated the first "
+        "one; the others weren't touched."
+    ) in result.message
+
+
+@pytest.mark.asyncio
 async def test_create_task_defaults_to_general_tasklist():
     """With no tasklist_name, the task is filed under the default 'General' list — the value
     now named PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST, unchanged by the constant swap."""

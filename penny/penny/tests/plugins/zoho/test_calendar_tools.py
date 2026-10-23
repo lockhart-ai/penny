@@ -156,7 +156,18 @@ async def test_update_event_applies_changes_and_renders_summary():
             timezone="UTC",
         )
     )
-    client.update_event = AsyncMock(return_value=ZohoEvent(uid="E1", title="Standup"))
+    # The mock mirrors what the real endpoint returns: the response it parses
+    # (``_event_from_update_response``) echoes the CONFIRMED fields back, which is
+    # what the result now renders from (#2768) — never the request's own args.
+    client.update_event = AsyncMock(
+        return_value=ZohoEvent(
+            uid="E1",
+            title="Standup",
+            start=datetime(2026, 7, 22, 14, 0),
+            end=datetime(2026, 7, 22, 15, 0),
+            location="Room 2",
+        )
+    )
 
     result = await UpdateEventTool(client).execute(
         CallLink.new_top(),
@@ -171,9 +182,8 @@ async def test_update_event_applies_changes_and_renders_summary():
     assert result.message == (
         "Event updated successfully (all occurrences):\n\n"
         "**Standup**\n"
-        "Changes:\n"
-        "  - Time: 2026-07-22 14:00 to 15:00\n"
-        "  - Location: Room 2"
+        "Time: 2026-07-22 14:00 to 15:00\n"
+        "Location: Room 2"
     )
     await_args = client.update_event.await_args
     assert await_args is not None
@@ -256,6 +266,40 @@ async def test_update_event_reports_missing_event_as_failure():
         "No event found matching 'Ghost' in calendar 'Default'. "
         "Please check the event title and try again."
     )
+
+
+@pytest.mark.asyncio
+async def test_update_event_names_other_matches_when_title_is_ambiguous():
+    """More than one event sharing the title picks the soonest-starting match, but
+    says so (#2768) — a silent pick read as an unambiguous update when it wasn't."""
+    first = datetime(2026, 7, 22, 9, 0, tzinfo=UTC)
+    second = datetime(2026, 7, 23, 9, 0, tzinfo=UTC)
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(return_value=_calendar())
+    client.get_events = AsyncMock(
+        return_value=[
+            ZohoEvent(uid="E1", title="Standup", start=first),
+            ZohoEvent(uid="E2", title="Standup", start=second),
+        ]
+    )
+    client.get_event = AsyncMock(
+        return_value=ZohoEvent(
+            uid="E1", title="Standup", start=first, end=first, etag=7, timezone="UTC"
+        )
+    )
+    client.update_event = AsyncMock(
+        return_value=ZohoEvent(uid="E1", title="Standup", start=first, end=first)
+    )
+
+    result = await UpdateEventTool(client).execute(
+        CallLink.new_top(), event_title="Standup", new_location="Room 2"
+    )
+
+    assert result.success
+    assert (
+        "Heads up: 2 events matched 'Standup' — updated the one starting "
+        "2026-07-22 09:00; the others weren't touched."
+    ) in result.message
 
 
 # ── Calendar tools report their own client failures (#2369) ──────────────────

@@ -195,7 +195,7 @@ class CreateExpenseTool(Tool):
         except httpx.HTTPError as e:
             logger.exception("Creating InvoiceNinja expense failed")
             return ToolResult(message=CREATE_EXPENSE_FAILED.format(e=e), success=False)
-        return ToolResult(message=f"Created expense: {expense}")
+        return ToolResult(message=f"Created expense: {expense}", mutated=True)
 
 
 class ListExpensesArgs(ToolArgs):
@@ -359,7 +359,7 @@ class UpdateExpenseTool(Tool):
         except httpx.HTTPError as e:
             logger.exception("Updating InvoiceNinja expense failed")
             return ToolResult(message=UPDATE_EXPENSE_FAILED.format(e=e), success=False)
-        return ToolResult(message=f"Updated expense: {expense}")
+        return ToolResult(message=f"Updated expense: {expense}", mutated=True)
 
 
 class CreateExpenseCategoryArgs(ToolArgs):
@@ -397,7 +397,7 @@ class CreateExpenseCategoryTool(Tool):
         except httpx.HTTPError as e:
             logger.exception("Creating InvoiceNinja expense category failed")
             return ToolResult(message=CREATE_EXPENSE_CATEGORY_FAILED.format(e=e), success=False)
-        return ToolResult(message=f"Created expense category: {category}")
+        return ToolResult(message=f"Created expense category: {category}", mutated=True)
 
 
 class ListExpenseCategoriesArgs(ToolArgs):

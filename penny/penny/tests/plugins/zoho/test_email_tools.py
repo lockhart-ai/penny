@@ -44,6 +44,9 @@ async def test_move_emails_to_existing_folder():
     assert isinstance(result, ToolResult)
     assert result.success is True
     assert result.mutated is True
+    # No count claimed: the bulk endpoint confirms the whole batch's status, never a
+    # per-message count the result could honestly state (#2768).
+    assert result.message == "Moved the email(s) to 'Invoices'."
     client.move_messages.assert_awaited_once_with(["F001:M1", "F001:M2"], "F123")
 
 
@@ -119,6 +122,8 @@ async def test_apply_label_tool_creates_label_when_missing():
     assert isinstance(result, ToolResult)
     assert result.success is True
     assert result.mutated is True
+    # Same bulk-status shape as move_messages — no per-message count claimed (#2768).
+    assert result.message == "Applied label 'Done' to the email(s)."
     client.create_label.assert_awaited_once_with("Done")
     client.apply_label.assert_awaited_once_with(["F001:M1"], "L123")
 

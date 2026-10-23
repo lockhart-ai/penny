@@ -401,6 +401,23 @@ async def test_create_expense_tool_reports_a_raised_create():
 
 
 @pytest.mark.asyncio
+async def test_create_expense_tool_marks_a_success_as_mutated():
+    """A successful write sets ``mutated=True`` (#2768) — without it, a collector
+    cycle can't tell this tool changed anything, starving its work/no-work signal
+    the same way a read or a no-op would."""
+    client = MagicMock()
+    client.create_expense = AsyncMock(return_value="Taxi, $45.00")
+
+    result = await CreateExpenseTool(client).execute(
+        CallLink.new_top(), amount=45.0, date="2026-07-22", vendor_id="ven1", category_id="cat1"
+    )
+
+    assert result.success is True
+    assert result.mutated is True
+    assert result.message == "Created expense: Taxi, $45.00"
+
+
+@pytest.mark.asyncio
 async def test_list_expenses_tool_reports_a_raised_listing():
     client = MagicMock()
     client.list_expenses = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
@@ -436,6 +453,21 @@ async def test_update_expense_tool_reports_a_raised_update():
 
 
 @pytest.mark.asyncio
+async def test_update_expense_tool_marks_a_success_as_mutated():
+    """Same mutated-signal gap as ``create_expense`` (#2768)."""
+    client = MagicMock()
+    client.update_expense = AsyncMock(return_value="Taxi, $50.00")
+
+    result = await UpdateExpenseTool(client).execute(
+        CallLink.new_top(), expense_id="exp1", amount=50.0
+    )
+
+    assert result.success is True
+    assert result.mutated is True
+    assert result.message == "Updated expense: Taxi, $50.00"
+
+
+@pytest.mark.asyncio
 async def test_create_expense_category_tool_reports_a_raised_create():
     client = MagicMock()
     client.create_expense_category = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
@@ -444,6 +476,19 @@ async def test_create_expense_category_tool_reports_a_raised_create():
 
     assert result.success is False
     assert result.message == CREATE_EXPENSE_CATEGORY_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_create_expense_category_tool_marks_a_success_as_mutated():
+    """Same mutated-signal gap as ``create_expense`` (#2768)."""
+    client = MagicMock()
+    client.create_expense_category = AsyncMock(return_value="Travel")
+
+    result = await CreateExpenseCategoryTool(client).execute(CallLink.new_top(), name="Travel")
+
+    assert result.success is True
+    assert result.mutated is True
+    assert result.message == "Created expense category: Travel"
 
 
 @pytest.mark.asyncio

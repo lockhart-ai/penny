@@ -18,7 +18,7 @@ from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
 from penny.agents.models import ToolCallRecord
-from penny.constants import PennyConstants
+from penny.constants import CollectionConfigureOutcome, PennyConstants
 from penny.database import Database
 from penny.database.memory import (
     WriteGateOutcome,
@@ -38,6 +38,7 @@ from penny.llm.similarity import embed_text
 from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
+from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
     SCHEDULE_EXAMPLES,
     ScheduleError,
@@ -1093,6 +1094,13 @@ class TestBlankOptionalArgsAreRefused:
         )
         assert created.success and created.mutated
         assert created.message == _INERT_ECHO_LITERAL
+        # The dispatcher stamps which path ran (#2768), and ONLY ``CollectionSetTool``
+        # answers to the registered name — so the real registry dispatch (not just the
+        # bare field) narrates a create as a create, never as an update.
+        assert created.configure_outcome == CollectionConfigureOutcome.CREATED
+        assert Tool.format_result(
+            "collection_configure", {"collection": "deals-watch"}, created
+        ).startswith("You created `deals-watch`: (collection_configure result)")
 
         _seed_collection(update_db, name="deals-watch", description="track the shoe deals")
         updated = await CollectionSetTool(update_db, cast(Any, MockLlmClient())).run(
@@ -1101,6 +1109,10 @@ class TestBlankOptionalArgsAreRefused:
             description="track the trail-runner shoe deals",
         )
         assert updated.success
+        assert updated.configure_outcome == CollectionConfigureOutcome.UPDATED
+        assert Tool.format_result(
+            "collection_configure", {"collection": "deals-watch"}, updated
+        ).startswith("You updated `deals-watch`'s settings: (collection_configure result)")
         row = update_db.memories.get("deals-watch")
         assert row is not None
         assert row.description == "track the trail-runner shoe deals"

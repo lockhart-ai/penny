@@ -55,9 +55,14 @@ class ListFoldersTool(Tool):
             logger.exception("Mailbox folder listing failed")
             return ToolResult(message=MAILBOX_FOLDERS_FAILED.format(e=e), success=False)
         if not folders:
+            # Every mailbox has at least Inbox/Sent/Drafts, so an empty list is the
+            # account being unreachable, not a legitimately empty one — the message
+            # already said so; ``success`` now agrees (#2768) rather than reading as
+            # a completed, if boring, listing.
             return ToolResult(
                 message="No mail folders returned — this usually means the mail account isn't "
-                "reachable or has no access right now. Let the user know rather than retrying."
+                "reachable or has no access right now. Let the user know rather than retrying.",
+                success=False,
             )
 
         lines = [f"Found {len(folders)} folder(s):\n"]

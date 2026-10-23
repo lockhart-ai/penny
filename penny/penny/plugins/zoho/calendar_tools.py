@@ -589,9 +589,10 @@ class UpdateEventTool(Tool):
             if isinstance(calendar, ToolResult):
                 return calendar
 
-            event = await self._find_event(calendar, args)
-            if isinstance(event, ToolResult):
-                return event
+            found = await self._find_event(calendar, args)
+            if isinstance(found, ToolResult):
+                return found
+            event, ambiguity_note = found
 
             full_event = await self._load_full_event(calendar, event)
             if isinstance(full_event, ToolResult):
@@ -623,7 +624,7 @@ class UpdateEventTool(Tool):
             logger.exception("Calendar event update failed")
             return ToolResult(message=CALENDAR_EVENT_UPDATE_FAILED.format(e=e), success=False)
 
-        return self._build_update_result(args, updated_event, new_start, new_end)
+        return self._build_update_result(args, updated_event, new_start, new_end, ambiguity_note)
 
     async def _resolve_calendar(self, args: UpdateEventArgs) -> ZohoCalendarInfo | ToolResult:
         """Resolve the target calendar (named or default), else a failure ToolResult."""
@@ -644,8 +645,13 @@ class UpdateEventTool(Tool):
 
     async def _find_event(
         self, calendar: ZohoCalendarInfo, args: UpdateEventArgs
-    ) -> ZohoEvent | ToolResult:
-        """Find the event whose title matches the request, else a failure ToolResult."""
+    ) -> tuple[ZohoEvent, str] | ToolResult:
+        """Find the event whose title matches the request, else a failure ToolResult.
+
+        More than one event can share a title; the soonest-starting match is picked
+        (events come back in start order), but it's SAID, not silent (#2768) — the
+        returned note names how many matched, so an ambiguous update isn't reported
+        as if it were unambiguous."""
         start = datetime.now(UTC)
         end = start + timedelta(days=30)
 
@@ -666,7 +672,20 @@ class UpdateEventTool(Tool):
             event.title,
             event.start,
         )
-        return event
+        return event, self._ambiguous_match_note(matching_events, event)
+
+    @staticmethod
+    def _ambiguous_match_note(matching_events: list[ZohoEvent], chosen: ZohoEvent) -> str:
+        """``""`` for an unambiguous match (the common case, byte-identical to
+        before); otherwise names how many events matched and when the one updated
+        starts, since the title alone no longer tells them apart."""
+        if len(matching_events) <= 1:
+            return ""
+        when = chosen.start.strftime("%Y-%m-%d %H:%M") if chosen.start else "soonest"
+        return (
+            f"\n\n(Heads up: {len(matching_events)} events matched '{chosen.title}' — "
+            f"updated the one starting {when}; the others weren't touched.)"
+        )
 
     async def _load_full_event(
         self, calendar: ZohoCalendarInfo, event: ZohoEvent
@@ -760,37 +779,34 @@ class UpdateEventTool(Tool):
         updated_event: ZohoEvent | None,
         new_start: datetime,
         new_end: datetime,
+        ambiguity_note: str,
     ) -> ToolResult:
-        """Render the update outcome — the change summary on success, else a failure."""
-        if updated_event:
-            changes = []
-            if args.new_title:
-                changes.append(f"Title: {args.new_title}")
-            if new_start and new_end:
-                changes.append(
-                    f"Time: {new_start.strftime('%Y-%m-%d %H:%M')} to {new_end.strftime('%H:%M')}"
-                )
-            if args.new_location:
-                changes.append(f"Location: {args.new_location}")
-            if args.new_description:
-                changes.append("Description updated")
+        """Render the update outcome from the state the backend CONFIRMS in its
+        response (#2768), never the args that asked for it: a call can land some
+        fields and reject others, so echoing the request would claim a field
+        landed that didn't.  Mirrors ``CreateEventTool``'s own render, which
+        already reads the returned event rather than its own args."""
+        if not updated_event:
+            return ToolResult(message="Failed to update event.", success=False)
 
-            edit_scope = {
-                "all": "all occurrences",
-                "following": "this and future occurrences",
-                "only": "only this occurrence",
-            }.get(args.recurrence_edittype, "all occurrences")
+        edit_scope = {
+            "all": "all occurrences",
+            "following": "this and future occurrences",
+            "only": "only this occurrence",
+        }.get(args.recurrence_edittype, "all occurrences")
+        start = updated_event.start or new_start
+        end = updated_event.end or new_end
 
-            result = [
-                f"Event updated successfully ({edit_scope}):\n",
-                f"**{updated_event.title}**",
-            ]
-            if changes:
-                result.append("Changes:")
-                result.extend([f"  - {c}" for c in changes])
-            return ToolResult(message="\n".join(result), mutated=True)
-
-        return ToolResult(message="Failed to update event.", success=False)
+        result = [
+            f"Event updated successfully ({edit_scope}):\n",
+            f"**{updated_event.title}**",
+            f"Time: {start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}",
+        ]
+        if updated_event.location:
+            result.append(f"Location: {updated_event.location}")
+        if updated_event.description:
+            result.append(f"Description: {updated_event.description}")
+        return ToolResult(message="\n".join(result) + ambiguity_note, mutated=True)
 
 
 def calendar_tools(calendar_client: Any) -> list[Tool]:

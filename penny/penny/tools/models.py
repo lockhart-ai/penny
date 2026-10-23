@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from penny.constants import PageReading, WriteGateOutcome
+from penny.constants import CollectionConfigureOutcome, PageReading, WriteGateOutcome
 from penny.text_validity import half_formed_send_reason, is_blank
 
 
@@ -159,6 +159,18 @@ class ToolResult(BaseModel):
       than re-deriving it from the call's arguments (#2758): a cross-key merge redirects
       the content onto the matched entry, so a headline built from the key the model
       passed claims a new entry that was never created.  Empty for every other tool.
+    - ``configure_outcome``: which path a ``collection_configure`` call took — set by
+      the dispatcher (``CollectionSetTool``) and read by that tool's own
+      ``to_result_narration`` (#2768), the same pattern as ``saved_keys``/``merged_keys``:
+      the class registry used to resolve the tool's registered name to whichever of its
+      three implementing classes was defined last, so every call — a brand-new job's
+      included — narrated as an update.  ``None`` for every other tool, and for a
+      ``collection_configure`` call that failed before either path ran.
+    - ``read_email_ids``: the ids ``read_emails`` actually got a body back for — set by
+      ``ReadEmailsTool.execute`` and read by that tool's own ``to_result_narration``
+      (#2768), never the call's requested ``email_ids``: the backend can silently drop
+      an id it failed to fetch, so a headline built from the request would count one
+      that was never opened.  Empty for every other tool.
     """
 
     message: str
@@ -170,6 +182,8 @@ class ToolResult(BaseModel):
     stop: WriteGateOutcome | None = None
     saved_keys: list[str] = Field(default_factory=list)
     merged_keys: list[str] = Field(default_factory=list)
+    configure_outcome: CollectionConfigureOutcome | None = None
+    read_email_ids: list[str] = Field(default_factory=list)
 
     def __str__(self) -> str:
         return self.message
