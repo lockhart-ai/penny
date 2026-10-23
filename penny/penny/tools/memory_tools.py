@@ -205,6 +205,53 @@ def format_entries(
     return f"{len(entries)} {noun} from `{source}`{suffix}:\n{body}"
 
 
+# The disclosure line a bounded collection read (`collection_list`/`collection_sample`)
+# shows in place of `format_entries`' own header when its default cap (#2771) left
+# entries out — named total, named follow-up calls, so the cut is never silent.
+_BOUNDED_READ_CUT_HEADER = (
+    "Showing {shown} of {total} entries in {collection}, {ordering}. For more, "
+    "{tool}({collection}, k=<n>); for an overview, collection_keys({collection}); "
+    "to search, find(...)"
+)
+
+
+def _bounded_read_message(
+    entries: list[MemoryEntry],
+    *,
+    collection: str,
+    total: int,
+    tool: str,
+    ordering: str,
+    cut_ordering: str | None = None,
+    handles: HandleTable | None = None,
+) -> str:
+    """Render a defaulted-cap collection read, naming the cut rather than returning
+    it silently (#2771).
+
+    ``entries`` is what the tool actually read (already capped to ``k`` or the
+    default); ``total`` is the collection's real ``entry_count()``. When nothing was
+    left out — an explicit ``k`` at or above the total, a collection with no more
+    than the default, or an empty collection — this is just ``format_entries``'
+    normal header, with ``ordering`` as its human hint (e.g. ``"most recent
+    first"``). When the read is short of the total, the header instead states the
+    real count and names the two calls that reach what it left out: the same tool
+    with a larger ``k``, or ``collection_keys`` for an overview (``find`` for a
+    meaning search) — worded with ``cut_ordering`` (falling back to ``ordering``),
+    since the disclosure sentence's own phrasing (e.g. ``"newest first"``) need not
+    match the un-cut header's."""
+    if len(entries) >= total:
+        return format_entries(entries, source=collection, ordering=ordering, handles=handles)
+    body = format_entries(entries, handles=handles)
+    header = _BOUNDED_READ_CUT_HEADER.format(
+        shown=len(entries),
+        total=total,
+        collection=collection,
+        tool=tool,
+        ordering=cut_ordering if cut_ordering is not None else ordering,
+    )
+    return f"{header}\n{body}"
+
+
 # One collection's share of what a run WROTE (#1946) — the count, the collection, and
 # the keys, which together are the whole of what a reply can truthfully claim it saved.
 _WRITES_LANDED_LINE = "{count} {noun} landed in '{collection}': {keys}"
@@ -1066,20 +1113,32 @@ class CollectionListTool(MemoryTool):
     Collection-only: logs are read through the cursored ``log_read``, never
     through a newest-first scan (which would bypass the cursor and silently miss
     entries).  A log target gets a readable refusal.
+
+    With no ``k``, the read is capped at ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT``
+    (#2771) rather than returning every entry — an unscoped "look through your
+    memory" turn previously pulled in a whole deep collection at once (330k
+    characters across one turn's parallel reads, one collection alone costing 111k).
+    A capped read never looks silently incomplete: when it left entries out, the
+    result's header says so, states the real total, and names the two calls that
+    reach the rest (a larger ``k`` on this same tool, or ``collection_keys`` for an
+    overview).
     """
 
     name = "collection_list"
     # Collections only — the description sends a log read to the cursored reader.
-    advises = ("log_read",)
+    # A cut result's disclosure header also names `collection_keys` (an overview)
+    # and `find` (a meaning search) — see `_BOUNDED_READ_CUT_HEADER` (#2771).
+    advises = ("log_read", "collection_keys", "find")
     description = (
-        "Return the newest entries in a collection, newest first. Omit `k` to "
-        "return every entry. Collections only — to read a log use `log_read(<log>)`."
+        "Return the newest entries in a collection, newest first. Omit `k` for the "
+        "newest 20; name `k` to read more (or fewer) — however large, it's honoured "
+        "in full. Collections only — to read a log use `log_read(<log>)`."
     )
     parameters = {
         "type": "object",
         "properties": {
             "collection": {"type": "string"},
-            "k": {"type": "integer", "description": "Max entries; omit for all"},
+            "k": {"type": "integer", "description": "Max entries; omit for the newest 20"},
         },
         "required": ["collection"],
     }
@@ -1098,12 +1157,17 @@ class CollectionListTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionListArgs(**kwargs)
-        entries = _resolve(self._db, args.collection).read_latest(args.k)
+        collection = _resolve(self._db, args.collection)
+        limit = args.k if args.k is not None else PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT
+        entries = collection.read_latest(limit)
         return ToolResult(
-            message=format_entries(
+            message=_bounded_read_message(
                 entries,
-                source=args.collection,
+                collection=args.collection,
+                total=collection.entry_count(),
+                tool="collection_list",
                 ordering="most recent first",
+                cut_ordering="newest first",
                 handles=self._handles,
             )
         )
@@ -1167,15 +1231,29 @@ class CollectionGetTool(MemoryTool):
 
 
 class CollectionSampleTool(MemoryTool):
-    """Pick entries at random from a collection."""
+    """Pick entries at random from a collection.
+
+    With no ``k``, the sample is capped at
+    ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT`` rather than drawing from every
+    entry (#2771) — the same default-cap rule as ``collection_list``, since an
+    unbounded sample read is the same unscoped-pull risk. A capped sample names the
+    cut the same way: the header states the real total and names the follow-up
+    calls that reach the rest.
+    """
 
     name = "collection_sample"
-    description = "Return `k` entries sampled uniformly at random. Omit `k` to return all."
+    # A cut result's disclosure header names `collection_keys` (an overview) and
+    # `find` (a meaning search) — see `_BOUNDED_READ_CUT_HEADER` (#2771).
+    advises = ("collection_keys", "find")
+    description = (
+        "Return `k` entries sampled uniformly at random. Omit `k` to sample up to "
+        "20 — however large, an explicit `k` is honoured in full."
+    )
     parameters = {
         "type": "object",
         "properties": {
             "collection": {"type": "string"},
-            "k": {"type": "integer"},
+            "k": {"type": "integer", "description": "Sample size; omit for up to 20"},
         },
         "required": ["collection"],
     }
@@ -1193,9 +1271,17 @@ class CollectionSampleTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadSampleArgs(**kwargs)
-        entries = _resolve(self._db, args.collection).read_random(args.k)
+        collection = _resolve(self._db, args.collection)
+        limit = args.k if args.k is not None else PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT
+        entries = collection.read_random(limit)
         return ToolResult(
-            message=format_entries(entries, source=args.collection, ordering="random sample")
+            message=_bounded_read_message(
+                entries,
+                collection=args.collection,
+                total=collection.entry_count(),
+                tool="collection_sample",
+                ordering="random sample",
+            )
         )
 
 

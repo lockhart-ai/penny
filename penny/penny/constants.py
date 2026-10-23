@@ -725,6 +725,15 @@ class PennyConstants:
     # might not be on it, and an instruction that cannot be followed is worse than the
     # honest number.
     COLLECTOR_HOLDINGS_LIMIT = 20
+    # Default cap on an unbounded collection read (``collection_list``/``collection_sample``)
+    # when the model omits `k` (#2771): with no cap, one ordinary "look through your
+    # memory" turn — 13 parallel reads across several collections — pulled in 330k
+    # characters at once (one 281-entry collection alone cost 111k characters), and
+    # prefill slowed accordingly. 20 keeps an unscoped look cheap while still showing
+    # real content; an explicit `k`, or a collection with 20 or fewer entries, is
+    # unaffected. The cut is never silent — the tool's own result header names the
+    # real total and the follow-up calls that reach the rest.
+    COLLECTION_LIST_DEFAULT_LIMIT = 20
     # How many of a learned routine's steps the learn-close narration's step-shape line
     # renders (#1943), in order, before it states the count it left off.  The line exists
     # to be SKIMMED in one pass by the person who knows what the routine was meant to do,

@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -2582,6 +2582,119 @@ class TestEmbedFailureRefusesWrite:
             CallLink.new_top(), collection="likes", k=5
         )
         assert "key='a' 1" in rendered.message
+
+    @staticmethod
+    def _seed_entries(db: Database, collection: str, count: int, *, key: str, content: str) -> None:
+        """Insert ``count`` entries directly, one second apart, oldest first — so
+        "newest first" is unambiguous and every timestamp is known up front (the
+        pattern `TestEmissionProvenanceRender` uses for a whole-string-pinned read)."""
+        with Session(db.engine) as session:
+            for index in range(1, count + 1):
+                session.add(
+                    MemoryEntry(
+                        memory_name=collection,
+                        key=f"{key}-{index:02d}",
+                        content=f"{content} {index}",
+                        author="test",
+                        created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=index),
+                    )
+                )
+            session.commit()
+
+    def _rendered_line(self, position: int, entry: MemoryEntry) -> str:
+        return (
+            f"{position}. [{format_log_timestamp(entry.created_at)}] key='{entry.key}' "
+            f"{entry.content}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_collection_list_default_cap_discloses_the_cut(self, db):
+        """With no `k`, a deep collection reads only the newest
+        `COLLECTION_LIST_DEFAULT_LIMIT` entries (#2771) — the default cap that
+        replaced an unbounded "return all" read — and the header says so: the real
+        total, and the two follow-up calls that reach the rest."""
+        _seed_collection(db, name="ai-news", description="x")
+        limit = PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT
+        total = limit + 3
+        self._seed_entries(db, "ai-news", total, key="item", content="story")
+
+        rendered = await CollectionListTool(db).execute(CallLink.new_top(), collection="ai-news")
+
+        # Written oldest-to-newest (item-01 .. item-{total}); newest-first shows the
+        # last `limit` written, highest index first.
+        newest_first = "\n".join(
+            self._rendered_line(position, entry)
+            for position, entry in enumerate(require_memory(db, "ai-news").read_latest(limit), 1)
+        )
+        expected = (
+            f"Showing {limit} of {total} entries in ai-news, newest first. For more, "
+            f"collection_list(ai-news, k=<n>); for an overview, collection_keys(ai-news); "
+            f"to search, find(...)\n{newest_first}"
+        )
+        assert rendered.message == expected
+        assert "item-03" not in rendered.message  # the 3 oldest are the ones left out
+        assert f"item-{total:02d}" in rendered.message  # the newest is shown
+
+    @pytest.mark.asyncio
+    async def test_collection_list_uncut_keeps_the_plain_header(self, db):
+        """A collection at or under the default cap reads in full, with the
+        ordinary `format_entries` header — no disclosure line, since nothing was
+        left out."""
+        _seed_collection(db, name="likes", description="x")
+        self._seed_entries(db, "likes", 2, key="pref", content="loves")
+
+        rendered = await CollectionListTool(db).execute(CallLink.new_top(), collection="likes")
+
+        entries = require_memory(db, "likes").read_latest(None)
+        newest_first = "\n".join(
+            self._rendered_line(position, entry) for position, entry in enumerate(entries, 1)
+        )
+        assert rendered.message == f"2 entries from `likes` (most recent first):\n{newest_first}"
+        assert "Showing" not in rendered.message
+
+    @pytest.mark.asyncio
+    async def test_collection_list_explicit_k_is_honoured_and_its_cut_disclosed(self, db):
+        """An explicit `k` still returns exactly that many — not the default — and
+        when it's fewer than the collection holds, the same disclosure header
+        applies, naming the real total."""
+        _seed_collection(db, name="recipes", description="x")
+        self._seed_entries(db, "recipes", 5, key="dish", content="recipe")
+
+        rendered = await CollectionListTool(db).execute(
+            CallLink.new_top(), collection="recipes", k=3
+        )
+
+        shown = require_memory(db, "recipes").read_latest(3)
+        newest_first = "\n".join(
+            self._rendered_line(position, entry) for position, entry in enumerate(shown, 1)
+        )
+        expected = (
+            "Showing 3 of 5 entries in recipes, newest first. For more, "
+            "collection_list(recipes, k=<n>); for an overview, collection_keys(recipes); "
+            f"to search, find(...)\n{newest_first}"
+        )
+        assert rendered.message == expected
+
+    @pytest.mark.asyncio
+    async def test_collection_sample_default_cap_discloses_the_cut(self, db):
+        """`collection_sample` follows the same default-cap rule (#2771): with no
+        `k`, the sample is capped at `COLLECTION_LIST_DEFAULT_LIMIT` rather than
+        drawing from every entry, and the header discloses the real total."""
+        _seed_collection(db, name="trivia", description="x")
+        limit = PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT
+        total = limit + 5
+        self._seed_entries(db, "trivia", total, key="fact", content="fact")
+
+        rendered = await CollectionSampleTool(db).execute(CallLink.new_top(), collection="trivia")
+
+        header = (
+            f"Showing {limit} of {total} entries in trivia, random sample. For more, "
+            f"collection_sample(trivia, k=<n>); for an overview, collection_keys(trivia); "
+            f"to search, find(...)"
+        )
+        assert rendered.message.startswith(f"{header}\n")
+        body_lines = rendered.message[len(header) + 1 :].splitlines()
+        assert len(body_lines) == limit
 
 
 class TestCollectionMutations:
