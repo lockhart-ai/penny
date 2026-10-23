@@ -27,6 +27,7 @@ from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFu
 from penny.prompts import Prompt
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, require_memory, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
+from penny.tools.link_handles import HandleTable
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 
@@ -204,8 +205,12 @@ async def test_static_system_prefix_byte_identical_across_turns(db, monkeypatch)
     """The FIRST system message is the prefix the model server reuses across
     turns (#2745), so nothing per-turn — the clock, entry counts, job rows — may
     leak into it.  Two renders with a shifted clock and a changed registry must
-    produce a byte-identical first message, while the dynamic second message
-    DID move (so the guard cannot pass vacuously)."""
+    produce a byte-identical first message, while the dynamic message DID move
+    (so the guard cannot pass vacuously).
+
+    The dynamic message sits right BEFORE the user's own turn (#2756) — the
+    one mid-conversation system placement prod's patched oMLX and OpenRouter
+    both render in place (see ``Agent._build_messages``)."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent._pending_page_context = None
@@ -225,17 +230,94 @@ async def test_static_system_prefix_byte_identical_across_turns(db, monkeypatch)
     db.memories.create_collection("late-addition", "created between the two renders")
     second = agent._build_messages("hi", None, await agent._build_system_prompt(TEST_SENDER))
 
-    # Both system messages present, static first, dynamic second.
-    assert [m.role for m in first[:2]] == ["system", "system"]
-    assert [m.role for m in second[:2]] == ["system", "system"]
+    # Static leading, dynamic state next, user LAST — no history, so
+    # nothing sits between the static message and the dynamic one.
+    assert [m.role for m in first] == ["system", "system", "user"]
+    assert [m.role for m in second] == ["system", "system", "user"]
     # The reused prefix: byte-identical across a shifted clock and new state.
     assert second[0].content == first[0].content
-    # The dynamic message carries the clock and moved between the renders.
+    # The user turn (now last) is unaffected by either change.
+    assert first[-1].content == "hi"
+    assert second[-1].content == "hi"
+    # The dynamic message (now second) carries the clock and moved between the renders.
     assert first[1].content.startswith("Current date and time: ")
     assert second[1].content != first[1].content
-    # And the history + the bare user turn close the array.
-    assert second[-1].role == "user"
-    assert second[-1].content == "hi"
+
+
+@pytest.mark.asyncio
+async def test_history_stays_between_static_and_user_state_right_before_user(db, monkeypatch):
+    """With history present, the shape is ``[static][history…][state][user]``
+    (#2756) — history rides right after the one leading system message (so
+    the static text, the tool schemas, and history are the reused prefix),
+    and the dynamic state message sits right before the live user turn, the
+    one mid-conversation system placement prod's patched oMLX and OpenRouter
+    both render in place."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    agent._pending_page_context = None
+    agent._current_user = TEST_SENDER
+
+    history = [("user", "earlier question"), ("assistant", "earlier answer")]
+    messages = agent._build_messages("hi", history, await agent._build_system_prompt(TEST_SENDER))
+
+    assert [m.role for m in messages] == ["system", "user", "assistant", "system", "user"]
+    assert messages[1].content == "earlier question"
+    assert messages[2].content == "earlier answer"
+    assert messages[3].content.startswith("Current date and time: ")
+    assert messages[-1].content == "hi"
+
+
+@pytest.mark.asyncio
+async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """Between cuts, each turn's history is the previous turn's history plus
+    exactly one new exchange — never a changed message, link handle numbers
+    included (#2756).  A URL planted in the first reply keeps the same handle
+    number on every later turn, right up to the cut that drops it."""
+    config = make_config(chat_history_turns=2)  # window grows 2 -> 3, cuts at 4
+
+    async with running_penny(config) as penny:
+        renders: list[list[str]] = []
+        for n in range(1, 5):  # four exchanges: turns at M=1,2,3 grow; M=4 cuts
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+            )
+            reply = "reply 1 https://example.com/a" if n == 1 else f"reply {n}"
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                reply,
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+            )
+            history = penny.chat_agent.get_history(TEST_SENDER)
+            table = HandleTable()
+            converted = [
+                table.convert(content) if role == "assistant" else content
+                for role, content in (history or [])
+            ]
+            renders.append(converted)
+
+        # M=1,2: fewer turns than the window (2) — everything so far, growing.
+        assert renders[0] == ["user message 1", "reply 1 [1]"]
+        assert renders[1] == ["user message 1", "reply 1 [1]", "user message 2", "reply 2"]
+        # M=3: within the window's growth (up to 2*2-1=3) — a byte-identical
+        # extension of renders[1], same handle number for the planted URL.
+        assert renders[2][: len(renders[1])] == renders[1]
+        assert renders[2] == [
+            "user message 1",
+            "reply 1 [1]",
+            "user message 2",
+            "reply 2",
+            "user message 3",
+            "reply 3",
+        ]
+        # M=4: the cut turn — back down to 2 exchanges, the oldest (and the
+        # planted URL) dropped.  Allowed to differ (#2756).
+        assert renders[3] == ["user message 3", "reply 3", "user message 4", "reply 4"]
 
 
 # ── 1b. Provenance stamping ─────────────────────────────────
@@ -1190,7 +1272,7 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "fits, or under a new name; the write creates the collection if it doesn't exist. "
     "That is a plain write, not a job: no schedule, no notify.\n"
     "\n"
-    "When a 'Current Browser Page' section appears above, the user is browsing that page "
+    "When a 'Current Browser Page' section appears below, the user is browsing that page "
     "right now. If they say 'this page', 'this thread', 'this article', or anything "
     "ambiguous, they mean the Current Browser Page — not something from earlier in the "
     "conversation.\n"

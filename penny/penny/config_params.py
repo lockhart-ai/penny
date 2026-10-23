@@ -187,8 +187,11 @@ ConfigParam(
     key="CHAT_HISTORY_TURNS",
     description=(
         "How many recent exchanges a chat turn sees as conversation history — "
-        "the last N of the user's turns, each with its reply. Older turns stay "
-        "reachable through log_read, find, and the self-state's recent activity."
+        "N of the user's turns, each with its reply. The window grows by one "
+        "exchange per turn from N up to 2N-1, then cuts back to N, so most "
+        "turns extend the prior turn's history rather than replacing it "
+        "(#2756). Older turns stay reachable through log_read, find, and the "
+        "self-state's recent activity."
     ),
     type=int,
     default=5,

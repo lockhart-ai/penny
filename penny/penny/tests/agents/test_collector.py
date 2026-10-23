@@ -2140,14 +2140,15 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
 async def test_collector_message_array_verbatim(test_config, tmp_path):
     """Full verbatim dump of the collector's on-wire message array.
 
-    Shows exactly what the collector model sees: the STATIC system message (the
-    stored prompt verbatim + the close-with-``done()`` instruction + the fixed
-    runtime rules (#2455 naive baseline) — the prefix reused across cycles) and
-    the DYNAMIC one (the clock + what the collection holds + this collector's
-    recent run history, #2745), then the bare user turn (empty for a background
-    agent).  Date and run timestamps are normalised to placeholders; everything
-    else is asserted char-for-char so the structure is visible and drift is
-    caught.
+    Shows exactly what the collector model sees: the STATIC system message
+    (the stored prompt verbatim + the close-with-``done()`` instruction +
+    the fixed runtime rules, #2455 naive baseline — the prefix reused across
+    cycles), then the DYNAMIC one (the clock + what the collection holds +
+    this collector's recent run history) right before the bare user turn
+    (empty for a background agent, #2756) — the same shape #2745 originally
+    shipped, since a collector cycle has no history to separate them.  Date
+    and run timestamps are normalised to placeholders; everything else is
+    asserted char-for-char so the structure is visible and drift is caught.
 
     The state blocks sit in their fixed order (#1914): the clock, what the
     collection holds — nothing, here, said plainly — then what its recent runs
@@ -2208,7 +2209,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         f"Static system message mismatch:\n{static_text!r}\n\nvs expected:\n{expected_static!r}"
     )
 
-    # ── Dynamic system message: clock + holdings + run history ─────────────
+    # ── Dynamic system message: clock + holdings + run history (V2: before user) ─
     dynamic_text = _normalise_stamps(
         re.sub(r"Current date and time: [^\n]*", "Current date and time: DATE", messages[1].content)
     )
@@ -2232,13 +2233,15 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     )
 
     # ── User turn: bare (empty) — a collector runs with no user message ────
+    # static, dynamic, user — the user turn closes the array (#2756).
     assert messages[-1].role == "user"
     assert messages[-1].content == ""
 
 
 def _datetime_line(messages: list[LlmMessage]) -> str:
-    """The rendered 'Current date and time:' anchor line from a message array —
-    the first line of the DYNAMIC system message (#2745)."""
+    """The rendered 'Current date and time:' anchor line from a message array
+    — the first line of the DYNAMIC system message, which sits right before
+    the user turn (#2756)."""
     return messages[1].content.split("\n", 1)[0]
 
 

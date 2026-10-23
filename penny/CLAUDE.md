@@ -76,8 +76,8 @@ penny/
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
     models.py         — ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
-    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the two-system-message split (static identity/rules/instructions + a dynamic clock/page/state message, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656)
-    self_state.py     — `SelfStateHeader`: renders Penny's operational self-state into the chat prompt's dynamic system message (the request's second system message, #2745)
+    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the static-leading system message split (static identity/rules/instructions, then the growing history, then a dynamic clock/page/state system message right before the user's own turn, #2756; previously two leading messages, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656)
+    self_state.py     — `SelfStateHeader`: renders Penny's operational self-state into the chat prompt's dynamic system message (the request's system message right before the user's own turn, #2756; previously the request's second leading message, #2745)
     collector.py      — Collector: single dispatcher agent driving every per-collection extractor
   scheduler/
     base.py           — BackgroundScheduler + Schedule ABC

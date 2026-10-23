@@ -86,7 +86,7 @@ class Prompt:
     )
 
     CONVERSATION_TAIL_OPEN = (
-        "When a 'Current Browser Page' section appears above, the user is browsing "
+        "When a 'Current Browser Page' section appears below, the user is browsing "
         "that page right now. If they say 'this page', 'this thread', 'this article', "
         "or anything ambiguous, they mean the Current Browser Page — not something "
         "from earlier in the conversation.\n\n"

@@ -837,6 +837,27 @@ class MessageStore:
             ).all()
         )
 
+    def count_user_turns(self, sender: str) -> int:
+        """Total incoming (non-reaction) messages ever sent by ``sender`` —
+        UNCAPPED, unlike ``get_messages_since``'s own fetch (#2756).
+
+        This is the stable anchor ``Agent._trim_history_window``'s grow/cut
+        cycle is a pure function of: it increases by exactly one per real new
+        user turn, forever, so the same window math gives the same answer on
+        consecutive turns.  A count read off the capped raw pool instead would
+        stop advancing (and silently reindex, since the pool's oldest member
+        keeps changing) the moment a conversation outgrows
+        ``MESSAGE_CONTEXT_LIMIT`` — this query never does.
+        """
+        with self._session() as session:
+            return session.exec(
+                select(func.count()).where(
+                    MessageLog.sender == sender,
+                    MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                )
+            ).one()
+
     def get_messages_since(
         self, sender: str, since: datetime, limit: int = 100
     ) -> list[MessageLog]:

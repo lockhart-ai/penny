@@ -40,22 +40,28 @@ class ChatAgent(Agent):
 
     Two context mechanisms, kept independent:
 
-    - Operational self-state → the DYNAMIC system message (the second of the
-      request's two system messages, #2745): a deterministic ``SelfStateHeader``
-      (active mechanisms · recent activity · the store map · durable user
-      facts), rendered from the registry + ledger, never a relevance guess.
-      The speculative user-content recall is gone (the ambient inversion,
-      #1555): user content is fetched on demand via the tools the header's
-      pointers name.
+    - Operational self-state → the DYNAMIC system message (#2756, previously
+      the second of two leading messages, #2745): a deterministic
+      ``SelfStateHeader`` (active mechanisms · recent activity · the store map
+      · durable user facts), rendered from the registry + ledger, never a
+      relevance guess.  The speculative user-content recall is gone (the
+      ambient inversion, #1555): user content is fetched on demand via the
+      tools the header's pointers name.
     - Chat turns → messages array as alternating user/assistant turns
       via ``_build_conversation`` and ``history=``.
 
-    The request is two system messages, static first (#2745): the first carries
-    identity + the user's standing rules + instructions (never changes between
-    turns, so the server reuses it and the tool schemas rendered after it); the
-    second carries the clock, the page hint and the self-state header.  Every
-    turn — image or not — runs the standard agentic loop; an image rides the
-    turn's own user message (#2635) for the chat model to read.
+    The request is ``[static system][history][dynamic system][user]``
+    (#2756): the static message carries identity + the user's standing rules
+    + instructions (never changes between turns, so the server reuses it and
+    the tool schemas rendered after it); the growing, append-only history
+    follows it untouched — static + tools + history is the reused prefix.
+    The dynamic message — the clock, the page hint and the self-state header
+    — sits right BEFORE the user's own turn: the one MID-CONVERSATION system
+    placement prod's patched oMLX and OpenRouter (eval) both render in
+    place, so eval and prod read the same prompt (see
+    ``Agent._build_messages``).  Every turn — image or not — runs the
+    standard agentic loop; an image rides the turn's own user message
+    (#2635) for the chat model to read.
     """
 
     name: str = "chat"
@@ -420,7 +426,16 @@ class ChatAgent(Agent):
         images: list[str] | None = None,
         handles: HandleTable | None = None,
     ) -> list[LlmMessage]:
-        """Build messages, injecting page context as a synthetic tools result."""
+        """Build messages, injecting page context as a synthetic tools result.
+
+        ``super()`` ends the array ``[…history, state, user]`` (#2756 — the
+        state system message right BEFORE the user's own turn).  The
+        synthetic page-context assistant-call + tool-result appended below
+        land AFTER that, so the full shape is
+        ``[…state][user][assistant][tool]`` — state between the history's
+        last entry and the user's own turn, the one mid-conversation
+        placement prod's patched oMLX and OpenRouter both render in place
+        (see ``Agent._build_messages``'s docstring)."""
         messages = super()._build_messages(prompt, history, system_prompt, images=images)
         if self._pending_page_context:
             self._inject_page_context(
@@ -500,8 +515,8 @@ class ChatAgent(Agent):
         *,
         handles: HandleTable | None = None,
     ) -> str:
-        """Identity + standing rules + instructions — the STATIC system message
-        (#2745).
+        """Identity + standing rules + instructions — the LEADING, static
+        system message (#2745; reordered relative to history/state #2756).
 
         This message is the prefix the model server reuses across turns, so it
         carries only what never changes between them: Penny's persona/voice, then
@@ -510,8 +525,8 @@ class ChatAgent(Agent):
         per-turn — the clock, the current browser page, and the deterministic
         **self-state header** (active mechanisms · recent activity · the store map ·
         durable user facts, rendered from the registry (#1566) + ledger (#1560),
-        never a relevance guess) — rides the SECOND system message
-        (``_dynamic_system_section``).
+        never a relevance guess) — rides the dynamic system message, placed
+        right before the user's own turn (#2756; ``_dynamic_system_section``).
 
         The ambient inversion (#1555): the chat prompt injects no
         **speculative user-content recall** at all.  User content is fetched on
@@ -530,10 +545,11 @@ class ChatAgent(Agent):
         )
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
-        """The per-turn system message's content (#2745): the clock, the page
-        hint, then Penny's own state — in that order, everything that may change
-        between turns, none of it able to touch the reused static prefix ahead
-        of it."""
+        """The per-turn system message's content, placed right BEFORE the
+        live user turn (#2756): the clock, the page hint, then Penny's own
+        state — in that order, everything that may change between turns,
+        none of it able to touch the reused static-system + history prefix
+        that precedes it."""
         return "\n\n".join(
             section
             for section in [

@@ -2070,19 +2070,31 @@ class Agent:
     ) -> list[LlmMessage]:
         """Build message list for Ollama chat API.
 
-        Two system messages, static first (#2745): the static system prompt
-        (identity, instructions — everything that never changes per turn) rides
-        the FIRST system message, and each agent's per-turn section (the clock;
-        chat's page hint and self-state, the collector's holdings and run
-        history) rides a SECOND system message placed after it, before the
-        history.  Ollama's gemma4 renderer puts the tool schemas inside the
-        first system turn, after its content — so with the per-turn parts out
-        of that message, the static text AND the tool schemas are one reused
-        prefix across turns instead of being re-read on every one.  The old
-        shape opened the prompt with the timestamp line, so nothing after
-        char 0 could ever be reused.
+        Static system, then history, then the per-turn state as its own
+        SYSTEM message, then the user (#2756): the static system prompt
+        (identity, instructions — everything that never changes per turn)
+        rides the ONE leading system message; the growing, append-only
+        history (#2756) follows it untouched — this prefix (the static text,
+        the tool schemas gemma4's renderer puts right after it, and the
+        history) is what a server-side prefix cache reuses turn to turn.
+        Each agent's per-turn section (the clock; chat's page hint and
+        self-state, the collector's holdings and run history) rides a SYSTEM
+        message placed right BEFORE the live user turn, so only that message
+        and the user's own text are re-read every time.
 
-        The per-turn content stays in a SYSTEM-role turn — never in or before
+        This placement is a MID-CONVERSATION system message — between the
+        history's last entry (ordinarily an ``assistant`` turn) and
+        ``user`` — which prod's runner (oMLX) does not render in place out
+        of the box: unpatched, it downgrades a non-leading system message
+        into the following user turn's own text
+        (``_downgrade_mid_system_to_user_notes``), which would silently fold
+        the state into the user's message instead of keeping it a separate
+        turn. Prod carries a local oMLX patch that keeps a mid-conversation
+        system message in place, so this is the shape prod actually runs;
+        OpenRouter (eval) renders it natively with no patch needed, so eval
+        and prod read the same prompt.
+
+        The per-turn content stays in a SYSTEM-role turn — never folded into
         the user turn: the #1296/#1304 revert measured that recalled context
         riding beside the live message reads as the live ask.
 
@@ -2093,27 +2105,27 @@ class Agent:
         effective = system_prompt or self.system_prompt
 
         messages = [LlmMessage(role=MessageRole.SYSTEM, content=effective)]
-        dynamic = self._dynamic_system_section(handles=handles)
-        if dynamic:
-            messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
-
         if history:
             for role, content in history:
                 messages.append(LlmMessage(role=MessageRole(role), content=content))
+
+        dynamic = self._dynamic_system_section(handles=handles)
+        if dynamic:
+            messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
 
         messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
         return messages
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
-        """The per-turn section — the SECOND system message's content (#2745).
+        """The per-turn section — the system message placed right BEFORE the
+        live user turn (#2756).
 
         Everything here may change between turns without touching the reused
-        prefix: it rides its own system message behind the static one, never
-        inside it and never in the user turn.  The default is the datetime
+        static+history prefix ahead of it.  The default is the datetime
         anchor alone; ChatAgent adds its page hint and self-state header, the
         Collector its holdings and run history.  ``handles`` is the run's own
-        link table, for sections that render URLs as numbered handles (#2717).
-        """
+        link table, for sections that render URLs as numbered handles
+        (#2717)."""
         return current_datetime_line(self.db)
 
     # ── System prompt building (template method pattern) ─────────────────
@@ -2215,8 +2227,20 @@ class Agent:
 
         Fetches a raw pool of recent messages (``MESSAGE_CONTEXT_LIMIT``, no
         time boundary), merges consecutive same-role messages with newlines
-        into turns, then trims to the history window — the last
-        ``CHAT_HISTORY_TURNS`` user turns with their replies (#2746).
+        into turns, then trims to the history window — ``CHAT_HISTORY_TURNS``
+        user turns growing to twice that minus one before cutting back
+        (#2756; previously a flat last-N, #2746).
+
+        ``total_user_turns`` is read separately from the capped raw pool
+        (``MessageStore.count_user_turns``, #2756) — the anchor the
+        grow/cut cycle is computed against.  The raw pool's own turn count
+        would stop advancing (and silently reindex) once a conversation
+        outgrows ``MESSAGE_CONTEXT_LIMIT``, since that fetch keeps only the
+        MOST RECENT ``limit`` incoming messages and drops its oldest member
+        every time a new one arrives; anchoring to that count would freeze
+        the window on an old cut point instead of tracking the present. The
+        uncapped count only ever grows by one per real user turn, so the
+        same window math applies forever.
 
         The history carries the replies as the user received them and nothing
         else (#2646): the per-run tool line this method used to append (#2630)
@@ -2241,31 +2265,61 @@ class Agent:
                     conversation[-1] = (prev_role, f"{prev_content}\n{msg.content}")
                 else:
                     conversation.append((role, msg.content))
-            conversation = self._trim_history_window(conversation)
+            total_user_turns = self.db.messages.count_user_turns(sender)
+            conversation = self._trim_history_window(conversation, total_user_turns)
             if conversation:
                 logger.debug("Built conversation (%d turns)", len(conversation))
         except Exception:
             logger.warning("Conversation building failed, proceeding without")
         return conversation
 
-    def _trim_history_window(self, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
-        """Keep the last ``CHAT_HISTORY_TURNS`` user turns, with their replies (#2746).
+    def _trim_history_window(
+        self, history: list[tuple[str, str]], total_user_turns: int | None = None
+    ) -> list[tuple[str, str]]:
+        """Keep the most recent user turns, with their replies — growing from
+        ``CHAT_HISTORY_TURNS`` to twice that minus one, then cutting back
+        (#2756; previously a flat last-N, #2746).
 
         Both the standard window (``_build_conversation``) and a quote-reply's
         thread history (``ChatAgent.get_history``) pass through here.  A user
         turn means an incoming message: everything from the window's oldest
-        user turn onward stays, so the replies in between and any autonomous
-        sends after the last user message ride along.  Fewer user turns in the
-        history than the window asks for leaves the history whole.
+        kept user turn onward stays, so the replies in between and any
+        autonomous sends after the last user message ride along.
+
+        ``total_user_turns`` is the STABLE anchor the grow/cut cycle is a pure
+        function of (``_history_window_size``) — the caller's own count,
+        unaffected by any cap on ``history`` itself, so the SAME turns get the
+        SAME window turn over turn (an append-only prefix extension) until a
+        cut is due, never a window that silently drifts because the fetch
+        that built ``history`` was capped.  ``None`` (the thread-history
+        caller, whose chain has no cheap global count of its own — flagged in
+        the PR as a smaller, short-chain approximation) falls back to
+        ``history``'s own user-turn count, which is exact as long as the
+        thread itself never exceeds its own fetch cap.
         """
         window = int(self.config.runtime.CHAT_HISTORY_TURNS)
+        if total_user_turns is None:
+            total_user_turns = sum(1 for role, _ in history if role == MessageRole.USER)
+        size = self._history_window_size(total_user_turns, window)
         seen = 0
         for start in range(len(history) - 1, -1, -1):
             if history[start][0] == MessageRole.USER:
                 seen += 1
-                if seen == window:
+                if seen == size:
                     return history[start:]
         return history
+
+    @staticmethod
+    def _history_window_size(total_user_turns: int, window: int) -> int:
+        """How many of the most recent user turns to keep — a pure function of
+        the TRUE total (#2756), so two consecutive turns agree with no stored
+        cursor: growing by one per new turn from ``window`` up to
+        ``2 * window - 1``, then cutting back to ``window`` and growing again.
+        Fewer turns than ``window`` exist yet: keep them all (nothing to cut).
+        """
+        if total_user_turns <= window:
+            return total_user_turns
+        return window + ((total_user_turns - window) % window)
 
     # ── Utilities ────────────────────────────────────────────────────────
 
