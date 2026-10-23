@@ -59,10 +59,21 @@ _DEFAULT_API_KEY = "not-needed"
 # non-thinking remote against thinking local — and every conclusion drawn from it was
 # about the switch rather than the model.
 #
-# Read-only: sent as-is, never mutated. Backends that do not know the field ignore it
-# (verified against Ollama's OpenAI-compatible endpoint), so the local path is unchanged
-# and the remote path stops silently differing from it.
-REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
+# Both bodies below carry TWO fields because the switch is read differently per runner
+# (#2761): ``reasoning``/``reasoning_effort`` are what OpenRouter and Ollama's
+# OpenAI-compatible endpoint read; oMLX ignores both and switches Gemma 4 thinking only
+# through the chat template, ``chat_template_kwargs.enable_thinking`` — a field the other
+# two runners silently ignore. Sending both on every call is what makes one body portable
+# to all three without a backend-specific branch; prod was already getting this on oMLX
+# only because a host-side proxy rewrote every request to add the kwarg.
+#
+# Read-only: sent as-is, never mutated. A runner that does not know a field ignores it
+# (verified against Ollama's OpenAI-compatible endpoint), so no runner's path changes
+# just because another runner's field rides alongside it.
+REASONING_ENABLED_BODY = {
+    "reasoning": {"enabled": True},
+    "chat_template_kwargs": {"enable_thinking": True},
+}
 
 # The per-call override that turns reasoning OFF for one draw (#2474's probes, then
 # #2607's follow-up). Only ``reasoning_effort: "none"`` — no ``reasoning`` key at all.
@@ -75,8 +86,13 @@ REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
 # thinking-off retry (#2476) sent both fields, thought for 31k characters, and was cut
 # at its token budget exactly like the draw it was retrying. So this body must omit
 # ``reasoning`` entirely, not set it to ``False`` — see ``_build_chat_kwargs``, which
-# drops the always-on key for this call rather than updating it.
-THINKING_OFF_BODY = {"reasoning_effort": "none"}
+# drops the always-on key for this call rather than updating it. ``chat_template_kwargs``
+# carries the same off switch for oMLX (#2761) — it has no key-presence quirk of its own,
+# so unlike ``reasoning`` it is simply set ``False`` rather than omitted.
+THINKING_OFF_BODY = {
+    "reasoning_effort": "none",
+    "chat_template_kwargs": {"enable_thinking": False},
+}
 
 # Ask for embedding vectors as plain floats rather than the SDK's base64 default.
 # Not every backend accepts base64: Google AI Studio refuses it outright ("embeddings do

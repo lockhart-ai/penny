@@ -174,7 +174,10 @@ class TestReasoningAlwaysOn:
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
         await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
-        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        assert sent["extra_body"] == {
+            "reasoning": {"enabled": True},
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
         await client.close()
 
 
@@ -239,7 +242,8 @@ class TestTokenBudgetAndFinishReason:
         PRESENCE keeps thinking on regardless of its ``enabled`` value, so the
         always-on ``reasoning: {enabled: True}`` must never ride alongside the off
         switch. An ordinary call is unchanged: the always-on key, no
-        ``reasoning_effort``."""
+        ``reasoning_effort``. ``chat_template_kwargs.enable_thinking`` (#2761) rides
+        both bodies as the field oMLX reads, flipped true/false with the switch."""
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -256,7 +260,10 @@ class TestTokenBudgetAndFinishReason:
             thinking_enabled=False,
         )
 
-        assert sent["extra_body"] == {"reasoning_effort": "none"}
+        assert sent["extra_body"] == {
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
         assert "reasoning" not in sent["extra_body"]
 
         sent.clear()
@@ -265,7 +272,10 @@ class TestTokenBudgetAndFinishReason:
             call_link=CallLink.new_top(),
         )
 
-        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        assert sent["extra_body"] == {
+            "reasoning": {"enabled": True},
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
         assert "reasoning_effort" not in sent["extra_body"]
         await client.close()
 
@@ -616,6 +626,7 @@ class TestAConfiguredProviderIsPinned:
         # cost of the other, and a run that lost it would be comparing a model to itself.
         assert sent["extra_body"] == {
             "reasoning": {"enabled": True},
+            "chat_template_kwargs": {"enable_thinking": True},
             "provider": {"order": ["Cloudflare"], "allow_fallbacks": False},
         }
         await client.close()
@@ -636,7 +647,10 @@ class TestAConfiguredProviderIsPinned:
         with pytest.raises(LlmError):
             await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
 
-        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        assert sent["extra_body"] == {
+            "reasoning": {"enabled": True},
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
         await client.close()
 
     @pytest.mark.asyncio
@@ -1140,7 +1154,10 @@ FROZEN_WIRE_MESSAGES = [
 FROZEN_KWARGS = {
     "model": "frozen-test-model",
     "messages": FROZEN_WIRE_MESSAGES,
-    "extra_body": {"reasoning": {"enabled": True}},
+    "extra_body": {
+        "reasoning": {"enabled": True},
+        "chat_template_kwargs": {"enable_thinking": True},
+    },
 }
 
 
@@ -1234,7 +1251,10 @@ class TestTypedMessagesMatchTheFrozenPayload:
         await client.chat(TYPED_FROZEN_MESSAGES, call_link=CallLink.new_top())
 
         assert sent["messages"] == FROZEN_WIRE_MESSAGES
-        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        assert sent["extra_body"] == {
+            "reasoning": {"enabled": True},
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
         await client.close()
 
 
