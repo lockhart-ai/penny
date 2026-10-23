@@ -285,3 +285,25 @@ class MutationStore:
                     .limit(limit)
                 ).all()
             )
+
+    def events_for_runs(self, run_ids: list[str]) -> dict[str, list[MutationEvent]]:
+        """The registry mutations each of the given runs made, oldest first per
+        run (#2752) — the conversation map's job-change clause, read off the same
+        ledger stamp the self-state header's change lines render.  Scoped to the
+        given run ids in one query, so the map stays a bounded read; a run that
+        changed nothing contributes nothing."""
+        if not run_ids:
+            return {}
+        with self._session() as session:
+            rows = list(
+                session.exec(
+                    select(MutationEvent)
+                    .where(col(MutationEvent.run_id).in_(run_ids))
+                    .order_by(col(MutationEvent.created_at).asc(), col(MutationEvent.id).asc())
+                ).all()
+            )
+        grouped: dict[str, list[MutationEvent]] = {}
+        for event in rows:
+            if event.run_id is not None:
+                grouped.setdefault(event.run_id, []).append(event)
+        return grouped

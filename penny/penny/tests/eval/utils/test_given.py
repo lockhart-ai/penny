@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from penny.agents.conversation_map import ConversationMap
 from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
 from penny.database.models import MemoryEntry
@@ -188,3 +189,30 @@ def test_the_self_state_headers_own_data_sections_are_given_an_example_is_not() 
     assert SelfStateHeader.POINTERS not in given.content
     assert "name: Alex" in given.content
     assert "timezone: America/Denver" in given.content
+
+
+def test_the_conversation_maps_lines_are_given_its_header_and_anchor_are_not() -> None:
+    """A fact the conversation map renders on one of its lines (#2752) is given the same
+    as a tool result that echoes a stored fact — Penny answering from the map alone must
+    not read as invented.  The map's header and its closing anchor are scaffolding: the
+    section opens on the map's own title and closes on the anchor line's fixed prefix,
+    whose date varies with the horizon."""
+    map_line = (
+        "- Oct 13 19:38 · \"start me a list of jazz albums\" → saved 'kind-of-blue' → jazz-to-hear"
+    )
+    prompt = "\n\n".join(
+        [
+            ConversationMap.HEADER,
+            map_line,
+            f"{ConversationMap.ANCHOR_PREFIX}log_read('user-messages', day='YYYY-MM-DD'), "
+            "log_read('penny-messages', day='YYYY-MM-DD')",
+            "Current date and time: Wednesday, October 14, 2026 at 02:00 PM UTC",
+        ]
+    )
+    turns = [{"role": "system", "content": prompt}]
+
+    given = read_given(turns)
+
+    assert map_line in given.content
+    assert ConversationMap.HEADER not in given.content
+    assert ConversationMap.ANCHOR_PREFIX not in given.content

@@ -26,7 +26,7 @@ import difflib
 import logging
 from abc import abstractmethod
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from similarity.identity import KeyRule, ShortlistSide, shortlist
@@ -72,7 +72,12 @@ from penny.database.memory.identity import (
 )
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.database.mutation_store import render_mutation
-from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
+from penny.datetime_utils import (
+    format_log_timestamp,
+    format_user_timestamp,
+    user_timezone_name,
+    zone_or_utc,
+)
 from penny.llm.call_link import CallLink
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt
@@ -2448,7 +2453,9 @@ _LOG_READ_CURSOR_DESCRIPTION = (
 )
 _LOG_READ_WINDOW_DESCRIPTION = (
     "Return recent entries from this log (a short look-back window), oldest "
-    "first.  Use for 'what just happened' questions."
+    "first.  Use for 'what just happened' questions.  Give day='YYYY-MM-DD' to "
+    "read one whole day instead — for anything older than the recent window, "
+    "like a line in the conversation map."
 )
 
 
@@ -2490,6 +2497,11 @@ class CursorReadTool(MemoryTool):
             self._pending[memory] = max_seen
 
 
+def _naive_utc(at: datetime) -> datetime:
+    """An aware instant as naive UTC — how every timestamp column is stored."""
+    return at.astimezone(UTC).replace(tzinfo=None)
+
+
 class LogReadTool(CursorReadTool):
     """Read entries from a log — one tool, caller-dispatched behaviour.
 
@@ -2506,7 +2518,10 @@ class LogReadTool(CursorReadTool):
     name = "log_read"
     parameters = {
         "type": "object",
-        "properties": {"log": {"type": "string"}},
+        "properties": {
+            "log": {"type": "string"},
+            "day": {"type": "string", "description": "Optional: read one day, 'YYYY-MM-DD'"},
+        },
         "required": ["log"],
     }
     args_model = ReadLogArgs
@@ -2533,11 +2548,45 @@ class LogReadTool(CursorReadTool):
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadLogArgs(**kwargs)
         memory = _resolve(self._db, args.log)
+        if args.day is not None:
+            return self._read_day(memory, args.log, args.day)
         entries = self._read_cursor(memory) if self._cursor_mode else self._read_window(memory)
         return ToolResult(
             message=format_entries(
                 entries,
                 source=args.log,
+                ordering="oldest first",
+                show_ids=self._shows_ids(memory),
+                handles=self._handles,
+            )
+        )
+
+    def _read_day(self, memory: Memory, log: str, day: str) -> ToolResult:
+        """One local day of a log, oldest first (#2752) — the read the
+        conversation map's anchors name.  The day is read on the USER's own
+        clock (the same zone the map's lines render), bounded both ways so an
+        old day is reached without walking the whole log; a malformed date is
+        an honest error naming the form."""
+        try:
+            parsed = date.fromisoformat(day)
+        except ValueError:
+            return ToolResult(
+                message=(
+                    f"'{day}' is not a date I can read — name the day as YYYY-MM-DD, "
+                    f"like a map line's own date stamp."
+                ),
+                success=False,
+            )
+        zone = zone_or_utc(user_timezone_name(self._db))
+        start_local = datetime.combine(parsed, datetime.min.time(), tzinfo=zone)
+        end_local = start_local + timedelta(days=1)
+        entries = memory.read_range(
+            _naive_utc(start_local), _naive_utc(end_local), cap=PennyConstants.LOG_READ_DAY_LIMIT
+        )
+        return ToolResult(
+            message=format_entries(
+                entries,
+                source=log,
                 ordering="oldest first",
                 show_ids=self._shows_ids(memory),
                 handles=self._handles,

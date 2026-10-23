@@ -56,6 +56,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, NamedTuple
 
+from penny.agents.conversation_map import ConversationMap
 from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
 from penny.datetime_utils import format_log_timestamp
@@ -111,6 +112,15 @@ _SELF_STATE_SECTION_HEADERS = frozenset(
 # The header's own closing line — fixed instruction text, never a render of a fact — closes
 # the last data section the same way a new section header would.
 _SELF_STATE_SECTION_END = SelfStateHeader.POINTERS
+
+# The conversation map's own data section (#2752) — every line between its header
+# and its closing anchor is a verbatim render of the conversation log and the run
+# records, given the same as the self-state header's data sections.  The section
+# CLOSES on the map's own closing anchor line (``Full text: …``), whose date
+# varies with the map's horizon — so the close reads the line's fixed PREFIX,
+# never its whole text.
+_CONVERSATION_MAP_HEADER = ConversationMap.HEADER
+_CONVERSATION_MAP_END_PREFIX = ConversationMap.ANCHOR_PREFIX
 
 
 class _Kind(StrEnum):
@@ -192,10 +202,13 @@ def _mark_self_state_data(lines: Sequence[_Line]) -> list[_Line]:
     for line in lines:
         if line.kind != _Kind.OTHER:
             marked.append(line)
-        elif line.text in _SELF_STATE_SECTION_HEADERS:
+        elif line.text in _SELF_STATE_SECTION_HEADERS or line.text == _CONVERSATION_MAP_HEADER:
             in_section = True
             marked.append(line)
-        elif line.text == _SELF_STATE_SECTION_END:
+        elif (
+            line.text.startswith(_CONVERSATION_MAP_END_PREFIX)
+            or line.text == _SELF_STATE_SECTION_END
+        ):
             in_section = False
             marked.append(line)
         elif in_section:

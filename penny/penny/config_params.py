@@ -199,6 +199,33 @@ ConfigParam(
     group=GROUP_CHAT,
 )
 
+ConfigParam(
+    key="CHAT_MAP_DAYS",
+    description=(
+        "How many recent DAYS the conversation map covers (#2752) — today and "
+        "yesterday by default. The horizon is by DATE, so a line leaves the map "
+        "at most once a day and the cached prefix holds between turns."
+    ),
+    type=int,
+    default=2,
+    validator=_validate_positive_int,
+    group=GROUP_CHAT,
+)
+
+ConfigParam(
+    key="CHAT_MAP_MAX_LINES",
+    description=(
+        "The conversation map's line ceiling (#2752, about 35 tokens a line). "
+        "Past it the OLDEST WHOLE DAY collapses into one line naming its "
+        "log_read read — never line by line, which would break the cached "
+        "prefix every turn."
+    ),
+    type=int,
+    default=40,
+    validator=_validate_positive_int,
+    group=GROUP_CHAT,
+)
+
 # ── Background — every background agent (thinking, notify, extractors) ───────
 
 ConfigParam(

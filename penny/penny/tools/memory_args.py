@@ -371,9 +371,15 @@ class CollectionKeysArgs(ToolArgs):
 class ReadLogArgs(ToolArgs):
     """A single ``log_read`` over a log.  The caller names only the log — the
     semantics (cursor batch for collectors, recent window for chat/schedule) and
-    all sizes are decided in Python from the caller, never by the model."""
+    all sizes are decided in Python from the caller, never by the model.
+
+    ``day`` is optional (#2752): the conversation map's lines are older than
+    chat's recent window, so its anchor reads name the DAY to read — that local
+    day's entries, oldest first, capped.  A map line's own date names the day
+    its full text is read at."""
 
     log: MemoryName
+    day: str | None = None
 
 
 class LogGetArgs(ToolArgs):

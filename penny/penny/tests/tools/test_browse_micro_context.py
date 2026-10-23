@@ -443,6 +443,11 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     assert browse_log is not None
     stored_entries = browse_log.read_recent(window_seconds=3600, cap=None)
     assert any(_BODY_PHRASE in entry.content for entry in stored_entries)
+    # The stored page carries the run that read it (#2752): the entry is the
+    # structural record that its run READ a page — the conversation map's
+    # "read N" clause counts these, and no tool name is consulted.
+    assert stored_entries
+    assert all(entry.created_by_run_id == "chat-run-1" for entry in stored_entries)
 
     # The micro-context is a ledger-visible model call with an honest attribution.
     with Session(db.engine) as session:

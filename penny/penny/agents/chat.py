@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from penny.agents.base import Agent, InvalidDraw, ProgressCallback
+from penny.agents.conversation_map import ConversationMap
 from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
 from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.channels.base import PageContext
@@ -52,13 +53,16 @@ class ChatAgent(Agent):
 
     The request is ``[static system][history][dynamic system][user]``
     (#2756): the static message carries identity + the user's standing rules
-    + instructions (never changes between turns, so the server reuses it and
-    the tool schemas rendered after it); the growing, append-only history
-    follows it untouched — static + tools + history is the reused prefix.
-    The dynamic message — the clock, the page hint and the self-state header
-    — sits right BEFORE the user's own turn: the one MID-CONVERSATION system
-    placement prod's patched oMLX and OpenRouter (eval) both render in
-    place, so eval and prod read the same prompt (see
+    + instructions + the **conversation map** (#2752) — one line per
+    exchange older than the history window, appended LAST so it never
+    disturbs anything ahead of it.  None of this changes between ordinary
+    turns (the map changes only on a cut turn, #2757), so the server reuses
+    it, along with the tool schemas rendered right after it; the growing,
+    append-only history follows it untouched — static + tools + history is
+    the reused prefix.  The dynamic message — the clock, the page hint and
+    the self-state header — sits right BEFORE the user's own turn: the one
+    MID-CONVERSATION system placement prod's patched oMLX and OpenRouter
+    (eval) both render in place, so eval and prod read the same prompt (see
     ``Agent._build_messages``).  Every turn — image or not — runs the
     standard agentic loop; an image rides the turn's own user message
     (#2635) for the chat model to read.
@@ -515,18 +519,31 @@ class ChatAgent(Agent):
         *,
         handles: HandleTable | None = None,
     ) -> str:
-        """Identity + standing rules + instructions — the LEADING, static
-        system message (#2745; reordered relative to history/state #2756).
+        """Identity + standing rules + instructions + the conversation map —
+        the LEADING, static system message (#2745; reordered relative to
+        history/state #2756; the map appended at its end, #2752/#2757).
 
-        This message is the prefix the model server reuses across turns, so it
-        carries only what never changes between them: Penny's persona/voice, then
-        the user's standing rules — in the instruction part, right after the voice
-        sections, where she reads instructions — then the instructions.  Everything
-        per-turn — the clock, the current browser page, and the deterministic
-        **self-state header** (active mechanisms · recent activity · the store map ·
-        durable user facts, rendered from the registry (#1566) + ledger (#1560),
-        never a relevance guess) — rides the dynamic system message, placed
-        right before the user's own turn (#2756; ``_dynamic_system_section``).
+        This message is the prefix the model server reuses across turns
+        (along with the tool schemas gemma4's renderer puts right after it),
+        so it carries only what changes RARELY between them: Penny's
+        persona/voice, then the user's standing rules — in the instruction
+        part, right after the voice sections, where she reads instructions —
+        then the instructions, then the **conversation map** (#2752): one
+        line per exchange older than the history window, the LAST thing in
+        this message so a line it grows at its own end never disturbs
+        anything ahead of it.  The map changes only on a cut turn — the one
+        turn the history window's own first exchange moves (#2757,
+        ``ConversationMap``/``Agent._history_window_size``) — so most turns
+        reuse this whole message byte-for-byte.
+
+        Everything per-turn — the clock, the current browser page, and the
+        deterministic **self-state header** (active mechanisms · recent
+        activity · the store map · durable user facts, rendered from the
+        registry (#1566) + ledger (#1560), never a relevance guess) — rides
+        the dynamic system message, placed right before the user's own turn
+        (#2756; ``_dynamic_system_section``).  The map never rides there: it
+        changes far less often than the state does, so it belongs in the
+        reused prefix, not beside what changes every turn.
 
         The ambient inversion (#1555): the chat prompt injects no
         **speculative user-content recall** at all.  User content is fetched on
@@ -540,6 +557,7 @@ class ChatAgent(Agent):
                 self._identity_section(),
                 standing_rules_instruction(self.db),
                 self._instructions_section(instructions),
+                ConversationMap(self.db, user, self.config.runtime).render(),
             ]
             if section
         )

@@ -918,7 +918,7 @@ class BrowseTool(Tool):
         # links are still ``[text](url)`` there; the converted section's are
         # already handles and would yield nothing.
         links = _links_clause(section, self._handles)
-        entry = await self._store_one_page(section)
+        entry = await self._store_one_page(section, run_id=call_link.run_id)
         stored = [entry] if entry is not None else []
         label = self._page_label(section)
         self._read_log.append((label, entry))
@@ -990,16 +990,23 @@ class BrowseTool(Tool):
         )
         return f"{cut}\n{cut_line}"
 
-    async def _store_one_page(self, section: str) -> MemoryEntry | None:
+    async def _store_one_page(self, section: str, *, run_id: str) -> MemoryEntry | None:
         """Side-effect-write ONE successful page as its own log entry, returning
         it (its id is the fetch handle a render anchors its extracted value to).
-        Embeds at write time so similarity recall can address the page."""
+        Embeds at write time so similarity recall can address the page.
+
+        The write carries the run id (#2752): the entry is the structural record
+        that its run READ a page, whichever tool fetched it — the conversation
+        map's ``read N`` clause counts these.  ``run_id`` is a required parameter,
+        never ambient: the caller reads it off the ``call_link`` it was handed."""
         vec = await embed_text(self._embedding_client, section)
         browse_log = self._db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
         if browse_log is None:
             return None
         entries = browse_log.append(
-            [LogEntryInput(content=section, content_embedding=vec)], author=self._author
+            [LogEntryInput(content=section, content_embedding=vec)],
+            author=self._author,
+            run_id=run_id,
         )
         return entries[0] if entries else None
 

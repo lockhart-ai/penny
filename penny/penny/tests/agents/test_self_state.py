@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 from sqlmodel import Session
 
 from penny.agents.chat import ChatAgent
 from penny.agents.self_state import SelfStateHeader
+from penny.config import Config
+from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.database import Database
 from penny.database.models import (
@@ -37,6 +40,7 @@ from penny.database.models import (
 )
 from penny.database.mutation_store import MutationDetail
 from penny.prompts import Prompt
+from penny.tests.conftest import DEFAULT_TEST_CONFIG
 
 USER = "+15550001111"
 
@@ -1095,16 +1099,29 @@ def _seed_mutation_matrix(db: Database, *, detail_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_chat_system_prompt_composition(db):
+async def test_full_chat_system_prompt_composition(db, tmp_path):
     """The whole chat request's system side (#2745): the STATIC message —
     Identity + the standing rules (the instruction part, right after the voice)
-    + Instructions, the prefix the server reuses across turns — and the DYNAMIC
-    message — the clock, then the self-state header.  The rules render in the
-    static message, not the header: where she reads instructions rather than
-    state.  The speculative recall / profile / inventory are gone."""
+    + Instructions + the conversation map (#2752, empty here since the kitchen
+    sink logs no messages), the prefix the server reuses across turns — and
+    the DYNAMIC message — the clock, then the self-state header.  The rules
+    render in the static message, not the header: where she reads
+    instructions rather than state.  The speculative recall / profile /
+    inventory are gone."""
     _seed_kitchen_sink(db)
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
+    agent.config = Config(
+        **cast(
+            Any,
+            {
+                **DEFAULT_TEST_CONFIG,
+                "signal_api_url": "http://localhost:1",
+                "db_path": str(tmp_path / "config.db"),
+                "runtime": RuntimeParams(db),
+            },
+        )
+    )
     agent._pending_page_context = None
     agent._current_user = USER
     static = await agent._build_system_prompt(USER)

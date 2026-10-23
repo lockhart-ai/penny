@@ -858,6 +858,46 @@ class MessageStore:
                 )
             ).one()
 
+    def recent_direct_messages(self, since: datetime, limit: int) -> list[MessageLog]:
+        """The conversation's DIRECT messages since a horizon, oldest first (#2752).
+
+        The conversation map's own read: incoming user messages and outgoing
+        replies Penny sent herself — ``mechanism`` NULL, so autonomous sends stay
+        out (they render in the self-state header's activity block, #1568) —
+        non-reaction, since ``since``.  The two legs merge in ``_in_send_order``
+        like ``get_messages_since``: timestamp, then id for a tie, so a reply and
+        the message answering it can never swap.
+
+        Bounded by ``limit``; the OLDEST rows past it drop, which is how the map
+        loses its front lines on a day that outgrew the pool — the same
+        once-a-day shape as the date horizon itself.
+        """
+        with self._session() as session:
+            incoming = (
+                select(MessageLog)
+                .where(
+                    MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                    MessageLog.timestamp >= since,
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+                .limit(limit)
+            )
+            outgoing = (
+                select(MessageLog)
+                .where(
+                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                    col(MessageLog.mechanism).is_(None),
+                    MessageLog.timestamp >= since,
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+                .limit(limit)
+            )
+            rows = list(session.exec(incoming).all()) + list(session.exec(outgoing).all())
+            rows.sort(key=_in_send_order)
+            return rows[-limit:]
+
     def get_messages_since(
         self, sender: str, since: datetime, limit: int = 100
     ) -> list[MessageLog]:

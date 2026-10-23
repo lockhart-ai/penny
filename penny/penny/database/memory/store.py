@@ -576,6 +576,30 @@ class MemoryStore:
                 ).all()
             )
 
+    def pages_read_by_run(self, run_ids: list[str]) -> dict[str, int]:
+        """How many pages each run READ — the ``browse-results`` entries created
+        under the run (#2752), one entry per fetched page, whichever tool fetched
+        it.  The count rides the stamp browse writes at the store chokepoint
+        (``_store_one_page`` → ``append(run_id=…)``), never the tool names a run's
+        calls carry (§2.6) — the conversation map renders this as a run's ``read N``
+        clause, and a run that read nothing contributes no clause.
+
+        Scoped to the given run ids in one grouped query, so the map stays a
+        bounded read like ``writes_by_run``.
+        """
+        if not run_ids:
+            return {}
+        with self._session() as session:
+            rows = session.exec(
+                select(MemoryEntry.created_by_run_id, func.count())
+                .where(
+                    MemoryEntry.memory_name == PennyConstants.MEMORY_BROWSE_RESULTS_LOG,
+                    col(MemoryEntry.created_by_run_id).in_(run_ids),
+                )
+                .group_by(MemoryEntry.created_by_run_id)
+            ).all()
+        return {run_id: count for run_id, count in rows if run_id is not None}
+
     def names_with_entry_match(self, search: str) -> set[str]:
         """Names of memories holding an entry whose ``key`` or ``content``
         contains ``search`` — powers the addon's "search entries too" filter

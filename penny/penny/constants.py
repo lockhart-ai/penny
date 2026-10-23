@@ -670,6 +670,13 @@ class PennyConstants:
     # bounded batches across cycles instead of flooding one agentic loop with
     # hundreds of entries it can't reason over.
     LOG_READ_LIMIT = 10
+    # ``log_read``'s day-read bound (#2752) — the optional ``day`` argument
+    # reads ONE local day of a message log, oldest first, capped at this.  A
+    # day is what the conversation map's anchors name, and a day's own volume
+    # (10–23 messages on this deployment, ~52 at the recorded peak) is what the
+    # cap has to hold — the 10-entry cursor batch would cut a day's exchange
+    # in half.
+    LOG_READ_DAY_LIMIT = 60
     # How many recent registry-change events ``memory_get`` renders in its
     # "Recent changes" block (``db.mutations.history``) — bounded like every other
     # history read so a config-change trail stays readable without flooding.

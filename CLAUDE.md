@@ -292,6 +292,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 **Behavior**:
 - `MAX_STEPS`: Max agent loop steps per message (default: 20 — equal to the background budget, so a flow taught in chat is never longer than a collector could run; runtime-configurable via `/config`)
 - `CHAT_HISTORY_TURNS`: How many recent exchanges a chat turn sees as conversation history (default: 5 — N of the user's turns, each with its reply, for both the standard window and a quote-reply's thread history; the window grows by one exchange per turn from N up to 2N-1, then cuts back to N, so most turns extend the prior turn's history rather than replacing it (#2756); older turns stay reachable via `log_read`, `find`, and the self-state's recent activity; runtime-configurable via `/config`)
+- `CHAT_MAP_DAYS` / `CHAT_MAP_MAX_LINES`: the conversation map's bounds (#2752) — how many recent DAYS of exchanges older than the history window render as the map (default 2, by date, so a line leaves at most once a day) and its line ceiling (default 40; past it the oldest whole day collapses into one line naming its `log_read` read). The map rides the END of the static leading system message (#2757), so it changes — and the cached prefix is rebuilt — only on a cut turn, the same turn the history window's own first exchange moves. Runtime-configurable via `/config`
 - `IDLE_SECONDS`: Global idle threshold for all background tasks (default: 60, runtime-configurable via `/config`)
 - `TOOL_TIMEOUT`: Tool execution timeout in seconds (default: 60)
 

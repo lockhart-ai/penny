@@ -19,6 +19,7 @@ import pytest
 from sqlmodel import select
 
 from penny.agents.chat import ChatAgent
+from penny.agents.conversation_map import ConversationMap
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
@@ -201,7 +202,7 @@ async def test_basic_message_flow(
 
 
 @pytest.mark.asyncio
-async def test_static_system_prefix_byte_identical_across_turns(db, monkeypatch):
+async def test_static_system_prefix_byte_identical_across_turns(db, test_config, monkeypatch):
     """The FIRST system message is the prefix the model server reuses across
     turns (#2745), so nothing per-turn — the clock, entry counts, job rows — may
     leak into it.  Two renders with a shifted clock and a changed registry must
@@ -210,9 +211,13 @@ async def test_static_system_prefix_byte_identical_across_turns(db, monkeypatch)
 
     The dynamic message sits right BEFORE the user's own turn (#2756) — the
     one mid-conversation system placement prod's patched oMLX and OpenRouter
-    both render in place (see ``Agent._build_messages``)."""
+    both render in place (see ``Agent._build_messages``).  No messages are
+    logged to ``db`` here, so the conversation map (#2752, appended to the end
+    of the static message) renders empty on both turns — ``agent.config`` is
+    still required because the map is constructed unconditionally."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
+    agent.config = test_config
     agent._pending_page_context = None
     agent._current_user = TEST_SENDER
 
@@ -245,7 +250,9 @@ async def test_static_system_prefix_byte_identical_across_turns(db, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_history_stays_between_static_and_user_state_right_before_user(db, monkeypatch):
+async def test_history_stays_between_static_and_user_state_right_before_user(
+    db, test_config, monkeypatch
+):
     """With history present, the shape is ``[static][history…][state][user]``
     (#2756) — history rides right after the one leading system message (so
     the static text, the tool schemas, and history are the reused prefix),
@@ -254,6 +261,7 @@ async def test_history_stays_between_static_and_user_state_right_before_user(db,
     both render in place."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
+    agent.config = test_config
     agent._pending_page_context = None
     agent._current_user = TEST_SENDER
 
@@ -318,6 +326,76 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
         # M=4: the cut turn — back down to 2 exchanges, the oldest (and the
         # planted URL) dropped.  Allowed to differ (#2756).
         assert renders[3] == ["user message 3", "reply 3", "user message 4", "reply 4"]
+
+
+@pytest.mark.asyncio
+async def test_the_static_prefix_with_the_map_is_stable_except_on_a_cut_turn(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """The conversation map rides the END of the static leading message
+    (#2752/#2757), appended by ``_build_system_prompt``.  Across two turns
+    neither of which is a cut, the exchanges older than the history window
+    don't change, so the static message — map included — is byte-identical;
+    on a cut turn it gains exactly the exchanges the history dropped, whole,
+    at the map's end, with every earlier line unchanged."""
+    config = make_config(chat_history_turns=2)  # window grows 2 -> 3, cuts at 4
+
+    async with running_penny(config) as penny:
+        statics: list[str] = []
+        for n in range(1, 7):  # six exchanges: a cut at turn 4, another at turn 6
+            run_id = f"{n:032x}"
+            penny.db.memories.create_collection(f"list-{n}", f"notes {n}", created_by_run_id=run_id)
+            require_memory(penny.db, f"list-{n}").write_rule_decided(
+                [EntryInput(key=f"key-{n}", content=f"key-{n} — a note.")],
+                author=PennyConstants.MessageAuthor.PENNY,
+                run_id=run_id,
+            )
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+                run_id=run_id,
+            )
+            statics.append(await penny.chat_agent._build_system_prompt(TEST_SENDER))
+
+        def map_lines(static: str) -> list[str]:
+            start = static.index(ConversationMap.HEADER)
+            return static[start:].split("\n")[1:-1]  # content lines only
+
+        # Turns 1-3: before any cut, nothing is older than the window yet —
+        # the map is empty, so the static message carries no map section at
+        # all and is identical to a build with no messages logged.
+        assert ConversationMap.HEADER not in statics[0]
+        assert statics[0] == statics[1] == statics[2]
+
+        # Turn 4 is the first cut: exchanges 1 and 2 newly age out — the
+        # static message grows to carry the map for the first time.
+        assert statics[3] != statics[2]
+        turn4_lines = map_lines(statics[3])
+        assert len(turn4_lines) == 2
+        assert "user message 1" in turn4_lines[0]
+        assert "user message 2" in turn4_lines[1]
+
+        # Turn 5 is NOT a cut (the window is growing again after turn 4's
+        # cut) — the static message, map included, is byte-identical.
+        assert statics[4] == statics[3]
+
+        # Turn 6 is the next cut: exchanges 3 and 4 age out, appended at the
+        # map's end — turn 4/5's two lines stay an exact, byte-identical
+        # prefix of turn 6's four.
+        assert statics[5] != statics[4]
+        turn6_lines = map_lines(statics[5])
+        assert turn6_lines[:2] == turn4_lines
+        assert len(turn6_lines) == 4
+        assert "user message 3" in turn6_lines[2]
+        assert "user message 4" in turn6_lines[3]
 
 
 # ── 1b. Provenance stamping ─────────────────────────────────

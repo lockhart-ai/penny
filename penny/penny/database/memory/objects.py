@@ -324,16 +324,28 @@ class Memory:
                 query = query.limit(k)
             return list(session.exec(query).all())
 
-    def _rows_since(self, cursor: datetime, cap: int | None) -> list[MemoryEntry]:
+    def _rows_since(
+        self, cursor: datetime, cap: int | None, until: datetime | None = None
+    ) -> list[MemoryEntry]:
         with self._session() as session:
             query = (
                 select(MemoryEntry)
                 .where(MemoryEntry.memory_name == self.name, MemoryEntry.created_at > cursor)
                 .order_by(col(MemoryEntry.created_at).asc())
             )
+            if until is not None:
+                query = query.where(MemoryEntry.created_at < until)
             if cap is not None:
                 query = query.limit(cap)
             return list(session.exec(query).all())
+
+    def read_range(
+        self, start: datetime, until: datetime, cap: int | None = None
+    ) -> list[MemoryEntry]:
+        """Entries within ``[start, until)``, oldest first — the conversation
+        map's day read (#2752): one local day's entries, bounded both ways so
+        the read never walks the whole log to reach an old day."""
+        return self._rows_since(start, cap, until=until)
 
     def _embedded_rows(self) -> list[MemoryEntry]:
         with self._session() as session:
@@ -959,13 +971,17 @@ class MessageLogMemory(Log):
             rows = session.exec(query).all()
         return [self._to_entry(row) for row in rows]
 
-    def _rows_since(self, cursor: datetime, cap: int | None) -> list[MemoryEntry]:
+    def _rows_since(
+        self, cursor: datetime, cap: int | None, until: datetime | None = None
+    ) -> list[MemoryEntry]:
         with self._session() as session:
             query = (
                 self._select()
                 .where(MessageLog.timestamp > cursor)
                 .order_by(col(MessageLog.timestamp).asc())
             )
+            if until is not None:
+                query = query.where(MessageLog.timestamp < until)
             if cap is not None:
                 query = query.limit(cap)
             rows = session.exec(query).all()
@@ -1832,8 +1848,10 @@ class RunLog(Log):
         # ``search`` doesn't apply — runs are activity, not searchable entries.
         return self._records(newest_first=True, limit=k, offset=offset)
 
-    def _rows_since(self, cursor: datetime, cap: int | None) -> list[MemoryEntry]:
-        return self._records(newest_first=False, cursor=cursor, limit=cap)
+    def _rows_since(
+        self, cursor: datetime, cap: int | None, until: datetime | None = None
+    ) -> list[MemoryEntry]:
+        return self._records(newest_first=False, cursor=cursor, limit=cap, until=until)
 
     def _embedded_rows(self) -> list[MemoryEntry]:
         return []
@@ -1845,11 +1863,12 @@ class RunLog(Log):
         cursor: datetime | None = None,
         limit: int | None = None,
         offset: int = 0,
+        until: datetime | None = None,
     ) -> list[MemoryEntry]:
         """Completion rows → rendered run records as ``MemoryEntry`` (content =
         the record, created_at = completion time)."""
         with self._session() as session:
-            rows = self._completion_rows(session, newest_first, cursor, limit, offset)
+            rows = self._completion_rows(session, newest_first, cursor, limit, offset, until)
             if not rows:
                 return []
             grouped = self._group_prompts(session, [run_id for run_id, _, _ in rows])
@@ -1862,6 +1881,7 @@ class RunLog(Log):
         cursor: datetime | None,
         limit: int | None,
         offset: int,
+        until: datetime | None = None,
     ) -> list:
         """The ``(run_id, completion_time, last_prompt_id)`` run-index rows for
         this scope — one per completed run, served by the partial index."""
@@ -1870,6 +1890,8 @@ class RunLog(Log):
         )
         if cursor is not None:
             query = query.where(PromptLog.timestamp > cursor)
+        if until is not None:
+            query = query.where(PromptLog.timestamp < until)
         order = col(PromptLog.timestamp).desc() if newest_first else col(PromptLog.timestamp).asc()
         query = query.order_by(order)  # type: ignore[union-attr]
         if offset:
