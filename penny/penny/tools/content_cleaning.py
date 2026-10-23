@@ -65,6 +65,52 @@ _NAV_BOILERPLATE = frozenset(
 # e.g. "NewsCategory: News.|TechnologyCategory: Technology."
 _CATEGORY_LABELS = re.compile(r"^(\w+Category:\s*\w+\.\|?){2,}$")
 
+# ── Guarded page-chrome trims (#2759) ───────────────────────────────────────
+# Each rule below is bounded by a length guard so it can only touch chrome,
+# never prose: a long paragraph that happens to repeat, picture, or mention a
+# chrome phrase survives untouched.
+
+# Rule 1 (repeated lines): a line at least this long that already appeared
+# earlier on the page is a re-rendered nav/footer block, not prose; a short
+# repeated line (a table cell, a label) stays.
+_MIN_REPEATED_LINE_LEN = 20
+
+# Rule 2 (image markup): a line that is ONLY a markdown image carries no text
+# the reader uses, whatever its URL.
+_IMAGE_ONLY_LINE = re.compile(r"^!\[[^\]]*]\([^)]*\)$")
+
+# Rule 3 (boilerplate): SHORT lines (guard: at most this many chars) matching
+# known UI chrome phrasing; a long prose line that happens to mention the
+# same words (e.g. "...read our privacy policy before you...") stays.
+_MAX_BOILERPLATE_LINE_LEN = 80
+_BOILERPLATE_PHRASES = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"cookie",
+        r"consent",
+        r"privacy policy",
+        r"subscribe",
+        r"sign in",
+        r"sign up",
+        r"related (articles?|stories)",
+        r"more stories",
+        r"you might also like",
+        r"share this",
+        r"follow us",
+        r"advertisement",
+        r"all rights reserved",
+        r"copyright \d{4}",
+        r"^skip to",
+    )
+]
+
+# Rule 4 (blob lines): a line over this many chars that is a JSON-like blob
+# or carries a URL over 200 chars is a spec/price dump or an encoded URL, not
+# prose; a prose line this long is never truncated, only left as is.
+_MAX_BLOB_LINE_LEN = 500
+_JSON_LIKE_LINE = re.compile(r"^[\[{].*[\]}]$")
+_LONG_URL_IN_LINE = re.compile(r"https?://\S{200,}")
+
 
 def clean_browser_content(text: str) -> str:
     """Remove structural cruft from browser-extracted markdown content."""
@@ -92,6 +138,8 @@ def clean_browser_content(text: str) -> str:
                 continue
 
         cleaned.append(line)
+
+    cleaned = _apply_guarded_trims(cleaned)
 
     result = "\n".join(cleaned)
     # Collapse runs of 3+ blank lines
@@ -160,3 +208,48 @@ def _should_skip_line(stripped: str) -> bool:
 
     # Repeated category labels from listing pages
     return bool(_CATEGORY_LABELS.match(stripped))
+
+
+def _apply_guarded_trims(lines: list[str]) -> list[str]:
+    """Rules 1-4 (#2759), each guarded so it can only touch chrome, never
+    prose: repeated lines, then image markup, boilerplate, and blob lines."""
+    lines = _drop_repeated_lines(lines)
+    lines = [ln for ln in lines if not _is_image_only_line(ln.strip())]
+    lines = [ln for ln in lines if not _is_boilerplate_chrome_line(ln.strip())]
+    lines = [ln for ln in lines if not _is_blob_line(ln.strip())]
+    return lines
+
+
+def _drop_repeated_lines(lines: list[str]) -> list[str]:
+    """Rule 1 (#2759): keep a line's first occurrence; drop a later repeat of
+    any line at least `_MIN_REPEATED_LINE_LEN` chars long."""
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) >= _MIN_REPEATED_LINE_LEN:
+            if stripped in seen:
+                continue
+            seen.add(stripped)
+        kept.append(line)
+    return kept
+
+
+def _is_image_only_line(stripped: str) -> bool:
+    """Rule 2 (#2759): the line carries nothing but a markdown image."""
+    return bool(_IMAGE_ONLY_LINE.match(stripped))
+
+
+def _is_boilerplate_chrome_line(stripped: str) -> bool:
+    """Rule 3 (#2759): a SHORT line matching known UI chrome phrasing."""
+    if len(stripped) > _MAX_BOILERPLATE_LINE_LEN:
+        return False
+    return any(pattern.search(stripped) for pattern in _BOILERPLATE_PHRASES)
+
+
+def _is_blob_line(stripped: str) -> bool:
+    """Rule 4 (#2759): a long line that is a JSON-like blob or carries a very
+    long URL; a prose line this long is left as is, never truncated."""
+    if len(stripped) <= _MAX_BLOB_LINE_LEN:
+        return False
+    return bool(_JSON_LIKE_LINE.match(stripped)) or bool(_LONG_URL_IN_LINE.search(stripped))
