@@ -44,6 +44,7 @@ from penny.config import Config
 from penny.constants import ChannelType, MutationEntityType, PageReading, PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
+from penny.database.memory.objects import run_tool_calls
 from penny.database.memory.store import snapshot_fields
 from penny.database.message_store import MessageStore, PromptPerf
 from penny.database.models import Media, MemoryRow, MutationEvent, PromptLog
@@ -2686,6 +2687,28 @@ def _chat_tool_sequence(db: Database) -> list[str]:
     return [tool for run in chat_run_tool_sequences(db) for tool in run]
 
 
+def _collection_write_keys(db: Database) -> list[str]:
+    """Every ``key`` a ``collection_write`` call in this sample's turn PASSED, in call order
+    (#2758) — the write's own ARGUMENT, read straight off this turn's own prompt-log rows via
+    ``run_tool_calls``, never the store's end state: a cross-key merge lands the content under
+    an EXISTING entry, so the key the model typed is absent from ``held`` entirely once it has
+    merged, and a claim that needs "what she asked for" cannot derive it from "what survived"."""
+    keys: list[str] = []
+    for tool, args in run_tool_calls(_sample_prompt_rows(db)):
+        if tool != "collection_write" or not isinstance(args, dict):
+            continue
+        entries = args.get("entries")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get("key")
+            if isinstance(key, str):
+                keys.append(key)
+    return keys
+
+
 def _machine_walk(db: Database) -> str:
     """The machine's walk this sample, oldest move first (#2538 naive baseline): there
     is no conversation machine any more, so no sample ever moves one — ``db`` stays the
@@ -2751,6 +2774,7 @@ def _observe_sample(
         muted=db.users.is_muted(TEST_SENDER),
         images=stored_images(db),
         tool_sequence=_chat_tool_sequence(db),
+        collection_write_keys=_collection_write_keys(db),
         reply=reply,
         reply_embedding=reply_embedding(db, reply),
         aborted_on_model_error=_aborted_on_model_error(reply),

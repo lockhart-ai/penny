@@ -387,6 +387,13 @@ class SampleObservation(BaseModel):
     # a shape that writes its own observation leaves it empty, and no non-chat case claims it.
     images: list[StoredImage] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
+    # Every ``key`` a ``collection_write`` call in this sample's turn PASSED, in call order,
+    # duplicates included — the write's own ARGUMENT, read off the prompt log, never derived
+    # from ``held``/``entries`` (#2758).  The identity ladder can redirect a write's content
+    # onto an EXISTING entry under a DIFFERENT key, so after a cross-key merge the key the
+    # model typed is not a key the store holds under — a claim that needs "what she asked
+    # for" cannot answer it from "what the store now has".
+    collection_write_keys: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
     # Whether the measured CHAT turn ended on an aborted model call, rather than on a reply the
