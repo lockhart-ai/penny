@@ -18,7 +18,7 @@ from penny.agents.models import ControllerResponse, ToolCallRecord, account_of
 from penny.config import Config
 from penny.constants import PennyConstants, PermissionResolution
 from penny.database.media_store import ImageSelectionPolicy
-from penny.database.models import Media, MessageLog
+from penny.database.models import Device, Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
@@ -630,11 +630,30 @@ class MessageChannel(ABC):
         return False
 
     def _resolve_device_id(self, message: IncomingMessage) -> int | None:
-        """Look up the device ID from the message's device identifier."""
+        """Look up the device ID from the message's device identifier.
+
+        A miss falls through to ``_bootstrap_device`` — a channel whose
+        endpoint has no independent pairing flow (Signal: #2765) registers it
+        here, the first time it's seen, instead of never. Browser and iOS
+        register on connect/pair already, so their default no-op costs
+        nothing extra on the miss path.
+        """
         if not message.device_identifier:
             return None
         device = self._db.devices.get_by_identifier(message.device_identifier)
+        if device is None:
+            device = self._bootstrap_device(message)
         return device.id if device else None
+
+    def _bootstrap_device(self, message: IncomingMessage) -> Device | None:
+        """Register a device the first time its identifier is ever seen.
+
+        Default no-op. Override on a channel whose endpoint has no explicit
+        pairing step (Signal) to claim it lazily — the identifier is known
+        the moment a message arrives, even on a fresh install with no profile
+        yet, which is earlier than startup can know it.
+        """
+        return None
 
     def _needs_profile(self) -> bool:
         """Check if any user profile exists (Penny is single-user)."""

@@ -2,10 +2,10 @@
 
 import logging
 
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
 from penny.clock import Clock
-from penny.database.models import Device
+from penny.database.models import Device, MessageLog
 
 logger = logging.getLogger(__name__)
 
@@ -97,3 +97,26 @@ class DeviceStore:
                 device.is_default = device.id == device_id
                 session.add(device)
             session.commit()
+
+    def delete_by_identifier(self, identifier: str) -> None:
+        """Remove a device row by identifier, nulling any ``messagelog`` rows that
+        still reference it (#2765's reclaim: a stale row seeded by the pre-fix
+        startup bug — Penny's own Signal number registered as a user device — is
+        never a legitimate link, so nulling what points at it loses nothing).
+        No-op when no such device exists."""
+        device = self.get_by_identifier(identifier)
+        if device is None:
+            return
+        with self._session() as session:
+            session.exec(
+                update(MessageLog)
+                .where(col(MessageLog.device_id) == device.id)
+                .values(device_id=None)
+            )
+            stale = session.get(Device, device.id)
+            if stale is not None:
+                session.delete(stale)
+            session.commit()
+            logger.info(
+                "Removed stale device: %s (%s, %s)", device.label, device.channel_type, identifier
+            )

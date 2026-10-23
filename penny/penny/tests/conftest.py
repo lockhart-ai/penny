@@ -255,6 +255,12 @@ def test_user_info(test_config):
     This sets up a UserInfo record for TEST_SENDER so tests don't get
     intercepted by profile collection prompts. The DB is initialized (tables
     created, then migrations run) before creating the user.
+
+    No device is registered here on purpose (#2765): with the profile
+    already in place before Penny ever starts, `running_penny`'s own startup
+    (`_register_signal_channel`) is what must register TEST_SENDER as the
+    default Signal device — so every test that drives a real Penny through
+    this fixture is itself a regression guard on that startup path.
     """
     from penny.database import Database
     from penny.database.migrate import migrate
@@ -274,11 +280,6 @@ def test_user_info(test_config):
         timezone="America/Los_Angeles",
         date_of_birth="1990-01-01",
     )
-
-    # Register the test sender as a Signal device
-    from penny.constants import ChannelType
-
-    db.devices.register(ChannelType.SIGNAL, TEST_SENDER, "Test Signal", is_default=True)
 
     return db
 

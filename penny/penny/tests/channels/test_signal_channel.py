@@ -1081,3 +1081,49 @@ async def test_quote_reply_walks_the_quoted_thread_as_history(
     ]
 
     await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_signal_message_and_reply_link_to_the_real_device(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """#2765 regression: startup registers the PROFILE's own sender as the
+    Signal device — never ``config.signal_number`` (Penny's own number) — so
+    a user message and Penny's reply to it both land with that device's id,
+    and both surface on the iOS history page."""
+    from datetime import datetime
+
+    from penny.constants import PennyConstants
+
+    config = make_config()
+    mock_llm.set_default_flow(final_response="here's something neat about octopuses")
+
+    async with running_penny(config) as penny:
+        await signal_server.push_message(sender=TEST_SENDER, content="tell me something neat")
+        await signal_server.wait_for_message_containing("octopuses", timeout=10.0)
+
+        device = penny.db.devices.get_by_identifier(TEST_SENDER)
+        assert device is not None
+        assert device.channel_type == ChannelType.SIGNAL
+        # Penny's own number is never a device (#2765's central claim).
+        assert penny.db.devices.get_by_identifier(config.signal_number) is None
+
+        rows = penny.db.messages.get_messages_since(TEST_SENDER, since=datetime.min, limit=10)
+        incoming = next(
+            r
+            for r in rows
+            if r.direction == PennyConstants.MessageDirection.INCOMING
+            and "tell me something neat" in r.content
+        )
+        outgoing = next(
+            r
+            for r in rows
+            if r.direction == PennyConstants.MessageDirection.OUTGOING and "octopuses" in r.content
+        )
+        assert incoming.device_id == device.id
+        assert outgoing.device_id == device.id
+
+        page_rows, _ = penny.db.messages.ios_history_page(channel_types=None, before=None, limit=10)
+        page_ids = {row[0].id for row in page_rows}
+        assert incoming.id in page_ids
+        assert outgoing.id in page_ids

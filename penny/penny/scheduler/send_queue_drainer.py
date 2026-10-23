@@ -45,7 +45,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from penny.constants import ChannelType, CycleTrigger, PennyConstants
+from penny.constants import CycleTrigger, PennyConstants
 from penny.llm.call_link import CallLink
 from penny.notification import build_job_report, withheld_reason
 from penny.text_validity import half_formed_send_reason
@@ -247,16 +247,19 @@ class SendQueueDrainer:
         return self._db.send_queue.next_pending(origin=CycleTrigger.ON_DEMAND)
 
     def _resolve_recipient(self) -> str | None:
-        """Where a drained message is delivered.
+        """Where a drained message is delivered — the default device's own
+        identifier (that's the routing #1373 needed for iOS).
 
-        For an iOS default device the device identifier *is* the recipient
-        (that's the routing #1373 needed).  For every other channel the default
-        device row is Penny's own seeded endpoint (e.g. ``config.signal_number``
-        on a fresh Signal install), so routing there would land in Note-to-Self
-        — the user is the single primary sender.
+        #2765 made this true for every channel: Signal and Discord now
+        register the user's own endpoint (not Penny's) as the default
+        device, so there is no longer a channel whose default device row
+        would misroute a read-by-identifier to Note-to-Self. The primary
+        sender is still the fallback for the one case with no default
+        device registered at all (a fresh Signal install before its first
+        message ever arrives).
         """
         default = self._db.devices.get_default()
-        if default is not None and default.channel_type == ChannelType.IOS:
+        if default is not None:
             return default.identifier
         return self._db.users.get_primary_sender()
 

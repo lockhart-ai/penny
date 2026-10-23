@@ -36,12 +36,12 @@ _PENNY_LOG = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
 _USER_LOG = PennyConstants.MEMORY_USER_MESSAGES_LOG
 
 _RECIPIENT = "+15551234567"  # the user's primary sender identity
-# Penny's OWN registered Signal number — what production seeds as the default
-# device on a fresh install (config.signal_number).  Deliberately different from
-# the user's number so a drainer that routes to the default device identifier
-# would misroute to Note-to-Self rather than the user.
+# Penny's OWN Signal number (config.signal_number) — #2765's startup fix makes
+# sure this is NEVER registered as a device.  Kept here only so tests can
+# assert the drainer never resolves to it.
 _PENNY_NUMBER = "+15559998888"
 _IOS_IDENTIFIER = "ios-keychain-id"
+_DISCORD_CHANNEL_ID = "9876543210"
 _COLLECTION = "notified-thoughts"
 
 
@@ -58,9 +58,11 @@ def _make_db(tmp_path) -> Database:
         timezone="America/Toronto",
         date_of_birth="1990-01-01",
     )
-    # Production seeding: the seeded Signal default device is Penny's own number,
-    # NOT the user's — the drainer must still route to the primary sender.
-    db.devices.register(ChannelType.SIGNAL, _PENNY_NUMBER, "Signal", is_default=True)
+    # #2765: production now seeds the Signal default device as the USER's own
+    # number — never Penny's own (config.signal_number, which is never
+    # registered at all) — so the drainer's default-device read lands on the
+    # user directly, with no special-casing.
+    db.devices.register(ChannelType.SIGNAL, _RECIPIENT, "Signal", is_default=True)
     return db
 
 
@@ -102,8 +104,8 @@ async def test_drain_delivers_when_no_prior_send(tmp_path):
     assert did_work is True
     channel.send_response.assert_awaited_once()
     kwargs = channel.send_response.await_args.kwargs
-    # Routes to the user's primary sender, NOT the seeded Signal default device
-    # (Penny's own number) — otherwise the send would land in Note-to-Self.
+    # Routes to the seeded Signal default device's identifier — the user's own
+    # number (#2765) — never Penny's own, which is never registered at all.
     assert kwargs["recipient"] == _RECIPIENT
     assert kwargs["recipient"] != _PENNY_NUMBER
     assert kwargs["content"] == "hey there!"
@@ -237,6 +239,57 @@ async def test_drain_routes_to_ios_default_device_identifier(tmp_path):
     assert did_work is True
     kwargs = channel.send_response.await_args.kwargs
     assert kwargs["recipient"] == _IOS_IDENTIFIER
+
+
+@pytest.mark.asyncio
+async def test_drainer_resolves_signal_default_to_the_users_number(tmp_path):
+    """Signal's default device is the user's own number (#2765) — never
+    Penny's own seeded endpoint, which is never registered at all."""
+    db = _make_db(tmp_path)
+    drainer = _make_drainer(db, _make_channel())
+
+    recipient = drainer._resolve_recipient()
+
+    assert recipient == _RECIPIENT
+    assert recipient != _PENNY_NUMBER
+
+
+@pytest.mark.asyncio
+async def test_drainer_resolves_discord_default_to_the_channel_id(tmp_path):
+    """Discord's default device identifier is the channel id — the only
+    endpoint Discord's own ``_send_raw`` ever delivers to (it ignores its
+    ``recipient`` argument and always posts to the configured channel), so
+    reading the default device directly is correct there too, not merely
+    tolerated: the primary sender it used to fall back to is a Discord USER
+    id, which no device is ever registered under."""
+    db = _make_db(tmp_path)
+    db.devices.register(ChannelType.DISCORD, _DISCORD_CHANNEL_ID, "Discord", is_default=True)
+    drainer = _make_drainer(db, _make_channel())
+
+    recipient = drainer._resolve_recipient()
+
+    assert recipient == _DISCORD_CHANNEL_ID
+    assert recipient != _PENNY_NUMBER
+
+
+@pytest.mark.asyncio
+async def test_drainer_falls_back_to_primary_sender_with_no_default_device(tmp_path):
+    """No device registered at all yet (a fresh Signal install before its
+    first message ever arrives) — the drainer still has a recipient to try:
+    the primary sender, the one case the simplified read can't cover."""
+    db = schema_only_db(str(tmp_path / "test.db"))
+    db.memories.create_log(_PENNY_LOG, "outbound")
+    db.memories.create_log(_USER_LOG, "inbound")
+    db.users.save_info(
+        sender=_RECIPIENT,
+        name="user",
+        location="Toronto",
+        timezone="America/Toronto",
+        date_of_birth="1990-01-01",
+    )
+    drainer = _make_drainer(db, _make_channel())
+
+    assert drainer._resolve_recipient() == _RECIPIENT
 
 
 @pytest.mark.asyncio

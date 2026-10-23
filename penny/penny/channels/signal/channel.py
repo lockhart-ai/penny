@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from penny.channels.permission_manager import PermissionManager
     from penny.commands import CommandRegistry
     from penny.database import Database
-    from penny.database.models import MessageLog
+    from penny.database.models import Device, MessageLog
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,28 @@ class SignalChannel(MessageChannel):
     def sender_id(self) -> str:
         """Get the identifier for outgoing messages (the Signal phone number)."""
         return self.phone_number
+
+    def _bootstrap_device(self, message: IncomingMessage) -> Device | None:
+        """Claim the user's Signal device the first time it's seen (#2765).
+
+        Signal has no pairing flow (unlike browser/iOS), so the only moment
+        the user's own number is knowable is the first message that carries
+        it. Registers — and makes default, Signal is always the primary
+        channel when registered — only when this sender IS the established
+        user: the primary sender once a profile exists, or whichever number
+        messages in first when none exists yet. A different number arriving
+        after a primary sender is already known (a wrong-number text) is
+        left alone rather than stealing the default.
+        """
+        primary_sender = self._db.users.get_primary_sender()
+        if primary_sender is not None and primary_sender != message.sender:
+            return None
+        device = self._db.devices.register(
+            ChannelType.SIGNAL, message.sender, "Signal", is_default=True
+        )
+        if device.id is not None:
+            self._db.devices.set_default(device.id)
+        return device
 
     async def validate_connectivity(
         self,

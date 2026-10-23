@@ -97,7 +97,15 @@ def _register_signal_channel(
     *,
     is_default_device: bool,
 ) -> None:
-    """Create and register the Signal channel."""
+    """Create and register the Signal channel.
+
+    Penny's own number is never a user device (#2765) — it is the channel's
+    identity, not an endpoint belonging to the single user. The real Signal
+    device is the user's own number: known immediately when a profile already
+    exists (a restart), registered here; otherwise left for
+    ``SignalChannel._bootstrap_device`` to claim on first contact, since a
+    fresh install has no identifier to register yet.
+    """
     if not config.signal_number:
         raise ValueError("Signal requires SIGNAL_NUMBER")
     channel = SignalChannel(
@@ -110,12 +118,32 @@ def _register_signal_channel(
         retry_delay=config.llm_retry_delay,
     )
     manager.register_channel(ChannelType.SIGNAL, channel)
-    db.devices.register(
-        ChannelType.SIGNAL,
-        config.signal_number,
-        "Signal",
-        is_default=is_default_device,
-    )
+    _reclaim_signal_default_device(db, config.signal_number, is_default_device)
+
+
+def _reclaim_signal_default_device(
+    db: Database, penny_number: str, is_default_device: bool
+) -> None:
+    """Undo the pre-#2765 startup bug's residue, every time Signal starts.
+
+    An existing deployment may still hold a device row keyed on Penny's own
+    number, wrongly marked default from every prior startup — left there, the
+    send-queue drainer's default-device read would misroute a proactive
+    notification to Note-to-Self. Remove that row outright (safe: nothing
+    legitimate is ever looked up by Penny's own number), then make the real
+    user's Signal device the default when one is already known (an existing
+    profile) — a fresh install has no primary sender yet, so there is nothing
+    to make default until the bootstrap hook claims one on first contact.
+    """
+    db.devices.delete_by_identifier(penny_number)
+    if not is_default_device:
+        return
+    primary_sender = db.users.get_primary_sender()
+    if primary_sender is None:
+        return
+    device = db.devices.register(ChannelType.SIGNAL, primary_sender, "Signal", is_default=True)
+    if device.id is not None:
+        db.devices.set_default(device.id)
 
 
 def _register_ios_channel(
