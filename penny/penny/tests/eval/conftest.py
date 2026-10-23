@@ -16,6 +16,7 @@ import itertools
 import json
 import logging
 import os
+import urllib.parse
 from collections import Counter
 from collections.abc import (
     AsyncIterator,
@@ -96,6 +97,27 @@ logger = logging.getLogger(__name__)
 # dropping a module into ``drivers/`` is the whole registration — nothing here
 # names it, and nothing here declares ``pytest_plugins`` either.
 
+# ── Local vs remote model endpoint (#2713) ──────────────────────────────────
+# Every wait below that assumes "no reply yet" means "the provider stalled" is wrong on a
+# LOCAL runner (Ollama, LM Studio): there is no network between the sample and the model,
+# so a slow call is the model actually thinking, not a stall the retry loop should catch
+# sooner.  The harness tells the two apart the one way it already does elsewhere
+# (``_real_model_config``'s own docstring): by the endpoint's own hostname — a URL on THIS
+# machine, or Docker's host-gateway alias, is local; anything else (a direct or routed
+# remote provider) is remote.  Resolved once, from the same env var and default
+# ``_real_model_config`` reads, so every wait below and that function agree on which
+# endpoint a run is actually driving.
+_LOCAL_LLM_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "host.docker.internal"})
+_DEFAULT_LLM_API_URL = "http://localhost:11434"
+
+
+def _is_local_llm_endpoint(url: str) -> bool:
+    """Whether ``url``'s host is one of the LOCAL names, never a remote provider's."""
+    return urllib.parse.urlsplit(url).hostname in _LOCAL_LLM_HOSTNAMES
+
+
+EVAL_LLM_IS_LOCAL = _is_local_llm_endpoint(os.environ.get("LLM_API_URL", _DEFAULT_LLM_API_URL))
+
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
 SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))
 
@@ -114,6 +136,20 @@ EVAL_CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "1"))
 # genuinely stuck sample still ends rather than hanging the run.
 SAMPLE_READY_TIMEOUT_SECONDS = 60.0
 
+# How long ONE turn's reply + settle wait may take (#2713) — ``_drive_turns``' own
+# ``timeout``, pushed in by both ``chat_eval`` (one turn) and ``end_to_end_eval`` (every
+# turn of its script).  Each driver keeps its own REMOTE default unchanged (``chat.py``'s
+# 120.0, ``end_to_end.py``'s 240.0) — tuned on a provider with no comparable widening
+# needed — and both switch to this ONE shared LOCAL deadline instead, because on a local
+# runner the dominating factor is the model's own generation speed, not which driver asked.
+# Sized off the measurement in #2713: prefill ~430 tok/s, generation ~45 tok/s, so a
+# 10k-token step with ~1k tokens of thinking runs ~45s, and a turn drives 5+ such steps
+# before it settles — a local chat turn with thinking on was measured running past the
+# end-to-end driver's 240s for its FIRST turn alone.  900s is 5 steps at this module's own
+# LOCAL per-call deadline (below) — the same "5+ steps" the measurement named — so a turn
+# that needs every one of its steps at the heavier end still settles before this wait ends.
+TURN_REPLY_WAIT_SECONDS_LOCAL = 900.0
+
 # How long ONE drive of a sample may take — standing its world up, its turns or cycles, its
 # teardown — before the harness stops it and excludes it by name (#2168).  The waits inside a
 # drive carry budgets of their own (the readiness wait above, each turn's reply timeout of up to
@@ -122,7 +158,17 @@ SAMPLE_READY_TIMEOUT_SECONDS = 60.0
 # had absorbed its cancel, and wrote nothing until it was killed by hand.  Generous rather than
 # tuned: a healthy drive, a slow local model's several turns or collector cycles included,
 # finishes well inside it, and a cut here costs a sample that could have been measured.
-SAMPLE_WALL_CLOCK_SECONDS = 1800.0
+#
+# LOCAL (#2713): a local turn's own reply wait is 900s (above) — an end-to-end script can
+# drive several turns plus the created job's own cycles, each able to run that long, so the
+# backstop widens to 5400s (6x one turn) rather than let a sample that is genuinely still
+# working, just slowly, get excluded by the same bound a remote provider's 1800s was tuned
+# against.
+SAMPLE_WALL_CLOCK_SECONDS_REMOTE = 1800.0
+SAMPLE_WALL_CLOCK_SECONDS_LOCAL = 5400.0
+SAMPLE_WALL_CLOCK_SECONDS = (
+    SAMPLE_WALL_CLOCK_SECONDS_LOCAL if EVAL_LLM_IS_LOCAL else SAMPLE_WALL_CLOCK_SECONDS_REMOTE
+)
 
 # How long a single-call drive (classifier, framer, namer, binder, extractor) waits for its one
 # model call.  The client's per-request deadline does not bound it: a gateway that sends
@@ -132,7 +178,17 @@ SAMPLE_WALL_CLOCK_SECONDS = 1800.0
 # before they answered — 8 of 15 in one case — while the other model lost none.  A cut sample
 # measures the wait, not the model, so the wait is generous rather than tuned; the slowness
 # itself is read off the case's timings.
-SINGLE_CALL_WAIT_SECONDS = 180.0
+#
+# LOCAL (#2713): here the client's per-request deadline DOES bound the call — a local
+# endpoint has no gateway in front of it to keep the connection alive, so the call fails (or
+# retries) on the client's own LOCAL per-call deadline (below) well before this wait would
+# matter.  600s covers that deadline's full retry budget (3 attempts x 180s = 540s, plus
+# backoff) with margin, so this wait is never what cuts a local single-call drive short.
+SINGLE_CALL_WAIT_SECONDS_REMOTE = 180.0
+SINGLE_CALL_WAIT_SECONDS_LOCAL = 600.0
+SINGLE_CALL_WAIT_SECONDS = (
+    SINGLE_CALL_WAIT_SECONDS_LOCAL if EVAL_LLM_IS_LOCAL else SINGLE_CALL_WAIT_SECONDS_REMOTE
+)
 
 # How many times one sample is stood up before a failing preflight voids it (#2230), and how
 # long it waits before the first re-boot (doubling each time after).  A sample's preflight
@@ -455,14 +511,31 @@ _EVAL_LLM_MAX_RETRIES = 3
 _EVAL_LLM_RETRY_DELAY = 1.0
 
 # The per-request deadline.  Without one the OpenAI SDK's own default applies — a 600s
-# read — so a remote endpoint that simply STOPS ANSWERING is not a failure the retry loop
+# read — so a REMOTE endpoint that simply STOPS ANSWERING is not a failure the retry loop
 # can see: the request never errors, it just sits, and the harness's own turn timeout ends
 # the sample ~2 minutes later with nothing recorded anywhere.  Measured, that is exactly
 # what happened to 3 of 20 samples.  A deadline turns the stall into a timeout the client
 # retries and, failing that, into an aborted run the harness RE-DRIVES from a clean world.
 # The budget is what makes it work: attempts x deadline (plus backoff) must fit inside the
 # runner's turn timeout, or the turn dies first and the retries never run.
-_EVAL_LLM_TIMEOUT_DEFAULT_SECONDS = 20.0
+#
+# LOCAL (#2713) gets a longer deadline instead of this one: a local endpoint (Ollama, LM
+# Studio) has no network between the sample and the model, so a call that is simply SLOW is
+# not a stall this deadline needs to catch — it is the model thinking, and cutting it off
+# mid-call is the defect this issue fixes.  Measured: the digest case's ``collection_write``
+# call (~4k tokens of prompt, ~800 of thinking, then twelve headlines with their urls as the
+# argument) ran past the 20s REMOTE deadline on every attempt on an M1 Max / LM Studio
+# gemma-4-26B, cutting the tool call's argument mid-string every time (0/15 samples).
+# ``LLM_TIMEOUT=120`` fixed it outright — no cut-off tool calls left in the whole run (11/15
+# samples; the remaining 4 were the model's own choices, not cut-offs).  180s keeps a 60s
+# margin over that measured-sufficient value for a heavier write than the one measured.
+_EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_REMOTE = 20.0
+_EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_LOCAL = 180.0
+_EVAL_LLM_TIMEOUT_DEFAULT_SECONDS = (
+    _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_LOCAL
+    if EVAL_LLM_IS_LOCAL
+    else _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_REMOTE
+)
 
 
 def env_seconds(name: str, default: float) -> float:
@@ -512,7 +585,7 @@ def _real_model_config(
         # A case is parametrized over MODEL, so a cohort names the one it is measured on;
         # with none named, the run's configured model.
         llm_model=model or os.environ.get("LLM_MODEL", "gpt-oss:20b"),
-        llm_api_url=os.environ.get("LLM_API_URL", "http://localhost:11434"),
+        llm_api_url=os.environ.get("LLM_API_URL", _DEFAULT_LLM_API_URL),
         llm_embedding_model=os.environ.get("LLM_EMBEDDING_MODEL", "embeddinggemma"),
         # The identity ladder's decision step (#2715) — env-configured like every
         # other model here; unset runs the named degraded mode and the preflight

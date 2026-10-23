@@ -12,7 +12,9 @@ from penny.database import Database
 from penny.datetime_utils import user_timezone_name
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
+    EVAL_LLM_IS_LOCAL,
     SAMPLES,
+    TURN_REPLY_WAIT_SECONDS_LOCAL,
     UNSTATED,
     PassRate,
     SampleResult,
@@ -64,6 +66,16 @@ from penny.tests.mocks.signal_server import MockSignalServer
 # is; what is new is that the round's own turns are DRIVEN rather than seeded as having
 # already happened, because the question is whether the round's output is the cycle's input.
 EndToEndEval = Callable[..., Awaitable["Cohort"]]
+
+# How long each scripted turn's reply + settle wait may take.  REMOTE is this driver's own
+# tuned value, unchanged; LOCAL swaps in the shared local turn deadline (#2713) — see
+# ``TURN_REPLY_WAIT_SECONDS_LOCAL``'s own comment in conftest.py for the measurement.
+_END_TO_END_TURN_REPLY_WAIT_SECONDS_REMOTE = 240.0
+_END_TO_END_TURN_REPLY_WAIT_SECONDS = (
+    TURN_REPLY_WAIT_SECONDS_LOCAL
+    if EVAL_LLM_IS_LOCAL
+    else _END_TO_END_TURN_REPLY_WAIT_SECONDS_REMOTE
+)
 
 
 class EndToEndArm(NamedTuple):
@@ -394,7 +406,7 @@ def end_to_end_eval(
                 case_id=case_id,
                 sample_index=sample_index,
                 arm=arms[arm_index],
-                timeout=240.0,
+                timeout=_END_TO_END_TURN_REPLY_WAIT_SECONDS,
                 retryable=retryable,
                 observe=observe,
             )

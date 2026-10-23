@@ -152,6 +152,10 @@ from penny.tests.eval.collector.test_watch_cycles import (
 )
 from penny.tests.eval.conftest import (
     _ACTOR,
+    _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS,
+    _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_LOCAL,
+    _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_REMOTE,
+    EVAL_LLM_IS_LOCAL,
     MUTATION_HISTORY_WINDOW,
     NO_CHAT_DRAW,
     NO_CYCLE,
@@ -159,6 +163,13 @@ from penny.tests.eval.conftest import (
     NO_MEASURED_TURN,
     NO_REPLY,
     PENNY_LOGGER,
+    SAMPLE_WALL_CLOCK_SECONDS,
+    SAMPLE_WALL_CLOCK_SECONDS_LOCAL,
+    SAMPLE_WALL_CLOCK_SECONDS_REMOTE,
+    SINGLE_CALL_WAIT_SECONDS,
+    SINGLE_CALL_WAIT_SECONDS_LOCAL,
+    SINGLE_CALL_WAIT_SECONDS_REMOTE,
+    TURN_REPLY_WAIT_SECONDS_LOCAL,
     UNSTATED,
     Check,
     SampleResult,
@@ -170,6 +181,7 @@ from penny.tests.eval.conftest import (
     _exclusion,
     _flush_sample_blocks,
     _held_entries,
+    _is_local_llm_endpoint,
     _last_scripted_turn_at,
     _mechanism_records,
     _observe_sample,
@@ -221,6 +233,10 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.conftest import (
     collection_names as memory_names_now,
 )
+from penny.tests.eval.drivers.chat import (
+    _CHAT_TURN_REPLY_WAIT_SECONDS,
+    _CHAT_TURN_REPLY_WAIT_SECONDS_REMOTE,
+)
 from penny.tests.eval.drivers.collector_cycles import (
     CYCLE_DEAD,
     CycleCall,
@@ -231,7 +247,12 @@ from penny.tests.eval.drivers.collector_cycles import (
     _DrivenCycles,
     cycle_script,
 )
-from penny.tests.eval.drivers.end_to_end import _no_job_created_yet, _observe_end_to_end
+from penny.tests.eval.drivers.end_to_end import (
+    _END_TO_END_TURN_REPLY_WAIT_SECONDS,
+    _END_TO_END_TURN_REPLY_WAIT_SECONDS_REMOTE,
+    _no_job_created_yet,
+    _observe_end_to_end,
+)
 from penny.tests.eval.drivers.extractor import _observe_extraction, _write_classifier_report
 from penny.tests.eval.end_to_end.world import seed_known_routine
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
@@ -324,6 +345,83 @@ def test_a_forwarded_but_unset_duration_reads_as_its_default(monkeypatch) -> Non
     assert env_seconds("SOME_DURATION", 20.0) == 20.0
     monkeypatch.setenv("SOME_DURATION", "45")
     assert env_seconds("SOME_DURATION", 20.0) == 45.0
+
+
+@pytest.mark.parametrize(
+    ("url", "is_local"),
+    [
+        ("http://localhost:11434", True),
+        ("http://127.0.0.1:11434", True),
+        ("http://host.docker.internal:11434", True),
+        ("https://openrouter.ai/api/v1", False),
+        ("https://api.x.ai/v1", False),
+        ("http://192.168.1.50:11434", False),
+    ],
+)
+def test_a_local_endpoint_is_told_apart_by_its_hostname_alone(url: str, is_local: bool) -> None:
+    """The LOCAL/REMOTE split (#2713) reads only the endpoint's own hostname — a loopback
+    address or Docker's host-gateway alias is local, every other host (a direct provider, a
+    routed gateway, a LAN address) is remote, whatever port or path rides along with it."""
+    assert _is_local_llm_endpoint(url) is is_local
+
+
+def test_a_remote_endpoint_keeps_every_wait_byte_for_byte_unchanged() -> None:
+    """#2713 widens waits for a LOCAL endpoint only — the REMOTE branch of each one must
+    still be the exact value that shipped before this change, so a remote run (``make
+    eval-remote``) is unaffected."""
+    assert _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_REMOTE == 20.0
+    assert _CHAT_TURN_REPLY_WAIT_SECONDS_REMOTE == 120.0
+    assert _END_TO_END_TURN_REPLY_WAIT_SECONDS_REMOTE == 240.0
+    assert SINGLE_CALL_WAIT_SECONDS_REMOTE == 180.0
+    assert SAMPLE_WALL_CLOCK_SECONDS_REMOTE == 1800.0
+
+
+def test_every_wait_resolves_to_its_local_or_remote_half_by_the_same_flag() -> None:
+    """Each of the five waits #2713 names picks its LOCAL value when the configured
+    endpoint is local and its unchanged REMOTE value otherwise — all five read the SAME
+    ``EVAL_LLM_IS_LOCAL`` flag, so a run can never widen one and leave another at its
+    remote size by a flag that drifted out of step."""
+    assert (
+        _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_LOCAL
+        if EVAL_LLM_IS_LOCAL
+        else _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_REMOTE
+    ) == _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS
+    assert (
+        TURN_REPLY_WAIT_SECONDS_LOCAL if EVAL_LLM_IS_LOCAL else _CHAT_TURN_REPLY_WAIT_SECONDS_REMOTE
+    ) == _CHAT_TURN_REPLY_WAIT_SECONDS
+    assert (
+        TURN_REPLY_WAIT_SECONDS_LOCAL
+        if EVAL_LLM_IS_LOCAL
+        else _END_TO_END_TURN_REPLY_WAIT_SECONDS_REMOTE
+    ) == _END_TO_END_TURN_REPLY_WAIT_SECONDS
+    assert (
+        SINGLE_CALL_WAIT_SECONDS_LOCAL if EVAL_LLM_IS_LOCAL else SINGLE_CALL_WAIT_SECONDS_REMOTE
+    ) == SINGLE_CALL_WAIT_SECONDS
+    assert (
+        SAMPLE_WALL_CLOCK_SECONDS_LOCAL if EVAL_LLM_IS_LOCAL else SAMPLE_WALL_CLOCK_SECONDS_REMOTE
+    ) == SAMPLE_WALL_CLOCK_SECONDS
+    # The two turn-reply waits share one LOCAL deadline (#2713) — a local run never widens
+    # one driver's turn wait further than the other's.
+    assert _CHAT_TURN_REPLY_WAIT_SECONDS_REMOTE != _END_TO_END_TURN_REPLY_WAIT_SECONDS_REMOTE
+    if EVAL_LLM_IS_LOCAL:
+        assert _CHAT_TURN_REPLY_WAIT_SECONDS == _END_TO_END_TURN_REPLY_WAIT_SECONDS
+
+
+def test_local_waits_are_each_more_generous_than_the_measured_floor_they_must_clear() -> None:
+    """Every LOCAL default must clear the specific measured number #2713 is sized against,
+    with margin — never just be "bigger than remote" by an arbitrary amount."""
+    # LLM_TIMEOUT=120 was the measured-SUFFICIENT per-call deadline for the heaviest
+    # observed write step (a 12-headline digest's collection_write call).
+    assert _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_LOCAL > 120.0
+    # A single-call drive's own wait must outlast the per-call deadline's full retry
+    # budget (3 attempts), or it cuts a local call the client's own deadline would not.
+    assert SINGLE_CALL_WAIT_SECONDS_LOCAL > 3 * _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS_LOCAL
+    # A turn was measured running past the end-to-end driver's 240s for its first turn
+    # alone, so the shared local turn deadline must clear that measurement with margin.
+    assert TURN_REPLY_WAIT_SECONDS_LOCAL > 240.0
+    # The sample backstop must outlast a single local turn, or it cuts a sample that is
+    # only ever waiting on the turn-reply wait above to do its job.
+    assert SAMPLE_WALL_CLOCK_SECONDS_LOCAL > TURN_REPLY_WAIT_SECONDS_LOCAL
 
 
 async def test_concurrent_samples_keep_their_logs_apart(tmp_path) -> None:

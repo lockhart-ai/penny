@@ -10,7 +10,9 @@ from penny.config import Config
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
     _MODEL_CALL_ATTEMPTS,
+    EVAL_LLM_IS_LOCAL,
     SAMPLES,
+    TURN_REPLY_WAIT_SECONDS_LOCAL,
     UNSTATED,
     Observer,
     PassRate,
@@ -38,6 +40,14 @@ from penny.tests.mocks.signal_server import MockSignalServer
 # A chat-eval runner: a case passes ``ask`` + ``world`` and gets a :class:`Cohort` back to
 # assert against.
 ChatEval = Callable[..., Awaitable["Cohort"]]
+
+# How long one chat turn's reply + settle wait may take.  REMOTE is this driver's own
+# tuned value, unchanged; LOCAL swaps in the shared local turn deadline (#2713) — see
+# ``TURN_REPLY_WAIT_SECONDS_LOCAL``'s own comment in conftest.py for the measurement.
+_CHAT_TURN_REPLY_WAIT_SECONDS_REMOTE = 120.0
+_CHAT_TURN_REPLY_WAIT_SECONDS = (
+    TURN_REPLY_WAIT_SECONDS_LOCAL if EVAL_LLM_IS_LOCAL else _CHAT_TURN_REPLY_WAIT_SECONDS_REMOTE
+)
 
 
 @pytest.fixture
@@ -71,7 +81,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         prepare: Preparer | None = None,
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
-        timeout: float = 120.0,
+        timeout: float = _CHAT_TURN_REPLY_WAIT_SECONDS,
         family: str | None = None,
     ) -> Cohort:
         """Drive one request in its wordings and return the COHORT.
