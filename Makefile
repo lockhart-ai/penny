@@ -63,11 +63,11 @@ EVAL_ARTIFACTS_MOUNT := /penny/eval-artifacts
 # `make eval-remote` forwards model config as explicit env vars rather than reading the
 # mounted `/penny/.env`, because it runs from a WORKTREE and only the primary
 # checkout has a real `.env`.  The remote OpenAI-compatible provider (OpenRouter)
-# adds a credential to that list, and a credential belongs in `.env`, not in
-# shell history — so each one is read from the host shell first and from the
-# PRIMARY checkout's `.env` second, which makes `LLM_API_KEY=...` in that file
-# work from any worktree.  Values are forwarded into the container's env and
-# never echoed.
+# adds a credential to that list. For that credential only, evals read OPENROUTER_API_KEY
+# from the primary `.env`, never LLM_API_KEY (which is the chat endpoint's key). A shell
+# LLM_API_KEY still overrides, for one-off runs. Other variables are read from the shell
+# first and from the PRIMARY checkout's `.env` second.  Values are forwarded into the
+# container's env and never echoed.
 EVAL_PRIMARY_ENV := $(EVAL_PRIMARY_CHECKOUT)/.env
 # Where the embedding model lives, from inside the eval container: it stays local in
 # every run, so pointing the chat model at a remote provider never silently moves the
@@ -81,8 +81,8 @@ LLM_LOCAL_ENDPOINT := http://host.docker.internal:11434
 EVAL_REMOTE_ENDPOINT := https://openrouter.ai/api
 EVAL_REMOTE_WORKERS := 8
 EVAL_REMOTE_CONCURRENCY := 5
-# The .env key holding the credential. LLM_API_KEY still wins from the shell, then from
-# .env, and this is only the last fallback. Point the endpoint somewhere else and you set
+# The .env key holding the eval credential (OPENROUTER_API_KEY). A shell LLM_API_KEY
+# overrides this for one-off runs. Point the endpoint somewhere else and you set a shell
 # LLM_API_KEY, exactly as before.
 EVAL_REMOTE_API_KEY_VAR := OPENROUTER_API_KEY
 # The MODELS are not a make variable at all: they live in EVAL_MODELS in
@@ -349,13 +349,13 @@ eval-remote: $(if $(LOCAL),,build)
 	rm -f "$$roster_log"; \
 	if [ "$$rostered" = 0 ]; then exit 1; fi; \
 	llm_url="$${LLM_API_URL:-$(EVAL_REMOTE_ENDPOINT)}"; \
-	llm_key="$${LLM_API_KEY:-$$(from_env LLM_API_KEY)}"; \
+	llm_key="$${LLM_API_KEY}"; \
 	if [ -z "$$llm_key" ]; then llm_key="$$(from_env "$(EVAL_REMOTE_API_KEY_VAR)")"; fi; \
 	embed_url="$${LLM_EMBEDDING_API_URL:-$(LLM_LOCAL_ENDPOINT)}"; \
 	embed_key="$${LLM_EMBEDDING_API_KEY:-$$(from_env LLM_EMBEDDING_API_KEY)}"; \
 	echo "eval: embeddings stay local at $$embed_url"; \
 	if [ -z "$$llm_key" ]; then \
-		echo "eval: no credential — set LLM_API_KEY (or $(EVAL_REMOTE_API_KEY_VAR)) in $(EVAL_PRIMARY_ENV), or LLM_API_KEY in the shell." >&2; \
+		echo "eval: no credential — set $(EVAL_REMOTE_API_KEY_VAR) in $(EVAL_PRIMARY_ENV), or LLM_API_KEY in the shell." >&2; \
 		exit 1; \
 	fi; \
 	echo "eval: $$model at $$llm_url$${pinned:+ pinned to $$pinned} · $$workers worker(s) x $$concurrency sample(s) in flight"; \
