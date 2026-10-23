@@ -151,11 +151,19 @@ def _premise() -> Preparer:
 
 # ── The claims ────────────────────────────────────────────────────────────────
 
-# A key-shaped token the reply wraps in backticks or quotes — the same wrapping
+# A key-shaped token the reply wraps in backticks or double quotes — the same wrapping
 # `CollectionWriteTool`'s own narration uses for a key (`_keys_label` / `_merge_clause` in
 # `penny/tools/memory_tools.py`), which a model recapping the write's result line carries
 # over.  Excludes the collection's own name, which the headline also backtick-quotes.
-_NAMED_TOKEN = re.compile(r"`([^`]+)`|\"([^\"]+)\"|'([^']+)'")
+#
+# Single quotes are deliberately NOT a delimiter here (MEASURED): casual prose is full of
+# apostrophes ("I'll", "I've", "didn't"), and a naive single-quote pair regex treats the
+# apostrophe in one contraction as an OPENING quote and the apostrophe in a later, unrelated
+# contraction as its CLOSE — capturing the entire run of prose between them as one "named
+# key".  Every reply in this case's first measured run got flagged this way, none of them a
+# real quoted key.  Backticks and double quotes carry no such risk (a reply has no reason to
+# use either mid-word), so they stay.
+_NAMED_TOKEN = re.compile(r"`([^`]+)`|\"([^\"]+)\"")
 
 
 def _reply_named_keys(reply: str) -> list[str]:
