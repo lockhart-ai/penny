@@ -291,10 +291,13 @@ class TestMemoryWriteNarration:
     call says so, never a false "saved"), and a failure."""
 
     def test_collection_write_saved(self):
+        """The headline names what the write did (#2758) — the key it landed under,
+        read off the result's own ``saved_keys``, never re-derived from the call's
+        arguments."""
         args = {"collection": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        result = ToolResult(message="ok", mutated=True, saved_keys=["chess"])
         assert (
-            CollectionWriteTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
-            == 'You saved "chess" to `likes`:'
+            CollectionWriteTool.to_result_narration(args, result) == 'You saved "chess" to `likes`:'
         )
 
     def test_collection_write_already_there(self):

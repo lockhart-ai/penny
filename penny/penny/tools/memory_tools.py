@@ -330,15 +330,45 @@ def _entry_label(arguments: dict) -> str:
     return f'"{key}"' if key else "an entry"
 
 
-def _written_label(arguments: dict) -> str:
-    """Name the write's single entry by key, or a count of several, for narration."""
-    entries = arguments.get("entries", [])
-    keys = [entry.get("key") for entry in entries if isinstance(entry, dict) and entry.get("key")]
+def _keys_label(keys: list[str]) -> str:
+    """Name one key by itself, or a count of several, for narration."""
     if len(keys) == 1:
         return f'"{keys[0]}"'
     if keys:
         return f"{len(keys)} entries"
     return "an entry"
+
+
+def _merge_clause(keys: list[str]) -> tuple[str, str, str]:
+    """The backtick-quoted key list for a merge headline, with the pronoun and
+    noun that agree with it — singular for one key, plural for several."""
+    quoted = ", ".join(f"`{key}`" for key in keys)
+    if len(keys) == 1:
+        return quoted, "it", "thing"
+    return quoted, "they", "things"
+
+
+def _write_headline(saved_keys: list[str], merged_keys: list[str], collection: str) -> str:
+    """The ``collection_write`` headline, built from what the write DID — which entries
+    landed under their own key and which merged into an EXISTING entry under a
+    DIFFERENT key — never from the call's arguments (#2758).  The identity ladder
+    (#2715) can redirect a write's content onto an existing entry under a different
+    key; a headline built from the key the model passed then claims a new entry was
+    created when nothing was.  ``saved_keys`` / ``merged_keys`` come from the write's own
+    ``WriteResult`` outcomes (``ToolResult.saved_keys`` / ``merged_keys``), not the call's
+    ``entries`` argument."""
+    if not merged_keys:
+        return f"You saved {_keys_label(saved_keys)} to {collection}:"
+    quoted, pronoun, noun = _merge_clause(merged_keys)
+    if not saved_keys:
+        return (
+            f"You updated the existing {quoted} in {collection} — {pronoun} matched "
+            f"what you wrote as the same {noun}:"
+        )
+    return (
+        f"You saved {_keys_label(saved_keys)} and updated the existing {quoted} in "
+        f"{collection} — {pronoun} matched what you wrote as the same {noun}:"
+    )
 
 
 def _bracket_key_rejection(memory: Memory, memory_name: str, key: str) -> ToolResult | None:
@@ -1425,7 +1455,7 @@ class CollectionWriteTool(MemoryTool):
             return f"You tried to save to {collection} but it didn't work:"
         if not result.mutated:
             return f"You didn't add anything new to {collection} — it was already there:"
-        return f"You saved {_written_label(arguments)} to {collection}:"
+        return _write_headline(result.saved_keys, result.merged_keys, collection)
 
     def __init__(
         self,
@@ -1686,9 +1716,12 @@ class CollectionWriteTool(MemoryTool):
         self._log_rejections(memory, by)
         parts = self._message_parts(memory, by)
         message = " ".join(parts) if parts else "(no entries written)"
+        saved_keys, merged_keys = self._landed_keys(by)
         return ToolResult(
             message=message,
             mutated=any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results),
+            saved_keys=saved_keys,
+            merged_keys=merged_keys,
         )
 
     @staticmethod
@@ -1699,6 +1732,20 @@ class CollectionWriteTool(MemoryTool):
         for result in results:
             by[result.outcome].append(result)
         return by
+
+    @staticmethod
+    def _landed_keys(by: dict[WriteGateOutcome, list[WriteResult]]) -> tuple[list[str], list[str]]:
+        """Which keys the write actually landed under, for the headline (#2758):
+        ``saved_keys`` are entries written under their OWN key (a new key, or an
+        exact-key content refresh — ``matched_key == key``); ``merged_keys`` are the
+        EXISTING entries a cross-key merge (``matched_key != key``) redirected onto."""
+        changed = by[WriteGateOutcome.KEY_EXISTS_CHANGED]
+        saved_keys = [r.key for r in by[WriteGateOutcome.NEW_KEY]]
+        saved_keys += [r.key for r in changed if r.matched_key == r.key]
+        merged_keys = [
+            r.matched_key for r in changed if r.matched_key is not None and r.matched_key != r.key
+        ]
+        return saved_keys, merged_keys
 
     @staticmethod
     def _log_rejections(memory: str, by: dict[WriteGateOutcome, list[WriteResult]]) -> None:

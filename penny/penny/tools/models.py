@@ -151,6 +151,14 @@ class ToolResult(BaseModel):
       stop reason; the chat loop never reads it, so a chat write gets the same
       enumerated text WITHOUT a loop-stop (chat isn't must-act).  ``None`` for every
       other call.
+    - ``saved_keys`` / ``merged_keys``: which of a ``collection_write`` call's entries
+      landed under their own key (new, or an exact-key content refresh) versus merged
+      into an EXISTING entry under a DIFFERENT key the identity ladder (#2715) matched
+      it to — set by ``CollectionWriteTool._format_results`` and read by that tool's own
+      ``to_result_narration`` so the headline names what the write actually did rather
+      than re-deriving it from the call's arguments (#2758): a cross-key merge redirects
+      the content onto the matched entry, so a headline built from the key the model
+      passed claims a new entry that was never created.  Empty for every other tool.
     """
 
     message: str
@@ -160,6 +168,8 @@ class ToolResult(BaseModel):
     narration: str | None = None
     media_id: int | None = None
     stop: WriteGateOutcome | None = None
+    saved_keys: list[str] = Field(default_factory=list)
+    merged_keys: list[str] = Field(default_factory=list)
 
     def __str__(self) -> str:
         return self.message

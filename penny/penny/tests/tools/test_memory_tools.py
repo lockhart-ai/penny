@@ -87,11 +87,13 @@ from penny.tools.memory_tools import (
     ReadRunCallsTool,
     _format_unsure,
     _format_updated,
+    _write_headline,
     build_memory_tools,
     format_entries,
     render_nothing_landed,
     render_writes_landed,
 )
+from penny.tools.models import ToolResult
 
 # The named degraded mode for tool tests: rules settle what they can, the rest
 # is written as new with the honest question (entries) or refused with a
@@ -1808,6 +1810,48 @@ class TestCollectionWritesAndReads:
         assert "matched as the same thing" not in exact
         assert 'It held: "$219"' in exact
 
+    def test_write_headline_names_what_the_write_did(self):
+        """The headline (#2758) is built from the write's own outcome — which keys
+        landed under their own name and which merged into an existing entry under a
+        different one — never from the call's arguments.  Whole-string: a plain
+        single key, a plain count, a pure single merge (the issue's own wording), a
+        pure multi-merge, and a mix of a saved key and a merge."""
+        assert (
+            _write_headline(["dark roast"], [], "`likes`") == 'You saved "dark roast" to `likes`:'
+        )
+        assert _write_headline(["a", "b"], [], "`likes`") == "You saved 2 entries to `likes`:"
+        assert _write_headline([], ["search-before-answering"], "`rules`") == (
+            "You updated the existing `search-before-answering` in `rules` — it "
+            "matched what you wrote as the same thing:"
+        )
+        assert _write_headline([], ["rule-a", "rule-b"], "`rules`") == (
+            "You updated the existing `rule-a`, `rule-b` in `rules` — they matched "
+            "what you wrote as the same things:"
+        )
+        assert _write_headline(["new-topic"], ["dark roast"], "`likes`") == (
+            'You saved "new-topic" and updated the existing `dark roast` in `likes` '
+            "— it matched what you wrote as the same thing:"
+        )
+
+    def test_to_result_narration_dispatches_on_mutated_and_merged_keys(self):
+        """``to_result_narration`` reads the structured ``saved_keys``/``merged_keys``
+        fields a real write populates (#2758) — a failure, an unchanged no-op, and a
+        merge all narrate off the result, never off the arguments passed."""
+        args = {"collection": "rules", "entries": [{"key": "whatever", "content": "x"}]}
+        failed = ToolResult(message="boom", success=False)
+        assert CollectionWriteTool.to_result_narration(args, failed) == (
+            "You tried to save to `rules` but it didn't work:"
+        )
+        unchanged = ToolResult(message="unchanged", mutated=False)
+        assert CollectionWriteTool.to_result_narration(args, unchanged) == (
+            "You didn't add anything new to `rules` — it was already there:"
+        )
+        merged = ToolResult(message="x", mutated=True, merged_keys=["search-before-answering"])
+        assert CollectionWriteTool.to_result_narration(args, merged) == (
+            "You updated the existing `search-before-answering` in `rules` — it "
+            "matched what you wrote as the same thing:"
+        )
+
     def test_format_unsure_names_the_candidate_and_both_calls(self):
         """The honest question (#2715) names the candidate key and what each call
         would do — update it if the write is the same thing, or let the new entry
@@ -1912,6 +1956,61 @@ class TestCollectionWritesAndReads:
         entries = db.memories.memory("likes").read_all()
         assert len(entries) == 1
         assert entries[0].content == "a fresher value"
+        # The cross-key merge headline (#2758): a real write's own saved_keys/merged_keys
+        # feed the narration, so it names the EXISTING key `likes` holds the content
+        # under, never the new key 'dark roast coffee' the model passed.
+        assert result.saved_keys == []
+        assert result.merged_keys == ["dark roast"]
+        narration = CollectionWriteTool.to_result_narration(
+            {"collection": "likes", "entries": [{"key": "dark roast coffee"}]}, result
+        )
+        assert narration == (
+            "You updated the existing `dark roast` in `likes` — it matched what you "
+            "wrote as the same thing:"
+        )
+
+    @pytest.mark.asyncio
+    async def test_write_mix_of_new_and_merged_entries_names_each(self, db, mock_llm):
+        """A single batch write with both a brand-new entry and a cross-key merge
+        (#2758) names EACH in the headline — the new key it saved, and the existing
+        key it updated — rather than folding the merge into a plain entry count."""
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        write = CollectionWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_decider_saying("no", "yes", "new_value"),
+            name_decider=_NO_NAME_MODEL,
+        )
+        await write.execute(
+            CallLink.new_top(),
+            collection="likes",
+            entries=[{"key": "dark roast", "content": "first body"}],
+        )
+        result = await write.execute(
+            CallLink.new_top(),
+            collection="likes",
+            entries=[
+                {"key": "mountain views", "content": "likes a window seat with a view"},
+                {"key": "dark roast coffee", "content": "a fresher value"},
+            ],
+        )
+        assert result.mutated is True
+        assert result.saved_keys == ["mountain views"]
+        assert result.merged_keys == ["dark roast"]
+        narration = CollectionWriteTool.to_result_narration(
+            {"collection": "likes", "entries": []}, result
+        )
+        assert narration == (
+            'You saved "mountain views" and updated the existing `dark roast` in '
+            "`likes` — it matched what you wrote as the same thing:"
+        )
 
     @pytest.mark.asyncio
     async def test_write_unchanged_and_already_recorded_prescribe_no_call(self, db, mock_llm):
