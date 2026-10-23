@@ -83,27 +83,39 @@ _USER_NAME = "Marguerite"
 _USER_LOCATION = "Halifax, NS"
 _USER_TIMEZONE = "America/Halifax"
 
-# The stored rule and the user's restatement of the SAME policy, worded differently — the
-# shape the identity ladder's decision model is asked about (#2715): a paraphrase, not a
-# copy.  Invented, about table formatting, unrelated to any real conversation.
+# The stored rule and the user's restatement of the SAME policy, worded differently AND
+# carrying one NEW detail the stored content doesn't — the shape that reaches the identity
+# ladder's VALUE question as "new_value" rather than "same_value" (#2715): a near-identical
+# restatement reads as the SAME VALUE, which merges silently (``KEY_EXISTS_UNCHANGED`` /
+# ``DUPLICATE_UNCHANGED``) and never exercises this case's headline at all — MEASURED in this
+# case's own first run, where every sample's restatement was close enough to read as nothing
+# new, and the single-entry STORE claim passed vacuously on an unchanged write every time.  A
+# genuinely added qualifier (which surface the rule covers) is still the same specific rule —
+# the identity question is still "yes" — so it reaches the merge path this case exists to
+# narrate.  Invented, about table formatting, unrelated to any real conversation.
 _SEEDED_KEY = "no_markdown_tables"
 _SEEDED_CONTENT = "Never format a reply as a markdown table — turn it into a bulleted list instead."
 
 ASK = (
     "hey, new rule for you: whenever you're about to answer me, don't lay it out as a "
-    "table — just turn it into bullet points instead, ok?"
+    "table — turn it into bullet points instead, and that goes for your job reports too, "
+    "not just chat replies"
 )
 ALSO_PHRASED: tuple[str, ...] = (
-    "quick rule update — never answer me with a table, always break it into bullets instead",
-    "can you remember this as a rule: stop using tables in your replies, use bullet points instead",
+    "quick rule update — never answer me with a table, always break it into bullets "
+    "instead, even for long comparison lists",
+    "can you remember this as a rule: stop using tables in your replies, use bullet points "
+    "instead, same goes for anything with more than a couple of rows",
 )
 _WORDINGS = (ASK, *ALSO_PHRASED)
 
 
-def _assert_wordings_restate_the_policy_without_the_key() -> None:
+def _assert_wordings_restate_the_policy_and_add_something_new() -> None:
     """ENFORCED at import: every wording restates the stored policy (tables, bullets) in its
-    own words, and never leaks the seeded key or its exact sentence — the ladder's identity
-    question is answered from the CONTENT, never from a copied key or phrase."""
+    own words, adds a qualifier the stored content doesn't carry (so the pair reads as the
+    same rule with a NEW value, not a duplicate), and never leaks the seeded key or its exact
+    sentence — the ladder's identity question is answered from the CONTENT, never from a
+    copied key or phrase."""
     seeded_first_words = " ".join(_SEEDED_CONTENT.split()[:4]).casefold()
     for wording in _WORDINGS:
         folded = wording.casefold()
@@ -113,9 +125,12 @@ def _assert_wordings_restate_the_policy_without_the_key() -> None:
         assert seeded_first_words not in folded, (
             f"a wording must not borrow the seeded rule's own words: {wording!r}"
         )
+        assert "too" in folded or "even" in folded or "same goes" in folded, (
+            f"a wording must add a qualifier the stored content lacks: {wording!r}"
+        )
 
 
-_assert_wordings_restate_the_policy_without_the_key()
+_assert_wordings_restate_the_policy_and_add_something_new()
 
 
 def _seed_world(db: Database) -> None:
@@ -165,14 +180,32 @@ def _premise() -> Preparer:
 # use either mid-word), so they stay.
 _NAMED_TOKEN = re.compile(r"`([^`]+)`|\"([^\"]+)\"")
 
+# A key is a short label, not a sentence: this case's own keys are one to three words
+# (``no_markdown_tables``), and the issue's own motivating example is the same shape
+# (``rule: always-cite``).  A reply's quoted RULE CONTENT is wrapped the same way (the model
+# often repeats what a rule says back in quotes) and reads as many words ending in sentence
+# punctuation — MEASURED in this case's own second run, where a quoted restatement of the
+# rule's full sentence was flagged as a "named key" the store doesn't hold under that exact
+# wording, which is true but not the bug this case exists to catch.  A token this shaped is
+# content, not a key, and is excluded rather than counted.
+_MAX_KEY_WORDS = 6
+_SENTENCE_ENDINGS = (".", "!", "?")
+
+
+def _reads_as_a_key(token: str) -> bool:
+    if token.endswith(_SENTENCE_ENDINGS):
+        return False
+    return len(token.split()) <= _MAX_KEY_WORDS
+
 
 def _reply_named_keys(reply: str) -> list[str]:
-    """Every backtick- or quote-wrapped token in the reply that reads as an entry key,
-    excluding the collection's own name."""
+    """Every backtick- or quote-wrapped, key-shaped token in the reply, excluding the
+    collection's own name and anything that reads as quoted sentence content rather than a
+    key."""
     names = []
     for match in _NAMED_TOKEN.finditer(reply):
         token = next(group for group in match.groups() if group is not None).strip()
-        if token and token.casefold() != RULES.casefold():
+        if token and token.casefold() != RULES.casefold() and _reads_as_a_key(token):
             names.append(token)
     return names
 
