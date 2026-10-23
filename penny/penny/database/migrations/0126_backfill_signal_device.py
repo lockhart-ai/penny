@@ -8,6 +8,28 @@ criteria only: a phone-number-shaped (``+``-prefixed) sender or recipient on
 recognise a Signal row.  It never touches a Discord/iOS/browser row (none of
 their identifiers are ``+``-shaped) and never references this deployment's
 own number.
+
+Direction matters here, and matters a lot: on a live deployment, an
+``INCOMING`` row's sender and an ``OUTGOING`` row's sender are different
+parties (the user, and Penny herself) even though both numbers are
+``+``-shaped. An earlier version of this migration matched sender for
+EVERY NULL row regardless of direction — so an outgoing reply (sender =
+Penny's own number, recipient = the user) got linked to Penny's own
+device whenever that stale row still existed (seeded by the pre-#2765
+startup bug, not by this migration), because the sender-match clause had
+no direction filter to keep it out. Each UPDATE below is now direction-
+scoped AND reads only the user's own party for that direction — an
+incoming row's sender, an outgoing row's recipient — so neither clause can
+ever touch the other direction's Penny-keyed column.
+
+This migration never touches ``device.is_default``. Seeding every distinct
+historical sender as a device needs no default to be correct, and forcing
+one here risks clobbering a genuinely different primary channel's default
+(iOS, browser) on a deployment that has since moved off Signal. Hands-off,
+every historical row still resolves identically because the backfill below
+never depends on which seeded device is marked default. The user's own
+Signal device still ends up default on any deployment where Signal is the
+primary channel — that's `_register_signal_channel`'s job, every startup.
 """
 
 from __future__ import annotations
@@ -22,12 +44,11 @@ _SIGNAL_SENDER_SHAPE = "+%"
 
 
 def up(conn: sqlite3.Connection) -> None:
-    """Seed a Signal device per distinct historical sender, mark one default,
-    then backfill ``device_id`` on NULL rows that match a seeded identifier."""
+    """Seed a Signal device per distinct historical sender, then backfill
+    ``device_id`` on NULL rows that match a seeded identifier, by direction."""
     if not _table_exists(conn, "messagelog") or not _table_exists(conn, "device"):
         return
     seeded = _seed_signal_devices(conn)
-    _mark_signal_default(conn)
     backfilled = _backfill_device_id(conn)
     if seeded or backfilled:
         logger.info(
@@ -47,11 +68,13 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def _seed_signal_devices(conn: sqlite3.Connection) -> int:
-    """Register every distinct phone-shaped incoming sender as a (non-default)
+    """Register every distinct phone-shaped INCOMING sender as a (non-default)
     Signal device — one row per real number the deployment has ever heard
-    from, not just the first one ``0016`` happened to seed.  Returns how many
-    new device rows this inserted (``INSERT OR IGNORE`` skips any that
-    ``0016`` or a prior run already seeded)."""
+    from, not just the first one ``0016`` happened to seed. Deliberately
+    reads ``direction='incoming'`` only: an outgoing row's sender is Penny's
+    own number, never a device to register. Returns how many new device rows
+    this inserted (``INSERT OR IGNORE`` skips any that ``0016`` or a prior run
+    already seeded)."""
     senders = conn.execute(
         "SELECT DISTINCT sender FROM messagelog WHERE direction='incoming' AND sender LIKE ?",
         (_SIGNAL_SENDER_SHAPE,),
@@ -69,59 +92,24 @@ def _seed_signal_devices(conn: sqlite3.Connection) -> int:
     return inserted
 
 
-def _mark_signal_default(conn: sqlite3.Connection) -> None:
-    """Exactly one default: the user's own record when there is one, read the
-    same way ``UserStore.get_primary_sender`` reads it — the sole ``userinfo``
-    row — else the most-seen phone-shaped incoming sender.  No-op if nothing
-    phone-shaped got seeded (a non-Signal deployment)."""
-    any_signal = conn.execute(
-        "SELECT 1 FROM device WHERE channel_type='signal' AND identifier LIKE ?",
-        (_SIGNAL_SENDER_SHAPE,),
-    ).fetchone()
-    if not any_signal:
-        return
-    primary = _primary_sender(conn)
-    if primary is None:
-        return
-    conn.execute("UPDATE device SET is_default = 0")
-    conn.execute(
-        "UPDATE device SET is_default = 1 WHERE channel_type='signal' AND identifier = ?",
-        (primary,),
-    )
-
-
-def _primary_sender(conn: sqlite3.Connection) -> str | None:
-    """The established user's number if a profile already exists, else the
-    most frequent phone-shaped incoming sender (a fresh/unprofiled deployment
-    whose live messages still name the one real user)."""
-    if _table_exists(conn, "userinfo"):
-        row = conn.execute("SELECT sender FROM userinfo LIMIT 1").fetchone()
-        if row and row[0] and row[0].startswith("+"):
-            return row[0]
-    row = conn.execute(
-        "SELECT sender, COUNT(*) AS c FROM messagelog"
-        " WHERE direction='incoming' AND sender LIKE ?"
-        " GROUP BY sender ORDER BY c DESC, sender ASC LIMIT 1",
-        (_SIGNAL_SENDER_SHAPE,),
-    ).fetchone()
-    return row[0] if row else None
-
-
 def _backfill_device_id(conn: sqlite3.Connection) -> int:
-    """Link every still-NULL row whose sender or recipient matches a device
-    this migration just seeded — incoming by sender, outgoing by recipient.
-    Returns the total rows updated across both directions."""
+    """Link every still-NULL row whose OWN-DIRECTION party matches a seeded
+    device: an incoming row by its sender, an outgoing row by its recipient.
+    Each clause is scoped to its own direction so an outgoing row's sender
+    (Penny's own number, never a party this migration seeds) can never be
+    read by the incoming clause, and vice versa. Returns the total rows
+    updated across both directions."""
     incoming = conn.execute(
         "UPDATE messagelog"
         " SET device_id = (SELECT id FROM device WHERE identifier = messagelog.sender)"
-        " WHERE device_id IS NULL AND sender LIKE ?"
+        " WHERE device_id IS NULL AND direction='incoming' AND sender LIKE ?"
         " AND sender IN (SELECT identifier FROM device)",
         (_SIGNAL_SENDER_SHAPE,),
     ).rowcount
     outgoing = conn.execute(
         "UPDATE messagelog"
         " SET device_id = (SELECT id FROM device WHERE identifier = messagelog.recipient)"
-        " WHERE device_id IS NULL AND recipient LIKE ?"
+        " WHERE device_id IS NULL AND direction='outgoing' AND recipient LIKE ?"
         " AND recipient IN (SELECT identifier FROM device)",
         (_SIGNAL_SENDER_SHAPE,),
     ).rowcount
