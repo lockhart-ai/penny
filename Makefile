@@ -470,7 +470,11 @@ assemble: $(if $(LOCAL),,build)
 # posting, it lists the PR's existing comments (`gh api .../issues/<pr>/comments`), keeps
 # only the ones carrying that run's marker AND authored by the token's own login (the App —
 # `penny.tests.eval.utils.pr_comments` makes that one decision, pure and unit-tested), and
-# deletes them — so a PR always shows exactly one report. `BASELINE=<run>` additionally
+# deletes them. The REPORT pass also sweeps every PRE-#2734 LEGACY report comment (no
+# marker to match — it predates the marker) that has the old report's SHAPE: a per-case
+# heading + its checks row, or a hand-written comparison heading — so a PR already
+# carrying a pile of old unmarked reports is left showing only the run about to post,
+# not that pile plus one new report. `BASELINE=<run>` additionally
 # builds and posts (or replaces) ONE comparison comment against that main run
 # (`penny.tests.eval.utils.compare`): refused if the two runs were pinned to different
 # providers, and a merge-base warning (computed HOST-side — the container has no git) rides
@@ -532,10 +536,10 @@ eval-report: $(if $(LOCAL),,build)
 	fi; \
 	existing="$$(GH_TOKEN=$$tok gh api repos/{owner}/{repo}/issues/$(PR)/comments --paginate 2>/dev/null)"; \
 	[ -n "$$existing" ] || existing="[]"; \
-	to_delete="$$(printf '%s' "$$existing" | $(EVAL_RUN) python -m penny.tests.eval.utils.pr_comments "$(EVAL_REPORT_MARKER)" "$$app_login")"; \
+	to_delete="$$(printf '%s' "$$existing" | $(EVAL_RUN) python -m penny.tests.eval.utils.pr_comments "$(EVAL_REPORT_MARKER)" "$$app_login" --include-legacy)"; \
 	if [ -n "$(DRY_RUN)" ]; then \
 		echo "eval-report: DRY RUN — nothing is posted or deleted"; \
-		echo "eval-report: would delete $$(printf '%s\n' "$$to_delete" | grep -c .) earlier marked report comment(s) on PR #$(PR):"; \
+		echo "eval-report: would delete $$(printf '%s\n' "$$to_delete" | grep -c .) earlier marked or legacy-shaped report comment(s) on PR #$(PR):"; \
 		printf '%s\n' "$$to_delete" | grep . | sed 's/^/  - /'; \
 		echo "eval-report: would post $$(printf '%s\n' $$names | wc -l | tr -d ' ') report comment(s) for $$run: $$names"; \
 	else \
