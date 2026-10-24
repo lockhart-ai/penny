@@ -348,6 +348,19 @@ class Prompt:
     # last told them, both rendered on the prompt — and states that a quiet cycle is
     # a normal outcome, because the old argless close read quiet as "nothing to
     # report" and the model had no way to say so on the record.
+    # The leading system message's opening line (#2778). The job's own identity
+    # (its name, description, instructions) moved out of this message into the
+    # user turn, so a cycle needs orienting before it gets there — stated as what
+    # IS, not an order: this is framework-fixed text, byte-identical across every
+    # job and every cycle, so it, the close instruction, and the runtime rules
+    # below are the one prefix every collector cycle shares.
+    COLLECTOR_CYCLE_FRAMING = (
+        "This is one cycle of a background collector — there is no live message "
+        "from the user here. The message below is this run's job: the collection "
+        "it is for, the job's own instructions, what the collection currently "
+        "holds, and this collector's recent run history."
+    )
+
     COLLECTOR_DONE_INSTRUCTION = (
         "A cycle does not message the user itself: what you write down here, plus "
         "the close with notify=true, is how they find out — Penny tells them "

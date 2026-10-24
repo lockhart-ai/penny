@@ -392,7 +392,7 @@ class Agent:
         system_prompt = await self._build_system_prompt(primary_user, handles=handles)
 
         response = await self.run(
-            prompt="",
+            prompt=self._cycle_prompt(handles),
             max_steps=self.get_max_steps(),
             call_link=call_link,
             system_prompt=system_prompt,
@@ -404,6 +404,19 @@ class Agent:
         return CycleResult(
             success=self._closed_cleanly(response), response=response, reads=cursor_tools
         )
+
+    def _cycle_prompt(self, handles: HandleTable | None = None) -> str:
+        """The cycle's own USER turn (#2778) — empty by default, so an
+        unoverridden background agent keeps today's shape: the per-cycle
+        state rides ``_dynamic_system_section`` instead, as a message
+        right before this (empty) user turn.  ``Collector`` — the only live
+        ``BackgroundAgent`` — overrides this to carry the job, its holdings,
+        its run history and the clock instead, with its own ``_build_messages``
+        override skipping the dynamic-system placement entirely (see
+        ``Collector._cycle_prompt`` for why: oMLX merges two LEADING system
+        messages ahead of the tool schemas, so a collector cycle — which has
+        no history to separate them — never cached its prefix)."""
+        return ""
 
     @staticmethod
     def settle_reads(reads: tuple[CursorReadTool, ...], consumed: bool) -> None:
@@ -2078,9 +2091,19 @@ class Agent:
         the tool schemas gemma4's renderer puts right after it, and the
         history) is what a server-side prefix cache reuses turn to turn.
         Each agent's per-turn section (the clock; chat's page hint and
-        self-state, the collector's holdings and run history) rides a SYSTEM
-        message placed right BEFORE the live user turn, so only that message
-        and the user's own text are re-read every time.
+        self-state) rides a SYSTEM message placed right BEFORE the live user
+        turn, so only that message and the user's own text are re-read every
+        time.
+
+        ``Collector`` overrides this method entirely (#2778): a collector
+        cycle has no history, so this shape would put its dynamic section
+        right after the static one — two LEADING system messages, which
+        oMLX merges ahead of the tool schemas, losing the cached prefix on
+        every cycle. Its own ``_build_messages`` carries the job, the
+        holdings, and the run history in the USER turn instead (via
+        ``_cycle_prompt``), so the leading system message (now identical
+        across every job and cycle) and the tool schemas stay the one
+        reused prefix.
 
         This placement is a MID-CONVERSATION system message — between the
         history's last entry (ordinarily an ``assistant`` turn) and

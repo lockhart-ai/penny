@@ -52,6 +52,7 @@ from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmMessage, LlmResponse
 from penny.notification import NOTIFICATION_NOTES, NOTIFIED_CYCLE_ENDS, NotificationOutcome
+from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient, deterministic_embed
@@ -863,19 +864,18 @@ async def test_unexpired_collection_is_not_retired(test_config, tmp_path):
     assert collector._archive_if_expired(_get(db, "eternal-watch"), "r") is False
 
 
-# ── Composed system prompt (target identity + extraction_prompt + runtime tail) ──
+# ── Composed job section (target identity + extraction_prompt, #2778) ──
 
 
-def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
-    """Snapshot the full composed system prompt — exact-string assertion catches
-    structural drift in the framing OR the runtime-rules tail.  The runtime rules
-    are load-bearing (batched writes, in-place corrections, browse provenance, no
-    manual dedup) — chat doesn't relay them, the collector base attaches them on
-    every cycle.
+def test_compose_prompt_wraps_extraction_with_target_identity():
+    """Snapshot the job section of the cycle's USER turn — exact-string assertion
+    catches structural drift in the framing.  The close instruction and the
+    runtime-rules tail moved to the LEADING system message in #2778 (they're the
+    same for every job; this isn't), so this is job identity + the job's own
+    instructions and nothing else.
 
     The job's own prompt is the free text the model wrote verbatim (#2455 naive
-    baseline) — no rendering seam, no injected numbered terminal — followed by the
-    close-with-``done()`` instruction and the runtime-rules tail."""
+    baseline) — no rendering seam, no injected numbered terminal."""
     target = MemoryRow(
         name="board-games",
         type="collection",
@@ -898,8 +898,30 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "Collect board games from chat and browse logs.\n"
         "1. Read the user-messages log.\n"
         "2. Browse for new games.\n"
-        "3. Write each one into board-games.\n"
-        "\n"
+        "3. Write each one into board-games."
+    )
+
+    assert composed == expected, (
+        f"Composed prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_system_prompt_carries_no_job_identity(test_config, tmp_path):
+    """The LEADING system message (#2778) is framework-fixed text, with no job
+    identity: the cycle framing, the close-with-``done()`` instruction, and the
+    runtime rules, byte-identical regardless of which job or which cycle composed
+    it (no target needs to be bound at all to build it — there's nothing job-
+    specific left to read).  Proven for real, across two different jobs and two
+    cycles of the same job, in
+    ``test_leading_system_message_and_tools_are_byte_identical_across_jobs_and_cycles``
+    below."""
+    collector, _db = _make_collector(test_config, tmp_path)
+
+    static = await collector._build_system_prompt(None)
+
+    expected = (
+        f"{Prompt.COLLECTOR_CYCLE_FRAMING}\n\n"
         "A cycle does not message the user itself: what you write down here, plus "
         "the close with notify=true, is how they find out — Penny tells them "
         "afterwards, from what the cycle wrote. Finish with done(notify=…). Say "
@@ -919,9 +941,7 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "- Don't dedup manually — the store rejects duplicates on write automatically."
     )
 
-    assert composed == expected, (
-        f"Composed prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
-    )
+    assert static == expected, f"Static system message mismatch:\n{static!r}\n\nvs:\n{expected!r}"
 
 
 def test_send_message_is_not_on_the_collector_surface(test_config, tmp_path):
@@ -960,13 +980,14 @@ async def _configure_timetable_collection(db: Database) -> None:
 
 
 async def _composed_for(collector: Collector, db: Database, name: str) -> tuple[str, str]:
-    """The per-cycle system messages the collector really builds for ``name`` —
-    bound and with its tools installed, exactly as ``_run_cycle`` does.  Returns
-    (static, dynamic): the reused prefix and the per-cycle state (#2745)."""
+    """What the collector really builds for ``name`` — bound and with its tools
+    installed, exactly as ``_run_cycle`` does.  Returns (static, user): the
+    reused leading system message (#2778 — framework-fixed, no job in it any
+    more) and the cycle's whole user turn (the job + its per-cycle state)."""
     collector._bind(_get(db, name))
     collector._install_tools(collector.get_tools())
     static = await collector._build_system_prompt(None)
-    return static, collector._dynamic_system_section()
+    return static, collector._cycle_prompt()
 
 
 @pytest.mark.asyncio
@@ -996,21 +1017,16 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         author="collector",
     )
 
-    static, dynamic = await _composed_for(collector, db, "ferry-departures")
+    static, user = await _composed_for(collector, db, "ferry-departures")
     static = _normalise_stamps(static)
-    dynamic = re.sub(
-        r"Current date and time: [^\n]*", "Current date and time: DATE", _normalise_stamps(dynamic)
+    user = re.sub(
+        r"Current date and time: [^\n]*", "Current date and time: DATE", _normalise_stamps(user)
     )
 
-    # The STATIC message — the reused prefix: the job's own words + the close
-    # instruction + the runtime rules, and nothing per-cycle (#2745).
+    # The STATIC message — the reused prefix (#2778): framework-fixed text, no job
+    # identity, nothing per-cycle — byte-identical for every job and every cycle.
     assert static == (
-        "You are the collector for the `ferry-departures` collection.\n"
-        "Description: the dawn sailing on the north pier timetable\n"
-        "\n"
-        "Check https://northpier.example/departures for the dawn sailing and "
-        "record the time it leaves.\n"
-        "\n"
+        f"{Prompt.COLLECTOR_CYCLE_FRAMING}\n\n"
         "A cycle does not message the user itself: what you write down here, plus "
         "the close with notify=true, is how they find out — Penny tells them "
         "afterwards, from what the cycle wrote. Finish with done(notify=…). Say "
@@ -1022,10 +1038,14 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         f"{Collector._runtime_rules()}"
     ), f"Static system message mismatch:\n{static!r}"
 
-    # The DYNAMIC message — the clock, then the holdings (#1914), then the
-    # last-told line (#2385).
-    assert dynamic == (
-        "Current date and time: DATE\n"
+    # The USER turn — the job, then the holdings (#1914), then the last-told
+    # line (#2385), then the clock LAST (#2778).
+    assert user == (
+        "You are the collector for the `ferry-departures` collection.\n"
+        "Description: the dawn sailing on the north pier timetable\n"
+        "\n"
+        "Check https://northpier.example/departures for the dawn sailing and "
+        "record the time it leaves.\n"
         "\n"
         "## What this collection holds (newest first)\n"
         "The entries it holds right now, and the key each one is stored under.\n"
@@ -1034,8 +1054,10 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         "\n"
         "\n"
         "## What you last told the user\n"
-        "You have never sent them anything about this collection."
-    ), f"Dynamic system message mismatch:\n{dynamic!r}"
+        "You have never sent them anything about this collection.\n"
+        "\n"
+        "Current date and time: DATE"
+    ), f"User turn mismatch:\n{user!r}"
 
 
 def _expected_holdings(newest_first: range, tail: str) -> str:
@@ -2124,35 +2146,32 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
     collector._current_target = db.memories.get("board-games")
 
     prompt = await collector._build_system_prompt(None)
-    # The state blocks ride the DYNAMIC system message now (#2745), not the
-    # static one this test used to read.
-    dynamic = collector._dynamic_system_section()
+    # The state blocks ride the cycle's USER turn (#2778), not the static
+    # system message this test used to read.
+    user = collector._cycle_prompt()
 
     assert "## Your recent runs" not in prompt
-    assert "## Your recent runs" not in dynamic
+    assert "## Your recent runs" not in user
     assert (
         "## What you last told the user\n"
-        "You have never sent them anything about this collection." in dynamic
+        "You have never sent them anything about this collection." in user
     )
 
 
 @pytest.mark.asyncio
 async def test_collector_message_array_verbatim(test_config, tmp_path):
-    """Full verbatim dump of the collector's on-wire message array.
+    """Full verbatim dump of the collector's on-wire message array (#2778).
 
-    Shows exactly what the collector model sees: the STATIC system message
-    (the stored prompt verbatim + the close-with-``done()`` instruction +
-    the fixed runtime rules, #2455 naive baseline — the prefix reused across
-    cycles), then the DYNAMIC one (the clock + what the collection holds +
-    this collector's recent run history) right before the bare user turn
-    (empty for a background agent, #2756) — the same shape #2745 originally
-    shipped, since a collector cycle has no history to separate them.  Date
-    and run timestamps are normalised to placeholders; everything else is
-    asserted char-for-char so the structure is visible and drift is caught.
-
-    The state blocks sit in their fixed order (#1914): the clock, what the
-    collection holds — nothing, here, said plainly — then what its recent runs
-    did."""
+    Shows exactly what the collector model sees: ``[system, user]`` — two
+    messages, no history, no mid-conversation dynamic system message.  The
+    SYSTEM message is framework-fixed text (the close-with-``done()``
+    instruction + the fixed runtime rules, #2455 naive baseline — byte-
+    identical for every job and cycle, the one prefix a server-side cache
+    reuses).  The USER message carries everything that churns per job and
+    per cycle: the job's own stored prompt, then what the collection holds,
+    then this collector's recent run history, then the clock LAST.  Date and
+    run timestamps are normalised to placeholders; everything else is
+    asserted char-for-char so the structure is visible and drift is caught."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "board-games",
@@ -2176,17 +2195,17 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     collector._install_tools(collector.get_tools())
 
     system_prompt = await collector._build_system_prompt(None)
-    messages = collector._build_messages("", None, system_prompt)
+    user_prompt = collector._cycle_prompt()
+    messages = collector._build_messages(user_prompt, None, system_prompt)
 
-    # ── Static system message: the reused prefix, no per-cycle content ─────
+    assert len(messages) == 2, (
+        f"expected [system, user] — no history, no mid-turn system: {messages!r}"
+    )
+
+    # ── System message: the reused prefix, no job and no per-cycle content ─
     static_text = _normalise_stamps(messages[0].content)
     expected_static = (
-        "You are the collector for the `board-games` collection.\n"
-        "Description: Strategy board games worth buying\n"
-        "\n"
-        "Collect board games.\n"
-        '1. log_read("user-messages")\n'
-        "\n"
+        f"{Prompt.COLLECTOR_CYCLE_FRAMING}\n\n"
         "A cycle does not message the user itself: what you write down here, plus "
         "the close with notify=true, is how they find out — Penny tells them "
         "afterwards, from what the cycle wrote. Finish with done(notify=…). Say "
@@ -2206,15 +2225,19 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "- Don't dedup manually — the store rejects duplicates on write automatically."
     )
     assert static_text == expected_static, (
-        f"Static system message mismatch:\n{static_text!r}\n\nvs expected:\n{expected_static!r}"
+        f"System message mismatch:\n{static_text!r}\n\nvs expected:\n{expected_static!r}"
     )
 
-    # ── Dynamic system message: clock + holdings + run history (V2: before user) ─
-    dynamic_text = _normalise_stamps(
+    # ── User turn: the job, then holdings + run history, then the clock LAST ─
+    user_text = _normalise_stamps(
         re.sub(r"Current date and time: [^\n]*", "Current date and time: DATE", messages[1].content)
     )
-    expected_dynamic = (
-        "Current date and time: DATE\n"
+    expected_user = (
+        "You are the collector for the `board-games` collection.\n"
+        "Description: Strategy board games worth buying\n"
+        "\n"
+        "Collect board games.\n"
+        '1. log_read("user-messages")\n'
         "\n"
         "## What this collection holds (newest first)\n"
         "It holds nothing yet.\n"
@@ -2226,23 +2249,83 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "2. [YYYY-MM-DD HH:MM UTC] worked\n"
         "\n"
         "## What you last told the user\n"
-        "You have never sent them anything about this collection."
+        "You have never sent them anything about this collection.\n"
+        "\n"
+        "Current date and time: DATE"
     )
-    assert dynamic_text == expected_dynamic, (
-        f"Dynamic system message mismatch:\n{dynamic_text!r}\n\nvs expected:\n{expected_dynamic!r}"
+    assert user_text == expected_user, (
+        f"User turn mismatch:\n{user_text!r}\n\nvs expected:\n{expected_user!r}"
+    )
+    assert messages[1].role == "user"
+
+
+@pytest.mark.asyncio
+async def test_leading_system_message_and_tools_are_byte_identical_across_jobs_and_cycles(
+    test_config, tmp_path
+):
+    """The offline proof of #2778's whole point — no real model, no oMLX, no
+    network: the leading system message and the tool schemas are the ONE
+    prefix a server-side cache reuses, across every job and every cycle, not
+    just a same-job rerun.
+
+    Three builds through the real code: job A's first cycle, job A's second
+    cycle (after it wrote an entry and a run was tagged — holdings and run
+    history now differ), and an unrelated job B's first cycle.  The leading
+    system message and the tool schema list must be byte-identical across all
+    three; the user turn must NOT be — it's proof the per-cycle state moved,
+    not vanished."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "board-games", "Strategy board games worth buying", extraction_prompt="x" * 30
+    )
+    db.memories.create_collection(
+        "ferry-departures",
+        "the dawn sailing on the north pier timetable",
+        extraction_prompt="y" * 30,
     )
 
-    # ── User turn: bare (empty) — a collector runs with no user message ────
-    # static, dynamic, user — the user turn closes the array (#2756).
-    assert messages[-1].role == "user"
-    assert messages[-1].content == ""
+    async def _built(name: str) -> tuple[str, list[dict[str, Any]], str]:
+        collector._bind(db.memories.get(name))
+        collector._install_tools(collector.get_tools())
+        static = await collector._build_system_prompt(None)
+        tools = collector._tool_registry.get_ollama_tools()
+        user = collector._cycle_prompt()
+        return static, tools, user
+
+    static_a1, tools_a1, user_a1 = await _built("board-games")
+
+    require_memory(db, "board-games").write_rule_decided(
+        [EntryInput(key="pick", content="Wingspan")], author="collector"
+    )
+    db.messages.log_prompt(
+        model="t",
+        messages=[],
+        response={},
+        agent_name="collector",
+        run_id="run-a",
+        run_target="board-games",
+    )
+    collector._tag_promptlog_run("run-a", RunOutcome.WORKED, "", 0)
+
+    static_a2, tools_a2, user_a2 = await _built("board-games")
+    static_b1, tools_b1, user_b1 = await _built("ferry-departures")
+
+    assert static_a1 == static_a2 == static_b1, (
+        "the leading system message must be byte-identical across cycles and jobs"
+    )
+    assert tools_a1 == tools_a2 == tools_b1, (
+        "the tool schemas must be byte-identical across cycles and jobs"
+    )
+    assert user_a1 != user_a2, "job A's second cycle must show its new holdings and run history"
+    assert user_a1 != user_b1, "job B's user turn must carry job B's own identity, not job A's"
 
 
-def _datetime_line(messages: list[LlmMessage]) -> str:
-    """The rendered 'Current date and time:' anchor line from a message array
-    — the first line of the DYNAMIC system message, which sits right before
-    the user turn (#2756)."""
-    return messages[1].content.split("\n", 1)[0]
+def _datetime_line(user_prompt: str) -> str:
+    """The rendered 'Current date and time:' anchor line out of the cycle's
+    USER turn — its LAST line (#2778): the clock rides at the end of
+    ``Collector._cycle_prompt``, after the job and its state, since there's
+    no live ask here for it to crowd."""
+    return user_prompt.rsplit("\n", 1)[-1]
 
 
 def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
@@ -2251,8 +2334,8 @@ def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
     — otherwise the model is handed a UTC time under a non-UTC profile and, near
     local midnight, the wrong calendar day."""
     collector, db = _make_collector(test_config, tmp_path)
-    # The clock rides the dynamic system message, whose state sections need a
-    # bound target — bind one, the way a real cycle does (#2745).
+    # The clock rides the cycle's user turn, whose state sections need a
+    # bound target — bind one, the way a real cycle does (#2778).
     db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
     collector._bind(db.memories.get("board-games"))
     db.users.save_info(
@@ -2267,7 +2350,7 @@ def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
     # them can't flake the exact-stamp assertion.
     fmt = "%A, %B %d, %Y at %I:%M %p IST"
     before = datetime.now(ZoneInfo("Asia/Kolkata")).strftime(fmt)
-    line = _datetime_line(collector._build_messages("", None, "body"))
+    line = _datetime_line(collector._cycle_prompt())
     after = datetime.now(ZoneInfo("Asia/Kolkata")).strftime(fmt)
 
     assert line.startswith("Current date and time: ")
@@ -2280,12 +2363,12 @@ def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
 def test_datetime_anchor_falls_back_to_utc_without_profile(test_config, tmp_path):
     """No profile / timezone (fresh install) → the anchor stays UTC."""
     collector, db = _make_collector(test_config, tmp_path)
-    # The clock rides the dynamic system message, whose state sections need a
-    # bound target — bind one, the way a real cycle does (#2745).
+    # The clock rides the cycle's user turn, whose state sections need a
+    # bound target — bind one, the way a real cycle does (#2778).
     db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
     collector._bind(db.memories.get("board-games"))
 
-    line = _datetime_line(collector._build_messages("", None, "body"))
+    line = _datetime_line(collector._cycle_prompt())
 
     assert line.startswith("Current date and time: ")
     assert line.endswith(" UTC"), line

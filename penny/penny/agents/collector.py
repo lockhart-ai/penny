@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from penny.agents.base import BackgroundAgent
-from penny.agents.models import ControllerResponse, ToolCallRecord
+from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
 from penny.agents.self_state import standing_rules_section
 from penny.config import Config
 from penny.constants import (
@@ -76,6 +76,7 @@ from penny.datetime_utils import (
 )
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
+from penny.llm.models import LlmMessage
 from penny.notification import (
     NOTIFICATION_NOTES,
     NOTIFIED_CYCLE_ENDS,
@@ -916,46 +917,71 @@ class Collector(BackgroundAgent):
 
     # ── Per-cycle prompt + tool scope ─────────────────────────────────────
 
+    def _build_messages(
+        self,
+        prompt: str,
+        history: list[tuple[str, str]] | None = None,
+        system_prompt: str | None = None,
+        images: list[str] | None = None,
+        handles: HandleTable | None = None,
+    ) -> list[LlmMessage]:
+        """The collector's own two-message shape (#2778): ``[system, user]`` —
+        no mid-conversation dynamic system message, no history (a cycle never
+        has any).  ``Agent._build_messages``'s shape puts the per-turn state
+        in a SECOND leading system message when there's no history to put it
+        after, which is exactly a collector cycle's case — and prod's runner
+        merges two leading system messages ahead of the tool schemas, so that
+        state invalidated the tools and everything after them on every cycle.
+        Here the per-cycle state rides the USER turn instead (``_cycle_prompt``,
+        called by ``Agent._run_cycle`` to build ``prompt``), so the leading
+        system message — identical across every job and cycle — and the tool
+        schemas stay the one prefix a server-side cache reuses; only the user
+        turn's own content is re-read each time.  ``images`` is unused: a
+        background cycle never carries an attachment."""
+        effective = system_prompt or self.system_prompt
+        return [
+            LlmMessage(role=MessageRole.SYSTEM, content=effective),
+            LlmMessage(role=MessageRole.USER, content=prompt, images=images or None),
+        ]
+
     async def _build_system_prompt(
         self, user: str | None, *, handles: HandleTable | None = None
     ) -> str:
-        """Static system prompt for the bound target — re-fetched each cycle.
+        """The LEADING system message (#2778) — framework-fixed text, byte-identical
+        across every job and every cycle: the cycle framing, the close-with-``done()``
+        instruction, the runtime rules, then the standing rules.
 
-        Reading from the DB instead of caching means a chat-side
-        ``collection_configure`` call that changes ``extraction_prompt`` is
-        picked up on the very next collector cycle, no restart needed.
-
-        The standing rules render after the job's own instructions (#2633): the
-        same shared section the chat self-state header shows, so a rule about how
-        she speaks or what she uses holds in every cycle without a lookup.  With
-        no rule set the section is omitted entirely (#2686).
-
-        The cycle's own STATE — what the collection holds now (#1914), what this
-        collector's recent runs did (#1569), and the clock — rides the SECOND
-        system message (``_dynamic_system_section``, #2745): it churns per cycle,
-        so it must not sit inside the message the model server reuses across
-        cycles (the job prompt, the rules, and the tool schemas are that prefix).
-        """
-        target = self._require_target()
-        fresh = self.db.memories.get(target.name) or target
-        prompt = self._compose_prompt(fresh)
+        No job identity lives here any more.  The job (its name, description, and
+        own instructions), what the collection holds, and the run history all moved
+        into the USER turn (``_cycle_prompt``) — which is what makes this message,
+        and the tool schemas gemma4's renderer puts right after it, ONE prefix every
+        collector cycle reuses, not just a same-job rerun.  Reading the standing
+        rules from the DB each cycle means a chat-side rule change is picked up on
+        the very next one, no restart needed; with no rule set the section is
+        omitted entirely (#2686)."""
+        sections = [Prompt.COLLECTOR_CYCLE_FRAMING, Prompt.COLLECTOR_DONE_INSTRUCTION]
+        sections.append(self._runtime_rules())
         rules = standing_rules_section(self.db)
         if rules:
-            prompt += f"\n\n{rules}"
-        return prompt
+            sections.append(rules)
+        return "\n\n".join(section for section in sections if section)
 
-    def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
-        """The per-cycle system message's content (#2745): the clock, then what
-        the collection holds (#1914), then this collector's recent runs (#1569)
-        — holdings first, the entries being what the prompt acts ON."""
+    def _cycle_prompt(self, handles: HandleTable | None = None) -> str:
+        """The cycle's whole USER turn (#2778): the job — re-fetched from the DB so a
+        chat-side ``collection_configure`` edit lands on the very next cycle, no
+        restart needed — then what the collection holds (#1914), then this
+        collector's recent runs (#1569), then the clock LAST.  There is no live ask
+        here for state to crowd out (#1296/#1304 doesn't apply to a background
+        cycle), so the clock reads best after the job and its state, not before."""
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
         return "\n\n".join(
             section
             for section in [
-                current_datetime_line(self.db),
+                self._compose_prompt(fresh),
                 self._holdings_section(fresh.name, handles),
                 self._run_history_section(fresh.name),
+                current_datetime_line(self.db),
             ]
             if section
         )
@@ -973,9 +999,9 @@ class Collector(BackgroundAgent):
         The window is bounded in the QUERY and the remainder is a COUNT, so a deep
         collection is never materialized to render twenty lines of it.  A collection
         that vanished between binding and composing has nothing to state: the block is
-        absent and the dynamic message is byte-identical to what it was, said out
+        absent and the user turn is byte-identical to what it was, said out
         loud rather than swallowed.  Returns the section WITHOUT a leading
-        separator — the dynamic message's join adds it (#2745).
+        separator — ``_cycle_prompt``'s join adds it (#1914; #2778).
         """
         memory = self.db.memory(target_name)
         if memory is None:
@@ -1056,28 +1082,24 @@ class Collector(BackgroundAgent):
 
     @classmethod
     def _compose_prompt(cls, target: MemoryRow) -> str:
-        """Frame the stored ``extraction_prompt`` with target identity + the
-        close-with-``done()`` instruction + runtime rules (#2455 naive baseline; was
-        #1557/#1907).
+        """Frame the stored ``extraction_prompt`` with the target's own identity
+        (#2455 naive baseline; was #1557/#1907; the close instruction and runtime
+        rules moved to the LEADING system message in #2778 — they're the same for
+        every job, this isn't).
 
         The job's own instructions are the free text the model wrote when it set the
         job up — stored verbatim, run verbatim, with no rendering seam in between.
         There is no routine/values block any more: there is no skill, so there is
-        nothing to name beyond the prompt itself.
-
-        The runtime-rules tail is appended structurally — not relayed through
-        Penny when she authors the prompt.  This guarantees the rules apply on
-        every cycle regardless of how the prompt was written.  The chat-facing
-        ``collection_configure`` description only carries authoring-shape guidance;
-        the runtime invariants live here.
+        nothing to name beyond the prompt itself.  This is the first section of the
+        cycle's USER turn (``_cycle_prompt``), not the static system message: it
+        churns per job, so it must not sit in the prefix the model server reuses
+        across every collector's cycles.
         """
         return (
             f"You are the collector for the `{target.name}` collection.\n"
             f"Description: {target.description}\n"
             "\n"
-            f"{target.extraction_prompt}\n"
-            f"\n{Prompt.COLLECTOR_DONE_INSTRUCTION}\n\n"
-            f"{cls._runtime_rules()}"
+            f"{target.extraction_prompt}"
         ).rstrip("\n")
 
     @classmethod
