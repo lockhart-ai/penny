@@ -30,6 +30,9 @@ dependencies = [
     "PyJWT[crypto]>=2.8.0",
     "numpy>=2.0.0",
     "python-dateutil>=2.9.0",
+    # Image resize/re-encode for stored and incoming images (#2780) —
+    # penny.image_utils.normalize_image.
+    "Pillow>=11.0.0",
 
 ]
 

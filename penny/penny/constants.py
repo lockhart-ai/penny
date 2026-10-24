@@ -404,6 +404,19 @@ class PennyConstants:
     # (the cited page's own image is the right one) — jitter applies only here.
     MEDIA_MATCH_JITTER_TOPK = 5
 
+    # Image normalization (#2780) — the cap/budget ``penny.image_utils.normalize_image``
+    # enforces at both ends: the media store (browse captures, generated images) and
+    # chat ingress (an incoming photo). Long edge in pixels; a static image already
+    # within both this and the byte budget below passes through untouched. An
+    # animated image follows only the pixel cap — no byte budget applies to it.
+    IMAGE_LONG_EDGE_CAP = 1024
+    # A static image within the pixel cap but over this many bytes is still
+    # re-encoded (at its current size) — ~500 KB.
+    IMAGE_PASSTHROUGH_MAX_BYTES = 500_000
+    # JPEG quality used for every opaque re-encode (the static target format and
+    # the oversized same-format JPEG fallback alike).
+    IMAGE_JPEG_QUALITY = 85
+
     # ``log_read`` window-mode look-back (seconds) for chat/schedule reads — the
     # "what just happened" range.  1 hour.
     LOG_READ_WINDOW_SECONDS = 3600

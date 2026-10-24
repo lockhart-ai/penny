@@ -5,14 +5,24 @@ chat model — no separate caption call, no vision model, full tool surface.
 """
 
 import base64
+import io
 
 import pytest
+from PIL import Image
 
 from penny.constants import PennyConstants
 from penny.tests.conftest import TEST_SENDER, wait_until
 
 # Minimal valid JPEG header bytes for testing
 FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+
+
+def _oversized_jpeg() -> bytes:
+    """A real, decodable JPEG over the normalize_image pixel cap (#2780) — unlike
+    FAKE_JPEG, which is deliberately undecodable so it exercises the passthrough path."""
+    buf = io.BytesIO()
+    Image.new("RGB", (2000, 1000), color=(10, 200, 80)).save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
 
 
 def _image_urls(request) -> list[str]:
@@ -105,6 +115,41 @@ async def test_image_without_text_goes_to_the_chat_model(
         expected_uri = f"data:image/jpeg;base64,{base64.b64encode(FAKE_JPEG).decode()}"
         assert _image_urls(request) == [expected_uri]
         assert request.get("tools")
+
+
+@pytest.mark.asyncio
+async def test_oversized_attachment_is_normalized_before_the_model_request(
+    signal_server,
+    mock_llm,
+    make_config,
+    test_user_info,
+    running_penny,
+):
+    """A real oversized photo attachment is capped to the pixel/byte rules (#2780)
+    before it rides the model request — the ingress chokepoint in
+    ``MessageChannel._run_message_through_agent``, shared by every channel."""
+    config = make_config()
+    mock_llm.set_default_flow(final_response="nice photo! 📸")
+    original = _oversized_jpeg()
+
+    async with running_penny(config):
+        await signal_server.push_image_message(
+            sender=TEST_SENDER,
+            image_data=original,
+            text="check this out",
+        )
+
+        await signal_server.wait_for_message(timeout=10.0)
+        await wait_until(lambda: len(mock_llm.requests) >= 1)
+        request = mock_llm.requests[0]
+        urls = _image_urls(request)
+        assert len(urls) == 1
+        header, encoded = urls[0].split(";base64,", 1)
+        sent_bytes = base64.b64decode(encoded)
+        assert header == "data:image/jpeg"
+        assert len(sent_bytes) < len(original)
+        out = Image.open(io.BytesIO(sent_bytes))
+        assert max(out.size) == PennyConstants.IMAGE_LONG_EDGE_CAP
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from penny.config import Config
 from penny.constants import PennyConstants, PermissionResolution
 from penny.database.media_store import ImageSelectionPolicy
 from penny.database.models import Device, Media, MessageLog
+from penny.image_utils import normalize_data_uri
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
@@ -772,6 +773,15 @@ class MessageChannel(ABC):
         the call chain with no ambient state anywhere.
         """
         logger.info("Dispatching to message agent for %s", message.sender)
+        # Normalize every image attachment to the stored-image size rules (#2780)
+        # before it ever reaches the model request or the prompt log — the one
+        # shared chokepoint every channel's incoming message passes through here,
+        # so a channel that starts accepting image attachments later needs no
+        # change of its own.
+        if message.images:
+            message = message.model_copy(
+                update={"images": [normalize_data_uri(uri) for uri in message.images]}
+            )
         # Mint the turn's run id here so the same id stamps every promptlog row of
         # the run AND is recorded on any collection the run creates
         # (``created_by_run_id``, #1566).  The incoming message is logged AFTER the

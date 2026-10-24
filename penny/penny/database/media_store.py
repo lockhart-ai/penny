@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 from penny.clock import Clock
 from penny.constants import PennyConstants
 from penny.database.models import Media
+from penny.image_utils import normalize_image
 from penny.llm.embeddings import deserialize_embedding
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,13 @@ class MediaStore:
         title: str | None = None,
         embedding: bytes | None = None,
     ) -> int:
-        """Insert an image blob with its metadata and return its assigned id."""
+        """Insert an image blob with its metadata and return its assigned id.
+
+        Normalized to the stored-image size rules (#2780) before the row is
+        built, so every stored image — a browse capture, a generated image —
+        is already within bounds at both storage and egress (egress reads
+        this same row, never re-encodes)."""
+        data, mime_type = normalize_image(data, mime_type)
         with self._session() as session:
             row = Media(
                 mime_type=mime_type,
