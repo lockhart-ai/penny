@@ -2401,7 +2401,10 @@ class TestValidatorRetry:
     @pytest.mark.parametrize("condition", list(_RETRIED_DRAFTS))
     async def test_a_redraw_failing_the_same_condition_ships(self, test_db, mock_llm, condition):
         """The condition is spent after one retry, so a second draft with the same defect
-        is the answer — two calls, the second on the unchanged conversation."""
+        is the answer — two calls, the second on the unchanged conversation.  For
+        HALLUCINATED_URLS the "answer" is the REPAIRED draft (#2721): the retry is
+        spent, so the still-unsourced link is dropped and a notice appended, rather
+        than shipping the bad link unchanged."""
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         draft = _RETRIED_DRAFTS[condition]
 
@@ -2410,7 +2413,12 @@ class TestValidatorRetry:
         response = await agent.run(
             "what does the deck cost?", max_steps=max_steps, call_link=CallLink.new_top()
         )
-        assert response.answer == draft
+        if condition == ConditionKey.HALLUCINATED_URLS:
+            assert response.answer == (
+                f"It's $499, see  for details.\n\n{PennyResponse.LINK_DROPPED_NOTICE}"
+            )
+        else:
+            assert response.answer == draft
         assert len(mock_llm.requests) == 2
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
 
@@ -2588,7 +2596,13 @@ class TestMalformedUrlCleaning:
 
     @pytest.mark.asyncio
     async def test_bare_truncated_url_removed(self, test_db, mock_llm):
-        """Bare URL ending with a hyphen (truncated path) is removed from the response."""
+        """Bare URL ending with a hyphen (truncated path) is removed from the response.
+
+        None of these four addresses ever appear in the source text either, so the
+        hallucinated-URL validator retries once and then, on the same draft again,
+        repairs it (#2721) — the same removal `clean_malformed_urls` would have done
+        downstream, plus the dropped-link notice; nothing is left for the later
+        malformed-URL cleanup pass to do."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
         # The cleaner reads a URL as the address alone, the same way the hallucinated-URL
@@ -2604,7 +2618,10 @@ class TestMalformedUrlCleaning:
         response = await agent.run(
             "tell me about travel", max_steps=max_steps, call_link=CallLink.new_top()
         )
-        assert response.answer == "Check this out:  for details. Also 【browse: 】, **** and ()."
+        assert response.answer == (
+            "Check this out:  for details. Also 【browse: 】, **** and ().\n\n"
+            f"{PennyResponse.LINK_DROPPED_NOTICE}"
+        )
 
         await agent.close()
 
@@ -2623,8 +2640,14 @@ class TestMalformedUrlCleaning:
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_valid_url_unchanged(self, test_db, mock_llm):
-        """A well-formed URL is not touched."""
+    async def test_unsourced_well_formed_url_dropped_with_notice(self, test_db, mock_llm):
+        """A well-formed URL is still a URL this synthetic test never sources, so the
+        hallucinated-URL validator retries it once and then, unchanged on the second
+        draft, repairs it (#2721): every address is removed — the same shape
+        `clean_malformed_urls` produces for a truncated one — with the dropped-link
+        notice appended.  Well-formed is not the same as sourced: a URL that really
+        was read off a page the turn browsed is left alone by both the validator and
+        the cleaner (#2159's wrapped-forms sweep above covers that case)."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
         # Nor is a wrapped one: the wrapper is not read into the address (#2159).
@@ -2639,7 +2662,9 @@ class TestMalformedUrlCleaning:
         response = await agent.run(
             "article link", max_steps=max_steps, call_link=CallLink.new_top()
         )
-        assert response.answer == raw
+        assert response.answer == (
+            f"See  for more, 【browse: 】, ****,  and ().\n\n{PennyResponse.LINK_DROPPED_NOTICE}"
+        )
 
         await agent.close()
 
@@ -3765,6 +3790,67 @@ class TestResponseValidators:
                 _text_response(form), _ctx(source_text=source)
             )
             assert isinstance(outcome, Retry), form
+
+    def test_hallucinated_url_validator_drops_the_link_once_the_retry_is_spent(self, caplog):
+        """The SECOND draft (#2721): the retry-once condition is spent
+        (``ctx.retried``), so a still-unsourced raw URL or a still-dangling
+        handle no longer reaches the user silently — it is dropped (a
+        ``Repair``) and the message says one was left out, logged the same
+        way the chain's other repair records what it did.  A clean second
+        draft proceeds untouched, same as a first draft that was never bad."""
+        retried = {ConditionKey.HALLUCINATED_URLS}
+
+        # Still-unsourced raw URL → Repair: the URL is gone, the sentence around
+        # it stays, the notice is appended, and the original draft is untouched
+        # (pure validator, deep copy).
+        resp = _text_response("The price is $499, see https://made-up.example/deck for it.")
+        with caplog.at_level(logging.WARNING, logger="penny.validation.response_validators"):
+            outcome = HallucinatedUrlValidator().check(
+                resp, _ctx(source_text="unrelated text", retried=retried)
+            )
+        assert isinstance(outcome, Repair)
+        repaired_content = outcome.response.message.content
+        assert "https://made-up.example/deck" not in repaired_content
+        assert "The price is $499, see  for it." in repaired_content
+        assert repaired_content.endswith(PennyResponse.LINK_DROPPED_NOTICE)
+        assert resp.message.content == (
+            "The price is $499, see https://made-up.example/deck for it."
+        )
+        assert any("Dropped unsourced URL" in r.message for r in caplog.records)
+
+        # Still-dangling handle → Repair: the citation is gone, its text kept.
+        table = HandleTable()
+        table.register("https://source.example/page-1")
+        dangling_resp = _text_response("Read about it, see [text][27].")
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="penny.validation.response_validators"):
+            outcome = HallucinatedUrlValidator().check(
+                dangling_resp, _ctx(source_text="some source", handles=table, retried=retried)
+            )
+        assert isinstance(outcome, Repair)
+        repaired_content = outcome.response.message.content
+        assert "[27]" not in repaired_content
+        assert "Read about it, see text." in repaired_content
+        assert repaired_content.endswith(PennyResponse.LINK_DROPPED_NOTICE)
+        assert any("Dropped dangling link handle" in r.message for r in caplog.records)
+
+        # A clean second draft — nothing still bad — proceeds untouched.
+        clean = _text_response("Read about it, see [1].")
+        assert isinstance(
+            HallucinatedUrlValidator().check(
+                clean, _ctx(source_text="some source", handles=table, retried=retried)
+            ),
+            Proceed,
+        )
+
+        # A FIRST draft retries exactly as today — the retry-once condition is
+        # not yet spent, so the same bad draft still re-draws rather than being
+        # repaired in place (covered in full by test_hallucinated_url_validator_
+        # uses_source_text above; asserted again here beside the spent-retry
+        # case for contrast).
+        first_draft = HallucinatedUrlValidator().check(resp, _ctx(source_text="unrelated text"))
+        assert isinstance(first_draft, Retry)
+        assert first_draft.condition == ConditionKey.HALLUCINATED_URLS
 
     def test_hallucinated_tool_call_repair_strips_when_no_tools(self):
         resp = _tool_response("search", {"query": "x"})

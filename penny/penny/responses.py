@@ -65,6 +65,19 @@ class PennyResponse:
     ACCOUNT_TRIED_PREFIX = "What I tried: "
     ACCOUNT_FAILED_SUFFIX = " (failed)"
 
+    # ── Validation ───────────────────────────────────────────────────────────
+
+    # Appended, as its own plain line, to a reply where the hallucinated-URL
+    # validator (#2721) dropped a link still unsourced after its one retry — a
+    # dangling handle citation or a raw URL absent from the source material.
+    # The link never reaches the user silently (visible degradation over silent
+    # success, docs/principles.md): this names the gap in Penny's own voice,
+    # since it rides inside her finished message rather than a fact handed to
+    # a draw.
+    LINK_DROPPED_NOTICE = (
+        "I left out a link there — I couldn't trace it back to a page I actually read."
+    )
+
     # ── Channel ──────────────────────────────────────────────────────────────
 
     DELIVERY_FAILURE = "Sorry, I had trouble delivering that message. Please try again."

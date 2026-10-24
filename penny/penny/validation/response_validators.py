@@ -16,7 +16,7 @@ Mapping from the old inline ``_check_response`` branches:
 
   XML branch              → ``XmlTagValidator``        (Retry)
   refusal branch          → ``RefusalValidator``       (Retry)
-  hallucinated-URL branch → ``HallucinatedUrlValidator`` (Retry)
+  hallucinated-URL branch → ``HallucinatedUrlValidator`` (Retry once, then Repair)
   strip-tool-calls-no-tools → ``HallucinatedToolCallRepair`` (Repair)
 
 **The call-shaped-text family is NOT here (#1839), and neither is the EMPTY draw
@@ -43,6 +43,7 @@ from typing import NamedTuple
 
 from penny.llm.models import LlmResponse
 from penny.llm.refusal import is_refusal
+from penny.responses import PennyResponse
 from penny.text_validity import strip_think_tags
 from penny.validation.conditions import ConditionKey
 from penny.validation.outcomes import (
@@ -64,6 +65,22 @@ _XML_TAG_PATTERN = re.compile(r"<[a-zA-Z]\w*[\s=>].*</[a-zA-Z]\w*>", re.DOTALL)
 
 # Matches a markdown link [text](url), so a malformed target can be dropped with its text kept
 _MARKDOWN_LINK_URL_PATTERN = re.compile(r"\[([^\]]*)\]\((https?://[^)]*)\)")
+
+# The five citation forms a numbered link handle can take — mirrors
+# ``HandleTable``'s own pattern (``penny.tools.link_handles``), duplicated rather
+# than imported so this module stays the dependency-light leaf its docstring
+# promises.  A citation IS the link, so dropping a still-dangling one (#2721)
+# recognizes the same shapes ``HandleTable.dangling()`` found: bare ``[12]``;
+# ``[text][12]``; the two hybrids a model composes when it treats the handle as
+# a markdown link (``[12](target)`` / ``[text](12)``); and a list form
+# ``[4, 6]``.
+_HANDLE_CITATION_PATTERN = re.compile(
+    r"\[([^\]]*)\]\[(\d+)\]"
+    r"|\[(\d+)\]\(([^)]*)\)"
+    r"|\[([^\]]+)\]\((\d+)\)"
+    r"|\[(\d+(?:,\s*\d+)+)\]"
+    r"|\[(\d+)\]"
+)
 
 # ── Reading a URL as the ADDRESS alone ──
 #
@@ -241,6 +258,71 @@ def find_hallucinated_urls(text: str, source_text: str) -> list[str]:
     return [url for url in urls if url not in source_text]
 
 
+def _drop_unsourced_urls(content: str, bad_urls: list[str]) -> str:
+    """``content`` with each of ``bad_urls`` removed — a markdown link's target
+    is dropped with its text kept; a bare address drops outright, the sentence
+    around it left as it was.  Same shape as :func:`clean_malformed_urls`, keyed
+    to "still unsourced after the retry" rather than "truncated" (#2721)."""
+    targets = set(bad_urls)
+
+    def fix_md_link(match: re.Match) -> str:
+        text, url = match.group(1), match.group(2)
+        return text if _address(url) in targets else match.group(0)
+
+    content = _MARKDOWN_LINK_URL_PATTERN.sub(fix_md_link, content)
+    for address in reversed(_addresses(content)):
+        url = content[address.start : address.end]
+        if url in targets:
+            content = f"{content[: address.start]}{content[address.end :]}"
+    return content
+
+
+def _drop_dangling_handles(content: str, dangling: list[int]) -> str:
+    """``content`` with every citation of a number in ``dangling`` removed — a
+    labelled form (``[text][n]``, ``[text](n)``) keeps its text; an unlabelled
+    one (``[n]``, ``[n](target)``) drops outright; a list form (``[4, 6]``)
+    keeps whichever numbers aren't dangling (#2721)."""
+    bad = set(dangling)
+
+    def sub(match: re.Match) -> str:
+        text, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = match.groups()
+        if multi_numbers is not None:
+            kept = [n.strip() for n in multi_numbers.split(",") if int(n.strip()) not in bad]
+            return f"[{', '.join(kept)}]" if kept else ""
+        if linked is not None:
+            return text if int(linked) in bad else match.group(0)
+        if target_num is not None:
+            return label if int(target_num) in bad else match.group(0)
+        num = hybrid_num if hybrid_num is not None else bare
+        return "" if int(num) in bad else match.group(0)
+
+    return _HANDLE_CITATION_PATTERN.sub(sub, content)
+
+
+def _drop_unsourced_link(
+    response: LlmResponse, dangling: list[int], bad_urls: list[str]
+) -> LlmResponse:
+    """The repair once the retry is spent and the second draft still carries the
+    defect (#2721): the still-bad link removed — a dangling handle citation or a
+    raw unsourced URL — and a plain line telling the user one was left out,
+    because it never reaches them silently (visible degradation over silent
+    success, docs/principles.md).  Logged the same way the chain's other repair
+    (``HallucinatedToolCallRepair``) records what it did."""
+    content = response.message.content
+    if dangling:
+        content = _drop_dangling_handles(content, dangling)
+        logger.warning("Dropped dangling link handle(s) after retry: %s", dangling)
+    else:
+        content = _drop_unsourced_urls(content, bad_urls)
+        logger.warning(
+            "Dropped unsourced URL(s) after retry: %s",
+            ", ".join(url[:80] for url in bad_urls),
+        )
+    repaired = response.model_copy(deep=True)
+    repaired.message.content = f"{content}\n\n{PennyResponse.LINK_DROPPED_NOTICE}"
+    return repaired
+
+
 # ── Response-level validators (chat + collector) ─────────────────────────────
 
 
@@ -280,28 +362,32 @@ class HallucinatedUrlValidator:
     cannot usually see a miscounted handle in its own draft (the number reads as
     real to it), so the re-draw is shown the draft plus the note.  Links that came
     through handles never reach the raw-URL check: the model cites ``[n]``, not an
-    address, so the raw-URL branch only fires for a URL still typed outright."""
+    address, so the raw-URL branch only fires for a URL still typed outright.
+
+    The retry is spent after one attempt (#2721): when the SECOND draft still
+    carries a dangling handle or an unsourced URL, it no longer reaches the user
+    silently — the still-bad link is dropped (a ``Repair``, not another re-draw)
+    and the message says plainly that one was left out."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
-        if ConditionKey.HALLUCINATED_URLS in ctx.retried:
-            return Proceed(response=response)
         effective_content, _ = strip_think_tags(response.content.strip())
         if not (ctx.source_text and effective_content):
             return Proceed(response=response)
-        if ctx.handles:
-            dangling = ctx.handles.dangling(effective_content)
+        dangling = ctx.handles.dangling(effective_content) if ctx.handles else []
+        bad_urls = [] if dangling else find_hallucinated_urls(effective_content, ctx.source_text)
+        if not dangling and not bad_urls:
+            return Proceed(response=response)
+        if ConditionKey.HALLUCINATED_URLS not in ctx.retried:
             if dangling:
                 note = ctx.handles.dangling_note(dangling)
                 logger.warning("Dangling link handle(s): %s", note)
                 return Retry(condition=ConditionKey.HALLUCINATED_URLS, note=note)
-        bad_urls = find_hallucinated_urls(effective_content, ctx.source_text)
-        if bad_urls:
             logger.warning(
                 "Hallucinated URL(s): %s",
                 ", ".join(url[:80] for url in bad_urls),
             )
             return Retry(condition=ConditionKey.HALLUCINATED_URLS)
-        return Proceed(response=response)
+        return Repair(response=_drop_unsourced_link(response, dangling, bad_urls))
 
 
 class HallucinatedToolCallRepair:

@@ -128,8 +128,14 @@ async def test_a_report_composes_through_one_chat_turn_and_delivers_once(db, tes
     turn's own run id stamped on the delivery (#2630's pairing)."""
     _seed_cycle_writes(db, "cycle-run-1")
     row_id = _enqueue(db, "cycle-run-1")
+    # The model cites the entry's link by its handle (#2717) — the form the run's own
+    # citation line tells it to use — and the finished message expands it back to the
+    # real URL before delivery, so the handle never reaches the hallucinated-URL
+    # validator's raw-URL branch at all (#2721's repair is a different scenario: a
+    # model that typed the URL out directly instead of citing it).
+    draft = "Hey! Cinder Drift just dropped — a hand-drawn metroidvania. [1]"
     reply = "Hey! Cinder Drift just dropped — a hand-drawn metroidvania. https://ex.example/cd"
-    mock_llm.set_response_handler(_reply_handler(mock_llm, reply))
+    mock_llm.set_response_handler(_reply_handler(mock_llm, draft))
     drainer, channel = _make_delivery(db, test_config)
 
     assert await drainer.execute() is True
@@ -214,11 +220,12 @@ async def test_an_unusable_reply_is_retried_bounded_then_failed_visibly(db, test
     never silence and never a message the user never received."""
     _seed_cycle_writes(db, "cycle-run-1")
     row_id = _enqueue(db, "cycle-run-1")
-    # The unusable reply is one the turn's own loop ACCEPTS (a bare URL — a
-    # complete-enough draw for the agent loop) but the send gate's whole-message rule
-    # rejects: the loop owns what a valid DRAW is, the gate owns what a sendable
+    # The unusable reply is one the turn's own loop ACCEPTS (a known bail-out phrase —
+    # a complete-enough draw for the agent loop, and one with no URL in it for the
+    # hallucinated-URL validator to retry or repair) but the send gate's whole-message
+    # rule rejects: the loop owns what a valid DRAW is, the gate owns what a sendable
     # MESSAGE is.
-    mock_llm.set_response_handler(_reply_handler(mock_llm, "https://ex.example/cd"))
+    mock_llm.set_response_handler(_reply_handler(mock_llm, "not sure"))
     drainer, channel = _make_delivery(db, test_config)
 
     for attempt in range(1, PennyConstants.COLLECTOR_RETRY_ATTEMPTS):
