@@ -3852,6 +3852,35 @@ class TestResponseValidators:
         assert isinstance(first_draft, Retry)
         assert first_draft.condition == ConditionKey.HALLUCINATED_URLS
 
+    def test_hallucinated_url_validator_drops_both_defects_in_one_second_draft(self, caplog):
+        """A second draft can carry a dangling handle AND a separately typed
+        unsourced raw URL at once — both are checked every time (#2721 review),
+        so both are dropped in the one repair rather than the raw URL slipping
+        through because the dangling check already matched."""
+        table = HandleTable()
+        table.register("https://source.example/page-1")
+        both = _text_response(
+            "Read about it, see [text][27]. Also check https://made-up.example/other for more."
+        )
+        with caplog.at_level(logging.WARNING, logger="penny.validation.response_validators"):
+            outcome = HallucinatedUrlValidator().check(
+                both,
+                _ctx(
+                    source_text="some source",
+                    handles=table,
+                    retried={ConditionKey.HALLUCINATED_URLS},
+                ),
+            )
+        assert isinstance(outcome, Repair)
+        repaired_content = outcome.response.message.content
+        assert "[27]" not in repaired_content
+        assert "https://made-up.example/other" not in repaired_content
+        assert "Read about it, see text. Also check  for more." in repaired_content
+        assert repaired_content.endswith(PennyResponse.LINK_DROPPED_NOTICE)
+        messages = [r.message for r in caplog.records]
+        assert any("Dropped dangling link handle" in m for m in messages)
+        assert any("Dropped unsourced URL" in m for m in messages)
+
     def test_hallucinated_tool_call_repair_strips_when_no_tools(self):
         resp = _tool_response("search", {"query": "x"})
         outcome = HallucinatedToolCallRepair().check(resp, _ctx(tools_available=False))

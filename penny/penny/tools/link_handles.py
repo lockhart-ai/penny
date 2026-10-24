@@ -229,6 +229,32 @@ class HandleTable:
             )
         return f"There is no link {cited} in this turn; there are no numbered links."
 
+    def drop_citations(self, text: str, numbers: list[int]) -> str:
+        """``text`` with every citation of a number in ``numbers`` removed — the
+        repair for a handle still dangling after the hallucinated-URL
+        validator's one retry (#2721): the model gets no second nudge, so the
+        still-bad citation is dropped instead of reaching the user.  A labelled
+        form (``[text][n]``, ``[text](n)``) keeps its text; an unlabelled one
+        (``[n]``, ``[n](target)``) drops outright; a list form (``[4, 6]``)
+        keeps whichever numbers aren't in ``numbers``."""
+        bad = set(numbers)
+
+        def sub(match: re.Match) -> str:
+            text_label, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = (
+                match.groups()
+            )
+            if multi_numbers is not None:
+                kept = [n.strip() for n in multi_numbers.split(",") if int(n.strip()) not in bad]
+                return f"[{', '.join(kept)}]" if kept else ""
+            if linked is not None:
+                return text_label if int(linked) in bad else match.group(0)
+            if target_num is not None:
+                return label if int(target_num) in bad else match.group(0)
+            num = hybrid_num if hybrid_num is not None else bare
+            return "" if int(num) in bad else match.group(0)
+
+        return _HANDLE_RE.sub(sub, text)
+
     # ── substitution helpers ──────────────────────────────────────────────
 
     def _link_sub(self, match: re.Match) -> str:

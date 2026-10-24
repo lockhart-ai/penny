@@ -45,6 +45,7 @@ from penny.llm.models import LlmResponse
 from penny.llm.refusal import is_refusal
 from penny.responses import PennyResponse
 from penny.text_validity import strip_think_tags
+from penny.tools.link_handles import HandleTable
 from penny.validation.conditions import ConditionKey
 from penny.validation.outcomes import (
     LoopContext,
@@ -65,22 +66,6 @@ _XML_TAG_PATTERN = re.compile(r"<[a-zA-Z]\w*[\s=>].*</[a-zA-Z]\w*>", re.DOTALL)
 
 # Matches a markdown link [text](url), so a malformed target can be dropped with its text kept
 _MARKDOWN_LINK_URL_PATTERN = re.compile(r"\[([^\]]*)\]\((https?://[^)]*)\)")
-
-# The five citation forms a numbered link handle can take — mirrors
-# ``HandleTable``'s own pattern (``penny.tools.link_handles``), duplicated rather
-# than imported so this module stays the dependency-light leaf its docstring
-# promises.  A citation IS the link, so dropping a still-dangling one (#2721)
-# recognizes the same shapes ``HandleTable.dangling()`` found: bare ``[12]``;
-# ``[text][12]``; the two hybrids a model composes when it treats the handle as
-# a markdown link (``[12](target)`` / ``[text](12)``); and a list form
-# ``[4, 6]``.
-_HANDLE_CITATION_PATTERN = re.compile(
-    r"\[([^\]]*)\]\[(\d+)\]"
-    r"|\[(\d+)\]\(([^)]*)\)"
-    r"|\[([^\]]+)\]\((\d+)\)"
-    r"|\[(\d+(?:,\s*\d+)+)\]"
-    r"|\[(\d+)\]"
-)
 
 # ── Reading a URL as the ADDRESS alone ──
 #
@@ -277,42 +262,24 @@ def _drop_unsourced_urls(content: str, bad_urls: list[str]) -> str:
     return content
 
 
-def _drop_dangling_handles(content: str, dangling: list[int]) -> str:
-    """``content`` with every citation of a number in ``dangling`` removed — a
-    labelled form (``[text][n]``, ``[text](n)``) keeps its text; an unlabelled
-    one (``[n]``, ``[n](target)``) drops outright; a list form (``[4, 6]``)
-    keeps whichever numbers aren't dangling (#2721)."""
-    bad = set(dangling)
-
-    def sub(match: re.Match) -> str:
-        text, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = match.groups()
-        if multi_numbers is not None:
-            kept = [n.strip() for n in multi_numbers.split(",") if int(n.strip()) not in bad]
-            return f"[{', '.join(kept)}]" if kept else ""
-        if linked is not None:
-            return text if int(linked) in bad else match.group(0)
-        if target_num is not None:
-            return label if int(target_num) in bad else match.group(0)
-        num = hybrid_num if hybrid_num is not None else bare
-        return "" if int(num) in bad else match.group(0)
-
-    return _HANDLE_CITATION_PATTERN.sub(sub, content)
-
-
 def _drop_unsourced_link(
-    response: LlmResponse, dangling: list[int], bad_urls: list[str]
+    response: LlmResponse, handles: HandleTable, dangling: list[int], bad_urls: list[str]
 ) -> LlmResponse:
     """The repair once the retry is spent and the second draft still carries the
-    defect (#2721): the still-bad link removed — a dangling handle citation or a
-    raw unsourced URL — and a plain line telling the user one was left out,
-    because it never reaches them silently (visible degradation over silent
-    success, docs/principles.md).  Logged the same way the chain's other repair
+    defect (#2721): every still-bad link removed — a dangling handle citation
+    AND a raw unsourced URL can both be present, so both are dropped, never
+    just the first one found — and a plain line telling the user one was left
+    out, because it never reaches them silently (visible degradation over
+    silent success, docs/principles.md).  The citation grammar is
+    ``HandleTable``'s own (``drop_citations``, beside its ``dangling()``); only
+    the raw-URL removal is this module's, since a plain unsourced address is
+    not a handle concern.  Logged the same way the chain's other repair
     (``HallucinatedToolCallRepair``) records what it did."""
     content = response.message.content
     if dangling:
-        content = _drop_dangling_handles(content, dangling)
+        content = handles.drop_citations(content, dangling)
         logger.warning("Dropped dangling link handle(s) after retry: %s", dangling)
-    else:
+    if bad_urls:
         content = _drop_unsourced_urls(content, bad_urls)
         logger.warning(
             "Dropped unsourced URL(s) after retry: %s",
@@ -373,8 +340,11 @@ class HallucinatedUrlValidator:
         effective_content, _ = strip_think_tags(response.content.strip())
         if not (ctx.source_text and effective_content):
             return Proceed(response=response)
+        # Both are computed every time — a draft can carry a dangling handle AND a
+        # separately typed raw URL at once, and skipping one check because the other
+        # already fired would let that second defect through unflagged (#2721 review).
         dangling = ctx.handles.dangling(effective_content) if ctx.handles else []
-        bad_urls = [] if dangling else find_hallucinated_urls(effective_content, ctx.source_text)
+        bad_urls = find_hallucinated_urls(effective_content, ctx.source_text)
         if not dangling and not bad_urls:
             return Proceed(response=response)
         if ConditionKey.HALLUCINATED_URLS not in ctx.retried:
@@ -387,7 +357,7 @@ class HallucinatedUrlValidator:
                 ", ".join(url[:80] for url in bad_urls),
             )
             return Retry(condition=ConditionKey.HALLUCINATED_URLS)
-        return Repair(response=_drop_unsourced_link(response, dangling, bad_urls))
+        return Repair(response=_drop_unsourced_link(response, ctx.handles, dangling, bad_urls))
 
 
 class HallucinatedToolCallRepair:

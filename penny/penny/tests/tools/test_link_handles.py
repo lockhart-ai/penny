@@ -196,6 +196,30 @@ def test_dangling_note_on_an_empty_table():
     assert note == "There is no link [3] in this turn; there are no numbered links."
 
 
+def test_drop_citations_labelled_forms_keep_their_text():
+    table = HandleTable()
+    assert table.drop_citations("see [Travel Guide][27] here", [27]) == "see Travel Guide here"
+    assert table.drop_citations("see [Travel Guide](27) here", [27]) == "see Travel Guide here"
+
+
+def test_drop_citations_unlabelled_forms_drop_outright():
+    table = HandleTable()
+    assert table.drop_citations("see [27] here", [27]) == "see  here"
+    assert table.drop_citations("see [27](some-target) here", [27]) == "see  here"
+
+
+def test_drop_citations_list_form_keeps_numbers_not_dropped():
+    table = HandleTable()
+    assert table.drop_citations("see [4, 6, 27] here", [27]) == "see [4, 6] here"
+    assert table.drop_citations("see [4, 27] here", [27]) == "see [4] here"
+    assert table.drop_citations("see [27] here", [27]) == "see  here"
+
+
+def test_drop_citations_leaves_numbers_not_named_alone():
+    table = HandleTable()
+    assert table.drop_citations("see [1] and [27] here", [27]) == "see [1] and  here"
+
+
 def test_citation_lines():
     assert PAGE_CITATION_LINE.startswith("Links on this page are numbered, like [12].")
     assert CITATION_LINE.startswith("Links are numbered, like [12].")
