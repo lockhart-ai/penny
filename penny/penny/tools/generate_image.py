@@ -50,12 +50,11 @@ class GenerateImageTool(Tool):
 
     name = "generate_image"
     description = (
-        "Generate an image from a text description and send it to the user.  Use "
-        "this when the user asks you to draw, paint, sketch, or make a "
-        "picture/image of something.  Pass the full visual description as "
-        "`description`; the image is delivered automatically with your reply, so "
-        "your reply should tell the user their image is ready and describe what "
-        "you drew."
+        "Generate an image from a text description.  Use this when the user asks "
+        "you to draw, paint, sketch, or make a picture/image of something.  Pass "
+        "the full visual description as `description`.  The call makes the image "
+        "and returns; your reply after it goes out with the image attached, and "
+        "can tell the user it's ready and describe what you drew."
     )
     parameters = {
         "type": "object",
@@ -96,8 +95,8 @@ class GenerateImageTool(Tool):
                 # ``run_list`` reads this id back so a delivery can be inspected
                 # by a read, not confabulated (#1560).
                 f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}{media_id} of: "
-                f"{args.description}.  It will be delivered to the user with your "
-                "reply — tell them their image is ready and describe what you drew."
+                f"{args.description}.  It goes out with your next reply, which can "
+                "describe it."
             ),
             mutated=True,
             media_id=media_id,
