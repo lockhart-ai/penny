@@ -3205,6 +3205,20 @@ def _render_message_hit(
     return f"{index}. {message.memory_name} [{stamp}]: {content}"
 
 
+def _message_hit_from_entry(entry: MemoryEntry, memory_name: str) -> ResolvedMessage:
+    """A scoped-find read's ``MemoryEntry`` as the ``ResolvedMessage``
+    ``_render_message_hit`` renders (#2289, #2774).  ``entry.id`` is typed
+    ``int | None`` on the row, but every entry reaching here came from an
+    already-persisted read (``Memory.read_similar``) — narrowed with a raise,
+    not suppressed, since a `None` here would mean the read returned a row
+    that was never actually saved."""
+    if entry.id is None:
+        raise ValueError(f"a persisted message entry in '{memory_name}' has no id")
+    return ResolvedMessage(
+        id=entry.id, memory_name=memory_name, content=entry.content, created_at=entry.created_at
+    )
+
+
 def _render_scoped_memory(
     memory: Memory, entries: list[MemoryEntry], handles: HandleTable | None = None
 ) -> str:
@@ -3227,13 +3241,7 @@ def _render_scoped_memory(
     if not entries:
         return format_entries(entries, source=memory.name)
     body = "\n".join(
-        _render_message_hit(
-            i,
-            ResolvedMessage(
-                memory_name=memory.name, content=entry.content, created_at=entry.created_at
-            ),
-            handles,
-        )
+        _render_message_hit(i, _message_hit_from_entry(entry, memory.name), handles)
         for i, entry in enumerate(entries, start=1)
     )
     noun = "entry" if len(entries) == 1 else "entries"
@@ -3241,16 +3249,19 @@ def _render_scoped_memory(
 
 
 class FindTool(MemoryTool):
-    """Find anything of Penny's own by meaning — the guess-free fallback when the
-    exact name/key isn't ambient (#1558, #1640, #2289).
+    """Find anything of Penny's own by meaning OR by word — the guess-free
+    fallback when the exact name/key isn't ambient (#1558, #1640, #2289, #2774).
 
-    Embedding search (plain cosine, the #1565 explicit-search path) over every
-    registry row's description anchor (collections + logs, ARCHIVED INCLUDED), AND
-    every stored entry's content/key anchors across the
-    non-archived collections + real logs (#1640), ranked best-first in ONE fused
-    list.  An object hit returns its exact identity, family, live/archived state,
-    AND how to address it — the specific tool + call shape that operates on it,
-    fixed deterministically by its type (never derived by the model).  An entry hit
+    HYBRID search over every registry row's description anchor (collections +
+    logs, ARCHIVED INCLUDED, embedding-only) AND every stored entry's content/key
+    across the non-archived collections + real logs (#1640, embedding AND
+    keyword legs fused by reciprocal rank, #2774) — ranked best-first in ONE
+    fused list.  A literal word (a name an embedding alone can blend away) still
+    surfaces via the keyword leg (``memory_entry_fts``, migration 0127) even when
+    its cosine similarity falls below the embedding leg's own cutoff.  An object
+    hit returns its exact identity, family, live/archived state, AND how to
+    address it — the specific tool + call shape that operates on it, fixed
+    deterministically by its type (never derived by the model).  An entry hit
     CARRIES the stored value plus how to read it back, so for a short fact the find
     IS the answer (one call, no container guess).  Ambiguity is returned, not
     resolved: several candidates come back ranked with how to narrow; zero matches
@@ -3259,10 +3270,13 @@ class FindTool(MemoryTool):
     answering "what is it" and "what can be done with it" in one result.
 
     ALSO searches what the user and Penny said in conversation (#2289): the two
-    message logs are ranked in the same fused pass, but reported as a SEPARATE
-    section after the store hits (``MemoryStore.resolve_messages``) rather than
-    merged into the list above — a message is read back whole, with no addressing
-    line, since the message itself is the answer.
+    message logs get the SAME hybrid (embedding + keyword, ``messagelog_fts``)
+    fusion, but ranked and budgeted ENTIRELY WITHIN THEIR OWN SECTION
+    (``MemoryStore.resolve_messages``) — reported separately, after the store
+    hits, and NEVER sharing a ranking pool or a result slot with them (#2774): a
+    message can never be crowded out of its own section by a stored entry's
+    score, however well that entry happens to rank.  A message is read back
+    whole, with no addressing line, since the message itself is the answer.
 
     An optional ``memory`` (#2289) NARROWS the search to one memory she can
     already name, instead of the whole registry: ``Memory.read_similar`` on the
@@ -3361,11 +3375,13 @@ class FindTool(MemoryTool):
             return ToolResult(message=_FIND_EMBED_FAILURE, success=False)
         if args.memory is not None:
             return self._run_scoped(args.memory, vec)
-        hits = self._db.memories.resolve_objects(vec, PennyConstants.FIND_MATCH_LIMIT)
-        # The conversation logs' own share of the fused ranking (#2289) — computed
-        # independently of ``hits`` above, so a long conversation can never shrink the
-        # store's own result; see ``MemoryStore.resolve_messages``.
-        messages = self._db.memories.resolve_messages(vec, PennyConstants.FIND_MATCH_LIMIT)
+        hits = self._db.memories.resolve_objects(vec, args.query, PennyConstants.FIND_STORE_LIMIT)
+        # The conversation logs' own INDEPENDENT budget (#2774) — ranked and capped
+        # entirely within its own section, so it can never be crowded out by (or
+        # crowd out) the store's own result; see ``MemoryStore.resolve_messages``.
+        messages = self._db.memories.resolve_messages(
+            vec, args.query, PennyConstants.FIND_MESSAGE_LIMIT
+        )
         return ToolResult(message=self._format(args.query, hits, messages))
 
     def _run_scoped(self, name: str, vec: list[float]) -> ToolResult:

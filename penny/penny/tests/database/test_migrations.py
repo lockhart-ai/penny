@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 127
+        assert count == 128
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 127
+        assert count1 == 128
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 126 migrations
-        assert count == 126
+        # 0001 is skipped; the rest run = 127 migrations
+        assert count == 127
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 127  # all migrations applied
+        assert count == 128  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -2172,4 +2172,58 @@ class TestMigrate:
             "Standing instructions the user has given: things to always or never do"
         )
         assert prompt is None and schedule is None and not archived
+        conn.close()
+
+    def test_0127_builds_find_fts_indexes_over_existing_rows(self, tmp_path):
+        """Migration 0127 builds the FTS5 keyword indexes behind find's hybrid
+        search (#2774) — ``memory_entry_fts`` / ``messagelog_fts`` — and the
+        one-time rebuild backfills BOTH from rows that existed before the
+        migration ran, not just rows written after."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE memory_entry (id INTEGER PRIMARY KEY, memory_name TEXT, "
+            "key TEXT, content TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO memory_entry (memory_name, key, content) "
+            "VALUES ('notes', 'pet', 'the cat is named Clementine')"
+        )
+        conn.execute(
+            "CREATE TABLE messagelog (id INTEGER PRIMARY KEY, direction TEXT, "
+            "content TEXT, mechanism TEXT, is_reaction BOOLEAN DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO messagelog (direction, content) "
+            "VALUES ('incoming', 'tell me about Clementine')"
+        )
+        conn.commit()
+
+        migration_path = (
+            Path(__file__).parents[3] / "penny" / "database" / "migrations" / "0127_find_fts.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0127", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        assert {"memory_entry_fts", "messagelog_fts"} <= tables
+
+        entry_hits = conn.execute(
+            "SELECT rowid FROM memory_entry_fts WHERE memory_entry_fts MATCH 'clementine'"
+        ).fetchall()
+        assert entry_hits == [(1,)]
+        message_hits = conn.execute(
+            "SELECT rowid FROM messagelog_fts WHERE messagelog_fts MATCH 'clementine'"
+        ).fetchall()
+        assert message_hits == [(1,)]
+
+        # Idempotent — a second application adds nothing and raises nothing.
+        mod.up(conn)
         conn.close()

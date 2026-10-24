@@ -700,11 +700,38 @@ class PennyConstants:
     # "Recent changes" block (``db.mutations.history``) — bounded like every other
     # history read so a config-change trail stays readable without flooding.
     RUN_HISTORY_RECORDS = 8
-    # How many resolve-by-meaning hits ``find`` returns, best-first (#1558,
-    # #1640).  Bounded like every other read so an ambiguous query surfaces the
-    # top candidates without flooding the model; the model narrows further by
-    # exact name or type.  All candidates are ranked; only the head is shown.
+    # How many resolve-by-meaning hits a SCOPED ``find(memory=...)`` returns,
+    # best-first (#1558, #1640, #2289) — the single-memory, pure-cosine path
+    # (``Memory.read_similar``) that never fuses a keyword leg, since it has
+    # already narrowed to one memory the caller named.  The UNSCOPED path's two
+    # sections (store, conversation) are bounded separately by
+    # ``FIND_STORE_LIMIT``/``FIND_MESSAGE_LIMIT`` below (#2774).
     FIND_MATCH_LIMIT = 5
+    # Unscoped ``find``'s two independent section budgets (#2774): store hits
+    # (collections/logs/entries) and conversation hits (messages) are ranked and
+    # capped SEPARATELY, so a handful of generic stored facts can never crowd out
+    # the conversation section's own slots or vice versa — the failure #2774
+    # measured (four ``user_profile`` facts filling 1–4 of every 5 shared slots).
+    FIND_STORE_LIMIT = 5
+    FIND_MESSAGE_LIMIT = 5
+    # How many candidates each leg (embedding, keyword) contributes to the fused
+    # ranking before the section budget above cuts it down (#2774) — wider than
+    # the final budget so an item ranked outside one leg's own top-``FIND_STORE_LIMIT``
+    # can still surface on the strength of the OTHER leg.
+    FIND_RRF_POOL = 20
+    # Reciprocal rank fusion's damping constant (#2774): fused score = sum over
+    # legs of ``1 / (FIND_RRF_K + rank)``, 1-indexed rank, 0 for a leg an item is
+    # absent from.  60 is RRF's standard constant (Cormack et al.) — not tuned
+    # from this corpus, just the well-known default; it dampens rank-1 vs.
+    # rank-2 enough that a top hit on EITHER leg dominates, without one leg's
+    # rank-1 completely swamping a near-tie on the other.
+    FIND_RRF_K = 60
+    # Within one section, a fused hit scoring below this fraction of the
+    # section's own best fused score is dropped (#2774) — the relative floor
+    # that replaces an absolute cosine cutoff: an unrelated query honestly
+    # returns fewer hits (or none) instead of padding out to the budget with
+    # the same few generic entries.
+    FIND_RELATIVE_FLOOR_RATIO = 0.5
     # Did-you-mean suggestion gate (#1674): the minimum stdlib string similarity
     # (``difflib.SequenceMatcher`` ratio, 0..1) between a missed memory name / entry
     # key and an EXISTING one for the miss to lead its error with "did you mean

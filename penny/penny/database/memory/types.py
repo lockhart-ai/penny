@@ -225,6 +225,16 @@ class ResolvedMatch(BaseModel):
     archived: bool
     label: str
 
+    @property
+    def fusion_identity(self) -> tuple[str, str]:
+        """What makes two hits — one found by meaning, one by word — "the same
+        row" for the hybrid find's reciprocal-rank fuser (#2774, ``MemoryStore.
+        _fuse_rrf``): an object's own name.  A method on each ``ResolvedHit`` arm
+        rather than an ``isinstance`` check at the fuser's call site, so a third
+        arm added later carries its own identity instead of growing a type-check
+        chain."""
+        return ("object", self.name)
+
 
 class ResolvedEntry(BaseModel):
     """One resolve-by-meaning hit on a *stored entry* (#1640) — the entry arm of a
@@ -247,6 +257,14 @@ class ResolvedEntry(BaseModel):
     key: str | None
     content: str
 
+    @property
+    def fusion_identity(self) -> tuple[str, int]:
+        """What makes two hits — one found by meaning, one by word — "the same
+        row" for the hybrid find's reciprocal-rank fuser (#2774, ``MemoryStore.
+        _fuse_rrf``): an entry's id (deduping its two facets, content and key,
+        to one row).  See :meth:`ResolvedMatch.fusion_identity`."""
+        return ("entry", self.entry_id)
+
 
 class ResolvedMessage(BaseModel):
     """One message ranked against ``find``'s own candidates (#2289) — read off the
@@ -260,8 +278,14 @@ class ResolvedMessage(BaseModel):
     included where the row carries one — so it reads exactly as ``read_similar`` on
     that log showed it, verbatim, with no preview cap and no addressing line: the
     message IS the answer.
+
+    ``id`` is the backing ``messagelog`` row id — the identity the hybrid fuser
+    (#2774) matches a message between its two independently-ranked legs
+    (embedding, keyword) on, so the same row found by both isn't counted twice.
+    Internal only: no render reads it, so it carries no model-facing surface.
     """
 
+    id: int
     memory_name: str
     content: str
     created_at: datetime

@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import difflib
 import logging
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Hashable, Sequence
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 from pydantic import BaseModel
 from similarity.dedup import JobSide, is_same_job
-from sqlalchemy import ColumnElement, and_, func, or_
+from sqlalchemy import ColumnElement, and_, func, or_, text
 from sqlmodel import Session, col, select
 
 from penny.clock import Clock
@@ -65,6 +66,33 @@ _MESSAGE_LOG_DIRECTIONS = {
     PennyConstants.MEMORY_USER_MESSAGES_LOG: PennyConstants.MessageDirection.INCOMING,
     PennyConstants.MEMORY_PENNY_MESSAGES_LOG: PennyConstants.MessageDirection.OUTGOING,
 }
+# The reverse of the map above — a keyword-matched ``messagelog`` row carries its
+# own ``direction``, and the hybrid find's keyword leg (#2774) needs the facade
+# name that direction reads through, the same name the embedding leg's
+# ``_message_candidates`` already reports.
+_MESSAGE_LOG_BY_DIRECTION = {direction: name for name, direction in _MESSAGE_LOG_DIRECTIONS.items()}
+
+
+def _fts_match_query(text_: str) -> str | None:
+    """``text_`` as an FTS5 ``MATCH`` query for find's keyword leg (#2774): every
+    word token, quoted and prefix-matched, OR-joined — ``"cats, Mochi, or Biscuit"``
+    becomes ``"cats"* OR "mochi"* OR "or"* OR "biscuit"*`` (a stray `OR`/`OR`-shaped
+    word costs nothing; it just adds one more term nothing need match).
+
+    ``re.findall(r"\\w+", ...)`` keeps only word characters, so no FTS5 syntax
+    character (``"``, ``:``, ``-``, parentheses) ever reaches the query string;
+    QUOTING each token additionally defeats a bare word that happens to be an
+    FTS5 keyword (``AND``/``OR``/``NOT``/``NEAR``) — a quoted string is always a
+    literal term, never an operator.  OR (not implicit AND) because the issue's
+    own evidence is a query naming several names at once and ANY of them
+    matching should count (#2774) — never AND, which would require every name in
+    one query to appear in the same row.  ``None`` when the query tokenizes to
+    nothing (no word characters at all), so the caller skips the keyword leg
+    entirely rather than issuing an empty-term MATCH."""
+    tokens = re.findall(r"\w+", text_.lower())
+    if not tokens:
+        return None
+    return " OR ".join(f'"{token}"*' for token in tokens)
 
 
 def _count[T](column: T) -> ColumnElement[int]:
@@ -918,67 +946,69 @@ class MemoryStore:
             session.add(entry)
             session.commit()
 
-    # ── Resolve by meaning ────────────────────────────────────────────────────
+    # ── Resolve by meaning + by word (hybrid find, #2774) ──────────────────────
 
-    def resolve_objects(self, anchor: list[float], limit: int) -> list[ResolvedHit]:
-        """Rank Penny's own addressable things by meaning, best-first (#1558, #1640).
+    def resolve_objects(self, anchor: list[float], query: str, limit: int) -> list[ResolvedHit]:
+        """Rank Penny's own addressable things, best-first (#1558, #1640, #2774).
 
-        Plain-cosine nearest-neighbour search (the explicit-search path, #1565 —
-        no ambient centrality/cluster gating) of ``anchor`` against every registry
-        row's description anchor (collections + logs, **archived included**) AND
-        every stored entry's content/key anchors across the non-archived
-        collections + real logs (#1640).  The search spans every
-        family — one fused best-first list, no up-front narrowing (#1643): a family
-        filter it reasons about first can only encode a guess, and at single-user
-        scale the ranked, capped list is readable whole.
+        TWO independently-ranked legs fused by reciprocal rank (``_fuse_rrf``):
+        an EMBEDDING leg — plain-cosine nearest-neighbour over every registry row's
+        description anchor (collections + logs, **archived included**) AND every
+        stored entry's content/key anchors across the non-archived collections +
+        real logs (#1640), positively-correlated candidates only (cosine > 0) — and
+        a KEYWORD leg over stored entries' key/content via ``memory_entry_fts``
+        (#2774; object descriptions are NOT indexed for keywords, so a collection/log
+        hit only ever carries an embedding-leg score).  The search spans every
+        family in one fused list, no up-front narrowing (#1643).
 
-        The fusion is honest because it needs no rescaling: object description
-        anchors and entry content/key anchors are all produced by the SAME
-        embedding model, so they share one vector space and their cosines rank
-        directly against each other — one ``cosine_scores`` pass over the union.
-        An entry contributes up to two facet candidates (content + key); the
-        ranked walk keeps the FIRST (best-scoring) facet of each entry and skips
-        the rest, so an entry scores as the max over its facets (the same
-        "either signal" disjunction the write-dedup uses).  Only positively
-        correlated candidates survive (cosine > 0 — a wholly-unrelated query
-        returns an honest empty), capped at ``limit`` distinct hits.  The tool
-        layer turns each hit into identity + the deterministic addressing;
-        ambiguity (several hits) is returned, never silently resolved.
+        Fusing by RANK (not raw score) means a candidate the keyword leg finds but
+        whose embedding fell at or below the cosine>0 gate (so it's simply absent
+        from the embedding leg) still surfaces on the keyword leg's own strength —
+        the literal-name-beats-unremarkable-embedding case #2774 exists for.  An
+        entry contributes up to two embedding facets (content + key); the embedding
+        leg keeps the FIRST (best-scoring) facet of each entry (max-of-facets, same
+        disjunction the write-dedup uses).  Capped at ``limit`` after a relative
+        floor drops hits far below the section's own best fused score
+        (``_apply_relative_floor``) — an unrelated query honestly returns fewer
+        hits, or none, rather than padding out with filler.  The tool layer turns
+        each hit into identity + the deterministic addressing; ambiguity (several
+        hits) is returned, never silently resolved.
         """
-        # The candidates here are always ResolvedHit (never a message), by
-        # construction — `_rank_candidates`'s Sequence parameter is covariant for
-        # the call, but its return stays the wider union it also serves
-        # `resolve_messages` with, so the narrowing back is explicit here.
-        return cast(
-            "list[ResolvedHit]", self._rank_candidates(self._resolution_candidates(), anchor, limit)
+        embedding_ranked = cast(
+            "list[ResolvedHit]",
+            self._rank_candidates(
+                self._resolution_candidates(), anchor, PennyConstants.FIND_RRF_POOL
+            ),
         )
+        keyword_ranked = self._keyword_candidates_entries(query)
+        fused = self._fuse_rrf(embedding_ranked, keyword_ranked, lambda hit: hit.fusion_identity)
+        return self._apply_relative_floor(fused, limit)
 
-    def resolve_messages(self, anchor: list[float], limit: int) -> list[ResolvedMessage]:
-        """``find``'s share of the conversation logs (#2289) — messages ranked in the
-        SAME fused pass ``resolve_objects`` ranks its own candidates in, but reported
-        SEPARATELY and never allowed to displace one of them: a message surfaces
-        only when its score would place it among the top ``limit`` of the FUSED
-        ranking (``resolve_objects``'s own candidates plus every embedded message in
-        ``user-messages`` / ``penny-messages``), so a long conversation can crowd out
-        other MESSAGES at worst — it can never shrink the store's own result, which
-        ``resolve_objects`` computes independently of this call. Bounded at ``limit``
-        by construction: the fused top-``limit`` has at most that many rows total,
-        however many of them are messages.
+    def resolve_messages(
+        self, anchor: list[float], query: str, limit: int
+    ) -> list[ResolvedMessage]:
+        """``find``'s share of the conversation logs (#2289, #2774) — ranked and
+        budgeted ENTIRELY WITHIN its own section: messages never compete with
+        ``resolve_objects``'s store hits for a shared slot (the #2774 fix — a
+        generic stored fact used to be able to fill every slot and crowd every
+        message out).
 
-        Messages carry no ``memory_entry`` row (#1640's own account of why they are
-        absent from ``_resolution_candidates``), so they are read here through the
-        same ``embedded_rows()`` facade ``read_similar`` ranks — one set of vectors,
-        two rankings over it, never a second embed.
+        Same two-leg RRF fusion as ``resolve_objects``: an embedding leg (plain
+        cosine over every embedded row of ``user-messages``/``penny-messages``,
+        read through ``Memory.embedded_rows()`` — the identical rows/vectors
+        ``read_similar`` ranks, never a second embed) and a keyword leg over
+        ``messagelog_fts``.  Capped at ``limit`` after the same relative floor.
         """
-        fused: list[tuple[ResolvedHit | ResolvedMessage, bytes]] = [
-            *self._resolution_candidates(),
-            *self._message_candidates(),
-        ]
-        ranked = self._rank_candidates(fused, anchor, limit)
-        return [hit for hit in ranked if isinstance(hit, ResolvedMessage)]
+        embedding_ranked = cast(
+            "list[ResolvedMessage]",
+            self._rank_candidates(self._message_candidates(), anchor, PennyConstants.FIND_RRF_POOL),
+        )
+        keyword_ranked = self._keyword_candidates_messages(query)
+        fused = self._fuse_rrf(embedding_ranked, keyword_ranked, lambda message: message.id)
+        return self._apply_relative_floor(fused, limit)
 
     def _message_candidates(self) -> list[tuple[ResolvedMessage, bytes]]:
-        """Every embedded row in the two conversation logs as a fused-ranking
+        """Every embedded row in the two conversation logs as an embedding-leg
         candidate (#2289) — read through ``Memory.embedded_rows()`` on each log's own
         ``MessageLogMemory`` facade, so a message candidate here and a
         ``read_similar``/notify-time nearest-message hit are the identical row and
@@ -993,13 +1023,172 @@ class MemoryStore:
             if log is None:
                 continue
             for row in log.embedded_rows():
-                if row.content_embedding is None:
+                if row.content_embedding is None or row.id is None:
                     continue
                 hit = ResolvedMessage(
-                    memory_name=name, content=row.content, created_at=row.created_at
+                    id=row.id, memory_name=name, content=row.content, created_at=row.created_at
                 )
                 candidates.append((hit, row.content_embedding))
         return candidates
+
+    def _fts_table_exists(self, name: str) -> bool:
+        """Whether FTS virtual table ``name`` (migration 0127) exists on this
+        connection (#2774). The keyword leg checks this before every MATCH query
+        rather than assuming it, so a schema that predates (or deliberately skips,
+        like the test suite's bare current-models schema — ``schema_template.py``)
+        migration 0127 degrades to pure-embedding ranking instead of a raw SQL
+        error on a missing table — the same honest-fallback shape the degraded
+        decision-model/image/browser modes use elsewhere."""
+        with self._session() as session:
+            row = session.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name"),
+                {"name": name},
+            ).first()
+        return row is not None
+
+    def _fts_match_rows(self, table: str, query: str, sql: Any, extra_params: dict) -> list | None:
+        """The raw rows one keyword-leg MATCH query returns, or ``None`` when
+        there is nothing to run (#2774): an empty/word-less ``query``, or a
+        schema without ``table`` yet (``_fts_table_exists``) — so each
+        candidate builder's own early-return ("the keyword leg contributes
+        nothing, fusion falls back to the embedding leg alone") stays one
+        line.  ``extra_params`` carries whatever ``sql`` needs beyond ``:q``/
+        ``:pool`` (e.g. the message leg's direction filter)."""
+        match = _fts_match_query(query)
+        if match is None or not self._fts_table_exists(table):
+            return None
+        params = {"q": match, "pool": PennyConstants.FIND_RRF_POOL, **extra_params}
+        with self._session() as session:
+            return list(session.execute(sql, params).all())
+
+    def _keyword_candidates_entries(self, query: str) -> list[tuple[ResolvedEntry, int]]:
+        """The keyword leg's ranked ``ResolvedEntry`` candidates (#2774) — every
+        ``memory_entry`` whose key/content matches ``query`` via ``memory_entry_fts``
+        (migration 0127), best ``bm25`` first, capped at ``FIND_RRF_POOL``, filtered
+        to the same live (non-archived) containers the embedding leg's
+        ``_entry_candidates`` filters to."""
+        sql = text(
+            "SELECT e.id, e.memory_name, e.key, e.content FROM memory_entry_fts f "
+            "JOIN memory_entry e ON e.id = f.rowid "
+            "WHERE memory_entry_fts MATCH :q ORDER BY bm25(memory_entry_fts) LIMIT :pool"
+        )
+        rows = self._fts_match_rows("memory_entry_fts", query, sql, {})
+        if rows is None:
+            return []
+        kinds = {
+            row.name: (
+                ResolvedKind.COLLECTION if row.type == MemoryType.COLLECTION else ResolvedKind.LOG
+            )
+            for row in self.list_all()
+            if not row.archived
+        }
+        return self._entry_hits_from_rows(rows, kinds)
+
+    @staticmethod
+    def _entry_hits_from_rows(
+        rows: list, kinds: dict[str, ResolvedKind]
+    ) -> list[tuple[ResolvedEntry, int]]:
+        """One ``(ResolvedEntry, rank)`` pair per matched row, skipping a row
+        whose containing collection/log is archived or gone."""
+        candidates: list[tuple[ResolvedEntry, int]] = []
+        for row in rows:
+            if row.memory_name not in kinds:
+                continue
+            hit = ResolvedEntry(
+                entry_id=row.id,
+                memory_name=row.memory_name,
+                container_kind=kinds[row.memory_name],
+                key=row.key,
+                content=row.content,
+            )
+            candidates.append((hit, len(candidates) + 1))
+        return candidates
+
+    def _keyword_candidates_messages(self, query: str) -> list[tuple[ResolvedMessage, int]]:
+        """The keyword leg's ranked ``ResolvedMessage`` candidates (#2774) — every
+        non-reaction conversation message matching ``query`` via ``messagelog_fts``
+        (migration 0127), best ``bm25`` first, capped at ``FIND_RRF_POOL``."""
+        sql = text(
+            "SELECT m.id, m.direction, m.content, m.mechanism, m.timestamp "
+            "FROM messagelog_fts f JOIN messagelog m ON m.id = f.rowid "
+            "WHERE messagelog_fts MATCH :q AND m.is_reaction = 0 "
+            "AND m.direction IN (:incoming, :outgoing) "
+            "ORDER BY bm25(messagelog_fts) LIMIT :pool"
+        )
+        extra = {
+            "incoming": PennyConstants.MessageDirection.INCOMING,
+            "outgoing": PennyConstants.MessageDirection.OUTGOING,
+        }
+        rows = self._fts_match_rows("messagelog_fts", query, sql, extra)
+        if rows is None:
+            return []
+        return self._message_hits_from_rows(rows)
+
+    @staticmethod
+    def _message_hits_from_rows(rows: list) -> list[tuple[ResolvedMessage, int]]:
+        """One ``(ResolvedMessage, rank)`` pair per matched row, rendered
+        through the SAME emission-provenance marker
+        (``MessageLogMemory.SENT_BY_MARKER``) the embedding leg's
+        ``_render_content`` applies, so a keyword-only hit reads identically to
+        one the embedding leg would have rendered."""
+        candidates: list[tuple[ResolvedMessage, int]] = []
+        for row in rows:
+            content = row.content
+            if row.mechanism is not None:
+                content = (
+                    f"{MessageLogMemory.SENT_BY_MARKER.format(mechanism=row.mechanism)}{content}"
+                )
+            hit = ResolvedMessage(
+                id=row.id,
+                memory_name=_MESSAGE_LOG_BY_DIRECTION[row.direction],
+                content=content,
+                created_at=row.timestamp,
+            )
+            candidates.append((hit, len(candidates) + 1))
+        return candidates
+
+    @staticmethod
+    def _fuse_rrf[T](
+        embedding_ranked: Sequence[T],
+        keyword_ranked: Sequence[tuple[T, int]],
+        identity: Callable[[T], Hashable],
+    ) -> list[tuple[T, float]]:
+        """Reciprocal rank fusion (#2774) over two independently-ranked lists of the
+        SAME item type: ``score = Σ_leg 1 / (FIND_RRF_K + rank)``, 1-indexed rank, a
+        leg an item is absent from contributing 0.  Fusing by RANK (never the raw
+        cosine/bm25 score, which live on unrelated scales) is what lets a
+        keyword-only hit outrank an embedding-only one on the strength of its own
+        leg, with no cross-scale rescaling.  ``identity`` says which two candidates
+        — one from each leg — are "the same row" (an entry's id, an object's name, a
+        message's id); the first occurrence (whichever leg reaches it first) is kept
+        as the representative item.  Returns every fused item, best-first — the
+        caller applies its own budget/floor."""
+        scores: dict[Hashable, float] = {}
+        items: dict[Hashable, T] = {}
+        for rank, item in enumerate(embedding_ranked, start=1):
+            key = identity(item)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (PennyConstants.FIND_RRF_K + rank)
+            items.setdefault(key, item)
+        for item, rank in keyword_ranked:
+            key = identity(item)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (PennyConstants.FIND_RRF_K + rank)
+            items.setdefault(key, item)
+        return sorted(
+            ((items[key], score) for key, score in scores.items()), key=lambda pair: -pair[1]
+        )
+
+    @staticmethod
+    def _apply_relative_floor[T](scored: list[tuple[T, float]], limit: int) -> list[T]:
+        """The relative floor (#2774): within one fused, best-first ``scored`` list,
+        drop every item scoring below ``FIND_RELATIVE_FLOOR_RATIO`` of the list's OWN
+        best score, then cap at ``limit``.  Replaces the old absolute cosine>0 gate
+        as the thing that keeps an unrelated query from padding out to the budget
+        with the same few generic entries — a weak section (nothing really matches)
+        now honestly returns fewer hits, or none, instead of exactly ``limit``."""
+        if not scored:
+            return []
+        floor = scored[0][1] * PennyConstants.FIND_RELATIVE_FLOOR_RATIO
+        return [item for item, score in scored if score >= floor][:limit]
 
     @staticmethod
     def _rank_candidates(

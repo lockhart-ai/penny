@@ -12,6 +12,7 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from penny.constants import (
@@ -33,14 +34,14 @@ from penny.database.memory import (
     ResolvedMatch,
     WrongShapeError,
 )
-from penny.database.memory.store import _FIELD_PRIORS, _MetadataUpdate
+from penny.database.memory.store import _FIELD_PRIORS, MemoryStore, _MetadataUpdate
 from penny.database.models import MemoryRow, MutationEvent
 from penny.database.mutation_store import FieldPrior, MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.call_link import CallLink
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
 from penny.tests.conftest import require_memory
-from penny.tests.schema_template import schema_only_db
+from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.memory_tools import MemoryMetadataTool
 
 pytestmark = pytest.mark.bare_db
@@ -1579,7 +1580,7 @@ class TestResolveObjects:
         self._seed_mixed(db)
         found = {
             (match.name, match.kind, match.archived)
-            for match in db.memories.resolve_objects(_unit_vec(0), 10)
+            for match in db.memories.resolve_objects(_unit_vec(0), "", 10)
         }
         assert ("watch", ResolvedKind.COLLECTION, False) in found
         assert ("old-watch", ResolvedKind.COLLECTION, True) in found  # archived included
@@ -1588,7 +1589,7 @@ class TestResolveObjects:
     def test_orthogonal_query_returns_honest_empty(self, db):
         self._seed_mixed(db)
         # Axis 5 is orthogonal to every seeded object → nothing is a match.
-        assert db.memories.resolve_objects(_unit_vec(5), 10) == []
+        assert db.memories.resolve_objects(_unit_vec(5), "", 10) == []
 
     def test_ranks_best_first(self, db):
         db.memories.create_collection("exact", "d", description_embedding=_unit_vec(0))
@@ -1597,7 +1598,7 @@ class TestResolveObjects:
             "d",
             description_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         )
-        matches = db.memories.resolve_objects(_unit_vec(0), 10)
+        matches = db.memories.resolve_objects(_unit_vec(0), "", 10)
         # cos(axis0, exact)=1.0 > cos(axis0, partial)=0.707 → exact ranks first.
         assert [match.name for match in matches] == ["exact", "partial"]
 
@@ -1608,7 +1609,7 @@ class TestResolveObjects:
                 "d",
                 description_embedding=_unit_vec(0),
             )
-        assert len(db.memories.resolve_objects(_unit_vec(0), 3)) == 3
+        assert len(db.memories.resolve_objects(_unit_vec(0), "", 3)) == 3
 
 
 class TestResolveEntries:
@@ -1638,7 +1639,7 @@ class TestResolveEntries:
             ],
             author="test",
         )
-        hits = db.memories.resolve_objects(_unit_vec(0), 10)
+        hits = db.memories.resolve_objects(_unit_vec(0), "", 10)
         assert any(isinstance(hit, ResolvedMatch) for hit in hits)  # the collection object
         entries = self._entries(hits)
         assert len(entries) == 1  # deduped across both matching facets
@@ -1665,7 +1666,7 @@ class TestResolveEntries:
             ],
             author="test",
         )
-        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), 10))
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), "", 10))
         assert [entry.key for entry in entries] == ["target"]
 
     def test_keyless_log_entry_carries_log_container(self, db):
@@ -1675,7 +1676,7 @@ class TestResolveEntries:
         db.memories.memory("feed").append(
             [LogEntryInput(content="c", content_embedding=_unit_vec(0))], author="test"
         )
-        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), 10))
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), "", 10))
         assert len(entries) == 1
         assert entries[0].container_kind == ResolvedKind.LOG
         assert entries[0].key is None
@@ -1692,7 +1693,7 @@ class TestResolveEntries:
             [EntryInput(key="b", content="y", content_embedding=_unit_vec(0))], author="test"
         )
         db.memories.archive("dead")
-        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), 10))
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), "", 10))
         assert {entry.memory_name for entry in entries} == {"live"}
 
     def test_query_matching_both_families_fuses_them(self, db):
@@ -1702,6 +1703,82 @@ class TestResolveEntries:
         db.memories.memory("watch").write_rule_decided(
             [EntryInput(key="k", content="c", content_embedding=_unit_vec(0))], author="test"
         )
-        hits = db.memories.resolve_objects(_unit_vec(0), 10)
+        hits = db.memories.resolve_objects(_unit_vec(0), "", 10)
         assert any(isinstance(hit, ResolvedMatch) for hit in hits)
         assert any(isinstance(hit, ResolvedEntry) for hit in hits)
+
+
+class TestHybridFind:
+    """Hybrid (keyword + meaning) resolve-by-meaning (#2774): an embedding leg and
+    a keyword leg (FTS5, migration 0127) are ranked independently and fused by
+    reciprocal rank, so a literal word a query names can outrank a
+    closer-but-not-literal embedding.  ``_fuse_rrf``/``_apply_relative_floor`` are
+    pure math, tested directly; the end-to-end wiring needs the REAL migrated
+    schema (the module's own ``db`` fixture is deliberately bare — #2774 reuses
+    it unchanged for every pre-existing cosine-only test above), so these build
+    their own ``migrated_db``."""
+
+    def test_literal_keyword_match_beats_a_closer_embedding(self, tmp_path):
+        """``food``'s embedding (cos 0.707) is further from the query than
+        ``other``'s (cos 1.0), but ``food`` is the only entry whose content
+        literally contains the query word — the fused ranking puts it first
+        anyway, because the keyword leg's rank-1 score adds to its own
+        embedding-leg score instead of needing to beat ``other`` on cosine
+        alone."""
+        db = migrated_db(str(tmp_path / "test.db"))
+        # Orthogonal to the query axis — excluded from the embedding leg (cosine
+        # ≤ 0) and carries no literal overlap, so the collection object itself
+        # never contends with its own entries here.
+        db.memories.create_collection("notes", "d", description_embedding=_unit_vec(7))
+        require_memory(db, "notes").write_rule_decided(
+            [
+                EntryInput(
+                    key="food",
+                    content="Clementine only eats salmon pate",
+                    content_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                ),
+                EntryInput(
+                    key="other",
+                    content="some unrelated fact",
+                    content_embedding=_unit_vec(0),
+                ),
+            ],
+            author="test",
+        )
+        hits = db.memories.resolve_objects(_unit_vec(0), "Clementine", 10)
+        entries = [hit for hit in hits if isinstance(hit, ResolvedEntry)]
+        assert [entry.key for entry in entries] == ["food", "other"]
+
+    def test_fts_index_kept_in_sync_on_insert(self, tmp_path):
+        """A fresh write is found by a raw keyword MATCH immediately — the
+        migration's AFTER INSERT triggers fire on the store's normal write path,
+        with no separate Python-side sync call (#2774)."""
+        db = migrated_db(str(tmp_path / "test.db"))
+        db.memories.create_collection("notes", "d", description_embedding=_unit_vec(0))
+        require_memory(db, "notes").write_rule_decided(
+            [EntryInput(key="food", content="Clementine only eats salmon pate")],
+            author="test",
+        )
+        with Session(db.engine) as session:
+            rows = session.execute(
+                text(
+                    "SELECT content FROM memory_entry_fts WHERE memory_entry_fts MATCH 'clementine'"
+                )
+            ).all()
+        assert [row[0] for row in rows] == ["Clementine only eats salmon pate"]
+
+    def test_apply_relative_floor_caps_at_the_budget(self):
+        """More fused hits than the section's budget allows — even all
+        comfortably above the floor — are capped at ``limit`` (#2774's
+        per-section budget)."""
+        scored = [(f"item-{i}", 1.0 - i * 0.01) for i in range(8)]
+        kept = MemoryStore._apply_relative_floor(scored, limit=5)
+        assert kept == [f"item-{i}" for i in range(5)]
+
+    def test_apply_relative_floor_drops_hits_far_below_the_best(self):
+        """A hit scoring well below the section's own best fused score is
+        dropped even though the budget has room left (#2774's relative floor,
+        replacing the old absolute cosine>0 cutoff)."""
+        scored = [("best", 1.0), ("close", 0.6), ("weak", 0.1)]
+        kept = MemoryStore._apply_relative_floor(scored, limit=5)
+        assert kept == ["best", "close"]
