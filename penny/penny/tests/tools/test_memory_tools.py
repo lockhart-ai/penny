@@ -17,6 +17,7 @@ import pytest
 from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
+from penny.agents.chat import ChatAgent
 from penny.agents.models import ToolCallRecord
 from penny.constants import PennyConstants
 from penny.database import Database
@@ -3076,8 +3077,11 @@ class TestLogTools:
     async def test_run_list_renders_by_source(self, db):
         """run_list is the SEQUENCE lens over runs, orthogonal to source: a
         collector's name renders its runs as ``[target] -> tools -> done``; ``chat``
-        renders conversations as ``user -> tools -> penny``.  The valid sources are
-        discovered from the DB into its description."""
+        renders conversations as ``user -> tools -> penny``.  The description and
+        parameter schema are STATIC (#2777, not discovered from the live
+        collector list — that would change the schema, and the chat prompt's
+        cached prefix, every time a job is set up or archived); the valid set
+        still reaches the model, via the unknown-source refusal below."""
         _seed_collection(
             db,
             name="espresso-gear",
@@ -3154,9 +3158,11 @@ class TestLogTools:
         )
 
         tool = ReadRunCallsTool(db, "quality")
-        # Sources discovered from the DB (chat + the collector) are in the description.
-        assert "espresso-gear" in tool.description
+        # The description names "chat" and "a collector's name" generically — never
+        # a specific collector, so it stays static across the collector's lifecycle.
         assert "chat" in tool.description
+        assert "espresso-gear" not in tool.description
+        assert "enum" not in tool.parameters["properties"]["source"]
 
         collector = await tool.run(CallLink.new_top(), source="espresso-gear")
         assert "[espresso-gear]" in collector.message
@@ -3175,10 +3181,21 @@ class TestLogTools:
 
         # An unknown/typo'd source resolves to a failed, actionable refusal that
         # names the offending value — not a silent empty batch that reads as "this
-        # collector has no runs".
+        # collector has no runs".  The schema no longer enumerates sources (#2777),
+        # so the refusal spells out the valid set by name instead — a miss stays
+        # one call from the fix.  Asserted whole: this is the exact render the
+        # model reads on a miss.
         unknown = await tool.run(CallLink.new_top(), source="esspreso-gear")
         assert unknown.success is False
-        assert "esspreso-gear" in unknown.message
+        assert unknown.message == (
+            "Memory 'esspreso-gear' not found — did you mean 'espresso-gear'? Check "
+            "the name (it may be misspelled), or find it by meaning with "
+            "find(query=<what it's about>) — it resolves your collections, logs, and "
+            "skills (archived included) and names the exact tool for each. Or create "
+            "it with collection_configure(collection='esspreso-gear') / "
+            "log_create(log='esspreso-gear') if it should exist. Valid sources: "
+            "chat, espresso-gear."
+        )
 
     @staticmethod
     def _log_run(db, *, run_id: str, target: str, summary: str, write_key: str) -> None:
@@ -3725,6 +3742,49 @@ class TestFactory:
             name_decider=_NO_NAME_MODEL,
         )
         assert {tool.name for tool in tools} == self._FULL_SURFACE
+
+    @pytest.mark.asyncio
+    async def test_chat_tool_schemas_are_static_across_a_collector_change(
+        self, db, test_config, mock_llm
+    ):
+        """Chat's tool schemas render right after the static leading system
+        message, inside the prefix the server caches across turns (#2757) — a
+        schema that reflects live DB state changes that prefix every time a job
+        is set up or archived, breaking the cache (#2777: ``run_list`` used to
+        rebuild its description and its ``source`` enum from the live collector
+        list on every construction). Every chat tool's serialized schema —
+        name, description, and parameters — must be byte-identical before and
+        after a collector is added."""
+        client = _make_llm_client(mock_llm)
+        agent = ChatAgent(
+            model_client=client,
+            embedding_model_client=client,
+            tools=[],
+            db=db,
+            config=test_config,
+        )
+        before = {
+            tool.name: json.dumps(tool.to_ollama_tool(), sort_keys=True)
+            for tool in agent.get_tools()
+        }
+
+        _seed_collection(
+            db,
+            name="espresso-gear",
+            extraction_prompt="1. browse for new espresso gear. 2. write it. 3. done().",
+        )
+
+        after = {
+            tool.name: json.dumps(tool.to_ollama_tool(), sort_keys=True)
+            for tool in agent.get_tools()
+        }
+
+        assert before.keys() == after.keys()
+        for name in before:
+            assert before[name] == after[name], (
+                f"{name}'s schema changed after a collector was added — it embeds live "
+                "DB state and will invalidate the chat prompt's cached prefix"
+            )
 
     def test_collector_surface_is_the_same_full_set(self, db, mock_llm):
         """A bound collector (scope=X) gets the identical surface — scope binds

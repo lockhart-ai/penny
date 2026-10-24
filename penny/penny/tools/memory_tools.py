@@ -2808,21 +2808,30 @@ class ReadRunCallsTool(CursorReadTool):
 
     def __init__(self, db: Database, agent_name: str) -> None:
         super().__init__(db, agent_name)
-        # Discover the valid sources from the DB so the model sees the current set —
-        # 'chat' plus every collector (a collection with an extraction_prompt).
-        sources = self._available_targets()
-        listed = ", ".join(sources)
+        # Static — NOT discovered from the live collector list (#2777). Chat's tool
+        # schemas render right after the static leading system message, inside the
+        # prefix the server caches across turns (#2757); a schema that names every
+        # live collector changes that prefix each time a job is set up or archived,
+        # breaking the cache. The exact set stays one call away: the self-state
+        # header's job list renders every collector's name, and an unknown source
+        # below is refused with the valid set spelled out.
         self.description = (
             "Return a source's recent runs as tool-call sequences — each run shows its "
             "origin (the user's message, or the collector's bound target), the tool "
             "calls made, and the outcome. Returns the next batch since you last read; "
-            f"call again for older runs. source is one of: {listed} "
-            '("chat" for conversations, a collector name for that collector\'s runs).'
+            'call again for older runs. source is "chat" for conversations, or a '
+            "collector's name for that collector's runs."
         )
         self.parameters: dict[str, Any] = {
             "type": "object",
             "properties": {
-                "source": {"type": "string", "enum": sources, "description": f"one of {listed}"}
+                "source": {
+                    "type": "string",
+                    "description": (
+                        '"chat" for conversations, or a collector\'s name for that '
+                        "collector's runs"
+                    ),
+                }
             },
             "required": ["source"],
         }
@@ -2834,6 +2843,17 @@ class ReadRunCallsTool(CursorReadTool):
             if row.extraction_prompt and not row.archived
         )
         return [PennyConstants.CHAT_AGENT_NAME, *collectors]
+
+    async def _suggest_and_fail(self, exc: MemoryNotFoundError) -> ToolResult:
+        """Augment the generic not-found refusal with the exact valid-source set
+        the description used to enumerate before it went static (#2777) — so a
+        miss is still one call from the right name, without the schema reflecting
+        the live collector list on every turn."""
+        result = await super()._suggest_and_fail(exc)
+        targets = ", ".join(self._available_targets())
+        return ToolResult(
+            message=f"{result.message} Valid sources: {targets}.", success=result.success
+        )
 
     @staticmethod
     def _cursor_key(target: str) -> str:
