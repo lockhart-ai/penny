@@ -1188,20 +1188,22 @@ async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
 ):
     """A reply that leads with a line of prose and then a tool call serialized as
     JSON text (#2787 — seen in prod: "On it!" followed by a ``generate_image`` call
-    object) is discarded and re-rolled, exactly like the whole-reply envelope
-    :func:`is_call_as_text_bail` already catches — it must never reach the user, and
-    the call it describes must actually run on the next draw.
+    object) is discarded and re-rolled — shown the draft plus a note naming the tool
+    it never ran, not re-drawn blind (#2790: a model-choice shape, not a transport
+    artifact) — exactly like the whole-reply envelope :func:`is_call_as_text_bail`
+    already catches.  The draft must never reach the user, and the call it
+    describes must actually run on the next draw.
     """
     config = make_config()
+    draft = (
+        'On it!\n\n{"action": "generate_image", "action_input": '
+        '"{\\"description\\": \\"a kite shaped like a sea turtle\\"}", '
+        '"reasoning": "the user asked for a drawing"}'
+    )
 
     def handler(request: dict, count: int):
         if count == 1:
-            return mock_llm._make_text_response(
-                request,
-                'On it!\n\n{"action": "generate_image", "action_input": '
-                '"{\\"description\\": \\"a kite shaped like a sea turtle\\"}", '
-                '"reasoning": "the user asked for a drawing"}',
-            )
+            return mock_llm._make_text_response(request, draft)
         if count == 2:
             return mock_llm._make_tool_call_response(
                 request,
@@ -1226,8 +1228,14 @@ async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
         image_client.generate_image.assert_awaited_once()
         assert "sea turtle" in image_client.generate_image.await_args.kwargs["prompt"]
         assert len(mock_llm.requests) == 3
-        # The reroll ran on the UNCHANGED context (the discarded draw never joined it).
-        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        # The redraw is shown the draft plus a note naming the tool it never ran
+        # (#2790) — not a blind re-roll on the unchanged context.
+        redraw = mock_llm.requests[1]["messages"]
+        assert redraw[:-2] == mock_llm.requests[0]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
+        assert note_turn["role"] == "user"
+        assert note_turn["content"] == Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="generate_image")
 
         # The raw call-as-text never reached the user, in this reply or any other
         # the channel sent.

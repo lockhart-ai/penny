@@ -1068,7 +1068,7 @@ class Agent:
             match run_validators(self.response_validators, response, ctx):
                 case Proceed(response=validated):
                     return validated if validated is not None else response
-                case Retry(condition=condition):
+                case Retry(condition=condition, note=note):
                     # The discarded draw's own row carries the condition it was
                     # rejected for (#2702) — the accepted re-draw follows with
                     # no mark.
@@ -1079,6 +1079,12 @@ class Agent:
                         # none were offered, so the loop's text/tool branching matches
                         # the form the chain validated.
                         return self._without_unoffered_calls(response, effective_tools)
+                    if note is not None:
+                        # A validator's note (the dangling-link check, #2729) is shown
+                        # to the redraw via the same shared mechanism (#2790) — this is
+                        # what first actually CONSUMES it; the field has carried the
+                        # note since #2729 with no reader.
+                        self._append_retry_note(messages, response, note, include_draft=True)
                     response = await self._invoke_nondegenerate(
                         messages, effective_tools, call_link, prompt_type
                     )
@@ -1112,10 +1118,12 @@ class Agent:
         """Apply a ``Retry`` disposition: record the condition, so the same condition
         cannot retry twice in one call.
 
-        The bad draw is discarded and nothing is written into the conversation, so the
-        next draw re-samples the exact state the discarded one was drawn from.  A draw
-        carries no mark of what was wrong with it, so appending it would only show the
-        model a finished reply with nothing after it to answer."""
+        By default the bad draw is discarded and nothing is written into the
+        conversation, so the next draw re-samples the exact state the discarded one
+        was drawn from.  A ``Retry`` whose validator supplies a ``note`` is the one
+        exception (#2790): the caller appends the draft plus the note before
+        re-drawing (``_append_retry_note``), so the redraw reads what was wrong
+        instead of re-sampling blind."""
         retried.add(condition)
         logger.warning(
             "Invalid response (%s) on attempt %d/%d", condition, attempt + 1, max_retries
@@ -1202,19 +1210,24 @@ class Agent:
             collector turn that is not a tool call at all, a chat reply that is really
             a serialized call.  The conversation state machine makes a turn's valid
             terminal states decidable, so such a draw is rejected rather than recovered
-            by conversation: it never enters the run, so no nudge turn and no stray
-            output can be mistaken later for what the model actually did.
-        So the check runs here, on the raw output of every call, before the loop
-        parses or acts on it.  The bad draw is DROPPED, never appended: re-appending a
-        collapse feeds it back into the conversation (a poisoned step makes the next
-        ~4× more likely to collapse too), and re-appending a leaked envelope or a
-        call-shaped blob would ship it.  After ``DEGENERATE_REROLL_ATTEMPTS`` it raises
-        ``ModelCallAbortedError`` so the caller throws out the whole run rather than act on
-        it — one shared budget for every family.  The warning names WHICH condition
-        tripped (the reroll mechanism is shared; the log label must stay honest), and so
-        does the raised error: the conditions are collected in draw order, since a run
-        killed by three parse failures and one killed by three collapses are different
-        problems (#1909).
+            by conversation: it never enters the run, so no stray output can be mistaken
+            later for what the model actually did.
+        So the check runs here, on the raw output of every call, before the loop parses
+        or acts on it.  A TRANSPORT artifact (the collapse, the leaked envelope) is
+        DROPPED, never appended: re-appending a collapse feeds it back into the
+        conversation (a poisoned step makes the next ~4× more likely to collapse too),
+        and a fresh draw usually sheds a leak on its own — neither is something the
+        model chose, so there is nothing to show it.  A SHAPE violation is different
+        (#2790): the model's own choice produced it, and the redraw is shown the draft
+        plus a note naming what was wrong (``_retry_note_for_condition`` /
+        ``_append_retry_note``) rather than re-sampling blind — never risking delivery,
+        since the note says outright the draft never ran.  After
+        ``DEGENERATE_REROLL_ATTEMPTS`` it raises ``ModelCallAbortedError`` so the caller
+        throws out the whole run rather than act on it — one shared budget for every
+        family.  The warning names WHICH condition tripped (the reroll mechanism is
+        shared; the log label must stay honest), and so does the raised error: the
+        conditions are collected in draw order, since a run killed by three parse
+        failures and one killed by three collapses are different problems (#1909).
 
         A draw cut by its own token budget (#2475) is caught FIRST, before any of the
         above — ``finish_reason == FINISH_REASON_LENGTH`` is a transport fact, true
@@ -1255,6 +1268,12 @@ class Agent:
             self._mark_discarded(response, condition)
             self._log_reroll(condition, attempt, attempts)
             discarded.append(condition)
+            if attempt + 1 < attempts:
+                note = self._retry_note_for_condition(condition, response)
+                if note is not None:
+                    self._append_retry_note(
+                        messages, response, note, include_draft=condition != ConditionKey.EMPTY
+                    )
         logger.error(
             "Model output still unusable after %d re-rolls (%s) — aborting run",
             attempts,
@@ -1286,6 +1305,44 @@ class Agent:
         if response.prompt_log_id is None:
             return
         self.db.messages.mark_prompt_discarded(response.prompt_log_id, condition.value)
+
+    def _retry_note_for_condition(
+        self, condition: ConditionKey, response: LlmResponse
+    ) -> str | None:
+        """The note a MODEL-CHOICE invalid-draw condition shows the redraw, or
+        ``None`` for a transport artifact — which stays a blind reroll (#2790).
+
+        The base agent declares no model-choice conditions of its own
+        (``invalid_draw_conditions`` is empty, so nothing call-less is ever invalid
+        here); ``ChatAgent`` and ``BackgroundAgent`` override this for the shapes
+        their own ``invalid_draw_conditions`` declare.  Called from both reroll
+        sites — the shape-check loop (``_invoke_nondegenerate``) and a validator's
+        ``Retry.note`` (``_call_model_validated``) — so a condition that can arise
+        from either reads the same note either way."""
+        return None
+
+    @staticmethod
+    def _append_retry_note(
+        messages: list[LlmMessage], response: LlmResponse, note: str, *, include_draft: bool
+    ) -> None:
+        """Show the redraw the discarded draft (assistant turn) plus the note naming
+        what was wrong (user turn) — the one case a reroll is not blind (#2790,
+        extending the dangling-link design, #2729).  ``include_draft=False`` omits
+        the assistant turn — the EMPTY condition's draft has nothing worth echoing
+        back, so only the note is appended.
+
+        Mutates the run's OWN ``messages`` — never a copy: a note shown mid-turn may
+        be answered by a tool call that continues the SAME turn on these messages, so
+        it must survive that hop.  It is still turn-local: ``messages`` is the
+        in-memory scratch list one call's resolution is built from, never what
+        ``Agent._build_conversation`` reads back for the NEXT turn (that reads
+        persisted ``messagelog`` rows, written separately) — so neither the draft nor
+        the note is ever stored history, and nothing here revisits #1937 (an invalid
+        draw's nudge used to become part of the conversation's own turn structure,
+        re-read by every later draw; this is confined to resolving one call)."""
+        if include_draft:
+            messages.append(response.message)
+        messages.append(LlmMessage(role=MessageRole.USER, content=note))
 
     def _unusable_output_condition(self, response: LlmResponse) -> ConditionKey | None:
         """The condition that makes this raw draw unusable, or ``None`` if it's clean.
@@ -2399,6 +2456,18 @@ class BackgroundAgent(Agent):
     # cycles the guard's absence costs nothing to allow, and the run record says what
     # a cycle actually did.
     run_shape_validators: list[ResponseValidator] = []
+
+    def _retry_note_for_condition(
+        self, condition: ConditionKey, response: LlmResponse
+    ) -> str | None:
+        """The notes for this agent's own two shapes (#2790) — both state-keyed,
+        never keyed to what the prose happened to say (a collector's draw is
+        arbitrary free text; see ``TEXT_INSTEAD_OF_TOOL``'s own catch-all note)."""
+        if condition == ConditionKey.DONE_JSON_BAIL:
+            return Prompt.DONE_JSON_BAIL_RETRY_NOTE
+        if condition == ConditionKey.TEXT_INSTEAD_OF_TOOL:
+            return Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
+        return super()._retry_note_for_condition(condition, response)
 
     async def _draw_narration(
         self,

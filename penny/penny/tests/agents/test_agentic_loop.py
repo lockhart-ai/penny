@@ -94,11 +94,13 @@ class StubSearchTool(Tool):
         return ToolResult(message="Mock search results for testing")
 
 
-def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
+def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None, agent_cls=Agent):
     """Create a minimal Agent for loop testing.
 
     Returns (agent, db, max_steps) — max_steps must be passed to agent.run().
     Pass runtime_overrides={key: value} to override runtime config params for the test.
+    Pass agent_cls to build a different polarity (e.g. ``_ChatRerollAgent`` below) — the
+    class, not an instance, since all of this method's own setup still applies.
     """
     db = Database(test_db)
     db.create_tables()
@@ -123,7 +125,7 @@ def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
         max_retries=1,
         retry_delay=0.1,
     )
-    agent = Agent(
+    agent = agent_cls(
         system_prompt="test",
         model_client=client,
         embedding_model_client=client,
@@ -137,6 +139,14 @@ def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
     # because they exit via a terminator tool call (done / send_message).
     agent._keep_tools_on_final_step = False
     return agent, db, max_steps
+
+
+class _ChatRerollAgent(ChatAgent):
+    """A real ``ChatAgent``, built on ``_make_agent``'s plain test setup (#2790) —
+    so a loop test exercises ``ChatAgent``'s own invalid-draw shapes AND notes, not
+    a copy of them pasted onto a lighter base.  (A plain instance attribute can't
+    stand in for ``_retry_note_for_condition``: its zero-arg ``super()`` call binds
+    to the class it was textually defined on, which only a real subclass is.)"""
 
 
 class TestReasoningStripped:
@@ -1062,9 +1072,10 @@ class TestDegenerateOutputGuard:
     @pytest.mark.asyncio
     async def test_call_fragment_reply_discarded_and_rerolled(self, test_db, mock_llm):
         """A would-be final reply that is a bare JSON call fragment
-        (``{"memory": "rip? wait …"}`` — the #1570 field audit's observed leak)
-        is discarded and re-rolled on the unchanged context, exactly like the
-        other unusable-output conditions — it must never be SENT verbatim.
+        (``{"memory": "rip? wait …"}`` — the #1570 field audit's observed leak) is
+        discarded and re-rolled — never SENT verbatim — and the redraw is shown the
+        draft plus a note naming what was wrong (#2790): a model-choice shape, not a
+        transport artifact, so it is not blind.
 
         Chat-only polarity: ``ChatAgent`` declares it in ``invalid_draw_conditions``;
         the base agent declares none, so plain text is a legitimate answer there.
@@ -1087,22 +1098,30 @@ class TestDegenerateOutputGuard:
         assert is_call_fragment_reply('I saved it as {"key": "price"} for you') is False
         assert is_call_fragment_reply("An empty JSON object is {}.") is False
 
-        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        # The ChatAgent polarity, declared on the test agent.
-        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+        # The ChatAgent polarity, built on the test agent, with its real notes.
+        agent, _db, max_steps = _make_agent(
+            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
+        )
+        draft = '{"memory": "rip? wait we need"}'
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_text_response(request, '{"memory": "rip? wait we need"}')
+                return mock_llm._make_text_response(request, draft)
             return mock_llm._make_text_response(request, "here is the real answer")
 
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "here is the real answer"
-        # Exactly one reroll on the unchanged context — the fragment never appended.
+        # Exactly one reroll, shown the draft plus the note (not blind, #2790) — the
+        # fragment itself never becomes the redraw's OWN content.
         assert len(mock_llm.requests) == 2
-        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        redraw = mock_llm.requests[1]["messages"]
+        assert redraw[:-2] == mock_llm.requests[0]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
+        assert note_turn["role"] == "user"
+        assert note_turn["content"] == Prompt.CALL_FRAGMENT_RETRY_NOTE
 
         await agent.close()
 
@@ -3181,38 +3200,45 @@ def _make_background_agent(test_db, *, max_steps=4):
 
 class TestCollectorInvalidDrawReroll:
     """A collector acts ONLY through tool calls, so a draw carrying none is an INVALID
-    DRAW (#1839): the loop discards it and re-rolls the UNCHANGED context on the shared
-    reroll budget.  Nothing about the invalid draw enters the conversation — no stray
-    assistant turn, no nudge user-turn, no marker on the run's prompt rows — so a
-    recovered run is indistinguishable from one that never slipped."""
+    DRAW (#1839): the loop discards it and re-rolls on the shared reroll budget — now
+    shown the draft plus a note naming what was wrong (#2790), never a blind re-roll,
+    since the model's own choice produced it.  Neither the draft nor the note is ever
+    stored history: both live only in the in-memory ``messages`` resolving this one
+    call, never what the next cycle's own fresh ``messages`` is built from — no marker
+    on the run's prompt rows either, so a recovered run is otherwise indistinguishable
+    from one that never slipped."""
 
     @pytest.mark.asyncio
     async def test_prose_draw_is_discarded_and_the_redraw_proceeds(self, test_db, mock_llm):
-        """Work, then prose ("Done. Summary: ...") → the prose is thrown away and a
-        clean redraw closes the cycle with a real done().
+        """Work, then prose ("Done. Summary: ...") → discarded, the redraw shown the
+        prose plus a note that nothing in it ran, and a clean redraw closes the cycle
+        with a real done().
 
         The realistic production shape: the model does real work, THEN narrates
         completion as prose instead of calling done()."""
         agent, db, max_steps = _make_background_agent(test_db)
+        draft = "**Done. Summary: wrote the entry.**"
 
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
-                return mock_llm._make_text_response(request, "**Done. Summary: wrote the entry.**")
+                return mock_llm._make_text_response(request, draft)
             return mock_llm._make_tool_call_response(request, "stub_terminator", {})
 
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
-        # Exactly one reroll, on the UNCHANGED context — the prose never appended and
-        # no nudge user-turn injected.
+        # Exactly one reroll, shown the draft plus the note — never a nudge turn, and
+        # never stored (#2790).
         assert len(mock_llm.requests) == 3
-        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
-        redraw = str(mock_llm.requests[2]["messages"])
-        assert "Done. Summary: wrote the entry." not in redraw
-        assert "you act only through tool calls" not in redraw
+        redraw = mock_llm.requests[2]["messages"]
+        assert redraw[:-2] == mock_llm.requests[1]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
+        assert note_turn["role"] == "user"
+        assert note_turn["content"] == Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
         # The cycle closed with a real done() record (not a lost/failed cycle).
         assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
@@ -3245,9 +3271,11 @@ class TestCollectorInvalidDrawReroll:
 
     @pytest.mark.asyncio
     async def test_empty_draw_is_the_same_invalid_draw(self, test_db, mock_llm):
-        """An EMPTY draw (no text, no tool call) is a draw with no call like any other,
-        so it takes the same reroll — the collector-flavoured empty-content nudge that
-        used to answer it retired with the rest of the family."""
+        """An EMPTY draw (no text, no tool call) is a draw with no call like any
+        other — ``TEXT_INSTEAD_OF_TOOL``, the collector's own state-keyed catch-all,
+        not a separate empty condition — so it gets the SAME note (#2790), not the
+        old collector-flavoured empty-content nudge that retired with the rest of
+        the family."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
@@ -3262,8 +3290,13 @@ class TestCollectorInvalidDrawReroll:
         response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert len(mock_llm.requests) == 3
-        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
-        assert "Please provide your response" not in str(mock_llm.requests[2]["messages"])
+        redraw = mock_llm.requests[2]["messages"]
+        assert redraw[:-2] == mock_llm.requests[1]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == ""
+        assert note_turn["role"] == "user"
+        assert note_turn["content"] == Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
+        assert "Please provide your response" not in str(redraw)
         assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
         await agent.close()
@@ -3271,15 +3304,17 @@ class TestCollectorInvalidDrawReroll:
     @pytest.mark.asyncio
     async def test_done_as_json_text_is_the_same_invalid_draw(self, test_db, mock_llm):
         """The argless ``done()`` composed as a JSON envelope but never routed through
-        the tool channel (gpt-oss's Harmony fallback, #1569) is discarded like any other
-        call-less draw — the model's own real done() closes the cycle."""
+        the tool channel (gpt-oss's Harmony fallback, #1569) is discarded like any
+        other call-less draw — shown the draft plus a note that the run hasn't ended
+        (#2790) — and the model's own real done() closes the cycle."""
         agent, db, max_steps = _make_background_agent(test_db)
+        draft = '{"name": "done", "arguments": {}}'
 
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
-                return mock_llm._make_text_response(request, '{"name": "done", "arguments": {}}')
+                return mock_llm._make_text_response(request, draft)
             return mock_llm._make_tool_call_response(request, "stub_terminator", {})
 
         mock_llm.set_response_handler(handler)
@@ -3287,8 +3322,12 @@ class TestCollectorInvalidDrawReroll:
         response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert len(mock_llm.requests) == 3
-        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
-        assert '{"name": "done"' not in str(mock_llm.requests[2]["messages"])
+        redraw = mock_llm.requests[2]["messages"]
+        assert redraw[:-2] == mock_llm.requests[1]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
+        assert note_turn["role"] == "user"
+        assert note_turn["content"] == Prompt.DONE_JSON_BAIL_RETRY_NOTE
         done_records = [r for r in response.tool_calls if r.tool == "stub_terminator"]
         assert len(done_records) == 1
         assert done_records[0].arguments == {}
@@ -3350,10 +3389,15 @@ class TestChatCallShapedTextReroll:
 
     @pytest.mark.asyncio
     async def test_call_as_text_is_discarded_and_rerolled(self, test_db, mock_llm):
-        """Real search, then a browse call emitted as JSON *text* → discarded, redrawn
-        on the unchanged context, and the model's prose answer stands."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+        """Real search, then a browse call emitted as JSON *text* → discarded, and the
+        redraw is shown the draft plus a note (#2790) — not blind, since this is the
+        model's own choice, not a transport artifact.  The model's prose answer
+        stands. This draft is the bare-args shape (``reasoning``, no ``name``): no
+        tool is named in it, so the note is the UNNAMED wording."""
+        agent, db, max_steps = _make_agent(
+            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
+        )
+        draft = '{"queries": ["deepest lake"], "reasoning": "read the page"}'
 
         def handler(request, count):
             if count == 1:
@@ -3361,9 +3405,7 @@ class TestChatCallShapedTextReroll:
                     request, "search", {"query": "deepest lake"}
                 )
             if count == 2:
-                return mock_llm._make_text_response(
-                    request, '{"queries": ["deepest lake"], "reasoning": "read the page"}'
-                )
+                return mock_llm._make_text_response(request, draft)
             return mock_llm._make_text_response(request, "I couldn't find that app anywhere.")
 
         mock_llm.set_response_handler(handler)
@@ -3372,11 +3414,16 @@ class TestChatCallShapedTextReroll:
             "what's the deepest lake?", max_steps=max_steps, call_link=CallLink.new_top()
         )
 
-        # The JSON blob never became the reply and never entered the context.
+        # The JSON blob never became the reply — the redraw shows it back as a draft
+        # plus the note, and the clean prose answer is what the turn finalizes.
         assert response.answer == "I couldn't find that app anywhere."
         assert len(mock_llm.requests) == 3
-        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
-        assert '"reasoning": "read the page"' not in str(mock_llm.requests[2]["messages"])
+        redraw = mock_llm.requests[2]["messages"]
+        assert redraw[:-2] == mock_llm.requests[1]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
+        assert note_turn["role"] == "user"
+        assert note_turn["content"] == Prompt.CALL_AS_TEXT_RETRY_NOTE_UNNAMED
 
         await agent.close()
 
@@ -3478,24 +3525,34 @@ class TestChatCallShapedTextReroll:
 
 
 class TestChatEmptyDrawReroll:
-    """Chat's EMPTY draw is discarded and re-rolled like the rest of the family (#1937).
+    """Chat's EMPTY draw is discarded and re-rolled like the rest of the family (#1937),
+    with one addition since (#2790): the redraw is shown a note saying the last draft
+    came out empty — no draft to echo back, so no assistant turn, just the note.
 
-    It was the last invalid-output class handled on the VISIBLE path: the empty
-    assistant turn plus a nudge user turn went into the conversation, taking the
-    model's in-flight intent with them and leaving residue in the context every later
-    reader of the run sees.  Now nothing about it enters the run."""
+    #1937's guard still holds, stated precisely: the empty draw's nudge used to become
+    part of the CONVERSATION's own turn structure — a stored assistant+user turn the
+    state machine had to treat as shape, and every later reader of the run saw. The
+    #2790 note is not that: it lives only in the in-memory ``messages`` resolving this
+    one call (never what the next turn's ``_build_conversation`` reads back — that
+    reads persisted ``messagelog`` rows, written separately), so nothing about it is
+    ever stored history, and no assistant turn ever enters at all."""
 
     @pytest.mark.asyncio
     async def test_the_production_sequence_never_grows_the_conversation(self, test_db, mock_llm):
         """The observed sequence, recreated: a tool call whose arguments collapsed is
-        discarded (a true positive for the punctuation guard), the re-roll on the
-        unchanged context comes back EMPTY, and the third draw is a clean call.
+        discarded (a true positive for the punctuation guard, stays blind — a transport
+        artifact, not the model's choice), the re-roll on the unchanged context comes
+        back EMPTY (the model's own choice — shown a note, no draft), and the third
+        draw is a clean call.
 
-        All three draws are served on the SAME context — the two bad ones leave no
-        assistant turn and no nudge user turn behind — and the clean call executes, so
-        the write the model was in the middle of is not lost."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+        The collapse leaves no trace at all; the EMPTY draw leaves exactly one note
+        turn and no assistant turn — never the draft-plus-note shape the other
+        model-choice conditions get, since there is no draft worth echoing back; and
+        the clean call executes, so the write the model was in the middle of is not
+        lost."""
+        agent, db, max_steps = _make_agent(
+            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
+        )
 
         def handler(request, count):
             if count == 1:
@@ -3516,21 +3573,27 @@ class TestChatEmptyDrawReroll:
             "what does the lantern cost?", max_steps=max_steps, call_link=CallLink.new_top()
         )
 
-        # Two re-rolls on one budget, all three draws against a context that never grew.
         assert len(mock_llm.requests) == 4
+        # The collapse (transport, blind) leaves the context exactly as it was.
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
-        assert mock_llm.requests[2]["messages"] == mock_llm.requests[0]["messages"]
-        # Nothing from either bad draw reached the context: no collapse, no empty
-        # assistant turn, no nudge user turn.
+        # The EMPTY draw (the model's own choice) is shown ONLY the note — no draft,
+        # since an empty draw has nothing worth echoing back (#2790).
         redrawn = mock_llm.requests[2]["messages"]
+        assert redrawn[:-1] == mock_llm.requests[1]["messages"]
+        note_turn = redrawn[-1]
+        assert note_turn["role"] == "user" and note_turn["content"] == Prompt.EMPTY_DRAW_RETRY_NOTE
+        # Still no collapse residue, and still no ASSISTANT turn from either bad draw —
+        # only the note's own user turn is new.
         assert "?????" not in str(redrawn)
-        assert [message["role"] for message in redrawn].count(MessageRole.USER) == 1
         assert not any(message.get("role") == MessageRole.ASSISTANT for message in redrawn)
         # The clean draw's call ran, and the turn ends on the model's own reply.
         assert [record.tool for record in response.tool_calls] == ["search"]
         assert response.tool_calls[0].arguments["query"] == "harbour lantern price"
         assert response.answer == "It is nine credits."
-        # The re-roll's only durable trace: two persisted draws on one context (#1841).
+        # The collapse's own durable trace: two persisted draws on one context (#1841).
+        # The EMPTY draw's redraw is no longer a byte-identical re-roll (it carries the
+        # note), so this reads the collapse pair alone — accepted, the same shape #2698
+        # established for the dangling-link note.
         assert draw_rerolled(db)
 
         await agent.close()
@@ -3577,9 +3640,11 @@ class TestChatEmptyDrawReroll:
     @pytest.mark.asyncio
     async def test_garbage_shaped_draw_after_a_tool_call_is_rerolled(self, test_db, mock_llm):
         """A draw that carries no real words — a bare markdown separator — is the same
-        empty draw, so it is re-rolled rather than finalized over a real prior answer."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+        empty draw, so it is re-rolled (shown the note-only redraw, #2790) rather than
+        finalized over a real prior answer."""
+        agent, db, max_steps = _make_agent(
+            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
+        )
 
         def handler(request, count):
             if count == 1:
@@ -3596,8 +3661,11 @@ class TestChatEmptyDrawReroll:
 
         assert response.answer == "It is nine credits."
         assert len(mock_llm.requests) == 3
-        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
-        assert "---" not in str(mock_llm.requests[2]["messages"])
+        redrawn = mock_llm.requests[2]["messages"]
+        assert redrawn[:-1] == mock_llm.requests[1]["messages"]
+        note_turn = redrawn[-1]
+        assert note_turn["role"] == "user" and note_turn["content"] == Prompt.EMPTY_DRAW_RETRY_NOTE
+        assert "---" not in str(redrawn)
 
         await agent.close()
 

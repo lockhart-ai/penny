@@ -18,10 +18,11 @@ from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, RunOutcome
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
-from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
+from penny.llm.models import LlmError, LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.notification import JobReport, render_job_report
 from penny.prompts import Prompt
 from penny.text_validity import (
+    call_as_text_tool_name,
     is_call_as_text_bail,
     is_call_fragment_reply,
     is_embedded_call_as_text,
@@ -157,6 +158,29 @@ class ChatAgent(Agent):
         if is_embedded_call_as_text(content, registered_tools):
             return ConditionKey.CALL_AS_TEXT
         return super()._invalid_draw_condition(content)
+
+    def _retry_note_for_condition(
+        self, condition: ConditionKey, response: LlmResponse
+    ) -> str | None:
+        """The notes for chat's three model-choice shapes (#2790).  CALL_AS_TEXT
+        names the tool the draft wrote out as text — read off the LIVE registry, the
+        same source ``_invalid_draw_condition`` checks against, so a plugin tool is
+        covered with no change here — falling back to the unnamed wording for the
+        one nameless shape (bare serialized arguments carrying only ``reasoning``).
+        EMPTY has nothing worth echoing back as a draft (``_append_retry_note``'s
+        ``include_draft=False`` handles that at the call site)."""
+        if condition == ConditionKey.CALL_AS_TEXT:
+            registered_tools = frozenset(tool.name for tool in self._tool_registry.get_all())
+            content = response.message.content or ""
+            tool_name = call_as_text_tool_name(content, registered_tools)
+            if tool_name is not None:
+                return Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool=tool_name)
+            return Prompt.CALL_AS_TEXT_RETRY_NOTE_UNNAMED
+        if condition == ConditionKey.CALL_FRAGMENT_REPLY:
+            return Prompt.CALL_FRAGMENT_RETRY_NOTE
+        if condition == ConditionKey.EMPTY:
+            return Prompt.EMPTY_DRAW_RETRY_NOTE
+        return super()._retry_note_for_condition(condition, response)
 
     def get_tools(
         self, run_id: str | None = None, handles: HandleTable | None = None

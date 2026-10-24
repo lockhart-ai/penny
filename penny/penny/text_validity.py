@@ -295,6 +295,58 @@ def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) ->
     )
 
 
+def call_as_text_tool_name(content: str, registered_tools: Collection[str]) -> str | None:
+    """The tool name a call-as-text draft named, when the shape carries one (#2790)
+    — for the retry note, which names the tool rather than speaking only of "a call".
+
+    Mirrors :func:`is_call_as_text_bail` and :func:`is_embedded_call_as_text`'s own
+    detection without changing either's signature or behaviour: the whole-reply
+    envelope's ``"name"`` field, the textual call syntax's matched name, or a
+    registered tool named as a string value in an embedded object — tried in that
+    order, the whole-envelope shape first since it is the one unambiguous "name".
+    ``None`` when the draft is call-shaped but nameless (bare serialized arguments
+    carrying only the framework's ``reasoning`` key, with no tool named anywhere in
+    them) or when nothing call-shaped is found at all."""
+    whole = _lone_json_object(content)
+    if whole is not None and isinstance(whole.get("name"), str):
+        return whole["name"]
+    name = _textual_call_syntax_name(content, registered_tools)
+    if name is not None:
+        return name
+    return _embedded_call_object_tool_name(content, registered_tools)
+
+
+def _textual_call_syntax_name(content: str, registered_tools: Collection[str]) -> str | None:
+    """The registered tool name matched by :func:`_has_textual_call_syntax`'s own
+    pattern, or ``None`` — same anchoring, returning the match instead of a bool."""
+    if not registered_tools:
+        return None
+    names = "|".join(re.escape(name) for name in registered_tools)
+    pattern = re.compile(rf"\b({names})\(\s*[A-Za-z_]\w*\s*=")
+    match = pattern.search(content)
+    return match.group(1) if match else None
+
+
+def _embedded_call_object_tool_name(content: str, registered_tools: Collection[str]) -> str | None:
+    """The registered tool a JSON object embedded anywhere in ``content`` names as a
+    string value — see :func:`_has_embedded_call_object`, returning the name instead
+    of a bool."""
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(content, index)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        for value in parsed.values():
+            if isinstance(value, str) and value in registered_tools:
+                return value
+    return None
+
+
 def _has_embedded_call_object(content: str, registered_tools: Collection[str]) -> bool:
     """A JSON object anywhere in ``content`` that names a registered tool as a
     string value, or carries ``reasoning`` — see :func:`is_embedded_call_as_text`."""
