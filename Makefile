@@ -471,8 +471,9 @@ assemble: $(if $(LOCAL),,build)
 # only the ones carrying that run's marker AND authored by the token's own login (the App —
 # `penny.tests.eval.utils.pr_comments` makes that one decision, pure and unit-tested), and
 # deletes them. The REPORT pass also sweeps every PRE-#2734 LEGACY report comment (no
-# marker to match — it predates the marker) that has the old report's SHAPE: a per-case
-# heading + its checks row, or a hand-written comparison heading — so a PR already
+# marker to match — it predates the marker) that has one of the old report's SHAPES: a
+# per-case heading + its checks row, a split part's own heading-less continuation, the
+# `## Run summary` heading, or a hand-written comparison heading — so a PR already
 # carrying a pile of old unmarked reports is left showing only the run about to post,
 # not that pile plus one new report. `BASELINE=<run>` additionally
 # builds and posts (or replaces) ONE comparison comment against that main run

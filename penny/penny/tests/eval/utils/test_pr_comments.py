@@ -53,6 +53,25 @@ LEGACY_CASE_ONLY_BODY = (
     "\n"
     "Per request: two more scoped runs on the branch.\n"
 )
+# A real split part's own continuation (PR #2770, comment 6376460588) — carries no case
+# heading and no checks row of its own, only the split header `comment_split` stamps on
+# every part after the first.
+LEGACY_SPLIT_CONTINUATION_BODY = (
+    "(report 2 of 2 — split for GitHub's 64K comment cap; content verbatim)\n"
+    "\n"
+    "#### Representative sample\n"
+    "\n"
+    "<details><summary>1 turn · behavioral · 31s · 9 calls</summary>\n"
+)
+# A real run-summary comment (PR #2770, comment 6376465871) — its own heading, no case
+# heading or checks row either.
+LEGACY_RUN_SUMMARY_BODY = (
+    "## Run summary\n"
+    "\n"
+    "### `google/gemma-4-26b-a4b-it`\n"
+    "\n"
+    "**🟢 1805 / 1860 checks · 97%** — 20 cases\n"
+)
 # A real coordinator's note on the same PR — quotes numbers in a table, but has neither a
 # case heading nor a checks row nor either comparison heading. Never a legacy report.
 COORDINATOR_NOTE_BODY = (
@@ -113,17 +132,31 @@ def test_a_hand_written_comparison_heading_matches_either_form() -> None:
     assert is_legacy_report(LEGACY_CASE_ONLY_BODY) is True
 
 
+def test_a_heading_less_split_continuation_matches() -> None:
+    """The second (and later) part of an over-the-cap report carries no case heading and
+    no checks row of its own — only the split header — so it needs its own shape or a
+    swept report's tail is left orphaned on the PR."""
+    assert is_legacy_report(LEGACY_SPLIT_CONTINUATION_BODY) is True
+
+
+def test_the_run_summary_heading_matches() -> None:
+    assert is_legacy_report(LEGACY_RUN_SUMMARY_BODY) is True
+
+
 def test_a_human_comment_never_matches() -> None:
     """A human reviewer's comment never matches, however it's shaped — it never carries the
     App's own report structure, and the predicate doesn't need authorship to say so."""
     assert is_legacy_report("Looks good to me, approving.") is False
     assert is_legacy_report("### `case-a` — not actually a report heading") is False
+    assert is_legacy_report("(report back to me once you've looked, thanks)") is False
 
 
 def test_an_app_comment_that_is_not_a_report_does_not_match() -> None:
     """A coordinator's own note, posted by the App token like everything else, quotes
-    numbers in a table but carries neither a case heading + checks row nor either
-    comparison heading — it is not a report, and must not be swept as one."""
+    numbers in a table but carries neither a case heading + checks row, a split
+    continuation, the run-summary heading, nor either comparison heading — it is not a
+    report, and must not be swept as one. Left alone per the coordinator's own call: that
+    note is his to manage, not a shape eval-report sweeps."""
     assert is_legacy_report(COORDINATOR_NOTE_BODY) is False
 
 
@@ -133,8 +166,11 @@ def test_select_legacy_report_comments_requires_both_shape_and_app_authorship() 
         _comment(2, OTHER_BOT, LEGACY_CASE_BODY),  # right shape, wrong author
         _comment(3, APP_LOGIN, COORDINATOR_NOTE_BODY),  # right author, wrong shape
         _comment(4, APP_LOGIN, LEGACY_COMPARISON_BODY),
+        _comment(5, APP_LOGIN, LEGACY_SPLIT_CONTINUATION_BODY),
+        _comment(6, APP_LOGIN, LEGACY_RUN_SUMMARY_BODY),
+        _comment(7, OTHER_BOT, LEGACY_RUN_SUMMARY_BODY),  # right shape, wrong author
     ]
-    assert [c.id for c in select_legacy_report_comments(comments, APP_LOGIN)] == [1, 4]
+    assert [c.id for c in select_legacy_report_comments(comments, APP_LOGIN)] == [1, 4, 5, 6]
 
 
 # ── select_comments_to_delete (the one combined decision eval-report calls) ──

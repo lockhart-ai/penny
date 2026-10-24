@@ -11,12 +11,16 @@ marker, is never a candidate.
 A PR can also carry LEGACY report comments from before this feature existed — unmarked,
 because the marker didn't exist yet — and those are expected to vanish too, so a PR shows
 only the latest run at all times rather than the latest run plus whatever predates #2734.
-:func:`is_legacy_report` recognises them by SHAPE: either the per-case report heading
+:func:`is_legacy_report` recognises them by SHAPE, four of them: the per-case report heading
 (``### <glyph> \\`<case>\\` <i>/<n> — \\`<model>\\```) together with its ``| **checks** |``
-row, or one of the hand-written comparison headings kittens posted by hand before this
-module existed (``## Case-by-case: …`` / ``## \\`<case>\\` only — …``). Both are AND'd with
-the App's own authorship, same as a marked comment — a human's comment that happens to
-quote a heading is never a candidate.
+row; a split part's own continuation (``(report <i> of <n> — split for GitHub's 64K
+comment cap; content verbatim)``), which carries neither a heading nor a checks row of its
+own; the run summary (``## Run summary``); or one of the hand-written comparison headings
+kittens posted by hand before this module existed (``## Case-by-case: …`` /
+``## \\`<case>\\` only — …``). All four are AND'd with the App's own authorship, same as a
+marked comment — a human's comment that happens to quote one of these is never a
+candidate, and neither is an App comment that merely talks ABOUT a report (a coordinator's
+narrative note) without carrying one of these four shapes.
 
 This module holds the PURE decisions — which comment ids qualify, by marker or by legacy
 shape — so they are unit-testable with no network; the ``eval-report`` recipe does the
@@ -55,6 +59,20 @@ LEGACY_CHECKS_ROW = "| **checks** |"
 # existed — free-text headings, not a generated shape, so matched by their own two observed
 # openings rather than by any table structure underneath.
 LEGACY_COMPARISON_HEADING = re.compile(r"^## (?:Case-by-case:|`[^`]+` only —)", re.MULTILINE)
+# A split part's own continuation line — the literal text `comment_split.PART_HEADER`
+# formats (pre-#2734 and unchanged by it). The SECOND and later parts of an over-the-cap
+# report carry only this line and nothing else recognisable — no case heading, no checks
+# row — so a report split across several comments needs this shape too, or its tail parts
+# are left behind once the head is swept. The literal is kept here rather than imported,
+# the same "must match" convention the Makefile's own marker constants already use for a
+# value two modules both need to agree on.
+LEGACY_SPLIT_CONTINUATION = re.compile(
+    r"^\(report \d+ of \d+ — split for GitHub's 64K comment cap; content verbatim\)$",
+    re.MULTILINE,
+)
+# The run-wide summary `assemble.render_run_summary` posts last (`assemble.SUMMARY_HEADING`,
+# pre-#2734 and unchanged by it) — its own heading, carrying no case heading or checks row.
+LEGACY_RUN_SUMMARY_HEADING = re.compile(r"^## Run summary$", re.MULTILINE)
 
 USAGE = (
     "usage: gh api repos/{owner}/{repo}/issues/<pr>/comments --paginate | "
@@ -79,11 +97,15 @@ class ExistingComment:
 
 def is_legacy_report(body: str) -> bool:
     """Whether ``body`` has the SHAPE of a report `eval-report` posted before #2734 — no
-    marker to check, since the marker didn't exist yet. Either a case heading with its
-    checks row, or one of the hand-written comparison headings; nothing else qualifies, so
-    a plain markdown table or a coordinator's narrative note (quoting numbers, not a report)
-    never matches."""
+    marker to check, since the marker didn't exist yet. Four shapes qualify: a case heading
+    with its checks row, a split part's own continuation line, the run summary's heading, or
+    one of the hand-written comparison headings. Nothing else does, so a plain markdown
+    table or a coordinator's narrative note (quoting numbers, not a report) never matches."""
     if LEGACY_COMPARISON_HEADING.search(body):
+        return True
+    if LEGACY_SPLIT_CONTINUATION.search(body):
+        return True
+    if LEGACY_RUN_SUMMARY_HEADING.search(body):
         return True
     return bool(LEGACY_CASE_HEADING.search(body)) and LEGACY_CHECKS_ROW in body
 
