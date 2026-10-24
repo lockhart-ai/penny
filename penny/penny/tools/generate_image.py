@@ -1,8 +1,9 @@
-"""GenerateImageTool — model-driven image generation via the Ollama image model.
+"""GenerateImageTool — model-driven image generation via the local mflux image server.
 
-A thin wrapper over the same ``OllamaImageClient`` the retired ``/draw`` command
-used.  Registered on the chat surface only when an image model is configured
-(mirroring ``/draw``'s conditionality).
+A thin wrapper over ``MfluxImageClient`` (``penny/llm/image_client.py``), which talks
+to the mflux FLUX.2 [klein] server in ``image_server/`` (#2792).  Registered on the
+chat surface only when an image model is configured (mirroring the retired ``/draw``
+command's conditionality).
 
 The generated image is delivered **deterministically** to its own reply, not
 fuzzy-matched against the media table: the tool stores it in the ``media`` table
@@ -33,7 +34,7 @@ from penny.tools.models import GenerateImageArgs, ToolResult
 if TYPE_CHECKING:
     from penny.database import Database
     from penny.llm.client import LlmClient
-    from penny.llm.image_client import OllamaImageClient
+    from penny.llm.image_client import MfluxImageClient
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class GenerateImageTool(Tool):
     args_model = GenerateImageArgs
 
     def __init__(
-        self, image_client: OllamaImageClient, db: Database, embedding_client: LlmClient
+        self, image_client: MfluxImageClient, db: Database, embedding_client: LlmClient
     ) -> None:
         self._image_client = image_client
         self._db = db

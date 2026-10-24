@@ -2,7 +2,11 @@
 RUFF_TARGETS = penny/
 # Exclude the live-model eval suite from the default test run — it's slow and
 # needs a running Ollama, so it never runs in make check / CI (see make eval-remote).
-PYTEST_ARGS = penny/tests/ -v -m "not eval"
+# ../image_server is the mflux image server's own request/response tests (#2792) — mflux
+# is never installed here, but server.py imports it lazily, so its tests run against a
+# faked generator same as everything else; the sibling path matches the repo layout
+# outside Docker too (docker-compose.override.yml mounts it at that path in the container).
+PYTEST_ARGS = penny/tests/ ../image_server -v -m "not eval"
 # -s streams the PERF lines (wall time + tok/s, printed per case) live.
 EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 # The eval-harness modules that get imported COLD — first thing into a fresh
@@ -626,3 +630,28 @@ signal-avatar:
 	urllib.request.urlopen(req, timeout=10); \
 	print('Signal avatar set for ' + number) \
 	"
+
+# --- Image server (image_server/, #2792) — host-side, outside Docker: mflux needs Metal ---
+# Runs under the mflux uv tool's own interpreter, never penny's. Override MFLUX_PYTHON if
+# yours lives somewhere other than the default `uv tool install mflux` location.
+MFLUX_PYTHON ?= $(HOME)/.local/share/uv/tools/mflux/bin/python
+IMAGE_SERVER_DIR := $(CURDIR)/image_server
+LOG_DIR := $(CURDIR)/data/penny/logs
+
+# Foreground run, for a manual smoke test — Ctrl-C to stop. Never run a second one
+# concurrently (the server itself also refuses a second generation while one is in
+# flight, but two PROCESSES would each try to load the model into Metal memory).
+image-server-run:
+	$(MFLUX_PYTHON) $(IMAGE_SERVER_DIR)/server.py
+
+# Renders the launchd plist template with this checkout's absolute paths filled in and
+# prints it, plus the copy/load commands — it does NOT install or load the agent. Review
+# the rendered plist, then (as a one-time, manual step):
+#   cp <rendered file> ~/Library/LaunchAgents/com.penny.imageserver.plist
+#   launchctl load ~/Library/LaunchAgents/com.penny.imageserver.plist
+image-server-plist:
+	@sed \
+		-e 's#__MFLUX_PYTHON__#$(MFLUX_PYTHON)#g' \
+		-e 's#__IMAGE_SERVER_SCRIPT__#$(IMAGE_SERVER_DIR)/server.py#g' \
+		-e 's#__LOG_DIR__#$(LOG_DIR)#g' \
+		$(IMAGE_SERVER_DIR)/com.penny.imageserver.plist.template

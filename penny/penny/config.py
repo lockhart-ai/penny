@@ -167,7 +167,10 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_embedding_api_key": os.getenv("LLM_EMBEDDING_API_KEY"),
         "llm_decision_model": os.getenv("LLM_DECISION_MODEL"),
         "llm_decision_api_url": os.getenv("LLM_DECISION_API_URL"),
-        "image_api_url": os.getenv("LLM_IMAGE_API_URL", "http://host.docker.internal:11434"),
+        "image_api_url": os.getenv("LLM_IMAGE_API_URL", "http://host.docker.internal:8765"),
+        "image_width": int(os.getenv("IMAGE_WIDTH", "768")),
+        "image_height": int(os.getenv("IMAGE_HEIGHT", "768")),
+        "image_steps": int(os.getenv("IMAGE_STEPS", "4")),
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "db_path": os.getenv("DB_PATH", "/penny/data/penny/penny.db"),
         "log_file": os.getenv("LOG_FILE"),
@@ -245,7 +248,11 @@ class Config:
     log_file: str | None = None
     log_max_bytes: int = 10 * 1024 * 1024  # 10 MB
     log_backup_count: int = 5
-    llm_image_model: str | None = None  # Image generation model (e.g., x/z-image-turbo)
+    # Model id the local mflux image server (image_server/) is serving, e.g.
+    # "flux2-klein-4b" (#2792).  Sent on every request; the server rejects an id it
+    # doesn't serve with a 400 naming what it does serve, so a stale/wrong value
+    # surfaces honestly instead of silently generating with the wrong model.
+    llm_image_model: str | None = None
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model
     # Decision model for the entry-identity ladder (#2715) — optional; unset runs
@@ -257,7 +264,12 @@ class Config:
     # from several providers. A hard pin, fallbacks off: every call goes to exactly this
     # provider, and which provider answered is still recorded per call.
     llm_provider: str | None = None
-    image_api_url: str = "http://host.docker.internal:11434"  # Ollama REST API for image generation
+    # The local mflux image server (image_server/), bound to 127.0.0.1:8765 on the
+    # host; reached from Docker via host.docker.internal (#2792).
+    image_api_url: str = "http://host.docker.internal:8765"
+    image_width: int = 768
+    image_height: int = 768
+    image_steps: int = 4
 
     # LLM retry configuration
     llm_max_retries: int = 3

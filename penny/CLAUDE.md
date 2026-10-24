@@ -34,7 +34,7 @@ flowchart TD
 - **Channels**: Signal (WebSocket + REST) or Discord (discord.py bot)
 - **Ollama**: Local LLM inference (default model: gpt-oss:20b)
 - **Vision**: Image attachments ride the chat turn's own user message for the chat model to read directly (#2635) — no separate caption call or vision model
-- **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via the `generate_image` chat tool (config-gated on `LLM_IMAGE_MODEL`)
+- **Image Generation**: Optional local mflux FLUX.2 [klein] server (`image_server/`, #2792 — runs on the host, outside Docker, since it needs Metal) for generating images via the `generate_image` chat tool (config-gated on `LLM_IMAGE_MODEL`)
 - **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for memory identity (the ladder's shortlist) and similarity recall — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
 - **Decision Model**: Optional (`LLM_DECISION_MODEL`) small choice-question model on Ollama's `/v1/systemone` for the entry-identity ladder (#2715) and browse result picking (#2718); unset runs the named degraded modes (preflight-warned): entry matching falls back to asking, browse picking falls back to the chat model choosing from the results list with no second read on a none
 - **Browser Extension**: Web search and page reading — all web access goes through the connected browser
@@ -98,7 +98,7 @@ penny/
     browse_picker.py  — ResultPicker: which search result to read, decided behind the tool boundary (#2718) — DecisionClient choice question ranked by probabilities, or the named degraded arm (shared model, thinking off); the carry question drives fall-through
     micro_context.py  — MicroContext: single-shot extraction over bulk content (the browse extractor — its one customer since the notify composer retired, #2656)
     link_handles.py   — HandleTable: the run's numbered link table (#2717) — convert (a URL the model reads arrives as `[n]`), expand (a reply's citations back to URLs at send), dangling (the honest rejection); one per run, passed as a parameter
-    generate_image.py — GenerateImageTool: image generation via OllamaImageClient; stored to media, delivered deterministically by id to its own reply (ToolResult.media_id → ControllerResponse.generated_media_ids → send_response) (chat-only, gated on LLM_IMAGE_MODEL)
+    generate_image.py — GenerateImageTool: image generation via MfluxImageClient (the local mflux server, image_server/, #2792); stored to media, delivered deterministically by id to its own reply (ToolResult.media_id → ControllerResponse.generated_media_ids → send_response) (chat-only, gated on LLM_IMAGE_MODEL)
     content_cleaning.py — Post-processing for browse results (strips navigation, proxy images, boilerplate)
     search_emails.py  — SearchEmailsTool (JMAP + Zoho) — chat surface, config-gated on a mailbox
     read_emails.py    — ReadEmailsTool (JMAP + Zoho) — summarizes fetched bodies against the current message
@@ -138,7 +138,7 @@ penny/
   llm/
     client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one. `chat` takes a required `call_link: CallLink` and reads `run_id`/`parent_run_id`/`parent_tool_call_id` straight off it — no ambient state, no default
     call_link.py      — `CallLink` (#2458): the frozen, explicit run/tool-call linkage every model call and every dispatched tool call carries — `run_id`/`parent_run_id`/`parent_tool_call_id` (logged identity) plus `tool_call_id` (position: the tool call this link is presently inside, consumed only by `child()`). Constructors: `top(run_id)` / `new_top()` for a run starter, `for_tool_call(id)` for the dispatcher, `child()` for a micro-context's own draw — required everywhere, no ambient reads, no fallback
-    image_client.py   — OllamaImageClient: Ollama-specific HTTP client for image generation and model listing
+    image_client.py   — MfluxImageClient: HTTP client for the local mflux image server (image_server/, #2792) — no retry on a 4xx/5xx the server names a reason for; a bounded retry on 503 (busy) and on connection errors
     decision_client.py — DecisionClient: async client for Ollama's `/v1/systemone` choice-question endpoint (the entry-identity ladder's decision model, #2715)
     models.py         — LlmMessage, LlmResponse, LlmToolCall, LlmError hierarchy (SDK-decoupled Pydantic types)
     embeddings.py     — Re-exports serialize/deserialize/cosine from shared similarity/ package

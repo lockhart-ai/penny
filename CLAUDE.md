@@ -111,6 +111,19 @@ penny/                          — Penny chat agent (Signal/Discord)
   CLAUDE.md                     — Penny-specific context
 github_api/                     — GitHub App auth (auth.py); backs `make token`
   auth.py                       — GitHubAuth (App JWT token generation)
+image_server/                   — Local mflux FLUX.2 [klein] image-generation server (#2792) —
+                                  runs on the HOST, outside Docker (needs Metal); Penny's
+                                  generate_image tool talks to it over HTTP. See its README.md
+  server.py                     — stdlib-only HTTP server: ImageGenerator protocol (lazy mflux
+                                  import, so this stays importable/testable without mflux),
+                                  MfluxGenerator loaded once in main() before the socket binds
+                                  and kept resident (no idle-unload — memory to spare), one
+                                  generation at a time (a second request gets 503)
+  test_server.py                — request/response tests against a fake generator; runs
+                                  under `make check` (PYTEST_ARGS in the Makefile), mflux
+                                  never installed there
+  com.penny.imageserver.plist.template — launchd agent template; rendered by
+                                  `make image-server-plist`, never installed automatically
 similarity/                     — Similarity primitives (embeddings, dedup)
   embeddings.py                 — Pure math: cosine similarity, TCR, serialization; job-name
                                   normalisation (`tokenize_job_name` / `singularize` /
@@ -263,9 +276,10 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `LLM_PROVIDER`: Which upstream to **pin** when `LLM_API_URL` points at a routing gateway that serves one model from several providers (e.g. `Groq`). Optional; unset sends no routing field at all, and a direct endpoint ignores it. A **hard pin** — every request goes to exactly that provider with `allow_fallbacks: false`, so nothing is ever routed somewhere nobody chose (upstreams serving one model are not interchangeable: one was measured replacing every plain-text tool result with `{}`). A pin gets only that one provider's capacity, so size concurrency to what it sustains. Name it as the gateway reports it back (OpenRouter answers `Groq`, not `groq`); which provider answered comes back on every response and is recorded
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., embeddinggemma) — backs Penny's memory (preference dedup and similarity recall). Penny fails fast at startup if it is unset; there is no degraded, embedding-less mode
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override endpoint for embedding model
-- `LLM_IMAGE_MODEL`: Image generation model (e.g., x/z-image-turbo). Optional; enables the `generate_image` chat tool. Uses Ollama's native REST API at `LLM_IMAGE_API_URL`
+- `LLM_IMAGE_MODEL`: Model id the local mflux image server (`image_server/`, #2792) is serving, e.g. `flux2-klein-4b`. Optional; enables the `generate_image` chat tool. Sent on every request — the server rejects an id it doesn't serve with a 400 naming what it does serve, so a stale/wrong value surfaces honestly instead of silently generating with the wrong model
 - `LLM_DECISION_MODEL` / `LLM_DECISION_API_URL`: Optional decision model for the entry-identity ladder (#2715) — Ollama's `/v1/systemone` choice-question endpoint (`LLM_DECISION_API_URL` defaults to the embedding endpoint's host). Unset runs the named degraded mode: entry matching falls back to asking (look-alike entries are written as new and the writing model is asked whether it meant an existing one); the startup preflight names the mode
-- `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: http://host.docker.internal:11434)
+- `LLM_IMAGE_API_URL`: The local mflux image server's endpoint (default: http://host.docker.internal:8765 — the server binds to 127.0.0.1:8765 on the host; see `image_server/README.md` for running it)
+- `IMAGE_WIDTH` / `IMAGE_HEIGHT` / `IMAGE_STEPS`: Default generation size and step count sent with every `generate_image` request (default: 768 / 768 / 4 — a good speed/quality trade on an M1 Max)
 
 **Eval suite** (read from the primary checkout's `.env` by `make eval-remote`):
 - `EVAL_MODELS`: **Required for a remote run.** A JSON list of the models the suite measures and the upstream each is pinned to — `[{"model":"vendor/model-a","provider":"SomeCloud"}]`. A JSON list because that is how `PLUGINS` is configured, and because an env var name cannot contain `/`, so a per-model-suffixed scheme is unavailable. **At least one entry**, and a remote run refuses to start otherwise — the same fail-fast shape as `LLM_EMBEDDING_MODEL`. A PR's eval evidence is one run on the suite's model (the roster's first entry) at its final head; another roster entry stays runnable by name for a look, and such a run gates nothing. `provider` on an entry is optional and becomes that run's `LLM_PROVIDER` — a hard pin, fallbacks off (above), so size `EVAL_WORKERS` to what that provider sustains. Runs pinned to one provider take turns: the recipe holds that provider's lock (`EVAL_PROVIDER_LOCK_DIR`, default `/tmp/penny-eval-provider-locks`) for the life of the run, and a second run waits up to `EVAL_PROVIDER_LOCK_WAIT` seconds (default 3600) saying whose run it is waiting on. The suite's model is gemma (`google/gemma-4-26b-a4b-it`, pinned to Cloudflare) — the roster's first entry, which `make eval-remote` runs by default; `LLM_MODEL=<name> make eval-remote` runs a different roster entry by name, and a model outside the roster is refused (it has no upstream to pin and none to record).

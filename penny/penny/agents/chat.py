@@ -36,7 +36,7 @@ from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmute
 from penny.validation import ConditionKey
 
 if TYPE_CHECKING:
-    from penny.llm.image_client import OllamaImageClient
+    from penny.llm.image_client import MfluxImageClient
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class ChatAgent(Agent):
 
     def __init__(
         self,
-        image_client: OllamaImageClient | None = None,
+        image_client: MfluxImageClient | None = None,
         email_tools_builder: Callable[[str, str], list[Tool]] | None = None,
         plugin_tools: list[Tool] | None = None,
         **kwargs: Any,

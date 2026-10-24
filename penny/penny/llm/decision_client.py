@@ -1,7 +1,8 @@
 """Client for Ollama's ``/v1/systemone`` decision-model endpoint.
 
-A small sibling of :class:`~penny.llm.image_client.OllamaImageClient`: one
-Ollama-specific REST surface the OpenAI-compatible ``LlmClient`` does not carry.
+One Ollama-specific REST surface the OpenAI-compatible ``LlmClient`` does not
+carry (unlike image generation, which moved off Ollama entirely onto the local
+mflux server — see ``penny.llm.image_client.MfluxImageClient`` — #2792).
 A decision model answers *typed choice questions* — a state, one question, a
 fixed set of options each with its own description — and returns the chosen
 option with its per-option probabilities.

@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from penny.config import Config
 from penny.llm.client import LlmClient
 from penny.llm.decision_client import DecisionClient, DecisionError, decision_api_url
-from penny.llm.image_client import OllamaImageClient
+from penny.llm.image_client import MfluxImageClient
 from penny.llm.models import LlmConnectionError, LlmError, LlmFault
 
 logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ class Preflight:
         model_client: LlmClient,
         embedding_client: LlmClient,
         decision_client: DecisionClient | None,
-        image_client: OllamaImageClient | None,
+        image_client: MfluxImageClient | None,
         browser_enabled: bool,
         browser_connected: bool,
         configured_channel_type: str,
@@ -317,19 +317,19 @@ class Preflight:
     # ── Soft-warn checks ─────────────────────────────────────────────────
 
     async def _check_image_model(self) -> CheckResult | None:
-        """Image-generation model resolves if configured (soft warn)."""
+        """The local mflux image server answers and serves the configured model (soft warn)."""
         if not self.config.llm_image_model or self.image_client is None:
             return None
         name = PreflightCheck.IMAGE_MODEL
         model = self.config.llm_image_model
         url = self.config.image_api_url
-        available = await self.image_client.list_models()
-        if model_available(model, available):
-            return self._ok(name, f"image model {model!r} available at {url}")
+        ok, detail = await self.image_client.health()
+        if ok:
+            return self._ok(name, f"image model {model!r} available at {url}: {detail}")
         return self._warn(
             name,
-            f"image model {model!r} not available at {url} (or the endpoint is unreachable) "
-            f"— pull it (`ollama pull {model}`). Image generation disabled until then.",
+            f"image generation unavailable: {detail} — start the mflux image server "
+            f"(see image_server/README.md) or unset LLM_IMAGE_MODEL.",
         )
 
     def _check_browser_addon(self) -> CheckResult | None:

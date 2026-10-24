@@ -31,7 +31,7 @@ from penny.email.protocol import EmailClient
 from penny.llm.client import LlmClient
 from penny.llm.decision_client import DecisionClient, decision_api_url
 from penny.llm.embeddings import serialize_embedding
-from penny.llm.image_client import OllamaImageClient
+from penny.llm.image_client import MfluxImageClient
 from penny.llm.models import LlmError, ProviderPin
 from penny.plugins import Plugin, load_plugins
 from penny.plugins.fastmail import JmapClient
@@ -139,9 +139,12 @@ class Penny:
             api_key=config.llm_embedding_api_key,
         )
         self.image_client = (
-            OllamaImageClient(
+            MfluxImageClient(
                 api_url=config.image_api_url,
                 model=config.llm_image_model,
+                width=config.image_width,
+                height=config.image_height,
+                steps=config.image_steps,
                 max_retries=config.llm_max_retries,
                 retry_delay=config.llm_retry_delay,
             )

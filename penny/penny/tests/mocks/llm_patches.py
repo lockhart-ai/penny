@@ -338,19 +338,18 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MockLlmClient:
 
     monkeypatch.setattr("penny.llm.client.openai.AsyncOpenAI", _MockOpenAIClient)
 
-    # Prevent list_models from hitting the real API. The Ollama image client
-    # reports nothing; the OpenAI-compatible LlmClient reports its own configured
-    # model as available so the startup preflight resolves the chat + embedding
-    # models cleanly instead of hard-failing every test.
-    async def _mock_image_list_models(self: object) -> list[str]:
-        return []
+    # Prevent list_models/health from hitting the real API. The mflux image client
+    # reports unreachable (no server running in tests); the OpenAI-compatible
+    # LlmClient reports its own configured model as available so the startup
+    # preflight resolves the chat + embedding models cleanly instead of
+    # hard-failing every test.
+    async def _mock_image_health(self: object) -> tuple[bool, str]:
+        return False, "no image server configured for tests"
 
     async def _mock_llm_list_models(self: Any) -> list[str]:
         return [self.model]
 
-    monkeypatch.setattr(
-        "penny.llm.image_client.OllamaImageClient.list_models", _mock_image_list_models
-    )
+    monkeypatch.setattr("penny.llm.image_client.MfluxImageClient.health", _mock_image_health)
     monkeypatch.setattr("penny.llm.client.LlmClient.list_models", _mock_llm_list_models)
 
     return _mock_client

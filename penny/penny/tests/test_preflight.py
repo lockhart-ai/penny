@@ -1,8 +1,8 @@
 """Integration tests for the startup setup-health / preflight surface.
 
 Drives ``Preflight.run()`` — the public entry point of the preflight surface —
-with real ``LlmClient``/``OllamaImageClient`` instances whose ``list_models`` is
-stubbed at the boundary, exercising the OK / WARN / hard-FAIL matrix for every
+with real ``LlmClient``/``MfluxImageClient`` instances whose ``list_models``/``health``
+is stubbed at the boundary, exercising the OK / WARN / hard-FAIL matrix for every
 check.
 """
 
@@ -15,7 +15,7 @@ import pytest
 from penny.config import Config
 from penny.llm.client import LlmClient
 from penny.llm.decision_client import DecisionClient
-from penny.llm.image_client import OllamaImageClient
+from penny.llm.image_client import MfluxImageClient
 from penny.llm.models import LlmConnectionError, LlmFault, LlmResponseError, LlmTimeoutError
 from penny.preflight import CheckStatus, Preflight, PreflightCheck, PreflightReport
 
@@ -27,8 +27,31 @@ def _llm_client(model: str) -> LlmClient:
     return LlmClient(api_url=_DUMMY_URL, model=model, max_retries=1, retry_delay=0.0)
 
 
-def _image_client(model: str) -> OllamaImageClient:
-    return OllamaImageClient(api_url=_DUMMY_URL, model=model, max_retries=1, retry_delay=0.0)
+def _image_client(model: str) -> MfluxImageClient:
+    return MfluxImageClient(
+        api_url=_DUMMY_URL,
+        model=model,
+        width=768,
+        height=768,
+        steps=4,
+        max_retries=1,
+        retry_delay=0.0,
+    )
+
+
+def _stub_health(
+    monkeypatch: pytest.MonkeyPatch,
+    client: MfluxImageClient,
+    *,
+    ok: bool,
+    detail: str = "",
+) -> None:
+    """Replace ``client.health`` with a canned ``(ok, detail)`` result."""
+
+    async def _health() -> tuple[bool, str]:
+        return ok, detail
+
+    monkeypatch.setattr(client, "health", _health)
 
 
 def _stub_list_models(
@@ -75,7 +98,8 @@ def _build_preflight(
     embed_error: Exception | None = None,
     embed_specific_available: list[str] | None = None,
     embed_specific_error: Exception | None = None,
-    image_available: list[str] | None = None,
+    image_health_ok: bool = False,
+    image_health_detail: str = "not available",
     decision_client: DecisionClient | None = None,
     browser_enabled: bool = False,
     browser_connected: bool = False,
@@ -103,10 +127,10 @@ def _build_preflight(
         error=embed_specific_error,
     )
 
-    image_client: OllamaImageClient | None = None
+    image_client: MfluxImageClient | None = None
     if config.llm_image_model:
         image_client = _image_client(config.llm_image_model)
-        _stub_list_models(monkeypatch, image_client, available=image_available or [])
+        _stub_health(monkeypatch, image_client, ok=image_health_ok, detail=image_health_detail)
 
     return Preflight(
         config=config,
@@ -252,11 +276,26 @@ async def test_embedding_endpoint_unreachable_hard_fails(monkeypatch, test_confi
 async def test_image_missing_soft_warn(monkeypatch, make_config):
     """A configured-but-missing image-generation model warns but never fails startup."""
     config = make_config(llm_image_model="image-model")
-    preflight = _build_preflight(monkeypatch, config, image_available=[])
+    preflight = _build_preflight(
+        monkeypatch, config, image_health_ok=False, image_health_detail="server unreachable"
+    )
     report = await preflight.run()
 
     assert not report.has_failures
     assert _status(report, PreflightCheck.IMAGE_MODEL) is CheckStatus.WARN
+
+
+@pytest.mark.asyncio
+async def test_image_server_healthy_ok(monkeypatch, make_config):
+    """A configured image model the server confirms serving is OK, never a warning."""
+    config = make_config(llm_image_model="flux2-klein-4b")
+    preflight = _build_preflight(
+        monkeypatch, config, image_health_ok=True, image_health_detail="model ready"
+    )
+    report = await preflight.run()
+
+    assert not report.has_failures
+    assert _status(report, PreflightCheck.IMAGE_MODEL) is CheckStatus.OK
 
 
 @pytest.mark.asyncio

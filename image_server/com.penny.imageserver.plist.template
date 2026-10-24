@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the image server's launchd agent (#2792). Rendered with this checkout's
+  absolute paths by `make image-server-plist` — see image_server/README.md. Not installed
+  automatically: review the rendered output, then copy it to
+  ~/Library/LaunchAgents/com.penny.imageserver.plist and `launchctl load` it yourself.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.penny.imageserver</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__MFLUX_PYTHON__</string>
+		<string>__IMAGE_SERVER_SCRIPT__</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>IMAGE_SERVER_MODEL</key>
+		<string>flux2-klein-4b</string>
+		<key>IMAGE_SERVER_PORT</key>
+		<string>8765</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/image_server.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/image_server.err.log</string>
+</dict>
+</plist>
