@@ -172,11 +172,16 @@ async def _drive(chat_eval: ChatEval, model: str, case: RetryCase) -> Cohort:
 def drew(subject: tuple[str, ...]) -> Callable[[SampleObservation, World], Answer]:
     """The media store holds an image drawn this turn whose description names every
     part of ``subject`` — any one drawn image answers it, so a turn that drew twice
-    is measured rather than penalised."""
+    is measured rather than penalised.  ``fold_typography`` casefolds (among other
+    things), so ``subject`` — real proper nouns, capitalised — is folded on both
+    sides of the check, not only the haystack."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         drawn = [image.description for image in sample.images if image.drawn]
-        shows = any(all(part in fold_typography(text) for part in subject) for text in drawn)
+        shows = any(
+            all(fold_typography(part) in fold_typography(text) for part in subject)
+            for text in drawn
+        )
         return shows, f"drew {drawn or 'nothing'}"
 
     return answer
