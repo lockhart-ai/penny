@@ -14,8 +14,12 @@ from penny.text_validity import (
     degenerate_reason,
     is_degenerate_run,
     is_degenerate_tool_name,
+    is_embedded_call_as_text,
     suggest_tool_name,
 )
+
+# A chat agent's registered tool names, for the embedded-call-as-text tests below.
+REGISTERED_TOOLS = frozenset({"browse", "generate_image", "collection_configure"})
 
 # Legitimate punctuation that must NEVER be flagged — conversational ellipses,
 # emphatic marks, list/code notation.  A hit here would throw out good output.
@@ -111,6 +115,46 @@ def test_degenerate_reason_rejects_wordful_poison():
     assert "degenerate" in reason.lower()
     # A clean summary with a normal trailing ellipsis is still accepted.
     assert degenerate_reason("A new Boss delay pedal dropped this week…") is None
+
+
+def test_is_embedded_call_as_text_catches_a_call_object_after_prose():
+    """The prod leak (#2787): one line of prose, then the call serialized as JSON
+    text — a shape the whole-reply-only ``is_call_as_text_bail`` can't see.  Caught
+    either by naming a registered tool as a string value, or by carrying the
+    framework-injected ``reasoning`` key alone."""
+    assert is_embedded_call_as_text(
+        'On it!\n\n{"action": "generate_image", "action_input": '
+        '"{\\"description\\": \\"a lighthouse in a storm\\"}", '
+        '"reasoning": "the user asked for a drawing"}',
+        REGISTERED_TOOLS,
+    )
+    # reasoning alone is enough, even with no tool name in the object at all.
+    assert is_embedded_call_as_text(
+        'Sure thing — {"queries": ["lighthouse storms"], "reasoning": "look it up"}',
+        REGISTERED_TOOLS,
+    )
+
+
+def test_is_embedded_call_as_text_catches_textual_call_syntax():
+    """A draft that writes the call as ``tool_name(...identifier=...)`` prose
+    instead of JSON is caught the same way, keyed to the live registry."""
+    assert is_embedded_call_as_text(
+        "Let me grab that — generate_image(identifier=42)", REGISTERED_TOOLS
+    )
+
+
+def test_is_embedded_call_as_text_never_flags_ordinary_prose_or_mentions():
+    """Zero-false-positive discipline (#2787): plain prose, a sentence that merely
+    NAMES a tool, a JSON code sample with none of the call shapes, and a value that
+    only CONTAINS a tool's name as a substring must all pass through untouched."""
+    negatives = [
+        "Lake Baikal is the deepest lake in the world!",
+        "I can use browse for that if you'd like me to look it up.",
+        'Here\'s an example object: {"color": "teal", "count": 3}',
+        '{"description": "let\'s browse the shelves at the library this weekend"}',
+    ]
+    flagged = [text for text in negatives if is_embedded_call_as_text(text, REGISTERED_TOOLS)]
+    assert flagged == [], f"false positives: {flagged}"
 
 
 def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():

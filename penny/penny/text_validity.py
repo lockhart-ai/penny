@@ -18,9 +18,9 @@ share these:
     the agent-loop reroll guard's job (``is_degenerate_run`` in ``agents/base.py``).
 
 It is also where the agent loop's **invalid-draw** detectors live — the
-call-shaped-text family (:func:`is_call_as_text_bail`, :func:`is_done_json_bail`,
-:func:`is_call_fragment_reply`) and the say-nothing draw (:func:`is_empty_draw`,
-#1937), beside the transport artifacts (:func:`is_degenerate_run`,
+call-shaped-text family (:func:`is_call_as_text_bail`, :func:`is_embedded_call_as_text`,
+:func:`is_done_json_bail`, :func:`is_call_fragment_reply`) and the say-nothing draw
+(:func:`is_empty_draw`, #1937), beside the transport artifacts (:func:`is_degenerate_run`,
 :func:`has_leaked_harmony_envelope`, :func:`is_degenerate_tool_name`).  Since #1839
 all of them feed ONE mechanism — ``Agent._unusable_output_condition``'s
 discard-and-reroll — so they belong in one leaf rather than split between here and
@@ -265,6 +265,66 @@ def is_call_as_text_bail(content: str) -> bool:
     if set(parsed) == _CALL_ENVELOPE_KEYS:
         return isinstance(parsed.get("name"), str) and isinstance(parsed.get("arguments"), dict)
     return "reasoning" in parsed
+
+
+def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) -> bool:
+    """True when ``content`` carries a tool call written as text ANYWHERE in the
+    reply (#2787) — the shape :func:`is_call_as_text_bail` misses because it only
+    judges the WHOLE reply: a line of prose followed by the call object, e.g. the
+    observed prod leak, one line of "On it!" then
+    ``{"action": "generate_image", "action_input": "…", "reasoning": "…"}``, sent to
+    the user verbatim with the image never generated.
+
+    Keyed to the agent's LIVE tool registry, never a fixed tool list (#1783's
+    lesson — a plugin tool is covered without a change).  Two shapes:
+
+      - a JSON object anywhere in the text — found by scanning for every ``{`` and
+        trying ``json.JSONDecoder.raw_decode`` from there — that names one of
+        ``registered_tools`` as a STRING VALUE (an exact match, never a substring:
+        a value that merely *contains* a tool's name, or a sentence that mentions
+        one, must not trip this) or carries the framework-injected ``reasoning``
+        key (:func:`is_call_as_text_bail`'s own bare-args discriminator); or
+      - the textual call syntax a draft sometimes falls back to instead of JSON —
+        ``registered_tool_name(`` followed later in the text by ``identifier=``.
+    """
+    return _has_embedded_call_object(content, registered_tools) or _has_textual_call_syntax(
+        content, registered_tools
+    )
+
+
+def _has_embedded_call_object(content: str, registered_tools: Collection[str]) -> bool:
+    """A JSON object anywhere in ``content`` that names a registered tool as a
+    string value, or carries ``reasoning`` — see :func:`is_embedded_call_as_text`."""
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(content, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and _is_call_shaped_object(parsed, registered_tools):
+            return True
+    return False
+
+
+def _is_call_shaped_object(parsed: dict, registered_tools: Collection[str]) -> bool:
+    """A parsed JSON object names a registered tool as a string VALUE (an exact
+    match — never a substring hit), or carries the ``reasoning`` key every real
+    call's serialized arguments carry."""
+    if "reasoning" in parsed:
+        return True
+    return any(isinstance(value, str) and value in registered_tools for value in parsed.values())
+
+
+def _has_textual_call_syntax(content: str, registered_tools: Collection[str]) -> bool:
+    """``registered_tool_name(`` followed later by ``identifier=`` — the textual
+    call syntax some drafts fall back to instead of JSON."""
+    for name in registered_tools:
+        start = content.find(f"{name}(")
+        if start != -1 and "identifier=" in content[start:]:
+            return True
+    return False
 
 
 def has_leaked_harmony_envelope(content: str) -> bool:

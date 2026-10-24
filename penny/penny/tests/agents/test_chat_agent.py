@@ -22,7 +22,7 @@ from penny.agents.chat import ChatAgent
 from penny.agents.conversation_map import ConversationMap
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.models import Media, MessageLog
+from penny.database.models import Media, MessageLog, PromptLog
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
@@ -31,6 +31,7 @@ from penny.tests.mocks.llm_patches import deterministic_embed
 from penny.tools.link_handles import HandleTable
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
+from penny.validation import ConditionKey
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
 
@@ -1179,6 +1180,66 @@ async def test_generate_image_delivers_the_drawn_image_deterministically(
 
         # ...and exactly that drawn image (not the decoy) is attached to the reply.
         assert reply.get("base64_attachments") == [f"data:image/png;base64,{ONE_PX_PNG_B64}"]
+
+
+@pytest.mark.asyncio
+async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """A reply that leads with a line of prose and then a tool call serialized as
+    JSON text (#2787 — seen in prod: "On it!" followed by a ``generate_image`` call
+    object) is discarded and re-rolled, exactly like the whole-reply envelope
+    :func:`is_call_as_text_bail` already catches — it must never reach the user, and
+    the call it describes must actually run on the next draw.
+    """
+    config = make_config()
+
+    def handler(request: dict, count: int):
+        if count == 1:
+            return mock_llm._make_text_response(
+                request,
+                'On it!\n\n{"action": "generate_image", "action_input": '
+                '"{\\"description\\": \\"a kite shaped like a sea turtle\\"}", '
+                '"reasoning": "the user asked for a drawing"}',
+            )
+        if count == 2:
+            return mock_llm._make_tool_call_response(
+                request,
+                "generate_image",
+                {"description": "a kite shaped like a sea turtle"},
+            )
+        return mock_llm._make_text_response(request, "here's your sea turtle kite! 🪁")
+
+    mock_llm.set_response_handler(handler)
+
+    image_client = AsyncMock()
+    image_client.generate_image.return_value = ONE_PX_PNG_B64
+
+    async with running_penny(config) as penny:
+        penny.chat_agent._image_client = image_client
+        await signal_server.push_message(
+            sender=TEST_SENDER, content="draw me a kite shaped like a sea turtle"
+        )
+        reply = await signal_server.wait_for_message_containing("turtle", timeout=10.0)
+
+        # The call ran, on the REDRAWN step — never the one holding the JSON text.
+        image_client.generate_image.assert_awaited_once()
+        assert "sea turtle" in image_client.generate_image.await_args.kwargs["prompt"]
+        assert len(mock_llm.requests) == 3
+        # The reroll ran on the UNCHANGED context (the discarded draw never joined it).
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+
+        # The raw call-as-text never reached the user, in this reply or any other
+        # the channel sent.
+        assert "action_input" not in (reply.get("message") or "")
+        for sent in signal_server.outgoing_messages:
+            assert "action_input" not in (sent.get("message") or "")
+
+        # The discarded draw's own promptlog row says why (#2702).
+        with penny.db.get_session() as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        discard_reasons = [row.discard_reason for row in rows if row.discard_reason]
+        assert discard_reasons == [ConditionKey.CALL_AS_TEXT.value]
 
 
 # ── 7. Quote-reply handling ───────────────────────────────────────────────

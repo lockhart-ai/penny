@@ -21,7 +21,12 @@ from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.notification import JobReport, render_job_report
 from penny.prompts import Prompt
-from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply, is_empty_draw
+from penny.text_validity import (
+    is_call_as_text_bail,
+    is_call_fragment_reply,
+    is_embedded_call_as_text,
+    is_empty_draw,
+)
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
@@ -136,6 +141,22 @@ class ChatAgent(Agent):
         # structural once-per-run guard, so the post-narration re-reply never re-reads
         # the store a second time (chat turns are sequential, so one field suffices).
         self._extraction_run_id: str | None = None
+
+    def _invalid_draw_condition(self, content: str) -> ConditionKey | None:
+        """Chat's shape check (#1839), extended to catch a tool call written as text
+        ANYWHERE in the reply (#2787) — prose followed by the call object, which the
+        declared ``invalid_draw_conditions`` tuple can't see: its ``CALL_AS_TEXT``
+        entry (:func:`is_call_as_text_bail`) only judges the WHOLE reply, and a
+        content-only predicate has no way to read the live tool registry anyway.
+        Checked first, against the tools this turn actually installed
+        (``_install_tools`` runs before every call, #2458) — so a plugin tool is
+        covered with no change here — then falls through to the base walk, which
+        keeps the lone-envelope / bare-args / fragment / empty shapes exactly as
+        they were."""
+        registered_tools = frozenset(tool.name for tool in self._tool_registry.get_all())
+        if is_embedded_call_as_text(content, registered_tools):
+            return ConditionKey.CALL_AS_TEXT
+        return super()._invalid_draw_condition(content)
 
     def get_tools(
         self, run_id: str | None = None, handles: HandleTable | None = None
