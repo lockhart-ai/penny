@@ -41,12 +41,16 @@ import {
   upsertPromptEntry,
 } from "./draw_nesting.js";
 import {
+  cacheTooltip,
   earlierMessagesLabel,
   earlierWindow,
+  formatCachePercent,
   formatPillDuration,
   formatRunTime,
   formatStepCount,
   formatTokens,
+  formatTokensPerSecond,
+  sumPairedNonNull,
   type EarlierWindow,
 } from "./prompt_format.js";
 import { createSearchBanner, wireSearchClear } from "./shared.js";
@@ -926,25 +930,54 @@ function createRunLeftIcon(iconClass: string): string {
 // value and the pair is right-aligned (see .run-right/.row-right in
 // prompts.css). `unit`, when given, renders in its own span so the narrow
 // breakpoints can drop it from the display; the title always carries the
-// full "value unit" text so the unit stays reachable.
-function createMetricCell(cls: string, iconClass: string, value: string, unit = ""): HTMLElement {
+// full "value unit" text so the unit stays reachable — unless `title` is
+// given explicitly (the cache % cell: its tooltip names the counts behind
+// the percentage, not "NN% unit").
+function createMetricCell(cls: string, iconClass: string, value: string, unit = "", title?: string): HTMLElement {
   const cell = document.createElement("span");
   cell.className = `rc ${cls}`;
   cell.innerHTML =
     `${createRunLeftIcon(iconClass)}<span class="v">${value}</span>` +
     (unit ? `<span class="rc-unit">${unit}</span>` : "");
-  if (unit) cell.title = `${value} ${unit}`;
+  if (title !== undefined) cell.title = title;
+  else if (unit) cell.title = `${value} ${unit}`;
   return cell;
 }
 
-// The seven metric cells ride in two group spans: `display: contents` keeps
-// them as direct participants of the one shared grid at every width, while
-// the ~460px breakpoint turns the groups into the two stacked sub-rows the
+// The metric cells ride in two group spans: `display: contents` keeps them
+// as direct participants of the one shared grid at every width, while the
+// ~460px breakpoint turns the groups into the two stacked sub-rows the
 // narrow layout is built from (#2610).
 function createMetricGroup(kind: "a" | "b"): HTMLElement {
   const group = document.createElement("span");
   group.className = `metric-group metric-group-${kind}`;
   return group;
+}
+
+// A prompt's own (tokens, ms) pairing for one rate, read by both a single
+// row's cell and the run header's sum across its own prompts (#2798) —
+// `prefill_ms`/`generation_ms` are null for a runner (OpenRouter) that
+// reports no prefill/generation split at all.
+function inTokensPair(prompt: PromptLogEntry): readonly [number | null, number | null] {
+  return [prompt.prompt_tokens, prompt.prefill_ms];
+}
+function outTokensPair(prompt: PromptLogEntry): readonly [number | null, number | null] {
+  return [prompt.completion_tokens, prompt.generation_ms];
+}
+function cachePair(prompt: PromptLogEntry): readonly [number | null, number | null] {
+  return [prompt.cached_tokens, prompt.prompt_tokens];
+}
+
+// The run header's own sum of `pair` across its OWN prompts (never
+// `child_draws` — #2798 keeps the same "this run's own calls" pairing the
+// old tok/s figure used), as the [numerator, denominator] every formatter
+// above reads, or `[null, null]` when no prompt qualifies.
+function runRateSum(
+  run: PromptLogRun,
+  pair: (prompt: PromptLogEntry) => readonly [number | null, number | null],
+): readonly [number | null, number | null] {
+  const sum = sumPairedNonNull(run.prompts.map(pair));
+  return sum ?? [null, null];
 }
 
 function createRunRight(run: PromptLogRun): HTMLElement {
@@ -954,15 +987,29 @@ function createRunRight(run: PromptLogRun): HTMLElement {
   const groupA = createMetricGroup("a");
   groupA.appendChild(createMetricCell("rc-steps", "fa-layer-group", formatStepCount(run.prompt_count)));
   groupA.appendChild(createMetricCell("rc-down", "fa-arrow-down", formatTokens(run.total_input_tokens)));
+
+  const [inTokens, prefillMs] = runRateSum(run, inTokensPair);
+  groupA.appendChild(
+    createMetricCell("rc-in-toks", "fa-download", formatTokensPerSecond(inTokens, prefillMs), "tok/s"),
+  );
+
+  const [cachedTokens, promptTokens] = runRateSum(run, cachePair);
+  groupA.appendChild(
+    createMetricCell(
+      "rc-cache",
+      "fa-database",
+      formatCachePercent(cachedTokens, promptTokens),
+      "",
+      cacheTooltip(cachedTokens, promptTokens),
+    ),
+  );
+
   groupA.appendChild(createMetricCell("rc-up", "fa-arrow-up", formatTokens(run.total_output_tokens)));
-  // tok/s is paired with "model time" (total_duration_ms, this run's OWN
-  // prompts only) deliberately — that's the number that actually measures
-  // generation throughput; "wall time" below also counts child draws (a
-  // browse extraction reading pages, say), which never generated a token.
-  const tokPerSec = run.total_duration_ms > 0
-    ? ((run.total_output_tokens / run.total_duration_ms) * 1000).toFixed(1)
-    : "0";
-  groupA.appendChild(createMetricCell("rc-toks", "fa-gauge-high", tokPerSec, "tok/s"));
+
+  const [outTokens, generationMs] = runRateSum(run, outTokensPair);
+  groupA.appendChild(
+    createMetricCell("rc-out-toks", "fa-upload", formatTokensPerSecond(outTokens, generationMs), "tok/s"),
+  );
   right.appendChild(groupA);
 
   const groupB = createMetricGroup("b");
@@ -1231,11 +1278,11 @@ function createStepRowLeft(prompt: PromptLogEntry): HTMLElement {
 }
 
 // The shared right grid (#2610) — same tracks as the run header's
-// .run-right, so every row's steps / ↓ / ↑ / tok/s / time / duration / copy
-// columns land on the run header's vertical lines. `step` is given only for
-// a model-call entry: its number fills the steps column; draws and running
-// rows leave that column empty (except the run's own next running call,
-// which shows the number it will take).
+// .run-right, so every row's steps / ↓ / in tok/s / cache % / ↑ / out tok/s /
+// time / duration / copy columns land on the run header's vertical lines.
+// `step` is given only for a model-call entry: its number fills the steps
+// column; draws and running rows leave that column empty (except the run's
+// own next running call, which shows the number it will take).
 function createPromptRowRight(prompt: PromptLogEntry, step?: number): HTMLElement {
   const right = document.createElement("span");
   right.className = "row-right";
@@ -1252,12 +1299,39 @@ function createPromptRowRight(prompt: PromptLogEntry, step?: number): HTMLElemen
   }
   groupA.appendChild(stepsCell);
 
-  const tokPerSec = prompt.duration_ms > 0
-    ? ((prompt.output_tokens / prompt.duration_ms) * 1000).toFixed(1)
-    : "0";
   groupA.appendChild(createCellMetric("cell-down", "fa-arrow-down", formatTokens(prompt.input_tokens)));
+  // in tok/s = prompt_tokens / (prefill_ms / 1000) — replaces the old figure
+  // (output tokens over the call's TOTAL duration, prefill included, which
+  // read generation speed low); both halves null for a runner (OpenRouter)
+  // that reports no prefill/generation split at all (#2798).
+  groupA.appendChild(
+    createCellMetric(
+      "cell-in-toks",
+      "fa-download",
+      formatTokensPerSecond(prompt.prompt_tokens, prompt.prefill_ms),
+      "tok/s",
+    ),
+  );
+  groupA.appendChild(
+    createCellMetric(
+      "cell-cache",
+      "fa-database",
+      formatCachePercent(prompt.cached_tokens, prompt.prompt_tokens),
+      "",
+      cacheTooltip(prompt.cached_tokens, prompt.prompt_tokens),
+    ),
+  );
   groupA.appendChild(createCellMetric("cell-up", "fa-arrow-up", formatTokens(prompt.output_tokens)));
-  groupA.appendChild(createCellMetric("cell-toks", "fa-gauge-high", tokPerSec, "tok/s"));
+  // out tok/s = completion_tokens / (generation_ms / 1000) — generation time
+  // only, never the call's total duration.
+  groupA.appendChild(
+    createCellMetric(
+      "cell-out-toks",
+      "fa-upload",
+      formatTokensPerSecond(prompt.completion_tokens, prompt.generation_ms),
+      "tok/s",
+    ),
+  );
   right.appendChild(groupA);
 
   const groupB = createMetricGroup("b");
@@ -1291,14 +1365,16 @@ function createPromptRowRight(prompt: PromptLogEntry, step?: number): HTMLElemen
 
 // Same shared-grid metric cell shape as createMetricCell above (#2610) —
 // icon hugging the value, right-aligned, optional unit span with the full
-// text carried in the title.
-function createCellMetric(cls: string, iconClass: string, value: string, unit = ""): HTMLElement {
+// text carried in the title — unless `title` is given explicitly (the
+// cache % cell: its tooltip names the counts behind the percentage).
+function createCellMetric(cls: string, iconClass: string, value: string, unit = "", title?: string): HTMLElement {
   const cell = document.createElement("span");
   cell.className = cls;
   cell.innerHTML =
     `<i class="fa-solid ${iconClass}"></i><span class="v">${value}</span>` +
     (unit ? `<span class="rc-unit">${unit}</span>` : "");
-  if (unit) cell.title = `${value} ${unit}`;
+  if (title !== undefined) cell.title = title;
+  else if (unit) cell.title = `${value} ${unit}`;
   return cell;
 }
 
@@ -1406,7 +1482,8 @@ function createRunningRowRight(elapsedStartedAt: string, step?: number): HTMLEle
   right.className = "row-right";
 
   // Placeholder cells for the shared grid (#2610) — nothing to show in
-  // ↓ / ↑ / tok/s / start time while the call is still running.
+  // ↓ / in tok/s / cache % / ↑ / out tok/s / start time while the call is
+  // still running.
   const groupA = createMetricGroup("a");
   const stepsCell = document.createElement("span");
   stepsCell.className = "cell-steps";
@@ -1419,8 +1496,10 @@ function createRunningRowRight(elapsedStartedAt: string, step?: number): HTMLEle
   }
   groupA.appendChild(stepsCell);
   groupA.appendChild(document.createElement("span")).className = "cell-down";
+  groupA.appendChild(document.createElement("span")).className = "cell-in-toks";
+  groupA.appendChild(document.createElement("span")).className = "cell-cache";
   groupA.appendChild(document.createElement("span")).className = "cell-up";
-  groupA.appendChild(document.createElement("span")).className = "cell-toks";
+  groupA.appendChild(document.createElement("span")).className = "cell-out-toks";
   right.appendChild(groupA);
 
   const groupB = createMetricGroup("b");

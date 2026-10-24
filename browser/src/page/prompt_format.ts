@@ -32,6 +32,65 @@ export function formatStepCount(count: number): string {
   return count === 1 ? "1 step" : `${count} steps`;
 }
 
+// --- Prefill speed, generation speed, cache hit rate (#2798) ---
+//
+// Every derivation here reads a pair of `number | null` fields straight off
+// a `PromptLogEntry` (#2793: `prompt_tokens`/`cached_tokens`/
+// `completion_tokens`/`prefill_ms`/`generation_ms`) — never a dict lookup, so
+// a renamed or dropped field is a compile error, not a silently blank cell.
+// A `null` on EITHER side of a pairing (a runner that reports no
+// prefill/generation split, or no cache count at all) reads as "—", never a
+// guessed 0 — the same "visible degradation" rule every other null-tolerant
+// cell on this tab already follows.
+
+/** tokens ÷ (ms / 1000), formatted to one decimal — the shared shape behind
+ * both "in tok/s" (`prompt_tokens`/`prefill_ms`) and "out tok/s"
+ * (`completion_tokens`/`generation_ms`). "—" when either input is null or
+ * the duration is zero (nothing elapsed to divide by). */
+export function formatTokensPerSecond(tokens: number | null, ms: number | null): string {
+  if (tokens === null || ms === null || ms <= 0) return "—";
+  return ((tokens / ms) * 1000).toFixed(1);
+}
+
+/** The cache-hit percentage for one call: `cached_tokens / prompt_tokens`,
+ * rounded to a whole percent. "—" when either input is null or
+ * `prompt_tokens` is zero (nothing to have cached). */
+export function formatCachePercent(cachedTokens: number | null, promptTokens: number | null): string {
+  if (cachedTokens === null || promptTokens === null || promptTokens <= 0) return "—";
+  return `${Math.round((cachedTokens / promptTokens) * 100)}%`;
+}
+
+/** The cache cell's tooltip — the counts behind the percentage ("4.1k of
+ * 5.0k input tokens cached"), on the same `formatTokens` ladder as the ↓/↑
+ * columns. Mirrors `formatCachePercent`'s own null/zero reading, so a cell
+ * showing "—" never carries a tooltip implying otherwise. */
+export function cacheTooltip(cachedTokens: number | null, promptTokens: number | null): string {
+  if (cachedTokens === null || promptTokens === null || promptTokens <= 0) return "—";
+  return `${formatTokens(cachedTokens)} of ${formatTokens(promptTokens)} input tokens cached`;
+}
+
+/** Sums the numerator/denominator of every pair where BOTH sides are
+ * non-null — the run header's own rule for aggregating a rate or ratio (in
+ * tok/s, out tok/s, cache %) across its own prompts: a prompt missing
+ * either side of the pairing (an OpenRouter row with no prefill/generation
+ * split, say) contributes to neither sum rather than skewing the total.
+ * `null` when no pair qualifies — every formatter above already reads a
+ * `null` input as "—", so the caller passes this straight through. */
+export function sumPairedNonNull(
+  pairs: readonly (readonly [number | null, number | null])[],
+): readonly [number, number] | null {
+  let numerator = 0;
+  let denominator = 0;
+  let any = false;
+  for (const [n, d] of pairs) {
+    if (n === null || d === null) continue;
+    numerator += n;
+    denominator += d;
+    any = true;
+  }
+  return any ? [numerator, denominator] : null;
+}
+
 /** Token counts for the ↓/↑ columns — whole below 1k, one-decimal k below
  * 1M, one-decimal M above ("977", "13.6k", "1.2M"), the same ladder the
  * pill's duration format uses (#2610): a run total in the millions must

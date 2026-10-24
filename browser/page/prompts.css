@@ -27,15 +27,16 @@
   flex-direction: column;
   padding: 2px 0 8px;
 
-  /* The ONE metric-column grid (#2610) shared by run headers
+  /* The ONE metric-column grid (#2610, widened #2798) shared by run headers
    * (.run-right) and every step/draw/running row (.row-right), so all
    * rows' columns land on the same vertical lines. Track order:
-   * steps ↓ ↑ tok/s time duration copy. Sized for the widest realistic
-   * value per column — `100 steps`, `999.9k`, `101.2 tok/s`,
-   * the time track for the widest `formatRunTime` emission (see below),
-   * the pill `12m 34s / 12m 30s`, the 24px copy button.
-   * The narrow breakpoints below shrink — never drop — these tracks. */
-  --metric-cols: 78px 58px 58px 94px 120px 138px 24px;
+   * steps ↓ in-tok/s cache% ↑ out-tok/s time duration copy. Sized for the
+   * widest realistic value per column — `100 steps`, `999.9k`,
+   * `101.2 tok/s` (×2, in and out), `100%`, the time track for the widest
+   * `formatRunTime` emission (see below), the pill `12m 34s / 12m 30s`, the
+   * 24px copy button. The narrow breakpoints below shrink — never drop —
+   * these tracks. */
+  --metric-cols: 78px 58px 88px 54px 58px 88px 120px 138px 24px;
   --metric-gap: 8px;
 }
 
@@ -181,12 +182,12 @@
   color: var(--text);
 }
 
-/* --- Fixed right-hand cluster: the shared metric grid (#2610). The same
- * track list as .row-right below — steps ↓ ↑ tok/s time duration copy —
- * with the tracks (and gap) sized once on #runs, so the run header's
- * metrics and every row's metrics line up vertically. Within each cell the
- * icon hugs the value and the pair is right-aligned with tabular-nums, so
- * e.g. `↓ 453` and `↓ 6.5k` share a right edge. --- */
+/* --- Fixed right-hand cluster: the shared metric grid (#2610, #2798). The
+ * same track list as .row-right below — steps ↓ in-tok/s cache% ↑ out-tok/s
+ * time duration copy — with the tracks (and gap) sized once on #runs, so
+ * the run header's metrics and every row's metrics line up vertically.
+ * Within each cell the icon hugs the value and the pair is right-aligned
+ * with tabular-nums, so e.g. `↓ 453` and `↓ 6.5k` share a right edge. --- */
 
 .run-right {
   display: grid;
@@ -196,7 +197,7 @@
   flex-shrink: 0;
 }
 
-/* The two group spans wrap the seven cells: `display: contents` keeps the
+/* The two group spans wrap the nine cells: `display: contents` keeps the
  * cells as the shared grid's direct items at every width; at ~460px the
  * groups become the two stacked sub-rows the narrow layout is built from
  * (#2610). */
@@ -675,8 +676,10 @@
 }
 
 .cell-down,
+.cell-in-toks,
+.cell-cache,
 .cell-up,
-.cell-toks,
+.cell-out-toks,
 .cell-dur {
   display: flex;
   align-items: center;
@@ -692,8 +695,10 @@
 }
 
 .cell-down .v,
+.cell-in-toks .v,
+.cell-cache .v,
 .cell-up .v,
-.cell-toks .v {
+.cell-out-toks .v {
   color: var(--text-dim);
 }
 
@@ -909,19 +914,32 @@
 }
 
 /* ============================================================
-   Responsive metric tracks (#2610) — the columns NEVER disappear; as the
-   window narrows the shared tracks, the gap and the wall/model pill's
-   padding shrink in steps (~1100 / ~900 / ~700 / ~560), the tok/s unit drops to a
-   smaller and then title-only form (the number stays), and the flexible
-   left side (name, snippet) gives up the room, truncating with an
-   ellipsis throughout. One track list for run headers and every
-   step/draw/running row, so the columns stay aligned across all rows at
-   every width, and #2605's shared right edge holds throughout.
+   Responsive metric tracks (#2610, #2798) — the columns NEVER disappear; as
+   the window narrows the shared tracks, the gap and the wall/model pill's
+   padding shrink in steps (~1100 / ~900), the tok/s unit drops to a
+   smaller form (the number stays), and the flexible left side (name,
+   snippet) gives up the room, truncating with an ellipsis throughout —
+   until the two-row wrap (below, ~900px) takes over, where the fixed
+   per-row widths carry the rest of the way down to the narrowest cards.
+   #2798 added five tracks to the one shared list (in tok/s, cache %, out
+   tok/s replacing the old single tok/s), widening the single-row layout's
+   minimum content past what the 700px/560px single-row tiers below 900px
+   could still fit — hence the wrap engaging at 900px rather than ~460px:
+   below that there is no single-row width left that doesn't clip the
+   right-hand grid. The 700px/560px tiers' own `--metric-cols` are
+   consequently dead below 900px (the wrap's `display: flex` on
+   `.run-right`/`.row-right`, further down, wins over `display: grid` for
+   any width their media queries also match) — left in place rather than
+   deleted, since they're harmless and still describe the single-row
+   shrink ladder between 901px and 1100px accurately. One track list for
+   run headers and every step/draw/running row, so the columns stay
+   aligned across all rows at every width, and #2605's shared right edge
+   holds throughout.
    ============================================================ */
 
 @media (max-width: 1100px) {
   #runs {
-    --metric-cols: 64px 58px 58px 80px 120px 132px 24px;
+    --metric-cols: 64px 58px 76px 48px 58px 76px 120px 132px 24px;
     --metric-gap: 6px;
   }
 
@@ -944,7 +962,7 @@
 
 @media (max-width: 900px) {
   #runs {
-    --metric-cols: 64px 58px 58px 80px 120px 124px 24px;
+    --metric-cols: 64px 58px 76px 48px 58px 76px 120px 124px 24px;
     --metric-gap: 5px;
   }
 
@@ -956,12 +974,13 @@
 
 @media (max-width: 700px) {
   #runs {
-    --metric-cols: 64px 58px 58px 52px 120px 120px 24px;
+    --metric-cols: 64px 58px 50px 40px 58px 50px 120px 120px 24px;
     --metric-gap: 4px;
   }
 
   /* tok/s: the unit can no longer fit beside its number — it drops from
-   * the display entirely and lives on in the cell's title. */
+   * the display entirely and lives on in the cell's title (in and out
+   * alike, #2798 — one shared `.rc-unit` rule). */
   .rc-unit {
     display: none;
   }
@@ -971,19 +990,22 @@
   }
 }
 
-@media (max-width: 560px) {
-  #runs {
-    --metric-cols: 56px 52px 52px 48px 104px 108px 24px;
-    --metric-gap: 3px;
-  }
-
-  /* One notch smaller type so all seven tracks fit the ~440-500px window
-   * at every nesting depth; the left side keeps truncating. */
+/* #2798: moved from a 560px threshold to 900px, matching the wrap
+ * breakpoint below — the wrap's fixed, narrow per-cell widths (sized for
+ * this smaller type) are now in effect for the whole wrapped range
+ * (≤900px), so the type has to shrink for that whole range too, not just
+ * its narrowest fifth; at the unshrunk 11px/11.5px size those fixed
+ * widths clip in the 561–900px band. */
+@media (max-width: 900px) {
+  /* One notch smaller type so all nine tracks fit the wrapped card's two
+   * sub-rows at every nesting depth; the left side keeps truncating. */
   .rc,
   .cell-steps,
   .cell-down,
+  .cell-in-toks,
+  .cell-cache,
   .cell-up,
-  .cell-toks,
+  .cell-out-toks,
   .cell-time,
   .cell-dur {
     font-size: 10px;
@@ -994,17 +1016,21 @@
   }
 }
 
-@media (max-width: 460px) {
+@media (max-width: 900px) {
   #runs {
     padding: 2px 2px 6px;
+    --metric-gap: 4px;
   }
 
-  /* The only breakpoint where a header may wrap — right part drops to its
-   * own full-width line, still right-aligned, ALL seven columns still on
-   * it (#2610), copy still its own fixed column so it stays under every
-   * other run's copy button. On the left line, the collector's sub-target
-   * hides — lower priority than the agent name and the snippet, which
-   * keep truncating with an ellipsis. */
+  /* The breakpoint where a header may wrap — right part drops to its own
+   * full-width line, still right-aligned, ALL nine columns still on it
+   * (#2610, widened #2798), copy still its own fixed column so it stays
+   * under every other run's copy button. On the left line, the
+   * collector's sub-target hides — lower priority than the agent name
+   * and the snippet, which keep truncating with an ellipsis. #2798 moved
+   * this from ~460px to 900px — see the responsive-tracks comment above
+   * for why there's no single-row width left below that which doesn't
+   * clip the wider nine-column grid. */
   .run-header {
     padding: 9px 10px;
     gap: 6px 10px;
@@ -1019,11 +1045,20 @@
     display: none;
   }
 
+  /* The tok/s unit never fits beside its number once wrapped — drops from
+   * the display entirely and lives on in the cell's title, same as the
+   * single-row layout's own ≤700px rule above (#2798: both in and out
+   * tok/s share this one `.rc-unit` rule). */
+  .rc-unit {
+    display: none;
+  }
+
   /* Name/snippet alone on its own line, then the metrics on two stacked
-   * sub-rows — steps ↓ ↑ tok/s, then time duration copy — each right-
-   * aligned on the shared right edge. Every value still shows, nothing is
-   * clipped past the card, and the columns stay aligned across all rows
-   * (#2610); the copy button keeps its own column, one per row. */
+   * sub-rows — steps ↓ in-tok/s cache% ↑ out-tok/s, then time duration
+   * copy — each right-aligned on the shared right edge. Every value still
+   * shows, nothing is clipped past the card, and the columns stay aligned
+   * across all rows (#2610); the copy button keeps its own column, one
+   * per row. */
   .run-right,
   .row-right {
     flex-basis: 100%;
@@ -1045,7 +1080,7 @@
   }
 
   .metric-group-a {
-    grid-template-columns: 56px 52px 52px 48px;
+    grid-template-columns: 56px 46px 44px 38px 46px 44px;
   }
 
   .metric-group-b {

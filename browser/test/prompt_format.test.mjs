@@ -7,12 +7,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  cacheTooltip,
   earlierMessagesLabel,
   earlierWindow,
+  formatCachePercent,
   formatPillDuration,
   formatRunTime,
   formatStepCount,
   formatTokens,
+  formatTokensPerSecond,
+  sumPairedNonNull,
 } from "../dist/test/prompt_format.mjs";
 
 test("a pill duration under 10s keeps one decimal", () => {
@@ -155,4 +159,57 @@ test("an opened context shorter than the run's first prompt clamps to what it ho
 test("the collapsed row's text reads N earlier messages, singular at 1", () => {
   assert.equal(earlierMessagesLabel(12), "12 earlier messages");
   assert.equal(earlierMessagesLabel(1), "1 earlier message");
+});
+
+// --- Prefill speed, generation speed, cache hit rate (#2798) ---
+
+test("tokens per second divides tokens by the duration in seconds", () => {
+  assert.equal(formatTokensPerSecond(500, 2000), "250.0");
+  assert.equal(formatTokensPerSecond(123, 1000), "123.0");
+});
+
+test("tokens per second is — when either input is null, never a guessed 0", () => {
+  assert.equal(formatTokensPerSecond(null, 2000), "—");
+  assert.equal(formatTokensPerSecond(500, null), "—");
+  assert.equal(formatTokensPerSecond(null, null), "—");
+});
+
+test("tokens per second is — on a zero duration, not a divide-by-zero or Infinity", () => {
+  assert.equal(formatTokensPerSecond(500, 0), "—");
+});
+
+test("cache percent rounds cached/prompt tokens to a whole percent", () => {
+  assert.equal(formatCachePercent(4096, 5000), "82%");
+  assert.equal(formatCachePercent(0, 5000), "0%");
+});
+
+test("cache percent is — when either input is null or there are no prompt tokens to cache", () => {
+  assert.equal(formatCachePercent(null, 5000), "—");
+  assert.equal(formatCachePercent(4096, null), "—");
+  assert.equal(formatCachePercent(100, 0), "—");
+});
+
+test("the cache tooltip names the counts behind the percentage, on the ↓/↑ columns' own ladder", () => {
+  assert.equal(cacheTooltip(4100, 5000), "4.1k of 5.0k input tokens cached");
+  assert.equal(cacheTooltip(977, 998_000), "977 of 998.0k input tokens cached");
+});
+
+test("the cache tooltip is — wherever the percentage itself would be —", () => {
+  assert.equal(cacheTooltip(null, 5000), "—");
+  assert.equal(cacheTooltip(100, 0), "—");
+});
+
+test("summing paired values only counts a prompt where BOTH sides are non-null", () => {
+  const pairs = [
+    [100, 200],
+    [null, 300], // missing numerator — excluded entirely
+    [50, null], // missing denominator — excluded entirely
+    [25, 50],
+  ];
+  assert.deepEqual(sumPairedNonNull(pairs), [125, 250]);
+});
+
+test("summing paired values is null when no pair has both sides — the run header shows —", () => {
+  assert.equal(sumPairedNonNull([[null, 100], [50, null]]), null);
+  assert.equal(sumPairedNonNull([]), null);
 });
