@@ -1155,16 +1155,19 @@ _KITCHEN_SINK = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- news-digest — active · every hour (rule: `FREQ=HOURLY`) · notify: off · last run "
+    "- news-digest — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July "
+    "11, 2026 at 05:00 AM EDT · notify: off · last run "
     "FAILED 2026-07-11 08:00 UTC\n"
     '  "1. read the feed"\n'
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
-    "- price-watch — active · every 6 hours (rule: `FREQ=HOURLY;INTERVAL=6`) · notify: on "
+    "- price-watch — active · every 6 hours (rule: `FREQ=HOURLY;INTERVAL=6`), next run "
+    "Saturday, July 11, 2026 at 08:00 AM EDT · notify: on "
     "· expires Sunday, July 19, 2026 at 08:00 PM EDT · last run WORKED 2026-07-11 09:14 "
     "UTC\n"
     '  "1. browse the page"\n'
     "- reminder — active · once, at Saturday, July 11, 2026 at 08:00 AM EDT, then it "
-    "retires (rule: `DTSTART:20260711T120000Z FREQ=DAILY;COUNT=1`) · notify: off · "
+    "retires (rule: `DTSTART:20260711T120000Z FREQ=DAILY;COUNT=1`), next run Saturday, "
+    "July 11, 2026 at 08:00 AM EDT · notify: off · "
     "one-shot · no runs yet\n"
     '  "1. remind"\n'
     "\n"
@@ -1205,11 +1208,13 @@ _SCHEDULE_MECH = (
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
     "- one-off — active · once, at Saturday, July 11, 2026 at 05:00 AM EDT, then it "
-    "retires (rule: `DTSTART:20260711T090000Z FREQ=DAILY;COUNT=1`) · notify: off · "
+    "retires (rule: `DTSTART:20260711T090000Z FREQ=DAILY;COUNT=1`), next run Saturday, "
+    "July 11, 2026 at 05:00 AM EDT · notify: off · "
     "one-shot · no runs yet\n"
     '  "1. check it."\n'
     "- twice-daily — active · every day at 08:00 AM and 08:00 PM (rule: "
-    "`FREQ=DAILY;BYHOUR=8,20`) · notify: off · no runs yet\n"
+    "`FREQ=DAILY;BYHOUR=8,20`), next run Saturday, July 11, 2026 at 08:00 AM EDT "
+    "· notify: off · no runs yet\n"
     '  "1. check the peak."\n'
     "\n"
     "### Recent activity\n"
@@ -1258,7 +1263,8 @@ _OVERFLOW = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- watcher — active · every hour (rule: `FREQ=HOURLY`) · notify: off · last run WORKED "
+    "- watcher — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
+    "2026 at 06:00 AM UTC · notify: off · last run WORKED "
     "2026-07-11 09:08 UTC\n"
     '  "1. go"\n'
     "\n"
@@ -1290,7 +1296,8 @@ _ARCHIVED_HEAVY = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- live-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs yet\n"
+    "- live-watch — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
+    "2026 at 06:00 AM UTC · notify: off · no runs yet\n"
     '  "1. go"\n'
     "- retired-0 — archived 2026-07-11 08:00 UTC · no runs yet\n"
     "- retired-1 — archived 2026-07-11 08:01 UTC · no runs yet\n"
@@ -1318,15 +1325,18 @@ _INSTRUCTION_SHAPES = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- feed-check — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs yet\n"
+    "- feed-check — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
+    "2026 at 06:00 AM UTC · notify: off · no runs yet\n"
     '  reads https://harborferries.example/feed — "1. read '
     'https://harborferries.example/feed each morning and write the headlines."\n'
-    "- harbour-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs "
+    "- harbour-watch — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July "
+    "11, 2026 at 06:00 AM UTC · notify: off · no runs "
     "yet\n"
     '  reads https://harborferries.example/seasonal-sailings — "1. read the harbour notice '
     "board each morning before the first sailing. (2 more sentences cut — "
     "memory_get('harbour-watch') shows the whole prompt)\"\n"
-    "- plain-note — active · every hour (rule: `FREQ=HOURLY`) · notify: off · no runs yet\n"
+    "- plain-note — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
+    "2026 at 06:00 AM UTC · notify: off · no runs yet\n"
     '  "1. count the boats in the harbour."\n'
     "\n"
     "### Recent activity\n"

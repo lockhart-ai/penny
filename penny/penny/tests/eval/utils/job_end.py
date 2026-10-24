@@ -23,8 +23,10 @@ Where a job stores both, the one that stops it first is its end.
 
 **The user's clock is read the way production reads it.**  Occurrences are walked from the
 anchor ``next_occurrence`` uses — the collection's creation moment on the user's wall clock,
-seconds zeroed — through the tool's own helpers, so an hour a rule states is the hour the
-collector would fire it at.  The timezone is the profile's, read off the sample's database.
+seconds always zeroed, and its minute zeroed too for a rule that states ``BYHOUR`` with no
+``BYMINUTE`` of its own (#2775) — through the tool's own helpers, so an hour a rule states is
+the hour the collector would fire it at.  The timezone is the profile's, read off the sample's
+database.
 
 Its own module beside ``cohort.py`` rather than inside it, because the anchor helpers come from
 the tool that writes a rule and that module imports the database package; ``cohort.py`` is
@@ -117,7 +119,7 @@ def _rule(job: MechanismRecord, timezone: str | None) -> rrule | rruleset | None
     if job.schedule is None or job.created_at is None:
         return None
     text = job.schedule.replace(_LINE_ESCAPE, "\n")
-    return rrulestr(text, dtstart=_schedule_anchor(job.created_at, zone_or_utc(timezone)))
+    return rrulestr(text, dtstart=_schedule_anchor(job.created_at, zone_or_utc(timezone), text))
 
 
 def _walk(job: MechanismRecord, timezone: str | None) -> Iterator[datetime | None]:

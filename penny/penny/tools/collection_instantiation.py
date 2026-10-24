@@ -348,12 +348,21 @@ def next_occurrence(
 
     The anchor's SECONDS are zeroed.  An occurrence inherits whatever seconds its anchor
     carries, so a collection created at :51 past used to be a job that fired at :51 past
-    for ever.
+    for ever.  Its MINUTES are zeroed too, but only when the rule's own grammar states an
+    hour and no minute of its own (``BYHOUR`` without ``BYMINUTE``, #2775) — that rule
+    means "on the hour", so inheriting the anchor's minute is what fired a "7 PM" job at
+    7:59 every day for a collection created at :59 past.  A rule naming no hour at all
+    (``FREQ=HOURLY``) keeps the anchor's own minute exactly as it always has, and a rule
+    stating its own ``BYMINUTE`` is unaffected either way (it overrides whatever the
+    anchor carries).
 
     A rule that states its own start keeps it: an explicit ``DTSTART:…Z`` is an exact
     instant and is honoured as one, while a FLOATING ``DTSTART`` (no ``Z``) states no
     zone at all — RFC 5545 calls that local time, so it is read on the same user clock
-    as the default anchor and no occurrence can come back naive.
+    as the default anchor and no occurrence can come back naive.  Either way the rule's
+    own ``DTSTART`` line is what ``rrulestr`` anchors on — the default anchor computed
+    here is simply unused — so a rule with its own start is unaffected by the minute
+    rule above too.
 
     The first occurrence is read by ITERATING rather than by asking what follows the
     anchor: ``rrulestr`` truncates its start to whole seconds, so "after the anchor"
@@ -361,17 +370,40 @@ def next_occurrence(
     day to run its first cycle.
     """
     zone = zone_or_utc(timezone_name)
-    rule = rrulestr(schedule, dtstart=_schedule_anchor(created_at, zone))
+    rule = rrulestr(schedule, dtstart=_schedule_anchor(created_at, zone, schedule))
     first = next(iter(rule), None)
     if first is None or after is None:
         return _zoned(first, zone)
     return _zoned(rule.after(_rule_clock(stored_as_utc(after), first, zone)), zone)
 
 
-def _schedule_anchor(created_at: datetime, zone: tzinfo) -> datetime:
+def _schedule_anchor(created_at: datetime, zone: tzinfo, schedule: str) -> datetime:
     """Where a rule with no ``DTSTART`` of its own starts: the collection's creation
-    moment on the user's wall clock, with its seconds zeroed."""
-    return stored_as_utc(created_at).astimezone(zone).replace(second=0, microsecond=0)
+    moment on the user's wall clock, with its seconds always zeroed, and its minute
+    zeroed too when the rule's own grammar states ``BYHOUR`` with no ``BYMINUTE`` of its
+    own (#2775) — read off the rule's PARSED PARTS (:func:`_rule_parts`), never by
+    searching the raw text, so the same structural parse this module already uses to
+    lift ``COUNT=``/``UNTIL=`` decides this too."""
+    anchor = stored_as_utc(created_at).astimezone(zone).replace(second=0, microsecond=0)
+    if _states_byhour_without_byminute(schedule):
+        anchor = anchor.replace(minute=0)
+    return anchor
+
+
+_BYHOUR_PART = "BYHOUR"
+_BYMINUTE_PART = "BYMINUTE"
+
+
+def _states_byhour_without_byminute(schedule: str) -> bool:
+    """Whether the stored rule's own line names ``BYHOUR`` but leaves ``BYMINUTE``
+    unstated — the shape that means "on the hour" (#2775).  A stored schedule always
+    parsed once at write time (``parse_schedule``), so its one rule line is read the same
+    way here."""
+    rule_line = _rule_line(_canonical_lines(schedule))
+    if rule_line is None:
+        return False
+    parts = _rule_parts(rule_line)
+    return _BYHOUR_PART in parts and _BYMINUTE_PART not in parts
 
 
 def _zoned(occurrence: datetime | None, zone: tzinfo) -> datetime | None:
@@ -569,15 +601,47 @@ def _describe_rule_with_span(rule: str, clause: str, timezone_name: str | None) 
     return f"{_describe_rule(rule, timezone_name)} (rule: `{clause.replace(_LINE_ESCAPE, ' ')}`)"
 
 
+# The engine's own next-occurrence line (#2775): appended so a disagreement between
+# the cadence's plain words and what ``next_occurrence`` will actually fire next is
+# VISIBLE rather than hidden behind words alone — the motivating bug was a "7 PM" job
+# whose render said 7 PM while it actually fired at 7:59.
+_NEXT_RUN_CLAUSE = ", next run {when}"
+
+
+def _next_run_clause(row: MemoryRow, timezone_name: str | None) -> str:
+    """The same occurrence the readiness gate (``Collector._schedule_due``) is waiting
+    on, read on the user's clock and rendered as a trailing clause — empty when the rule
+    has no occurrence left (a spent ``COUNT=``, a passed ``UNTIL=``), so a retired
+    schedule's render states no next run rather than a stale or invented one.  Also
+    empty for an ARCHIVED row: ``memory_get`` (unlike the self-state job line, which
+    never reaches this for an archived row at all) renders the schedule clause on every
+    row regardless of lifecycle, and an archived job has no next run whatever the rule
+    alone would compute — it was archived for reasons the rule knows nothing about
+    (a manual archive, not only a spent quota)."""
+    assert (
+        row.schedule is not None
+    )  # callers only reach here once describe_schedule's own check held
+    if row.archived:
+        return ""
+    next_fire = next_occurrence(
+        row.schedule, row.created_at, timezone_name, after=row.last_collected_at
+    )
+    if next_fire is None:
+        return ""
+    return _NEXT_RUN_CLAUSE.format(when=format_user_timestamp(next_fire, timezone_name))
+
+
 def describe_schedule(row: MemoryRow, timezone_name: str | None = None) -> str:
     """Plain words for the mechanism's schedule, with its exact rule alongside in a code
-    span (#1857's display == invocation contract, #2425's plain-words-first fix): the
-    model still reads the exact copyable form (``render_schedule_clause``) it would
-    write back to change the schedule, it just no longer stands alone as the thing a
-    reply would naturally echo.  Empty for no schedule, like ``render_schedule_clause``."""
+    span (#1857's display == invocation contract, #2425's plain-words-first fix), plus
+    the engine's OWN computed next run (#2775, :func:`_next_run_clause`) — the model
+    still reads the exact copyable form (``render_schedule_clause``) it would write back
+    to change the schedule, it just no longer stands alone as the thing a reply would
+    naturally echo.  Empty for no schedule, like ``render_schedule_clause``."""
     if row.schedule is None:
         return ""
-    return _describe_rule_with_span(row.schedule, render_schedule_clause(row), timezone_name)
+    described = _describe_rule_with_span(row.schedule, render_schedule_clause(row), timezone_name)
+    return f"{described}{_next_run_clause(row, timezone_name)}"
 
 
 def describe_schedule_field(row: MemoryRow, timezone_name: str | None = None) -> str:
