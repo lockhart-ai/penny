@@ -104,11 +104,22 @@
   color: var(--text-dim);
 }
 
+/* `min-width: 0` here (flexbox's own default for an `overflow: hidden`
+ * flex item is effectively 0 regardless — the "automatic minimum size"
+ * special-case) let this shrink to NOTHING once the fixed-width
+ * `.run-right` grid widened enough to claim the whole header's room: the
+ * toggle chevron cropped to an unrecognisable diagonal sliver and the
+ * agent chip/snippet disappeared outright (#2798 review). An explicit
+ * floor — toggle + gap + the widest realistic agent chip ("Collector" +
+ * swatch) + gap + `.run-snippet`'s own 160px floor (below) — means the
+ * row can only ever overflow its card, never collapse past legibility;
+ * the two-row wrap breakpoint is set (further down) to a width that
+ * never asks it to. */
 .run-left {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 0;
+  min-width: 300px;
   flex: 1 1 auto;
   overflow: hidden;
 }
@@ -176,9 +187,12 @@
   display: inline-flex;
 }
 
+/* 160px: the "show it, or truncate with an ellipsis past a real amount of
+ * it" floor (#2798 review) — never squeezed down to the few-character
+ * sliver a 30px floor allowed. */
 .run-snippet {
   flex: 1 1 auto !important;
-  min-width: 30px;
+  min-width: 160px;
   color: var(--text-dim);
   font-size: 12.5px;
   overflow: hidden;
@@ -206,10 +220,10 @@
 }
 
 /* The two group spans wrap the nine cells: `display: contents` keeps the
- * cells as the shared grid's direct items at every width; at ~680px
- * (#2798; was ~460px before the grid widened to nine tracks) the groups
- * become the two stacked sub-rows the narrow layout is built from
- * (#2610). */
+ * cells as the shared grid's direct items at every width; at ~970px
+ * (#2798; was ~460px before the grid widened to nine tracks and the left
+ * side gained its own minimum width) the groups become the two stacked
+ * sub-rows the narrow layout is built from (#2610). */
 .metric-group {
   display: contents;
 }
@@ -512,11 +526,17 @@
 
 /* left part: chevron-slot | icon-slot | name (truncates) | badge */
 
+/* An explicit floor, not `min-width: 0` — the same collapse-to-nothing
+ * flexbox footgun `.run-left` carries its own comment for (#2798 review):
+ * chevron + gap + icon + gap + `.row-name`'s/`.row-name-wrap`'s own
+ * 160px floor (below), so a step or draw row can only ever overflow its
+ * card, never crop its chevron to an unrecognisable sliver or its title
+ * to nothing. */
 .row-left {
   display: flex;
   align-items: center;
   gap: 9px;
-  min-width: 0;
+  min-width: 208px;
   flex: 1 1 auto;
   overflow: hidden;
 }
@@ -562,12 +582,15 @@
   color: var(--c-model);
 }
 
+/* 160px floor (#2798 review) — matches `.run-snippet`'s own: shows in
+ * full past that width, or truncates with an ellipsis after a real
+ * amount of title, never squeezed to a few characters. */
 .row-name {
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  min-width: 20px;
+  min-width: 160px;
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -592,11 +615,13 @@
   flex-shrink: 0;
 }
 
+/* 160px floor (#2798 review) — same rule as `.row-name`: a draw's
+ * name + result reads as this row's "title" exactly as a step's does. */
 .row-name-wrap {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  min-width: 20px;
+  min-width: 160px;
   flex: 1 1 auto;
   overflow: hidden;
 }
@@ -924,33 +949,45 @@
 
 /* ============================================================
    Responsive metric tracks (#2610, #2798) — the columns NEVER disappear; as
-   the window narrows the shared tracks, the gap and the wall/model pill's
-   padding shrink in steps (~1100 / ~900 / ~760), the tok/s unit drops to a
-   smaller and then title-only form (the number stays), and the flexible
-   left side (name, snippet) gives up the room, truncating with an
-   ellipsis throughout — until the two-row wrap (below, ~680px) takes
-   over, where the fixed per-row widths carry the rest of the way down to
-   the narrowest cards. #2798 added five tracks to the one shared list (in
-   tok/s, cache %, out tok/s replacing the old single tok/s), which both
-   widened the single-row layout's minimum content and — since
-   `formatTokensPerSecond` now rounds to a whole number from 100 up
-   instead of always carrying one decimal — shortened its typical value,
-   so the single-row tiers below were retuned rather than just shifted:
-   narrower in/out-tok/s and cache % tracks, each with real headroom past
-   its worst-case value (see the #runs rule below for why), and a lower
-   680px floor before the wrap — found by testing every ~20px step down
-   from 900px in a headless-Firefox screenshot and taking the narrowest
-   width with no clipping and a safety margin (the right-hand grid starts
-   clipping its own copy button and duration cell between 655px and
-   660px). One track list for run headers and every step/draw/running
-   row, so the columns stay aligned across all rows at every width, and
-   #2605's shared right edge holds throughout.
+   the window narrows, the shared tracks and gap shrink once (~1100px),
+   the tok/s unit and the agent-target text drop at that same point, and
+   the flexible left side (name, snippet) gives up the room it can, down
+   to its own floor (below) — truncating with an ellipsis past that —
+   until the two-row wrap (below, ~970px) takes over, where the fixed
+   per-row widths carry the rest of the way down to the narrowest cards.
+
+   #2798 added five tracks to the one shared list (in tok/s, cache %, out
+   tok/s replacing the old single tok/s). A first pass narrowed the
+   single-row tiers and dropped the wrap down to 680px by testing only
+   the right-hand grid — which missed that `.run-left`/`.row-left` had
+   NO floor of their own (`min-width: 0`, and `overflow: hidden` means
+   the flexbox "automatic minimum size" is 0 regardless of content, not
+   "shrink to content"): a title, its badges, and the toggle chevron
+   could be squeezed to nothing — the chevron cropped to an
+   unrecognisable diagonal sliver — well before the right-hand grid
+   clipped anything (review on PR #2799). `.run-left`/`.row-left` now
+   carry an explicit floor instead (toggle/icon + gap + the title
+   element's own 160px floor, below) — a title shows in full past that,
+   or truncates with a real amount of it, never down to nothing — which
+   raised the single-row layout's true minimum width well past 680px: the
+   left floor alone (300px for a run header, with its wider agent chip)
+   leaves the right-hand grid needing real room too, so the 1100px/900px/
+   760px tiers collapsed into ONE compact tier (unit and agent-target
+   dropped immediately, not gradually) that carries the whole range down
+   to the wrap. 970px is that floor — found the same way as before but
+   checking the LEFT side too (title, badges, chevron) at every nesting
+   depth, not just the right-hand grid: the run header's wall/model pill
+   is the widest right-hand element, and its copy button starts clipping
+   between 955px and 960px, so 970px keeps a margin above that. One track
+   list for run headers and every step/draw/running row, so the columns
+   stay aligned across all rows at every width, and #2605's shared right
+   edge holds throughout.
    ============================================================ */
 
 @media (max-width: 1100px) {
   #runs {
-    --metric-cols: 64px 54px 68px 42px 54px 68px 120px 132px 24px;
-    --metric-gap: 6px;
+    --metric-cols: 60px 50px 50px 36px 50px 50px 108px 116px 24px;
+    --metric-gap: 5px;
   }
 
   /* The run header's steps icon leaves before the column does — the count
@@ -960,9 +997,21 @@
     display: none;
   }
 
-  /* The tok/s unit shrinks rather than vanishing yet. */
+  /* tok/s: the unit drops from the display entirely and lives on in the
+   * cell's title (in and out alike, #2798 — one shared `.rc-unit` rule) —
+   * a single compact tier now carries the whole single-row range down to
+   * the wrap breakpoint (see the responsive-tracks comment above), so
+   * there's no wider mid-point left to show it at. */
   .rc-unit {
-    font-size: 9px;
+    display: none;
+  }
+
+  /* Lower priority than the agent name once the header is this
+   * constrained — same reasoning `.agent-target` already gets in the
+   * wrap layout further down, just starting earlier now that the left
+   * side carries a real minimum width (`.run-left`) it has to share. */
+  .agent-target {
+    display: none;
   }
 
   .time-pair {
@@ -970,45 +1019,14 @@
   }
 }
 
-@media (max-width: 900px) {
-  #runs {
-    --metric-cols: 64px 54px 68px 42px 54px 68px 120px 124px 24px;
-    --metric-gap: 5px;
-  }
-
-  .time-pair {
-    padding: 3px 5px;
-    gap: 4px;
-  }
-}
-
-@media (max-width: 760px) {
-  #runs {
-    --metric-cols: 64px 50px 46px 36px 50px 46px 116px 116px 24px;
-    --metric-gap: 4px;
-  }
-
-  /* tok/s: the unit can no longer fit beside its number — it drops from
-   * the display entirely and lives on in the cell's title (in and out
-   * alike, #2798 — one shared `.rc-unit` rule). */
-  .rc-unit {
-    display: none;
-  }
-
-  .time-pair {
-    padding: 2px 3px;
-  }
-}
-
 /* #2798: moved from a 560px threshold to match the wrap breakpoint below
- * (680px, down from an earlier 900px once the in/out-tok/s tracks could
- * be narrowed — see the responsive-tracks comment above) — the wrap's
- * fixed, narrow per-cell widths (sized for this smaller type) are in
- * effect for the whole wrapped range (≤680px), so the type has to shrink
- * for that whole range too, not just its narrowest fifth; at the
- * unshrunk 11px/11.5px size those fixed widths clip in the 561–680px
- * band. */
-@media (max-width: 680px) {
+ * (970px — see the responsive-tracks comment above for how that floor
+ * was found) — the wrap's fixed, narrow per-cell widths (sized for this
+ * smaller type) are in effect for the whole wrapped range (≤970px), so
+ * the type has to shrink for that whole range too, not just its
+ * narrowest fifth; at the unshrunk 11px/11.5px size those fixed widths
+ * clip in the 561–970px band. */
+@media (max-width: 970px) {
   /* One notch smaller type so all nine tracks fit the wrapped card's two
    * sub-rows at every nesting depth; the left side keeps truncating. */
   .rc,
@@ -1028,7 +1046,7 @@
   }
 }
 
-@media (max-width: 680px) {
+@media (max-width: 970px) {
   #runs {
     padding: 2px 2px 6px;
     --metric-gap: 4px;
@@ -1039,12 +1057,14 @@
    * (#2610, widened #2798), copy still its own fixed column so it stays
    * under every other run's copy button. On the left line, the
    * collector's sub-target hides — lower priority than the agent name
-   * and the snippet, which keep truncating with an ellipsis. #2798 moved
-   * this from ~460px to 680px (an intermediate 900px, while the in/out
-   * tok/s and cache % tracks were still wider, has since been narrowed
-   * away) — see the responsive-tracks comment above for how that floor
-   * was found: the single-row layout clips below ~656–660px, so 680px
-   * keeps a margin above that. */
+   * and the snippet, which keep truncating with an ellipsis (never down
+   * to nothing — see `.run-left`'s own floor). #2798 moved this from
+   * ~460px, through an intermediate 680px that accounted for the
+   * right-hand grid alone, to 970px once `.run-left`/`.row-left` carried
+   * a real minimum width of their own too — see the responsive-tracks
+   * comment above for how that floor was found: the single-row layout's
+   * copy button starts clipping below ~955–960px, so 970px keeps a
+   * margin above that. */
   .run-header {
     padding: 9px 10px;
     gap: 6px 10px;
