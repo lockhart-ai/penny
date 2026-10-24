@@ -136,11 +136,22 @@ def test_is_embedded_call_as_text_catches_a_call_object_after_prose():
 
 
 def test_is_embedded_call_as_text_catches_textual_call_syntax():
-    """A draft that writes the call as ``tool_name(...identifier=...)`` prose
-    instead of JSON is caught the same way, keyed to the live registry."""
+    """A draft that writes the call as ``tool_name(arg=...)`` prose instead of
+    JSON is caught the same way, keyed to the live registry — a real argument
+    name followed by ``=``, not the literal word ``identifier``."""
     assert is_embedded_call_as_text(
-        "Let me grab that — generate_image(identifier=42)", REGISTERED_TOOLS
+        'Sure!\n\ngenerate_image(description="a lighthouse")', REGISTERED_TOOLS
     )
+
+
+def test_is_embedded_call_as_text_textual_syntax_never_flags_lookalikes():
+    """Word-boundary anchored on the tool name, and anchored on ``(`` itself —
+    a longer word ending in a tool's name, or a mention with a space before the
+    parenthesis, must not trip it."""
+    # "rebrowse(" ends in "browse(" but is a different identifier entirely.
+    assert not is_embedded_call_as_text('rebrowse(x="1")', REGISTERED_TOOLS)
+    # A parenthetical aside after the tool's name, not a call at all.
+    assert not is_embedded_call_as_text("I'll browse (quickly) for that", REGISTERED_TOOLS)
 
 
 def test_is_embedded_call_as_text_never_flags_ordinary_prose_or_mentions():

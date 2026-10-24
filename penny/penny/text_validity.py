@@ -285,7 +285,10 @@ def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) ->
         one, must not trip this) or carries the framework-injected ``reasoning``
         key (:func:`is_call_as_text_bail`'s own bare-args discriminator); or
       - the textual call syntax a draft sometimes falls back to instead of JSON —
-        ``registered_tool_name(`` followed later in the text by ``identifier=``.
+        ``registered_tool_name(`` followed by an argument name and ``=`` (e.g.
+        ``generate_image(description="…")``), word-boundary anchored on the tool
+        name so it never fires inside a longer word (``rebrowse(`` is not
+        ``browse(``).
     """
     return _has_embedded_call_object(content, registered_tools) or _has_textual_call_syntax(
         content, registered_tools
@@ -318,13 +321,16 @@ def _is_call_shaped_object(parsed: dict, registered_tools: Collection[str]) -> b
 
 
 def _has_textual_call_syntax(content: str, registered_tools: Collection[str]) -> bool:
-    """``registered_tool_name(`` followed later by ``identifier=`` — the textual
-    call syntax some drafts fall back to instead of JSON."""
-    for name in registered_tools:
-        start = content.find(f"{name}(")
-        if start != -1 and "identifier=" in content[start:]:
-            return True
-    return False
+    """``registered_tool_name(`` followed by an argument name and ``=`` — the
+    textual call syntax some drafts fall back to instead of JSON (e.g.
+    ``generate_image(description="…")``).  One compiled alternation over every
+    registered name, each ``re.escape``d and ``\\b``-anchored so a longer word
+    ending in a tool's name (``rebrowse(``) never matches."""
+    if not registered_tools:
+        return False
+    names = "|".join(re.escape(name) for name in registered_tools)
+    pattern = re.compile(rf"\b(?:{names})\(\s*[A-Za-z_]\w*\s*=")
+    return bool(pattern.search(content))
 
 
 def has_leaked_harmony_envelope(content: str) -> bool:
