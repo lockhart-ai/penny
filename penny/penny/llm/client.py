@@ -40,7 +40,9 @@ from penny.llm.models import (
     LlmToolCallFunction,
     LlmToolParseError,
     ProviderPin,
+    UsageTiming,
     fault_for_status,
+    usage_timing_from_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -1119,6 +1121,7 @@ class LlmClient:
             return None
         response = _dispatched_response(raw.model_dump()) if raw is not None else None
         fault = getattr(error, "fault", None)
+        timing = usage_timing_from_response(response) if response is not None else UsageTiming()
         return self.db.messages.log_prompt(
             model=self.model,
             messages=messages_snapshot,
@@ -1136,6 +1139,11 @@ class LlmClient:
             call_error_class=type(error).__name__ if error is not None else None,
             call_error_message=str(error) if error is not None else None,
             call_error_fault=fault.value if fault is not None else None,
+            prompt_tokens=timing.prompt_tokens,
+            cached_tokens=timing.cached_tokens,
+            completion_tokens=timing.completion_tokens,
+            prefill_ms=timing.prefill_ms,
+            generation_ms=timing.generation_ms,
         )
 
 

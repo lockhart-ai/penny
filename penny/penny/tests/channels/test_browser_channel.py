@@ -1727,6 +1727,11 @@ class TestBrowserPromptLogHandlers:
             run_id=run_id,
             run_target=run_target,
             duration_ms=100,
+            prompt_tokens=10,
+            cached_tokens=2,
+            completion_tokens=5,
+            prefill_ms=120,
+            generation_ms=340,
         )
 
     async def _request_prompt_logs(self, channel: BrowserChannel, data: dict | None = None) -> dict:
@@ -2282,6 +2287,14 @@ class TestBrowserPromptLogHandlers:
         assert run["total_input_tokens"] == 10
         assert run["total_output_tokens"] == 5
         assert run["prompts"][0]["input_tokens"] == 10
+        # The five usage/timing columns (#2793) ride the same fetched record, read
+        # straight off the row rather than re-derived from `response`.
+        prompt = run["prompts"][0]
+        assert prompt["prompt_tokens"] == 10
+        assert prompt["cached_tokens"] == 2
+        assert prompt["completion_tokens"] == 5
+        assert prompt["prefill_ms"] == 120
+        assert prompt["generation_ms"] == 340
 
     def test_set_run_outcome(self, tmp_path):
         """set_run_outcome stamps outcome / reason on the last prompt log for a run.
@@ -2365,12 +2378,24 @@ class TestBrowserPromptLogHandlers:
             agent_name="chat",
             run_id="run1",
             duration_ms=200,
+            prompt_tokens=50,
+            cached_tokens=5,
+            completion_tokens=20,
+            prefill_ms=80,
+            generation_ms=410,
         )
         assert logged_id is not None
         assert len(received) == 1
         assert received[0]["run_id"] == "run1"
         assert received[0]["input_tokens"] == 50
         assert received[0]["output_tokens"] == 20
+        # The five usage/timing columns (#2793) ride the same live push, read
+        # straight off the row rather than re-derived from `response`.
+        assert received[0]["prompt_tokens"] == 50
+        assert received[0]["cached_tokens"] == 5
+        assert received[0]["completion_tokens"] == 20
+        assert received[0]["prefill_ms"] == 80
+        assert received[0]["generation_ms"] == 410
         assert len(received_second) == 1
         assert received_second[0]["run_id"] == "run1"
         # No tool call in that response, and no parent linkage — an ordinary

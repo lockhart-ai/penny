@@ -43,6 +43,7 @@ from penny.llm.models import (
     LlmToolCallFunction,
     ProviderPin,
     fault_for_status,
+    usage_timing_from_response,
 )
 
 _HTML_ERROR_BODY = (
@@ -121,8 +122,16 @@ class TestChatPropagatesSummarizedError:
         await client.close()
 
 
-def _completion(content: str, finish_reason: str = "stop"):
-    """A minimal ChatCompletion-shaped response — what the SDK hands ``chat`` back."""
+def _completion(content: str, finish_reason: str = "stop", usage: dict | None = None):
+    """A minimal ChatCompletion-shaped response — what the SDK hands ``chat`` back.
+
+    ``usage``, when given, lands verbatim in ``model_dump()``'s ``"usage"`` key —
+    letting a test hand ``_log_call`` a runner-shaped ``usage`` object exactly as
+    ``raw.model_dump()`` would (the SDK's own ``CompletionUsage``/``PromptTokensDetails``
+    allow extra fields, so oMLX's non-standard duration keys survive it unchanged).
+    Omitted (the default, every existing caller), the dumped dict carries no
+    ``"usage"`` key at all — unchanged from before this parameter existed.
+    """
 
     class _Message:
         role = "assistant"
@@ -139,15 +148,18 @@ def _completion(content: str, finish_reason: str = "stop"):
 
     class _Completion:
         model = "m"
-        usage = None
 
-        def __init__(self, text: str, reason: str) -> None:
+        def __init__(self, text: str, reason: str, usage: dict | None) -> None:
             self.choices = [_Choice(text, reason)]
+            self.usage = usage
 
         def model_dump(self) -> dict:
-            return {"choices": [{"message": {"content": content}}]}
+            dumped: dict = {"choices": [{"message": {"content": content}}]}
+            if usage is not None:
+                dumped["usage"] = usage
+            return dumped
 
-    return _Completion(content, finish_reason)
+    return _Completion(content, finish_reason, usage)
 
 
 class TestReasoningAlwaysOn:
@@ -580,6 +592,90 @@ class TestFaultClassIsAValueNotASentence:
         await client.close()
 
 
+class TestUsageTimingMapping:
+    """``usage_timing_from_response`` (#2793) — the one mapping every runner's own
+    ``usage`` shape goes through, at write time (``LlmClient._log_call``) and in
+    migration 0129's backfill alike. A field the serving runner didn't report is
+    ``None``, never a guessed zero — these cases are what prove that, per shape."""
+
+    def test_omlx_shape_seconds_converted_to_ms(self) -> None:
+        """oMLX puts everything in ``usage``, durations in SECONDS."""
+        timing = usage_timing_from_response(
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "prompt_tokens_details": {"cached_tokens": 20},
+                    "prompt_eval_duration": 0.5,
+                    "generation_duration": 1.2,
+                    "time_to_first_token": 0.1,
+                    "total_time": 1.7,
+                }
+            }
+        )
+        assert timing.prompt_tokens == 100
+        assert timing.completion_tokens == 50
+        assert timing.cached_tokens == 20
+        assert timing.prefill_ms == 500
+        assert timing.generation_ms == 1200
+
+    def test_ollama_native_shape_nanoseconds_converted_to_ms(self) -> None:
+        """Ollama's native API names the same two phases differently, in NANOSECONDS —
+        told apart from oMLX's shape by ``eval_duration`` being present where oMLX's
+        ``generation_duration`` is not, never by a runner name passed in."""
+        timing = usage_timing_from_response(
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "prompt_eval_duration": 500_000_000,
+                    "eval_duration": 1_200_000_000,
+                }
+            }
+        )
+        assert timing.prompt_tokens == 100
+        assert timing.completion_tokens == 50
+        assert timing.cached_tokens is None  # Ollama native reports no cache breakdown here
+        assert timing.prefill_ms == 500
+        assert timing.generation_ms == 1200
+
+    def test_openrouter_shape_has_tokens_but_no_duration_split(self) -> None:
+        """OpenRouter reports cached tokens but no prefill/generation split at all —
+        absence of BOTH duration keys, not a zero-valued one."""
+        timing = usage_timing_from_response(
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "prompt_tokens_details": {"cached_tokens": 20},
+                }
+            }
+        )
+        assert timing.prompt_tokens == 100
+        assert timing.completion_tokens == 50
+        assert timing.cached_tokens == 20
+        assert timing.prefill_ms is None
+        assert timing.generation_ms is None
+
+    def test_no_usage_at_all_maps_every_field_to_none(self) -> None:
+        """A response with no ``usage`` object (a cancelled/timed-out/raised call's
+        literal ``{}``, or a runner that reports none) is every field NULL."""
+        timing = usage_timing_from_response({})
+        assert timing.prompt_tokens is None
+        assert timing.cached_tokens is None
+        assert timing.completion_tokens is None
+        assert timing.prefill_ms is None
+        assert timing.generation_ms is None
+
+    def test_a_present_usage_missing_one_field_maps_that_field_to_none(self) -> None:
+        """A field the runner's ``usage`` simply omits is NULL, not a guessed 0 —
+        unlike the legacy ``_extract_token_usage`` input/output tok counts, which
+        default to 0 for the addon's older tok/s render."""
+        timing = usage_timing_from_response({"usage": {"completion_tokens": 50}})
+        assert timing.prompt_tokens is None
+        assert timing.completion_tokens == 50
+
+
 class TestAConfiguredProviderIsPinned:
     """A configured provider is a hard pin: one upstream, no fallback routing (#2143)."""
 
@@ -852,6 +948,45 @@ class TestCallLoggedHoweverItEnds:
         assert json.loads(row.response)["choices"][0]["message"]["content"] == "ok"
 
     @pytest.mark.asyncio
+    async def test_a_completed_calls_usage_timing_is_persisted_on_the_row(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """``_log_call`` computes ``usage_timing_from_response`` off the real dumped
+        completion and the five columns land on the row (#2793) — the one production
+        chokepoint every call, including a reroll, writes through."""
+
+        async def answer(**kwargs):
+            return _completion(
+                "ok",
+                usage={
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "prompt_tokens_details": {"cached_tokens": 20},
+                    "prompt_eval_duration": 0.5,
+                    "generation_duration": 1.2,
+                },
+            )
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer)
+
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            agent_name="chat",
+            call_link=CallLink.top("run-usage"),
+        )
+        await client.close()
+
+        row = self._one_row(db)
+        assert row.prompt_tokens == 100
+        assert row.completion_tokens == 50
+        assert row.cached_tokens == 20
+        assert row.prefill_ms == 500
+        assert row.generation_ms == 1200
+
+    @pytest.mark.asyncio
     async def test_a_cancelled_call_leaves_one_row_and_still_propagates(
         self, monkeypatch, db: Database
     ) -> None:
@@ -883,6 +1018,10 @@ class TestCallLoggedHoweverItEnds:
         assert row.duration_ms is not None
         assert row.response == "{}"  # never NULL — see migration 0114's own note
         assert json.loads(row.messages)[-1]["content"] == "hi"
+        # No response ever landed, so there's no usage to map — every field NULL,
+        # never a guessed zero (#2793).
+        assert row.prompt_tokens is None
+        assert row.prefill_ms is None
 
     @pytest.mark.asyncio
     async def test_a_raised_call_leaves_one_row_with_its_error(

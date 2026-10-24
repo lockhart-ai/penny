@@ -94,6 +94,19 @@ class PromptLog(SQLModel, table=True):
     # handle.  NULL on rows logged before this column existed and on runs whose
     # surfaces rendered no handles.
     link_handles: str | None = None
+    # Token counts and per-phase timing read off this call's own ``usage`` object
+    # (#2793), via ``penny.llm.models.usage_timing_from_response`` — the one mapping
+    # migration 0129 also replays over every pre-existing row's stored ``response``.
+    # NULL wherever the serving runner didn't report the field, never a guessed
+    # zero: a direct Ollama-compatible endpoint has no prefill/generation split to
+    # report, an OpenRouter response has no cached-token breakdown either way it
+    # fails, and so on. Additive and never model-facing: only the addon serializers
+    # and the live push read these.
+    prompt_tokens: int | None = None
+    cached_tokens: int | None = None
+    completion_tokens: int | None = None
+    prefill_ms: int | None = None
+    generation_ms: int | None = None
 
     def get_trailing_messages(self) -> list[dict]:
         """The trailing turns as message dicts — empty when the run round-tripped

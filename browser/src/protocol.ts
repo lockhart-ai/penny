@@ -282,6 +282,15 @@ export interface PromptLogEntry {
   // distinguishes it.  discard_detail is the optional detail string.
   discard_reason: string | null;
   discard_detail: string | null;
+  // Token counts and per-phase timing read off this call's own `usage` (#2793) —
+  // null wherever the serving runner didn't report the field, never a guessed
+  // zero. `prefill_ms`/`generation_ms` are null for a runner (e.g. OpenRouter)
+  // that reports no prefill/generation split at all.
+  prompt_tokens: number | null;
+  cached_tokens: number | null;
+  completion_tokens: number | null;
+  prefill_ms: number | null;
+  generation_ms: number | null;
 }
 
 export interface PromptLogRun {

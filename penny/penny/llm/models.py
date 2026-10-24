@@ -181,6 +181,95 @@ class ProviderPin(BaseModel):
         return {"order": [self.provider], "allow_fallbacks": False}
 
 
+# ── Usage & timing ───────────────────────────────────────────────────────
+
+# A duration field present only on a response whose ``usage`` carries oMLX's own
+# shape (seconds) — its presence, not any passed-in runner identity, is what tells
+# an oMLX response apart from Ollama's native one below, which names its own
+# generation duration differently.
+_OMLX_GENERATION_FIELD = "generation_duration"
+_OMLX_PREFILL_FIELD = "prompt_eval_duration"
+
+# Ollama's native API (``/api/chat``, not the OpenAI-compatible endpoint Penny's
+# chat path actually calls today) reports the same two phases in nanoseconds,
+# under its own field names — ``eval_duration`` only ever appears on that shape,
+# so its presence is what tells the two apart.
+_OLLAMA_GENERATION_FIELD = "eval_duration"
+_OLLAMA_PREFILL_FIELD = "prompt_eval_duration"
+
+_NANOSECONDS_PER_MS = 1_000_000
+_MS_PER_SECOND = 1_000
+
+
+class UsageTiming(BaseModel):
+    """Token counts and per-phase timing read off one call's own ``usage`` object
+    (#2793) — every field ``None`` where the serving runner didn't report it,
+    never a guessed zero, so a reader can tell "ran instantly" from "not measured".
+
+    ``prompt_tokens``/``completion_tokens``/``cached_tokens`` share one field shape
+    across every runner this reads (OpenAI's own ``usage.prompt_tokens`` /
+    ``usage.completion_tokens`` / ``usage.prompt_tokens_details.cached_tokens``).
+    ``prefill_ms``/``generation_ms`` do not: each runner names and units its own
+    phase split differently, so :func:`usage_timing_from_response` tells them apart
+    structurally, by which duration field is actually present, never by a runner
+    name passed in from outside.
+    """
+
+    prompt_tokens: int | None = None
+    cached_tokens: int | None = None
+    completion_tokens: int | None = None
+    prefill_ms: int | None = None
+    generation_ms: int | None = None
+
+
+def usage_timing_from_response(response: dict) -> UsageTiming:
+    """:class:`UsageTiming` for one dumped completion's own ``usage`` object.
+
+    Called from the one chokepoint that logs a ``promptlog`` row (``LlmClient``'s
+    ``_log_call``) and, identically, from migration 0129's backfill over every
+    existing row's stored ``response`` — one mapping, never two.
+    """
+    usage = response.get("usage") or {}
+    prefill_ms, generation_ms = _duration_ms_pair(usage)
+    return UsageTiming(
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+        prefill_ms=prefill_ms,
+        generation_ms=generation_ms,
+    )
+
+
+def _duration_ms_pair(usage: dict) -> tuple[int | None, int | None]:
+    """``(prefill_ms, generation_ms)`` for whichever runner shape ``usage`` carries.
+
+    oMLX's ``generation_duration`` (seconds) and Ollama native's ``eval_duration``
+    (nanoseconds) never both appear on the same response, so checking for one
+    after the other — rather than requiring the caller to say which runner this
+    is — is exact, not a guess. OpenRouter (and anything else reporting neither)
+    returns ``(None, None)``: no prefill/generation split, not a zero one.
+    """
+    if _OMLX_GENERATION_FIELD in usage:
+        return (
+            _seconds_to_ms(usage.get(_OMLX_PREFILL_FIELD)),
+            _seconds_to_ms(usage.get(_OMLX_GENERATION_FIELD)),
+        )
+    if _OLLAMA_GENERATION_FIELD in usage:
+        return (
+            _nanoseconds_to_ms(usage.get(_OLLAMA_PREFILL_FIELD)),
+            _nanoseconds_to_ms(usage.get(_OLLAMA_GENERATION_FIELD)),
+        )
+    return None, None
+
+
+def _seconds_to_ms(seconds: float | None) -> int | None:
+    return round(seconds * _MS_PER_SECOND) if seconds is not None else None
+
+
+def _nanoseconds_to_ms(nanoseconds: float | None) -> int | None:
+    return round(nanoseconds / _NANOSECONDS_PER_MS) if nanoseconds is not None else None
+
+
 # ── Error types ──────────────────────────────────────────────────────────
 
 

@@ -469,6 +469,11 @@ class MessageStore:
         call_error_class: str | None = None,
         call_error_message: str | None = None,
         call_error_fault: str | None = None,
+        prompt_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        prefill_ms: int | None = None,
+        generation_ms: int | None = None,
     ) -> int | None:
         """Log a prompt/response exchange with Ollama.
 
@@ -483,7 +488,13 @@ class MessageStore:
 
         Returns the row's id (#2702) — a rejection site that later discards this
         call's output marks the row by it (``mark_prompt_discarded``); ``None``
-        only when the write failed."""
+        only when the write failed.
+
+        ``prompt_tokens``/``cached_tokens``/``completion_tokens``/``prefill_ms``/
+        ``generation_ms`` (#2793) are the caller's own ``UsageTiming`` mapping of
+        this call's ``response`` — computed once, by the one caller that has the
+        raw response (``LlmClient._log_call``), and stored verbatim; this method
+        does no mapping of its own."""
         response_payload = response if response is not None else {}
         try:
             with self._session() as session:
@@ -504,6 +515,11 @@ class MessageStore:
                     call_error_class=call_error_class,
                     call_error_message=call_error_message,
                     call_error_fault=call_error_fault,
+                    prompt_tokens=prompt_tokens,
+                    cached_tokens=cached_tokens,
+                    completion_tokens=completion_tokens,
+                    prefill_ms=prefill_ms,
+                    generation_ms=generation_ms,
                     timestamp=self._clock.now(),
                 )
                 session.add(log)
@@ -586,6 +602,11 @@ class MessageStore:
                 "call_error_message": log.call_error_message,
                 "discard_reason": log.discard_reason,
                 "discard_detail": log.discard_detail,
+                "prompt_tokens": log.prompt_tokens,
+                "cached_tokens": log.cached_tokens,
+                "completion_tokens": log.completion_tokens,
+                "prefill_ms": log.prefill_ms,
+                "generation_ms": log.generation_ms,
             }
         )
 
@@ -2143,6 +2164,11 @@ class MessageStore:
             "call_error_message": p.call_error_message,
             "discard_reason": p.discard_reason,
             "discard_detail": p.discard_detail,
+            "prompt_tokens": p.prompt_tokens,
+            "cached_tokens": p.cached_tokens,
+            "completion_tokens": p.completion_tokens,
+            "prefill_ms": p.prefill_ms,
+            "generation_ms": p.generation_ms,
         }
 
     @staticmethod
