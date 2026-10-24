@@ -470,11 +470,11 @@ class TestNextOccurrenceMinuteAnchoring:
     def test_byhour_only_schedule_stays_on_the_hour_across_a_dst_boundary(self):
         """#2775 holds on both sides of a DST boundary too — the hour is read on the
         user's WALL clock (#1932), which is a different UTC offset before and after the
-        2026-11-01 fall-back in America/Toronto, while the minute stays zero throughout.
+        2026-11-01 fall-back in America/New_York, while the minute stays zero throughout.
         ``after`` is passed explicitly on both sides (rather than relying on the rule's
         own first occurrence) so each assertion names exactly the occurrence it means."""
         created = datetime(2026, 10, 19, 8, 41, tzinfo=UTC)  # well before the boundary
-        zone = "America/Toronto"
+        zone = "America/New_York"
         # Before the fall-back (Oct 31): 19:00 local (EDT, UTC-4) is 23:00 UTC.
         assert next_occurrence(
             "FREQ=DAILY;BYHOUR=19", created, zone, after=datetime(2026, 10, 30, 23, 0, tzinfo=UTC)
@@ -493,7 +493,7 @@ class TestExpiresAtGrammar:
     # A fixed 'now' so relative words resolve deterministically: 20:00 UTC = 16:00 in
     # the user's zone, the wall clock their words are counted from.
     _NOW = datetime(2026, 8, 9, 20, 0, tzinfo=UTC)
-    _ZONE = "America/Toronto"
+    _ZONE = "America/New_York"
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -507,13 +507,13 @@ class TestExpiresAtGrammar:
             # A NAIVE ISO value is a wall-clock reading with no zone of its own, so it
             # is read on the USER's clock (#2206) — never defaulted to UTC, which put a
             # bounded watch's end hours away from the evening it was asked for.
-            # America/Toronto is EDT (UTC-4) on this date.
+            # America/New_York is EDT (UTC-4) on this date.
             ("2026-09-01 09:00", datetime(2026, 9, 1, 13, 0, tzinfo=UTC)),
             ("2026-09-01", datetime(2026, 9, 1, 4, 0, tzinfo=UTC)),
             # The exact naive shape a live model wrote for ``expires_at`` on an
             # end-to-end eval run (#2455 naive baseline) — pinned literally so a
             # regression back to a UTC default shows here, not only three hours off
-            # in a live-model report. America/Toronto is still EDT (UTC-4) in October.
+            # in a live-model report. America/New_York is still EDT (UTC-4) in October.
             ("2026-10-18T22:00:00", datetime(2026, 10, 19, 2, 0, tzinfo=UTC)),
             # Words, read in the user's zone: 10pm where they are is 02:00 UTC next day.
             ("10pm today", datetime(2026, 8, 10, 2, 0, tzinfo=UTC)),
@@ -580,7 +580,7 @@ class TestExpiresAtGrammar:
     def test_a_distant_but_meanable_end_date_still_lands(self):
         """The over-correction guard: the rule is a horizon, not a suspicion of
         distance.  A decade out is still a date someone can point at, so it is stored as
-        one.  Naive, so it's read on the user's clock (#2206) — America/Toronto is EST
+        one.  Naive, so it's read on the user's clock (#2206) — America/New_York is EST
         (UTC-5) in January."""
         assert parse_expires_at("2036-01-01", self._ZONE, self._NOW) == datetime(
             2036, 1, 1, 5, 0, tzinfo=UTC
@@ -659,7 +659,7 @@ class TestScheduleRoundTrip:
             sender="test-user",
             name="Test User",
             location="Somewhere",
-            timezone="America/Toronto",
+            timezone="America/New_York",
             date_of_birth="1990-01-01",
         )
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(

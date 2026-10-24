@@ -1609,7 +1609,7 @@ _EX2_USER = (
     "browser experimentation program called northlight. i'm a musician, i play guitar, "
     "i record my own music in my home studio, i play video games, i love music i "
     "collect vinyls. my partner is jess and she's my best friend. i've been fostering "
-    "cats lately, currently i have misty.\n\n"
+    "cats lately, currently i have jasper.\n\n"
     "i guess that's a lot of info for you to remember to start."
 )
 _EX2_REPLY = (
@@ -1618,7 +1618,7 @@ _EX2_REPLY = (
     "Wow, that is a lot of great info, but it's so helpful! I'm officially caught up. "
     "It sounds like you have a really full, creative life—between the work on "
     "Northlight at Skylark and recording your own music, you must stay pretty busy. "
-    "I'd love to hear more about your music or how Misty is doing whenever you want to "
+    "I'd love to hear more about your music or how Jasper is doing whenever you want to "
     "chat about it! 🎸"
 )
 _EX2_ANNOUNCEMENTS = (
@@ -1709,7 +1709,7 @@ _PROFILE_ENTRIES = (
         "Plays guitar and records music in a home studio; plays video games; collects vinyls.",
     ),
     ("relationships", "Partner Jess — she's my best friend."),
-    ("pets", "Fosters cats; currently fostering Misty."),
+    ("pets", "Fosters cats; currently fostering Jasper."),
 )
 _BROWSE_ENTRIES = (
     "OregonLive — top stories: Ferry service returns to Hood River after week of storm "

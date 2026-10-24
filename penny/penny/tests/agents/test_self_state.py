@@ -261,8 +261,8 @@ def _add_user(db: Database) -> None:
             UserInfo(
                 sender=USER,
                 name="Alex",
-                location="Toronto, Canada",
-                timezone="America/Toronto",
+                location="New York, USA",
+                timezone="America/New_York",
                 date_of_birth="1990-01-01",
             )
         )
@@ -1193,8 +1193,8 @@ _KITCHEN_SINK = (
     "\n"
     "### About the user\n"
     "- name: Alex\n"
-    "- timezone: America/Toronto\n"
-    "- location: Toronto, Canada\n"
+    "- timezone: America/New_York\n"
+    "- location: New York, USA\n"
     "\n"
     "To look deeper: memory_get(<name>) for a collection's full config and change history, "
     "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "
@@ -1226,8 +1226,8 @@ _SCHEDULE_MECH = (
     "\n"
     "### About the user\n"
     "- name: Alex\n"
-    "- timezone: America/Toronto\n"
-    "- location: Toronto, Canada\n"
+    "- timezone: America/New_York\n"
+    "- location: New York, USA\n"
     "\n"
     "To look deeper: memory_get(<name>) for a collection's full config and change history, "
     "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "

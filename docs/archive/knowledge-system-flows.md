@@ -183,5 +183,5 @@ sequenceDiagram
     User->>Penny: "/learn"
     Penny->>DB: LearnPrompt → SearchLogs → Facts → Entities
 
-    Penny->>User: 1) 'speakers' ✓ — wharfedale (17), kef (8)<br/>2) 'ai conferences' ... — ml prague (3)
+    Penny->>User: 1) 'speakers' ✓ — wharfedale (17), kef (8)<br/>2) 'ai conferences' ... — neurips (3)
 ```

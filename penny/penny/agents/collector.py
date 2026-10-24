@@ -133,7 +133,7 @@ class Collector(BackgroundAgent):
     # ``memory`` row.  These are *behaviour* invariants — not authoring
     # guidance — so they're attached structurally rather than relied on
     # the prompt-writer to include.  Penny dropped the provenance line
-    # in the first prague-highlights prompt she wrote even though the
+    # in the first job prompt she wrote for a user-authored collection even though the
     # chat-facing guide called for it; structural enforcement is the
     # fix.  Class-scoped so subclasses (none yet) could override if a
     # different runtime contract emerged.

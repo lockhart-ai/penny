@@ -120,7 +120,7 @@ Queued learning
    - wharfedale denton 85 (17 facts)
    - kef ls50 meta (8 facts)
 2) 'ai conferences in europe' ...
-   - ml prague 2026 (3 facts)
+   - neurips 2026 (3 facts)
 ```
 
 The chain: `LearnPrompt → SearchLog (via learn_prompt_id) → Fact (via source_search_log_id) → Entity (via entity_id)`

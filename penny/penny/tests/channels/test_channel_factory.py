@@ -82,8 +82,8 @@ async def test_signal_primary_registers_the_existing_profiles_number(make_config
     db.users.save_info(
         sender=_USER_NUMBER,
         name="user",
-        location="Toronto",
-        timezone="America/Toronto",
+        location="New York",
+        timezone="America/New_York",
         date_of_birth="1990-01-01",
     )
     config = make_config(channel_type=ChannelType.SIGNAL)
@@ -109,8 +109,8 @@ async def test_signal_primary_reclaims_a_stale_penny_number_default(make_config,
     db.users.save_info(
         sender=_USER_NUMBER,
         name="user",
-        location="Toronto",
-        timezone="America/Toronto",
+        location="New York",
+        timezone="America/New_York",
         date_of_birth="1990-01-01",
     )
 

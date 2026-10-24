@@ -408,7 +408,7 @@ _RRULE_STAMP = "%Y%m%dT%H%M%SZ"
 _LOCAL_MORNING = "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"
 # A zone that is NOT UTC in both directions and observes DST, so a local hour and a UTC
 # hour can never coincide by accident and the fall-back is testable.
-_USER_ZONE = "America/Toronto"
+_USER_ZONE = "America/New_York"
 
 
 def _set_profile_timezone(db: Database, timezone: str) -> None:

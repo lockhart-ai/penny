@@ -87,10 +87,10 @@ async def get_timezone(location: str) -> str | None:
     Derive IANA timezone from natural language location.
 
     Args:
-        location: Natural language location (e.g., "Toronto, Canada")
+        location: Natural language location (e.g., "New York, USA")
 
     Returns:
-        IANA timezone string (e.g., "America/Toronto") or None if lookup failed
+        IANA timezone string (e.g., "America/New_York") or None if lookup failed
     """
     if not HAS_GEO:
         logger.error("Geopy/timezonefinder not available")

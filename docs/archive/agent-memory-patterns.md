@@ -215,7 +215,7 @@ class SemanticStore:
         return [f for f, _ in scored[:n]]
 ```
 
-**Key pattern — Fact Conflict Resolution:** When the agent learns "user lives in Toronto" but already knows "user lives in Montreal," it needs a strategy. Common approaches: last-write-wins (simple but lossy), LLM-mediated resolution (smarter but more expensive), or temporal validity tracking (mark the old fact as expired, keep both with date ranges).
+**Key pattern — Fact Conflict Resolution:** When the agent learns "user lives in New York" but already knows "user lives in Montreal," it needs a strategy. Common approaches: last-write-wins (simple but lossy), LLM-mediated resolution (smarter but more expensive), or temporal validity tracking (mark the old fact as expired, keep both with date ranges).
 
 ---
 

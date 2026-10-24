@@ -936,17 +936,15 @@ def _seed_world(db: Database) -> None:
         arguments={
             "items": [
                 {
-                    "query": "RX 9070 XT specifications VRAM",
+                    "query": "Linea Mini vs Silvia Pro X boiler temperature",
                     "looking_for": (
-                        "the two cards' memory sizes and what running large models on a pair "
-                        "of them takes"
+                        "the two machines' boiler temperature stability and steam recovery times"
                     ),
                 },
                 {
-                    "query": "running local LLMs on RX 9070 XT dual cards",
+                    "query": "Rancilio Silvia Pro X dual boiler specifications",
                     "looking_for": (
-                        "the two cards' memory sizes and what running large models on a pair "
-                        "of them takes"
+                        "the two machines' boiler temperature stability and steam recovery times"
                     ),
                 },
             ]
@@ -954,7 +952,7 @@ def _seed_world(db: Database) -> None:
         result=ToolResult(
             message=_EX0_BROWSE_BODY,
             success=True,
-            source_urls=["https://www.tomshardware.com/pc-components/gpus/rx-9070-xt-specs"],
+            source_urls=["https://www.coffeereview.com/comparison/linea-mini-vs-silvia-pro-x/"],
         ),
         reply=_EX0_REPLY,
     )
@@ -969,7 +967,7 @@ def _seed_world(db: Database) -> None:
                 {
                     "query": _EX1_BROWSE_URL,
                     "looking_for": (
-                        "the token-per-second rates and the models they were measured on"
+                        "the temperature stability and steam recovery figures for the two machines"
                     ),
                 }
             ]

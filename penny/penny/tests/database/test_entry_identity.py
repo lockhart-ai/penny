@@ -66,8 +66,8 @@ def _decide(stub: DecisionClient, entries: list[EntryInput], existing: list[Entr
         plans=plans,
         entries=entries,
         existing=existing,
-        collection_name="anime_to_watch",
-        collection_description="Anime the user wants to watch",
+        collection_name="book_club_picks",
+        collection_description="Books the user wants to read",
     )
 
 

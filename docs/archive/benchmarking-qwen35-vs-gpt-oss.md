@@ -152,7 +152,7 @@ This is where things fall apart. Out of 11 benchmarks:
 
 - **Entity ID from search** (#3): A news article search result. qwen put 14 items in the "known" list including "strait of hormuz", "galápagos", and "cyberpunk: edgerunners" — none of which were in the actual known entity list. It also created new entities for "russia", "ukraine", "kyiv", "nigeria" — all locations/countries that the prompt rules explicitly say to skip. gpt-oss correctly identified 1 known entity and 8 new entities, all following the naming and filtering rules.
 
-- **Schedule parsing** (#8): The prompt says `User timezone: America/Toronto` and the user input is "daily 9:30am." gpt-oss correctly returned `"cron_expression": "30 9 * * *"` (9:30 AM in the user's timezone). qwen returned `"30 14 * * *"` — it converted to UTC, ignoring the timezone instruction in the prompt.
+- **Schedule parsing** (#8): The prompt says `User timezone: America/New_York` and the user input is "daily 9:30am." gpt-oss correctly returned `"cron_expression": "30 9 * * *"` (9:30 AM in the user's timezone). qwen returned `"30 14 * * *"` — it converted to UTC, ignoring the timezone instruction in the prompt.
 
 - **Chat with tools** (#5): Neither model actually invoked the search tool (both answered from training data), but qwen was also 2x slower.
 

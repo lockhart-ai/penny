@@ -1913,13 +1913,13 @@ class TestParallelToolCalls:
 
         await tool.execute(
             CallLink.new_top(),
-            items=[{"query": "best pizza toronto", "looking_for": "the page content"}],
+            items=[{"query": "best pizza new york", "looking_for": "the page content"}],
         )
 
         assert len(browsed_urls) == 1
         search_url = list(browsed_urls.keys())[0]
         assert search_url.startswith("https://duckduckgo.com/?q=")
-        assert "best%20pizza%20toronto" in search_url
+        assert "best%20pizza%20new%20york" in search_url
 
     @pytest.mark.asyncio
     async def test_text_queries_fail_without_browser(self, test_db, mock_llm, monkeypatch):
@@ -1941,7 +1941,7 @@ class TestParallelToolCalls:
         result = await tool.execute(
             CallLink.new_top(),
             items=[
-                {"query": "best pizza toronto", "looking_for": "the page content"},
+                {"query": "best pizza new york", "looking_for": "the page content"},
                 {"query": "https://example.test/a", "looking_for": "the page content"},
                 {"query": "https://example.test/b", "looking_for": "the page content"},
             ],

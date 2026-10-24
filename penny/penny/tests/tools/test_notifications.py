@@ -31,8 +31,8 @@ def _register_user(db: Database) -> None:
     db.users.save_info(
         sender=_RECIPIENT,
         name="user",
-        location="Toronto",
-        timezone="America/Toronto",
+        location="New York",
+        timezone="America/New_York",
         date_of_birth="1990-01-01",
     )
 

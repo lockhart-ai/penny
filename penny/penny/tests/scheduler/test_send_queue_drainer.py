@@ -54,8 +54,8 @@ def _make_db(tmp_path) -> Database:
     db.users.save_info(
         sender=_RECIPIENT,
         name="user",
-        location="Toronto",
-        timezone="America/Toronto",
+        location="New York",
+        timezone="America/New_York",
         date_of_birth="1990-01-01",
     )
     # #2765: production now seeds the Signal default device as the USER's own
@@ -283,8 +283,8 @@ async def test_drainer_falls_back_to_primary_sender_with_no_default_device(tmp_p
     db.users.save_info(
         sender=_RECIPIENT,
         name="user",
-        location="Toronto",
-        timezone="America/Toronto",
+        location="New York",
+        timezone="America/New_York",
         date_of_birth="1990-01-01",
     )
     drainer = _make_drainer(db, _make_channel())

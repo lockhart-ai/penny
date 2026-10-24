@@ -46,7 +46,7 @@ DEGENERATE = [
     "...??…?..?????..?",
     "… ……?? ……………?????",
     "AI\xa0……?",
-    "New Prague\xa0…\xa0…\xa0…\xa0…\xa0…",
+    "San Diego\xa0…\xa0…\xa0…\xa0…\xa0…",
     "Delivered deliver...???",
     "the summary is ...??",
     "...…………—………... !…..",
