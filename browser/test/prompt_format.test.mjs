@@ -164,8 +164,19 @@ test("the collapsed row's text reads N earlier messages, singular at 1", () => {
 // --- Prefill speed, generation speed, cache hit rate (#2798) ---
 
 test("tokens per second divides tokens by the duration in seconds", () => {
-  assert.equal(formatTokensPerSecond(500, 2000), "250.0");
-  assert.equal(formatTokensPerSecond(123, 1000), "123.0");
+  assert.equal(formatTokensPerSecond(45, 600), "75.0");
+  assert.equal(formatTokensPerSecond(41, 1000), "41.0");
+});
+
+test("tokens per second rounds to a whole number from 100 up — a fraction of a token is noise there", () => {
+  assert.equal(formatTokensPerSecond(500, 350), "1429");
+  assert.equal(formatTokensPerSecond(900, 100), "9000");
+  assert.equal(formatTokensPerSecond(410, 3200), "128");
+});
+
+test("tokens per second keeps one decimal below 100 — the only digit of precision it has", () => {
+  assert.equal(formatTokensPerSecond(300, 4000), "75.0");
+  assert.equal(formatTokensPerSecond(990, 10_000), "99.0");
 });
 
 test("tokens per second is — when either input is null, never a guessed 0", () => {

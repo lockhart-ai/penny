@@ -43,13 +43,18 @@ export function formatStepCount(count: number): string {
 // guessed 0 — the same "visible degradation" rule every other null-tolerant
 // cell on this tab already follows.
 
-/** tokens ÷ (ms / 1000), formatted to one decimal — the shared shape behind
- * both "in tok/s" (`prompt_tokens`/`prefill_ms`) and "out tok/s"
- * (`completion_tokens`/`generation_ms`). "—" when either input is null or
- * the duration is zero (nothing elapsed to divide by). */
+/** tokens ÷ (ms / 1000) — the shared shape behind both "in tok/s"
+ * (`prompt_tokens`/`prefill_ms`) and "out tok/s" (`completion_tokens`/
+ * `generation_ms`). "—" when either input is null or the duration is zero
+ * (nothing elapsed to divide by). One decimal below 100 (where it's the
+ * only digit of precision at all, "75.0"); a whole number from 100 up
+ * ("1429", not "1428.6") — a fraction of a token per second is noise once
+ * the figure itself is three or four digits, and the extra digit only
+ * widens the column. */
 export function formatTokensPerSecond(tokens: number | null, ms: number | null): string {
   if (tokens === null || ms === null || ms <= 0) return "—";
-  return ((tokens / ms) * 1000).toFixed(1);
+  const rate = (tokens / ms) * 1000;
+  return rate < 100 ? rate.toFixed(1) : String(Math.round(rate));
 }
 
 /** The cache-hit percentage for one call: `cached_tokens / prompt_tokens`,

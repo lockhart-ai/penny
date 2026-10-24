@@ -946,8 +946,9 @@ function createMetricCell(cls: string, iconClass: string, value: string, unit = 
 
 // The metric cells ride in two group spans: `display: contents` keeps them
 // as direct participants of the one shared grid at every width, while the
-// ~460px breakpoint turns the groups into the two stacked sub-rows the
-// narrow layout is built from (#2610).
+// ~680px breakpoint (#2798; was ~460px before the grid widened to nine
+// tracks) turns the groups into the two stacked sub-rows the narrow
+// layout is built from (#2610).
 function createMetricGroup(kind: "a" | "b"): HTMLElement {
   const group = document.createElement("span");
   group.className = `metric-group metric-group-${kind}`;
