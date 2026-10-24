@@ -1300,6 +1300,15 @@ class TestCollectionUpdateScheduleAtApply:
         stickiness the rule exists to end would survive it.  The removal is recorded as a
         change like any other, so the row does not quietly differ from the ledger."""
         _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
+        # Pin created_at to the fixed moment `_row_with_schedule` uses (rather than the
+        # fixture's "now") so the next-run clause (#2775) below is an exact literal, not
+        # a tautological re-call of `describe_schedule` on whatever it happens to return.
+        with Session(db.engine) as session:
+            row = session.get(MemoryRow, "watch")
+            assert row is not None
+            row.created_at = _SCHEDULE_ROW_CREATED
+            session.add(row)
+            session.commit()
         db.memories.update_collection_metadata(
             "watch", expires_at=datetime(2099, 12, 31, tzinfo=UTC)
         )
@@ -1307,19 +1316,16 @@ class TestCollectionUpdateScheduleAtApply:
             CallLink.new_top(), name="watch", expires_at="2099-12-31T00:00:00Z"
         )
         assert result.success
-        memory = db.memories.get("watch")
-        assert memory.expires_at is None
+        assert db.memories.get("watch").expires_at is None
         event = next(e for e in db.mutations.history("watch", 5) if e.run_id == "run-x")
         assert "expires_at" in mutation_change_summary(event)
         # Whole render: the echo now states the expiry too (#2251) — what it was
         # before this call, and what it came to — so the note isn't the only thing
-        # that tells the turn what became of the value it passed.  The schedule line's
-        # next-run clause (#2775) is read off the row's own stored ``created_at``
-        # rather than hardcoded — the fixture seeds it at "now", so a literal stamp
-        # would flake on every run.
+        # that tells the turn what became of the value it passed.
         assert result.message == (
             "Updated collection 'watch':\n"
-            f"  schedule: {describe_schedule(memory, None)}\n"
+            "  schedule: every hour (rule: `FREQ=HOURLY`), "
+            "next run Thursday, July 02, 2026 at 09:00 AM UTC\n"
             "  notify: False\n"
             "  expires: was 2099-12-31 00:00 UTC → now never\n"
             "  description: x\n"

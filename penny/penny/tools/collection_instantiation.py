@@ -608,7 +608,7 @@ def _describe_rule_with_span(rule: str, clause: str, timezone_name: str | None) 
 _NEXT_RUN_CLAUSE = ", next run {when}"
 
 
-def _next_run_clause(row: MemoryRow, timezone_name: str | None) -> str:
+def _next_run_clause(row: MemoryRow, schedule: str, timezone_name: str | None) -> str:
     """The same occurrence the readiness gate (``Collector._schedule_due``) is waiting
     on, read on the user's clock and rendered as a trailing clause — empty when the rule
     has no occurrence left (a spent ``COUNT=``, a passed ``UNTIL=``), so a retired
@@ -617,14 +617,13 @@ def _next_run_clause(row: MemoryRow, timezone_name: str | None) -> str:
     never reaches this for an archived row at all) renders the schedule clause on every
     row regardless of lifecycle, and an archived job has no next run whatever the rule
     alone would compute — it was archived for reasons the rule knows nothing about
-    (a manual archive, not only a spent quota)."""
-    assert (
-        row.schedule is not None
-    )  # callers only reach here once describe_schedule's own check held
+    (a manual archive, not only a spent quota).  ``schedule`` is the caller's own
+    already-non-``None`` ``row.schedule`` — a required parameter rather than an assert
+    re-deriving what the caller already knows, so there is nothing to narrow twice."""
     if row.archived:
         return ""
     next_fire = next_occurrence(
-        row.schedule, row.created_at, timezone_name, after=row.last_collected_at
+        schedule, row.created_at, timezone_name, after=row.last_collected_at
     )
     if next_fire is None:
         return ""
@@ -641,7 +640,7 @@ def describe_schedule(row: MemoryRow, timezone_name: str | None = None) -> str:
     if row.schedule is None:
         return ""
     described = _describe_rule_with_span(row.schedule, render_schedule_clause(row), timezone_name)
-    return f"{described}{_next_run_clause(row, timezone_name)}"
+    return f"{described}{_next_run_clause(row, row.schedule, timezone_name)}"
 
 
 def describe_schedule_field(row: MemoryRow, timezone_name: str | None = None) -> str:
