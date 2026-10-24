@@ -214,8 +214,14 @@ HEALTHY_CYCLE_ENDS: frozenset[CycleEnd] = frozenset(
 # ``_retry_reason``, now read off this table).  ``ABORTED`` renders the abort's own
 # cause when the run carries one (#1909) and falls back to this line when it does not.
 # A foreground message cancels the cycle wherever it happens to be — the timing is the
-# user's, not the collection's — so each of these, attempted a moment later, is a
-# different draw.
+# user's, not the collection's — so ``ABORTED``/``UNFINISHED``, attempted a moment
+# later, is a different draw, and bounding them protects against a collection that
+# fails every time.  ``CANCELLED`` is this table's one EXEMPT entry (#2779): the
+# collector's own ``_settle_occurrence`` reads it before ``_retry_reason`` and retries
+# it unconditionally, never spending one of ``COLLECTOR_RETRY_ATTEMPTS`` — a preemption
+# is not a verdict on the collection's program, so nothing about it should count down a
+# bound meant for genuine failures.  The line below documents the reason only; it is
+# never read through ``_retry_reason`` for this member.
 CYCLE_END_RETRY_REASONS: dict[CycleEnd, str] = {
     CycleEnd.ABORTED: "the cycle's model call died mid-run",
     CycleEnd.CANCELLED: "the cycle was preempted by foreground activity",

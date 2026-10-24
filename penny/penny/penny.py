@@ -349,29 +349,31 @@ class Penny:
         The Collector is a single idle-gated schedule that ticks fast
         (COLLECTOR_TICK_INTERVAL).  Each tick it picks the most-overdue
         collection from ``memory`` (per-row ``schedule``, an RRULE)
-        and runs that collection's extraction prompt.  Idle gating keeps
-        collector work out of the way during active conversation; the
-        store fills up "between conversations".
+        and runs that collection's extraction prompt.  Each schedule carries its
+        OWN idle threshold (#2779): the drainer uses ``IDLE_SECONDS`` (queued
+        autonomous messages never interrupt an active conversation), while the
+        collector waits out the longer ``COLLECTOR_IDLE_SECONDS`` — an ordinary
+        pause in conversation is not long enough to start a cycle that the next
+        message would only restart. A user-requested "run it now" dispatches the
+        collector directly (``Collector.run_for``) and never goes through this gate.
         """
         schedules: list[Schedule] = [
             # Drain before the collector so a queued message is delivered
             # promptly once its cooldown clears, rather than waiting behind a
-            # collection cycle.  Idle-gated: queued autonomous messages never
-            # interrupt an active conversation.
+            # collection cycle.
             PeriodicSchedule(
                 agent=self.send_queue_drainer,
                 interval=lambda: PennyConstants.SEND_QUEUE_DRAIN_INTERVAL,
-                requires_idle=True,
+                idle_threshold=lambda: config.runtime.IDLE_SECONDS,
             ),
             PeriodicSchedule(
                 agent=self.collector,
                 interval=lambda: config.runtime.COLLECTOR_TICK_INTERVAL,
-                requires_idle=True,
+                idle_threshold=lambda: config.runtime.COLLECTOR_IDLE_SECONDS,
             ),
         ]
         self.scheduler = BackgroundScheduler(
             schedules=schedules,
-            idle_threshold=lambda: config.runtime.IDLE_SECONDS,
             tick_interval=config.scheduler_tick_interval,
         )
         self._connect_scheduler(config)
@@ -700,6 +702,7 @@ async def main() -> None:
     logger.info("  llm_model: %s", config.llm_model)
     logger.info("  llm_api_url: %s", config.llm_api_url)
     logger.info("  idle_threshold: %.0fs", config.runtime.IDLE_SECONDS)
+    logger.info("  collector_idle_threshold: %.0fs", config.runtime.COLLECTOR_IDLE_SECONDS)
 
     agent = Penny(config)
     await agent.run()

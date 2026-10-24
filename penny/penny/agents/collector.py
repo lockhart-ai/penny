@@ -570,12 +570,24 @@ class Collector(BackgroundAgent):
         The bound is the stamp's ORIGINAL job, kept whole: a collection failing this
         way every time would otherwise re-attempt on every tick forever.  After
         ``COLLECTOR_RETRY_ATTEMPTS`` the occurrence is consumed whatever happened and
-        the collection waits for its next one.
+        the collection waits for its next one.  ``CANCELLED`` is exempt from that bound
+        (#2779): the timing of a foreground preemption is the USER's, not a verdict on
+        the collection's own program, so it is retried unconditionally and never spends
+        an attempt — measured live, four preemptions in one conversation burned the
+        day's occurrence under the old shared bound, and that day's job never ran.
 
         Returns whether the occurrence was KEPT, which the post-cycle retirement reads:
         a cycle that did not spend its fire must not spend a run of a bounded schedule
         either (``_retire_if_ended``).
         """
+        if end is CycleEnd.CANCELLED:
+            logger.info(
+                "Leaving '%s' due rather than consuming its occurrence — preempted by "
+                "foreground activity; preemption spends no retry attempt",
+                name,
+            )
+            self.db.memories.notify_changed(name)
+            return True
         reason = self._retry_reason(end, response)
         if reason is not None and self._claim_retry(name, trigger):
             logger.info(

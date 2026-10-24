@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
 from typing import Protocol
 
 logger = logging.getLogger(__name__)
@@ -30,12 +29,15 @@ class Schedule:
 
     agent: ScheduledTask
 
-    def should_run(self, is_idle: bool) -> bool:
+    def should_run(self, idle_seconds: float) -> bool:
         """
         Check if the schedule condition is met.
 
         Args:
-            is_idle: True if the system has been idle past the global threshold
+            idle_seconds: Seconds of no foreground activity (elapsed since the last
+                message). Each schedule reads its OWN idle requirement against this —
+                there is no single global threshold any more (#2779): a schedule with
+                no idle requirement of its own just compares against ``0.0``.
 
         Returns:
             True if the task should run now
@@ -57,7 +59,6 @@ class BackgroundScheduler:
     def __init__(
         self,
         schedules: list[Schedule],
-        idle_threshold: Callable[[], float],
         tick_interval: float = 1.0,
     ):
         """
@@ -65,11 +66,9 @@ class BackgroundScheduler:
 
         Args:
             schedules: List of schedules in priority order (first checked first)
-            idle_threshold: Callable returning current idle threshold in seconds (read each tick)
             tick_interval: How often to check schedules in seconds
         """
         self._schedules = schedules
-        self._idle_threshold = idle_threshold
         self._tick_interval = tick_interval
         self._last_message_time = time.monotonic()
         self._running = True
@@ -143,21 +142,16 @@ class BackgroundScheduler:
     async def run(self) -> None:
         """Main scheduler loop."""
         task_names = [s.agent.name for s in self._schedules]
-        logger.info(
-            "Background scheduler started with tasks: %s (idle_threshold=%.0fs)",
-            task_names,
-            self._idle_threshold(),
-        )
+        logger.info("Background scheduler started with tasks: %s", task_names)
 
         while self._running:
             idle_seconds = time.monotonic() - self._last_message_time
-            is_idle = idle_seconds >= self._idle_threshold()
 
             # Skip all background tasks if foreground work is active
             if not self._foreground_active:
                 # Try schedules in priority order; skip agents with no work
                 for schedule in self._schedules:
-                    if schedule.should_run(is_idle):
+                    if schedule.should_run(idle_seconds):
                         agent = schedule.agent
                         self._current_task = agent.name
 

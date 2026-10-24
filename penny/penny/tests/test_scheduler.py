@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from penny.scheduler.base import BackgroundScheduler, Schedule
+from penny.scheduler.schedules import PeriodicSchedule
 from penny.tests.conftest import TEST_SENDER, wait_until
 
 
@@ -54,7 +55,7 @@ class _AlwaysRunSchedule(Schedule):
         self.agent: Any = agent
         self._completed = False
 
-    def should_run(self, is_idle: bool) -> bool:
+    def should_run(self, idle_seconds: float) -> bool:
         return not self._completed
 
     def mark_complete(self) -> None:
@@ -68,7 +69,7 @@ class _AlwaysEligibleSchedule(Schedule):
         self.agent: Any = agent
         self.mark_complete_count = 0
 
-    def should_run(self, is_idle: bool) -> bool:
+    def should_run(self, idle_seconds: float) -> bool:
         return True
 
     def mark_complete(self) -> None:
@@ -82,7 +83,6 @@ async def test_foreground_cancels_active_background_task():
     schedule = _AlwaysRunSchedule(agent)
     scheduler = BackgroundScheduler(
         schedules=[schedule],
-        idle_threshold=lambda: 0.0,
         tick_interval=0.01,
     )
 
@@ -112,7 +112,6 @@ async def test_foreground_during_idle_prevents_task_start():
     schedule = _AlwaysRunSchedule(agent)
     scheduler = BackgroundScheduler(
         schedules=[schedule],
-        idle_threshold=lambda: 0.0,
         tick_interval=0.01,
     )
 
@@ -174,7 +173,6 @@ async def test_scheduler_skips_agents_with_no_work():
 
     scheduler = BackgroundScheduler(
         schedules=[schedule_a, schedule_b],
-        idle_threshold=lambda: 0.0,
         tick_interval=0.01,
     )
 
@@ -213,7 +211,6 @@ async def test_scheduler_mark_complete_always_called():
 
     scheduler = BackgroundScheduler(
         schedules=[schedule_no_work, schedule_has_work],
-        idle_threshold=lambda: 0.0,
         tick_interval=0.01,
     )
 
@@ -245,7 +242,6 @@ async def test_scheduler_breaks_when_agent_does_work():
 
     scheduler = BackgroundScheduler(
         schedules=[schedule_a, schedule_b],
-        idle_threshold=lambda: 0.0,
         tick_interval=0.01,
     )
 
@@ -257,6 +253,48 @@ async def test_scheduler_breaks_when_agent_does_work():
         assert agent_a.execute_count >= 3
         assert agent_b.execute_count == 0, (
             "Lower-priority agent should not run when higher-priority does work"
+        )
+    finally:
+        scheduler.stop()
+        scheduler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduler_task
+
+
+@pytest.mark.asyncio
+async def test_schedules_gate_on_their_own_idle_threshold():
+    """Each PeriodicSchedule reads its OWN idle_threshold against the scheduler's raw
+    idle_seconds (#2779) — there is no single global gate any more. A schedule with a
+    much higher threshold (like the collector's COLLECTOR_IDLE_SECONDS) stays
+    ineligible for as long as its threshold hasn't cleared, while another schedule
+    with a low threshold (like the send-queue drainer's IDLE_SECONDS) becomes eligible
+    almost immediately — in the SAME tick, from the SAME elapsed idle time.
+    """
+    high_threshold_agent = _SimpleAgent("high_threshold", return_value=True)
+    low_threshold_agent = _SimpleAgent("low_threshold", return_value=True)
+
+    # Checked FIRST each tick, so its own should_run is actually exercised and not
+    # merely skipped by priority order.
+    high_threshold_schedule = PeriodicSchedule(
+        agent=high_threshold_agent, interval=lambda: 0.01, idle_threshold=lambda: 999.0
+    )
+    low_threshold_schedule = PeriodicSchedule(
+        agent=low_threshold_agent, interval=lambda: 0.01, idle_threshold=lambda: 0.0
+    )
+
+    scheduler = BackgroundScheduler(
+        schedules=[high_threshold_schedule, low_threshold_schedule],
+        tick_interval=0.01,
+    )
+
+    scheduler_task = asyncio.create_task(scheduler.run())
+    try:
+        await wait_until(lambda: low_threshold_agent.execute_count > 0, timeout=2.0)
+
+        assert low_threshold_agent.execute_count > 0
+        assert high_threshold_agent.execute_count == 0, (
+            "A schedule gated on a much larger idle threshold should stay ineligible "
+            "while another schedule's own (lower) threshold has already cleared"
         )
     finally:
         scheduler.stop()

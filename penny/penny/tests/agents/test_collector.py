@@ -2719,29 +2719,32 @@ async def test_cancelled_cycle_leaves_the_days_occurrence_still_due(
 
 
 @pytest.mark.asyncio
-async def test_retry_bound_consumes_the_occurrence_so_a_cancelled_collection_cant_hot_loop(
-    mock_llm, test_config, tmp_path
-):
-    """The stamp's ORIGINAL job survives the retry (#1935): it exists so a collection
-    that fails every time isn't re-attempted on every tick.
+async def test_repeated_preemption_never_consumes_the_occurrence(mock_llm, test_config, tmp_path):
+    """Preemption is EXEMPT from the retry bound (#2779): the timing of a foreground
+    message is the user's, not a verdict on the collection's own program, so it never
+    spends one of ``COLLECTOR_RETRY_ATTEMPTS``.
 
-    A collection cancelled on every single attempt is re-dispatched a bounded number of
-    times and then has its occurrence consumed anyway, so it drops out of the running
-    and waits for its next fire.
+    OBSERVED LIVE: a daily job was preempted four times while the user chatted, and
+    the fourth preemption consumed the occurrence under the old shared bound — that
+    day's run never happened and nothing said so.  Many MORE than
+    ``COLLECTOR_RETRY_ATTEMPTS`` preemptions in a row must all leave the occurrence
+    due, with no attempt ever recorded against it — only a real failure (an abort, an
+    unfinished program) counts toward that bound.
     """
     collector, db = _make_collector(test_config, tmp_path)
     _seed_daily_briefing(db)
     mock_llm.set_response_handler(_cancel_the_cycle)
 
-    for attempt in range(PennyConstants.COLLECTOR_RETRY_ATTEMPTS):
+    for attempt in range(PennyConstants.COLLECTOR_RETRY_ATTEMPTS * 3):
         with pytest.raises(asyncio.CancelledError):
             await collector.execute()
         assert _get(db, "morning-briefing").last_collected_at is None, attempt
         assert collector._next_ready_collection() is not None, attempt
+        assert collector._retry_attempts == {}, attempt
 
-    # The budget is spent — this attempt consumes the occurrence whatever happened.
-    with pytest.raises(asyncio.CancelledError):
-        await collector.execute()
+    # A later, uninterrupted cycle is the one that finally consumes the occurrence.
+    mock_llm.set_response_handler(_writes_then_closes(mock_llm))
+    assert await collector.execute() is True
 
     assert _get(db, "morning-briefing").last_collected_at is not None
     assert collector._next_ready_collection() is None
@@ -2837,13 +2840,18 @@ async def test_on_demand_attempts_do_not_spend_the_schedules_own_retry_budget(
     assert _get(db, "morning-briefing").last_collected_at is None
 
     # The schedule's own attempt arrives with its budget untouched, so a preemption
-    # still keeps the occurrence rather than burning the day.
+    # still keeps the occurrence rather than burning the day. Preemption is exempt
+    # from the bound entirely (#2779), so it records no attempt under EITHER asker —
+    # the user's spent ON_DEMAND budget stands exactly as the clicks left it.
     mock_llm.set_response_handler(_cancel_the_cycle)
     with pytest.raises(asyncio.CancelledError):
         await collector.execute()
 
     assert _get(db, "morning-briefing").last_collected_at is None
-    assert collector._retry_attempts[("morning-briefing", CycleTrigger.CADENCE)] == 1
+    assert ("morning-briefing", CycleTrigger.CADENCE) not in collector._retry_attempts
+    assert collector._retry_attempts == {
+        ("morning-briefing", CycleTrigger.ON_DEMAND): PennyConstants.COLLECTOR_RETRY_ATTEMPTS
+    }
 
     # A cycle that spends the fire clears every asker's count with it.
     mock_llm.set_response_handler(_writes_then_closes(mock_llm))

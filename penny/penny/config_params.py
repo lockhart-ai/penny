@@ -279,6 +279,21 @@ ConfigParam(
 )
 
 ConfigParam(
+    key="COLLECTOR_IDLE_SECONDS",
+    description=(
+        "Seconds of silence before a due collector cycle may START (#2779) — its "
+        "own, longer idle requirement, separate from IDLE_SECONDS: a 60s pause in "
+        "conversation is ordinary, but a collector cycle started in it is restarted "
+        "by the next message, over and over, without ever finishing. A user-requested "
+        "'run it now' is unaffected — it dispatches directly, never through this gate."
+    ),
+    type=float,
+    default=600.0,
+    validator=_validate_positive_float,
+    group=GROUP_BACKGROUND,
+)
+
+ConfigParam(
     key="EMBEDDING_BACKFILL_BATCH_LIMIT",
     description="Max items per embedding backfill cycle on startup",
     type=int,

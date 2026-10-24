@@ -83,6 +83,10 @@ DEFAULT_TEST_CONFIG = {
 # Default runtime param overrides for tests (disable background tasks)
 DEFAULT_TEST_RUNTIME_OVERRIDES: dict[str, int | float] = {
     "IDLE_SECONDS": 99999.0,
+    # The collector's own idle threshold (#2779) — bumped the same way IDLE_SECONDS
+    # is, so a scheduler-driven test (or the eval harness, which shares this fixture)
+    # never waits out the real 600s default to see a collector become eligible.
+    "COLLECTOR_IDLE_SECONDS": 99999.0,
     # Bump every background-agent interval past any test timeout so the
     # scheduler never fires them mid-test.
     "COLLECTOR_TICK_INTERVAL": 99999.0,
