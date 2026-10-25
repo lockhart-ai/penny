@@ -382,7 +382,7 @@ ConfigParam(
         "Max characters of an outgoing message the iOS push notification's preview carries"
     ),
     type=int,
-    default=140,
+    default=450,
     validator=_validate_positive_int,
     group=GROUP_SEND,
 )

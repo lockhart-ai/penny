@@ -17,6 +17,7 @@ from penny.channels.ios.channel import (
     TEST_PUSH_MESSAGE,
     IosChannel,
     IosConnectionInfo,
+    _push_preview,
 )
 from penny.channels.ios.models import (
     IOS_MSG_TYPE_ACK,
@@ -343,6 +344,68 @@ async def test_admin_config_request_returns_runtime_params(db):
     )
 
 
+@pytest.mark.parametrize(
+    ("message", "limit", "expected"),
+    [
+        (
+            "First sentence. Second sentence. Third sentence.",
+            32,
+            "First sentence. Second sentence.",
+        ),
+        ("First sentence. Second sentence.", 31, "First sentence."),
+        ("First sentence. Second sentence.", 32, "First sentence. Second sentence."),
+        ("Short. " + "x" * 40 + ". Last.", 20, "Short."),
+        (
+            'She said "Book today." Seats are limited. More details.',
+            41,
+            'She said "Book today." Seats are limited.',
+        ),
+        (
+            "**First sentence.**\n[Second sentence.](https://example.com) Third sentence.",
+            32,
+            "First sentence. Second sentence.",
+        ),
+        ("A complete sentence. An unfinished tail", 25, "A complete sentence."),
+        ("A sentence without punctuation", 40, "A sentence without punctuation"),
+        ("x" * 451 + ".", 450, "x" * 447 + "..."),
+        ("unpunctuated long text", 10, "unpunct..."),
+        ("long text", 1, "."),
+        ("long text", 2, ".."),
+        ("long text", 3, "..."),
+        ("\n  ", 450, ""),
+    ],
+)
+def test_push_preview_fills_limit_with_complete_sentences(message, limit, expected):
+    title, body = _push_preview(message, limit)
+
+    assert title == PUSH_GREETING_TITLE
+    assert body == expected
+    assert len(body) <= limit
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_push_preview_default_is_450_characters(db, configured):
+    channel = _make_channel(db)
+    if configured:
+        from penny.config_params import RuntimeParams
+
+        channel._config = MagicMock(runtime=RuntimeParams())
+    device = db.devices.register("ios", "preview-test-device", "iPhone")
+    assert device.id is not None
+    first = "a" * 199 + "."
+    second = "b" * 248 + "."
+    item = channel._enqueue_ios_outbox_item(
+        device_id=device.id,
+        message=f"{first} {second} Another sentence.",
+        attachments=None,
+        source_name="flight-deals",
+    )
+
+    assert channel._push_preview_limit() == 450
+    assert item.push_summary == f"{first} {second}"
+    assert len(item.push_summary) == 450
+
+
 @pytest.mark.asyncio
 async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(db, caplog):
     apns = FakeApns()
@@ -386,7 +449,9 @@ async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(d
     assert apns.sent[0]["device_token"] == "apns-token"
     assert apns.sent[0]["outbox_id"] == external_id
     assert apns.sent[0]["title"] == PUSH_GREETING_TITLE
-    assert apns.sent[0]["body"] == "Found a fare drop."
+    assert apns.sent[0]["body"] == (
+        "Found a fare drop. Vancouver to Tokyo is cheaper today. https://example.com"
+    )
     assert apns.sent[0]["badge"] == 1
     assert apns.sent[0]["environment"] == "sandbox"
 

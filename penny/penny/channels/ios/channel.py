@@ -1420,12 +1420,25 @@ def _push_preview(message: str, limit: int) -> tuple[str, str]:
 
 
 def _summarize_for_push(message: str, limit: int) -> str:
+    """Keep the longest opening sequence of sentences that fits the preview.
+
+    A first sentence (or unpunctuated message) longer than the limit falls back
+    to a truncated prefix, with the ellipsis counted inside the same limit.
+    """
     text = _strip_markup(message)
-    first_sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
-    summary = first_sentence or text
-    if len(summary) <= limit:
-        return summary
-    return summary[: limit - 1].rstrip() + "..."
+    if len(text) <= limit:
+        return text
+
+    end = 0
+    for sentence in re.finditer(r"[.!?。！？]+[\"'”’)}\]]*(?=\s|$)", text):
+        if sentence.end() > limit:
+            break
+        end = sentence.end()
+    if end:
+        return text[:end]
+
+    ellipsis = "." * min(3, limit)
+    return text[: limit - len(ellipsis)].rstrip() + ellipsis
 
 
 def _strip_markup(message: str) -> str:
