@@ -30,6 +30,10 @@ dependencies = [
     "PyJWT[crypto]>=2.8.0",
     "numpy>=2.0.0",
     "python-dateutil>=2.9.0",
+    # Public Suffix List lookup for browse's bare-domain classifier (#2804) —
+    # penny.tools.browse. Used with suffix_list_urls=() (TLDExtract(suffix_list_urls=()))
+    # so it only ever consults its bundled offline snapshot, never fetches over the network.
+    "tldextract>=5.1.0",
     # Image resize/re-encode for stored and incoming images (#2780) —
     # penny.image_utils.normalize_image.
     "Pillow>=11.0.0",

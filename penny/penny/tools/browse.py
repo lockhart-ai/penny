@@ -23,6 +23,8 @@ import urllib.parse
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+import tldextract
+
 from penny.constants import PageReading, PennyConstants, ProgressEmoji
 from penny.database.memory import LogEntryInput
 from penny.llm.call_link import CallLink
@@ -72,106 +74,29 @@ _HANDLE_QUERY_RE = re.compile(r"^\[(\d+)\]$")
 # Group 1 is the host; group 2, if present, is the path.
 _BARE_HOST_RE = re.compile(r"^([^\s/]+)(/\S*)?$")
 
-# The public suffixes a bare host's LAST label must be one of to read as a
-# domain (#2804) — not the full IANA list (over a thousand entries), just the
-# handful of gTLDs and ccTLDs a job prompt realistically names a source by.
-# "Alphabetic and 2+ characters" alone isn't enough: a filename extension
-# (``file.txt``, ``notes.md``) or a trailing word in a version string is
-# alphabetic and long enough too, so without a real suffix check either would
-# be opened as an address instead of staying a search.
-_COMMON_TLDS = frozenset(
-    {
-        # Generic
-        "com",
-        "org",
-        "net",
-        "edu",
-        "gov",
-        "mil",
-        "int",
-        "info",
-        "biz",
-        "name",
-        "pro",
-        "co",
-        "io",
-        "ai",
-        "app",
-        "dev",
-        "xyz",
-        "tech",
-        "online",
-        "site",
-        "store",
-        "blog",
-        "news",
-        "media",
-        "tv",
-        "me",
-        "cc",
-        # Country-code (the ones most likely to name a job's source)
-        "us",
-        "uk",
-        "ca",
-        "de",
-        "fr",
-        "jp",
-        "cn",
-        "au",
-        "nz",
-        "eu",
-        "in",
-        "br",
-        "ru",
-        "it",
-        "es",
-        "nl",
-        "se",
-        "no",
-        "fi",
-        "dk",
-        "ch",
-        "at",
-        "be",
-        "pl",
-        "ie",
-        "za",
-        "mx",
-        "kr",
-        "sg",
-        "hk",
-        "id",
-        "th",
-        "vn",
-        "ph",
-        "my",
-        "ar",
-        "cl",
-        "pt",
-        "gr",
-        "hu",
-        "cz",
-        "ro",
-        "bg",
-        "ua",
-    }
-)
+# The real Public Suffix List, offline (#2804): ``suffix_list_urls=()`` makes this
+# extractor consult ONLY its bundled snapshot, never the network — so a bare host's
+# last label is checked against the actual PSL, not a hand-maintained guess at "the
+# common ones". "Alphabetic and 2+ characters" alone isn't enough to tell a domain
+# from a filename extension (``notes.md`` IS a registered domain — ``.md`` is
+# Moldova's ccTLD — but ``readme.docx``/``script.min.js`` are not, since neither
+# ``docx`` nor ``js`` is a real suffix); the PSL is what actually knows the difference.
+_PUBLIC_SUFFIXES = tldextract.TLDExtract(suffix_list_urls=())
 
 
 def _is_bare_domain(query: str) -> bool:
     """Whether ``query`` is a bare host, optionally with a path, with no
     scheme and no spaces (#2804) — opened as ``https://<query>`` rather than
-    searched.  Rejects a dotted non-domain token (``e.g.``, ``v1.2``,
-    ``file.txt``) by checking the host's last label against a real,
-    if small, set of public suffixes, rather than just "alphabetic and long
-    enough"."""
+    searched.  A host is a domain only when it has BOTH a registered name and a
+    real public suffix (``_PUBLIC_SUFFIXES``) — rejecting a dotted non-domain
+    token (``e.g.``, ``v1.2``, ``script.min.js``) that merely looks alphabetic
+    and long enough."""
     match = _BARE_HOST_RE.match(query)
     if match is None:
         return False
     host = match.group(1)
-    if "." not in host:
-        return False
-    return host.rsplit(".", 1)[-1].lower() in _COMMON_TLDS
+    extracted = _PUBLIC_SUFFIXES.extract_str(host)
+    return bool(extracted.domain and extracted.suffix)
 
 
 def _is_read_query(query: str) -> bool:

@@ -1371,6 +1371,45 @@ async def test_www_bare_domain_opens_the_page_directly(tmp_path):
     assert result.success is True
 
 
+@pytest.mark.asyncio
+async def test_co_uk_bare_domain_opens_the_page_directly(tmp_path):
+    """The bare compound-suffix form with no subdomain: ``example.co.uk`` reads
+    ``https://example.co.uk`` — the PSL recognises ``co.uk`` as the suffix, so
+    the registered name is ``example``, not ``co``."""
+    db = _make_db(tmp_path)
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _extract_tool(db, model)
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query="example.co.uk", looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}https://example.co.uk\n"
+        f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    )
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_fm_bare_domain_opens_the_page_directly(tmp_path):
+    """A less-common but real ccTLD not in any hand-picked shortlist: ``.fm``
+    (Micronesia) — confirms the PSL check isn't limited to a curated set of
+    "the usual" suffixes."""
+    db = _make_db(tmp_path)
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _extract_tool(db, model)
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query="example.fm", looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}https://example.fm\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    )
+    assert result.success is True
+
+
 _NO_RESULTS_PAGE = "Title: No results\nNo relevant results were found for this query."
 
 
