@@ -1950,29 +1950,27 @@ class CollectionSetTool(MemoryTool):
     # for the collection the call actually landed on.
     advises = ("memory_get", "collection_list")
     description = (
-        "Create or reconfigure a collection in ONE idempotent call. If `collection` "
-        "doesn't exist it comes into being with this config; if it does, only "
-        "the fields you set change — you never need to know which. "
-        "`description` = what it's for, in the user's words (required the first "
-        "time). `prompt` = the instructions this job's cycles follow each time they "
-        "run — write it as you would explain the task to someone doing it once: "
-        "what to read, what to do with it, and what to remember. On a job that "
-        "already exists, a schedule, expiry or notify change needs ONLY that field — "
-        "leave `prompt` out and the job's instructions stay exactly as they are "
-        "(collection_configure(collection=<the job's name>, "
-        "schedule='FREQ=DAILY;BYHOUR=8') changes only when it runs). Pass `prompt` "
-        "only when you mean to replace the instructions; the reply then shows the "
-        "lines the old prompt had that the new one doesn't. "
-        "`schedule` says "
-        "when it runs, as one recurrence rule: "
-        '"FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
-        '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify` turns THIS '
-        "collection's notifications on or off — true tells the user about "
-        "new/changed entries, false stops telling them while the job keeps "
-        "running. It is the per-collection switch: turning it off silences this "
-        "one collection and nothing else, and leaves the collection itself in "
-        "place. Plain storage needs no call at all — collection_write creates "
-        "storage automatically; use collection_configure for jobs and config."
+        "Create or reconfigure a collection in ONE idempotent call. If "
+        "`collection` doesn't exist, it's created with the fields you give; if "
+        "it exists, only the fields you set change — you never need to know "
+        "which case this is. `description` is what the collection is for, in "
+        "the user's words (required the first time).\n"
+        "\n"
+        "`prompt` is the job's instructions: free text written as you'd explain "
+        "the task to someone doing it once — what to read, what to do with it, "
+        "and what to remember. Leave it out to change only `schedule`, "
+        "`expires_at`, or `notify` — the job's instructions stay exactly as "
+        "they are (collection_configure(collection=<the job's name>, "
+        "schedule='FREQ=DAILY;BYHOUR=8') changes only when it runs). Set "
+        "`prompt` to replace the instructions completely.\n"
+        "\n"
+        "`notify` is the switch for THIS collection's alerts only — true tells "
+        "the user about new or changed entries, false keeps the job running "
+        "without telling them. It doesn't pause the job, and it's separate "
+        "from the global notification mute.\n"
+        "\n"
+        "Plain storage needs no call here — collection_write creates storage "
+        "automatically. Use this tool only for jobs and settings."
     )
     parameters = {
         "type": "object",
@@ -3341,18 +3339,18 @@ class FindTool(MemoryTool):
         "log_get",
     )
     description = (
-        "Find anything of your own by meaning, when you don't know its exact name — "
-        "a collection, a log, a single stored entry (a fact you "
-        "saved), or something the user or you said earlier in the conversation.  Pass "
+        "Find anything of your own by meaning, when you don't know its exact "
+        "name — a collection, a log, a single stored entry (a fact you saved), "
+        "or something the user or you said earlier in the conversation. Pass "
         "`query`, a paraphrase of what it's about (\"what I said that product "
-        'costs").  Returns the closest matches, best first: a collection/log '
-        "with its exact name, whether it's active or archived, and the exact tool call "
-        "that operates on it (archived included); a stored entry with the value it "
-        "holds and how to read it back; a matching message from the conversation, "
-        "shown in full under its own heading.  Use it "
-        "instead of guessing a name: a guessed name fails, this resolves the real one "
-        "— and for a short fact or a past message, the returned value IS the answer. "
-        "Pass `memory` too to search inside one store you can already name instead of "
+        'costs"). Returns the closest matches, best first: a collection or log '
+        "with its exact name, whether it's active or archived, and the exact "
+        "tool call that operates on it; a stored entry with the value it holds "
+        "and how to read it back; a matching message from the conversation, "
+        "shown in full under its own heading. Use it instead of guessing a "
+        "name — a guessed name fails, this resolves the real one, and for a "
+        "short fact or a past message the returned value IS the answer. Pass "
+        "`memory` to search inside one store you can already name, instead of "
         "everything — its own nearest entries come back, best first."
     )
     parameters = {
