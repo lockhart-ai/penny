@@ -1733,13 +1733,12 @@ class Agent:
             handles=table,
         )
         tools.append(self._build_browse_tool(author=self.name, handles=table))
-        # ``choose`` — the fair random picker — is collector-only (#2812): chat
-        # never called it in 444 measured prod tool calls, while a collector
-        # cycle needs it at runtime so a demonstrated ``choose`` step captured
-        # into a program (#1590) renders into a runnable one.  It holds no
-        # state, so one shared instance built per cycle is fine.
-        if self._include_choose_tool():
-            tools.append(ChooseTool())
+        # ``choose`` — the fair random picker — is on every agent surface, like
+        # browse: chat dispatches it from the user's "pick one at random", and a
+        # collector needs it at runtime so a demonstrated ``choose`` step captured
+        # into a skill (#1590) renders into a runnable collector program.  It holds
+        # no state, so one shared instance built per cycle is fine.
+        tools.append(ChooseTool())
         return tools
 
     # Recovery move bound into a browse channel-outage error (no browser connected).
@@ -1760,18 +1759,6 @@ class Agent:
         type decides), never as an if/else on run type inside the loop.
         """
         return True
-
-    def _include_choose_tool(self) -> bool:
-        """Whether this agent's surface carries ``choose``, the fair random picker.
-
-        Chat does NOT (#2812, overriding the old every-surface default): 444
-        measured prod tool calls never dispatched it from chat, so it comes off
-        that surface to save a tool definition's worth of tokens on every turn.
-        ``Collector`` overrides to True — a cadence-fired cycle still needs it at
-        runtime, since a demonstrated ``choose`` step captured into a program
-        (#1590) has to render into something the cycle can actually call.
-        """
-        return False
 
     def _build_browse_tool(self, author: str, handles: HandleTable) -> BrowseTool:
         """Build a fresh BrowseTool from config, updating self._browse_tool.

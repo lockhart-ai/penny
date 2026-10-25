@@ -1063,9 +1063,8 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "read_similar" not in names
 
         # Fair random selection — the model is a biased chooser, so "pick one at
-        # random" would need a Python coin flip, but ``choose`` is collector-only
-        # now (#2812): chat never dispatched it in 444 measured prod tool calls.
-        assert "choose" not in names
+        # random" is a Python coin flip on the chat surface (like browse, on both).
+        assert "choose" in names
 
         # Notifications — one chat-surface tool over the MuteState row (the retired
         # /mute + /unmute commands, then the retired mute/unmute tool pair, #2812),

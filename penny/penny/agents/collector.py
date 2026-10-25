@@ -1150,12 +1150,6 @@ class Collector(BackgroundAgent):
         """
         return False
 
-    def _include_choose_tool(self) -> bool:
-        """A collector cycle keeps ``choose`` (#2812): the fair random picker a
-        demonstrated ``choose`` step captured into a program (#1590) renders
-        into — overrides the ``Agent`` default, which took it off chat."""
-        return True
-
     def _require_target(self) -> MemoryRow:
         if self._current_target is None:
             raise RuntimeError(
