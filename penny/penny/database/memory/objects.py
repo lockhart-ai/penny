@@ -1072,7 +1072,9 @@ def render_tool_call(name: str, args: object) -> str:
     # a while — this run trace is model-facing and no longer shows it either way.
     if isinstance(args, dict):
         rendered = ", ".join(
-            f"{key}={value!r}" for key, value in args.items() if key != "reasoning"
+            f"{key}={value!r}"
+            for key, value in args.items()
+            if key != PennyConstants.STRAY_REASONING_ARG_KEY
         )
         return f"{name}({rendered})"
     return f"{name}({args!r})"

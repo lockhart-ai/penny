@@ -1896,7 +1896,7 @@ class Agent:
             # No tool declares a ``reasoning`` field any more (#2813), but a model may
             # still send a stray one out of habit — popped before dedup/validation so
             # it never affects the call key and ``extra="forbid"`` never rejects it.
-            arguments.pop("reasoning", None)
+            arguments.pop(PennyConstants.STRAY_REASONING_ARG_KEY, None)
             call_key = self._make_call_key(tool_name, arguments)
 
             if not self.allow_repeat_tools and call_key in called_tools:

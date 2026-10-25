@@ -230,13 +230,13 @@ optional one, so which value is which is unambiguous. A single, obvious argument
 positional (`collection_list("<collection>")`). Don't show a bare positional list of
 two-plus values — the model mis-slots them.
 
-**4. Never put these in a written example:** the auto-injected `reasoning` param (it's added
-by the framework, and showing it teaches the model to hand-write it), and any **raw JSON
-envelope or payload-shaped snippet** (`{"name": "done", "arguments": {…}}`). Payload-shaped
-examples get adopted as the model's *output* format: a collector whose prompt demonstrated
-calls in a `kwargs + reasoning=` payload dialect had its failures dominated by the model
-emitting calls **as plain text** instead of real tool calls. Show the *call*, never its
-wire form.
+**4. Never put a raw JSON envelope or payload-shaped snippet in a written example**
+(`{"name": "done", "arguments": {…}}`). Payload-shaped examples get adopted as the model's
+*output* format: a collector whose prompt demonstrated calls in a payload dialect had its
+failures dominated by the model emitting calls **as plain text** instead of real tool calls.
+Show the *call*, never its wire form. (No tool schema carries a `reasoning` param any more —
+#2813 dropped the framework's per-call injection, so there's nothing left to accidentally
+teach the model to hand-write.)
 
 **5. The terminal `done()` is argless (#1569).** Write `done()` — no arguments, ever.
 The run record is GENERATED from the ledger (tool calls + write-gate outcomes + structural

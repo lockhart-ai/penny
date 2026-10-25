@@ -663,6 +663,13 @@ class PennyConstants:
     LOG_APPEND_TOOL_NAME = "log_append"
     SEND_MESSAGE_TOOL_NAME = "send_message"
     BROWSE_TOOL_NAME = "browse"
+    # The per-call rationale key every tool's schema used to carry (``Tool.
+    # to_ollama_tool``, retired #2813).  No schema injects it any more, but a
+    # model may still send a stray one out of habit, and a row logged before
+    # the retirement still carries it verbatim in ``promptlog.response`` — named
+    # once here rather than as a bare literal at each site that pops or filters
+    # it (``Agent._dedup_tool_calls``, ``objects.py``'s ``render_tool_call``).
+    STRAY_REASONING_ARG_KEY = "reasoning"
     # The ledger identity of a browse micro-context extraction — a fresh
     # single-shot model call (content + instruction, no tools) that runs when a
     # ``browse`` carries an ``extract`` argument.  It logs its own promptlog rows
