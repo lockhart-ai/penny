@@ -3491,7 +3491,7 @@ class DoneTool(Tool):
     description = (
         "Call this when the cycle is finished, with notify set to true or false. A "
         "cycle does not message the user itself: what the cycle writes down, plus "
-        "this close with notify=true, is how they find out — Penny tells them "
+        "this close with notify set to true, is how they find out — Penny tells them "
         "afterwards, from what the cycle wrote. Say true when this cycle found or "
         "stored something the user would want to hear now; say false when nothing "
         "changed since what you last told them — a quiet cycle is a normal outcome, "
