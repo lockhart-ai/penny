@@ -3751,10 +3751,40 @@ class TestResponseValidators:
         into it, so a nudge field would be a parameter with nothing to apply it to."""
         assert "nudge" not in Retry.model_fields
 
-    def test_refusal_validator(self):
+    def test_refusal_validator_catches_an_opening_refusal(self):
         resp = _text_response("I'm sorry, but I can't help with that.")
         outcome = RefusalValidator().check(resp, _ctx())
         assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.REFUSAL
+
+    def test_refusal_validator_lets_through_a_mid_text_hedge(self):
+        """A good, substantive answer that only mentions "I can't" partway through is
+        not a refusal (#2805) — ``is_refusal`` reads the opening sentence, not the
+        whole reply, so this kind of good answer is never discarded and redrawn."""
+        resp = _text_response(
+            "Here's what I found on the topic. I can't fix the thundering herd problem "
+            "myself, but I can suggest a few mitigations: add jitter to the retry "
+            "backoff, cap the maximum number of concurrent connections, and consider a "
+            "circuit breaker so one failing dependency doesn't cascade into every "
+            "caller at once."
+        )
+        assert isinstance(RefusalValidator().check(resp, _ctx()), Proceed)
+
+    def test_refusal_validator_lets_through_a_long_honest_apology(self):
+        """An apology for a REAL failure that goes on to explain what happened is not a
+        refusal (#2805), even though it opens with "I'm sorry" — the length bound is
+        what tells an honest, substantive apology apart from a bare refusal."""
+        resp = _text_response(
+            "I'm sorry, the image server didn't answer when I tried to generate that "
+            "picture. I checked LLM_IMAGE_API_URL and it looks like the server isn't "
+            "reachable right now, so I can't produce an image until that's fixed. You "
+            "might want to check whether the mflux server process is still running on "
+            "the host."
+        )
+        assert isinstance(RefusalValidator().check(resp, _ctx()), Proceed)
+
+    def test_refusal_validator_empty_content_is_not_a_refusal(self):
+        resp = _text_response("")
+        assert isinstance(RefusalValidator().check(resp, _ctx()), Proceed)
 
     def test_hallucinated_url_validator_uses_source_text(self):
         resp = _text_response("See https://made-up.example/never for details.")
