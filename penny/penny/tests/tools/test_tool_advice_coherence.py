@@ -8,9 +8,9 @@ instruction that cannot be followed — an n≤1 reachability bug, and exactly t
 guessing the anchor discipline exists to remove.
 
 ONE declared exception: ``find``'s hit addressing can name a lifecycle verb
-(``collection_configure`` on an inert hit, ``collection_archive``/
-``collection_unarchive`` on a live/archived one) that the collector's surface does
-not carry, yet ``find`` itself has to stay on every surface regardless — every other
+(``collection_configure`` on an inert hit, ``collection_archive`` — with
+``archived`` naming the direction — on a live/archived one) that the collector's
+surface does not carry, yet ``find`` itself has to stay on every surface regardless — every other
 read/write tool's own did-you-mean fallback points at it (#1674), so excluding
 ``find`` from the collector surface would dead-end THOSE tools into a call that
 surface cannot make either, trading one reachability gap for a wider one.  This is

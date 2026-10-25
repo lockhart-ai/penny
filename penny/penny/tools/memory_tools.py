@@ -104,12 +104,12 @@ from penny.tools.collection_instantiation import (
 from penny.tools.job_summary import job_summary_line
 from penny.tools.link_handles import CITATION_LINE, HandleTable
 from penny.tools.memory_args import (
+    CollectionArchiveArgs,
     CollectionCreateArgs,
     CollectionEntrySpec,
     CollectionGetArgs,
     CollectionKeysArgs,
     CollectionListArgs,
-    CollectionNameArgs,
     CollectionRemoveArgs,
     CollectionSetArgs,
     CollectionUpdateArgs,
@@ -123,7 +123,6 @@ from penny.tools.memory_args import (
     MemoryNameArgs,
     ReadLogArgs,
     ReadRunCallsArgs,
-    ReadSampleArgs,
 )
 from penny.tools.models import ToolResult
 
@@ -206,7 +205,7 @@ def format_entries(
     return f"{len(entries)} {noun} from `{source}`{suffix}:\n{body}"
 
 
-# The disclosure line a bounded collection read (`collection_list`/`collection_sample`)
+# The disclosure line a bounded collection read (`collection_list`, either order)
 # shows in place of `format_entries`' own header when its default cap (#2771) left
 # entries out — named total, named follow-up calls, so the cut is never silent.
 _BOUNDED_READ_CUT_HEADER = (
@@ -369,9 +368,9 @@ def _memory_name(arguments: dict, fallback: str) -> str:
 
 
 def _collection_name(arguments: dict, fallback: str) -> str:
-    """Backtick-quoted ``collection`` argument for narration — the six entry
+    """Backtick-quoted ``collection`` argument for narration — the five entry
     tools (``collection_get`` / ``collection_keys`` / ``collection_list`` /
-    ``collection_sample`` / ``collection_write`` / ``collection_remove``) name
+    ``collection_write`` / ``collection_remove``) name
     their target this way; every other memory-keyed tool still reads ``memory``
     (``_memory_name``)."""
     return _named(arguments, "collection", fallback)
@@ -1040,67 +1039,62 @@ class LogCreateTool(MemoryTool):
 
 
 class CollectionArchiveTool(MemoryTool):
-    """Archive a collection — keeps its data but retires the mechanism."""
+    """Archive or restore a collection — one tool, one bool, both directions.
+
+    Folds the retired ``collection_archive`` / ``collection_unarchive`` pair
+    (#2812) onto one tool: ``archived=True`` retires the collection (data kept,
+    its collector stops running, it drops out of the active memory list but
+    stays reachable by its exact name, as a tombstone); ``archived=False``
+    restores it.  Neither direction had a single use in 444 measured prod tool
+    calls, so naming the direction as an argument rather than a second tool
+    name costs nothing in dispatch and saves a whole tool definition.
+    """
 
     name = "collection_archive"
     description = (
-        "Archive a collection. The data stays intact but the collection is "
-        "retired — its collector stops running and it drops out of the active "
-        "memory list (it stays reachable by its exact name, as a tombstone) "
-        "until unarchived."
+        "Archive or restore a collection. `archived=true` retires it — the data "
+        "stays intact but its collector stops running and it drops out of the "
+        "active memory list (it stays reachable by its exact name, as a "
+        "tombstone). `archived=false` restores a previously archived collection."
     )
     parameters = {
         "type": "object",
-        "properties": {"collection": {"type": "string"}},
-        "required": ["collection"],
+        "properties": {
+            "collection": {"type": "string"},
+            "archived": {
+                "type": "boolean",
+                "description": "true to archive it, false to restore it from the archive",
+            },
+        },
+        "required": ["collection", "archived"],
     }
-    args_model = CollectionNameArgs
+    args_model = CollectionArchiveArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
         memory = _named(arguments, "collection", "a collection")
+        archiving = arguments.get("archived")
         if not result.success:
-            return f"You tried to archive {memory} but it didn't work:"
-        return f"You archived {memory}:"
+            verb = "archive" if archiving else "restore"
+            tail = "" if archiving else " from the archive"
+            return f"You tried to {verb} {memory}{tail} but it didn't work:"
+        return (
+            f"You archived {memory}:" if archiving else f"You restored {memory} from the archive:"
+        )
 
     def __init__(self, db: Database, run_id: str | None = None) -> None:
         self._db = db
-        # The chat run archiving this collection — recorded as the mutation's
-        # cause (#1560).  The scheduler's max_runs/expiry archive takes a
-        # different path (actor=system); this tool is always a user-run archive.
+        # The chat run archiving/restoring this collection — recorded as the
+        # mutation's cause (#1560).  The scheduler's max_runs/expiry archive
+        # takes a different path (actor=system); this tool is always a
+        # user-run change.
         self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        args = CollectionNameArgs(**kwargs)
-        self._db.memories.archive(args.collection, run_id=self._run_id)
-        return ToolResult(message=f"Archived '{args.collection}'.", mutated=True)
-
-
-class CollectionUnarchiveTool(MemoryTool):
-    """Restore a previously archived collection — its collector resumes."""
-
-    name = "collection_unarchive"
-    description = "Unarchive a previously archived collection."
-    parameters = {
-        "type": "object",
-        "properties": {"collection": {"type": "string"}},
-        "required": ["collection"],
-    }
-    args_model = CollectionNameArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _named(arguments, "collection", "a collection")
-        if not result.success:
-            return f"You tried to restore {memory} from the archive but it didn't work:"
-        return f"You restored {memory} from the archive:"
-
-    def __init__(self, db: Database, run_id: str | None = None) -> None:
-        self._db = db
-        self._run_id = run_id
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = CollectionNameArgs(**kwargs)
+        args = CollectionArchiveArgs(**kwargs)
+        if args.archived:
+            self._db.memories.archive(args.collection, run_id=self._run_id)
+            return ToolResult(message=f"Archived '{args.collection}'.", mutated=True)
         self._db.memories.unarchive(args.collection, run_id=self._run_id)
         return ToolResult(message=f"Unarchived '{args.collection}'.", mutated=True)
 
@@ -1123,6 +1117,11 @@ class CollectionListTool(MemoryTool):
     result's header says so, states the real total, and names the two calls that
     reach the rest (a larger ``k`` on this same tool, or ``collection_keys`` for an
     overview).
+
+    ``order`` (#2812) picks ``"newest"`` (default) or ``"random"`` — folding in what
+    the retired ``collection_sample`` tool did on its own: a uniform random draw of
+    ``k`` entries, the same default cap and the same disclosure header when capped.
+    One read tool, one extra argument, rather than two tools for one capability.
     """
 
     name = "collection_list"
@@ -1131,15 +1130,27 @@ class CollectionListTool(MemoryTool):
     # and `find` (a meaning search) — see `_BOUNDED_READ_CUT_HEADER` (#2771).
     advises = ("log_read", "collection_keys", "find")
     description = (
-        "Return the newest entries in a collection, newest first. Omit `k` for the "
-        "newest 20; name `k` to read more (or fewer) — however large, it's honoured "
-        "in full. Collections only — to read a log use `log_read(<log>)`."
+        "Return entries from a collection. Omit `k` for the newest (or, with "
+        "order='random', a sampled) 20; name `k` to read more (or fewer) — however "
+        "large, it's honoured in full. `order` is 'newest' (default, most recent "
+        "first) or 'random' (a uniform random sample — for variety rather than "
+        "recency). Collections only — to read a log use `log_read(<log>)`."
     )
     parameters = {
         "type": "object",
         "properties": {
             "collection": {"type": "string"},
-            "k": {"type": "integer", "description": "Max entries; omit for the newest 20"},
+            "k": {
+                "type": "integer",
+                "description": "Max entries; omit for the newest (or sampled) 20",
+            },
+            "order": {
+                "type": "string",
+                "enum": ["newest", "random"],
+                "description": (
+                    "'newest' (default) for most recent first, 'random' for a uniform sample"
+                ),
+            },
         },
         "required": ["collection"],
     }
@@ -1149,7 +1160,10 @@ class CollectionListTool(MemoryTool):
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
         collection = _collection_name(arguments, "collection")
         if not result.success:
-            return f"You tried to look up your {collection} but it didn't work:"
+            verb = "pull a random sample from" if arguments.get("order") == "random" else "look up"
+            return f"You tried to {verb} your {collection} but it didn't work:"
+        if arguments.get("order") == "random":
+            return f"You pulled a random sample from {collection}:"
         return f"You looked up your {collection}:"
 
     def __init__(self, db: Database, handles: HandleTable | None = None) -> None:
@@ -1160,15 +1174,20 @@ class CollectionListTool(MemoryTool):
         args = CollectionListArgs(**kwargs)
         collection = _resolve(self._db, args.collection)
         limit = args.k if args.k is not None else PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT
-        entries = collection.read_latest(limit)
+        if args.order == "random":
+            entries = collection.read_random(limit)
+            ordering, cut_ordering = "random sample", None
+        else:
+            entries = collection.read_latest(limit)
+            ordering, cut_ordering = "most recent first", "newest first"
         return ToolResult(
             message=_bounded_read_message(
                 entries,
                 collection=args.collection,
                 total=collection.entry_count(),
                 tool="collection_list",
-                ordering="most recent first",
-                cut_ordering="newest first",
+                ordering=ordering,
+                cut_ordering=cut_ordering,
                 handles=self._handles,
             )
         )
@@ -1228,61 +1247,6 @@ class CollectionGetTool(MemoryTool):
             )
         return ToolResult(
             message=format_entries(rows, source=args.collection, handles=self._handles)
-        )
-
-
-class CollectionSampleTool(MemoryTool):
-    """Pick entries at random from a collection.
-
-    With no ``k``, the sample is capped at
-    ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT`` rather than drawing from every
-    entry (#2771) — the same default-cap rule as ``collection_list``, since an
-    unbounded sample read is the same unscoped-pull risk. A capped sample names the
-    cut the same way: the header states the real total and names the follow-up
-    calls that reach the rest.
-    """
-
-    name = "collection_sample"
-    # A cut result's disclosure header names `collection_keys` (an overview) and
-    # `find` (a meaning search) — see `_BOUNDED_READ_CUT_HEADER` (#2771).
-    advises = ("collection_keys", "find")
-    description = (
-        "Return `k` entries sampled uniformly at random. Omit `k` to sample up to "
-        "20 — however large, an explicit `k` is honoured in full."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "collection": {"type": "string"},
-            "k": {"type": "integer", "description": "Sample size; omit for up to 20"},
-        },
-        "required": ["collection"],
-    }
-    args_model = ReadSampleArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        collection = _collection_name(arguments, "a collection")
-        if not result.success:
-            return f"You tried to pull a random sample from {collection} but it didn't work:"
-        return f"You pulled a random sample from {collection}:"
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = ReadSampleArgs(**kwargs)
-        collection = _resolve(self._db, args.collection)
-        limit = args.k if args.k is not None else PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT
-        entries = collection.read_random(limit)
-        return ToolResult(
-            message=_bounded_read_message(
-                entries,
-                collection=args.collection,
-                total=collection.entry_count(),
-                tool="collection_sample",
-                ordering="random sample",
-            )
         )
 
 
@@ -3164,13 +3128,13 @@ def _find_addressing(match: ResolvedMatch) -> str:
         return f"read it with log_read('{name}')"
     if match.archived:
         return (
-            f"restore it with collection_unarchive('{name}'); its entries stay readable "
-            f"with collection_list('{name}')"
+            f"restore it with collection_archive('{name}', archived=False); its entries "
+            f"stay readable with collection_list('{name}')"
         )
     return (
         f"read it with collection_list('{name}'), reconfigure it with "
         f"collection_configure(collection='{name}', ...), archive it with "
-        f"collection_archive('{name}')"
+        f"collection_archive('{name}', archived=True)"
     )
 
 
@@ -3336,7 +3300,6 @@ class FindTool(MemoryTool):
         "collection_get",
         "collection_configure",
         "collection_archive",
-        "collection_unarchive",
         "log_read",
         "log_get",
     )
@@ -3591,8 +3554,7 @@ def build_memory_tools(
     since the message id isn't known until the run returns.)
 
     ``include_lifecycle`` gates the registry-shape tier — ``collection_configure`` /
-    ``collection_configure`` / ``collection_archive`` /
-    ``collection_unarchive`` / ``log_create``.  Chat-style agents get it (the user
+    ``collection_archive`` / ``log_create``.  Chat-style agents get it (the user
     evolves collections through them); a cadence-fired collector run passes
     ``False`` (#1556), so those tools are structurally ABSENT from its surface — a
     background poll cannot create, reconfigure, or archive mechanisms, no
@@ -3604,17 +3566,16 @@ def build_memory_tools(
     every other read/write tool here points at it (#1674), so an agent without it
     would have those tools dead-end into a call it cannot make.  The one coherence
     gap this opens — a `find` hit on a lifecycle object addresses it with a
-    lifecycle verb (``collection_configure``/``collection_archive``/
-    ``collection_unarchive``) a collector surface does not carry — is a known,
-    narrow exception: unlike every other tool here, `find`'s OWN closure cannot be
-    made to fit inside a collector cycle without either losing the did-you-mean
-    target every other tool depends on, or inventing a surface-aware addressing
-    `find` has never needed before.
+    lifecycle verb (``collection_configure``/``collection_archive``) a collector
+    surface does not carry — is a known, narrow exception: unlike every other
+    tool here, `find`'s OWN closure cannot be made to fit inside a collector
+    cycle without either losing the did-you-mean target every other tool
+    depends on, or inventing a surface-aware addressing `find` has never needed
+    before.
     """
     reads: list[Tool] = [
         CollectionListTool(db, handles),
         CollectionGetTool(db, handles),
-        CollectionSampleTool(db),
         CollectionKeysTool(db),
         MemoryMetadataTool(db),
         LogReadTool(db, agent_name, scope, handles),
@@ -3626,7 +3587,6 @@ def build_memory_tools(
     lifecycle: list[Tool] = [
         CollectionSetTool(db, llm_client, run_id=run_id),
         CollectionArchiveTool(db, run_id=run_id),
-        CollectionUnarchiveTool(db, run_id=run_id),
         LogCreateTool(db, llm_client),
     ]
     mutations: list[Tool] = [

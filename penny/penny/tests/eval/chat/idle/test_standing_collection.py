@@ -1,5 +1,5 @@
-"""Operating a job that is already running, and reading jobs back: nine cases (#2008, tranche 3;
-#2215; #2365; #2630).
+"""Operating a job that is already running, and reading jobs back: ten cases (#2008, tranche 3;
+#2215; #2365; #2630; #2812).
 
 The contract is `docs/eval-case-design.md`.
 
@@ -12,6 +12,7 @@ right for one is wrong for another, and each action is a case with its own sente
 | switch it off | ``standing-notify-off`` | ``notify`` off, the rest of the row as it was |
 | switch it on | ``standing-notify-on`` | ``notify`` on, the rest of the row as it was |
 | retire it | ``standing-archive`` | ``archived``, and what it gathered still readable |
+| bring it back | ``standing-restore`` | not archived, live again, what it gathered kept |
 | re-time it | ``standing-schedule-fix-prior`` | the rule fires at the hour they asked for |
 | re-time, long prompt | ``standing-retime-keeps-prompt`` | the hour asked for; prompt kept |
 | give it an end | ``standing-end-changed`` | it stops when the ask said, firing when it was due |
@@ -19,6 +20,13 @@ right for one is wrong for another, and each action is a case with its own sente
 | read one back | ``standing-describe-routine`` | the row as it was; the reply names its page |
 | list them | ``standing-list-running`` | every row as it was; the reply names each job |
 | two of the same kind match | ``standing-ambiguous-job-match`` | neither moved; reply names both |
+
+**Retiring and bringing it back are two cases for the same reason.**  ``standing-archive``
+starts on a LIVE job and leaves it archived; ``standing-restore`` (#2812, added alongside the
+``collection_archive``/``collection_unarchive`` fold onto one tool) starts on an ALREADY
+ARCHIVED one and leaves it live again — the directions a single ``archived`` bool now carries,
+each still its own world and its own claim, since a correct sample for one is wrong for the
+other.
 
 **The two directions of the switch are two cases, because they start in two worlds.**
 ``standing-notify-off`` is answered on a job seeded telling the user and
@@ -837,6 +845,80 @@ async def test_retiring_a_job_archives_it_and_keeps_what_it_gathered(
         _the_job_is_retired(_FINDS.container),
         SpecCategory.STORE,
     )
+    cohort.claim(
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_FINDS.container, asked=_ARCHIVED),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+# ═══ bring it back ═══════════════════════════════════════════════════════════
+#
+# The reversible other half of retiring (#2812): a retired job asked for again comes back
+# live, carrying everything it gathered before it was archived.  Archiving rather than
+# deleting is what makes this ask answerable at all.
+
+_RESTORED = "state: the job is restored (active again)"
+
+
+def _seed_archived_finds(db: Database) -> None:
+    """The restore case's entry condition: the typewriter watch, stood up and then
+    immediately retired — through the store's own chokepoints, so the archived row a
+    restore turn reads is exactly what a real retire would have left."""
+    seed_standing_jobs(_FINDS)(db)
+    db.memories.archive(_FINDS.container)
+
+
+_RESTORE = _OperationCase(
+    case_id="standing-restore",
+    behaviour=(
+        "In the chat agent, when the user asks for a retired job to run again, Penny "
+        "restores it exactly as it was, with everything it had already gathered still "
+        "there."
+    ),
+    job=_FINDS,
+    renders="archived",
+    ask=f"bring back {_THEIR_WORDS} — i want it running again",
+    also_phrased=(
+        f"can you restore {_THEIR_WORDS}? i want it going again",
+        f"un-retire {_THEIR_WORDS}, i need it back",
+        f"i changed my mind about {_THEIR_WORDS} — turn it back on",
+        f"i want {_THEIR_WORDS} back — bring it out of the archive",
+    ),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_restoring_a_retired_job_brings_it_back_as_it_was(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """A retired job, asked for again, comes back live with everything it already
+    gathered, and nothing else about it disturbed."""
+    cohort = await chat_eval(
+        case_id=_RESTORE.case_id,
+        behaviour=_RESTORE.behaviour,
+        area=Area.STANDING_JOBS,
+        model=model,
+        seed=_seed_archived_finds,
+        prepare=_premise(_RESTORE),
+        world=_RESTORE.ground,
+        ask=_RESTORE.ask,
+        also_phrased=_RESTORE.also_phrased,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_OPERATIONS_FAMILY,
+        timeout=240.0,
+    )
+    # STORE
+    cohort.claim(_RESTORED, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
     cohort.claim(
         _NOTHING_ELSE_MOVED,
         _nothing_else_moved(_FINDS.container, asked=_ARCHIVED),
@@ -2019,6 +2101,7 @@ OPERATION_CASES = (
     _NOTIFY_OFF,
     _NOTIFY_ON,
     _ARCHIVE,
+    _RESTORE,
     _RE_TIME,
     _END_CHANGED,
     _DESCRIBE,

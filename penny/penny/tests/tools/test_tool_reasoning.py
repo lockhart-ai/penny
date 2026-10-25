@@ -30,7 +30,6 @@ from penny.tools.memory_tools import (
     CollectionGetTool,
     CollectionKeysTool,
     CollectionRemoveTool,
-    CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
     GetEventTool,
@@ -364,13 +363,15 @@ class TestMemoryLifecycleNarration:
         )
 
     def test_archive_unarchive(self):
-        args = {"collection": "games"}
+        """One tool, both directions (#2812): `archived` names which."""
+        archive_args = {"collection": "games", "archived": True}
         assert (
-            CollectionArchiveTool.to_result_narration(args, ToolResult(message="ok"))
+            CollectionArchiveTool.to_result_narration(archive_args, ToolResult(message="ok"))
             == "You archived `games`:"
         )
+        unarchive_args = {"collection": "games", "archived": False}
         assert (
-            CollectionUnarchiveTool.to_result_narration(args, ToolResult(message="ok"))
+            CollectionArchiveTool.to_result_narration(unarchive_args, ToolResult(message="ok"))
             == "You restored `games` from the archive:"
         )
 

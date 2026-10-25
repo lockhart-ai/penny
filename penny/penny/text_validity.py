@@ -649,6 +649,12 @@ def check_description(description: str) -> str | None:
 #   0040/0057  log_read_log → log_read_next → log_read
 #   0111       collection_read_latest → collection_list,
 #              collection_delete_entry → collection_remove
+#   #2812      collection_sample → collection_list (order='random' is the same draw);
+#              collection_unarchive → collection_archive (archived=False is the same
+#              restore); notifications_mute / notifications_unmute → notifications_set
+#              (on=False / on=True) — three tool-PAIR folds, each a retired name
+#              resolving to the one tool that replaced it plus the argument that
+#              recovers the retired direction
 # Why a table rather than more string distance: what a name became is a fact about this
 # project's history, and the two names need not look alike.  ``collection_metadata`` is
 # the measured case — the model guessed the retired name, and the string leg answered
@@ -674,7 +680,18 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     "collection_delete_entry": "collection_remove",
     # A value stored under a key is written with the collection's one write call.
     "update_entry": "collection_write",
-    "collection_read_random": "collection_sample",
+    # collection_read_random pointed at collection_sample, which #2812 folded into
+    # collection_list(order='random') — repointed straight at the tool it ended up
+    # with, one hop, never a chain.
+    "collection_read_random": "collection_list",
+    "collection_sample": "collection_list",
+    # The archive/unarchive pair folded onto one tool (#2812): both retired names
+    # point at the tool that replaced them, which takes the direction as `archived`.
+    "collection_unarchive": "collection_archive",
+    # The mute/unmute pair folded onto one tool (#2812): both retired names point
+    # at the tool that replaced them, which takes the direction as `on`.
+    "notifications_mute": "notifications_set",
+    "notifications_unmute": "notifications_set",
     # A key either reads back something or it doesn't — collection_get answers that.
     "exists": "collection_get",
     # Reading one skill by name is skill_get (#2305).

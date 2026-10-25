@@ -332,8 +332,8 @@ async def test_get_tools_raises_outside_cycle(test_config, tmp_path):
 _LIFECYCLE_TOOL_NAMES = frozenset(
     {
         "collection_configure",
+        # Folded onto one tool (#2812): archived=true/false.
         "collection_archive",
-        "collection_unarchive",
         "log_create",
     }
 )
@@ -3031,8 +3031,8 @@ async def test_run_for_archived_collection(test_config, tmp_path):
     success, message = await collector.run_for("archived-col")
     assert success is False
     assert "archived" in message
-    # names the exact recovery move — unarchive this collection
-    assert "collection_unarchive('archived-col')" in message
+    # names the exact recovery move — restore this collection (#2812: the folded tool)
+    assert "collection_archive('archived-col', archived=False)" in message
 
 
 @pytest.mark.asyncio

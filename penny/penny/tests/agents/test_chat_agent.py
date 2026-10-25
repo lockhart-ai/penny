@@ -1042,13 +1042,15 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_create" not in names
         assert "collection_update" not in names
         assert "log_create" in names
+        # The archive/unarchive pair is folded onto one tool (#2812): archived=true/false.
         assert "collection_archive" in names
-        assert "collection_unarchive" in names
+        assert "collection_unarchive" not in names
 
         # Reads.
         assert "collection_list" in names
         assert "collection_get" in names
-        assert "collection_sample" in names
+        # collection_sample is retired (#2812): collection_list(order='random') replaces it.
+        assert "collection_sample" not in names
         assert "collection_keys" in names
         assert "memory_get" in names
         # Ledger reads: run_list browses a source's runs; run_get resolves
@@ -1061,13 +1063,16 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "read_similar" not in names
 
         # Fair random selection — the model is a biased chooser, so "pick one at
-        # random" is a Python coin flip on the chat surface (like browse, on both).
-        assert "choose" in names
+        # random" would need a Python coin flip, but ``choose`` is collector-only
+        # now (#2812): chat never dispatched it in 444 measured prod tool calls.
+        assert "choose" not in names
 
-        # Notification mute/unmute — chat-surface tools over the MuteState row
-        # (the retired /mute + /unmute commands), dispatched from natural language.
-        assert "notifications_mute" in names
-        assert "notifications_unmute" in names
+        # Notifications — one chat-surface tool over the MuteState row (the retired
+        # /mute + /unmute commands, then the retired mute/unmute tool pair, #2812),
+        # dispatched from natural language with the direction as an `on` bool.
+        assert "notifications_set" in names
+        assert "notifications_mute" not in names
+        assert "notifications_unmute" not in names
 
         # Loop-control stays background-only — never on the chat surface.
         assert "done" not in names

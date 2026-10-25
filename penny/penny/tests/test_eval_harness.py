@@ -64,17 +64,6 @@ from penny.tests.eval.chat.idle.test_chat_reply import (
     ANSWERING_CASES,
     _seeded_entries_unchanged,
 )
-from penny.tests.eval.chat.idle.test_choose_dispatch import (
-    _OPTIONS as _CHOOSE_OPTIONS,
-)
-from penny.tests.eval.chat.idle.test_choose_dispatch import (
-    REFERENCE_REPLY as CHOOSE_REFERENCE_REPLY,
-)
-from penny.tests.eval.chat.idle.test_choose_dispatch import (
-    assert_choose_world,
-    picks_on_the_record,
-    reply_reports,
-)
 from penny.tests.eval.chat.idle.test_email_dispatch import (
     ABSENT,
     ABSENT_ASK_SENDER,
@@ -122,6 +111,16 @@ from penny.tests.eval.chat.idle.test_notifications import (
 )
 from penny.tests.eval.chat.idle.test_notifications import (
     assert_no_fire_world as assert_mute_no_fire_world,
+)
+from penny.tests.eval.collector.test_choose_dispatch import (
+    _OPTIONS as _CHOOSE_OPTIONS,
+)
+from penny.tests.eval.collector.test_choose_dispatch import (
+    REFERENCE_REPLY as CHOOSE_REFERENCE_REPLY,
+)
+from penny.tests.eval.collector.test_choose_dispatch import (
+    picks_on_the_record,
+    reply_reports,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
     _BASELINE_AMOUNT as WATCH_BASELINE_AMOUNT,
@@ -1152,7 +1151,6 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
         install_image_client(penny)
         for image_case in IMAGE_CASES:
             assert_image_world(penny, image_case.case_id)
-        assert_choose_world(penny)
         assert_mute_world(penny)
         assert_mute_no_fire_world(penny)
         # The unmute case's world is the same one with the switch thrown, so it is probed

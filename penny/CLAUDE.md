@@ -105,7 +105,7 @@ penny/
     list_emails.py    — ListEmailsTool (folder listings; Zoho only)
     list_folders.py   — ListFoldersTool (available mailboxes; Zoho only)
     draft_email.py    — DraftEmailTool (compose + stage draft; Zoho only). All five retired the /email + /zoho commands (epic #1445) — built per turn by ChatAgent's email_tools_builder; NL-dispatch contract: tests/eval/chat/idle/test_email_dispatch.py
-    notifications.py  — NotificationsMuteTool / NotificationsUnmuteTool: chat-surface tools over the MuteState row (`db.users`); retired /mute + /unmute
+    notifications.py  — NotificationsTool: one chat-surface tool (`on` bool) over the MuteState row (`db.users`); folds the retired notifications_mute/notifications_unmute pair (#2812); retired /mute + /unmute
     collection_instantiation.py — The pure pieces behind `collection_configure`: schedule/expiry parsing and renders — no parameters to bind, no rendering seam (#1591)
     memory_args.py    — Pydantic arg models for the memory tool surface
     memory_tools.py   — Memory tool subclasses dispatching through `db.memory(name)`; `find`/`run_list`/`run_get`, `collection_configure`

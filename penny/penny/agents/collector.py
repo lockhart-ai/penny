@@ -249,7 +249,8 @@ class Collector(BackgroundAgent):
             return (
                 False,
                 f"Collection '{collection_name}' is archived — restore it first with "
-                f"collection_unarchive('{collection_name}'), or test a different collection.",
+                f"collection_archive('{collection_name}', archived=False), or test a "
+                f"different collection.",
             )
         if collection.extraction_prompt is None:
             return (
@@ -1148,6 +1149,12 @@ class Collector(BackgroundAgent):
         structurally impossible, not just discouraged.
         """
         return False
+
+    def _include_choose_tool(self) -> bool:
+        """A collector cycle keeps ``choose`` (#2812): the fair random picker a
+        demonstrated ``choose`` step captured into a program (#1590) renders
+        into — overrides the ``Agent`` default, which took it off chat."""
+        return True
 
     def _require_target(self) -> MemoryRow:
         if self._current_target is None:

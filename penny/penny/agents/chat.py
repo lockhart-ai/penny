@@ -33,7 +33,7 @@ from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.memory_tools import render_nothing_landed, render_writes_landed
-from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
+from penny.tools.notifications import NotificationsTool
 from penny.validation import ConditionKey
 
 if TYPE_CHECKING:
@@ -187,10 +187,10 @@ class ChatAgent(Agent):
     ) -> list[Tool]:
         tools = super().get_tools(run_id, handles)
         # Notification mute/unmute is a chat-driven action over the MuteState row
-        # (the retired /mute + /unmute commands), so both tools live on the chat
-        # surface — the model dispatches to them from natural language.
-        tools.append(NotificationsMuteTool(self.db))
-        tools.append(NotificationsUnmuteTool(self.db))
+        # (the retired /mute + /unmute commands, then the retired mute/unmute tool
+        # pair, #2812), so the tool lives on the chat surface — the model
+        # dispatches to it from natural language.
+        tools.append(NotificationsTool(self.db))
         if self._image_client is not None:
             tools.append(
                 GenerateImageTool(self._image_client, self.db, self._embedding_model_client)
