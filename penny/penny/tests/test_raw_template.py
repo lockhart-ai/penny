@@ -135,6 +135,48 @@ class TestParseCompletion:
         # per call within the response, for the dispatcher's own result-pairing.
         assert calls[0].id != calls[1].id
 
+    def test_call_ids_are_unique_across_separate_responses(self) -> None:
+        """A per-response counter (``raw_call_1``, ...) would repeat on every
+        turn's first call and collide with history/dedup/``CallLink`` tracing
+        that keys on the id (#2829) — the id is minted fresh every call, not
+        derived from its position."""
+        text = "<|tool_call>call:foo{}<tool_call|>"
+        first_calls = parse_completion(text)[1]
+        second_calls = parse_completion(text)[1]
+        assert first_calls is not None and second_calls is not None
+        assert first_calls[0].id != second_calls[0].id
+
+    def test_text_before_a_tool_call_is_kept_as_content_not_rerolled(self) -> None:
+        """A reply that opens with a sentence before calling a tool keeps that
+        sentence as content (#2829) — the chat path's provider-parsed tool
+        calls already tolerate this; treating it as unparsed CALL_AS_TEXT
+        here would be a regression against that behaviour."""
+        text = (
+            'Let me check that for you.<|tool_call>call:get_events{day:<|"|>today<|"|>}<tool_call|>'
+        )
+        thinking, calls, content = parse_completion(text)
+        assert thinking is None
+        assert calls is not None
+        assert calls[0].function.name == "get_events"
+        assert content == "Let me check that for you."
+
+    def test_a_trailing_tool_response_marker_is_stripped_not_hallucinated(self) -> None:
+        """After a tool call, the model's own generation prompt ends the turn
+        at ``<|tool_response>`` (gemma's eos id 50) rather than ``<turn|>``
+        (id 106) — a provider that returns this as literal text, instead of
+        consuming it as the stop sequence, must not have it leak into
+        content (#2829)."""
+        text = "<|tool_call>call:foo{}<tool_call|><|tool_response>"
+        _thinking, calls, content = parse_completion(text)
+        assert calls is not None
+        assert content == ""
+
+    def test_a_trailing_eos_marker_is_stripped(self) -> None:
+        thinking, calls, content = parse_completion("Sure thing.<eos>")
+        assert thinking is None
+        assert calls is None
+        assert content == "Sure thing."
+
     def test_a_tool_call_that_opens_but_does_not_parse_raises(self) -> None:
         with pytest.raises(LlmToolParseError):
             parse_completion("<|tool_call>call:foo{bad")
@@ -146,3 +188,48 @@ class TestParseCompletion:
     def test_a_tool_call_missing_its_closing_marker_raises(self) -> None:
         with pytest.raises(LlmToolParseError):
             parse_completion("<|tool_call>call:foo{}not the closing marker")
+
+
+class TestValueShapesTheTemplateCanEmit:
+    """``format_argument`` (the vendored template's own macro) has no branch
+    for a null/numeric/exponent value — a bare Python value falls to its
+    ``else: {{ argument }}`` and Jinja prints ``str()`` of it, which the
+    parser must read back exactly (#2829): confirmed empirically by
+    rendering each shape through the real template (``str(None) == "None"``,
+    ``str(1e21) == "1e+21"``)."""
+
+    def test_null_argument_value(self) -> None:
+        _thinking, calls, _content = parse_completion(
+            "<|tool_call>call:foo{value:None}<tool_call|>"
+        )
+        assert calls is not None
+        assert calls[0].function.arguments == {"value": None}
+
+    def test_a_very_large_float_renders_in_exponent_form(self) -> None:
+        _thinking, calls, _content = parse_completion(
+            "<|tool_call>call:foo{value:1e+21}<tool_call|>"
+        )
+        assert calls is not None
+        assert calls[0].function.arguments == {"value": 1e21}
+
+    def test_a_small_negative_exponent_float(self) -> None:
+        _thinking, calls, _content = parse_completion(
+            "<|tool_call>call:foo{value:1.5e-10}<tool_call|>"
+        )
+        assert calls is not None
+        assert calls[0].function.arguments == {"value": 1.5e-10}
+
+    def test_a_negative_integer(self) -> None:
+        _thinking, calls, _content = parse_completion("<|tool_call>call:foo{value:-7}<tool_call|>")
+        assert calls is not None
+        assert calls[0].function.arguments == {"value": -7}
+
+    def test_a_string_nested_two_levels_deep(self) -> None:
+        """A string inside an object inside an array — the same ``<|"|>``
+        escaping recurses at every nesting level (the template's
+        ``format_argument`` calls itself for both ``mapping`` and
+        ``iterable``)."""
+        text = '<|tool_call>call:foo{items:[{name:<|"|>first<|"|>}]}<tool_call|>'
+        _thinking, calls, _content = parse_completion(text)
+        assert calls is not None
+        assert calls[0].function.arguments == {"items": [{"name": "first"}]}

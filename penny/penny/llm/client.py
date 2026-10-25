@@ -714,7 +714,7 @@ class LlmClient:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
-            "stop": [raw_template.STOP_SEQUENCE],
+            "stop": list(raw_template.STOP_SEQUENCES),
             "extra_body": extra_body,
         }
         if token_budget is not None:

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +49,23 @@ _TEMPLATE_FILENAME = "gemma4_chat_template.jinja"
 _VENDORED_MODEL_MARKERS = ("gemma-4-26b-a4b-it",)
 
 BOS_TOKEN = "<bos>"
+# The two markers that end a generation, read off gemma's own
+# ``generation_config`` eos ids (1 = ``<eos>``, 106 = ``<turn|>``, 50 =
+# ``<|tool_response>``): the model ends an ordinary turn with ``<turn|>`` and
+# ends a TOOL-CALL turn with ``<|tool_response>`` instead (the template's own
+# generation prompt opens that block for it — see the vendored template's
+# final ``add_generation_prompt`` branch).  A provider honouring only the
+# tokenizer's bare eos id would let the model run on past a tool call and
+# hallucinate the tool's own response text, so both are sent as stop
+# sequences, not just the turn marker.
 STOP_SEQUENCE = "<turn|>"
+TOOL_RESPONSE_STOP_SEQUENCE = "<|tool_response>"
+STOP_SEQUENCES = (STOP_SEQUENCE, TOOL_RESPONSE_STOP_SEQUENCE)
+EOS_TOKEN = "<eos>"
+# Markers a provider can still return as literal TEXT rather than consuming
+# as the stop sequence (CoreWeave's probe behaviour) — stripped from the end
+# of the content the parser hands back, so one never leaks into a reply.
+_TRAILING_MARKERS = (TOOL_RESPONSE_STOP_SEQUENCE, STOP_SEQUENCE, EOS_TOKEN)
 
 # The raw-faithfulness check (#2829 build decision 3): a raw completion of the
 # bare BOS token must report exactly one prompt token.  A provider whose
@@ -72,7 +89,25 @@ _TOOL_CALL_OPEN = "<|tool_call>"
 _TOOL_CALL_CLOSE = "<tool_call|>"
 _TOOL_CALL_HEAD = re.compile(r"<\|tool_call>call:(?P<name>[^{]+)\{", re.DOTALL)
 _KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_NUMBER_PATTERN = re.compile(r"-?\d+(\.\d+)?")
+# Exponent form included (``1e+21``, ``1.5e-10``) — the template's own
+# ``format_argument`` macro has no numeric branch of its own: a plain
+# int/float falls to its ``else: {{ argument }}`` and Jinja prints Python's
+# own ``str()``, which switches a float to exponential notation outside a
+# normal range (confirmed: ``str(1e21) == "1e+21"``).
+_NUMBER_PATTERN = re.compile(r"-?\d+(\.\d+)?([eE][+-]?\d+)?")
+_NULL_LITERAL = "None"
+
+# Gemma's own tool-call syntax carries no id at all (unlike the OpenAI
+# tool-call schema) — Penny mints one per call, globally unique, since
+# history, dedup, and the prompt log's ``parent_tool_call_id``/``CallLink``
+# tracing all key on it; a per-RESPONSE counter (``raw_call_1``, …) would
+# repeat across every turn's first call and collide.
+_RAW_CALL_ID_PREFIX = "raw_call_"
+
+
+def _new_call_id() -> str:
+    return f"{_RAW_CALL_ID_PREFIX}{uuid.uuid4().hex}"
+
 
 # The thought channel's two equivalent spellings: the raw marker text gemma's
 # template itself emits (CoreWeave — confirmed byte-identical to the local
@@ -171,7 +206,7 @@ def parse_completion(text: str) -> tuple[str | None, list[LlmToolCall] | None, s
     """
     thinking, rest = _split_thought(text)
     tool_calls, rest = _split_tool_calls(rest)
-    content = _strip_trailing_turn(rest).strip()
+    content = _strip_trailing_markers(rest).strip()
     return thinking, tool_calls, content
 
 
@@ -185,38 +220,62 @@ def _split_thought(text: str) -> tuple[str | None, str]:
 
 
 def _split_tool_calls(text: str) -> tuple[list[LlmToolCall] | None, str]:
-    calls: list[LlmToolCall] = []
-    rest = text
-    while rest.startswith(_TOOL_CALL_OPEN):
-        rest, call = _read_one_tool_call(rest, len(calls) + 1)
-        calls.append(call)
-    return (calls or None), rest
-
-
-def _read_one_tool_call(text: str, position: int) -> tuple[str, LlmToolCall]:
-    """One ``<|tool_call>call:name{...}<tool_call|>`` span, and the text after it.
-
-    ``position`` numbers calls within this one response (1-based) to
-    synthesise a stable id — gemma's own tool-call syntax carries no id at
-    all, unlike the OpenAI tool-call schema, so Penny mints one for the
-    dispatcher's own result-pairing to key on.
+    """Every ``<|tool_call>...<tool_call|>`` span ANYWHERE in ``text`` (not
+    only at its very start) — a reply that opens with a sentence before
+    calling a tool keeps that sentence as content instead of being rerolled
+    as unparsed text, the same leniency the chat path's provider-parsed tool
+    calls already get.  Content is every span of text OUTSIDE a call,
+    concatenated in order.
     """
-    match = _TOOL_CALL_HEAD.match(text)
+    calls: list[LlmToolCall] = []
+    content_parts: list[str] = []
+    pos = 0
+    while True:
+        idx = text.find(_TOOL_CALL_OPEN, pos)
+        if idx == -1:
+            content_parts.append(text[pos:])
+            break
+        content_parts.append(text[pos:idx])
+        pos, call = _read_one_tool_call(text, idx)
+        calls.append(call)
+    return (calls or None), "".join(content_parts)
+
+
+def _read_one_tool_call(text: str, start: int) -> tuple[int, LlmToolCall]:
+    """One ``<|tool_call>call:name{...}<tool_call|>`` span starting at ``start``
+    (where ``text[start:]`` begins with ``<|tool_call>``) — returns the
+    position just past its closing marker, and the parsed call.
+
+    The id is minted fresh per call (:func:`_new_call_id`), never derived
+    from position within the response — gemma's own syntax carries no id at
+    all, so Penny mints its own for the dispatcher's own result-pairing.
+    """
+    match = _TOOL_CALL_HEAD.match(text, start)
     if not match:
-        raise LlmToolParseError(f"malformed tool call opening: {text[:80]!r}")
+        raise LlmToolParseError(f"malformed tool call opening: {text[start : start + 80]!r}")
     name = match.group("name")
     arguments, pos = _parse_object_body(text, match.end())
     if text[pos : pos + len(_TOOL_CALL_CLOSE)] != _TOOL_CALL_CLOSE:
         raise LlmToolParseError(f"tool call to {name!r} is missing its closing marker")
     call = LlmToolCall(
-        id=f"raw_call_{position}",
-        function=LlmToolCallFunction(name=name, arguments=arguments),
+        id=_new_call_id(), function=LlmToolCallFunction(name=name, arguments=arguments)
     )
-    return text[pos + len(_TOOL_CALL_CLOSE) :], call
+    return pos + len(_TOOL_CALL_CLOSE), call
 
 
-def _strip_trailing_turn(text: str) -> str:
-    return text[: -len(STOP_SEQUENCE)] if text.endswith(STOP_SEQUENCE) else text
+def _strip_trailing_markers(text: str) -> str:
+    """Strip a trailing stop marker a provider returned as literal text
+    rather than consuming as the stop sequence — ``<|tool_response>`` (the
+    tool-call turn's own end marker) and ``<turn|>``/``<eos>`` (an ordinary
+    turn's), repeated in case more than one trails."""
+    changed = True
+    while changed:
+        changed = False
+        for marker in _TRAILING_MARKERS:
+            if text.endswith(marker):
+                text = text[: -len(marker)]
+                changed = True
+    return text
 
 
 def _parse_value(text: str, pos: int) -> tuple[Any, int]:
@@ -231,6 +290,8 @@ def _parse_value(text: str, pos: int) -> tuple[Any, int]:
         return True, pos + 4
     if text.startswith("false", pos):
         return False, pos + 5
+    if text.startswith(_NULL_LITERAL, pos):
+        return None, pos + len(_NULL_LITERAL)
     return _parse_number(text, pos)
 
 
@@ -293,7 +354,8 @@ def _parse_number(text: str, pos: int) -> tuple[int | float, int]:
     if not match:
         raise LlmToolParseError(f"malformed tool call argument value at: {text[pos : pos + 40]!r}")
     raw = match.group(0)
-    value: int | float = float(raw) if "." in raw else int(raw)
+    is_float = "." in raw or "e" in raw or "E" in raw
+    value: int | float = float(raw) if is_float else int(raw)
     return value, match.end()
 
 

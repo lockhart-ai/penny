@@ -1496,7 +1496,7 @@ class TestRawTemplateTransport:
         assert call.function.arguments == {"collection": "jobs", "k": 5}
         assert captured["model"] == _GEMMA_MODEL
         assert "<|turn>user" in captured["prompt"]
-        assert captured["stop"] == ["<turn|>"]
+        assert captured["stop"] == ["<turn|>", "<|tool_response>"]
 
         with db.get_session() as session:
             row = session.exec(select(PromptLog)).one()
