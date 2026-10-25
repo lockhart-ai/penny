@@ -11,14 +11,18 @@ import re
 
 # Substrings that indicate the model has produced a refusal rather than
 # substantive content.  Lowercase for case-insensitive matching.
+#
+# An apology ("I'm sorry", "I apologize") is deliberately NOT here: it's
+# just as often an honest report of a real failure ("I'm sorry, the image
+# server didn't answer") as a refusal, and unlike "I can't"/"as an AI" an
+# apology carries no refusal of its own — it only READS as one next to a
+# phrase that does.  Dropping it means a short, honest "I'm sorry, X
+# failed." is never withheld or discarded as a refusal.
 REFUSAL_PHRASES = (
     "i can't",
     "i cannot",
-    "i'm sorry",
-    "i am sorry",
     "i'm unable",
     "i am unable",
-    "i apologize",
     "as an ai",
     "as a language model",
 )
@@ -27,8 +31,8 @@ REFUSAL_PHRASES = (
 # can't help with that." is under 40 characters, and the longest templated
 # refusal phrasings we've seen stay well under 150.  Past this many
 # characters the reply has moved on to real content, whether it opens with
-# an apology for an honest tool failure ("I'm sorry, the image server didn't
-# answer...") or hedges mid-answer ("...but I can suggest...") — neither is
+# an apology for an honest tool failure that goes on to explain what
+# happened, or hedges mid-answer ("...but I can suggest...") — neither is
 # a refusal, so the length bound keeps them from being discarded and
 # redrawn for nothing.
 MAX_REFUSAL_LENGTH = 160

@@ -3782,6 +3782,13 @@ class TestResponseValidators:
         )
         assert isinstance(RefusalValidator().check(resp, _ctx()), Proceed)
 
+    def test_refusal_validator_lets_through_a_short_honest_apology(self):
+        """A SHORT apology for a real failure is still not a refusal (#2808) —
+        "I'm sorry" carries no refusal phrase of its own, so a brief, honest "that
+        failed" reply is never caught on length alone."""
+        resp = _text_response("I'm sorry, the image server didn't answer.")
+        assert isinstance(RefusalValidator().check(resp, _ctx()), Proceed)
+
     def test_refusal_validator_empty_content_is_not_a_refusal(self):
         resp = _text_response("")
         assert isinstance(RefusalValidator().check(resp, _ctx()), Proceed)
