@@ -21,6 +21,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from penny.config import Config
+from penny.llm import raw_template
 from penny.llm.client import LlmClient
 from penny.llm.decision_client import DecisionClient, DecisionError, decision_api_url
 from penny.llm.image_client import MfluxImageClient
@@ -59,6 +60,7 @@ class PreflightCheck(StrEnum):
     IMAGE_MODEL = "image-model"
     BROWSER_ADDON = "browser-addon"
     PRIMARY_CHANNEL = "primary-channel"
+    RAW_TEMPLATE_TRANSPORT = "raw-template-transport"
 
 
 _STATUS_ICON: dict[CheckStatus, str] = {
@@ -164,6 +166,7 @@ class Preflight:
         """Run every applicable check and collect the results — summary method."""
         candidates: list[CheckResult | None] = [
             await self._check_llm_endpoint(),
+            await self._check_raw_template_transport(),
             await self._check_embedding_model(),
             await self._check_decision_model(),
             await self._check_image_model(),
@@ -249,6 +252,35 @@ class Preflight:
             name,
             f"chat model {model!r} not available at {url} — pull it (`ollama pull {model}`) "
             f"or set LLM_MODEL to an installed model.",
+        )
+
+    async def _check_raw_template_transport(self) -> CheckResult | None:
+        """The raw-template transport's own faithfulness, for a vendored-template
+        model (#2829 build decision 3) — soft warn, named degraded mode.
+
+        A model with no vendored template never reaches this check at all
+        (``None`` — not reported, the same shape the image/browser checks use
+        for "not applicable here"). A failure falls the client back to the
+        chat transport for the rest of this deployment's life, never
+        silently (``docs/principles.md``'s visible-degradation principle).
+        """
+        if not self.model_client.raw_template_enabled:
+            return None
+        name = PreflightCheck.RAW_TEMPLATE_TRANSPORT
+        url = self.config.llm_api_url
+        degraded_detail = raw_template.RAW_FAITHFULNESS_DEGRADED_MESSAGE.format(endpoint=url)
+        try:
+            faithful = await self.model_client.check_raw_template_faithfulness()
+        except LlmError as error:
+            self.model_client.disable_raw_template_transport(f"{degraded_detail} ({error})")
+            return self._warn(name, f"{degraded_detail} ({error})")
+        if faithful:
+            return self._ok(name, f"raw completions served faithfully at {url}")
+        self.model_client.disable_raw_template_transport(
+            f"{degraded_detail} (endpoint wraps raw completions as a chat turn)"
+        )
+        return self._warn(
+            name, f"{degraded_detail} (endpoint wraps raw completions as a chat turn)"
         )
 
     async def _check_embedding_model(self) -> CheckResult:

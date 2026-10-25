@@ -41,6 +41,8 @@ from penny.llm.models import (
     LlmTimeoutError,
     LlmToolCall,
     LlmToolCallFunction,
+    LlmToolParseError,
+    PromptTransport,
     ProviderPin,
     fault_for_status,
     usage_timing_from_response,
@@ -1416,3 +1418,225 @@ class TestImageDataUri:
     )
     def test_mime_type_comes_from_the_image_itself(self, image: str, expected: str) -> None:
         assert _image_data_uri(image) == expected
+
+
+# A model id with a vendored chat template (#2829) — matches both oMLX's own id and
+# OpenRouter's, via ``raw_template.has_vendored_template``'s substring match.
+_GEMMA_MODEL = "google/gemma-4-26b-a4b-it"
+
+
+def _text_completion(text: str, finish_reason: str = "stop", usage: dict | None = None):
+    """A minimal raw-completions-shaped response (#2829) — what the SDK hands
+    the raw template transport back from ``client.completions.create``."""
+
+    class _Choice:
+        def __init__(self, text: str, reason: str) -> None:
+            self.text = text
+            self.finish_reason = reason
+
+    class _Completion:
+        model = "m"
+        model_extra: dict = {}
+
+        def __init__(self, text: str, reason: str, usage: dict | None) -> None:
+            self.choices = [_Choice(text, reason)]
+            self.usage = usage
+
+        def model_dump(self) -> dict:
+            dumped: dict = {"choices": [{"text": text, "finish_reason": finish_reason}]}
+            if usage is not None:
+                dumped["usage"] = usage
+            return dumped
+
+    return _Completion(text, finish_reason, usage)
+
+
+class TestRawTemplateTransport:
+    """A model with a vendored chat template (#2829) routes through raw completions
+    instead of chat-completions, and its own grammar parses back into the same
+    ``LlmResponse`` shape either transport produces."""
+
+    @pytest.mark.asyncio
+    async def test_a_vendored_model_calls_raw_completions_not_chat(
+        self, monkeypatch, db: Database
+    ) -> None:
+        captured: dict = {}
+
+        async def chat_create(**kwargs):
+            raise AssertionError("the chat transport should not be called")
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion(
+                "<|channel>thought\nchecking\n<channel|><|tool_call>call:collection_list"
+                '{collection:<|"|>jobs<|"|>,k:5}<tool_call|>'
+            )
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", chat_create)
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        response = await client.chat(
+            [LlmMessage(role="user", content="list my jobs")],
+            agent_name="chat",
+            call_link=CallLink.top("run-raw"),
+        )
+        await client.close()
+
+        assert response.thinking == "checking"
+        assert response.message.tool_calls is not None
+        call = response.message.tool_calls[0]
+        assert call.function.name == "collection_list"
+        assert call.function.arguments == {"collection": "jobs", "k": 5}
+        assert captured["model"] == _GEMMA_MODEL
+        assert "<|turn>user" in captured["prompt"]
+        assert captured["stop"] == ["<turn|>"]
+
+        with db.get_session() as session:
+            row = session.exec(select(PromptLog)).one()
+        assert row.transport == PromptTransport.RAW_TEMPLATE.value
+        # The prompt log stays reader-compatible with the chat shape (#2829) —
+        # every existing reader of ``promptlog.response`` assumes
+        # ``choices[].message``, which the raw wire shape alone doesn't carry.
+        logged_message = json.loads(row.response)["choices"][0]["message"]
+        assert logged_message["tool_calls"][0]["function"]["name"] == "collection_list"
+        assert logged_message["reasoning_content"] == "checking"
+
+    @pytest.mark.asyncio
+    async def test_an_image_bearing_call_still_uses_chat_even_on_a_vendored_model(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """Images need the provider's own vision processor, which raw completions
+        has no equivalent for (#2829) — forced back to chat regardless of model."""
+
+        async def chat_create(**kwargs):
+            return _completion("I see it")
+
+        async def raw_create(**kwargs):
+            raise AssertionError("an image-bearing call must not route raw")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", chat_create)
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        await client.chat(
+            [LlmMessage(role="user", content="what is this", images=["c3VpdGNhc2U="])],
+            call_link=CallLink.top("run-image"),
+        )
+        await client.close()
+
+        with db.get_session() as session:
+            row = session.exec(select(PromptLog)).one()
+        assert row.transport == PromptTransport.CHAT.value
+
+    @pytest.mark.asyncio
+    async def test_a_structured_format_call_still_uses_chat_on_a_vendored_model(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """``format`` is an OpenAI-API-level field gemma's raw template has no
+        construct for (#2829) — forced back to chat regardless of model."""
+
+        async def chat_create(**kwargs):
+            return _completion("{}")
+
+        async def raw_create(**kwargs):
+            raise AssertionError("a structured-format call must not route raw")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", chat_create)
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        await client.chat(
+            [LlmMessage(role="user", content="profile please")],
+            format={"type": "object"},
+            call_link=CallLink.top("run-format"),
+        )
+        await client.close()
+
+        with db.get_session() as session:
+            row = session.exec(select(PromptLog)).one()
+        assert row.transport == PromptTransport.CHAT.value
+
+    @pytest.mark.asyncio
+    async def test_disabling_the_raw_transport_reroutes_the_next_call_to_chat(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """The startup preflight's raw-faithfulness check calls this on a failure
+        (#2829 build decision 3) — a named degraded mode for the rest of this
+        client's life, never a silent one."""
+
+        async def chat_create(**kwargs):
+            return _completion("fell back")
+
+        async def raw_create(**kwargs):
+            raise AssertionError("the raw transport was disabled and must not be called")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", chat_create)
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        assert client.raw_template_enabled
+
+        client.disable_raw_template_transport("endpoint wraps raw completions as a chat turn")
+        assert not client.raw_template_enabled
+
+        response = await client.chat(
+            [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-disabled")
+        )
+        await client.close()
+
+        assert response.content == "fell back"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_raw_tool_call_raises_tool_parse_error(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """A tool call that opens but does not parse is the same non-retried bucket
+        a malformed PROVIDER-parsed tool call falls into on the chat path (#2829)."""
+
+        async def raw_create(**kwargs):
+            return _text_completion("<|tool_call>call:foo{bad")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=3,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        with pytest.raises(LlmToolParseError):
+            await client.chat(
+                [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-malformed")
+            )
+        await client.close()
+
+        with db.get_session() as session:
+            row = session.exec(select(PromptLog)).one()
+        assert row.call_outcome == "raised"
+        assert row.transport == PromptTransport.RAW_TEMPLATE.value
+        assert row.response == "{}"

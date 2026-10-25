@@ -107,6 +107,12 @@ class PromptLog(SQLModel, table=True):
     completion_tokens: int | None = None
     prefill_ms: int | None = None
     generation_ms: int | None = None
+    # Which wire shape served this call (#2829) — "chat" | "raw_template"
+    # (``penny.llm.models.PromptTransport``).  NULL on every row logged before
+    # this column existed, read as "chat" by convention (the only transport
+    # that existed then); migration 0130 backfills the column's default for
+    # new rows rather than rewriting history.
+    transport: str | None = None
 
     def get_trailing_messages(self) -> list[dict]:
         """The trailing turns as message dicts — empty when the run round-tripped

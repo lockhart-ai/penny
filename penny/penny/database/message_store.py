@@ -474,6 +474,7 @@ class MessageStore:
         completion_tokens: int | None = None,
         prefill_ms: int | None = None,
         generation_ms: int | None = None,
+        transport: str | None = None,
     ) -> int | None:
         """Log a prompt/response exchange with Ollama.
 
@@ -520,6 +521,7 @@ class MessageStore:
                     completion_tokens=completion_tokens,
                     prefill_ms=prefill_ms,
                     generation_ms=generation_ms,
+                    transport=transport,
                     timestamp=self._clock.now(),
                 )
                 session.add(log)

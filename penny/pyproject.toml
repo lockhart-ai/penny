@@ -37,6 +37,9 @@ dependencies = [
     # Image resize/re-encode for stored and incoming images (#2780) —
     # penny.image_utils.normalize_image.
     "Pillow>=11.0.0",
+    # Renders gemma's own vendored chat template for the raw-template transport
+    # (#2829) — penny.llm.raw_template.
+    "jinja2>=3.1.0",
 
 ]
 

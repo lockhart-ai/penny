@@ -132,6 +132,28 @@ class CallOutcome(StrEnum):
     RAISED = "raised"
 
 
+class PromptTransport(StrEnum):
+    """Which wire shape carried ONE call to :meth:`LlmClient.chat` (#2829) —
+    stored on its ``promptlog`` row alongside ``call_outcome``, so a reader
+    can tell which runner behaviour it got without re-deriving it from the
+    model id.
+
+    ``CHAT`` — the OpenAI chat-completions API; each provider applies its
+    own copy of the model's chat template.
+    ``RAW_TEMPLATE`` — Penny renders the model's own vendored chat template
+    itself and sends the result as a raw completions prompt, so every
+    runner serving the model sees byte-identical input.  Chosen structurally
+    by model identity (:func:`penny.llm.raw_template.has_vendored_template`)
+    and forced back to ``CHAT`` for a call carrying an image or a structured
+    ``format`` (neither has a raw-completions equivalent), or when the
+    raw-faithfulness check (the startup preflight) found this deployment's
+    endpoint does not actually serve the model's raw completions faithfully.
+    """
+
+    CHAT = "chat"
+    RAW_TEMPLATE = "raw_template"
+
+
 _RATE_LIMITED_STATUS = 429
 _SERVER_ERROR_STATUS = 500
 _CLIENT_ERROR_STATUS = 400
