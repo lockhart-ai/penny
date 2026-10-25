@@ -9,8 +9,9 @@ entries, held byte-identical across the arms) and five wordings of the one piece
 upstream free text the report carries — the collection's own ``description`` — the
 same role the extractor's ``instruction``/``also_instructed`` play.
 
-Two cases (identities kept from the composer they ported; the composer itself is
-retired — the cases now measure the chat-agent delivery turn that replaced it):
+Three cases (the first two have identities kept from the composer they ported; the
+composer itself is retired — the cases now measure the chat-agent delivery turn
+that replaced it):
 
 * ``notify-composer-single-finding`` — the driver's own smoke test and cost baseline:
   one ordinary finding, nothing to summarise.
@@ -21,24 +22,39 @@ retired — the cases now measure the chat-agent delivery turn that replaced it)
   turn reads carries the entries FULL and uncapped (#2656), so the claim strengthens
   to ALL 18 — every finding the cycle wrote must reach the user, not the 8 a budget
   happened to show.  (Claim change flagged for the code owner in the PR body.)
+* ``job-report-numbered-sources-become-links`` (#2807) — a cycle that wrote two
+  picks, each citing its own source by number (``Source: [1]`` / ``Source: [2]``).
+  Built from a verbatim prod replay (a daily-picks job's report, genericised to a
+  different real topic): the delivered message cited neither number. The report
+  render's own citation line (``link_handles.CITATION_LINE``) already says a number
+  becomes the link at send — it sits at the very end of a long report, after a wall
+  of unrelated written entries, while the chat agent's static system prompt states an
+  OLDER citation rule first (``prompts.py``'s ``CONVERSATION_TAIL_CLOSE``) that never
+  says what a cited number becomes. The fix states that fact where the static rule is
+  read, so it stands beside the first instruction the model sees, not only the last.
 
-The marketplaces, brands and prices are real ones the model recognises (Reverb,
-eBay, Craigslist, Amazon; Korg, Moog, Roland and the rest), per the code owner's
-ruling of Oct 19 — the listings themselves are fictional, and the repo is public, so
-nothing resembling a real person or a real live listing appears.
+The marketplaces, brands and prices in the first two cases are real ones the model
+recognises (Reverb, eBay, Craigslist, Amazon; Korg, Moog, Roland and the rest), per
+the code owner's ruling of Oct 19 — the listings themselves are fictional, and the
+repo is public, so nothing resembling a real person or a real live listing appears.
+The third case's two albums and their Wikipedia pages are real and public, standing
+in for the private topic and real pages the prod turn actually cited.
 
 Every case is report-only; the thresholds are the code owner's.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from penny.database.memory import EntryInput
 from penny.tests.eval.conftest import EVAL_MODELS
 from penny.tests.eval.drivers.notify_composer import JobReportEval
+from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
-from penny.tests.eval.utils.cohort import REPLY_SPREAD
+from penny.tests.eval.utils.cohort import REPLY_SPREAD, SampleObservation, SpecCategory
 from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
@@ -183,6 +199,113 @@ async def test_notify_composer_names_one_ordinary_finding(
     # PROVENANCE
     cohort.assert_the_reply_answers_the_ask()
     cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(REPLY_SPREAD)
+
+
+# ── job-report-numbered-sources-become-links (#2807) ─────────────────────────────────────
+# A cycle that wrote one entry holding two picks, each citing its own source by a number
+# in the exact shape the report render leaves it: ``*Source: <url>*``, converted to a
+# handle (``[1]``/``[2]``) only when the report is rendered to the model.  Built from a
+# verbatim prod replay — a daily-picks job's report carried two sources as ``[1]`` and
+# ``[2]`` and the reply cited neither — genericised to a different real topic, with the
+# same shape: one entry, two picks, each ending in its own bare source URL.
+_SOURCE_LINKS_COLLECTION = "daily-jazz-picks"
+_HARD_BOP_URL = "https://en.wikipedia.org/wiki/Mingus_Ah_Um"
+_MODAL_URL = "https://en.wikipedia.org/wiki/Kind_of_Blue"
+_SOURCE_LINKS_URLS = (_HARD_BOP_URL, _MODAL_URL)
+_SOURCE_LINKS_ANCHORS = ("Mingus Ah Um", "Kind of Blue")
+_SOURCE_LINKS_ENTRIES = (
+    EntryInput(
+        key="today_picks",
+        content=(
+            "**Hard-bop pick:**\n"
+            "**Mingus Ah Um**\n"
+            "A swinging 1959 Columbia session led by Charles Mingus and his sextet. "
+            "This energetic album blends gospel-tinged blues with intricate ensemble "
+            "writing, anchored by Mingus's driving bass and the sharp interplay of his "
+            "horn players.\n"
+            f"*Source: {_HARD_BOP_URL}*\n\n"
+            "**Modal pick:**\n"
+            "**Kind of Blue**\n"
+            "A landmark 1959 Columbia session led by Miles Davis. Built on modal scales "
+            "rather than chord changes, it is spare, unhurried and widely regarded as "
+            "the best-selling jazz album of all time.\n"
+            f"*Source: {_MODAL_URL}*"
+        ),
+    ),
+)
+_SOURCE_LINKS_WORLD = World(
+    name="daily-jazz-picks-cycle",
+    pages=(),
+    keeps=(),
+    excludes=(),
+    answers=_SOURCE_LINKS_ANCHORS,
+)
+_SOURCE_LINKS_DESCRIPTION = (
+    "A daily scout for two short jazz album picks: one classic hard-bop record and one modal one"
+)
+_SOURCE_LINKS_ALSO_DESCRIBED = (
+    "picks two jazz albums a day, one hard-bop and one modal",
+    "finds one hard-bop jazz album and one modal one to recommend each day",
+    "scouts a daily pair of jazz album picks, a hard-bop one and a modal one",
+    "surfaces one hard-bop and one modal jazz album recommendation every day",
+)
+
+_ClaimFn = Callable[[SampleObservation, World], Answer]
+
+
+def _reply_carries_each_sources_link(urls: tuple[str, ...]) -> _ClaimFn:
+    """The delivered message carries each source's own link — never a paraphrase, the
+    identical address the entry named.
+
+    Checked as a literal substring, not through ``fold_typography``: a link is an exact
+    address, and the handle table expands a citation to the identical string it was
+    registered with, so there is no cosmetic variation to fold away."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        missing = [url for url in urls if url not in sample.reply]
+        return not missing, f"the reply never carries {missing}"
+
+    return answer
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_notify_composer_links_both_cited_sources(
+    job_report_eval: JobReportEval, model: str
+) -> None:
+    """A cycle that wrote two picks, each citing its own source by number — the report
+    render gives the citation fact once, at the end of a long report; the reply must
+    still carry both sources' real links, not their bare numbers and not nothing."""
+    cohort = await job_report_eval(
+        case_id="job-report-numbered-sources-become-links",
+        behaviour=(
+            "In a finished job's delivery turn, when the cycle wrote picks that each "
+            "cite their own source by number, Penny's message carries each source's "
+            "link so the user can follow it."
+        ),
+        area=Area.NOTIFICATIONS,
+        model=model,
+        collection=_SOURCE_LINKS_COLLECTION,
+        entries=_SOURCE_LINKS_ENTRIES,
+        world=_SOURCE_LINKS_WORLD,
+        description=_SOURCE_LINKS_DESCRIPTION,
+        also_described=_SOURCE_LINKS_ALSO_DESCRIBED,
+        samples_per_phrasing=3,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+    # STORE — the cycle's entries were seeded, and the delivery turn writes no store of
+    # its own; the message it queues is the read.
+    cohort.assert_the_reply_answers_the_ask()
+    # PROVENANCE
+    cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.claim(
+        "reply: it carries each source's own link",
+        _reply_carries_each_sources_link(_SOURCE_LINKS_URLS),
+        SpecCategory.PROVENANCE,
+        kind="reply",
+    )
 
     cohort.measure(REPLY_SPREAD)
 
