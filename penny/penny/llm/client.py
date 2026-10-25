@@ -42,6 +42,7 @@ from penny.llm.models import (
     LlmToolParseError,
     PromptTransport,
     ProviderPin,
+    RawFaithfulnessResult,
     UsageTiming,
     fault_for_status,
     usage_timing_from_response,
@@ -703,23 +704,36 @@ class LlmClient:
     ) -> openai.types.completion.Completion:
         """Render the vendored template and send the result as a raw completion
         (#2829) — the provider pin rides the same ``extra_body`` passthrough as
-        the chat transport; ``thinking_enabled`` is already baked into the
-        rendered prompt's own bytes, so it is not sent as a separate field here.
+        the chat transport (:meth:`_provider_pin_extra_body`); ``thinking_enabled``
+        is already baked into the rendered prompt's own bytes, so it is not sent
+        as a separate field here.
         """
         translated_tools = self._translate_tools(tools) if tools else None
         prompt = raw_template.render_prompt(messages, translated_tools, thinking_enabled)
-        extra_body: dict[str, Any] = {}
-        if self.provider_pin is not None:
-            extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "stop": list(raw_template.STOP_SEQUENCES),
-            "extra_body": extra_body,
+            "extra_body": self._provider_pin_extra_body(),
         }
         if token_budget is not None:
             kwargs["max_tokens"] = token_budget
         return await self.client.completions.create(**kwargs)
+
+    def _provider_pin_extra_body(self) -> dict[str, Any]:
+        """The provider pin's own ``extra_body`` passthrough (#2829) — the ONE
+        place that builds it, so the raw-template request and the
+        raw-faithfulness check can never drift apart on whether the pin rides
+        along.  (They did: the check called ``completions.create`` with no
+        pin at all, so an OpenRouter run pinned to CoreWeave could still be
+        answered by any provider on the check — usually a chat-wrapping one —
+        while the real raw-template calls stayed correctly pinned.)  Empty
+        when no pin is configured, same as every other passthrough here.
+        """
+        extra_body: dict[str, Any] = {}
+        if self.provider_pin is not None:
+            extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
+        return extra_body
 
     @staticmethod
     def _parse_raw_template_response(raw: openai.types.completion.Completion) -> LlmResponse:
@@ -910,13 +924,22 @@ class LlmClient:
             ) from error
         return [model.id for model in response.data]
 
-    async def check_raw_template_faithfulness(self) -> bool:
+    async def check_raw_template_faithfulness(self) -> RawFaithfulnessResult:
         """Whether this endpoint serves this model's RAW completions faithfully
         (#2829 build decision 3): one call of the bare BOS token, ``max_tokens``
         1, must report exactly one prompt token — a provider whose
         ``/v1/completions`` secretly wraps the prompt as a chat turn (Makora,
         Cloudflare, Google per #2828/#2829 step 1) reports the wrap's own
         turn-opening tokens on top (14, on one provider probed).
+
+        Carries the SAME provider pin as the real raw-template request
+        (:meth:`_provider_pin_extra_body`) — without it, a gateway routes this
+        check to any provider in the pool while the real calls stay pinned,
+        so a perfectly faithful CoreWeave answers nothing and an unrelated
+        chat-wrapping provider answers this check instead (the bug this
+        fixes).  The result names which upstream actually answered
+        (``_provider_of``), read off the response itself rather than assumed
+        to be the pin, so a future mis-route still names itself.
 
         Used by the startup preflight (falls back to the chat transport on a
         failure, named, never silent) and the eval suite's pre-run endpoint
@@ -931,6 +954,7 @@ class LlmClient:
                 model=self.model,
                 prompt=raw_template.RAW_FAITHFULNESS_PROMPT,
                 max_tokens=raw_template.RAW_FAITHFULNESS_MAX_TOKENS,
+                extra_body=self._provider_pin_extra_body(),
             )
         except openai.APITimeoutError as error:
             raise LlmTimeoutError(str(error)) from error
@@ -942,7 +966,8 @@ class LlmClient:
                 fault=fault_for_status(getattr(error, "status_code", None)),
             ) from error
         prompt_tokens = raw.usage.prompt_tokens if raw.usage else None
-        return prompt_tokens == raw_template.RAW_FAITHFULNESS_EXPECTED_PROMPT_TOKENS
+        faithful = prompt_tokens == raw_template.RAW_FAITHFULNESS_EXPECTED_PROMPT_TOKENS
+        return RawFaithfulnessResult(faithful=faithful, provider=_provider_of(raw))
 
     async def list_embedding_models(self) -> list[str]:
         """List embedding model ids from provider-specific /v1/embeddings/models.

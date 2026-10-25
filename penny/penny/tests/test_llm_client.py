@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import openai
@@ -1640,3 +1641,42 @@ class TestRawTemplateTransport:
         assert row.call_outcome == "raised"
         assert row.transport == PromptTransport.RAW_TEMPLATE.value
         assert row.response == "{}"
+
+    @pytest.mark.asyncio
+    async def test_the_faithfulness_check_carries_the_provider_pin_and_names_who_answered(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """Regression (#2831 review): the check called ``completions.create`` with
+        no pin at all, so an OpenRouter run pinned to CoreWeave could still have
+        this ONE check answered by any provider in the pool — usually a
+        chat-wrapping one — while the real raw-template calls stayed correctly
+        pinned. The pin must ride the check's own request exactly like the real
+        one's (``_provider_pin_extra_body``), and the result names whichever
+        upstream actually answered (read off the response, not the pin)."""
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                usage=SimpleNamespace(prompt_tokens=1),
+                model_extra={"provider": "CoreWeave"},
+            )
+
+        client = LlmClient(
+            api_url="https://gateway.example/api",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            provider_pin=ProviderPin.pin("CoreWeave"),
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        result = await client.check_raw_template_faithfulness()
+        await client.close()
+
+        assert captured["extra_body"] == {
+            "provider": {"order": ["CoreWeave"], "allow_fallbacks": False}
+        }
+        assert result.faithful is True
+        assert result.provider == "CoreWeave"

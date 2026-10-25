@@ -235,24 +235,33 @@ async def smoke_raw_template(
 async def _smoke_raw_template_once(
     *, api_url: str, model: str, api_key: str, provider: str | None = None
 ) -> SmokeResult:
-    """One raw-faithfulness draw, reported with the fault class its failure carried."""
+    """One raw-faithfulness draw, reported with the fault class its failure carried.
+
+    The refusal names the upstream that actually ANSWERED the check
+    (``result.provider``, read off the response itself), not the configured
+    pin — the pin not reaching the request is exactly the bug class this
+    check exists to catch, so a message built from the pin alone would hide
+    a mis-route behind the name of the provider that was supposed to answer.
+    """
     client = _smoke_client(api_url=api_url, model=model, api_key=api_key, provider=provider)
     try:
-        faithful = await client.check_raw_template_faithfulness()
-        if not faithful:
+        result = await client.check_raw_template_faithfulness()
+        if not result.faithful:
+            answered_by = result.provider or UNREPORTED_PROVIDER
             return SmokeResult(
                 subject="raw template",
                 ok=False,
                 detail=(
-                    f"{model} at {api_url} ({provider or UNREPORTED_PROVIDER}): "
-                    "raw completions are not faithful — the endpoint wraps the prompt "
-                    "as a chat turn"
+                    f"{model} at {api_url}: raw completions are not faithful — "
+                    f"{answered_by} wraps the prompt as a chat turn"
                 ),
+                provider=result.provider,
             )
         return SmokeResult(
             subject="raw template",
             ok=True,
             detail=f"{model} serves raw completions faithfully at {api_url}",
+            provider=result.provider,
         )
     except LlmError as error:
         return SmokeResult(

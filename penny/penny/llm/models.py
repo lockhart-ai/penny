@@ -203,6 +203,19 @@ class ProviderPin(BaseModel):
         return {"order": [self.provider], "allow_fallbacks": False}
 
 
+class RawFaithfulnessResult(BaseModel):
+    """Whether a raw-completions endpoint served THIS model's raw template
+    transport faithfully (#2829 build decision 3), and which upstream
+    actually answered — read off the response itself (``_provider_of``),
+    not assumed to be the configured pin, so a refusal or a degraded-mode
+    message names whoever really answered.  A future mis-route (the pin not
+    reaching the request, a gateway routing around it) then names itself
+    instead of reporting the pin back at the caller unchanged."""
+
+    faithful: bool
+    provider: str | None = None
+
+
 # ── Usage & timing ───────────────────────────────────────────────────────
 
 # A duration field present only on a response whose ``usage`` carries oMLX's own

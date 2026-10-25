@@ -25,7 +25,7 @@ from penny.llm import raw_template
 from penny.llm.client import LlmClient
 from penny.llm.decision_client import DecisionClient, DecisionError, decision_api_url
 from penny.llm.image_client import MfluxImageClient
-from penny.llm.models import LlmConnectionError, LlmError, LlmFault
+from penny.llm.models import UNREPORTED_PROVIDER, LlmConnectionError, LlmError, LlmFault
 
 logger = logging.getLogger(__name__)
 
@@ -270,18 +270,20 @@ class Preflight:
         url = self.config.llm_api_url
         degraded_detail = raw_template.RAW_FAITHFULNESS_DEGRADED_MESSAGE.format(endpoint=url)
         try:
-            faithful = await self.model_client.check_raw_template_faithfulness()
+            result = await self.model_client.check_raw_template_faithfulness()
         except LlmError as error:
             self.model_client.disable_raw_template_transport(f"{degraded_detail} ({error})")
             return self._warn(name, f"{degraded_detail} ({error})")
-        if faithful:
+        if result.faithful:
             return self._ok(name, f"raw completions served faithfully at {url}")
-        self.model_client.disable_raw_template_transport(
-            f"{degraded_detail} (endpoint wraps raw completions as a chat turn)"
-        )
-        return self._warn(
-            name, f"{degraded_detail} (endpoint wraps raw completions as a chat turn)"
-        )
+        # Named off the response itself, not the configured pin (#2829) — a
+        # future mis-route (the pin not reaching the request, a gateway
+        # routing around it) then names itself instead of hiding behind a
+        # pin that was never actually honoured.
+        answered_by = result.provider or UNREPORTED_PROVIDER
+        detail = f"{degraded_detail} ({answered_by} wraps raw completions as a chat turn)"
+        self.model_client.disable_raw_template_transport(detail)
+        return self._warn(name, detail)
 
     async def _check_embedding_model(self) -> CheckResult:
         """Embedding endpoint reachable + embedding model resolves (hard fail).
