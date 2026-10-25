@@ -41,7 +41,12 @@ one guess-free tool call from the detail). Sections:
   every other activity line renders.
 - **Your memory** — the map of stores: EVERY live collection and log, no cap
   (#2288), names + one-line scope — the index for an anchored lookup, never the
-  content. One compact trailing line names every ARCHIVED collection and log by
+  content. Its entry count is shown for a collection or log the user or a job
+  owns (moves only on a real write); the four system-log facades
+  (``PennyConstants.SYSTEM_LOGS``) show their name and scope with NO live count
+  (#2814) — that count ticks on every ordinary turn, and this section rides the
+  cached static prefix now, so showing it would rebuild the prefix every turn.
+  One compact trailing line names every ARCHIVED collection and log by
   name (``archived: `<name>`, …``), omitted entirely when nothing is archived — an
   archived row with no job has nowhere else in this header to appear, so this line
   is the complete list, not a remainder.
@@ -491,25 +496,44 @@ class SelfStateHeader:
 
     def _memory_map_section(self) -> str:
         """The index of readable stores — EVERY non-archived memory (collection or
-        log) by name, shape, entry count, and one-line scope. Names, never
-        content: any user fact is one anchored read away using a name shown here.
-        No cap (#2288) — the
-        live rows render in full, and the archived ones get their own compact
-        line below (``_archived_line``) rather than a count that hides them."""
+        log) by name, shape, and one-line scope, plus an entry count for the ones
+        whose count changes only on a real write. Names, never content: any user
+        fact is one anchored read away using a name shown here.  No cap (#2288) —
+        the live rows render in full, and the archived ones get their own compact
+        line below (``_archived_line``) rather than a count that hides them.
+
+        This section rides the static prefix (#2814, ``render_static``), so the
+        count is OMITTED for the four system-log facades
+        (``PennyConstants.SYSTEM_LOGS`` — ``user-messages``/``penny-messages``/
+        ``browse-results``/``collector-runs``): their ``entry_counts()`` value is
+        read straight off ``messagelog``/``promptlog``, which grows on every
+        ordinary turn (an incoming message, a reply, a browse call), not on a job
+        or collection changing — showing it here would rebuild the cached prefix
+        every turn, defeating the point of moving this section into it.  The
+        facade's NAME still renders (the ``log_read`` anchor, n≤1 reachability),
+        only its live count does not; a collection or log the user or a job owns
+        keeps its count, which only moves on a real write."""
         rows = self.db.memories.list_all()
         live = [row for row in rows if not row.archived]
         counts = self.db.memories.entry_counts()
         lines = [self.MAP_HEADER]
-        lines.extend(
-            f"- {row.name} ({row.type}, {counts.get(row.name, 0)} entries) — {row.description}"
-            for row in live
-        )
+        lines.extend(self._memory_map_line(row, counts) for row in live)
         if not live:
             lines.append(self.EMPTY_MAP)
         archived = self._archived_line(rows)
         if archived:
             lines.append(archived)
         return "\n".join(lines)
+
+    @staticmethod
+    def _memory_map_line(row: MemoryRow, counts: dict[str, int]) -> str:
+        """One store-map row: ``- <name> (<type>, <n> entries) — <description>``,
+        or ``- <name> (<type>) — <description>`` for a system-log facade
+        (``PennyConstants.SYSTEM_LOGS``), whose live count would otherwise rebuild
+        the static prefix on every ordinary turn (see ``_memory_map_section``)."""
+        if row.name in PennyConstants.SYSTEM_LOGS:
+            return f"- {row.name} ({row.type}) — {row.description}"
+        return f"- {row.name} ({row.type}, {counts.get(row.name, 0)} entries) — {row.description}"
 
     def _archived_line(self, rows: list[MemoryRow]) -> str:
         """One compact line naming every archived collection and log, by name

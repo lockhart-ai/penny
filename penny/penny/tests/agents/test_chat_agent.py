@@ -287,11 +287,18 @@ async def test_static_system_prefix_rebuilds_when_a_job_or_collection_changes(db
 async def test_static_system_prefix_unaffected_by_an_activity_only_change(db, test_config):
     """The mirror-image claim (#2814): an event that belongs to Recent activity
     alone — a delivered autonomous send, with no job created or collection
-    mutated — must NOT touch the static prefix (it isn't a registry change),
-    while it DOES change the dynamic message, which is where Recent activity
-    actually lives.  This is what keeps the activity boundary honest: activity
-    churning on every run/mutation/emission is exactly why it stayed in the
-    per-turn tail rather than moving in with Jobs and the store map."""
+    mutated — must NOT touch the static prefix, while it DOES change the
+    dynamic message, which is where Recent activity actually lives.
+
+    A mechanism-tagged outgoing message is exactly the case that moves the
+    registry's OWN ``penny-messages`` count (``MemoryStore.entry_counts()``
+    reads it straight off ``messagelog``, with no mechanism filter) without
+    touching any job or collection — the near-miss #2814 almost shipped with:
+    the store map's live count for ``penny-messages`` would otherwise have
+    ticked on every ordinary turn, since every reply is an outgoing message.
+    The fix is that the four system-log facades (``PennyConstants.SYSTEM_LOGS``)
+    render their name and scope with NO live count (``_memory_map_line``), so
+    this send moves the count but not anything the static prefix shows."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent.config = test_config
@@ -1542,37 +1549,39 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "On a plain reply with no tool calls, skip the recap and just respond.\n"
     "\n"
     "Always include specific details (specs, dates, prices) and at least one source "
-    "link (its number in brackets) so the user can follow up."
-)
-
-# The dynamic system message's state header, everything after the clock line —
-# the leading "\n" is the blank line that separated it from the clock.
-_BASIC_FLOW_STATE_EXPECTED = (
-    "\n"
-    "## Penny's current state\n"
+    "link (its number in brackets) so the user can follow up.\n"
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
     "(no jobs yet)\n"
+    "\n"
+    "### Your memory\n"
+    "- browse-results (log) — Every browse-tool fetch result\n"
+    "- collector-runs (log) — One entry per Collector cycle: the target + its "
+    "generated structural record (outcome, counts, tool trace)\n"
+    "- penny-messages (log) — Every outgoing Penny reply\n"
+    "- playlists (collection, 1 entries) — favorite playlists\n"
+    "- rules (collection, 0 entries) — Standing instructions the user has given: things "
+    "to always or never do\n"
+    "- secrets (collection, 1 entries) — hidden\n"
+    "- tips (log, 1 entries) — useful tips\n"
+    "- user-messages (log) — Every incoming user message\n"
+    "archived: `old-facts`"
+)
+
+# The dynamic system message's state header, everything after the clock line —
+# the leading "\n" is the blank line that separated it from the clock.  Jobs
+# and the store map moved into the STATIC message above (#2814) — this is
+# what's left: recent activity, then about the user.
+_BASIC_FLOW_STATE_EXPECTED = (
+    "\n"
+    "## Penny's current state\n"
     "\n"
     "### Recent activity\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts created by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · secrets created by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · playlists created by user-run\n"
-    "\n"
-    "### Your memory\n"
-    "- browse-results (log, 0 entries) — Every browse-tool fetch result\n"
-    "- collector-runs (log, 0 entries) — One entry per Collector cycle: the target + its "
-    "generated structural record (outcome, counts, tool trace)\n"
-    "- penny-messages (log, 0 entries) — Every outgoing Penny reply\n"
-    "- playlists (collection, 1 entries) — favorite playlists\n"
-    "- rules (collection, 0 entries) — Standing instructions the user has given: things "
-    "to always or never do\n"
-    "- secrets (collection, 1 entries) — hidden\n"
-    "- tips (log, 1 entries) — useful tips\n"
-    "- user-messages (log, 0 entries) — Every incoming user message\n"
-    "archived: `old-facts`\n"
     "\n"
     "### About the user\n"
     "- name: Test User\n"
