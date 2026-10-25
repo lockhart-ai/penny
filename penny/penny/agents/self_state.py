@@ -1,5 +1,8 @@
 """SelfStateHeader — Penny's operational self-state, rendered deterministically
-into the chat agent's system prompt (#1555).
+into the chat agent's system prompt (#1555).  Jobs and Your memory ride the
+STATIC prefix (``SelfStateHeader.render_static``); Recent activity and About the
+user ride the per-turn DYNAMIC message (``render_dynamic``) — see #2814 and each
+method's own docstring below.
 
 The ambient inversion: instead of *predicting* which of the user's stored content
 might be relevant this turn (speculative, usually unused, occasionally
@@ -93,11 +96,22 @@ if TYPE_CHECKING:
 
 
 class SelfStateHeader:
-    """Renders the ``## Penny's current state`` block from the registry + ledger.
+    """Renders Penny's operational self-state from the registry + ledger.
 
-    Constructed per chat turn (the activity block churns on every event, so it
-    lives in the dynamic tail of the prompt, never a cached static prefix) and
-    read purely — every method is a deterministic projection of stored rows.
+    Constructed per chat turn and read purely — every method is a deterministic
+    projection of stored rows. Two sections — Jobs and Your memory — ride
+    ``ChatAgent``'s cached STATIC prefix (:meth:`render_static`, #2814): both are
+    pure renders of the registry alone (schedule rule, ``notify``, ``expires_at``,
+    last-run stamp, entry counts, descriptions — never ``now``, confirmed turn to
+    turn by ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``),
+    so they are byte-identical across turns unless a job or a collection actually
+    changed — rare next to every turn, the same bet the conversation map makes.
+    The rest — Recent activity (which churns on every run/mutation/emission) and
+    About the user — stay in the per-turn dynamic tail (:meth:`render_dynamic`),
+    since those genuinely can change every turn. ``render()`` keeps the whole,
+    historical, single-message shape (identical output, unused by ``ChatAgent``
+    since #2814) for the many tests below that assert on ``SelfStateHeader`` as a
+    unit rather than on where its sections land.
     """
 
     HEADER = "## Penny's current state"
@@ -177,12 +191,45 @@ class SelfStateHeader:
         section that has nothing to show renders nothing.  The standing rules do not
         render here at all: with a rule standing they belong to the chat prompt's
         instruction part (``standing_rules_instruction``), and with none the section
-        is omitted entirely (#2686) — the store map still names ``rules``."""
+        is omitted entirely (#2686) — the store map still names ``rules``.
+
+        Kept for its many existing callers that test ``SelfStateHeader`` as a
+        self-contained unit (its own section-rendering logic — caps, cuts,
+        mute-state wording, …) rather than where a section lands in the chat
+        prompt.  ``ChatAgent`` itself no longer calls this: it calls
+        :meth:`render_static` and :meth:`render_dynamic` instead (#2814), so this
+        method's section order no longer matches either message — it is this
+        class's own legacy whole-render, not a third shape the model ever sees."""
         sections = [
             self.HEADER,
             self._mechanisms_section(),
             self._activity_section(),
             self._memory_map_section(),
+            self._durable_core_section(),
+            self.POINTERS,
+        ]
+        return "\n\n".join(section for section in sections if section)
+
+    def render_static(self) -> str:
+        """Jobs + Your memory — the two SLOW-CHANGING sections (#2814) that ride
+        ``ChatAgent``'s cached static system-prompt prefix instead of the per-turn
+        dynamic tail.  Both are pure renders of the registry alone — no activity,
+        no ``now`` — so this string is byte-identical turn to turn unless a job or
+        a collection actually changed, the same cache bet the conversation map
+        makes for the rest of the static message."""
+        sections = [self._mechanisms_section(), self._memory_map_section()]
+        return "\n\n".join(section for section in sections if section)
+
+    def render_dynamic(self) -> str:
+        """``## Penny's current state`` + Recent activity + About the user + the
+        pointers line — what rides ``ChatAgent``'s per-turn dynamic system message
+        (#2814): the activity block churns on every run/mutation/emission, so it
+        can never be part of a cached prefix; the durable core and the pointers
+        line are cheap enough to just ride along beside it rather than earn their
+        own split."""
+        sections = [
+            self.HEADER,
+            self._activity_section(),
             self._durable_core_section(),
             self.POINTERS,
         ]
