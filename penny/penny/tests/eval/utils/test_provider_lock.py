@@ -14,6 +14,12 @@ holder being gone is one of three ways a name on it goes stale — the others ar
 alive but belonging to a DIFFERENT process now (the OS reused it) and the pid being the
 LOOKING run's own (it can never legitimately be its own lock's holder).  All three are covered
 below; only the first is reachable by an ordinary kill.
+
+An EMPTY pid file — every one written before this change, or one a `ps`-less take writes —
+records no start time to be wrong, so it is never enough on its own to call a live holder
+stale: that holder is judged by aliveness alone, same as before this change.  Covered below
+too, since a run already holding a lock under the old format is exactly what a rollout mixes
+with the new one.
 """
 
 from __future__ import annotations
@@ -275,6 +281,36 @@ def test_a_lock_nobody_holds_is_cleared_and_taken(tmp_path: pathlib.Path) -> Non
         f"eval: holding provider Groq ({lock})",
     ]
     assert not lock.exists()
+
+
+def test_a_live_holder_with_an_empty_pid_file_is_waited_on_not_cleared(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Rollout compatibility: a run already holding a lock under the OLD format (every pid
+    file before this change) — or one a `ps`-less take wrote — has no start time in its pid
+    file for a later look to compare against.  That is not evidence of anything: the holder
+    is judged by aliveness alone, same as before #2821, so a live old-format holder is waited
+    on and given up on at the bound, same as any other live holder — never torn out from
+    under it just because its file records nothing to check."""
+    lock = tmp_path / "Groq.lock"
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        lock.mkdir()
+        (lock / f"{other.pid}").touch()
+        status, printed = _finish(_start(tmp_path, "Groq", wait=2))
+        held = f"{lock} is held by pid {other.pid}"
+        assert status == 1
+        assert printed == [
+            f"eval: provider Groq is busy — {held}; waiting (0s of 2s)",
+            f"eval: provider Groq is busy — {held}; waiting (1s of 2s)",
+            f"eval: gave up after 2s waiting for provider Groq — {held}. Wait for that run and "
+            f"start again, raise EVAL_PROVIDER_LOCK_WAIT, or remove {lock} if that pid is not "
+            "an eval run.",
+        ]
+        assert _holders(lock) == [f"{other.pid}"], "the lock is still its old-format holder's"
+    finally:
+        other.terminate()
+        other.wait(timeout=10)
 
 
 def test_a_lock_naming_a_reused_pid_is_cleared_and_taken(tmp_path: pathlib.Path) -> None:

@@ -15,11 +15,14 @@
 #                 trap, so however the run ends — except a kill no trap can catch, SIGKILL,
 #                 which is exactly what the next bullet is for).
 #   a STALE lock  one whose holder's name on it is no good: the pid is gone (a run killed
-#                 outright, a reboot); the pid is alive but its start time no longer matches
-#                 what the pid file recorded, because the OS has since reused that pid for an
-#                 unrelated process; or the pid is this very shell's own — the one doing the
-#                 looking, so it is never legitimately the lock's holder. The next run to find
-#                 one of these says so and clears it: the stale pid's file, then the directory.
+#                 outright, a reboot); the pid is alive, its pid file RECORDS a start time, and
+#                 that start time no longer matches the pid's real one, because the OS has
+#                 since reused that pid for an unrelated process (an EMPTY pid file — every
+#                 one before this change, or one a `ps`-less take wrote — records no start
+#                 time to be wrong, so a live pid behind one is judged by aliveness alone, same
+#                 as before); or the pid is this very shell's own — the one doing the looking,
+#                 so it is never legitimately the lock's holder. The next run to find one of
+#                 these says so and clears it: the stale pid's file, then the directory.
 #
 # Nothing ever removes a pid file but the run it names or a run that found that pid dead, and
 # `rmdir` only removes an EMPTY directory — so no step here can take a live run's lock away,
@@ -56,16 +59,24 @@ provider_lock_start_time() { # <pid>
 
 # Why pid $1's name on the lock is no good right now; empty when it still is. Checked in this
 # order: this very shell never legitimately holds a lock it is itself looking at (it is the
-# one waiting); a pid that is gone cannot hold anything; and a pid that is alive but whose
-# start time no longer matches what the pid file recorded is a different process the OS gave
-# the same number — not the run that took the lock.
+# one waiting); a pid that is gone cannot hold anything; and — ONLY when the pid file actually
+# recorded a start time — a pid that is alive but whose start time no longer matches what was
+# recorded is a different process the OS gave the same number, not the run that took the lock.
+# An EMPTY pid file (every pid file before this change, or one a `ps`-less take wrote) records
+# no start time to compare against, so a live pid behind one is judged by aliveness alone, same
+# as before this change — never called stale just for recording nothing, which would steal the
+# lock out from under an old-format run still genuinely holding it.
 provider_lock_stale_reason() { # <pid>
     if [ "$1" = "$$" ]; then
         printf '%s' 'is this very shell, waiting on it'
     elif ! provider_lock_alive "$1"; then
         printf '%s' 'is gone'
-    elif [ "$(provider_lock_start_time "$1")" != "$(cat "$PROVIDER_LOCK/$1" 2>/dev/null)" ]; then
-        printf '%s' 'is a different process now'
+    else
+        provider_lock_recorded="$(cat "$PROVIDER_LOCK/$1" 2>/dev/null)"
+        if [ -n "$provider_lock_recorded" ] \
+            && [ "$(provider_lock_start_time "$1")" != "$provider_lock_recorded" ]; then
+            printf '%s' 'is a different process now'
+        fi
     fi
 }
 
