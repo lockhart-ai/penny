@@ -45,6 +45,7 @@ from penny.llm.models import (
     LlmToolParseError,
     PromptTransport,
     ProviderPin,
+    RawFaithfulnessOutcome,
     fault_for_status,
     usage_timing_from_response,
 )
@@ -1678,5 +1679,104 @@ class TestRawTemplateTransport:
         assert captured["extra_body"] == {
             "provider": {"order": ["CoreWeave"], "allow_fallbacks": False}
         }
-        assert result.faithful is True
+        assert result.outcome is RawFaithfulnessOutcome.FAITHFUL
         assert result.provider == "CoreWeave"
+
+    @pytest.mark.asyncio
+    async def test_a_429_then_success_is_reported_faithful_not_unverified(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """Regression (#2831 second review): a run measured 71 of 1,275 samples
+        hitting a single un-retried 429 here, which a naive read-as-unfaithful
+        turned into every later call on that sample 404ing against the chat
+        endpoint. A transient fault is retried on the client's own backoff
+        (``_retry_after_openai_error``) — a draw that answers on a LATER
+        attempt is FAITHFUL, not a verdict drawn from the error that preceded
+        it."""
+        request = httpx.Request("POST", "https://openrouter.ai/api/v1/completions")
+        response = httpx.Response(429, request=request, json={"error": {"message": "slow down"}})
+        attempts = {"count": 0}
+
+        async def raw_create(**kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise openai.RateLimitError("Error code: 429", response=response, body=None)
+            return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1), model_extra={})
+
+        client = LlmClient(
+            api_url="https://openrouter.ai/api",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=3,
+            retry_delay=0.0,
+            provider_pin=ProviderPin.pin("CoreWeave"),
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        result = await client.check_raw_template_faithfulness()
+        await client.close()
+
+        assert result.outcome is RawFaithfulnessOutcome.FAITHFUL
+        assert attempts["count"] == 2
+        assert client.raw_template_enabled  # nothing disables it on a FAITHFUL answer
+
+    @pytest.mark.asyncio
+    async def test_a_persistent_429_is_unverified_not_unfaithful(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """Every attempt still erroring after retries is UNVERIFIED — an open
+        question, not a confirmed chat-wrap — and keeps the raw transport
+        (#2831 second review): a real call surfaces the endpoint's own
+        availability error honestly, rather than this check guessing on its
+        behalf and routing every later call to a chat endpoint that doesn't
+        even serve the model."""
+        request = httpx.Request("POST", "https://openrouter.ai/api/v1/completions")
+        response = httpx.Response(429, request=request, json={"error": {"message": "slow down"}})
+
+        async def always_429(**kwargs):
+            raise openai.RateLimitError("Error code: 429", response=response, body=None)
+
+        client = LlmClient(
+            api_url="https://openrouter.ai/api",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=3,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.completions, "create", always_429)
+
+        result = await client.check_raw_template_faithfulness()
+        await client.close()
+
+        assert result.outcome is RawFaithfulnessOutcome.UNVERIFIED
+        assert result.detail and "429" in result.detail
+        assert client.raw_template_enabled  # UNVERIFIED keeps the raw transport
+
+    @pytest.mark.asyncio
+    async def test_prompt_tokens_fourteen_is_the_chat_wrap_signature_and_disables(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """A real answer whose ``prompt_tokens`` disagrees (14, a chat wrap's own
+        turn-opening tokens on the bare BOS token — #2829 step 1) is UNFAITHFUL,
+        the only outcome that disables the raw transport (#2831 second review)."""
+
+        async def raw_create(**kwargs):
+            return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=14), model_extra={})
+
+        client = LlmClient(
+            api_url="https://openrouter.ai/api",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        result = await client.check_raw_template_faithfulness()
+        assert result.outcome is RawFaithfulnessOutcome.UNFAITHFUL
+
+        # The preflight is what actually disables it, on exactly this outcome —
+        # already covered by test_disabling_the_raw_transport_reroutes_the_next_call_to_chat.
+        client.disable_raw_template_transport("chat-wraps raw completions")
+        assert not client.raw_template_enabled
+        await client.close()

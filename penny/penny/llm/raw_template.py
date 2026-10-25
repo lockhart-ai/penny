@@ -78,10 +78,19 @@ RAW_FAITHFULNESS_MAX_TOKENS = 1
 RAW_FAITHFULNESS_EXPECTED_PROMPT_TOKENS = 1
 
 # The startup preflight's named degraded-mode message (#2829 build decision
-# 3) — never silent: a failed raw-faithfulness check falls the client back
-# to the chat transport, and says so in exactly these words.
+# 3) — never silent: a confirmed UNFAITHFUL answer falls the client back to
+# the chat transport, and says so in exactly these words.
 RAW_FAITHFULNESS_DEGRADED_MESSAGE = (
     "raw template unavailable on {endpoint}; using the chat transport"
+)
+
+# A transient fault (429/5xx/timeout/connection) is NOT a verdict — it says
+# the endpoint had a bad moment, not that it wraps raw completions.  Every
+# attempt erroring still keeps the raw transport (a real call surfaces its
+# own availability error honestly); this names the state out loud, never
+# silently.
+RAW_FAITHFULNESS_UNVERIFIED_MESSAGE = (
+    "raw template faithfulness unverified on {endpoint} ({detail}); keeping the raw transport"
 )
 
 _STRING_OPEN = '<|"|>'

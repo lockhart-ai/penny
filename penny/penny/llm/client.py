@@ -42,6 +42,7 @@ from penny.llm.models import (
     LlmToolParseError,
     PromptTransport,
     ProviderPin,
+    RawFaithfulnessOutcome,
     RawFaithfulnessResult,
     UsageTiming,
     fault_for_status,
@@ -936,38 +937,54 @@ class LlmClient:
         (:meth:`_provider_pin_extra_body`) — without it, a gateway routes this
         check to any provider in the pool while the real calls stay pinned,
         so a perfectly faithful CoreWeave answers nothing and an unrelated
-        chat-wrapping provider answers this check instead (the bug this
-        fixes).  The result names which upstream actually answered
-        (``_provider_of``), read off the response itself rather than assumed
-        to be the pin, so a future mis-route still names itself.
+        chat-wrapping provider answers this check instead.  A transient fault
+        (429/5xx/timeout/connection) is retried on the client's OWN
+        retry/backoff helpers (the same ones ``_chat_attempts`` uses, not a
+        second loop) up to ``max_retries`` attempts: a run measured 71 of
+        1,275 samples hitting a single un-retried 429 here, which a naive
+        read-as-unfaithful turned into every later call on that sample
+        routing to the chat endpoint and 404ing on a model it never serves.
 
-        Used by the startup preflight (falls back to the chat transport on a
-        failure, named, never silent) and the eval suite's pre-run endpoint
-        smoke check (refuses the run and names the provider) — both guard the
-        per-model routing ``_resolve_transport`` would otherwise take on
-        faith.  Translates SDK errors into the ``LlmError`` hierarchy like
-        ``list_models``, so both callers tell an unreachable endpoint from a
-        reachable one that answered unfaithfully.
+        Never raises — exhausting every attempt still erroring answers
+        :attr:`RawFaithfulnessOutcome.UNVERIFIED` rather than propagating,
+        because an error here is a MOMENT, not a verdict, and a real call is
+        what surfaces a genuinely dead endpoint's own honest error (visible
+        degradation, not a guess made on its behalf).  Used by the startup
+        preflight (keeps the raw transport on ``UNVERIFIED``, falls back to
+        chat only on a real ``UNFAITHFUL`` answer, both named, never silent)
+        and the eval suite's pre-run endpoint smoke check (which MAY still
+        refuse on ``UNVERIFIED``, since it is the gate protecting a whole run).
         """
-        try:
-            raw = await self.client.completions.create(
-                model=self.model,
-                prompt=raw_template.RAW_FAITHFULNESS_PROMPT,
-                max_tokens=raw_template.RAW_FAITHFULNESS_MAX_TOKENS,
-                extra_body=self._provider_pin_extra_body(),
+        last_error: LlmError | None = None
+        for attempt in range(self.max_retries):
+            try:
+                raw = await self.client.completions.create(
+                    model=self.model,
+                    prompt=raw_template.RAW_FAITHFULNESS_PROMPT,
+                    max_tokens=raw_template.RAW_FAITHFULNESS_MAX_TOKENS,
+                    extra_body=self._provider_pin_extra_body(),
+                )
+            except openai.APITimeoutError as error:
+                last_error = await self._retry_after_timeout(attempt, error)
+                continue
+            except openai.APIConnectionError as error:
+                last_error = await self._retry_after_connection_error(attempt, error)
+                continue
+            except openai.OpenAIError as error:
+                last_error = await self._retry_after_openai_error(attempt, error)
+                continue
+            prompt_tokens = raw.usage.prompt_tokens if raw.usage else None
+            outcome = (
+                RawFaithfulnessOutcome.FAITHFUL
+                if prompt_tokens == raw_template.RAW_FAITHFULNESS_EXPECTED_PROMPT_TOKENS
+                else RawFaithfulnessOutcome.UNFAITHFUL
             )
-        except openai.APITimeoutError as error:
-            raise LlmTimeoutError(str(error)) from error
-        except openai.APIConnectionError as error:
-            raise LlmConnectionError(str(error)) from error
-        except openai.OpenAIError as error:
-            raise LlmResponseError(
-                _summarize_llm_error(error),
-                fault=fault_for_status(getattr(error, "status_code", None)),
-            ) from error
-        prompt_tokens = raw.usage.prompt_tokens if raw.usage else None
-        faithful = prompt_tokens == raw_template.RAW_FAITHFULNESS_EXPECTED_PROMPT_TOKENS
-        return RawFaithfulnessResult(faithful=faithful, provider=_provider_of(raw))
+            return RawFaithfulnessResult(outcome=outcome, provider=_provider_of(raw))
+
+        return RawFaithfulnessResult(
+            outcome=RawFaithfulnessOutcome.UNVERIFIED,
+            detail=str(last_error) if last_error is not None else None,
+        )
 
     async def list_embedding_models(self) -> list[str]:
         """List embedding model ids from provider-specific /v1/embeddings/models.

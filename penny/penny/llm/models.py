@@ -203,17 +203,46 @@ class ProviderPin(BaseModel):
         return {"order": [self.provider], "allow_fallbacks": False}
 
 
-class RawFaithfulnessResult(BaseModel):
-    """Whether a raw-completions endpoint served THIS model's raw template
-    transport faithfully (#2829 build decision 3), and which upstream
-    actually answered — read off the response itself (``_provider_of``),
-    not assumed to be the configured pin, so a refusal or a degraded-mode
-    message names whoever really answered.  A future mis-route (the pin not
-    reaching the request, a gateway routing around it) then names itself
-    instead of reporting the pin back at the caller unchanged."""
+class RawFaithfulnessOutcome(StrEnum):
+    """What one raw-faithfulness check (#2829) established — not merely
+    whether a call errored.  An error is a MOMENT, not a verdict: a
+    provider having a bad 429 minute says nothing about whether it would
+    serve this model's raw completions faithfully if asked again — a 71-of-
+    1,275-sample run read a 429 as UNFAITHFUL, disabled the raw transport
+    for the whole sample, and every later call then went to the chat
+    endpoint and 404'd on a model that endpoint never serves at all.
 
-    faithful: bool
+    ``FAITHFUL`` — a real answer, ``prompt_tokens`` matches the bare BOS
+    token's own count: the endpoint serves raw completions faithfully.
+    ``UNFAITHFUL`` — a real answer whose ``prompt_tokens`` does NOT match
+    (a chat wrap's own extra tokens) — the only outcome that disables the
+    raw transport.
+    ``UNVERIFIED`` — every attempt errored (429/5xx/timeout/connection),
+    even after retries: the question is still open, not answered no.  Keeps
+    the raw transport — a REAL call surfaces its own availability error
+    honestly, which is exactly the visible-degradation this check must not
+    pre-empt by guessing.
+    """
+
+    FAITHFUL = "faithful"
+    UNFAITHFUL = "unfaithful"
+    UNVERIFIED = "unverified"
+
+
+class RawFaithfulnessResult(BaseModel):
+    """One raw-faithfulness check's outcome (#2829 build decision 3), and
+    which upstream actually answered — read off the response itself
+    (``_provider_of``), not assumed to be the configured pin, so a refusal
+    or a degraded-mode message names whoever really answered.  A future
+    mis-route (the pin not reaching the request, a gateway routing around
+    it) then names itself instead of reporting the pin back at the caller
+    unchanged.  ``detail`` carries the last attempt's own error message,
+    set only on ``UNVERIFIED`` — there is no response to read a provider
+    off when every attempt errored."""
+
+    outcome: RawFaithfulnessOutcome
     provider: str | None = None
+    detail: str | None = None
 
 
 # ── Usage & timing ───────────────────────────────────────────────────────

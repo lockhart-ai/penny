@@ -34,7 +34,14 @@ from pydantic import BaseModel
 from penny.llm import raw_template
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import UNREPORTED_PROVIDER, LlmError, LlmFault, LlmMessage, ProviderPin
+from penny.llm.models import (
+    UNREPORTED_PROVIDER,
+    LlmError,
+    LlmFault,
+    LlmMessage,
+    ProviderPin,
+    RawFaithfulnessOutcome,
+)
 
 USAGE = "usage: python -m penny.tests.eval.utils.endpoint_smoke"
 
@@ -235,40 +242,47 @@ async def smoke_raw_template(
 async def _smoke_raw_template_once(
     *, api_url: str, model: str, api_key: str, provider: str | None = None
 ) -> SmokeResult:
-    """One raw-faithfulness draw, reported with the fault class its failure carried.
+    """One raw-faithfulness check.  ``check_raw_template_faithfulness`` already
+    retries a transient fault (429/5xx/timeout/connection) on its own backoff
+    and never raises, so this reads the typed outcome rather than catching an
+    exception.
 
-    The refusal names the upstream that actually ANSWERED the check
-    (``result.provider``, read off the response itself), not the configured
-    pin — the pin not reaching the request is exactly the bug class this
-    check exists to catch, so a message built from the pin alone would hide
-    a mis-route behind the name of the provider that was supposed to answer.
+    The eval smoke MAY still refuse the run on UNVERIFIED, since this check
+    is the gate protecting a whole run's worth of calls — but its message
+    says "unverified", never "not faithful": the two are different claims,
+    and conflating them is the bug a 71-of-1,275-sample run exposed (a 429
+    read as "not faithful" disabled the raw transport for the whole sample).
+    A refusal names the upstream that actually ANSWERED (``result.provider``,
+    read off the response itself), not the configured pin.
     """
     client = _smoke_client(api_url=api_url, model=model, api_key=api_key, provider=provider)
     try:
         result = await client.check_raw_template_faithfulness()
-        if not result.faithful:
-            answered_by = result.provider or UNREPORTED_PROVIDER
+        if result.outcome is RawFaithfulnessOutcome.FAITHFUL:
+            return SmokeResult(
+                subject="raw template",
+                ok=True,
+                detail=f"{model} serves raw completions faithfully at {api_url}",
+                provider=result.provider,
+            )
+        if result.outcome is RawFaithfulnessOutcome.UNVERIFIED:
             return SmokeResult(
                 subject="raw template",
                 ok=False,
                 detail=(
-                    f"{model} at {api_url}: raw completions are not faithful — "
-                    f"{answered_by} wraps the prompt as a chat turn"
+                    f"{model} at {api_url}: raw template faithfulness unverified "
+                    f"({result.detail or 'no detail'})"
                 ),
-                provider=result.provider,
             )
-        return SmokeResult(
-            subject="raw template",
-            ok=True,
-            detail=f"{model} serves raw completions faithfully at {api_url}",
-            provider=result.provider,
-        )
-    except LlmError as error:
+        answered_by = result.provider or UNREPORTED_PROVIDER
         return SmokeResult(
             subject="raw template",
             ok=False,
-            detail=f"{model} at {api_url}: {error}",
-            fault=error.fault,
+            detail=(
+                f"{model} at {api_url}: raw completions are not faithful — "
+                f"{answered_by} wraps the prompt as a chat turn"
+            ),
+            provider=result.provider,
         )
     finally:
         await client.close()
