@@ -1,4 +1,4 @@
-"""The provider lock ``make eval-remote`` takes, driven from real shells (#2219).
+"""The provider lock ``make eval-remote`` takes, driven from real shells (#2219, #2821).
 
 The lock is a shell file the recipe sources (``scripts/eval-provider-lock.sh``), so what is
 tested is that file, in the shell the recipe runs it in — not a description of it.  Each test
@@ -8,13 +8,23 @@ of its own and reads what they print and what they leave on disk.
 No test waits on a clock: the script's wait between two looks at the lock is its own function,
 and the driver replaces it — with nothing, so a bounded wait runs out at once, or with a read
 of the driver's stdin, so a wait ends exactly when the test says it does.
+
+A pid file holds its holder's own process start time alongside its pid (#2821), so a lock's
+holder being gone is one of three ways a name on it goes stale — the others are the pid being
+alive but belonging to a DIFFERENT process now (the OS reused it) and the pid being the
+LOOKING run's own (it can never legitimately be its own lock's holder).  All three are covered
+below; only the first is reachable by an ordinary kill.
 """
 
 from __future__ import annotations
 
 import pathlib
+import queue
 import signal
 import subprocess
+import threading
+import time
+import weakref
 
 _LOCK_SCRIPT = pathlib.Path("scripts") / "eval-provider-lock.sh"
 
@@ -35,6 +45,22 @@ _NO_CLOCK = "provider_lock_sleep() { :; }"
 _CLOCK_ON_STDIN = "provider_lock_sleep() { read -r _; }"
 # A shell that never took the lock calling release on it.
 _RELEASE_SOMEONE_ELSES = '. "$1"; PROVIDER_LOCK="$2"; provider_lock_release'
+# A run that plants a lock naming ITS OWN pid as the holder before it ever tries to take
+# one — standing in for the OS handing a run the exact pid a stale lock already names, with
+# no need to wait for a real pid to cycle all the way back around.
+_PLANT_OWN_PID_THEN_RUN = """
+. "$1"
+{clock}
+PROVIDER_LOCK="$(provider_lock_path "$2" "$3")"
+mkdir -p "$PROVIDER_LOCK"
+provider_lock_start_time "$$" >"$PROVIDER_LOCK/$$"
+PROVIDER_LOCK=""
+provider_lock_acquire "$2" "$3" "$4" 1 || exit 1
+trap provider_lock_release EXIT
+trap 'exit 143' TERM
+echo "running $$"
+read -r _ || exit 0
+"""
 
 _SIGTERM_EXIT = 128 + signal.SIGTERM
 
@@ -69,15 +95,65 @@ def _start(
     )
 
 
-def _lines_until(run: subprocess.Popen[str], opening: str) -> list[str]:
-    """What a run printed up to and including its first line opening with ``opening``."""
+# One background reader per run, so two calls for the same run (this file makes some) share
+# one drain and never lose a line the first call read off the pipe before the second call's
+# own opening line had even arrived.  A plain `select` on the pipe's fd was tried and
+# discarded: once ``readline()`` has pulled a buffered chunk holding MORE than one line into
+# Python, the fd itself goes quiet and `select` reports not-ready even though the next line is
+# already sitting there ready to read — it waited out the whole timeout on a run that was not
+# hung at all.  Only the QUEUE is shared across calls — each call to ``_lines_until`` starts
+# its own fresh ``printed``, same as the unbounded version this replaced, so a second call for
+# a run `_lines_until` already read from does not re-hand-back the first call's lines.
+_READERS: weakref.WeakKeyDictionary[subprocess.Popen[str], queue.Queue[str | None]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _reader(run: subprocess.Popen[str]) -> queue.Queue[str | None]:
+    """The queue a background thread is draining ``run``'s stdout into."""
+    cached = _READERS.get(run)
+    if cached is not None:
+        return cached
     assert run.stdout is not None
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def _drain_stdout() -> None:
+        assert run.stdout is not None
+        for line in run.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=_drain_stdout, daemon=True).start()
+    _READERS[run] = lines
+    return lines
+
+
+def _lines_until(run: subprocess.Popen[str], opening: str, *, timeout: float = 2.0) -> list[str]:
+    """What a run printed up to and including its first line opening with ``opening`` —
+    bounded: every legitimate case here resolves almost at once (the clock is always
+    faked; the margin is just process-scheduling noise), so a run that is actually hung
+    (a bug, not a feature — #2821 wedged the whole suite for 19+ minutes this way) fails
+    this assertion within ``timeout`` instead of wedging the whole suite."""
+    lines = _reader(run)
     printed: list[str] = []
-    for line in run.stdout:
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(
+                f"no line opening with {opening!r} within {timeout}s — likely hung: {printed}"
+            )
+        try:
+            line = lines.get(timeout=remaining)
+        except queue.Empty:
+            raise AssertionError(
+                f"no line opening with {opening!r} within {timeout}s — likely hung: {printed}"
+            ) from None
+        if line is None:
+            raise AssertionError(f"the run ended without printing {opening!r}: {printed}")
         printed.append(line.rstrip("\n"))
         if printed[-1].startswith(opening):
             return printed
-    raise AssertionError(f"the run ended without printing {opening!r}: {printed}")
 
 
 def _finish(run: subprocess.Popen[str]) -> tuple[int, list[str]]:
@@ -198,6 +274,66 @@ def test_a_lock_nobody_holds_is_cleared_and_taken(tmp_path: pathlib.Path) -> Non
         f"eval: provider Groq had an abandoned, empty lock; cleared {lock}",
         f"eval: holding provider Groq ({lock})",
     ]
+    assert not lock.exists()
+
+
+def test_a_lock_naming_a_reused_pid_is_cleared_and_taken(tmp_path: pathlib.Path) -> None:
+    """A dead pid is not the only way a name on the lock goes bad: the OS can hand a brand
+    new process the exact pid an old, finished run's lock still names — a run killed by
+    something no trap can catch (SIGKILL) leaves exactly this behind once that pid cycles
+    back around.  The recorded holder is alive, but its start time no longer matches the one
+    the lock was written with, so the next run to look tells it apart from the real holder
+    and clears it rather than waiting on a stranger forever."""
+    lock = tmp_path / "Groq.lock"
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        lock.mkdir()
+        (lock / f"{other.pid}").write_text("not this process's real start time")
+        status, printed = _finish(_start(tmp_path, "Groq"))
+        assert status == 0
+        assert printed[:2] == [
+            f"eval: provider Groq had a stale lock — its holder, pid {other.pid}, is a "
+            f"different process now; cleared {lock}",
+            f"eval: holding provider Groq ({lock})",
+        ]
+        assert not lock.exists()
+    finally:
+        other.terminate()
+        other.wait(timeout=10)
+
+
+def test_a_run_given_its_own_pid_as_the_lock_s_holder_treats_it_as_stale(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Pid reuse's sharpest edge: the OS hands a WAITING run the exact pid a lock already
+    names as its holder.  That run can never legitimately be its own lock's holder — it is
+    the one still looking — so it recognizes its own pid on the lock as stale on sight,
+    clears it, and takes the lock cleanly rather than waiting on itself forever."""
+    lock = tmp_path / "Groq.lock"
+    run = subprocess.Popen(
+        [
+            "sh",
+            "-c",
+            _PLANT_OWN_PID_THEN_RUN.format(clock=_NO_CLOCK),
+            "sh",
+            _lock_script(),
+            str(tmp_path),
+            "Groq",
+            "60",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert _lines_until(run, "running") == [
+        f"eval: provider Groq had a stale lock — its holder, pid {run.pid}, is this very "
+        f"shell, waiting on it; cleared {lock}",
+        f"eval: holding provider Groq ({lock})",
+        f"running {run.pid}",
+    ]
+    assert _holders(lock) == [f"{run.pid}"]
+    assert _finish(run) == (0, [])
     assert not lock.exists()
 
 
