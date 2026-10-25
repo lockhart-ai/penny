@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import re
@@ -221,22 +220,45 @@ class IosChannel(MessageChannel):
     def _on_prompt_logged(self, prompt_data: dict) -> None:
         """Broadcast prompt log updates to connected iOS clients."""
         message = json.dumps({"type": "prompt_log_update", "prompt": prompt_data})
-        for conn in self._connections.values():
-            asyncio.ensure_future(conn.ws.send(message))
+        self._push(message, "prompt_log_update")
 
     def _on_run_outcome_set(self, run_id: str, outcome: str, reason: str) -> None:
         """Broadcast run outcome updates to connected iOS clients."""
         message = json.dumps(
             {"type": "run_outcome_update", "run_id": run_id, "outcome": outcome, "reason": reason}
         )
-        for conn in self._connections.values():
-            asyncio.ensure_future(conn.ws.send(message))
+        self._push(message, "run_outcome_update")
 
     def _on_memory_changed(self, name: str | None) -> None:
         """Broadcast memory mutation notifications to connected iOS clients."""
         message = BrowserMemoryChanged(name=name).model_dump_json()
-        for conn in self._connections.values():
-            asyncio.ensure_future(conn.ws.send(message))
+        self._push(message, "memory_changed")
+
+    def _push(self, payload: str, update: str) -> None:
+        """Schedule a database update whose detached task handles its own failures."""
+        if self._connections:
+            asyncio.ensure_future(self._deliver_push(payload, update))
+
+    async def _deliver_push(self, payload: str, update: str) -> None:
+        """A disconnected device must not prevent other devices receiving an update."""
+        targets = list(self._connections.values())
+        try:
+            delivered = await asyncio.gather(
+                *(self._deliver_text(conn.ws, payload) for conn in targets)
+            )
+        except Exception:
+            # This task is detached from the synchronous database callback:
+            # unexpected failures must be logged here rather than left unobserved.
+            logger.exception("Broadcasting a %s update to iOS clients failed", update)
+            return
+        dropped = delivered.count(False)
+        if dropped:
+            logger.info(
+                "iOS client closed before the %s push arrived — dropped for %d of %d connection(s)",
+                update,
+                dropped,
+                len(targets),
+            )
 
     async def listen(self) -> None:
         """Start the iOS WebSocket server and block forever."""
@@ -878,8 +900,7 @@ class IosChannel(MessageChannel):
 
     async def _send_json(self, ws: ServerConnection, payload: dict) -> None:
         """Send a raw JSON-compatible payload."""
-        with contextlib.suppress(websockets.ConnectionClosed):
-            await ws.send(json.dumps(payload))
+        await self._deliver_text(ws, json.dumps(payload))
 
     async def _handle_chat_message(self, data: dict, device_identifier: str) -> None:
         """Forward an iOS user message through the shared channel pipeline."""
@@ -1278,8 +1299,16 @@ class IosChannel(MessageChannel):
     @staticmethod
     async def _send_ws(ws: ServerConnection, msg: BaseModel) -> None:
         """Send a protocol message, suppressing closed sockets."""
-        with contextlib.suppress(websockets.ConnectionClosed):
-            await ws.send(msg.model_dump_json(exclude_none=True))
+        await IosChannel._deliver_text(ws, msg.model_dump_json(exclude_none=True))
+
+    @staticmethod
+    async def _deliver_text(ws: ServerConnection, payload: str) -> bool:
+        """Send an already serialized frame; report normal disconnects to the caller."""
+        try:
+            await ws.send(payload)
+        except websockets.ConnectionClosed:
+            return False
+        return True
 
 
 def _outbox_record(row: IosOutboxItem, embedding: bytes | None = None) -> IosOutboxRecord:

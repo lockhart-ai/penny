@@ -198,6 +198,9 @@ Read `docs/reference/agents.md` before changing the base loop, ChatAgent, or sel
 iOS APNs previews use the title `Hi from Penny` and the longest consecutive opening
 sentences that fit `PUSH_PREVIEW_CHARS` (default 450), after stripping markup. When the
 first sentence exceeds the limit, truncate it with an ellipsis counted inside the limit.
+iOS database-update broadcasts use `_push` / `_deliver_push` with the shared
+`_deliver_text` send guard: closed sockets are reported at INFO, other devices still
+receive their updates, and unexpected detached-task failures are logged locally.
 
 Signal, Discord and the browser extension share the `MessageChannel` ABC — `extract_message()` in, `send_response()`/`send_message()` out, both funnelling through one logging chokepoint (`_log_and_send()` → `_send_raw()`) so nothing Penny sends bypasses the conversation record. Read `docs/reference/channels.md` before changing a channel or the outgoing-send path.
 

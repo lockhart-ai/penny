@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+import websockets
 
 from penny.agents.base import AgentProgressEvent
 from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsEnvironment, ApnsError
@@ -86,6 +87,84 @@ async def _ios_admin_request(channel: IosChannel, payload: dict) -> dict:
         "ios-keychain-id",
     )
     return ws.sent[0]
+
+
+async def _settle_broadcasts(before: set[asyncio.Task[Any]]) -> None:
+    """Retrieve every scheduled result so a detached failure fails the test."""
+    tasks = asyncio.all_tasks() - before
+    results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=2.0)
+    assert all(result is None for result in results), results
+
+
+@pytest.mark.asyncio
+async def test_database_updates_survive_a_disconnected_ios_client(db, caplog):
+    channel = _make_channel(db)
+    close = websockets.frames.Close(1001, "")
+    dead = MagicMock(send=AsyncMock(side_effect=websockets.ConnectionClosedOK(close, close, True)))
+    live = FakeWs()
+    channel._connections["closed"] = IosConnectionInfo(ws=dead, device_id=1, identifier="closed")
+    channel._connections["live"] = IosConnectionInfo(
+        ws=cast(Any, live), device_id=2, identifier="live"
+    )
+
+    with caplog.at_level("INFO", logger="penny.channels.ios.channel"):
+        before = asyncio.all_tasks()
+        db.messages.log_prompt(
+            model="test-model", messages=[], response={}, agent_name="chat", run_id="run-1"
+        )
+        db.messages.set_run_outcome("run-1", "worked", "wrote 2 entries")
+        db.memories.create_collection("aurora-notes", "notes about the aurora")
+        await _settle_broadcasts(before)
+
+    assert [message["type"] for message in live.sent] == [
+        "prompt_log_update",
+        "run_outcome_update",
+        "memory_changed",
+    ]
+    assert dead.send.await_count == 3
+    assert "closed before" in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_ios_broadcast_keeps_null_memory_name(db):
+    channel = _make_channel(db)
+    live = FakeWs()
+    channel._connections["live"] = IosConnectionInfo(
+        ws=cast(Any, live), device_id=1, identifier="live"
+    )
+
+    before = asyncio.all_tasks()
+    channel._on_memory_changed(None)
+    await _settle_broadcasts(before)
+
+    assert live.sent == [{"type": "memory_changed", "name": None}]
+
+
+def test_ios_broadcast_without_clients_needs_no_event_loop(db):
+    channel = _make_channel(db)
+
+    channel._on_prompt_logged({"run_id": "run-1"})
+    channel._on_run_outcome_set("run-1", "worked", "wrote 2 entries")
+    channel._on_memory_changed(None)
+
+
+@pytest.mark.asyncio
+async def test_ios_broadcast_logs_unexpected_send_failure(db, caplog):
+    channel = _make_channel(db)
+    broken = MagicMock(send=AsyncMock(side_effect=RuntimeError("send failed")))
+    live = FakeWs()
+    channel._connections["broken"] = IosConnectionInfo(ws=broken, device_id=1, identifier="broken")
+    channel._connections["live"] = IosConnectionInfo(
+        ws=cast(Any, live), device_id=2, identifier="live"
+    )
+
+    before = asyncio.all_tasks()
+    channel._on_memory_changed(None)
+    await _settle_broadcasts(before)
+
+    assert live.sent == [{"type": "memory_changed", "name": None}]
+    assert "Broadcasting a memory_changed update to iOS clients failed" in caplog.text
 
 
 @pytest.mark.asyncio
