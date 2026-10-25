@@ -2,6 +2,13 @@
 against a main run's, case by case, with totals and a highlight on any case whose passing
 rate moved :data:`HIGHLIGHT_POINTS` or more.
 
+A second table (#2825) carries the same cases' per-sample COST — input tokens, output
+tokens, and wall time, branch against main with the change as a percentage — directly under
+the checks table, in the same row order, rather than widening the checks table itself. The
+per-sample figures are the same ``cohort.per_sample_cost`` reading the run reports already
+compute for each case (``CaseArtifact.timings`` divided by ``CaseArtifact.samples``), never
+re-derived from rendered markdown.
+
 Pure artifact consumption over two already-completed runs' ``manifest.json`` +
 ``results.jsonl`` (``artifacts.py`` via ``assemble.py``'s loaders) — no model, no git, no
 network, so the comparison builder is exercised by plain (non-eval) whole-render tests.
@@ -22,11 +29,11 @@ exactly like a run-comment part) and prints their file names in post order.
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from penny.tests.eval.utils import comment_split
+from penny.tests.eval.utils import cohort, comment_split
 from penny.tests.eval.utils.artifacts import CaseArtifact, RunManifest
 from penny.tests.eval.utils.assemble import load_case_artifacts, load_manifest
 from penny.tests.eval.utils.pr_comments import COMPARE_MARKER
@@ -48,6 +55,14 @@ _TABLE_HEAD = "| case | branch | main | moved |\n|---|---|---|---|"
 _ROW = "| {case} | {branch} | {main} | {moved} |"
 _CELL = "{passed}/{total} · {rate:.0%}"
 _MOVED_CELL = "{points:+.0f} pts{flag}"
+
+COST_HEADING = "## Cost"
+_COST_TABLE_HEAD = (
+    "| case | input tokens / sample | output tokens / sample | wall time / sample |\n"
+    "|---|---|---|---|"
+)
+_COST_ROW = "| {case} | {input} | {output} | {seconds} |"
+_COST_CHANGE_CELL = "{branch} → {main} ({change})"
 
 _MERGE_BASE_WARNING = (
     "_warning: the branch's merge base with the baseline run's commit is not that commit "
@@ -109,18 +124,31 @@ def _scored_totals(artifact: CaseArtifact) -> tuple[int, int]:
     return sum(check.passed for check in scored), sum(check.total for check in scored)
 
 
+def _by_case_id(artifacts: Sequence[CaseArtifact]) -> dict[str, CaseArtifact]:
+    return {artifact.case_id: artifact for artifact in artifacts}
+
+
+def _ordered_case_ids(branch: dict[str, CaseArtifact], main: dict[str, CaseArtifact]) -> list[str]:
+    """Case ids in RENDER order: branch's own order first, then any case main drove that the
+    branch did not — the one ordering the checks table and the cost table share (#2825), so
+    their rows line up for a reader comparing the two."""
+    return [*branch, *(case_id for case_id in main if case_id not in branch)]
+
+
 def build_case_comparisons(
     branch: Sequence[CaseArtifact], main: Sequence[CaseArtifact]
 ) -> list[CaseComparison]:
     """One row per case id appearing on EITHER side — branch order first, then any case main
     drove that the branch did not — so a case present on only one run still gets a row, with
     the other side's cell left absent rather than silently dropped."""
-    by_branch = {artifact.case_id: _scored_totals(artifact) for artifact in branch}
-    by_main = {artifact.case_id: _scored_totals(artifact) for artifact in main}
-    ids = [*by_branch, *(case_id for case_id in by_main if case_id not in by_branch)]
+    by_branch, by_main = _by_case_id(branch), _by_case_id(main)
     return [
-        CaseComparison(case_id=case_id, branch=by_branch.get(case_id), main=by_main.get(case_id))
-        for case_id in ids
+        CaseComparison(
+            case_id=case_id,
+            branch=_scored_totals(by_branch[case_id]) if case_id in by_branch else None,
+            main=_scored_totals(by_main[case_id]) if case_id in by_main else None,
+        )
+        for case_id in _ordered_case_ids(by_branch, by_main)
     ]
 
 
@@ -139,6 +167,67 @@ def _sum_cells(cells: Iterable[tuple[int, int] | None]) -> tuple[int, int] | Non
     if not present:
         return None
     return sum(passed for passed, _ in present), sum(total for _, total in present)
+
+
+# ── The per-case cost comparison (#2825) ─────────────────────────────────────
+@dataclass(frozen=True)
+class CaseCost:
+    """One case's per-sample cost on each side — ``None`` when the case is absent from that
+    run, exactly like :class:`CaseComparison`."""
+
+    case_id: str
+    branch: cohort.SampleCost | None
+    main: cohort.SampleCost | None
+
+
+def _case_cost(artifact: CaseArtifact) -> cohort.SampleCost | None:
+    """The same per-sample reading the run report's own 'cost / sample' line computes —
+    ``CaseArtifact.timings`` (a case's totals) divided by its sample count — never re-derived
+    from rendered markdown."""
+    return cohort.per_sample_cost(samples=artifact.samples, **artifact.timings.model_dump())
+
+
+def build_case_costs(
+    branch: Sequence[CaseArtifact], main: Sequence[CaseArtifact]
+) -> list[CaseCost]:
+    """One row per case id, in the SAME order :func:`build_case_comparisons` renders — so the
+    cost table under the checks table lines up with it row for row."""
+    by_branch, by_main = _by_case_id(branch), _by_case_id(main)
+    return [
+        CaseCost(
+            case_id=case_id,
+            branch=_case_cost(by_branch[case_id]) if case_id in by_branch else None,
+            main=_case_cost(by_main[case_id]) if case_id in by_main else None,
+        )
+        for case_id in _ordered_case_ids(by_branch, by_main)
+    ]
+
+
+def cost_totals_row(costs: Sequence[CaseCost]) -> CaseCost:
+    """The cost table's totals — summed over only the cases BOTH runs drove. Unlike
+    :func:`totals_row`'s pass/total counts, a per-sample average has nothing sound to add
+    against a side that never produced one, so a case missing from either run is excluded
+    from the sum rather than contributing a zero or being carried at its one-sided value."""
+    paired = [cost for cost in costs if cost.branch is not None and cost.main is not None]
+    if not paired:
+        return CaseCost(case_id=_TOTALS_CASE, branch=None, main=None)
+    return CaseCost(
+        case_id=_TOTALS_CASE,
+        branch=_sum_sample_costs(cost.branch for cost in paired if cost.branch is not None),
+        main=_sum_sample_costs(cost.main for cost in paired if cost.main is not None),
+    )
+
+
+def _sum_sample_costs(costs: Iterable[cohort.SampleCost]) -> cohort.SampleCost:
+    present = list(costs)
+    return cohort.SampleCost(
+        samples=sum(cost.samples for cost in present),
+        calls=sum(cost.calls for cost in present),
+        seconds=sum(cost.seconds for cost in present),
+        input_tokens=sum(cost.input_tokens for cost in present),
+        output_tokens=sum(cost.output_tokens for cost in present),
+        reasoning_tokens=sum(cost.reasoning_tokens for cost in present),
+    )
 
 
 # ── Rendering ──────────────────────────────────────────────────────────────
@@ -172,6 +261,55 @@ def render_comparison_table(comparisons: Sequence[CaseComparison]) -> str:
     return f"{_TABLE_HEAD}\n{body}"
 
 
+def _tokens(value: float) -> str:
+    return f"{value:,.0f}"
+
+
+def _seconds(value: float) -> str:
+    return f"{value:,.1f}s"
+
+
+def _pct_change(branch: float, main: float) -> str:
+    """The branch's value as a percentage change from main's — ``—`` where main's reading is
+    zero, since a change FROM zero has no percentage."""
+    if not main:
+        return MISSING_CELL
+    return f"{(branch - main) / main:+.0%}"
+
+
+def _cost_cell(
+    branch: cohort.SampleCost | None,
+    main: cohort.SampleCost | None,
+    read: Callable[[cohort.SampleCost], float],
+    format_value: Callable[[float], str],
+) -> str:
+    if branch is None or main is None:
+        return MISSING_CELL
+    branch_value, main_value = read(branch), read(main)
+    return _COST_CHANGE_CELL.format(
+        branch=format_value(branch_value),
+        main=format_value(main_value),
+        change=_pct_change(branch_value, main_value),
+    )
+
+
+def _cost_row(cost: CaseCost) -> str:
+    return _COST_ROW.format(
+        case=cost.case_id if cost.case_id == _TOTALS_CASE else f"`{cost.case_id}`",
+        input=_cost_cell(cost.branch, cost.main, lambda sample: sample.input_tokens, _tokens),
+        output=_cost_cell(cost.branch, cost.main, lambda sample: sample.output_tokens, _tokens),
+        seconds=_cost_cell(cost.branch, cost.main, lambda sample: sample.seconds, _seconds),
+    )
+
+
+def render_cost_table(costs: Sequence[CaseCost]) -> str:
+    """The per-sample cost table (#2825) — every case's row, then the totals row last, in the
+    same order :func:`render_comparison_table` renders its own rows."""
+    rows = [*costs, cost_totals_row(costs)]
+    body = "\n".join(_cost_row(row) for row in rows)
+    return f"{COST_HEADING}\n\n{_COST_TABLE_HEAD}\n{body}"
+
+
 def _identity_row(label: str, manifest: RunManifest) -> str:
     return _IDENTITY_ROW.format(
         label=label,
@@ -189,14 +327,15 @@ def render_comparison(
     merge_base_ok: bool | None = None,
 ) -> str:
     """The whole comparison comment (the summary method): refuses across providers, then the
-    two runs' identity, the per-case table, and — only when the check ran and failed — the
-    merge-base warning."""
+    two runs' identity, the per-case checks table, the per-case cost table (#2825), and — only
+    when the check ran and failed — the merge-base warning."""
     if branch_manifest.provider != main_manifest.provider:
         raise ProviderMismatchError(
             f"refusing to compare — branch ran on {branch_manifest.provider!r}, baseline ran "
             f"on {main_manifest.provider!r}; a comparison across providers measures neither"
         )
     comparisons = build_case_comparisons(branch_artifacts, main_artifacts)
+    costs = build_case_costs(branch_artifacts, main_artifacts)
     lines = [
         COMPARE_HEADING,
         "",
@@ -205,6 +344,8 @@ def render_comparison(
         _identity_row(_MAIN_LABEL, main_manifest),
         "",
         render_comparison_table(comparisons),
+        "",
+        render_cost_table(costs),
     ]
     if merge_base_ok is False:
         lines += ["", _MERGE_BASE_WARNING.format(commit=main_manifest.commit[:8])]

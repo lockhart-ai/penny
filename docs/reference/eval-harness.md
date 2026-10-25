@@ -514,15 +514,23 @@ marker) **one** comparison comment against that run — read as `main`, though m
 second completed run: one row per case, the branch's passing checks against the baseline's (`k/N` and
 `%`), any case that moved **5 points or more** marked `⚠`, and a totals row summed only over the cases
 each side actually drove (a case present on only one side renders `—` on the other, never a silent zero).
-It **refuses** when the two runs were pinned to different providers (`ProviderMismatchError` — a
-comparison across upstreams measures neither one's behaviour) and **warns inside the comment** when the
-branch's merge base with the baseline's commit is not that commit — computed **host-side** with plain
+A second table, `## Cost` (#2825), rides directly under the checks table in the same row order: each
+case's per-sample input tokens, output tokens, and wall time, branch against main with the change as a
+percentage (`branch → main (±%)`) — the same `cohort.per_sample_cost` reading a case's own report
+already computes (`CaseArtifact.timings` divided by `CaseArtifact.samples`), never re-derived from
+rendered markdown. Its totals row sums **only** the cases present on **both** sides — unlike the checks
+totals, a per-sample average has no sound zero to stand in for a side that never produced one. A
+percentage change **from zero** renders `—` rather than a division. It **refuses** when the two runs
+were pinned to different providers (`ProviderMismatchError` — a comparison across upstreams measures
+neither one's behaviour) and **warns inside the comment** when the branch's merge base with the
+baseline's commit is not that commit — computed **host-side** with plain
 `git merge-base`, because the eval container never mounts a worktree's `.git` (the same reason
 `HEAD_COMMIT_CMD` runs host-side, above). Without `BASELINE`, the comparison comment is left exactly as
 it was — no `BASELINE`, no touch. The comparison builder (`CaseComparison`, `build_case_comparisons`,
-`totals_row`, `render_comparison`) lives in `penny/tests/eval/utils/compare.py`, plain-tested over
-hand-built artifacts; it reuses `comment_split.split_run_summary` for its own over-cap split, since a
-comparison table has the same legal seam (a row boundary) the run summary does.
+`totals_row`, `CaseCost`, `build_case_costs`, `cost_totals_row`, `render_comparison`) lives in
+`penny/tests/eval/utils/compare.py`, plain-tested over hand-built artifacts; it reuses
+`comment_split.split_run_summary` for its own over-cap split, since a comparison table has the same
+legal seam (a row boundary) the run summary does.
 
 `DRY_RUN=1` runs every read (the existing-comments listing, the assemble/compare build) but skips every
 write (`gh api -X DELETE`, `gh pr comment`) — it prints what would be deleted and the comparison table

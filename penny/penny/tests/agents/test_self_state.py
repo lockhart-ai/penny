@@ -1100,12 +1100,15 @@ def _seed_mutation_matrix(db: Database, *, detail_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_full_chat_system_prompt_composition(db, tmp_path):
-    """The whole chat request's system side (#2745): the STATIC message —
-    Identity + the standing rules (the instruction part, right after the voice)
-    + Instructions + the conversation map (#2752, empty here since the kitchen
-    sink logs no messages), the prefix the server reuses across turns — and
-    the DYNAMIC message — the clock, then the self-state header.  The rules
-    render in the static message, not the header: where she reads
+    """The whole chat request's system side (#2745; Jobs + the store map moved
+    into the static message, #2814): the STATIC message — Identity + the
+    standing rules (the instruction part, right after the voice) + Instructions
+    + Jobs + Your memory (``SelfStateHeader.render_static()``) + the
+    conversation map (#2752, empty here since the kitchen sink logs no
+    messages), the prefix the server reuses across turns — and the DYNAMIC
+    message — the clock, then the rest of the self-state header
+    (``render_dynamic()``: recent activity, about the user, pointers).  The
+    rules render in the static message, not the header: where she reads
     instructions rather than state.  The speculative recall / profile /
     inventory are gone."""
     _seed_kitchen_sink(db)
@@ -1128,13 +1131,14 @@ async def test_full_chat_system_prompt_composition(db, tmp_path):
     expected_static = (
         f"## Identity\n{Prompt.PENNY_IDENTITY}\n\n"
         f"{_STANDING_RULES_INSTRUCTION}\n\n"
-        f"## Instructions\n{Prompt.CONVERSATION_PROMPT}"
+        f"## Instructions\n{Prompt.CONVERSATION_PROMPT}\n\n"
+        f"{_KITCHEN_SINK_STATIC}"
     )
     assert static == expected_static
     dynamic = agent._dynamic_system_section()
     clock_line, _, state = dynamic.partition("\n\n")
     assert clock_line.startswith("Current date and time: "), clock_line
-    assert state == _KITCHEN_SINK
+    assert state == _KITCHEN_SINK_DYNAMIC
 
 
 # ── Frozen render literals (filled from the captured actual) ──────────────
@@ -1190,6 +1194,66 @@ _KITCHEN_SINK = (
     "- rules (collection, 2 entries) — Standing instructions the user has given: things "
     "to always or never do\n"
     "archived: `old-watch`\n"
+    "\n"
+    "### About the user\n"
+    "- name: Alex\n"
+    "- timezone: America/New_York\n"
+    "- location: New York, USA\n"
+    "\n"
+    "To look deeper: memory_get(<name>) for a collection's full config and change history, "
+    "run_get(run <id>) for one run's tool calls, collection_list(<name>) reads a store's "
+    "entries, and find(query=<text>) searches them all by meaning — a collection, a stored "
+    "entry, or something said in the conversation."
+)
+
+# _KITCHEN_SINK split in two (#2814): the Jobs + Your memory slice that now rides
+# ``SelfStateHeader.render_static()`` (the cached static prefix), and the
+# Header + Recent activity + About the user + pointers slice that stays on
+# ``render_dynamic()`` (the per-turn message) — exact substrings of
+# ``_KITCHEN_SINK`` above, cut at the section boundary #2814 moved, so the two
+# halves can never silently drift from the whole-render literal they came from.
+_KITCHEN_SINK_STATIC = (
+    "### Jobs\n"
+    "notifications: on — proactive task notifications are delivered\n"
+    "- news-digest — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July "
+    "11, 2026 at 05:00 AM EDT · notify: off · last run "
+    "FAILED 2026-07-11 08:00 UTC\n"
+    '  "1. read the feed"\n'
+    "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
+    "- price-watch — active · every 6 hours (rule: `FREQ=HOURLY;INTERVAL=6`), next run "
+    "Saturday, July 11, 2026 at 08:00 AM EDT · notify: on "
+    "· expires Sunday, July 19, 2026 at 08:00 PM EDT · last run WORKED 2026-07-11 09:14 "
+    "UTC\n"
+    '  "1. browse the page"\n'
+    "- reminder — active · once, at Saturday, July 11, 2026 at 08:00 AM EDT, then it "
+    "retires (rule: `DTSTART:20260711T120000Z FREQ=DAILY;COUNT=1`), next run Saturday, "
+    "July 11, 2026 at 08:00 AM EDT · notify: off · "
+    "one-shot · no runs yet\n"
+    '  "1. remind"\n'
+    "\n"
+    "### Your memory\n"
+    "- chat-log (log, 0 entries) — shared conversation log\n"
+    "- favorites (collection, 2 entries) — things the user likes\n"
+    "- news-digest (collection, 0 entries) — gather headlines\n"
+    "- price-watch (collection, 1 entries) — watch a product price\n"
+    "- reminder (collection, 0 entries) — one-off reminder\n"
+    "- rules (collection, 2 entries) — Standing instructions the user has given: things "
+    "to always or never do\n"
+    "archived: `old-watch`"
+)
+
+_KITCHEN_SINK_DYNAMIC = (
+    "## Penny's current state\n"
+    "\n"
+    "### Recent activity\n"
+    "change · 2026-07-11 09:20 UTC · price-watch updated by user-run (run 66aa0099) — "
+    "changed schedule\n"
+    "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · wrote 'aurora "
+    "deck 2 price' → `price-watch`\n"
+    'sent · 2026-07-11 09:05 UTC · price-watch — "Heads up: the price dropped to $42!"\n'
+    "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 of "
+    "1)\n"
+    "run 88d14e5f · 2026-07-11 08:00 UTC · news-digest → FAILED (2 calls)\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"

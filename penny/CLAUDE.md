@@ -76,9 +76,9 @@ penny/
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
     models.py         — ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
-    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the static-leading system message split (static identity/rules/instructions + the conversation map at its end, then the growing history, then a dynamic clock/page/state system message right before the user's own turn, #2756; previously two leading messages, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656)
+    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the static-leading system message split (static identity/rules/instructions + Jobs + the store map + the conversation map at its end, #2814, then the growing history, then a dynamic clock/page/activity/user-facts system message right before the user's own turn, #2756; previously two leading messages, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656)
     conversation_map.py — `ConversationMap`: renders the conversation older than the history window as an append-only line-per-exchange map appended to the END of the static leading system message (#2752, placed there by #2757 to keep the map inside the reused cache prefix) — user's clipped words, recorded outcomes, the items her reply marked; bounded by `CHAT_MAP_DAYS`/`CHAT_MAP_MAX_LINES`; shares `Agent._history_window_size` with the history so the two never disagree about where the window starts
-    self_state.py     — `SelfStateHeader`: renders Penny's operational self-state into the chat prompt's dynamic system message (the request's system message right before the user's own turn, #2756; previously the request's second leading message, #2745)
+    self_state.py     — `SelfStateHeader`: renders Penny's operational self-state, split across both chat messages (#2814): Jobs + the store map ride the STATIC leading message (`render_static`, pure registry renders, byte-identical unless a job or collection changes), recent activity + durable user facts ride the per-turn DYNAMIC message right before the user's own turn (`render_dynamic`, #2756; previously the whole header rode there, #2745)
     collector.py      — Collector: single dispatcher agent driving every per-collection extractor
   scheduler/
     base.py           — BackgroundScheduler + Schedule ABC
@@ -105,7 +105,7 @@ penny/
     list_emails.py    — ListEmailsTool (folder listings; Zoho only)
     list_folders.py   — ListFoldersTool (available mailboxes; Zoho only)
     draft_email.py    — DraftEmailTool (compose + stage draft; Zoho only). All five retired the /email + /zoho commands (epic #1445) — built per turn by ChatAgent's email_tools_builder; NL-dispatch contract: tests/eval/chat/idle/test_email_dispatch.py
-    notifications.py  — NotificationsMuteTool / NotificationsUnmuteTool: chat-surface tools over the MuteState row (`db.users`); retired /mute + /unmute
+    notifications.py  — NotificationsTool: one chat-surface tool (`on` bool) over the MuteState row (`db.users`); folds the retired notifications_mute/notifications_unmute pair (#2812); retired /mute + /unmute
     collection_instantiation.py — The pure pieces behind `collection_configure`: schedule/expiry parsing and renders — no parameters to bind, no rendering seam (#1591)
     memory_args.py    — Pydantic arg models for the memory tool surface
     memory_tools.py   — Memory tool subclasses dispatching through `db.memory(name)`; `find`/`run_list`/`run_get`, `collection_configure`

@@ -339,7 +339,11 @@ pytest: $(if $(LOCAL),,build)
 # that pinned a provider holds that provider's lock (see EVAL_PROVIDER_LOCK_DIR) from just
 # before its samples start until the recipe exits — by any route, which is what the EXIT
 # trap is for — and a second run against the same provider waits for it, saying who it is
-# waiting on. Runs against different providers do not wait.
+# waiting on. Runs against different providers do not wait. A kill the trap cannot catch
+# (SIGKILL; nothing can) leaves the lock behind named for a pid that is gone, or that the OS
+# later hands to an unrelated process — the lock script (scripts/eval-provider-lock.sh)
+# records each holder's own process start time alongside its pid, so the next run to look
+# tells a stale name from a live one even across that reuse, and clears it either way.
 # Durable reports (#1734): a report run (one that declares its EVAL_LEVER) with
 # no explicit EVAL_REPORT_DIR defaults to a run-stamped dir under the primary
 # checkout's mounted data/eval-artifacts, so artifacts survive the worktree that

@@ -3,8 +3,8 @@
 Each tool validates its kwargs through one of these models as its first line,
 per the Pydantic-everywhere rule. Most read tools accept ``k: int | None``
 meaning "no cap — return every entry" when omitted; this matches the access
-layer's signature. ``CollectionListArgs``/``ReadSampleArgs`` are the exception
-(#2771): with ``k`` omitted, the tool caps the read itself at
+layer's signature. ``CollectionListArgs`` is the exception (#2771): with ``k``
+omitted, the tool caps the read itself at
 ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT`` rather than reading every entry —
 an explicit ``k`` is still honoured in full, however large.
 """
@@ -12,7 +12,7 @@ an explicit ``k`` is still honoured in full, however large.
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -265,11 +265,16 @@ class MemoryNameArgs(ToolArgs):
     memory: MemoryName
 
 
-class CollectionNameArgs(ToolArgs):
-    """One-field args for ``collection_archive`` / ``collection_unarchive`` — the
-    archive pair names its target with the collection-surface argument."""
+class CollectionArchiveArgs(ToolArgs):
+    """Args for ``collection_archive`` — the archive/unarchive pair folded onto one
+    tool (#2812): ``archived=True`` retires the collection (data kept, its collector
+    stops running), ``archived=False`` restores it. Neither direction had a single
+    use in 444 measured prod tool calls, so the fold is a pure token saving — the
+    model still reaches both ends, now by naming the direction as a bool rather than
+    picking between two tool names."""
 
     collection: MemoryName
+    archived: bool
 
 
 class CollectionSetArgs(ToolArgs):
@@ -342,21 +347,19 @@ class CollectionUpdateArgs(ToolArgs):
 
 
 class CollectionListArgs(ToolArgs):
-    """Newest-first; ``k=None`` returns the newest
-    ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT`` entries (#2771) rather than every
-    entry. Name ``k`` to read more (or fewer) — it is honoured in full, however large."""
+    """Newest-first by default; ``k=None`` returns the newest (or, with
+    ``order="random"``, samples up to) ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT``
+    entries (#2771) rather than every entry. Name ``k`` to read more (or fewer) — it
+    is honoured in full, however large.
+
+    ``order`` (#2812) picks how the read is drawn: ``"newest"`` (default) walks back
+    from the most recent entry; ``"random"`` samples ``k`` entries uniformly at
+    random — exactly what the retired ``collection_sample`` tool did on its own, now
+    one argument on the one read tool rather than a second tool to pick between."""
 
     collection: MemoryName
     k: ReadCount = None
-
-
-class ReadSampleArgs(ToolArgs):
-    """Random sample; ``k=None`` samples up to
-    ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT`` entries (#2771) rather than every
-    entry. Name ``k`` to sample more (or fewer) — it is honoured in full, however large."""
-
-    collection: MemoryName
-    k: ReadCount = None
+    order: Literal["newest", "random"] = "newest"
 
 
 class CollectionGetArgs(ToolArgs):

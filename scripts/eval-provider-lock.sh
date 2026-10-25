@@ -5,15 +5,24 @@
 # once draw rate limits (HTTP 429) and lose samples to them. Runs against DIFFERENT providers
 # share nothing, so each provider has its own lock and they never wait on each other.
 #
-# The lock is a DIRECTORY in the lock directory, named for the provider, holding one empty
-# file named for the holding shell's pid:
+# The lock is a DIRECTORY in the lock directory, named for the provider, holding one file
+# named for the holding shell's pid, holding that process's own start time (`ps -o lstart=`):
 #
 #   taking it     `mkdir` makes the directory in one step and fails when it exists; the run
-#                 then puts its pid file in and checks that file is the only one there.
+#                 then writes its pid file (named for its pid, holding its own start time)
+#                 and checks that file is the only one there.
 #   releasing it  the holder removes its own pid file, then the directory (the recipe's EXIT
-#                 trap, so however the run ends).
-#   a STALE lock  one whose holder is gone (a run killed outright, a reboot). The next run to
-#                 find it says so and clears it: the dead pid's file, then the directory.
+#                 trap, so however the run ends — except a kill no trap can catch, SIGKILL,
+#                 which is exactly what the next bullet is for).
+#   a STALE lock  one whose holder's name on it is no good: the pid is gone (a run killed
+#                 outright, a reboot); the pid is alive, its pid file RECORDS a start time, and
+#                 that start time no longer matches the pid's real one, because the OS has
+#                 since reused that pid for an unrelated process (an EMPTY pid file — every
+#                 one before this change, or one a `ps`-less take wrote — records no start
+#                 time to be wrong, so a live pid behind one is judged by aliveness alone, same
+#                 as before); or the pid is this very shell's own — the one doing the looking,
+#                 so it is never legitimately the lock's holder. The next run to find one of
+#                 these says so and clears it: the stale pid's file, then the directory.
 #
 # Nothing ever removes a pid file but the run it names or a run that found that pid dead, and
 # `rmdir` only removes an EMPTY directory — so no step here can take a live run's lock away,
@@ -42,6 +51,35 @@ provider_lock_alive() { # <pid>
     kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1
 }
 
+# A pid's own process start time, exactly how the pid file records it and how a later look
+# reads it again — the one fact a reused pid cannot share with the run that had it before.
+provider_lock_start_time() { # <pid>
+    ps -o lstart= -p "$1" 2>/dev/null
+}
+
+# Why pid $1's name on the lock is no good right now; empty when it still is. Checked in this
+# order: this very shell never legitimately holds a lock it is itself looking at (it is the
+# one waiting); a pid that is gone cannot hold anything; and — ONLY when the pid file actually
+# recorded a start time — a pid that is alive but whose start time no longer matches what was
+# recorded is a different process the OS gave the same number, not the run that took the lock.
+# An EMPTY pid file (every pid file before this change, or one a `ps`-less take wrote) records
+# no start time to compare against, so a live pid behind one is judged by aliveness alone, same
+# as before this change — never called stale just for recording nothing, which would steal the
+# lock out from under an old-format run still genuinely holding it.
+provider_lock_stale_reason() { # <pid>
+    if [ "$1" = "$$" ]; then
+        printf '%s' 'is this very shell, waiting on it'
+    elif ! provider_lock_alive "$1"; then
+        printf '%s' 'is gone'
+    else
+        provider_lock_recorded="$(cat "$PROVIDER_LOCK/$1" 2>/dev/null)"
+        if [ -n "$provider_lock_recorded" ] \
+            && [ "$(provider_lock_start_time "$1")" != "$provider_lock_recorded" ]; then
+            printf '%s' 'is a different process now'
+        fi
+    fi
+}
+
 # What the wait between two looks at the lock is. Its own function so a test can stand in for
 # the clock.
 provider_lock_sleep() { # <seconds>
@@ -54,22 +92,26 @@ provider_lock_holders() {
 }
 
 # One attempt at the lock. Succeeds only when this shell's pid file is the only one in it.
+# Writing the start time is best-effort, not a reason to fail the take: an environment with
+# no `ps` (recording nothing) must still take the lock, not spin forever re-clearing its own
+# just-written file as though it named someone else (see provider_lock_stale_reason).
 provider_lock_take() {
     mkdir "$PROVIDER_LOCK" 2>/dev/null || return 1
-    touch "$PROVIDER_LOCK/$$" 2>/dev/null || return 1
+    provider_lock_start_time "$$" >"$PROVIDER_LOCK/$$" 2>/dev/null
     [ "$(provider_lock_holders)" = "$$" ] && return 0
     rm -f "$PROVIDER_LOCK/$$"
     rmdir "$PROVIDER_LOCK" 2>/dev/null
     return 1
 }
 
-# Clear a lock whose holder is gone. Only the run whose `rm` removed the dead pid's file goes
-# on to remove the directory, so two runs clearing at once cannot both do it. Fails only when
-# the dead pid's file is still there afterwards — a file this user may not remove.
-provider_lock_clear_stale() { # <provider> <the dead holder>
+# Clear a lock whose holder's claim on it is no good (see provider_lock_stale_reason for
+# <why>). Only the run whose `rm` removed the stale pid's file goes on to remove the
+# directory, so two runs clearing at once cannot both do it. Fails only when the stale pid's
+# file is still there afterwards — a file this user may not remove.
+provider_lock_clear_stale() { # <provider> <the stale holder> <why>
     if rm "$PROVIDER_LOCK/$2" 2>/dev/null; then
         rmdir "$PROVIDER_LOCK" 2>/dev/null
-        echo "eval: provider $1 had a stale lock — its holder, pid $2, is gone; cleared $PROVIDER_LOCK"
+        echo "eval: provider $1 had a stale lock — its holder, pid $2, $3; cleared $PROVIDER_LOCK"
     fi
     [ ! -e "$PROVIDER_LOCK/$2" ]
 }
@@ -97,9 +139,10 @@ provider_lock_look() { # <provider>
     *)
         provider_lock_empty=0
         provider_lock_blocker="held by pid $provider_lock_held"
-        if ! provider_lock_alive "$provider_lock_held"; then
-            provider_lock_clear_stale "$1" "$provider_lock_held" && return 1
-            provider_lock_blocker="held by pid $provider_lock_held, which is gone, and could not be cleared"
+        provider_lock_reason="$(provider_lock_stale_reason "$provider_lock_held")"
+        if [ -n "$provider_lock_reason" ]; then
+            provider_lock_clear_stale "$1" "$provider_lock_held" "$provider_lock_reason" && return 1
+            provider_lock_blocker="held by pid $provider_lock_held, which $provider_lock_reason, and could not be cleared"
         fi
         ;;
     esac

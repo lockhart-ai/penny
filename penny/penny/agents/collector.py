@@ -249,7 +249,8 @@ class Collector(BackgroundAgent):
             return (
                 False,
                 f"Collection '{collection_name}' is archived — restore it first with "
-                f"collection_unarchive('{collection_name}'), or test a different collection.",
+                f"collection_archive('{collection_name}', archived=False), or test a "
+                f"different collection.",
             )
         if collection.extraction_prompt is None:
             return (

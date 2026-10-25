@@ -1,5 +1,8 @@
 """SelfStateHeader — Penny's operational self-state, rendered deterministically
-into the chat agent's system prompt (#1555).
+into the chat agent's system prompt (#1555).  Jobs and Your memory ride the
+STATIC prefix (``SelfStateHeader.render_static``); Recent activity and About the
+user ride the per-turn DYNAMIC message (``render_dynamic``) — see #2814 and each
+method's own docstring below.
 
 The ambient inversion: instead of *predicting* which of the user's stored content
 might be relevant this turn (speculative, usually unused, occasionally
@@ -38,7 +41,12 @@ one guess-free tool call from the detail). Sections:
   every other activity line renders.
 - **Your memory** — the map of stores: EVERY live collection and log, no cap
   (#2288), names + one-line scope — the index for an anchored lookup, never the
-  content. One compact trailing line names every ARCHIVED collection and log by
+  content. Its entry count is shown for a collection or log the user or a job
+  owns (moves only on a real write); the four system-log facades
+  (``PennyConstants.SYSTEM_LOGS``) show their name and scope with NO live count
+  (#2814) — that count ticks on every ordinary turn, and this section rides the
+  cached static prefix now, so showing it would rebuild the prefix every turn.
+  One compact trailing line names every ARCHIVED collection and log by
   name (``archived: `<name>`, …``), omitted entirely when nothing is archived — an
   archived row with no job has nowhere else in this header to appear, so this line
   is the complete list, not a remainder.
@@ -93,11 +101,22 @@ if TYPE_CHECKING:
 
 
 class SelfStateHeader:
-    """Renders the ``## Penny's current state`` block from the registry + ledger.
+    """Renders Penny's operational self-state from the registry + ledger.
 
-    Constructed per chat turn (the activity block churns on every event, so it
-    lives in the dynamic tail of the prompt, never a cached static prefix) and
-    read purely — every method is a deterministic projection of stored rows.
+    Constructed per chat turn and read purely — every method is a deterministic
+    projection of stored rows. Two sections — Jobs and Your memory — ride
+    ``ChatAgent``'s cached STATIC prefix (:meth:`render_static`, #2814): both are
+    pure renders of the registry alone (schedule rule, ``notify``, ``expires_at``,
+    last-run stamp, entry counts, descriptions — never ``now``, confirmed turn to
+    turn by ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``),
+    so they are byte-identical across turns unless a job or a collection actually
+    changed — rare next to every turn, the same bet the conversation map makes.
+    The rest — Recent activity (which churns on every run/mutation/emission) and
+    About the user — stay in the per-turn dynamic tail (:meth:`render_dynamic`),
+    since those genuinely can change every turn. ``render()`` keeps the whole,
+    historical, single-message shape (identical output, unused by ``ChatAgent``
+    since #2814) for the many tests below that assert on ``SelfStateHeader`` as a
+    unit rather than on where its sections land.
     """
 
     HEADER = "## Penny's current state"
@@ -177,12 +196,45 @@ class SelfStateHeader:
         section that has nothing to show renders nothing.  The standing rules do not
         render here at all: with a rule standing they belong to the chat prompt's
         instruction part (``standing_rules_instruction``), and with none the section
-        is omitted entirely (#2686) — the store map still names ``rules``."""
+        is omitted entirely (#2686) — the store map still names ``rules``.
+
+        Kept for its many existing callers that test ``SelfStateHeader`` as a
+        self-contained unit (its own section-rendering logic — caps, cuts,
+        mute-state wording, …) rather than where a section lands in the chat
+        prompt.  ``ChatAgent`` itself no longer calls this: it calls
+        :meth:`render_static` and :meth:`render_dynamic` instead (#2814), so this
+        method's section order no longer matches either message — it is this
+        class's own legacy whole-render, not a third shape the model ever sees."""
         sections = [
             self.HEADER,
             self._mechanisms_section(),
             self._activity_section(),
             self._memory_map_section(),
+            self._durable_core_section(),
+            self.POINTERS,
+        ]
+        return "\n\n".join(section for section in sections if section)
+
+    def render_static(self) -> str:
+        """Jobs + Your memory — the two SLOW-CHANGING sections (#2814) that ride
+        ``ChatAgent``'s cached static system-prompt prefix instead of the per-turn
+        dynamic tail.  Both are pure renders of the registry alone — no activity,
+        no ``now`` — so this string is byte-identical turn to turn unless a job or
+        a collection actually changed, the same cache bet the conversation map
+        makes for the rest of the static message."""
+        sections = [self._mechanisms_section(), self._memory_map_section()]
+        return "\n\n".join(section for section in sections if section)
+
+    def render_dynamic(self) -> str:
+        """``## Penny's current state`` + Recent activity + About the user + the
+        pointers line — what rides ``ChatAgent``'s per-turn dynamic system message
+        (#2814): the activity block churns on every run/mutation/emission, so it
+        can never be part of a cached prefix; the durable core and the pointers
+        line are cheap enough to just ride along beside it rather than earn their
+        own split."""
+        sections = [
+            self.HEADER,
+            self._activity_section(),
             self._durable_core_section(),
             self.POINTERS,
         ]
@@ -444,25 +496,44 @@ class SelfStateHeader:
 
     def _memory_map_section(self) -> str:
         """The index of readable stores — EVERY non-archived memory (collection or
-        log) by name, shape, entry count, and one-line scope. Names, never
-        content: any user fact is one anchored read away using a name shown here.
-        No cap (#2288) — the
-        live rows render in full, and the archived ones get their own compact
-        line below (``_archived_line``) rather than a count that hides them."""
+        log) by name, shape, and one-line scope, plus an entry count for the ones
+        whose count changes only on a real write. Names, never content: any user
+        fact is one anchored read away using a name shown here.  No cap (#2288) —
+        the live rows render in full, and the archived ones get their own compact
+        line below (``_archived_line``) rather than a count that hides them.
+
+        This section rides the static prefix (#2814, ``render_static``), so the
+        count is OMITTED for the four system-log facades
+        (``PennyConstants.SYSTEM_LOGS`` — ``user-messages``/``penny-messages``/
+        ``browse-results``/``collector-runs``): their ``entry_counts()`` value is
+        read straight off ``messagelog``/``promptlog``, which grows on every
+        ordinary turn (an incoming message, a reply, a browse call), not on a job
+        or collection changing — showing it here would rebuild the cached prefix
+        every turn, defeating the point of moving this section into it.  The
+        facade's NAME still renders (the ``log_read`` anchor, n≤1 reachability),
+        only its live count does not; a collection or log the user or a job owns
+        keeps its count, which only moves on a real write."""
         rows = self.db.memories.list_all()
         live = [row for row in rows if not row.archived]
         counts = self.db.memories.entry_counts()
         lines = [self.MAP_HEADER]
-        lines.extend(
-            f"- {row.name} ({row.type}, {counts.get(row.name, 0)} entries) — {row.description}"
-            for row in live
-        )
+        lines.extend(self._memory_map_line(row, counts) for row in live)
         if not live:
             lines.append(self.EMPTY_MAP)
         archived = self._archived_line(rows)
         if archived:
             lines.append(archived)
         return "\n".join(lines)
+
+    @staticmethod
+    def _memory_map_line(row: MemoryRow, counts: dict[str, int]) -> str:
+        """One store-map row: ``- <name> (<type>, <n> entries) — <description>``,
+        or ``- <name> (<type>) — <description>`` for a system-log facade
+        (``PennyConstants.SYSTEM_LOGS``), whose live count would otherwise rebuild
+        the static prefix on every ordinary turn (see ``_memory_map_section``)."""
+        if row.name in PennyConstants.SYSTEM_LOGS:
+            return f"- {row.name} ({row.type}) — {row.description}"
+        return f"- {row.name} ({row.type}, {counts.get(row.name, 0)} entries) — {row.description}"
 
     def _archived_line(self, rows: list[MemoryRow]) -> str:
         """One compact line naming every archived collection and log, by name

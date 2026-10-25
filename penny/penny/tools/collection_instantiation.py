@@ -51,8 +51,8 @@ from penny.datetime_utils import (
 
 _TOMBSTONE_DUPLICATE = (
     "There's an archived collection for this: '{name}' (archived {archived_at}) — I didn't "
-    "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, "
-    "or set up a fresh one with a clearly different name and description."
+    "create a duplicate. Bring it back with collection_archive('{name}', archived=False) to "
+    "resume it, or set up a fresh one with a clearly different name and description."
 )
 
 

@@ -22,13 +22,14 @@ and the self-state header states the muted line.  A seed that stopped holding fa
 naming what it lost, rather than scoring fifteen samples green for a turn that had nothing to
 undo.
 
-**Dispatch stands on the tool descriptions ALONE.**  Migration 0076 seeded a "Mute or unmute
+**Dispatch stands on the tool description ALONE.**  Migration 0076 seeded a "Mute or unmute
 notifications" skill whose numbered steps taught this routing; 0092 deleted every seeded rule
 entry and 0097 the collection itself, and 0108 leaves nothing pre-seeded at all — so no case
 here seeds a skill, the registry the turn runs against is empty, and what the two asks measure
-is whether ``NotificationsMuteTool`` and ``NotificationsUnmuteTool`` are reachable from an
-explicit ask with no recipe pointing at them.  The mute and no-fire worlds are the production
-cold start; the unmute world is that cold start with the one switch thrown.
+is whether ``NotificationsTool`` (``notifications_set``, folding the retired
+``notifications_mute`` / ``notifications_unmute`` pair, #2812) is reachable, in BOTH
+directions, from an explicit ask with no recipe pointing at it.  The mute and no-fire worlds
+are the production cold start; the unmute world is that cold start with the one switch thrown.
 
 **No case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds
 no collection, so the one prior state a preservation claim can read is the switch itself —
@@ -77,8 +78,8 @@ pytestmark = pytest.mark.eval
 # dispatch as one group.
 _FAMILY = "nl-dispatch"
 
-_MUTE = "notifications_mute"
-_UNMUTE = "notifications_unmute"
+# The one folded tool (#2812): both directions dispatch to it, the `on` bool naming which.
+_NOTIFICATIONS_TOOL = "notifications_set"
 
 _MUTES = "explicit-mute-request-mutes"
 _UNMUTES = "explicit-unmute-request-unmutes"
@@ -110,12 +111,12 @@ def assert_mute_world(penny: Penny) -> None:
     """The world this case is answered in, asserted out loud before the turn runs.
 
     Three things, each the precondition of a claim below: the chat surface really carries the
-    two notification tools (a scored dispatch miss against a model that was never offered the
+    notifications tool (a scored dispatch miss against a model that was never offered the
     tool is the failure this forecloses); the registry holds no COLLECTION, the production cold
     start; and notifications are ON — both in the store, so the claim that they are muted
     afterwards cannot be answered by the seed, and in the header the model reads, so the turn is
     answered by something that says which way the switch is set."""
-    assert_dispatch_world(penny, _MUTES, [_MUTE, _UNMUTE])
+    assert_dispatch_world(penny, _MUTES, [_NOTIFICATIONS_TOOL])
     assert not penny.db.users.is_muted(TEST_SENDER), (
         f"{_MUTES}: the user must start unmuted, or the claim that this turn muted them is "
         "answered by the seed"
@@ -130,10 +131,10 @@ def assert_mute_world(penny: Penny) -> None:
 
 # ── The claims, as pure functions over one sample ─────────────────────────────
 #
-# None of them reads a tool NAME.  Whether ``notifications_mute`` fired is a ROUTE — many
-# routes reach one end state, and a plugin could add a third verb over the same row tomorrow —
-# so it is measured in the tool sequence and never asserted; what the case claims is the switch
-# the turn left behind.
+# None of them reads a tool NAME.  Whether ``notifications_set`` fired is a ROUTE — more than
+# one route can reach one end state, and a plugin could add another verb over the same row
+# tomorrow — so it is measured in the tool sequence and never asserted; what the case claims is
+# the switch the turn left behind.
 
 
 def _notifications_are_muted(sample: SampleObservation, _world: World) -> Answer:
@@ -208,7 +209,7 @@ _UNMUTE_BEHAVIOUR = (
 
 def seed_muted(db: Database) -> None:
     """The unmute case's entry condition: proactive notifications muted for the user, through
-    the store's own write — the row ``notifications_mute`` leaves."""
+    the store's own write — the row ``notifications_set(on=False)`` leaves."""
     db.users.set_muted(TEST_SENDER)
 
 
@@ -216,11 +217,11 @@ def assert_unmute_world(penny: Penny) -> None:
     """The world the unmute case is answered in, asserted out loud before the turn runs.
 
     The mute world's three preconditions with the switch the other way: the chat surface
-    carries the two notification tools; the registry holds no collection; and notifications
+    carries the notifications tool; the registry holds no collection; and notifications
     are MUTED — in the store, because "not muted afterwards" is true of a database nobody
     muted and the claim would be answered by the absence of a seed, and in the header the
     model reads, because a turn that was never told about a mute has nothing to lift."""
-    assert_dispatch_world(penny, _UNMUTES, [_MUTE, _UNMUTE])
+    assert_dispatch_world(penny, _UNMUTES, [_NOTIFICATIONS_TOOL])
     assert penny.db.users.is_muted(TEST_SENDER), (
         f"{_UNMUTES}: the user must start MUTED, or the claim that they are not muted "
         "afterwards is true of a world nobody seeded"
@@ -307,7 +308,7 @@ def assert_no_fire_world(penny: Penny) -> None:
     that has nothing to do with the remark, and on one where nothing rendered the switch there
     would be no lever for a sample to reach for wrongly — so the temptation this case measures
     would be absent rather than declined."""
-    assert_dispatch_world(penny, _NO_FIRE, [_MUTE, _UNMUTE])
+    assert_dispatch_world(penny, _NO_FIRE, [_NOTIFICATIONS_TOOL])
     assert not penny.db.users.is_muted(TEST_SENDER), (
         f"{_NO_FIRE}: the user must start unmuted, or the claim that the switch did not move "
         "cannot tell a declined temptation from a world that was already quiet"

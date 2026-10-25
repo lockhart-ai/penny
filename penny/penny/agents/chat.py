@@ -33,7 +33,7 @@ from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.memory_tools import render_nothing_landed, render_writes_landed
-from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
+from penny.tools.notifications import NotificationsTool
 from penny.validation import ConditionKey
 
 if TYPE_CHECKING:
@@ -187,10 +187,10 @@ class ChatAgent(Agent):
     ) -> list[Tool]:
         tools = super().get_tools(run_id, handles)
         # Notification mute/unmute is a chat-driven action over the MuteState row
-        # (the retired /mute + /unmute commands), so both tools live on the chat
-        # surface — the model dispatches to them from natural language.
-        tools.append(NotificationsMuteTool(self.db))
-        tools.append(NotificationsUnmuteTool(self.db))
+        # (the retired /mute + /unmute commands, then the retired mute/unmute tool
+        # pair, #2812), so the tool lives on the chat surface — the model
+        # dispatches to it from natural language.
+        tools.append(NotificationsTool(self.db))
         if self._image_client is not None:
             tools.append(
                 GenerateImageTool(self._image_client, self.db, self._embedding_model_client)
@@ -288,7 +288,9 @@ class ChatAgent(Agent):
         meant.  A run that never tried gets no record: there is no ledger fact to report,
         and deciding it SHOULD have tried would mean reading the ask's words.  Nothing in
         the path names a tool, so a plugin's verb is covered by declaring the mark."""
-        landed = render_writes_landed(self.db.memories.entries_written_by_run(run_id))
+        landed = render_writes_landed(
+            self.db.memories.entries_written_by_run(run_id, exclude_system_logs=False)
+        )
         record = landed or render_nothing_landed(self._store_attempts(records))
         if record is None:
             return None
@@ -564,31 +566,38 @@ class ChatAgent(Agent):
         *,
         handles: HandleTable | None = None,
     ) -> str:
-        """Identity + standing rules + instructions + the conversation map —
-        the LEADING, static system message (#2745; reordered relative to
-        history/state #2756; the map appended at its end, #2752/#2757).
+        """Identity + standing rules + instructions + Jobs + the store map +
+        the conversation map — the LEADING, static system message (#2745;
+        reordered relative to history/state #2756; the map appended at its
+        end, #2752/#2757; Jobs and the store map moved in ahead of it, #2814).
 
         This message is the prefix the model server reuses across turns
         (along with the tool schemas gemma4's renderer puts right after it),
-        so it carries only what changes RARELY between them: Penny's
-        persona/voice, then the user's standing rules — in the instruction
-        part, right after the voice sections, where she reads instructions —
-        then the instructions, then the **conversation map** (#2752): one
-        line per exchange older than the history window, the LAST thing in
-        this message so a line it grows at its own end never disturbs
-        anything ahead of it.  The map changes only on a cut turn — the one
-        turn the history window's own first exchange moves (#2757,
+        so it carries only what changes RARELY between them, most-stable
+        first: Penny's persona/voice, then the user's standing rules — in the
+        instruction part, right after the voice sections, where she reads
+        instructions — then the instructions, then **Jobs** and **Your
+        memory** (#2814, ``SelfStateHeader.render_static``) — both pure
+        renders of the registry alone (no activity, no clock), so this part
+        is byte-identical turn to turn unless a job or a collection actually
+        changed, which is the same honest-and-rare rebuild the conversation
+        map already accepts — then the **conversation map** (#2752): one line
+        per exchange older than the history window, the LAST thing in this
+        message so a line it grows at its own end never disturbs anything
+        ahead of it.  The map changes only on a cut turn — the one turn the
+        history window's own first exchange moves (#2757,
         ``ConversationMap``/``Agent._history_window_size``) — so most turns
-        reuse this whole message byte-for-byte.
+        reuse this whole message byte-for-byte, Jobs/Your memory included.
 
         Everything per-turn — the clock, the current browser page, and the
-        deterministic **self-state header** (active mechanisms · recent
-        activity · the store map · durable user facts, rendered from the
-        registry (#1566) + ledger (#1560), never a relevance guess) — rides
-        the dynamic system message, placed right before the user's own turn
-        (#2756; ``_dynamic_system_section``).  The map never rides there: it
-        changes far less often than the state does, so it belongs in the
-        reused prefix, not beside what changes every turn.
+        rest of the deterministic **self-state header** (recent activity ·
+        durable user facts, rendered from the registry (#1566) + ledger
+        (#1560), never a relevance guess) — rides the dynamic system message,
+        placed right before the user's own turn (#2756;
+        ``_dynamic_system_section``, ``SelfStateHeader.render_dynamic``).
+        Neither the map nor Jobs/Your memory ride there: all three change far
+        less often than the activity block does, so they belong in the reused
+        prefix, not beside what changes every turn.
 
         The ambient inversion (#1555): the chat prompt injects no
         **speculative user-content recall** at all.  User content is fetched on
@@ -602,6 +611,7 @@ class ChatAgent(Agent):
                 self._identity_section(),
                 standing_rules_instruction(self.db),
                 self._instructions_section(instructions),
+                SelfStateHeader(self.db, user).render_static(),
                 ConversationMap(self.db, user, self.config.runtime).render(),
             ]
             if section
@@ -609,16 +619,17 @@ class ChatAgent(Agent):
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
         """The per-turn system message's content, placed right BEFORE the
-        live user turn (#2756): the clock, the page hint, then Penny's own
-        state — in that order, everything that may change between turns,
-        none of it able to touch the reused static-system + history prefix
-        that precedes it."""
+        live user turn (#2756): the clock, the page hint, then the rest of
+        Penny's own state (recent activity · durable user facts ·
+        pointers, ``SelfStateHeader.render_dynamic``, #2814) — in that
+        order, everything that may change between turns, none of it able to
+        touch the reused static-system + history prefix that precedes it."""
         return "\n\n".join(
             section
             for section in [
                 current_datetime_line(self.db),
                 self._page_hint_section(),
-                SelfStateHeader(self.db, self._current_user).render(),
+                SelfStateHeader(self.db, self._current_user).render_dynamic(),
             ]
             if section
         )

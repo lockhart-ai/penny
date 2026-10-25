@@ -785,7 +785,7 @@ class PennyConstants:
     # might not be on it, and an instruction that cannot be followed is worse than the
     # honest number.
     COLLECTOR_HOLDINGS_LIMIT = 20
-    # Default cap on an unbounded collection read (``collection_list``/``collection_sample``)
+    # Default cap on an unbounded collection read (``collection_list``, either order)
     # when the model omits `k` (#2771): with no cap, one ordinary "look through your
     # memory" turn — 13 parallel reads across several collections — pulled in 330k
     # characters at once (one 281-entry collection alone cost 111k characters), and

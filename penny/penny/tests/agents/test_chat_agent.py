@@ -199,16 +199,23 @@ async def test_basic_message_flow(
         assert all(e.author == "chat" for e in browse_entries)
 
 
-# ── 1a. The static/dynamic system split (#2745) ──────────────
+# ── 1a. The static/dynamic system split (#2745; Jobs + store map moved
+#        into the static prefix, #2814) ──────────────
 
 
 @pytest.mark.asyncio
-async def test_static_system_prefix_byte_identical_across_turns(db, test_config, monkeypatch):
+async def test_static_system_prefix_byte_identical_across_a_clock_only_change(
+    db, test_config, monkeypatch
+):
     """The FIRST system message is the prefix the model server reuses across
-    turns (#2745), so nothing per-turn — the clock, entry counts, job rows — may
-    leak into it.  Two renders with a shifted clock and a changed registry must
-    produce a byte-identical first message, while the dynamic message DID move
-    (so the guard cannot pass vacuously).
+    turns (#2745), so the clock alone — the one thing guaranteed to differ on
+    literally every turn — may never leak into it.  Two renders a clock apart,
+    with no registry change in between, must produce a byte-identical first
+    message, while the dynamic message DID move (so the guard cannot pass
+    vacuously).  The companion case, where the registry DOES change between
+    renders, is ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``
+    below — #2814 moved Jobs and the store map INTO this prefix, so a
+    registry change now correctly changes it, which this test must not claim.
 
     The dynamic message sits right BEFORE the user's own turn (#2756) — the
     one mid-conversation system placement prod's patched oMLX and OpenRouter
@@ -233,14 +240,13 @@ async def test_static_system_prefix_byte_identical_across_turns(db, test_config,
     first = agent._build_messages("hi", None, await agent._build_system_prompt(TEST_SENDER))
 
     monkeypatch.setattr(db, "clock", _FixedClock(datetime(2026, 1, 1, 12, 5, tzinfo=UTC)))
-    db.memories.create_collection("late-addition", "created between the two renders")
     second = agent._build_messages("hi", None, await agent._build_system_prompt(TEST_SENDER))
 
     # Static leading, dynamic state next, user LAST — no history, so
     # nothing sits between the static message and the dynamic one.
     assert [m.role for m in first] == ["system", "system", "user"]
     assert [m.role for m in second] == ["system", "system", "user"]
-    # The reused prefix: byte-identical across a shifted clock and new state.
+    # The reused prefix: byte-identical across a shifted clock alone.
     assert second[0].content == first[0].content
     # The user turn (now last) is unaffected by either change.
     assert first[-1].content == "hi"
@@ -248,6 +254,74 @@ async def test_static_system_prefix_byte_identical_across_turns(db, test_config,
     # The dynamic message (now second) carries the clock and moved between the renders.
     assert first[1].content.startswith("Current date and time: ")
     assert second[1].content != first[1].content
+
+
+@pytest.mark.asyncio
+async def test_static_system_prefix_rebuilds_when_a_job_or_collection_changes(db, test_config):
+    """#2814: Jobs and the store map now ride the static prefix, as pure renders
+    of the registry alone — so, unlike the clock, a job or a collection actually
+    changing between two renders correctly changes this message, and the new
+    job/collection is visible in it.  This is the honest-and-rare rebuild the
+    issue accepts, the same bet the conversation map already makes for a cut
+    turn — it is NOT byte-identical the way a clock-only change must be (the
+    companion test above)."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    agent.config = test_config
+    agent._pending_page_context = None
+    agent._current_user = TEST_SENDER
+
+    first = await agent._build_system_prompt(TEST_SENDER)
+    db.memories.create_collection("late-addition", "created between the two renders")
+    second = await agent._build_system_prompt(TEST_SENDER)
+
+    assert second != first
+    assert "late-addition" not in first
+    assert "late-addition" in second
+    # Everything ahead of Jobs/the store map (identity, standing rules,
+    # instructions) is untouched by the new collection.
+    assert second.split("### Jobs", 1)[0] == first.split("### Jobs", 1)[0]
+
+
+@pytest.mark.asyncio
+async def test_static_system_prefix_unaffected_by_an_activity_only_change(db, test_config):
+    """The mirror-image claim (#2814): an event that belongs to Recent activity
+    alone — a delivered autonomous send, with no job created or collection
+    mutated — must NOT touch the static prefix, while it DOES change the
+    dynamic message, which is where Recent activity actually lives.
+
+    A mechanism-tagged outgoing message is exactly the case that moves the
+    registry's OWN ``penny-messages`` count (``MemoryStore.entry_counts()``
+    reads it straight off ``messagelog``, with no mechanism filter) without
+    touching any job or collection — the near-miss #2814 almost shipped with:
+    the store map's live count for ``penny-messages`` would otherwise have
+    ticked on every ordinary turn, since every reply is an outgoing message.
+    The fix is that the four system-log facades (``PennyConstants.SYSTEM_LOGS``)
+    render their name and scope with NO live count (``_memory_map_line``), so
+    this send moves the count but not anything the static prefix shows."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    agent.config = test_config
+    agent._pending_page_context = None
+    agent._current_user = TEST_SENDER
+
+    static_before = await agent._build_system_prompt(TEST_SENDER)
+    dynamic_before = agent._dynamic_system_section()
+
+    db.messages.log_message(
+        PennyConstants.MessageDirection.OUTGOING,
+        "penny",
+        "heads up, done!",
+        recipient=TEST_SENDER,
+        mechanism="a-mechanism",
+    )
+
+    static_after = await agent._build_system_prompt(TEST_SENDER)
+    dynamic_after = agent._dynamic_system_section()
+
+    assert static_after == static_before
+    assert dynamic_after != dynamic_before
+    assert "heads up, done!" in dynamic_after
 
 
 @pytest.mark.asyncio
@@ -330,15 +404,24 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
 
 
 @pytest.mark.asyncio
-async def test_the_static_prefix_with_the_map_is_stable_except_on_a_cut_turn(
+async def test_the_conversation_map_within_the_static_prefix_is_stable_except_on_a_cut_turn(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
     """The conversation map rides the END of the static leading message
     (#2752/#2757), appended by ``_build_system_prompt``.  Across two turns
     neither of which is a cut, the exchanges older than the history window
-    don't change, so the static message — map included — is byte-identical;
-    on a cut turn it gains exactly the exchanges the history dropped, whole,
-    at the map's end, with every earlier line unchanged."""
+    don't change, so the map is byte-identical; on a cut turn it gains
+    exactly the exchanges the history dropped, whole, at the map's end, with
+    every earlier line unchanged.
+
+    This test scopes every comparison to the map's own SUFFIX of the static
+    message (``map_suffix``), not the whole static string: each loop
+    iteration also creates a fresh collection and writes to it, which — since
+    #2814 moved Jobs and the store map into this same static prefix — makes
+    THAT part of the message legitimately differ every single turn here (a
+    new collection each time).  That rebuild is covered on its own in
+    ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``;
+    this test's one claim is about the map, so it reads only the map."""
     config = make_config(chat_history_turns=2)  # window grows 2 -> 3, cuts at 4
 
     async with running_penny(config) as penny:
@@ -366,32 +449,36 @@ async def test_the_static_prefix_with_the_map_is_stable_except_on_a_cut_turn(
             )
             statics.append(await penny.chat_agent._build_system_prompt(TEST_SENDER))
 
+        def map_suffix(static: str) -> str:
+            """The map's own header-through-end slice, or "" when absent —
+            everything Jobs/the store map/instructions ahead of it is cut
+            away, since only THIS slice is under test here."""
+            return static[start:] if (start := static.find(ConversationMap.HEADER)) != -1 else ""
+
         def map_lines(static: str) -> list[str]:
-            start = static.index(ConversationMap.HEADER)
-            return static[start:].split("\n")[1:-1]  # content lines only
+            return map_suffix(static).split("\n")[1:-1]  # content lines only
 
         # Turns 1-3: before any cut, nothing is older than the window yet —
-        # the map is empty, so the static message carries no map section at
-        # all and is identical to a build with no messages logged.
-        assert ConversationMap.HEADER not in statics[0]
-        assert statics[0] == statics[1] == statics[2]
+        # the map is empty on all three, so the static message carries no map
+        # section at all on any of them.
+        assert map_suffix(statics[0]) == map_suffix(statics[1]) == map_suffix(statics[2]) == ""
 
         # Turn 4 is the first cut: exchanges 1 and 2 newly age out — the
         # static message grows to carry the map for the first time.
-        assert statics[3] != statics[2]
+        assert map_suffix(statics[3]) != map_suffix(statics[2])
         turn4_lines = map_lines(statics[3])
         assert len(turn4_lines) == 2
         assert "user message 1" in turn4_lines[0]
         assert "user message 2" in turn4_lines[1]
 
         # Turn 5 is NOT a cut (the window is growing again after turn 4's
-        # cut) — the static message, map included, is byte-identical.
-        assert statics[4] == statics[3]
+        # cut) — the map is byte-identical.
+        assert map_suffix(statics[4]) == map_suffix(statics[3])
 
         # Turn 6 is the next cut: exchanges 3 and 4 age out, appended at the
         # map's end — turn 4/5's two lines stay an exact, byte-identical
         # prefix of turn 6's four.
-        assert statics[5] != statics[4]
+        assert map_suffix(statics[5]) != map_suffix(statics[4])
         turn6_lines = map_lines(statics[5])
         assert turn6_lines[:2] == turn4_lines
         assert len(turn6_lines) == 4
@@ -1042,13 +1129,15 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_create" not in names
         assert "collection_update" not in names
         assert "log_create" in names
+        # The archive/unarchive pair is folded onto one tool (#2812): archived=true/false.
         assert "collection_archive" in names
-        assert "collection_unarchive" in names
+        assert "collection_unarchive" not in names
 
         # Reads.
         assert "collection_list" in names
         assert "collection_get" in names
-        assert "collection_sample" in names
+        # collection_sample is retired (#2812): collection_list(order='random') replaces it.
+        assert "collection_sample" not in names
         assert "collection_keys" in names
         assert "memory_get" in names
         # Ledger reads: run_list browses a source's runs; run_get resolves
@@ -1064,10 +1153,12 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         # random" is a Python coin flip on the chat surface (like browse, on both).
         assert "choose" in names
 
-        # Notification mute/unmute — chat-surface tools over the MuteState row
-        # (the retired /mute + /unmute commands), dispatched from natural language.
-        assert "notifications_mute" in names
-        assert "notifications_unmute" in names
+        # Notifications — one chat-surface tool over the MuteState row (the retired
+        # /mute + /unmute commands, then the retired mute/unmute tool pair, #2812),
+        # dispatched from natural language with the direction as an `on` bool.
+        assert "notifications_set" in names
+        assert "notifications_mute" not in names
+        assert "notifications_unmute" not in names
 
         # Loop-control stays background-only — never on the chat surface.
         assert "done" not in names
@@ -1429,13 +1520,7 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "[4], or a URL, and each with what it is looking for in plain language — that is the "
     'whole specification ("the opening hours" or "anything the page says about refunds" '
     "are complete asks). A search is picked and read inside the same call, so you get "
-    "back what the pages say, with a handle for every page you were given. There are no "
-    "CSS selectors, XPaths, or HTML parsing anywhere in your tools; never ask the user "
-    "for page structure, snippets, or selectors — reading pages is your job.\n"
-    "\n"
-    "After reading pages, you MUST respond with what you found. Do not make additional "
-    "tool calls to re-fetch or supplement pages you already read. If a page had limited "
-    "content, report what was there.\n"
+    "back what the pages say, with a handle for every page you were given.\n"
     "\n"
     "Let the answer come from the pages you read — every fact, name, and detail in your "
     "response must come from the pages you read or your memory.\n"
@@ -1464,37 +1549,39 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "On a plain reply with no tool calls, skip the recap and just respond.\n"
     "\n"
     "Always include specific details (specs, dates, prices) and at least one source "
-    "link (its number in brackets) so the user can follow up."
-)
-
-# The dynamic system message's state header, everything after the clock line —
-# the leading "\n" is the blank line that separated it from the clock.
-_BASIC_FLOW_STATE_EXPECTED = (
-    "\n"
-    "## Penny's current state\n"
+    "link (its number in brackets) so the user can follow up.\n"
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
     "(no jobs yet)\n"
+    "\n"
+    "### Your memory\n"
+    "- browse-results (log) — Every browse-tool fetch result\n"
+    "- collector-runs (log) — One entry per Collector cycle: the target + its "
+    "generated structural record (outcome, counts, tool trace)\n"
+    "- penny-messages (log) — Every outgoing Penny reply\n"
+    "- playlists (collection, 1 entries) — favorite playlists\n"
+    "- rules (collection, 0 entries) — Standing instructions the user has given: things "
+    "to always or never do\n"
+    "- secrets (collection, 1 entries) — hidden\n"
+    "- tips (log, 1 entries) — useful tips\n"
+    "- user-messages (log) — Every incoming user message\n"
+    "archived: `old-facts`"
+)
+
+# The dynamic system message's state header, everything after the clock line —
+# the leading "\n" is the blank line that separated it from the clock.  Jobs
+# and the store map moved into the STATIC message above (#2814) — this is
+# what's left: recent activity, then about the user.
+_BASIC_FLOW_STATE_EXPECTED = (
+    "\n"
+    "## Penny's current state\n"
     "\n"
     "### Recent activity\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts created by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · secrets created by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · playlists created by user-run\n"
-    "\n"
-    "### Your memory\n"
-    "- browse-results (log, 0 entries) — Every browse-tool fetch result\n"
-    "- collector-runs (log, 0 entries) — One entry per Collector cycle: the target + its "
-    "generated structural record (outcome, counts, tool trace)\n"
-    "- penny-messages (log, 0 entries) — Every outgoing Penny reply\n"
-    "- playlists (collection, 1 entries) — favorite playlists\n"
-    "- rules (collection, 0 entries) — Standing instructions the user has given: things "
-    "to always or never do\n"
-    "- secrets (collection, 1 entries) — hidden\n"
-    "- tips (log, 1 entries) — useful tips\n"
-    "- user-messages (log, 0 entries) — Every incoming user message\n"
-    "archived: `old-facts`\n"
     "\n"
     "### About the user\n"
     "- name: Test User\n"

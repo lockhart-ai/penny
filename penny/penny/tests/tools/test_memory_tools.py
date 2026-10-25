@@ -74,9 +74,7 @@ from penny.tools.memory_tools import (
     CollectionKeysTool,
     CollectionListTool,
     CollectionRemoveTool,
-    CollectionSampleTool,
     CollectionSetTool,
-    CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
     FindTool,
@@ -2691,7 +2689,7 @@ class TestEmbedFailureRefusesWrite:
         assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
 
     @pytest.mark.asyncio
-    async def test_sample_returns_all_when_few(self, db, mock_llm):
+    async def test_random_order_returns_all_when_few(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2709,8 +2707,8 @@ class TestEmbedFailureRefusesWrite:
         await write.execute(
             CallLink.new_top(), collection="likes", entries=[{"key": "a", "content": "1"}]
         )
-        rendered = await CollectionSampleTool(db).execute(
-            CallLink.new_top(), collection="likes", k=5
+        rendered = await CollectionListTool(db).execute(
+            CallLink.new_top(), collection="likes", k=5, order="random"
         )
         assert "key='a' 1" in rendered.message
 
@@ -2807,20 +2805,24 @@ class TestEmbedFailureRefusesWrite:
         assert rendered.message == expected
 
     @pytest.mark.asyncio
-    async def test_collection_sample_default_cap_discloses_the_cut(self, db):
-        """`collection_sample` follows the same default-cap rule (#2771): with no
-        `k`, the sample is capped at `COLLECTION_LIST_DEFAULT_LIMIT` rather than
-        drawing from every entry, and the header discloses the real total."""
+    async def test_collection_list_random_order_default_cap_discloses_the_cut(self, db):
+        """`collection_list(order='random')` follows the same default-cap rule
+        (#2771) the retired `collection_sample` tool did: with no `k`, the sample
+        is capped at `COLLECTION_LIST_DEFAULT_LIMIT` rather than drawing from
+        every entry, and the header discloses the real total — naming
+        `collection_list` itself as the follow-up call (#2812: one tool now)."""
         _seed_collection(db, name="trivia", description="x")
         limit = PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT
         total = limit + 5
         self._seed_entries(db, "trivia", total, key="fact", content="fact")
 
-        rendered = await CollectionSampleTool(db).execute(CallLink.new_top(), collection="trivia")
+        rendered = await CollectionListTool(db).execute(
+            CallLink.new_top(), collection="trivia", order="random"
+        )
 
         header = (
             f"Showing {limit} of {total} entries in trivia, random sample. For more, "
-            f"collection_sample(trivia, k=<n>); for an overview, collection_keys(trivia); "
+            f"collection_list(trivia, k=<n>); for an overview, collection_keys(trivia); "
             f"to search, find(...)"
         )
         assert rendered.message.startswith(f"{header}\n")
@@ -2869,6 +2871,8 @@ class TestCollectionMutations:
 
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, db):
+        """One tool, both directions (#2812): `archived=True` retires, `archived=False`
+        restores."""
         _seed_collection(
             db,
             name="likes",
@@ -2879,13 +2883,17 @@ class TestCollectionMutations:
         assert (
             "Archived 'likes'"
             in (
-                await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="likes")
+                await CollectionArchiveTool(db).execute(
+                    CallLink.new_top(), collection="likes", archived=True
+                )
             ).message
         )
         assert (
             "Unarchived 'likes'"
             in (
-                await CollectionUnarchiveTool(db).execute(CallLink.new_top(), collection="likes")
+                await CollectionArchiveTool(db).execute(
+                    CallLink.new_top(), collection="likes", archived=False
+                )
             ).message
         )
 
@@ -3823,7 +3831,6 @@ class TestFactory:
         # Reads
         "collection_list",
         "collection_get",
-        "collection_sample",
         "collection_keys",
         "memory_get",
         "log_read",
@@ -3834,7 +3841,6 @@ class TestFactory:
         # Lifecycle (shape)
         "collection_configure",
         "collection_archive",
-        "collection_unarchive",
         "log_create",
         # Entry mutations (contents)
         "collection_write",
@@ -4162,7 +4168,9 @@ class TestRegistryProvenanceAndLifecycle:
         await self._create(db, "kickstarters", created_by_run_id="run-ks-01")
         message_id = self._spawn(db, "run-ks-01", "watch for new board game kickstarters")
         # Archiving must change status, never reachability by name.
-        await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="kickstarters")
+        await CollectionArchiveTool(db).execute(
+            CallLink.new_top(), collection="kickstarters", archived=True
+        )
         result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="kickstarters")
 
         assert "status: archived" in result.message
@@ -4300,10 +4308,10 @@ class TestFind:
         "1. aurora-watch — active collection: aurora beacon cascade\n"
         "   how to use it: read it with collection_list('aurora-watch'), "
         "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-        "with collection_archive('aurora-watch')\n"
+        "with collection_archive('aurora-watch', archived=True)\n"
         "2. aurora-archive — archived collection: aurora beacon delta\n"
-        "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
-        "entries stay readable with collection_list('aurora-archive')\n"
+        "   how to use it: restore it with collection_archive('aurora-archive', "
+        "archived=False); its entries stay readable with collection_list('aurora-archive')\n"
         "3. aurora-log — active log: aurora echo foxtrot\n"
         "   how to use it: read it with log_read('aurora-log')\n"
         "Ranked by closeness — if one is what you meant, use its addressing above; "
@@ -4316,7 +4324,9 @@ class TestFind:
         an active collection, an archived collection, and a log."""
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
-        await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="aurora-archive")
+        await CollectionArchiveTool(db).execute(
+            CallLink.new_top(), collection="aurora-archive", archived=True
+        )
         await LogCreateTool(db, client).execute(
             CallLink.new_top(),
             log="aurora-log",
@@ -4362,7 +4372,7 @@ class TestFind:
             "1. solo-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('solo-watch'), "
             "reconfigure it with collection_configure(collection='solo-watch', ...), archive it "
-            "with collection_archive('solo-watch')"
+            "with collection_archive('solo-watch', archived=True)"
         )
 
     @pytest.mark.asyncio
@@ -4380,11 +4390,11 @@ class TestFind:
             "1. watch-primary — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('watch-primary'), reconfigure "
             "it with collection_configure(collection='watch-primary', ...), archive it "
-            "with collection_archive('watch-primary')\n"
+            "with collection_archive('watch-primary', archived=True)\n"
             "2. watch-secondary — active collection: aurora beacon delta\n"
             "   how to use it: read it with collection_list('watch-secondary'), reconfigure "
             "it with collection_configure(collection='watch-secondary', ...), archive it "
-            "with collection_archive('watch-secondary')\n"
+            "with collection_archive('watch-secondary', archived=True)\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
         )
@@ -4461,7 +4471,7 @@ class TestFind:
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('aurora-watch'), "
             "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-            "with collection_archive('aurora-watch')\n"
+            "with collection_archive('aurora-watch', archived=True)\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
             "   read it: collection_get(collection='aurora-watch', key='aurora beacon')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
@@ -4542,7 +4552,7 @@ class TestFind:
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('aurora-watch'), "
             "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-            "with collection_archive('aurora-watch')\n"
+            "with collection_archive('aurora-watch', archived=True)\n"
             "\n"
             "From the conversation:\n"
             f"1. user-messages [{user_stamp}]: aurora beacon cascade delta\n"
@@ -4579,7 +4589,7 @@ class TestFind:
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('aurora-watch'), "
             "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-            "with collection_archive('aurora-watch')\n"
+            "with collection_archive('aurora-watch', archived=True)\n"
             "\n"
             "From the conversation:\n"
         )
@@ -4676,7 +4686,9 @@ class TestFind:
             collection="aurora-archive",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
-        await CollectionArchiveTool(db).execute(CallLink.new_top(), collection="aurora-archive")
+        await CollectionArchiveTool(db).execute(
+            CallLink.new_top(), collection="aurora-archive", archived=True
+        )
         result = await FindTool(db, client).execute(
             CallLink.new_top(), query="aurora beacon cascade", memory="aurora-archive"
         )

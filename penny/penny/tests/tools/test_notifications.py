@@ -1,16 +1,17 @@
-"""Tests for the notification mute/unmute tools — the chat-agent surface that
-replaced the retired ``/mute`` + ``/unmute`` commands.
+"""Tests for the notifications tool — the chat-agent surface that replaced the
+retired ``/mute`` + ``/unmute`` commands, then the retired ``notifications_mute``
+/ ``notifications_unmute`` tool pair (#2812).
 
-Two thin tools over the existing ``MuteState`` row (``db.users``): the tool NAME
-carries the direction, so the model never picks a direction argument.  Each
-toggles the primary recipient's mute state, returns an honest mirror-back, and is
+One tool over the existing ``MuteState`` row (``db.users``): the direction is an
+explicit ``on`` bool argument rather than the tool's NAME.  It toggles the
+primary recipient's mute state, returns an honest mirror-back, and is
 idempotent — an already-in-that-state call is a successful ``mutated=False``
-no-op, not an error.  With no user registered, both fail loudly rather than
+no-op, not an error.  With no user registered, it fails loudly rather than
 silently no-op.
 
 The NL-dispatch contract (a naive phrasing reaches the right tool, and a casual
-mention does NOT) lives in ``tests/eval/test_notifications.py`` against the live
-model; this pins the deterministic mechanism for ``make check``.
+mention does NOT) lives in ``tests/eval/chat/idle/test_notifications.py`` against
+the live model; this pins the deterministic mechanism for ``make check``.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import pytest
 
 from penny.database import Database
 from penny.llm.call_link import CallLink
-from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
+from penny.tools.notifications import NotificationsTool
 
 pytestmark = pytest.mark.bare_db
 
@@ -39,10 +40,10 @@ def _register_user(db: Database) -> None:
 
 @pytest.mark.asyncio
 async def test_mute_sets_state_and_mirrors_back(db):
-    """A first mute writes the MuteState row and reports it as a real change."""
+    """``on=false`` writes the MuteState row and reports it as a real change."""
     _register_user(db)
 
-    result = await NotificationsMuteTool(db).execute(CallLink.new_top())
+    result = await NotificationsTool(db).execute(CallLink.new_top(), on=False)
 
     assert result.success is True
     assert result.mutated is True
@@ -50,7 +51,9 @@ async def test_mute_sets_state_and_mirrors_back(db):
     assert db.users.is_muted(_RECIPIENT) is True
     # The result twin of to_action_str: a real mute narrates the action first-person
     # (the seam adds the tag), so the chat recap can fold it into Penny's reply (#1481).
-    assert NotificationsMuteTool.to_result_narration({}, result) == "You paused notifications:"
+    assert (
+        NotificationsTool.to_result_narration({"on": False}, result) == "You paused notifications:"
+    )
 
 
 @pytest.mark.asyncio
@@ -59,7 +62,7 @@ async def test_mute_when_already_muted_is_a_noop(db):
     _register_user(db)
     db.users.set_muted(_RECIPIENT)
 
-    result = await NotificationsMuteTool(db).execute(CallLink.new_top())
+    result = await NotificationsTool(db).execute(CallLink.new_top(), on=False)
 
     assert result.success is True
     assert result.mutated is False
@@ -67,53 +70,53 @@ async def test_mute_when_already_muted_is_a_noop(db):
     assert db.users.is_muted(_RECIPIENT) is True
     # No-op branch: narrate the honest "already paused" so the recap can't claim a change.
     assert (
-        NotificationsMuteTool.to_result_narration({}, result)
+        NotificationsTool.to_result_narration({"on": False}, result)
         == "Notifications were already paused:"
     )
 
 
 @pytest.mark.asyncio
 async def test_unmute_clears_state_and_mirrors_back(db):
-    """An unmute on a muted user deletes the MuteState row and reports the change."""
+    """``on=true`` on a muted user deletes the MuteState row and reports the change."""
     _register_user(db)
     db.users.set_muted(_RECIPIENT)
 
-    result = await NotificationsUnmuteTool(db).execute(CallLink.new_top())
+    result = await NotificationsTool(db).execute(CallLink.new_top(), on=True)
 
     assert result.success is True
     assert result.mutated is True
     assert "back on" in result.message.lower()
     assert db.users.is_muted(_RECIPIENT) is False
     assert (
-        NotificationsUnmuteTool.to_result_narration({}, result)
+        NotificationsTool.to_result_narration({"on": True}, result)
         == "You turned notifications back on:"
     )
 
 
 @pytest.mark.asyncio
 async def test_unmute_when_not_muted_is_a_noop(db):
-    """Unmuting a user who isn't muted is a successful no-op (mutated=False)."""
+    """``on=true`` on a user who isn't muted is a successful no-op (mutated=False)."""
     _register_user(db)
 
-    result = await NotificationsUnmuteTool(db).execute(CallLink.new_top())
+    result = await NotificationsTool(db).execute(CallLink.new_top(), on=True)
 
     assert result.success is True
     assert result.mutated is False
     assert "already on" in result.message.lower()
     assert db.users.is_muted(_RECIPIENT) is False
     assert (
-        NotificationsUnmuteTool.to_result_narration({}, result) == "Notifications were already on:"
+        NotificationsTool.to_result_narration({"on": True}, result)
+        == "Notifications were already on:"
     )
 
 
 @pytest.mark.asyncio
-async def test_tools_fail_loudly_with_no_registered_user(db):
-    """With no primary user there is nothing to toggle — both tools fail visibly
-    (no silent no-op), naming the config condition rather than pretending success.
-
-    (No ``save_info`` call → no primary sender.)"""
-    mute = await NotificationsMuteTool(db).execute(CallLink.new_top())
-    unmute = await NotificationsUnmuteTool(db).execute(CallLink.new_top())
+async def test_tool_fails_loudly_with_no_registered_user(db):
+    """With no primary user there is nothing to toggle — the tool fails visibly
+    (no silent no-op) in both directions, naming the config condition rather than
+    pretending success."""
+    mute = await NotificationsTool(db).execute(CallLink.new_top(), on=False)
+    unmute = await NotificationsTool(db).execute(CallLink.new_top(), on=True)
 
     for result in (mute, unmute):
         assert result.success is False
@@ -121,10 +124,10 @@ async def test_tools_fail_loudly_with_no_registered_user(db):
         assert "no user" in result.message.lower()
     # Failure branch narrates honestly ("didn't work"), never a false success.
     assert (
-        NotificationsMuteTool.to_result_narration({}, mute)
+        NotificationsTool.to_result_narration({"on": False}, mute)
         == "You tried to pause notifications but it didn't work:"
     )
     assert (
-        NotificationsUnmuteTool.to_result_narration({}, unmute)
+        NotificationsTool.to_result_narration({"on": True}, unmute)
         == "You tried to turn notifications back on but it didn't work:"
     )

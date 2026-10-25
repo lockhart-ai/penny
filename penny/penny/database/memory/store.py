@@ -581,7 +581,9 @@ class MemoryStore:
             grouped.setdefault(run_id, []).append(RunWrite(memory_name=memory_name, key=key))
         return grouped
 
-    def entries_written_by_run(self, run_id: str) -> list[MemoryEntry]:
+    def entries_written_by_run(
+        self, run_id: str, *, exclude_system_logs: bool
+    ) -> list[MemoryEntry]:
         """Every entry whose CURRENT value this run wrote, oldest first (#1911) — what
         a finished cycle actually produced, read off the ledger stamp rather than
         inferred from which tools it called.
@@ -594,13 +596,27 @@ class MemoryStore:
         similarity anchor is built from it.  Reading the stamp rather than a
         ``collection_write`` call's arguments is what keeps it tool-agnostic: a routine
         writes through whatever tools it was taught with, including a plugin's (#1783).
+
+        ``exclude_system_logs`` is required, no default (#2803): every caller states its
+        own choice, so the type checker flags one that doesn't.  ``True`` drops rows in
+        ``PennyConstants.SYSTEM_LOGS`` — the memories Python writes as a side effect of
+        the run rather than one of the job's own write tools (``browse-results``, today;
+        any future system log the same way).  A job's report wants only what the job
+        itself kept, never a page the browse tool logged in passing; the self-state
+        writes clause and the chat turn's own "what landed" record (``False``) want
+        every entry.  The mark is the memory's own kind — which logs ``SYSTEM_LOGS``
+        already names as framework-managed and the ``log_append`` gate already refuses
+        model writes to — never a fresh name list grown for this call.
         """
         with self._session() as session:
+            query = select(MemoryEntry).where(MemoryEntry.last_written_by_run_id == run_id)
+            if exclude_system_logs:
+                query = query.where(
+                    col(MemoryEntry.memory_name).notin_(list(PennyConstants.SYSTEM_LOGS))
+                )
             return list(
                 session.exec(
-                    select(MemoryEntry)
-                    .where(MemoryEntry.last_written_by_run_id == run_id)
-                    .order_by(col(MemoryEntry.created_at).asc(), col(MemoryEntry.id).asc())
+                    query.order_by(col(MemoryEntry.created_at).asc(), col(MemoryEntry.id).asc())
                 ).all()
             )
 

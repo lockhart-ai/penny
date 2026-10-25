@@ -23,6 +23,8 @@ import urllib.parse
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+import tldextract
+
 from penny.constants import PageReading, PennyConstants, ProgressEmoji
 from penny.database.memory import LogEntryInput
 from penny.llm.call_link import CallLink
@@ -67,10 +69,42 @@ _URL_PATTERN = re.compile(r"^https?://")
 # handle stands for, never searched for literally.
 _HANDLE_QUERY_RE = re.compile(r"^\[(\d+)\]$")
 
+# A bare host, with no scheme and no spaces, optionally carrying a path
+# (#2804): ``example.com``, ``www.example.co.uk``, ``example.com/news/world``.
+# Group 1 is the host; group 2, if present, is the path.
+_BARE_HOST_RE = re.compile(r"^([^\s/]+)(/\S*)?$")
+
+# The real Public Suffix List, offline (#2804): ``suffix_list_urls=()`` makes this
+# extractor consult ONLY its bundled snapshot, never the network — so a bare host's
+# last label is checked against the actual PSL, not a hand-maintained guess at "the
+# common ones". "Alphabetic and 2+ characters" alone isn't enough to tell a domain
+# from a filename extension (``notes.md`` IS a registered domain — ``.md`` is
+# Moldova's ccTLD — but ``readme.docx``/``script.min.js`` are not, since neither
+# ``docx`` nor ``js`` is a real suffix); the PSL is what actually knows the difference.
+_PUBLIC_SUFFIXES = tldextract.TLDExtract(suffix_list_urls=())
+
+
+def _is_bare_domain(query: str) -> bool:
+    """Whether ``query`` is a bare host, optionally with a path, with no
+    scheme and no spaces (#2804) — opened as ``https://<query>`` rather than
+    searched.  A host is a domain only when it has BOTH a registered name and a
+    real public suffix (``_PUBLIC_SUFFIXES``) — rejecting a dotted non-domain
+    token (``e.g.``, ``v1.2``, ``script.min.js``) that merely looks alphabetic
+    and long enough."""
+    match = _BARE_HOST_RE.match(query)
+    if match is None:
+        return False
+    host = match.group(1)
+    extracted = _PUBLIC_SUFFIXES.extract_str(host)
+    return bool(extracted.domain and extracted.suffix)
+
 
 def _is_read_query(query: str) -> bool:
-    """Whether a query names a page to read: a URL, or a link citation."""
-    return bool(_URL_PATTERN.match(query) or _HANDLE_QUERY_RE.match(query))
+    """Whether a query names a page to read: a URL, a link citation, or a
+    bare domain (#2804)."""
+    return bool(
+        _URL_PATTERN.match(query) or _HANDLE_QUERY_RE.match(query) or _is_bare_domain(query)
+    )
 
 
 def _arg_items(arguments: dict) -> list[dict]:
@@ -669,16 +703,19 @@ class BrowseTool(Tool):
         """Split the requested items into what dispatches and what dangles.
 
         A bare-citation query (``"[12]"``) dispatches as the URL its handle
-        stands for; anything else dispatches as itself.  A citation the run's
-        table does not hold returns in the dangling list, to be refused with the
-        honest note naming the links that DO exist — searched for literally, a
-        ``"[12]"`` would be a garbage query about the number 12."""
+        stands for; a bare domain (#2804, e.g. ``"example.com"``) dispatches as
+        ``https://example.com``; anything else dispatches as itself.  A
+        citation the run's table does not hold returns in the dangling list, to
+        be refused with the honest note naming the links that DO exist —
+        searched for literally, a ``"[12]"`` would be a garbage query about the
+        number 12."""
         resolved: list[tuple[BrowseItem, str]] = []
         dangling: list[BrowseItem] = []
         for item in items:
             match = _HANDLE_QUERY_RE.match(item.query)
             if match is None:
-                resolved.append((item, item.query))
+                dispatch = f"https://{item.query}" if _is_bare_domain(item.query) else item.query
+                resolved.append((item, dispatch))
                 continue
             url = self._handles.url_for(int(match.group(1)))
             if url is None:

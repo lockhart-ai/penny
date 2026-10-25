@@ -788,6 +788,38 @@ class TestCollectionWrites:
         db.memories.create_collection("b", "dst")
         assert db.memories.memory("a").move("missing", "b", author="chat") == "not_found"
 
+    def test_entries_written_by_run_excludes_system_logs_when_asked(self, db):
+        """A run that browsed and wrote one entry stamps BOTH rows with its run id —
+        the page browse logged to ``browse-results`` and the entry the job itself kept.
+        ``exclude_system_logs=True`` (#2803) drops the former, the memory the
+        ``log_append`` gate already refuses a model write against, never a name list
+        grown for this call; the default stays unfiltered for the other two readers
+        (the self-state writes clause and the chat turn's own "what landed" record)."""
+        db.memories.create_collection("harbour-watch", "the pier lanterns")
+        db.memories.memory("harbour-watch").write_rule_decided(
+            [EntryInput(key="lanterns", content="pier 4 went dark overnight")],
+            author="collector",
+            run_id="run-browsed",
+        )
+        db.memories.create_log(
+            PennyConstants.MEMORY_BROWSE_RESULTS_LOG, "pages the browse tool read"
+        )
+        db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG).append(
+            [LogEntryInput(content="## browse: https://example.com/a\npage")],
+            author="collector",
+            run_id="run-browsed",
+        )
+
+        unfiltered = db.memories.entries_written_by_run("run-browsed", exclude_system_logs=False)
+        assert {e.memory_name for e in unfiltered} == {
+            "harbour-watch",
+            PennyConstants.MEMORY_BROWSE_RESULTS_LOG,
+        }
+
+        filtered = db.memories.entries_written_by_run("run-browsed", exclude_system_logs=True)
+        assert [e.memory_name for e in filtered] == ["harbour-watch"]
+        assert filtered[0].key == "lanterns"
+
 
 class TestDegenerateContentRejection:
     """Write-time degenerate content guard — empty/punctuation, bare URLs, bail-out phrases."""

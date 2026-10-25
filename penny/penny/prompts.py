@@ -96,16 +96,7 @@ class Prompt:
         'language — that is the whole specification ("the opening hours" or '
         '"anything the page says about refunds" are complete asks). A search is '
         "picked and read inside the same call, so you get back what the pages say, "
-        "with a handle for every page you were given. There "
-        "are no CSS selectors, XPaths, or HTML parsing anywhere in your tools; "
-        "never ask the user for page structure, snippets, or selectors — "
-        "reading pages is your job.\n\n"
-    )
-    # Reading is where a chat turn ends: the page has been read, so the reply is next.
-    REPLY_AFTER_READING = (
-        "After reading pages, you MUST respond with what you found. Do not make "
-        "additional tool calls to re-fetch or supplement pages you already read. "
-        "If a page had limited content, report what was there.\n\n"
+        "with a handle for every page you were given.\n\n"
     )
     CONVERSATION_TAIL_CLOSE = (
         "Let the answer come from the pages you read — every fact, name, and "
@@ -139,7 +130,7 @@ class Prompt:
 
     # The whole chat prompt (#2455 naive baseline): there is no conversation machine
     # and no second state, so this one composition is every chat turn's prompt.
-    CONVERSATION_TAIL = CONVERSATION_TAIL_OPEN + REPLY_AFTER_READING + CONVERSATION_TAIL_CLOSE
+    CONVERSATION_TAIL = CONVERSATION_TAIL_OPEN + CONVERSATION_TAIL_CLOSE
     CONVERSATION_PROMPT = CONVERSATION_HEAD + IDLE_INSTRUCTION + CONVERSATION_TAIL
 
     # Search result instruction — the first line of a search section (#2647): a
@@ -395,12 +386,13 @@ class Prompt:
 
     COLLECTOR_DONE_INSTRUCTION = (
         "A cycle does not message the user itself: what you write down here, plus "
-        "the close with notify=true, is how they find out — Penny tells them "
-        "afterwards, from what the cycle wrote. Finish with done(notify=…). Say "
-        "true when this cycle found or stored something the user would want to "
-        "hear now — compare what the collection holds and what you last told them "
-        "with what you found. Say false when nothing changed since what you last "
-        "told them: a quiet cycle is a normal outcome, not a failure."
+        "the close with notify set to true, is how they find out — Penny tells "
+        "them afterwards, from what the cycle wrote. End the cycle by calling the "
+        "done tool, with notify set to true or false. Set it to true when this "
+        "cycle found or stored something the user would want to hear now — "
+        "compare what the collection holds and what you last told them with what "
+        "you found. Set it to false when nothing changed since what you last told "
+        "them: a quiet cycle is a normal outcome, not a failure."
     )
 
     # The one tools-off draw a run falls back to when it has nothing more to do but
