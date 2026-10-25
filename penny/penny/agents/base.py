@@ -1836,14 +1836,14 @@ class Agent:
                     progress_scope,
                     step=step,
                     max_steps=max_steps,
-                    tools=tuple((name, dict(args)) for _, name, args, _ in pending),
+                    tools=tuple((name, dict(args)) for _, name, args in pending),
                 ),
             )
 
         results = await asyncio.gather(
             *[
-                self._execute_single_tool(tool_call_id, name, args, reasoning, call_link)
-                for tool_call_id, name, args, reasoning in pending
+                self._execute_single_tool(tool_call_id, name, args, call_link)
+                for tool_call_id, name, args in pending
             ]
         )
 
@@ -1872,7 +1872,7 @@ class Agent:
         called_tools: set[tuple[str, ...]],
         prior_records: list[ToolCallRecord],
         messages: list[LlmMessage],
-    ) -> list[tuple[str, str, dict, str | None]]:
+    ) -> list[tuple[str, str, dict]]:
         """Filter out repeat tool calls, returning the pending ones to execute.
 
         A byte-identical repeat of a call still in the seen-calls cache is rejected in
@@ -1888,13 +1888,15 @@ class Agent:
         appears rather than being blocked (#1673).  Mutates ``called_tools`` and
         ``messages``.
         """
-        pending: list[tuple[str, str, dict, str | None]] = []
+        pending: list[tuple[str, str, dict]] = []
         for tool_call in response.message.tool_calls or []:
             tool_call_id = tool_call.id
             tool_name = tool_call.function.name
             arguments = tool_call.function.arguments
-            # Pop reasoning before dedup (same args + different reasoning = repeat)
-            reasoning = arguments.pop("reasoning", None)
+            # No tool declares a ``reasoning`` field any more (#2813), but a model may
+            # still send a stray one out of habit — popped before dedup/validation so
+            # it never affects the call key and ``extra="forbid"`` never rejects it.
+            arguments.pop("reasoning", None)
             call_key = self._make_call_key(tool_name, arguments)
 
             if not self.allow_repeat_tools and call_key in called_tools:
@@ -1905,7 +1907,7 @@ class Agent:
                 continue
 
             called_tools.add(call_key)
-            pending.append((tool_call_id, tool_name, arguments, reasoning))
+            pending.append((tool_call_id, tool_name, arguments))
         return pending
 
     @staticmethod
@@ -1979,13 +1981,13 @@ class Agent:
     async def _notify_tool_start(
         self,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
-        pending: list[tuple[str, str, dict, str | None]],
+        pending: list[tuple[str, str, dict]],
     ) -> None:
         """Fire on_tool_start once with the full pending batch so UI can show combined status."""
         if not on_tool_start or not pending:
             return
         try:
-            await on_tool_start([(name, dict(args)) for _, name, args, _ in pending])
+            await on_tool_start([(name, dict(args)) for _, name, args in pending])
         except RuntimeError, ValueError:
             logger.debug("on_tool_start callback failed")
 
@@ -2001,7 +2003,7 @@ class Agent:
 
     def _collect_tool_results(
         self,
-        pending: list[tuple[str, str, dict, str | None]],
+        pending: list[tuple[str, str, dict]],
         results: list[tuple[ToolResult, ToolCallRecord, list[str]]],
         messages: list[LlmMessage],
         records: list[ToolCallRecord],
@@ -2015,7 +2017,7 @@ class Agent:
         ``ToolResult`` (not just its string body) are threaded through so the
         narration can name the action and branch on success/failure.
         """
-        for (tool_call_id, tool_name, arguments, _), (result, record, urls) in zip(
+        for (tool_call_id, tool_name, arguments), (result, record, urls) in zip(
             pending, results, strict=True
         ):
             records.append(record)
@@ -2038,7 +2040,6 @@ class Agent:
         tool_call_id: str,
         tool_name: str,
         arguments: dict,
-        reasoning: str | None,
         call_link: CallLink,
     ) -> tuple[ToolResult, ToolCallRecord, list[str]]:
         """Execute one tool call. Returns (result, record, source_urls).
@@ -2064,10 +2065,8 @@ class Agent:
         tool the same way it anchors any draw this tool call goes on to make.
         """
         logger.info("Executing tool: %s", tool_name)
-        if reasoning:
-            logger.debug("Tool reasoning: %s", reasoning[:200])
 
-        record = ToolCallRecord(tool=tool_name, arguments=arguments, reasoning=reasoning)
+        record = ToolCallRecord(tool=tool_name, arguments=arguments)
         tool_call = ToolCall(tool=tool_name, arguments=arguments, id=tool_call_id)
         dispatched_link = call_link.for_tool_call(tool_call_id)
         status = Tool.format_status(tool_name, arguments)

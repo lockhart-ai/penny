@@ -89,8 +89,9 @@ class ChatAgent(Agent):
     # prose is rejected.  Three shapes, most specific first, because the condition the
     # discarded draw is logged under must name what it actually was:
     #  - CALL_AS_TEXT: a tool call that reached the text channel — the full serialized
-    #    call (``{"name": …, "arguments": …}``) or real args carrying the framework's
-    #    ``reasoning`` field.  It would be delivered to the user as raw machinery.
+    #    call (``{"name": …, "arguments": …}``), or real args naming a registered tool
+    #    as a string value / textual call syntax (#2787).  It would be delivered to
+    #    the user as raw machinery.
     #  - CALL_FRAGMENT_REPLY: its mangled remainder — a bare argument fragment or the
     #    empty ``{}`` tail of a forced call attempt (#1570/#1732).
     #  - EMPTY: a draw that says nothing at all (#1937).  It was the last invalid-output
@@ -165,9 +166,10 @@ class ChatAgent(Agent):
         """The notes for chat's three model-choice shapes (#2790).  CALL_AS_TEXT
         names the tool the draft wrote out as text — read off the LIVE registry, the
         same source ``_invalid_draw_condition`` checks against, so a plugin tool is
-        covered with no change here — falling back to the unnamed wording for the
-        one nameless shape (bare serialized arguments carrying only ``reasoning``).
-        EMPTY has nothing worth echoing back as a draft (``_append_retry_note``'s
+        covered with no change here — falling back to the unnamed wording on the rare
+        chance ``call_as_text_tool_name`` can't resolve one (see its own docstring:
+        every reachable CALL_AS_TEXT shape names a tool since #2813).  EMPTY has
+        nothing worth echoing back as a draft (``_append_retry_note``'s
         ``include_draft=False`` handles that at the call site)."""
         if condition == ConditionKey.CALL_AS_TEXT:
             registered_tools = frozenset(tool.name for tool in self._tool_registry.get_all())

@@ -1065,9 +1065,15 @@ def render_tool_call(name: str, args: object) -> str:
         return f"browse({queries!r})"
     # A dict (incl. the empty dict of an argless call, e.g. ``done()``, #1569)
     # renders its fields; a non-dict / malformed args string shows its repr so the
-    # trace still names what the model tried.
+    # trace still names what the model tried.  ``reasoning`` is filtered here, not
+    # at the source: a row logged before #2813 dropped the framework-injected
+    # per-call rationale still carries the raw key verbatim in ``promptlog.response``
+    # (that capture is never rewritten), and a model may still send a stray one for
+    # a while — this run trace is model-facing and no longer shows it either way.
     if isinstance(args, dict):
-        rendered = ", ".join(f"{key}={value!r}" for key, value in args.items())
+        rendered = ", ".join(
+            f"{key}={value!r}" for key, value in args.items() if key != "reasoning"
+        )
         return f"{name}({rendered})"
     return f"{name}({args!r})"
 

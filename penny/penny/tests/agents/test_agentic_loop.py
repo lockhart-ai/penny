@@ -150,11 +150,15 @@ class _ChatRerollAgent(ChatAgent):
 
 
 class TestReasoningStripped:
-    """Test that reasoning is popped from tool arguments and stored on the record."""
+    """#2813 dropped the per-tool ``reasoning`` argument the framework used to
+    inject — a model may still send a stray one out of habit, and the loop
+    tolerates it (pops it before arg validation) without depending on its value:
+    it is never stored or threaded anywhere, just discarded."""
 
     @pytest.mark.asyncio
-    async def test_reasoning_captured_on_tool_call_record(self, test_db, mock_llm):
-        """Reasoning from tool call args is stored on ToolCallRecord."""
+    async def test_stray_reasoning_popped_and_discarded(self, test_db, mock_llm):
+        """A tool call that still carries ``reasoning`` runs normally, and the key
+        never reaches the tool's arguments or any stored record."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
         def handler(request, count):
@@ -173,7 +177,6 @@ class TestReasoningStripped:
         )
         assert response.answer == "here's the weather!"
         assert len(response.tool_calls) == 1
-        assert response.tool_calls[0].reasoning == "User asked about weather"
         # reasoning should NOT be in the arguments dict
         assert "reasoning" not in response.tool_calls[0].arguments
         # This run ended on a text reply, so every tool result already rode into a
@@ -184,8 +187,9 @@ class TestReasoningStripped:
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_reasoning_none_when_not_provided(self, test_db, mock_llm):
-        """ToolCallRecord.reasoning is None when model doesn't provide it."""
+    async def test_call_without_reasoning_runs_the_same(self, test_db, mock_llm):
+        """A tool call with no ``reasoning`` key at all — the ordinary case now
+        that the framework no longer injects one — runs exactly the same."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
         def handler(request, count):
@@ -197,7 +201,7 @@ class TestReasoningStripped:
 
         response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert len(response.tool_calls) == 1
-        assert response.tool_calls[0].reasoning is None
+        assert response.tool_calls[0].arguments == {"query": "weather"}
 
         await agent.close()
 
@@ -1722,13 +1726,9 @@ class TestAfterStepHook:
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_tool_call_response(
-                    request, "search", {"query": "first", "reasoning": "step 1 reason"}
-                )
+                return mock_llm._make_tool_call_response(request, "search", {"query": "first"})
             if count == 2:
-                return mock_llm._make_tool_call_response(
-                    request, "search", {"query": "second", "reasoning": "step 2 reason"}
-                )
+                return mock_llm._make_tool_call_response(request, "search", {"query": "second"})
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
@@ -1740,9 +1740,9 @@ class TestAfterStepHook:
         # Two steps with tool calls → two after_step calls
         assert len(captured_step_records) == 2
         assert len(captured_step_records[0]) == 1
-        assert captured_step_records[0][0].reasoning == "step 1 reason"
+        assert captured_step_records[0][0].arguments["query"] == "first"
         assert len(captured_step_records[1]) == 1
-        assert captured_step_records[1][0].reasoning == "step 2 reason"
+        assert captured_step_records[1][0].arguments["query"] == "second"
 
         await agent.close()
 
@@ -3417,8 +3417,11 @@ class TestChatCallShapedTextReroll:
         """Real search, then a browse call emitted as JSON *text* → discarded, and the
         redraw is shown the draft plus a note (#2790) — not blind, since this is the
         model's own choice, not a transport artifact.  The model's prose answer
-        stands. This draft is the bare-args shape (``reasoning``, no ``name``): no
-        tool is named in it, so the note is the UNNAMED wording."""
+        stands. This draft is a bare-args fragment with no envelope and no tool
+        named in it: before #2813 the framework's ``reasoning`` key alone
+        identified this as a call-as-text bail; now that signal is gone, it's
+        caught instead as CALL_FRAGMENT_REPLY (any ``{"…`` that isn't the full
+        envelope) — still discarded and rerolled, just under that note."""
         agent, db, max_steps = _make_agent(
             test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
         )
@@ -3448,7 +3451,7 @@ class TestChatCallShapedTextReroll:
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.CALL_AS_TEXT_RETRY_NOTE_UNNAMED
+        assert note_turn["content"] == Prompt.CALL_FRAGMENT_RETRY_NOTE
 
         await agent.close()
 
@@ -3513,13 +3516,16 @@ class TestChatCallShapedTextReroll:
         agent, _db, _max_steps = _make_agent(test_db, mock_llm)
         agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
 
-        assert is_call_as_text_bail('{"queries": ["x"], "reasoning": "y"}')
         assert is_call_as_text_bail('{"name": "browse", "arguments": {"queries": ["x"]}}')
         # A lone JSON object with no call markers, an envelope with a non-string name
         # or non-dict arguments, non-JSON prose, and prose that merely mentions JSON
-        # are all NOT call-as-text bails (a genuine reply must pass through).
+        # are all NOT call-as-text bails (a genuine reply must pass through).  The
+        # bare-args-plus-reasoning shape used to bail here too (keyed on the
+        # framework-injected ``reasoning`` field); #2813 dropped that field and the
+        # signal with it — it's still caught below as CALL_FRAGMENT_REPLY instead.
         for prose in (
-            '{"note": "just data"}',  # no reasoning / not an envelope
+            '{"queries": ["x"], "reasoning": "y"}',  # bare args, no envelope (#2813)
+            '{"note": "just data"}',  # not an envelope
             '{"name": 5, "arguments": {}}',  # non-string name
             '{"name": "browse", "arguments": "oops"}',  # non-dict arguments
             'The config looks like {"queries": [...]} roughly.',  # not a lone object

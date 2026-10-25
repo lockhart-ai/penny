@@ -87,11 +87,11 @@ class ToolArgs(BaseModel):
     default of silently dropping it and running the tool with default behaviour: a
     silent no-op parameter the model has no signal to correct.
 
-    The framework-injected ``reasoning`` param (``Tool.to_ollama_tool``) is popped
-    from the call arguments *before* validation (``Agent._dedup_tool_calls``), so
-    ``forbid`` never sees it — real tool calls are unaffected.  (``browse``
-    additionally declares ``reasoning`` as a genuine field, since it advertises the
-    param in its own schema.)
+    No tool declares a ``reasoning`` field any more (#2813 dropped the
+    framework-injected per-call rationale), but a model may still send a stray
+    one out of habit: ``Agent._dedup_tool_calls`` pops it from the call
+    arguments *before* validation, so ``forbid`` never sees it — real tool
+    calls are unaffected.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -249,7 +249,6 @@ class BrowseArgs(ToolArgs):
     """
 
     items: ItemList
-    reasoning: str | None = None
 
 
 class SendMessageArgs(ToolArgs):

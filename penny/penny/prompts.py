@@ -30,16 +30,13 @@ class Prompt:
     # help the model work out WHICH case it was in, and that question is now
     # answered in Python before the turn begins.
     #
-    # HEAD and TAIL are the invariant physics — how to think out loud, memory
-    # before browsing, the browse signature and no-selectors rule, the recap
-    # discipline, sources.  True under every state, so they never move.
+    # HEAD and TAIL are the invariant physics — memory before browsing, the browse
+    # signature and no-selectors rule, the recap discipline, sources.  True under
+    # every state, so they never move.
 
     CONVERSATION_HEAD = (
         "It's fine to greet them back when they greet you; otherwise just pick "
         "up the thread.\n\n"
-        "Every tool call has a `reasoning` field — use it to think out loud. "
-        "Explain what you're looking for, what you already know, "
-        "and what you'll do with the result.\n\n"
         "Search memory before browsing. Your memory tools "
         "(`collection_list(<collection>)`, `find(query=<text>)`, "
         "`log_read(<log>)`, etc.) read everything stored — the 'Your memory' list "

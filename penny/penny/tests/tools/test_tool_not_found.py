@@ -580,9 +580,10 @@ class TestMissingRequiredParameters:
 
     @pytest.mark.asyncio
     async def test_injected_reasoning_arg_survives_forbid_extra(self, test_db, mock_llm):
-        """The framework injects a ``reasoning`` param into every tool schema; it is
-        popped before arg validation, so ``extra="forbid"`` never rejects it — a real
-        tool call carrying reasoning still executes instead of erroring."""
+        """No tool's schema declares a ``reasoning`` param any more (#2813), but a
+        stray one some model may still send out of habit is popped before arg
+        validation, so ``extra="forbid"`` never rejects it — a real tool call
+        carrying one still executes instead of erroring."""
         db = Database(test_db)
         db.create_tables()
 
@@ -620,7 +621,7 @@ class TestMissingRequiredParameters:
         def handler(request: dict, count: int) -> dict:
             messages_sent.append(request["messages"])
             if count == 1:
-                # A well-formed call that also carries the injected reasoning arg.
+                # A well-formed call that also carries a stray reasoning arg.
                 return mock_llm._make_tool_call_response(
                     request,
                     "stub_done",

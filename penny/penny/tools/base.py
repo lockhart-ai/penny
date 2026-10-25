@@ -379,26 +379,15 @@ class Tool(ABC):
     def to_ollama_tool(self) -> dict[str, Any]:
         """Convert to Ollama tool calling format.
 
-        Injects a ``reasoning`` property so the model can explain why it is
-        making this tool call — a structured per-call rationale the run
-        record captures for display and safe re-exposure in logs the model
-        later reads (raw thinking is never fed back).  The field is stripped
-        before the tool executes (see ``Agent._dedup_tool_calls``).  One
-        carve-out: a tool that declares ``reasoning`` in its own
-        ``parameters`` keeps its hand-written description (browse) —
-        injection never overwrites a tool's own declaration.
+        No longer injects a ``reasoning`` property (#2813): gemma thinks
+        natively and its thinking is passed back between steps, so a separate
+        per-call rationale field cost tokens (schema + the model filling it)
+        for no reasoning the loop ever used.  A model may still send a stray
+        ``reasoning`` argument for a while out of habit — ``Agent.
+        _dedup_tool_calls`` tolerates it (pops it before arg validation so
+        ``extra="forbid"`` never rejects it) without depending on its value.
         """
         params = dict(self.parameters)
-        props = dict(params.get("properties", {}))
-        if "reasoning" not in props:
-            props["reasoning"] = {
-                "type": "string",
-                "description": (
-                    "Explain what you're looking for and what you'll do with the result. "
-                    "This is your inner monologue — think out loud."
-                ),
-            }
-        params["properties"] = props
         return {
             "type": "function",
             "function": {

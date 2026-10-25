@@ -1,21 +1,14 @@
-"""Tests for the reasoning field injected into tool call schemas.
+"""Tests for ``to_ollama_tool``'s tool-call schema, and (unrelated — sharing the
+file) the per-tool result-narration overrides.
 
-``to_ollama_tool`` adds a ``reasoning`` string property to every tool's schema
-— a structured per-call rationale the run record captures for display and safe
-re-exposure in logs the model later reads (raw thinking is never fed back).
-One carve-out, pinned here: a tool that declares ``reasoning`` in its OWN
-``parameters`` (browse) keeps its hand-written description — injection never
-overwrites a declaration.
-
-The one observed misuse — a terminal ``done`` called with ONLY ``reasoning``,
-displacing the required ``success``/``summary`` — is taught, not restructured:
-``done`` keeps the injected param, its description marks the two fields
-REQUIRED and says ``reasoning`` alone is never valid, and the shared
-invalid-args envelope already names both missing required fields with their
-type + description hints for that exact shape (asserted below).
+#2813 dropped the ``reasoning`` string property ``to_ollama_tool`` used to inject
+into every tool's schema (a structured per-call rationale gemma's native thinking
+made redundant) — browse's own hand-written ``reasoning`` declaration went with
+it.  What's pinned here now: a plain tool's schema carries only its own
+declared properties, unchanged, and the tool's own ``parameters`` dict is never
+mutated by the conversion.
 """
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from penny.database import Database
@@ -42,64 +35,26 @@ from penny.tools.memory_tools import (
 from penny.tools.models import ToolResult
 
 
-class _DummyTool(Tool):
-    """Minimal tool for testing reasoning injection."""
+class TestToolCallSchema:
+    """``to_ollama_tool()`` carries a tool's own schema through unchanged."""
 
-    name = "dummy"
-    description = "A test tool"
-    parameters: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "test param"},
-        },
-        "required": ["query"],
-    }
-
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        return ToolResult(message="ok")
-
-
-class TestToolReasoningSchema:
-    """Test that to_ollama_tool() injects a reasoning property."""
-
-    def test_reasoning_property_injected(self):
-        """Ollama tool schema includes a reasoning property."""
-        tool = _DummyTool()
-        schema = tool.to_ollama_tool()
-        props = schema["function"]["parameters"]["properties"]
-        assert "reasoning" in props
-        assert props["reasoning"]["type"] == "string"
-
-    def test_original_properties_preserved(self):
-        """Original tool properties are still present alongside reasoning."""
-        tool = _DummyTool()
-        schema = tool.to_ollama_tool()
-        props = schema["function"]["parameters"]["properties"]
-        assert "query" in props
-        assert props["query"]["description"] == "test param"
-
-    def test_original_parameters_not_mutated(self):
-        """Injecting reasoning does not mutate the tool's own parameters dict."""
-        tool = _DummyTool()
-        tool.to_ollama_tool()
-        # The tool's own parameters should NOT have reasoning
-        assert "reasoning" not in tool.parameters["properties"]
-
-    def test_tool_declared_reasoning_not_overwritten(self, db: Database):
-        """A tool that declares reasoning in its OWN parameters (browse) keeps
-        its hand-written description — injection never overwrites it."""
+    def test_schema_carries_only_declared_properties(self, db: Database):
+        """No framework property is injected — browse's schema has exactly its
+        own declared ``items`` (#2813 dropped the old ``reasoning`` injection and
+        browse's own matching declaration)."""
         tool = BrowseTool(max_calls=3, db=db, embedding_client=MagicMock(), handles=HandleTable())
-        own_description = tool.parameters["properties"]["reasoning"]["description"]
         schema = tool.to_ollama_tool()
         props = schema["function"]["parameters"]["properties"]
-        assert props["reasoning"]["description"] == own_description
-        assert "inner monologue" not in props["reasoning"]["description"]
+        assert set(props) == {"items"}
 
-
-# Note (#1569): the old "done with ONLY reasoning is an invalid-args displacement
-# failure" contract is gone — ``done()`` is argless, so once the loop strips the
-# framework-injected ``reasoning`` the remaining call is the valid argless sentinel.
-# Argless behaviour + extra-arg rejection is covered in ``tests/tools/test_memory_tools.py``.
+    def test_conversion_does_not_mutate_the_tools_own_parameters(self, db: Database):
+        """Converting to the Ollama shape never mutates the tool's own ``parameters``
+        dict — a dynamic ``parameters`` property (browse) must return the same
+        schema on a second read."""
+        tool = BrowseTool(max_calls=3, db=db, embedding_client=MagicMock(), handles=HandleTable())
+        before = set(tool.parameters["properties"])
+        tool.to_ollama_tool()
+        assert set(tool.parameters["properties"]) == before
 
 
 class TestBrowseResultNarration:

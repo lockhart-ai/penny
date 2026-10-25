@@ -61,7 +61,6 @@ class ChooseArgs(ToolArgs):
     """
 
     options: list[str]
-    reasoning: str | None = None
 
     @field_validator("options")
     @classmethod

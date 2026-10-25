@@ -246,13 +246,18 @@ def is_call_as_text_bail(content: str) -> bool:
     through the tool channel — gpt-oss's Harmony call-as-text fallback.
 
     Unlike :func:`is_done_json_bail` this keys on the *call shape*, not one named
-    tool's envelope, because chat has many tools and no ``done()``.  Two convergent
-    forms:
+    tool's envelope, because chat has many tools and no ``done()``: the full
+    envelope, ``{"name": "browse", "arguments": {…}}``.
 
-      - full envelope: ``{"name": "browse", "arguments": {…}}``
-      - bare args:     ``{"queries": [...], "reasoning": "…"}`` — identified by the
-        framework-injected ``reasoning`` field (``Tool.to_ollama_tool`` adds it to
-        every tool's schema, so a real call's serialized args carry it)
+    (Before #2813 a bare-args shape — ``{"queries": [...], "reasoning": "…"}`` —
+    was also caught here, keyed on the framework-injected ``reasoning`` field every
+    tool's schema used to carry.  That field is gone, and nothing replaces the
+    signal here: a bare-args leak with no envelope and no registered tool name
+    inside it (see :func:`is_embedded_call_as_text`, which keeps the name signal)
+    no longer trips this detector.  It still falls through to
+    :func:`is_call_fragment_reply`, which flags any ``{"…`` that isn't the full
+    envelope — so the draw is still discarded and rerolled, just under a
+    different, still-accurate condition.)
 
     The whole content must be a lone JSON object — a normal prose reply never is, so
     a genuine answer can't trip this.  That discriminator is what lets chat treat a
@@ -264,7 +269,7 @@ def is_call_as_text_bail(content: str) -> bool:
         return False
     if set(parsed) == _CALL_ENVELOPE_KEYS:
         return isinstance(parsed.get("name"), str) and isinstance(parsed.get("arguments"), dict)
-    return "reasoning" in parsed
+    return False
 
 
 def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) -> bool:
@@ -272,8 +277,8 @@ def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) ->
     reply (#2787) — the shape :func:`is_call_as_text_bail` misses because it only
     judges the WHOLE reply: a line of prose followed by the call object, e.g. the
     observed prod leak, one line of "On it!" then
-    ``{"action": "generate_image", "action_input": "…", "reasoning": "…"}``, sent to
-    the user verbatim with the image never generated.
+    ``{"action": "generate_image", "action_input": "…"}``, sent to the user
+    verbatim with the image never generated.
 
     Keyed to the agent's LIVE tool registry, never a fixed tool list (#1783's
     lesson — a plugin tool is covered without a change).  Two shapes:
@@ -282,13 +287,17 @@ def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) ->
         trying ``json.JSONDecoder.raw_decode`` from there — that names one of
         ``registered_tools`` as a STRING VALUE (an exact match, never a substring:
         a value that merely *contains* a tool's name, or a sentence that mentions
-        one, must not trip this) or carries the framework-injected ``reasoning``
-        key (:func:`is_call_as_text_bail`'s own bare-args discriminator); or
+        one, must not trip this); or
       - the textual call syntax a draft sometimes falls back to instead of JSON —
         ``registered_tool_name(`` followed by an argument name and ``=`` (e.g.
         ``generate_image(description="…")``), word-boundary anchored on the tool
         name so it never fires inside a longer word (``rebrowse(`` is not
         ``browse(``).
+
+    (Before #2813 a JSON object carrying only the framework-injected ``reasoning``
+    key, with no tool name anywhere in it, also tripped this.  That field is gone
+    and nothing replaces the signal — see :func:`is_call_as_text_bail` for what
+    still catches a bare-args leak with no name in it.)
     """
     return _has_embedded_call_object(content, registered_tools) or _has_textual_call_syntax(
         content, registered_tools
@@ -304,9 +313,11 @@ def call_as_text_tool_name(content: str, registered_tools: Collection[str]) -> s
     envelope's ``"name"`` field, the textual call syntax's matched name, or a
     registered tool named as a string value in an embedded object — tried in that
     order, the whole-envelope shape first since it is the one unambiguous "name".
-    ``None`` when the draft is call-shaped but nameless (bare serialized arguments
-    carrying only the framework's ``reasoning`` key, with no tool named anywhere in
-    them) or when nothing call-shaped is found at all."""
+    ``None`` when nothing call-shaped is found at all.  (Every shape that DOES
+    carry a name now also HAS one, per #2813's removal of the nameless
+    reasoning-only signal — see :func:`is_call_as_text_bail` and
+    :func:`is_embedded_call_as_text` — so ``None`` is no longer reachable through
+    a genuinely call-shaped draft; callers still handle it as a fallback.)"""
     whole = _lone_json_object(content)
     if whole is not None and isinstance(whole.get("name"), str):
         return whole["name"]
@@ -349,7 +360,7 @@ def _embedded_call_object_tool_name(content: str, registered_tools: Collection[s
 
 def _has_embedded_call_object(content: str, registered_tools: Collection[str]) -> bool:
     """A JSON object anywhere in ``content`` that names a registered tool as a
-    string value, or carries ``reasoning`` — see :func:`is_embedded_call_as_text`."""
+    string value — see :func:`is_embedded_call_as_text`."""
     decoder = json.JSONDecoder()
     for index, character in enumerate(content):
         if character != "{":
@@ -365,10 +376,14 @@ def _has_embedded_call_object(content: str, registered_tools: Collection[str]) -
 
 def _is_call_shaped_object(parsed: dict, registered_tools: Collection[str]) -> bool:
     """A parsed JSON object names a registered tool as a string VALUE (an exact
-    match — never a substring hit), or carries the ``reasoning`` key every real
-    call's serialized arguments carry."""
-    if "reasoning" in parsed:
-        return True
+    match — never a substring hit).
+
+    Before #2813 this also matched a bare ``reasoning`` key, every real call's
+    serialized arguments having carried one.  That field is gone and nothing
+    replaces the signal: a bare-args object with no registered tool name
+    anywhere in it is no longer call-shaped by this predicate (though
+    :func:`is_call_fragment_reply` still catches most such leaks — see
+    :func:`is_call_as_text_bail`)."""
     return any(isinstance(value, str) and value in registered_tools for value in parsed.values())
 
 

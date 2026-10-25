@@ -450,10 +450,6 @@ class BrowseTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "reasoning": {
-                    "type": "string",
-                    "description": "Think out loud about what you're looking up and why.",
-                },
                 "items": {
                     "type": "array",
                     "description": (

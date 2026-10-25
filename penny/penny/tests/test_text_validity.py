@@ -120,17 +120,13 @@ def test_degenerate_reason_rejects_wordful_poison():
 def test_is_embedded_call_as_text_catches_a_call_object_after_prose():
     """The prod leak (#2787): one line of prose, then the call serialized as JSON
     text — a shape the whole-reply-only ``is_call_as_text_bail`` can't see.  Caught
-    either by naming a registered tool as a string value, or by carrying the
-    framework-injected ``reasoning`` key alone."""
+    by naming a registered tool as a string value.  (Before #2813 a bare-args
+    object carrying only the framework-injected ``reasoning`` key, with no tool
+    name at all, was also caught here — that field and the signal it carried are
+    both gone now.)"""
     assert is_embedded_call_as_text(
         'On it!\n\n{"action": "generate_image", "action_input": '
-        '"{\\"description\\": \\"a lighthouse in a storm\\"}", '
-        '"reasoning": "the user asked for a drawing"}',
-        REGISTERED_TOOLS,
-    )
-    # reasoning alone is enough, even with no tool name in the object at all.
-    assert is_embedded_call_as_text(
-        'Sure thing — {"queries": ["lighthouse storms"], "reasoning": "look it up"}',
+        '"{\\"description\\": \\"a lighthouse in a storm\\"}"}',
         REGISTERED_TOOLS,
     )
 
