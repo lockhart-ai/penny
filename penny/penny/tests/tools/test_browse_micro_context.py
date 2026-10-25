@@ -1304,6 +1304,119 @@ async def test_failed_extraction_hands_back_the_pages_links(tmp_path):
     assert _CATALOGUE_BODY not in result.message
 
 
+# ── A bare domain is opened as an address, not searched (#2804) ───────────────
+#
+# Seen in prod: a job naming its sources by domain ("bbc.com top news stories")
+# got search results about each domain instead of the domain's own page — the
+# query had no scheme, so it took the search path like any other plain text.
+
+
+@pytest.mark.asyncio
+async def test_bare_domain_item_opens_the_page_directly(tmp_path):
+    """A bare host with no scheme (``example.com``) reads ``https://example.com``
+    directly, rather than being searched for literally."""
+    db = _make_db(tmp_path)
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _extract_tool(db, model)
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query="example.com", looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}https://example.com\n"
+        f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    )
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_bare_domain_with_path_opens_the_page_directly(tmp_path):
+    """A bare domain's path travels with it: ``example.com/news/world`` reads
+    ``https://example.com/news/world``."""
+    db = _make_db(tmp_path)
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _extract_tool(db, model)
+
+    result = await tool.execute(
+        CallLink.new_top(),
+        items=[BrowseItem(query="example.com/news/world", looking_for=_INSTRUCTION)],
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}https://example.com/news/world\n"
+        f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    )
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_www_bare_domain_opens_the_page_directly(tmp_path):
+    """The ``www.`` + compound-suffix form: ``www.example.co.uk`` reads
+    ``https://www.example.co.uk`` — the check only needs the LAST label
+    (``uk``) to be a real public suffix, not the whole ``co.uk``."""
+    db = _make_db(tmp_path)
+    model = _responds(_EXTRACTED_VALUE)
+    tool = _extract_tool(db, model)
+
+    result = await tool.execute(
+        CallLink.new_top(),
+        items=[BrowseItem(query="www.example.co.uk", looking_for=_INSTRUCTION)],
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}https://www.example.co.uk\n"
+        f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    )
+    assert result.success is True
+
+
+_NO_RESULTS_PAGE = "Title: No results\nNo relevant results were found for this query."
+
+
+async def _assert_stays_a_search(tmp_path, query: str) -> None:
+    """Run ``query`` as the sole item and assert it took the SEARCH path (the
+    configured search URL, under the search header) rather than being read as
+    an address."""
+    db = _make_db(tmp_path)
+    model = MockLlmClient()
+    search_url = f"https://duckduckgo.com/?q={urllib.parse.quote(query)}"
+    tool = _multi_extract_tool(db, model, _provider_by_url({search_url: _NO_RESULTS_PAGE}))
+
+    result = await tool.execute(
+        CallLink.new_top(), items=[BrowseItem(query=query, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{query}\n"
+        f"Looking for: {_INSTRUCTION}.\n{_NO_RESULTS_PAGE}"
+    )
+    assert model.requests == []  # never reached extraction — nothing to read
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_one_word_non_domain_query_stays_a_search(tmp_path):
+    """A one-word query with no dot has nothing to parse as a host, so it
+    stays a search, same as before #2804."""
+    await _assert_stays_a_search(tmp_path, "weather")
+
+
+@pytest.mark.asyncio
+async def test_sentence_containing_a_domain_stays_a_search(tmp_path):
+    """A domain embedded in a sentence still has spaces, so the whole query
+    stays a search rather than being parsed for the domain inside it."""
+    await _assert_stays_a_search(tmp_path, "check example.com for today's forecast")
+
+
+@pytest.mark.asyncio
+async def test_filename_like_token_stays_a_search(tmp_path):
+    """``file.txt`` has a dot and an alphabetic, 2+ character last label too —
+    the same shape a real domain has — but ``txt`` isn't a public suffix, so
+    it stays a search rather than being opened as an address."""
+    await _assert_stays_a_search(tmp_path, "file.txt")
+
+
 # ── Concurrent page batch (#1941) ─────────────────────────────────────────────
 
 
