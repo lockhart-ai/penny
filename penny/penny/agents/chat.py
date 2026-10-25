@@ -288,7 +288,9 @@ class ChatAgent(Agent):
         meant.  A run that never tried gets no record: there is no ledger fact to report,
         and deciding it SHOULD have tried would mean reading the ask's words.  Nothing in
         the path names a tool, so a plugin's verb is covered by declaring the mark."""
-        landed = render_writes_landed(self.db.memories.entries_written_by_run(run_id))
+        landed = render_writes_landed(
+            self.db.memories.entries_written_by_run(run_id, exclude_system_logs=False)
+        )
         record = landed or render_nothing_landed(self._store_attempts(records))
         if record is None:
             return None

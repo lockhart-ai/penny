@@ -172,11 +172,20 @@ def build_job_report(
     db: Database, collection: str, run_id: str, *, trigger: CycleTrigger
 ) -> JobReport | None:
     """Assemble the report for one queued row: the collection row's own words, and the
-    FULL current value of every entry that run wrote.
+    FULL current value of every entry that run wrote THROUGH ITS OWN WRITE TOOLS.
 
     ``trigger`` is the queued row's own ``origin`` — a required parameter, carried
     never inferred: it is what the report says about why the cycle ran, and what the
     drainer's delivery lane already read off the row.
+
+    ``entries_written_by_run`` is read with ``exclude_system_logs=True`` (#2803): a run
+    that browsed stamped a ``browse-results`` entry with the same run id a kept entry
+    carries, but that page is Python's own record of what the run READ, not something
+    the job itself decided to keep — rendering it alongside a kept entry told the
+    delivery turn its message "covers every one" when it hadn't even read most of them.
+    The exclusion is the memory's own kind (``PennyConstants.SYSTEM_LOGS`` — the same
+    mark the ``log_append`` gate already refuses a model write against), never a name
+    this call invents.
 
     ``None`` when the collection has vanished between the enqueue and the compose —
     logged, and the caller records the failure on the row rather than composing from
@@ -191,7 +200,7 @@ def build_job_report(
             run_id,
         )
         return None
-    written = db.memories.entries_written_by_run(run_id)
+    written = db.memories.entries_written_by_run(run_id, exclude_system_logs=True)
     return JobReport(
         collection=collection,
         description=row.description,

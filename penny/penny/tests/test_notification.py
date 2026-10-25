@@ -24,6 +24,8 @@ import pytest
 from sqlmodel import Session
 
 from penny.constants import CycleEnd, CycleTrigger, PennyConstants
+from penny.database.memory import LogEntryInput
+from penny.database.memory.objects import EntryInput
 from penny.database.models import SendQueueItem
 from penny.notification import (
     NOTIFICATION_NOTES,
@@ -35,6 +37,7 @@ from penny.notification import (
     render_job_report,
     withheld_reason,
 )
+from penny.tests.conftest import require_memory
 from penny.tools.link_handles import CITATION_LINE, HandleTable
 
 pytestmark = pytest.mark.bare_db
@@ -154,9 +157,6 @@ def test_a_built_report_carries_the_full_written_entries(db):
     composer's document condensed an entry to a 500-character preview and the message
     named only what the preview held (#2656's failure); this is the fix's other half —
     the chat agent is shown everything."""
-    from penny.database.memory.objects import EntryInput
-    from penny.tests.conftest import require_memory
-
     db.memories.create_collection("harbour-watch", "the pier lanterns on the harbour front")
     require_memory(db, "harbour-watch").write_rule_decided(
         [EntryInput(key="lanterns", content="pier 4 went dark overnight")],
@@ -175,6 +175,37 @@ def test_a_built_report_carries_the_full_written_entries(db):
     assert "- into `harbour-watch`, under `lanterns`: pier 4 went dark overnight" in (
         render_job_report(built)
     )
+
+
+def test_a_built_report_lists_only_what_the_job_wrote_not_a_page_it_browsed(db):
+    """A run that browsed stamps the page it read into ``browse-results`` with the
+    SAME run id as the entry it kept (#2803) — that log is Python's own record of
+    what the run read, not something the job's own write tools kept, so the report
+    lists only the latter.  Before the fix, the browsed page rode into the report
+    alongside the kept entry, and the lead line's "tells them about every one" claim
+    went false for a reader who never saw most of a long browse."""
+    db.memories.create_collection("harbour-watch", "the pier lanterns on the harbour front")
+    require_memory(db, "harbour-watch").write_rule_decided(
+        [EntryInput(key="lanterns", content="pier 4 went dark overnight")],
+        author="producer",
+        run_id="cycle-run-10",
+    )
+    db.memories.create_log(PennyConstants.MEMORY_BROWSE_RESULTS_LOG, "pages the browse tool read")
+    db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG).append(
+        [LogEntryInput(content="## browse: https://example.com/harbour\nthe whole page")],
+        author="producer",
+        run_id="cycle-run-10",
+    )
+
+    built = build_job_report(db, "harbour-watch", "cycle-run-10", trigger=CycleTrigger.CADENCE)
+    assert built is not None
+    assert built.entries == (
+        WrittenEntry(memory="harbour-watch", key="lanterns", content="pier 4 went dark overnight"),
+    )
+    rendered = render_job_report(built)
+    assert "harbour-watch" in rendered
+    assert "the whole page" not in rendered
+    assert PennyConstants.MEMORY_BROWSE_RESULTS_LOG not in rendered
 
 
 def test_a_report_for_a_vanished_collection_is_a_named_failure(db):
