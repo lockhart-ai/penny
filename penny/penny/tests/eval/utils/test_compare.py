@@ -20,12 +20,16 @@ from penny.tests.eval.utils.artifacts import (
     RunManifest,
     build_manifest,
 )
+from penny.tests.eval.utils.cohort import SampleCost
 from penny.tests.eval.utils.compare import (
     HIGHLIGHT_POINTS,
     ProviderMismatchError,
     build_case_comparisons,
+    build_case_costs,
+    cost_totals_row,
     render_comparison,
     render_comparison_table,
+    render_cost_table,
     totals_row,
 )
 from penny.tests.eval.utils.pr_comments import COMPARE_MARKER
@@ -33,8 +37,12 @@ from penny.tests.eval.utils.pr_comments import COMPARE_MARKER
 _TIMINGS = CaseTimings(calls=1, duration_ms=1000, input_tokens=100, output_tokens=10)
 
 
-def _artifact(case_id: str, passed: int, total: int) -> CaseArtifact:
-    """One case's artifact with a single scored check — the only field ``compare.py`` reads."""
+def _artifact(
+    case_id: str, passed: int, total: int, *, timings: CaseTimings = _TIMINGS, samples: int = 1
+) -> CaseArtifact:
+    """One case's artifact with a single scored check — the only fields ``compare.py`` reads
+    are ``checks``, ``timings``, and ``samples``, so those three are the only ones a caller
+    can vary."""
     return CaseArtifact(
         run_id="run-x",
         case_id=case_id,
@@ -42,12 +50,12 @@ def _artifact(case_id: str, passed: int, total: int) -> CaseArtifact:
         mean=0.0,
         all_pass_rate=0.0,
         pathology_excluded_mean=0.0,
-        samples=1,
+        samples=samples,
         sample_scores=[0.0],
         sample_causes=[None],
         cause_counts=CauseCounts(),
         checks=[CheckOutcome(label="check", passed=passed, total=total, scored=True)],
-        timings=_TIMINGS,
+        timings=timings,
     )
 
 
@@ -163,6 +171,100 @@ def test_render_comparison_table_whole_render() -> None:
     )
 
 
+# ── build_case_costs: per-sample division, matching/missing cases (#2825) ────
+_COST_TIMINGS = CaseTimings(calls=2, duration_ms=1200, input_tokens=120, output_tokens=15)
+
+
+def test_build_case_costs_divides_the_case_totals_by_its_own_sample_count() -> None:
+    """Two samples' totals read back the SAME per-sample reading a single sample with those
+    doubled totals would — the division ``compare.py`` reuses from ``cohort.per_sample_cost``,
+    never re-derived."""
+    doubled = CaseTimings(calls=4, duration_ms=2400, input_tokens=240, output_tokens=30)
+    costs = build_case_costs(
+        branch=[_artifact("a", 1, 1, timings=doubled, samples=2)],
+        main=[_artifact("a", 1, 1, timings=_COST_TIMINGS, samples=1)],
+    )
+    assert len(costs) == 1
+    row = costs[0]
+    assert row.branch is not None
+    assert row.main is not None
+    assert row.branch.input_tokens == pytest.approx(row.main.input_tokens)
+    assert row.branch.output_tokens == pytest.approx(row.main.output_tokens)
+    assert row.branch.seconds == pytest.approx(row.main.seconds)
+
+
+def test_a_case_missing_from_either_side_has_no_cost_reading() -> None:
+    branch_only = build_case_costs(branch=[_artifact("only-branch", 1, 1)], main=[])
+    assert branch_only[0].main is None
+
+    main_only = build_case_costs(branch=[], main=[_artifact("only-main", 1, 1)])
+    assert main_only[0].branch is None
+
+
+def test_cost_row_order_matches_build_case_comparisons() -> None:
+    """The cost table rides directly under the checks table, so the two share one order."""
+    branch = [_artifact("a", 1, 1), _artifact("b", 1, 1)]
+    main = [_artifact("b", 1, 1), _artifact("c", 1, 1)]
+    assert [row.case_id for row in build_case_costs(branch, main)] == [
+        row.case_id for row in build_case_comparisons(branch, main)
+    ]
+
+
+# ── cost_totals_row: only cases present on both sides ─────────────────────────
+def test_cost_totals_sum_only_cases_present_on_both_sides() -> None:
+    """Unlike the checks totals, a case missing from either run contributes nothing to the
+    cost totals — a per-sample average has no sound zero to stand in for a missing side."""
+    costs = build_case_costs(
+        branch=[_artifact("a", 1, 1), _artifact("only-branch", 1, 1)],
+        main=[_artifact("a", 1, 1), _artifact("only-main", 1, 1)],
+    )
+    totals = cost_totals_row(costs)
+    expected = SampleCost(
+        samples=1,
+        calls=1.0,
+        seconds=1.0,
+        input_tokens=100.0,
+        output_tokens=10.0,
+        reasoning_tokens=0.0,
+    )
+    assert totals.branch == expected
+    assert totals.main == expected
+
+
+def test_cost_totals_is_absent_when_no_case_is_on_both_sides() -> None:
+    totals = cost_totals_row(build_case_costs(branch=[_artifact("only-branch", 1, 1)], main=[]))
+    assert totals.branch is None
+    assert totals.main is None
+
+
+# ── render_cost_table (whole-render) ──────────────────────────────────────────
+def test_render_cost_table_whole_render() -> None:
+    costs = build_case_costs(
+        branch=[_artifact("a", 1, 1, timings=_COST_TIMINGS), _artifact("c", 1, 1)],
+        main=[_artifact("a", 1, 1), _artifact("d", 1, 1)],
+    )
+    assert render_cost_table(costs) == (
+        "## Cost\n"
+        "\n"
+        "| case | input tokens / sample | output tokens / sample | wall time / sample |\n"
+        "|---|---|---|---|\n"
+        "| `a` | 120 → 100 (+20%) | 15 → 10 (+50%) | 1.2s → 1.0s (+20%) |\n"
+        "| `c` | — | — | — |\n"
+        "| `d` | — | — | — |\n"
+        "| **total** | 120 → 100 (+20%) | 15 → 10 (+50%) | 1.2s → 1.0s (+20%) |"
+    )
+
+
+def test_render_cost_table_dashes_the_percentage_when_mains_reading_is_zero() -> None:
+    """A change FROM zero has no percentage — the value still renders, the ``%`` does not."""
+    zero_duration = CaseTimings(calls=1, duration_ms=0, input_tokens=100, output_tokens=10)
+    costs = build_case_costs(
+        branch=[_artifact("a", 1, 1, timings=_COST_TIMINGS)],
+        main=[_artifact("a", 1, 1, timings=zero_duration)],
+    )
+    assert "1.2s → 0.0s (—)" in render_cost_table(costs)
+
+
 # ── render_comparison: providers, identity, the merge-base warning ──────────
 def test_render_comparison_refuses_across_providers() -> None:
     branch_manifest = _manifest(commit="a" * 40, provider="Groq")
@@ -192,7 +294,14 @@ def test_render_comparison_whole_render_with_merge_base_ok() -> None:
         "| case | branch | main | moved |\n"
         "|---|---|---|---|\n"
         "| `a` | 9/10 · 90% | 10/10 · 100% | -10 pts ⚠ |\n"
-        "| **total** | 9/10 · 90% | 10/10 · 100% | -10 pts ⚠ |"
+        "| **total** | 9/10 · 90% | 10/10 · 100% | -10 pts ⚠ |\n"
+        "\n"
+        "## Cost\n"
+        "\n"
+        "| case | input tokens / sample | output tokens / sample | wall time / sample |\n"
+        "|---|---|---|---|\n"
+        "| `a` | 100 → 100 (+0%) | 10 → 10 (+0%) | 1.0s → 1.0s (+0%) |\n"
+        "| **total** | 100 → 100 (+0%) | 10 → 10 (+0%) | 1.0s → 1.0s (+0%) |"
     )
     assert "merge base" not in document
 
