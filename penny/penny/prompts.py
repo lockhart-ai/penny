@@ -395,12 +395,13 @@ class Prompt:
 
     COLLECTOR_DONE_INSTRUCTION = (
         "A cycle does not message the user itself: what you write down here, plus "
-        "the close with notify=true, is how they find out — Penny tells them "
-        "afterwards, from what the cycle wrote. Finish with done(notify=…). Say "
-        "true when this cycle found or stored something the user would want to "
-        "hear now — compare what the collection holds and what you last told them "
-        "with what you found. Say false when nothing changed since what you last "
-        "told them: a quiet cycle is a normal outcome, not a failure."
+        "the close with notify set to true, is how they find out — Penny tells "
+        "them afterwards, from what the cycle wrote. End the cycle by calling the "
+        "done tool, with notify set to true or false. Set it to true when this "
+        "cycle found or stored something the user would want to hear now — "
+        "compare what the collection holds and what you last told them with what "
+        "you found. Set it to false when nothing changed since what you last told "
+        "them: a quiet cycle is a normal outcome, not a failure."
     )
 
     # The one tools-off draw a run falls back to when it has nothing more to do but
