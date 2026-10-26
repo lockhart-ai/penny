@@ -244,6 +244,25 @@ class _ChatAttemptResult(NamedTuple):
     response: LlmResponse | None
 
 
+class _RawTemplateParseError(Exception):
+    """Internal-only (#2833): carries the raw completion alongside the
+    ``LlmToolParseError`` it wraps, from the point in ``_attempt_chat_request``
+    where both are in scope, up to ``chat()``'s own logging — the one place
+    with the ids/snapshot a ``promptlog`` row needs.
+
+    Never escapes ``chat()``: it is caught there, the original
+    ``LlmToolParseError`` (unchanged — same message, same ``fault``) is what
+    the caller actually sees raised. Not a public error class, and not a new
+    fault — purely plumbing so the prompt-log row can keep the raw completion
+    text instead of discarding it.
+    """
+
+    def __init__(self, error: LlmToolParseError, raw: _RawCompletion) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.raw = raw
+
+
 class LlmClient:
     """Client for LLM inference via OpenAI-compatible APIs.
 
@@ -414,6 +433,28 @@ class LlmClient:
                 CallOutcome.CANCELLED,
             )
             raise
+        except _RawTemplateParseError as failure:
+            # The raw completion was already fetched before parsing failed —
+            # kept as this call's logged response instead of the usual "no
+            # response" `{}` (#2833), so what the model actually wrote survives
+            # for diagnosis. The error the caller sees is the original
+            # `LlmToolParseError`, unchanged — this wrapper never escapes here.
+            self._log_failed_call(
+                messages_snapshot,
+                tools,
+                start,
+                agent_name,
+                prompt_type,
+                resolved_run_id,
+                run_target,
+                parent_run_id,
+                parent_tool_call_id,
+                transport,
+                CallOutcome.RAISED,
+                error=failure.error,
+                raw=failure.raw,
+            )
+            raise failure.error from failure.__cause__
         except LlmError as error:
             outcome = (
                 CallOutcome.TIMED_OUT if isinstance(error, LlmTimeoutError) else CallOutcome.RAISED
@@ -511,14 +552,21 @@ class LlmClient:
         outcome: CallOutcome,
         *,
         error: Exception | None = None,
+        raw: _RawCompletion | None = None,
     ) -> None:
         """Log this call's ONE ``promptlog`` row for a cancelled, timed-out, or
-        raised call (#2355 part A) — no response to persist, so ``raw``/``thinking``
-        go through as ``None``.
+        raised call (#2355 part A) — no parsed response to persist, so
+        ``thinking`` goes through as ``None``.
+
+        ``raw`` is ``None`` for every outcome except a raw-template tool-call
+        parse failure (#2833), whose caller passes the completion already
+        fetched before parsing failed — ``_log_call`` dumps it unreshaped
+        (no parsed ``LlmResponse`` to reshape it around), so the row keeps the
+        raw completion text instead of the usual ``{}``.
         """
         self._log_call(
             messages_snapshot,
-            None,
+            raw,
             None,
             tools,
             None,
@@ -683,7 +731,17 @@ class LlmClient:
             )
             if not raw.choices:
                 return _ChatAttemptResult(raw=raw, response=None)
-            response = self._parse_raw_template_response(raw)
+            try:
+                response = self._parse_raw_template_response(raw)
+            except LlmToolParseError as error:
+                # The agent loop's own ``except LlmToolParseError`` already logs
+                # this DEBUG line (``penny/agents/base.py``) — nothing to add
+                # here. ``error``'s message carries ~200 characters of context
+                # around the failure point (#2833, ``raw_template._context``),
+                # so that line names the offending text with no change needed
+                # on its side. Wrapped so the raw completion, already fetched,
+                # reaches ``chat()``'s own logging instead of being discarded.
+                raise _RawTemplateParseError(error, raw) from error
         else:
             kwargs = self._build_chat_kwargs(
                 translated_messages, tools, format, token_budget, thinking_enabled
@@ -1303,15 +1361,22 @@ class LlmClient:
         Returns the row's id (#2702) — read only by the success path, which
         stamps it on the returned response so a rejection site can mark it.
 
-        ``raw`` is the dumped completion on :attr:`CallOutcome.COMPLETED`, ``None``
-        on every other outcome — ``log_prompt`` writes the literal ``"{}"`` for a
-        call with no response, which every existing reader already treats exactly
-        as it treats a falsy ``response`` (no change needed on their side).  On the
-        raw-template transport the dump is RESHAPED to the chat endpoint's own
-        ``choices[].message`` shape (#2829, ``_raw_template_log_shape``) — every
-        existing reader of ``promptlog.response`` (the self-state header, the data
-        browser, the eval harness's own tool-call read) assumes that shape, which
-        the raw completions wire shape (``choices[].text``) does not carry.
+        ``raw`` is the dumped completion on :attr:`CallOutcome.COMPLETED`, and also
+        on a raised raw-template tool-call parse failure (#2833, via
+        ``_log_failed_call``'s own ``raw`` — the completion was already fetched
+        before parsing it failed), ``None`` on every other non-completed outcome
+        — ``log_prompt`` writes the literal ``"{}"`` for a call with genuinely no
+        response, which every existing reader already treats exactly as it
+        treats a falsy ``response`` (no change needed on their side).  On the
+        raw-template transport, a successfully PARSED call's dump is RESHAPED to
+        the chat endpoint's own ``choices[].message`` shape (#2829,
+        ``_raw_template_log_shape``) — every existing reader of
+        ``promptlog.response`` (the self-state header, the data browser, the eval
+        harness's own tool-call read) assumes that shape, which the raw
+        completions wire shape (``choices[].text``) does not carry; an unparsed
+        (``response=None``) dump is left AS ITS RAW SHAPE instead — there is no
+        parsed ``LlmResponse`` to reshape it around, and the raw ``choices[].text``
+        is exactly the text this is for: keeping what the model actually wrote.
 
         ``error.fault`` (an ``LlmFault`` — #2526) is persisted alongside the error's own
         class and message: every ``LlmError`` already carries this classification (set

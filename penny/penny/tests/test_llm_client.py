@@ -1617,10 +1617,19 @@ class TestRawTemplateTransport:
         self, monkeypatch, db: Database
     ) -> None:
         """A tool call that opens but does not parse is the same non-retried bucket
-        a malformed PROVIDER-parsed tool call falls into on the chat path (#2829)."""
+        a malformed PROVIDER-parsed tool call falls into on the chat path (#2829).
+
+        #2833: the completion was already fetched before parsing it failed, so
+        the row keeps that raw text as its own response instead of the usual
+        no-response ``{}`` — what the model actually wrote survives for
+        diagnosis. The error reaching the caller is still exactly
+        ``LlmToolParseError`` with its usual ``TOOL_PARSE`` fault; only what
+        gets LOGGED changed.
+        """
+        malformed_text = "<|tool_call>call:foo{bad"
 
         async def raw_create(**kwargs):
-            return _text_completion("<|tool_call>call:foo{bad")
+            return _text_completion(malformed_text)
 
         client = LlmClient(
             api_url="http://localhost:11434",
@@ -1631,17 +1640,26 @@ class TestRawTemplateTransport:
         )
         monkeypatch.setattr(client.client.completions, "create", raw_create)
 
-        with pytest.raises(LlmToolParseError):
+        with pytest.raises(LlmToolParseError) as excinfo:
             await client.chat(
                 [LlmMessage(role="user", content="hi")], call_link=CallLink.top("run-malformed")
             )
         await client.close()
 
+        assert excinfo.value.fault == LlmFault.TOOL_PARSE
+        # The error names ~200 characters of context around the failure point
+        # (#2833) — here the whole malformed text, since it's short.
+        assert malformed_text in str(excinfo.value)
+
         with db.get_session() as session:
             row = session.exec(select(PromptLog)).one()
         assert row.call_outcome == "raised"
         assert row.transport == PromptTransport.RAW_TEMPLATE.value
-        assert row.response == "{}"
+        assert row.call_error_class == "LlmToolParseError"
+        # The raw completion text — not the usual no-response "{}" — is what
+        # survives in the logged row (#2833): what the model actually wrote.
+        logged_choice = json.loads(row.response)["choices"][0]
+        assert logged_choice["text"] == malformed_text
 
     @pytest.mark.asyncio
     async def test_the_faithfulness_check_carries_the_provider_pin_and_names_who_answered(

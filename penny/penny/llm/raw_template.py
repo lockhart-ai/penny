@@ -113,9 +113,21 @@ _NULL_LITERAL = "None"
 # repeat across every turn's first call and collide.
 _RAW_CALL_ID_PREFIX = "raw_call_"
 
+# Half-width of the context window every ``LlmToolParseError`` message embeds
+# around the exact position parsing broke (#2833) — ~200 characters total, enough
+# to read what the model actually wrote there (what came just before the break,
+# not only what follows it), for the DEBUG log line client.py reads straight off
+# the raised error's own message.
+_CONTEXT_RADIUS = 100
+
 
 def _new_call_id() -> str:
     return f"{_RAW_CALL_ID_PREFIX}{uuid.uuid4().hex}"
+
+
+def _context(text: str, pos: int) -> str:
+    """~200 characters of ``text`` centred on ``pos`` — the failure point."""
+    return text[max(0, pos - _CONTEXT_RADIUS) : pos + _CONTEXT_RADIUS]
 
 
 # The thought channel's two equivalent spellings: the raw marker text gemma's
@@ -261,11 +273,13 @@ def _read_one_tool_call(text: str, start: int) -> tuple[int, LlmToolCall]:
     """
     match = _TOOL_CALL_HEAD.match(text, start)
     if not match:
-        raise LlmToolParseError(f"malformed tool call opening: {text[start : start + 80]!r}")
+        raise LlmToolParseError(f"malformed tool call opening: {_context(text, start)!r}")
     name = match.group("name")
     arguments, pos = _parse_object_body(text, match.end())
     if text[pos : pos + len(_TOOL_CALL_CLOSE)] != _TOOL_CALL_CLOSE:
-        raise LlmToolParseError(f"tool call to {name!r} is missing its closing marker")
+        raise LlmToolParseError(
+            f"tool call to {name!r} is missing its closing marker: {_context(text, pos)!r}"
+        )
     call = LlmToolCall(
         id=_new_call_id(), function=LlmToolCallFunction(name=name, arguments=arguments)
     )
@@ -308,7 +322,9 @@ def _parse_string(text: str, pos: int) -> tuple[str, int]:
     start = pos + len(_STRING_OPEN)
     end = text.find(_STRING_OPEN, start)
     if end == -1:
-        raise LlmToolParseError("unterminated string in tool call arguments")
+        raise LlmToolParseError(
+            f"unterminated string in tool call arguments: {_context(text, start)!r}"
+        )
     return text[start:end], end + len(_STRING_OPEN)
 
 
@@ -322,13 +338,13 @@ def _parse_object_body(text: str, pos: int) -> tuple[dict[str, Any], int]:
     while True:
         key_match = _KEY_PATTERN.match(text, pos)
         if not key_match:
-            raise LlmToolParseError(
-                f"malformed tool call argument key at: {text[pos : pos + 40]!r}"
-            )
+            raise LlmToolParseError(f"malformed tool call argument key at: {_context(text, pos)!r}")
         key, pos = key_match.group(0), key_match.end()
         pos = _skip_ws(text, pos)
         if not text.startswith(":", pos):
-            raise LlmToolParseError(f"expected ':' after key {key!r} in tool call arguments")
+            raise LlmToolParseError(
+                f"expected ':' after key {key!r} in tool call arguments: {_context(text, pos)!r}"
+            )
         pos = _skip_ws(text, pos + 1)
         value, pos = _parse_value(text, pos)
         result[key] = value
@@ -338,7 +354,9 @@ def _parse_object_body(text: str, pos: int) -> tuple[dict[str, Any], int]:
             continue
         if text.startswith("}", pos):
             return result, pos + 1
-        raise LlmToolParseError("malformed tool call arguments: expected ',' or '}'")
+        raise LlmToolParseError(
+            f"malformed tool call arguments: expected ',' or '}}': {_context(text, pos)!r}"
+        )
 
 
 def _parse_array(text: str, pos: int) -> tuple[list[Any], int]:
@@ -355,13 +373,15 @@ def _parse_array(text: str, pos: int) -> tuple[list[Any], int]:
             continue
         if text.startswith("]", pos):
             return result, pos + 1
-        raise LlmToolParseError("malformed tool call arguments: expected ',' or ']'")
+        raise LlmToolParseError(
+            f"malformed tool call arguments: expected ',' or ']': {_context(text, pos)!r}"
+        )
 
 
 def _parse_number(text: str, pos: int) -> tuple[int | float, int]:
     match = _NUMBER_PATTERN.match(text, pos)
     if not match:
-        raise LlmToolParseError(f"malformed tool call argument value at: {text[pos : pos + 40]!r}")
+        raise LlmToolParseError(f"malformed tool call argument value at: {_context(text, pos)!r}")
     raw = match.group(0)
     is_float = "." in raw or "e" in raw or "E" in raw
     value: int | float = float(raw) if is_float else int(raw)
