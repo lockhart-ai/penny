@@ -27,8 +27,14 @@ that the last message about it had no link, and a follow-up asking for it.
 
 **Real game, invented collection.** The real production turn named a real
 game on a real storefront; this world swaps in a DIFFERENT real game on the
-same real storefront (Steam) — Stardew Valley — because the repo is public
-and the specific game and collection are the user's own. The collection's
+same real storefront (Steam) — Big Pharma, a real but small, little-known
+indie title — because the repo is public and the specific game and
+collection are the user's own. Picked deliberately obscure, not a cultural
+touchstone like the first swap (Stardew Valley) tried: that run's claim
+passed on main anyway, because the model's own training data already
+supplies Stardew Valley's Steam URL verbatim once it gives up resolving the
+handle, which masks the failure on the one measure that matters most. A
+small, rarely-discussed title carries no such safety net. The collection's
 name (`indie_game_radar`), its description, and the conversation around it
 are invented to the same shape as a real media-watch collection.
 
@@ -79,33 +85,36 @@ _FAMILY = "stored-link-number-cited"
 
 # ── The world's constants ─────────────────────────────────────────────────────
 #
-# Stardew Valley stands in for the real production game: a different REAL game
-# on the same real storefront (Steam), never an invented one.  The collection's
+# Big Pharma stands in for the real production game: a different REAL game on
+# the same real storefront (Steam), never an invented one — and deliberately a
+# small, little-known one, so the model has no training-data shortcut to the
+# right answer (see the module docstring on why the first pick, Stardew
+# Valley, let the claim pass on main for the wrong reason).  The collection's
 # own name, description and schedule are invented to the shape of a real
 # media-watch job — the entry's shape (`Title:` / `Media Type:` / `Summary:` /
 # `Source:` lines in one free-text `content`) is the one a collector cycle
 # really writes.
 
-_GAME = "Stardew Valley"
+_GAME = "Big Pharma"
 _COLLECTION = "indie_game_radar"
 _COLLECTION_DESCRIPTION = "Indie games the user might like, one find per cycle, with a source link."
 _COLLECTION_PROMPT = "Find one indie game the user hasn't seen yet and save it with a source link."
 _COLLECTION_SCHEDULE = "DTSTART:20261001T120000\nFREQ=DAILY"
 
-_STORE_URL = "https://store.steampowered.com/app/413150/Stardew_Valley/"
+_STORE_URL = "https://store.steampowered.com/app/376620/Big_Pharma/"
 # The host-and-path prefix every served URL for this game shares — the shape a
 # cited, expanded link must carry.  Not a slug: a name-only reply would satisfy
 # a slug check without any address in it.
-_URL_PREFIX = "store.steampowered.com/app/413150"
+_URL_PREFIX = "store.steampowered.com/app/376620"
 
 # The entry a collector cycle already wrote — the real shape (`Title:` /
 # `Media Type:` / `Summary:` / `Source:` lines in one free-text `content`), the
 # same shape production's entry carried.
 _ENTRY_CONTENT = (
-    "Title: Stardew Valley\n"
+    "Title: Big Pharma\n"
     "Media Type: video game\n"
-    "Summary: A farming life simulator — you inherit a run-down farm, grow crops, "
-    "raise animals, and get to know the town.\n"
+    "Summary: A pharmaceutical factory tycoon — you design production lines, "
+    "discover drug combinations, and grow a small lab into a sprawling plant.\n"
     f"Source: {_STORE_URL}\n"
 )
 
@@ -163,27 +172,28 @@ def _seed_stored_link(db: Database) -> None:
 # a claim.
 
 _STORE_PAGE = CannedPage(
-    match="stardew",
+    match="big pharma",
     text=(
-        "Title: Stardew Valley on Steam\n"
+        "Title: Big Pharma on Steam\n"
         f"Source: {_STORE_URL}\n"
         "\n"
-        "Stardew Valley is a farming life simulator. You've inherited your "
-        "grandfather's old farm plot and, with a few hand-me-down tools, set out "
-        "to begin your new life.\n"
+        "Big Pharma is a pharmaceutical factory tycoon. You design production "
+        "lines, discover drug combinations, and grow a small lab into a "
+        "sprawling plant — and decide how ethical a pharma company you want to "
+        "run.\n"
         "\n"
-        "Price: $14.99\n"
+        "Price: $19.99\n"
         "Platforms: Windows, macOS, Linux\n"
     ),
 )
 
 _SEARCH_PAGE = CannedPage(
-    match="stardew",
+    match="big pharma",
     text=(
-        "Title: stardew valley — search results\n"
-        f"[Stardew Valley on Steam]({_STORE_URL})\n"
-        "A farming life simulator where you inherit a run-down farm and grow it "
-        "into a thriving home.\n"
+        "Title: big pharma — search results\n"
+        f"[Big Pharma on Steam]({_STORE_URL})\n"
+        "A pharmaceutical factory tycoon where you design production lines and "
+        "grow a small lab into a sprawling plant.\n"
     ),
     search=True,
 )
