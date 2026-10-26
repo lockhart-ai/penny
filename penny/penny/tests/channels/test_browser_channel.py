@@ -538,9 +538,10 @@ class TestBrowseTool:
 
         assert result.success is True
         assert request_fn.call_count == 3
-        assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://a.com" in result.message
-        assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://b.com" in result.message
-        assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://c.com" in result.message
+        # The handle names its domain and title (#2832), not the raw address.
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1] a.com — Ex" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[3] b.com — Ex" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[4] c.com — Ex" in result.message
         assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://d.com" not in result.message
         assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
         assert "beyond the 3-per-call total" in result.message

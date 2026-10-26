@@ -944,7 +944,14 @@ class BrowseTool(Tool):
 
         The page is stored WHOLE to browse-results first (its entry id is the
         fetch handle the render anchors to), and both progress logs are written
-        before the draw, toward this call's timeout report (#2367)."""
+        before the draw, toward this call's timeout report (#2367).
+
+        The page's own title backfills its handle here (#2832): pick time
+        registered the URL before the fetch, with no title yet to give it, so
+        this is the first moment one is known, and every bare render of this
+        handle from here on names it."""
+        if page.url is not None:
+            self._handles.register(page.url, title=page.title)
         section = f"{PennyConstants.BROWSE_PAGE_HEADER}{page.url}\n{page.text}"
         converted = self._handles.convert_browse_section(section)
         # The failure renders' links clause reads the RAW section — its markdown
@@ -1003,7 +1010,13 @@ class BrowseTool(Tool):
             )
             return f"{failure}{links}", ""
         text = self._cap_extract(micro.value, handle_clause)
-        return _EXTRACT_SUCCESS.format(instruction=instruction, value=text), text
+        # The answer MAY be, in its entirety, the one fact the page gave as a
+        # handle (#2832) — "the official store link" extracted straight off
+        # the page as a bare ``[1]``.  Annotated for the render only; the
+        # returned ``text`` stays the plain value the fall-through and the
+        # carry question read.
+        displayed = self._handles.annotate(text)
+        return _EXTRACT_SUCCESS.format(instruction=instruction, value=displayed), text
 
     @staticmethod
     def _cap_extract(value: str, handle_clause: str) -> str:

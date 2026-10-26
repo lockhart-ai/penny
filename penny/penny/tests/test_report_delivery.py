@@ -200,10 +200,11 @@ async def test_the_delivery_turn_reads_the_report_whole(db, test_config, mock_ll
         "## What the job wrote this run\n"
         "These entries are what the job kept for the user this run — the message "
         "tells them about every one.\n"
-        # The entry's stored URL renders as the delivery turn's handle (#2717), and
-        # the one plain line telling the model how to cite rides after the entries.
+        # The entry's stored URL renders as the delivery turn's handle, with its
+        # domain beside it (#2717, #2832), and the one plain line telling the
+        # model how to cite rides after the entries.
         "- into `indie-metroidvanias`, under `Cinder Drift`: Cinder Drift — a hand-drawn "
-        f"metroidvania. [1]\n{CITATION_LINE}\n"
+        f"metroidvania. [1] ex.example\n{CITATION_LINE}\n"
         "\n"
         "Write the one message to send the user about this run, from what the job wrote. It "
         "can be as long as it takes to cover every entry — a job's report isn't a quick "

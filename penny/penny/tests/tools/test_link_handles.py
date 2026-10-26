@@ -22,7 +22,7 @@ def test_convert_markdown_links_and_standalone_urls():
     table = HandleTable()
     text = "Read [the report](https://a.example/r) today.\nhttps://b.example/n\n"
     converted = table.convert(text)
-    assert converted == "Read [the report][1] today.\n[2]\n"
+    assert converted == "Read [the report][1] today.\n[2] b.example\n"
     assert table.url_for(1) == "https://a.example/r"
     assert table.url_for(2) == "https://b.example/n"
 
@@ -41,7 +41,7 @@ def test_convert_bare_url_inside_a_line():
     ``Headline - https://…`` is exactly the production path that broke."""
     table = HandleTable()
     converted = table.convert("Headline - https://x.com/a.")
-    assert converted == "Headline - [1]."
+    assert converted == "Headline - [1] x.com."
     assert table.url_for(1) == "https://x.com/a"
 
 
@@ -49,7 +49,7 @@ def test_convert_bare_url_inside_parens():
     """A bare URL inside prose parens converts, and the paren the URL never
     opened stays around the handle."""
     table = HandleTable()
-    assert table.convert("(see https://x.com/a)") == "(see [1])"
+    assert table.convert("(see https://x.com/a)") == "(see [1] x.com)"
 
 
 def test_convert_keeps_parens_the_url_opened():
@@ -58,14 +58,16 @@ def test_convert_keeps_parens_the_url_opened():
     table = HandleTable()
     url = "https://en.wikipedia.org/wiki/Dune_(novel)"
     converted = table.convert(f"The novel is at {url}, read it.")
-    assert converted == "The novel is at [1], read it."
+    assert converted == "The novel is at [1] en.wikipedia.org, read it."
     assert table.url_for(1) == url
 
 
 def test_convert_self_link_collapses_to_the_handle():
-    """A link whose text is its own URL carries no readable address at all."""
+    """A link whose text is its own URL carries no readable address at all —
+    the handle alone, described (#2832): a domain beside a bare number, so
+    a reader has grounds to trust it is real."""
     table = HandleTable()
-    assert table.convert("[https://x.com/a](https://x.com/a)") == "[1]"
+    assert table.convert("[https://x.com/a](https://x.com/a)") == "[1] x.com"
 
 
 def test_convert_markdown_link_url_is_not_double_converted():
@@ -104,12 +106,15 @@ def test_convert_browse_section_leaves_the_page_address_written_out():
 def test_convert_browse_section_cites_a_registered_page_by_its_handle():
     """A page the model asked for by number comes back by that number — the
     handle it cited is the page as it gave it (#2735); the address never re-enters
-    the model-facing text and no second number is assigned."""
+    the model-facing text and no second number is assigned.  Its domain
+    renders beside it (#2832); a title the page was never registered with
+    (no caller supplied one here) just isn't there — this handle's number is
+    the only thing carried over from the pick."""
     table = HandleTable()
     table.register("https://a.example/page")
     section = "## browse: https://a.example/page\nBody [link](https://b.example/l) text"
     converted = table.convert_browse_section(section)
-    assert converted.startswith("## browse: [1]\n")
+    assert converted.startswith("## browse: [1] a.example\n")
     assert "[link][2]" in converted
     assert "https://" not in converted
     assert len(table) == 2
@@ -293,3 +298,83 @@ def test_dangling_multi_cite_with_repeats_deduplicated():
     table = HandleTable()
     table.register("https://example.com/story-transit")
     assert table.dangling("[4, 6, 4]") == [4, 6]
+
+
+# ── Domain + title beside a bare handle (#2832) ───────────────────────────────
+#
+# A bare ``[n]`` with nothing else beside it read as an opaque reference worth
+# resolving rather than a citable address — production's turn searched five
+# more times and drafted raw URLs after a collection entry's ``Source: [209]``
+# was right in front of it.  Every bare render now carries the handle's own
+# registrable domain, and its page title once one is known.
+
+
+def test_register_backfills_a_title_once_known_but_never_overwrites_it():
+    """A URL is often registered before its page is read (the pick-time
+    citation) and again once it is (the title now known) — the SECOND call
+    backfills the title onto the SAME number, and a third call naming a
+    different title changes nothing: the first title known wins."""
+    table = HandleTable()
+    assert table.register("https://a.example/x") == 1
+    assert table.register("https://a.example/x", title="Page One") == 1
+    assert table.register("https://a.example/x", title="A Different Title") == 1
+    assert table.convert("https://a.example/x") == "[1] a.example — Page One"
+
+
+def test_convert_bare_url_with_no_known_title_shows_the_domain_alone():
+    """A handle this run never fetched — a collection entry's stored
+    ``Source:`` link, say — carries no title to show, and the render is
+    honest about that: the domain alone, never a guessed name."""
+    table = HandleTable()
+    converted = table.convert("Source: https://store.example/app/1/Big-Game/")
+    assert converted == "Source: [1] store.example"
+
+
+def test_convert_bare_url_with_a_known_title_shows_both():
+    """Once a title is known (a page actually read this run), the bare handle
+    carries it beside the domain — the shape the issue's own example gives:
+    ``[1] store.steampowered.com — <title>``."""
+    table = HandleTable()
+    table.register("https://store.example/app/1/Big-Game/", title="Big Game")
+    converted = table.convert("Source: https://store.example/app/1/Big-Game/")
+    assert converted == "Source: [1] store.example — Big Game"
+
+
+def test_header_sub_carries_the_domain_and_title_too():
+    """The browse page header names the SAME handle the same way — one
+    mechanism for every bare render, not a special case per seam."""
+    table = HandleTable()
+    table.register("https://a.example/page", title="A Page")
+    section = "## browse: https://a.example/page\nBody text"
+    converted = table.convert_browse_section(section)
+    assert converted.startswith("## browse: [1] a.example — A Page\n")
+
+
+def test_annotate_describes_an_answer_that_is_only_a_handle():
+    """A page reader's answer that IS, in its entirety, the handle it was
+    asked for — "the official store link: [1]" — gets the same domain/title
+    description a bare render anywhere else gets."""
+    table = HandleTable()
+    table.register("https://store.example/app/1/Big-Game/", title="Big Game")
+    assert table.annotate("[1]") == "[1] store.example — Big Game"
+    assert table.annotate(" [1] ") == "[1] store.example — Big Game"
+
+
+def test_annotate_leaves_an_answer_that_carries_more_than_the_citation():
+    """An answer that is a SENTENCE naming the handle, not just the bare
+    number, is already legible — annotate() only describes a citation that
+    stands completely alone, so it never double-renders a label the model
+    already wrote."""
+    table = HandleTable()
+    table.register("https://store.example/app/1/Big-Game/", title="Big Game")
+    text = "the store page is [1]"
+    assert table.annotate(text) == text
+
+
+def test_annotate_leaves_plain_text_and_dangling_handles_alone():
+    """Text that is no citation at all, and a bare number the table never
+    registered, are both left exactly as given — annotate() never invents a
+    description for a handle it doesn't hold."""
+    table = HandleTable()
+    assert table.annotate("no link here") == "no link here"
+    assert table.annotate("[7]") == "[7]"

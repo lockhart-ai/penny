@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from urllib.parse import urlparse
 
 # A markdown link ``[text](url)`` — the form the page reader renders links in.
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
@@ -83,6 +84,16 @@ def _cited_numbers(match: re.Match) -> list[int]:
     return [num]
 
 
+def _registrable_domain(url: str) -> str:
+    """``url``'s own host, scheme and path dropped — the shape a bare handle
+    is annotated with (#2832): a domain names what a link IS without inviting
+    anyone to copy a path out of it.  Falls back to the whole ``url`` on a
+    scheme-less or otherwise unparseable address, which handle registration
+    never actually hands this (every registered URL opens ``https?://``), but
+    a fallback that degrades to the input is safer than one that raises."""
+    return urlparse(url).hostname or url
+
+
 def _address_only(url: str) -> str:
     """A bare URL's address without the prose marks it ran into at its end."""
     while url:
@@ -124,6 +135,11 @@ class HandleTable:
     def __init__(self) -> None:
         self._by_number: dict[int, str] = {}
         self._by_url: dict[str, int] = {}
+        # A title is known only when a caller that actually read the page
+        # (browse) supplies one at registration — never backfilled from
+        # anywhere else, so a handle this run never fetched just renders its
+        # domain alone rather than a guessed name (#2832).
+        self._titles: dict[int, str] = {}
 
     def __bool__(self) -> bool:
         """Whether any link has been rendered as a handle this run."""
@@ -134,15 +150,56 @@ class HandleTable:
         reads to decide whether its own citation line is new information."""
         return len(self._by_number)
 
-    def register(self, url: str) -> int:
-        """The handle for ``url`` — assigned on first sight, stable after."""
+    def register(self, url: str, *, title: str | None = None) -> int:
+        """The handle for ``url`` — assigned on first sight, stable after.
+
+        ``title`` backfills the handle's title the first time one is known —
+        a URL is often registered before its page is read (the pick-time
+        citation a run assigns itself) and again once it is, so a later call
+        naming the title fills the gap rather than needing to be first. An
+        already-known title is never overwritten by a second, possibly
+        different one."""
         existing = self._by_url.get(url)
         if existing is not None:
+            if title and existing not in self._titles:
+                self._titles[existing] = title
             return existing
         number = len(self._by_number) + 1
         self._by_number[number] = url
         self._by_url[url] = number
+        if title:
+            self._titles[number] = title
         return number
+
+    def _describe(self, number: int) -> str:
+        """``[n]`` with its registrable domain, and its page title when one is
+        known, beside it — the render that makes a bare handle legible as a
+        real address rather than an opaque reference worth resolving (#2832):
+        ``[1] store.steampowered.com`` or, once a title is known,
+        ``[1] store.steampowered.com — Big Pharma``. The full path never
+        renders, so nothing invites copying one out by hand."""
+        url = self._by_number.get(number)
+        if url is None:
+            return f"[{number}]"
+        domain = _registrable_domain(url)
+        title = self._titles.get(number)
+        return f"[{number}] {domain} — {title}" if title else f"[{number}] {domain}"
+
+    def annotate(self, text: str) -> str:
+        """``text`` described by its domain (and title, when known) when
+        ``text``, in its entirety, IS one handle citation — the shape a page
+        reader's answer takes when the one fact asked for is a link (#2832):
+        a bare ``[1]`` with nothing else around it reads as an internal
+        reference rather than an address, so the model goes looking for "the
+        real" one instead of writing the number down. Text that carries
+        anything besides the citation — a sentence, a second fact — is left
+        exactly as it is: this names what a BARE answer stands for, it is not
+        a second citation form stacked onto normal prose."""
+        match = _HANDLE_RE.fullmatch(text.strip())
+        if match is None:
+            return text
+        described = (self._describe(number) for number in _cited_numbers(match))
+        return _MULTI_CITATION_SEPARATOR.join(described)
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[int, str]) -> HandleTable:
@@ -262,8 +319,9 @@ class HandleTable:
         number = self.register(url)
         if not label.strip() or label.strip() == url:
             # An empty label, or a link whose text is its own URL — the handle
-            # alone: the URL must not survive as readable text.
-            return f"[{number}]"
+            # alone, described (#2832): the URL must not survive as readable
+            # text, but the handle on its own carries nothing to trust either.
+            return self._describe(number)
         return f"[{self._convert_bare(label)}][{number}]"
 
     def _convert_bare(self, text: str) -> str:
@@ -275,14 +333,15 @@ class HandleTable:
         url = _address_only(match.group(0))
         if not url:
             return match.group(0)
-        return f"[{self.register(url)}]{match.group(0)[len(url) :]}"
+        number = self.register(url)
+        return f"{self._describe(number)}{match.group(0)[len(url) :]}"
 
     def _header_sub(self, match: re.Match) -> str:
         prefix, url = match.group(1), match.group(2)
         number = self._by_url.get(url)
         # A page the model cited by number already has its handle; one it asked
         # for by address stays written out.  Never a new registration.
-        return f"{prefix}[{number}]" if number is not None else match.group(0)
+        return f"{prefix}{self._describe(number)}" if number is not None else match.group(0)
 
     def _expand_list(self, match: re.Match) -> str:
         """Expand a list-form citation ``[4, 6]`` to its held URLs joined by
