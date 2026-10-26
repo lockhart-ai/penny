@@ -193,7 +193,7 @@ def format_entries(
             # read accepts — the mirror of the keyed entry's ``key=`` prefix.
             prefix = f"id={entry.id} "
         stamp = f"[{format_log_timestamp(entry.created_at)}] "
-        content = handles.convert(entry.content) if handles is not None else entry.content
+        content = handles.convert_entry(entry.content) if handles is not None else entry.content
         lines.append(f"{index}. {stamp}{prefix}{content}")
     body = "\n".join(lines)
     if handles is not None and len(handles) > size_before:
@@ -3165,7 +3165,7 @@ def _render_entry_hit(index: int, entry: ResolvedEntry, handles: HandleTable | N
     """One stored-entry hit (#1640): its identity + the value it carries, then how to
     read it back — mirroring the object hit's two-line shape.  The value converts
     through the run's link table (#2717): a stored entry keeps real URLs."""
-    content = handles.convert(entry.content) if handles is not None else entry.content
+    content = handles.convert_entry(entry.content) if handles is not None else entry.content
     head = f'{index}. {_entry_identity(entry)} — "{_entry_preview(content)}"'
     return f"{head}\n   read it: {_entry_addressing(entry)}"
 

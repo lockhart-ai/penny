@@ -352,12 +352,13 @@ def test_header_sub_carries_the_domain_and_title_too():
 
 def test_annotate_describes_an_answer_that_is_only_a_handle():
     """A page reader's answer that IS, in its entirety, the handle it was
-    asked for — "the official store link: [1]" — gets the same domain/title
-    description a bare render anywhere else gets."""
+    asked for — "the official store link: [1]" — carries its FULL address
+    beside the number (#2832 arm C): the link IS the whole answer here, so a
+    domain alone still reads as partial."""
     table = HandleTable()
     table.register("https://store.example/app/1/Big-Game/", title="Big Game")
-    assert table.annotate("[1]") == "[1] store.example — Big Game"
-    assert table.annotate(" [1] ") == "[1] store.example — Big Game"
+    assert table.annotate("[1]") == "[1] https://store.example/app/1/Big-Game/"
+    assert table.annotate(" [1] ") == "[1] https://store.example/app/1/Big-Game/"
 
 
 def test_annotate_leaves_an_answer_that_carries_more_than_the_citation():
@@ -378,3 +379,36 @@ def test_annotate_leaves_plain_text_and_dangling_handles_alone():
     table = HandleTable()
     assert table.annotate("no link here") == "no link here"
     assert table.annotate("[7]") == "[7]"
+
+
+# ── The full-address render for a stored entry (#2832 arm C) ─────────────────
+#
+# A stored entry's own ``Source:`` line is where the citation IS the fact an
+# entry exists for, so convert_entry() shows the full address beside the
+# number — unlike convert(), which shows the domain alone everywhere else.
+
+
+def test_convert_entry_shows_the_full_address_on_a_bare_url():
+    table = HandleTable()
+    url = "https://store.example/app/1/Big-Game/"
+    converted = table.convert_entry(f"Title: Big Game\nSource: {url}")
+    assert converted == f"Title: Big Game\nSource: [1] {url}"
+
+
+def test_convert_entry_shows_the_full_address_on_a_self_referential_link():
+    """A markdown link whose text is its own URL — the same collapsed shape
+    ``convert()`` reduces to a bare handle — gets the full address too."""
+    table = HandleTable()
+    url = "https://store.example/app/1/Big-Game/"
+    assert table.convert_entry(f"[{url}]({url})") == f"[1] {url}"
+
+
+def test_convert_entry_leaves_a_labelled_markdown_link_unchanged():
+    """A link with real anchor text already reads fine — convert_entry()
+    only touches the shape where the link is the whole value, same as
+    convert() does for everything else."""
+    table = HandleTable()
+    url = "https://store.example/app/1/Big-Game/"
+    converted = table.convert_entry(f"loves this game — [the store page]({url})")
+    assert converted == "loves this game — [the store page][1]"
+    assert url not in converted

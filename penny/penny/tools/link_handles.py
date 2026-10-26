@@ -185,21 +185,62 @@ class HandleTable:
         title = self._titles.get(number)
         return f"[{number}] {domain} — {title}" if title else f"[{number}] {domain}"
 
+    def _describe_full(self, number: int) -> str:
+        """``[n]`` with its FULL address beside it — the render for the shape
+        where the link IS the whole answer (#2832 arm C): a stored entry's own
+        ``Source:`` line, and a page reader's answer that is entirely a link.
+        Everywhere else a bare handle renders (a page body, a browse header),
+        the number plus domain stays as ``_describe`` already has it."""
+        url = self._by_number.get(number)
+        return f"[{number}] {url}" if url is not None else f"[{number}]"
+
     def annotate(self, text: str) -> str:
-        """``text`` described by its domain (and title, when known) when
-        ``text``, in its entirety, IS one handle citation — the shape a page
-        reader's answer takes when the one fact asked for is a link (#2832):
-        a bare ``[1]`` with nothing else around it reads as an internal
-        reference rather than an address, so the model goes looking for "the
-        real" one instead of writing the number down. Text that carries
-        anything besides the citation — a sentence, a second fact — is left
-        exactly as it is: this names what a BARE answer stands for, it is not
-        a second citation form stacked onto normal prose."""
+        """``text`` described by its FULL address when ``text``, in its
+        entirety, IS one handle citation — the shape a page reader's answer
+        takes when the one fact asked for is a link (#2832 arm C): a bare
+        ``[1]`` with nothing else around it IS the answer, so it carries the
+        real address rather than a domain that still reads as partial. Text
+        that carries anything besides the citation — a sentence, a second
+        fact — is left exactly as it is: this names what a BARE answer stands
+        for, it is not a second citation form stacked onto normal prose."""
         match = _HANDLE_RE.fullmatch(text.strip())
         if match is None:
             return text
-        described = (self._describe(number) for number in _cited_numbers(match))
+        described = (self._describe_full(number) for number in _cited_numbers(match))
         return _MULTI_CITATION_SEPARATOR.join(described)
+
+    def convert_entry(self, text: str) -> str:
+        """``text`` with every link replaced by its handle, FULL-address form
+        — a stored entry's own render (#2832 arm C): the citation on an
+        entry's ``Source:`` line IS the fact the ask wants, so a bare or
+        self-referential link shows its full address beside the number
+        instead of just the domain.  A LABELLED markdown link keeps its
+        ordinary ``[text][n]`` form unchanged — it already carries readable
+        text, so this only touches the shape where the link is the whole
+        value."""
+        text = _IMAGE_RE.sub("", text)
+        text = _MARKDOWN_LINK_RE.sub(self._link_sub_full, text)
+        return _BARE_URL_RE.sub(self._bare_sub_full, text)
+
+    def _link_sub_full(self, match: re.Match) -> str:
+        label, url = match.group(1), match.group(2)
+        # Registering here (not only in the bare pass below) keeps "assigned
+        # on first sight" true in text order even for the collapsed branch,
+        # which defers its own text to that bare pass rather than describing
+        # the url twice (#2832 arm C) — register() is idempotent, so the bare
+        # pass re-registering the same url is a no-op that returns this
+        # number back.
+        number = self.register(url)
+        if not label.strip() or label.strip() == url:
+            return url
+        return f"[{self._convert_bare(label)}][{number}]"
+
+    def _bare_sub_full(self, match: re.Match) -> str:
+        url = _address_only(match.group(0))
+        if not url:
+            return match.group(0)
+        number = self.register(url)
+        return f"{self._describe_full(number)}{match.group(0)[len(url) :]}"
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[int, str]) -> HandleTable:

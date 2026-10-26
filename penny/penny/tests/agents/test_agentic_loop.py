@@ -3902,6 +3902,36 @@ class TestResponseValidators:
             )
             assert isinstance(outcome, Retry), form
 
+    def test_hallucinated_url_validator_accepts_a_stored_entrys_full_address(self):
+        """#2832 arm C: a stored entry's ``Source:`` line renders its FULL
+        address beside the number (``HandleTable.convert_entry``), not just
+        the domain — so when that render becomes the tool result the model
+        was shown, a reply that copies the address out verbatim is sourced,
+        the same way any other URL the model was shown already is (#2159).
+        An address never shown this way — invented, or merely sharing the
+        entry's domain — is still caught."""
+        table = HandleTable()
+        entry_url = "https://store.steampowered.com/app/376620/Big_Pharma/"
+        rendered_entry = table.convert_entry(
+            "Title: Big Pharma\nSummary: a factory tycoon.\nSource: " + entry_url
+        )
+        assert rendered_entry.endswith(f"Source: [1] {entry_url}")
+        source_text = f"1. key='Big Pharma' {rendered_entry}"
+
+        shown = _text_response(f"Here's the store page: {entry_url}")
+        outcome = HallucinatedUrlValidator().check(
+            shown, _ctx(source_text=source_text, handles=table)
+        )
+        assert isinstance(outcome, Proceed)
+
+        invented = "https://store.steampowered.com/app/999999/Not_Shown/"
+        assert find_hallucinated_urls(invented, source_text) == [invented]
+        not_shown = _text_response(f"Here's the store page: {invented}")
+        outcome = HallucinatedUrlValidator().check(
+            not_shown, _ctx(source_text=source_text, handles=table)
+        )
+        assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.HALLUCINATED_URLS
+
     def test_hallucinated_url_validator_drops_the_link_once_the_retry_is_spent(self, caplog):
         """The SECOND draft (#2721): the retry-once condition is spent
         (``ctx.retried``), so a still-unsourced raw URL or a still-dangling
