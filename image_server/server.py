@@ -45,9 +45,10 @@ DEFAULT_QUANTIZE = 4
 
 # MLX keeps freed buffers around for reuse instead of returning them to the OS. Left
 # uncapped, that cache grows with every generation's working set and never shrinks —
-# measured at 25.3 GB resident after 4½ days (model weights are a few GB at
-# quantize=4). Capping it bounds that growth; clearing it after each request (see
-# ``MfluxGenerator.release``) returns what's cached beyond the model itself.
+# measured live at 25+ GB resident after a SINGLE generation (model weights are a few
+# GB at quantize=4; loading+quantizing itself transiently holds full-precision weights
+# too). ``MfluxGenerator.load`` clears the cache once loading/quantizing is done and
+# caps it; ``MfluxGenerator.release`` clears it again after every generation.
 MLX_CACHE_LIMIT_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
 
 
@@ -99,10 +100,13 @@ class MfluxGenerator:
             model_config=ModelConfig.from_name(model_name=self._model_name),
             quantize=self._quantize,
         )
-        # Imported here too (see the module docstring) — set once, right after load,
-        # before the first generate() can grow the cache.
+        # Imported here too (see the module docstring).
         import mlx.core as mx
 
+        # Loading+quantizing holds full-precision weights transiently; clear that
+        # before capping, so the cap applies to steady-state generation, not the
+        # load's own high-water mark.
+        mx.clear_cache()
         mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES)
         logger.info("Model %r loaded", self._model_name)
 
