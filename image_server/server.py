@@ -198,24 +198,29 @@ class ImageRequestHandler(BaseHTTPRequestHandler):
         try:
             self._generate_and_respond(request)
         finally:
-            # Every attempt, success or failure, releases the backend's GPU cache
-            # before the lock does — see MfluxGenerator.release.
-            self.server.generator.release()
             self.server.lock.release()
 
     def _generate_and_respond(self, request: _GenerateRequest) -> None:
         try:
-            png_bytes = self.server.generator.generate(
+            png_bytes = self._generate_released(request)
+        except ImageGenerationError as error:
+            self._respond(500, {"error": str(error)})
+            return
+        self._respond(200, {"image": base64.b64encode(png_bytes).decode("ascii")})
+
+    def _generate_released(self, request: _GenerateRequest) -> bytes:
+        """Generate one image, releasing the backend's GPU cache afterward — success
+        or failure, and before any response is written (see MfluxGenerator.release)."""
+        try:
+            return self.server.generator.generate(
                 prompt=request.prompt,
                 width=request.width,
                 height=request.height,
                 steps=request.steps,
                 seed=request.seed,
             )
-        except ImageGenerationError as error:
-            self._respond(500, {"error": str(error)})
-            return
-        self._respond(200, {"image": base64.b64encode(png_bytes).decode("ascii")})
+        finally:
+            self.server.generator.release()
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
