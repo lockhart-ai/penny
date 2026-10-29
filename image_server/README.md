@@ -29,7 +29,11 @@ reaches it over HTTP at `host.docker.internal:8765` (the default `LLM_IMAGE_API_
    reachable `/health` always means the model is ready, never "still loading". It stays
    resident for the server's whole lifetime (the machine has memory to spare, so there's no
    idle-unload to reason about); every `/generate` after that just denoises (~12s at 512px,
-   ~35s at 1024px on an M1 Max, 4 steps).
+   ~35s at 1024px on an M1 Max, 4 steps). MLX keeps freed buffers around for reuse rather than
+   returning them to the OS, so at load the server caps that cache (`MLX_CACHE_LIMIT_BYTES` in
+   `server.py`) and clears it after every generation, success or failure — without that, the
+   resident process grows unboundedly with the cache's working-set high-water mark instead of
+   settling back near the model's own size.
 
 ## Running it as a launchd agent
 

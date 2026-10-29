@@ -43,6 +43,13 @@ DEFAULT_MODEL = "flux2-klein-4b"
 DEFAULT_PORT = 8765
 DEFAULT_QUANTIZE = 4
 
+# MLX keeps freed buffers around for reuse instead of returning them to the OS. Left
+# uncapped, that cache grows with every generation's working set and never shrinks —
+# measured at 25.3 GB resident after 4½ days (model weights are a few GB at
+# quantize=4). Capping it bounds that growth; clearing it after each request (see
+# ``MfluxGenerator.release``) returns what's cached beyond the model itself.
+MLX_CACHE_LIMIT_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
+
 
 class ImageGenerationError(RuntimeError):
     """A generation attempt failed — its message is the reason the response carries."""
@@ -61,6 +68,10 @@ class ImageGenerator(Protocol):
     def generate(self, *, prompt: str, width: int, height: int, steps: int, seed: int) -> bytes:
         """Generate one image and return it as PNG bytes. Raises ImageGenerationError."""
 
+    def release(self) -> None:
+        """Release resources held by the last generation. Called after every generate()
+        attempt, success or failure."""
+
 
 class MfluxGenerator:
     """The real backend: mflux's FLUX.2 [klein], loaded once and kept resident."""
@@ -78,11 +89,21 @@ class MfluxGenerator:
         from mflux.models.common.config import ModelConfig
         from mflux.models.flux2.variants import Flux2Klein
 
-        logger.info("Loading mflux model %r (quantize=%d)...", self._model_name, self._quantize)
+        logger.info(
+            "Loading mflux model %r (quantize=%d), MLX cache capped at %d bytes...",
+            self._model_name,
+            self._quantize,
+            MLX_CACHE_LIMIT_BYTES,
+        )
         self._model = Flux2Klein(
             model_config=ModelConfig.from_name(model_name=self._model_name),
             quantize=self._quantize,
         )
+        # Imported here too (see the module docstring) — set once, right after load,
+        # before the first generate() can grow the cache.
+        import mlx.core as mx
+
+        mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES)
         logger.info("Model %r loaded", self._model_name)
 
     @property
@@ -106,6 +127,12 @@ class MfluxGenerator:
         buffer = io.BytesIO()
         generated.image.save(buffer, format="PNG")
         return buffer.getvalue()
+
+    def release(self) -> None:
+        # Imported here, not at module scope (see the module docstring).
+        import mlx.core as mx
+
+        mx.clear_cache()
 
 
 class ImageServer(ThreadingHTTPServer):
@@ -165,20 +192,26 @@ class ImageRequestHandler(BaseHTTPRequestHandler):
             self._respond(503, {"error": "busy, a generation is already in progress"})
             return
         try:
-            try:
-                png_bytes = self.server.generator.generate(
-                    prompt=request.prompt,
-                    width=request.width,
-                    height=request.height,
-                    steps=request.steps,
-                    seed=request.seed,
-                )
-            except ImageGenerationError as error:
-                self._respond(500, {"error": str(error)})
-                return
-            self._respond(200, {"image": base64.b64encode(png_bytes).decode("ascii")})
+            self._generate_and_respond(request)
         finally:
+            # Every attempt, success or failure, releases the backend's GPU cache
+            # before the lock does — see MfluxGenerator.release.
+            self.server.generator.release()
             self.server.lock.release()
+
+    def _generate_and_respond(self, request: _GenerateRequest) -> None:
+        try:
+            png_bytes = self.server.generator.generate(
+                prompt=request.prompt,
+                width=request.width,
+                height=request.height,
+                steps=request.steps,
+                seed=request.seed,
+            )
+        except ImageGenerationError as error:
+            self._respond(500, {"error": str(error)})
+            return
+        self._respond(200, {"image": base64.b64encode(png_bytes).decode("ascii")})
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))

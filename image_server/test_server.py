@@ -27,7 +27,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from image_server.server import ImageRequestHandler, ImageServer
+from image_server.server import ImageGenerationError, ImageRequestHandler, ImageServer
 
 _SERVED_MODEL = "flux2-klein-4b"
 _ONE_PX_PNG = (
@@ -43,6 +43,8 @@ class FakeGenerator:
     def __init__(self) -> None:
         self.loaded = False
         self.calls: list[dict] = []
+        self.release_calls = 0
+        self.fail_with: str | None = None
 
     def load(self) -> None:
         self.loaded = True
@@ -56,7 +58,12 @@ class FakeGenerator:
         self.calls.append(
             {"prompt": prompt, "width": width, "height": height, "steps": steps, "seed": seed}
         )
+        if self.fail_with is not None:
+            raise ImageGenerationError(self.fail_with)
         return _ONE_PX_PNG
+
+    def release(self) -> None:
+        self.release_calls += 1
 
 
 class _Response:
@@ -127,6 +134,20 @@ def test_generate_success_returns_base64_png(
     assert call["prompt"] == "a teal dragon"
     assert (call["width"], call["height"], call["steps"]) == (768, 768, 4)
     assert isinstance(call["seed"], int)
+    assert generator.release_calls == 1, "release() must run after a successful generation"
+
+
+def test_generate_failure_releases_cache(
+    running_server: tuple[ImageServer, str], generator: FakeGenerator
+) -> None:
+    generator.fail_with = "boom"
+    _, base_url = running_server
+    response = _request(
+        base_url, "/generate", body={"model": _SERVED_MODEL, "prompt": "a cat"}
+    )
+    assert response.status == 500
+    assert "boom" in response.payload["error"]
+    assert generator.release_calls == 1, "release() must run after a failed generation too"
 
 
 def test_generate_rejects_an_unsupported_model(running_server: tuple[ImageServer, str]) -> None:
