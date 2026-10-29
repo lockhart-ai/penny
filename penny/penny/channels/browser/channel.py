@@ -1499,7 +1499,7 @@ class BrowserChannel(MessageChannel):
         return True
 
     def _make_handle_kwargs(
-        self, message: IncomingMessage, progress: ProgressTracker | None = None
+        self, message: IncomingMessage, progress: ProgressTracker | None = None, run_id: str = ""
     ) -> dict:
         """Pass an on_tool_start callback so tool calls update the typing indicator.
 
@@ -1508,7 +1508,13 @@ class BrowserChannel(MessageChannel):
         progress directly into the typing indicator HTML rather than going
         through a ``ProgressTracker``, so ``progress`` is intentionally unused
         — ``_begin_progress`` returns ``None`` for this channel.
+
+        Starts from the base default (#2837) and adds ``on_tool_start`` on top,
+        so the ``on_interim_message`` hook the base builds from ``run_id`` still
+        reaches this channel — replacing the dict outright, as this override
+        used to, would silently drop it.
         """
+        kwargs = super()._make_handle_kwargs(message, progress, run_id)
         recipient = message.sender
         completed: list[str] = []
 
@@ -1522,7 +1528,8 @@ class BrowserChannel(MessageChannel):
             await self._send_tool_status(recipient, "<br>".join(lines))
             completed.extend(current)
 
-        return {"on_tool_start": on_tool_start}
+        kwargs["on_tool_start"] = on_tool_start
+        return kwargs
 
     @staticmethod
     def _format_tool_status(tool_name: str, arguments: dict) -> str:

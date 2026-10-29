@@ -260,6 +260,20 @@
         {{- '<|channel>thought\n' + thinking_text + '\n<channel|>' -}}
     {%- endif -%}
 
+    {#- Content generated BEFORE a call in the SAME turn (#2837): a reply that opens
+        with a sentence before calling a tool (raw_template.py's parser keeps that
+        prose as `content` on the SAME message the call lands on) renders here, in
+        the order the model actually produced it — not after the call's response —
+        and the turn stays open for the next step exactly as the call-only shape
+        already does.  Only the plain-string content shape is handled early; an
+        iterable (image/audio/video) content on a tool-call message is not a shape
+        Penny ever produces, and falls through to the unchanged position below. -#}
+    {%- set early_content = strip_thinking(message['content']) if message['content'] is string else '' -%}
+    {%- set print_content_early = message['tool_calls'] and (early_content | trim | length > 0) -%}
+    {%- if print_content_early -%}
+        {{- early_content -}}
+    {%- endif -%}
+
             {%- if message['tool_calls'] -%}
                 {%- for tool_call in message['tool_calls'] -%}
                     {%- set function = tool_call['function'] -%}
@@ -362,11 +376,16 @@
             {%- endif -%}
             {%- endset -%}
 
-            {{- captured_content -}}
+            {%- if not print_content_early -%}
+                {{- captured_content -}}
+            {%- endif -%}
             {%- set has_content = captured_content | trim | length > 0 -%}
 
         {%- if ns.prev_message_type == 'tool_call' and not ns_tr_out.flag -%}
             {{- '<|tool_response>' -}}
+        {%- elif print_content_early -%}
+            {#- Content already rendered ahead of the call above — the turn stays
+                open for the next step, same as the content-empty tool-call shape. -#}
         {%- elif not (ns_tr_out.flag and not has_content) -%}
             {{- '<turn|>\n' -}}
         {%- endif -%}

@@ -65,6 +65,7 @@ from penny.validation.response_validators import (
     RefusalValidator,
     XmlTagValidator,
     clean_malformed_urls,
+    interim_prose_rejection_reason,
 )
 
 if TYPE_CHECKING:
@@ -498,6 +499,7 @@ class Agent:
         images: list[str] | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
+        on_interim_message: Callable[[str], Awaitable[None]] | None = None,
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
         handles: HandleTable | None = None,
@@ -513,6 +515,13 @@ class Agent:
         on the turn's own user message, so the ordinary loop reads them: chat's
         token budget and the thinking-off last draw both apply.  They ride only
         this turn; history never resends them.
+
+        ``on_interim_message`` (#2837) is called with a step's own prose the
+        moment it is validated — BEFORE that step's tool calls run — so the caller
+        can send it to the user while the turn carries on.  ``None`` (the default,
+        and every background/collector caller) means the turn has no user to send
+        one to, and the prose simply stays on the step's own message, exactly as
+        today.
         """
         run_id = call_link.run_id
         self._tool_result_text = []
@@ -536,6 +545,7 @@ class Agent:
             prompt_type,
             progress_scope,
             table,
+            on_interim_message,
         )
 
     # ── Agentic loop internals ───────────────────────────────────────────
@@ -552,6 +562,7 @@ class Agent:
         prompt_type: str | None,
         progress_scope: str,
         handles: HandleTable,
+        on_interim_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> ControllerResponse:
         """Run the loop while guaranteeing a terminal progress event and a complete
         run record (the trailing turns no model call carried, #1778)."""
@@ -573,6 +584,7 @@ class Agent:
                 progress_scope,
                 logged,
                 handles,
+                on_interim_message,
             )
             outcome = self._run_outcome(response)
             return response
@@ -715,6 +727,7 @@ class Agent:
         progress_scope: str,
         logged: _LoggedBoundary | None = None,
         handles: HandleTable | None = None,
+        on_interim_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> ControllerResponse:
         """Execute the step loop: call model, process tool calls, or return final answer.
 
@@ -772,6 +785,7 @@ class Agent:
             if response.has_tool_calls:
                 if self._reject_premature_terminator(response, messages, ctx):
                     continue
+                await self._send_interim_message(response, ctx, on_interim_message)
                 result = await self._process_tool_calls(
                     response,
                     called_tools,
@@ -871,6 +885,41 @@ class Agent:
                 )
             case unreachable:
                 assert_never(unreachable)
+
+    async def _send_interim_message(
+        self,
+        response: LlmResponse,
+        ctx: LoopContext,
+        on_interim_message: Callable[[str], Awaitable[None]] | None,
+    ) -> None:
+        """Send a tool-call step's own prose to the user before its calls run
+        (#2837), instead of silently dropping it — gemma's own chat template
+        (and every OpenAI-compatible backend) returns ``content`` alongside
+        ``tool_calls`` in one turn, and the step's response already carries both.
+
+        ``on_interim_message`` is ``None`` for every caller with no user to send
+        to (a collector cycle, and any run started with no callback) — a cheap,
+        explicit no-op rather than a silent one, since there is nothing to check
+        or send.  ``response.message.content`` is never touched here: it stays on
+        the step's own message exactly as drawn, so the run's own step history —
+        fed back on the next step, and replayed by the raw-template transport in
+        the order the model actually produced it — still carries it whether or
+        not this call could send it.
+
+        The check is DROP-ONLY, never a retry or a repair: this step's calls are
+        about to run regardless, and re-drawing the whole step to fix only its
+        prose would also redraw (and possibly change) the calls the issue wants
+        left alone.  A failing check drops the prose; it never blocks the calls
+        or the run."""
+        content = response.content.strip()
+        if not content or on_interim_message is None:
+            return
+        registered_tools = frozenset(tool.name for tool in self._tool_registry.get_all())
+        reason = interim_prose_rejection_reason(content, ctx, registered_tools)
+        if reason is not None:
+            logger.info("Dropped interim message (%s): %.120s", reason, content)
+            return
+        await on_interim_message(content)
 
     async def after_tool_step(
         self,

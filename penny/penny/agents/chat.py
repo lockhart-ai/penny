@@ -317,6 +317,7 @@ class ChatAgent(Agent):
         thread_parent_id: int | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
+        on_interim_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> ControllerResponse:
         """Handle an incoming message — summary method.
 
@@ -332,6 +333,12 @@ class ChatAgent(Agent):
         ``thread_parent_id`` is the quote-reply's resolved parent row id — resolved
         by the channel from the quote's own anchor, never re-guessed here — and
         selects the thread history for the turn (``get_history``).
+
+        ``on_interim_message`` (#2837) sends a step's own prose to the user the
+        moment it is validated, before that step's tool calls run — the live
+        channel's own hook, built with a user and a run to send to.  ``None`` for
+        every other caller (``handle_job_report``'s delivery turn has no live
+        channel dispatch of its own; the drainer gates and queues its reply).
 
         There is no conversation machine (#2455 naive baseline): every turn runs the
         same ``Prompt.CONVERSATION_PROMPT`` — there is no second state to pick an
@@ -349,6 +356,7 @@ class ChatAgent(Agent):
             thread_parent_id=thread_parent_id,
             on_tool_start=on_tool_start,
             on_progress=on_progress,
+            on_interim_message=on_interim_message,
         )
 
     async def handle_job_report(
@@ -400,6 +408,7 @@ class ChatAgent(Agent):
         thread_parent_id: int | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
+        on_interim_message: Callable[[str], Awaitable[None]] | None = None,
         handles: HandleTable | None = None,
     ) -> ControllerResponse:
         """The one turn both entry points ride — the template method under
@@ -444,6 +453,7 @@ class ChatAgent(Agent):
                 images=images,
                 on_tool_start=on_tool_start,
                 on_progress=on_progress,
+                on_interim_message=on_interim_message,
                 progress_scope=progress_scope,
                 prompt_type=prompt_type,
                 handles=table,

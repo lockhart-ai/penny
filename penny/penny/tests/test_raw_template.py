@@ -84,6 +84,75 @@ class TestRenderPin:
         assert prompt == _EXPECTED_RENDER
 
 
+# A second fixed fixture (#2837): the SAME assistant step carries both prose and a
+# tool call — the shape raw_template.py's own parser already keeps (a reply that
+# opens with a sentence before calling a tool stays content on that call's own
+# message, see TestParseCompletion below) but the template never had to REPLAY
+# until the interim-message feature started keeping that prose on the message
+# instead of dropping it.  Pinned separately from ``_FIXTURE_MESSAGES`` above —
+# that fixture's own tool-call message still carries empty content, and its pin
+# must keep passing unchanged.
+_COMBINED_FIXTURE_MESSAGES = [
+    LlmMessage(role="system", content="You are Penny."),
+    LlmMessage(role="user", content="What is my job doing?"),
+    LlmMessage(
+        role="assistant",
+        content="I'll check on that now.",
+        tool_calls=[
+            LlmToolCall(
+                id="call_1",
+                function=LlmToolCallFunction(name="run_get", arguments={"run": "run abc"}),
+            )
+        ],
+    ),
+    LlmMessage(role="tool", content="the run finished ok", tool_call_id="call_1"),
+]
+_COMBINED_FIXTURE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_get",
+            "description": "Get a run.",
+            "parameters": {
+                "type": "object",
+                "properties": {"run": {"type": "string"}},
+                "required": ["run"],
+            },
+        },
+    }
+]
+_COMBINED_EXPECTED_RENDER = (
+    "<bos><|turn>system\nYou are Penny.<|tool>declaration:run_get"
+    '{description:<|"|>Get a run.<|"|>,parameters:{properties:{run:{type:<|"|>STRING<|"|>}}'
+    ',required:[<|"|>run<|"|>],type:<|"|>OBJECT<|"|>}}<tool|><turn|>\n<|turn>user\n'
+    "What is my job doing?<turn|>\n<|turn>model\n"
+    "I'll check on that now."
+    '<|tool_call>call:run_get{run:<|"|>run abc<|"|>}<tool_call|><|tool_response>'
+    'response:run_get{value:<|"|>the run finished ok<|"|>}<tool_response|>'
+)
+
+
+class TestCombinedContentAndToolCallRenderPin:
+    """The content-beside-a-call render pin (#2837): the prose must replay in
+    GENERATION order — content, then the call, then its response — never after
+    the response, and the model turn must stay OPEN (no ``<turn|>``, no
+    re-opened ``<|turn>model``) so the next step continues the same turn, exactly
+    as the content-empty tool-call shape already does."""
+
+    def test_content_before_a_call_replays_in_generation_order_turn_stays_open(self) -> None:
+        wire = [message.to_log_dict() for message in _COMBINED_FIXTURE_MESSAGES]
+        prompt = render_prompt(wire, _COMBINED_FIXTURE_TOOLS, False)
+        assert prompt == _COMBINED_EXPECTED_RENDER
+
+    def test_existing_content_empty_pin_is_unchanged_by_the_combined_shape_branch(self) -> None:
+        """The original pin (content empty on the tool-call message) must still
+        render byte-identically — the new branch only engages when content is
+        non-empty beside a call."""
+        wire = [message.to_log_dict() for message in _FIXTURE_MESSAGES]
+        prompt = render_prompt(wire, _FIXTURE_TOOLS, True)
+        assert prompt == _EXPECTED_RENDER
+
+
 class TestParseCompletion:
     """``parse_completion`` reads gemma's own grammar — the thought channel
     (both spellings), its tool-call syntax (including ``<|"|>`` string

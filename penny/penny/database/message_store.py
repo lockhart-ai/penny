@@ -408,6 +408,7 @@ class MessageStore:
         embedding: bytes | None = None,
         mechanism: str | None = None,
         run_id: str | None = None,
+        timestamp: datetime | None = None,
     ) -> int | None:
         """Log a user message or agent response. Returns the message ID or None.
 
@@ -421,6 +422,16 @@ class MessageStore:
         side: the run whose reply a direct reply delivers — stamped by the
         framework on the chat reply path, so the history pairs a run with the
         message that answered for it by identity.  NULL for an autonomous send.
+
+        ``timestamp`` is the recency-ordering column every reader (conversation
+        history, the thread walk) sorts by — ``None`` (every caller but one) keeps
+        logging at WRITE time (``self._clock.now()``), as always.  The one caller
+        that passes it explicitly is the live-channel incoming-message log (#2837):
+        that row is written only once its whole turn finishes (so it never doubles
+        into the turn's own recall), but an interim message sent DURING the turn
+        can now log its own outgoing row first — stamping the incoming row with the
+        time the turn actually STARTED keeps it ordered ahead of anything the turn
+        sends, instead of a write-time stamp from after the turn.
 
         The record keeps an outgoing message's text as the model wrote it
         (#2722) — the channel conversion is a send-time concern, so no
@@ -440,7 +451,7 @@ class MessageStore:
                     embedding=embedding,
                     mechanism=mechanism,
                     run_id=run_id,
-                    timestamp=self._clock.now(),
+                    timestamp=timestamp if timestamp is not None else self._clock.now(),
                 )
                 session.add(log)
                 session.commit()

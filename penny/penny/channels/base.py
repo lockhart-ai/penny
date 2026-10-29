@@ -8,6 +8,7 @@ import logging
 import re
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -670,18 +671,57 @@ class MessageChannel(ABC):
         return primary if primary else device_sender
 
     def _make_handle_kwargs(
-        self, message: IncomingMessage, progress: ProgressTracker | None = None
+        self, message: IncomingMessage, progress: ProgressTracker | None = None, run_id: str = ""
     ) -> dict:
-        """Return extra kwargs for ChatAgent.handle(). Override in subclasses.
+        """Return extra kwargs for ChatAgent.handle(). Override in subclasses —
+        by calling ``super()._make_handle_kwargs(...)`` and merging in whatever
+        the override adds, never by replacing the dict outright, so a kwarg this
+        base default adds (``on_interim_message`` below) reaches every channel
+        with no override of its own to update.
 
         ``progress`` is the optional tracker returned by ``_begin_progress``.
         Default forwards ``progress.update`` as ``on_tool_start`` so any
         channel that returns a tracker gets tool-call progress updates for
         free; channels with custom progress UI (e.g. browser) can override.
+
+        ``run_id`` (#2837) is the turn's own run id, minted by the caller before
+        this is called — always present on the live-message dispatch path (the
+        only caller); the default `""` is for any OTHER direct caller, which
+        gets no ``on_interim_message`` hook (nothing to link an interim send to).
         """
-        if progress is None:
-            return {}
-        return {"on_tool_start": progress.update}
+        kwargs: dict = {}
+        if progress is not None:
+            kwargs["on_tool_start"] = progress.update
+        if run_id:
+            kwargs["on_interim_message"] = self._interim_message_sender(message, run_id)
+        return kwargs
+
+    def _interim_message_sender(
+        self, message: IncomingMessage, run_id: str
+    ) -> Callable[[str], Awaitable[None]]:
+        """The default ``on_interim_message`` hook (#2837): send a tool-call
+        step's own prose to the user through the ordinary ``send_response``
+        chokepoint the moment the loop validates it — embedded, logged OUTGOING
+        (so it reads in ``penny-messages`` and merges into conversation history
+        beside the turn's own final reply, #2837), delivered — before that
+        step's calls run.
+
+        ``parent_id=None``: the turn's own incoming message isn't logged until
+        the whole turn finishes (``_finish_turn``, deliberately deferred so it
+        never doubles into the turn's own recall), so there is no id yet for an
+        interim send to link against — it threads the run instead
+        (``run_id``), which the turn's own eventual reply also carries."""
+
+        async def send(text: str) -> None:
+            await self.send_response(
+                message.sender,
+                text,
+                parent_id=None,
+                author=self._message_agent.name,
+                run_id=run_id,
+            )
+
+        return send
 
     async def _begin_progress(self, message: IncomingMessage) -> ProgressTracker | None:
         """Start an in-flight progress indicator for this message.
@@ -789,6 +829,12 @@ class MessageChannel(ABC):
         # linked structurally to the run by ``link_source_message``.
         # ``user-messages`` is a read facade over ``messagelog`` — no separate append.
         run_id = uuid.uuid4().hex
+        # Captured HERE, before the run's own interim sends (#2837) can log their
+        # own outgoing rows, and threaded through to the incoming row's own
+        # ``timestamp`` in ``_finish_turn`` — so the incoming row (logged only once
+        # the whole turn finishes) still sorts AHEAD of anything the turn sends,
+        # rather than carrying a write-time stamp from after the turn.
+        received_at = self._db.clock.now()
         call_link = CallLink.top(run_id)
         parent_id = self._resolve_quoted_parent(message)
         response = await self._message_agent.handle(
@@ -798,11 +844,11 @@ class MessageChannel(ABC):
             images=message.images or None,
             page_context=message.page_context,
             thread_parent_id=parent_id,
-            **self._make_handle_kwargs(message, progress),
+            **self._make_handle_kwargs(message, progress, run_id),
         )
         try:
             await self._finish_turn(
-                message, user_sender, device_id, response, run_id, parent_id, progress
+                message, user_sender, device_id, response, run_id, parent_id, progress, received_at
             )
         except Exception:
             logger.exception("Failed to finish turn for %s", message.sender)
@@ -819,6 +865,7 @@ class MessageChannel(ABC):
         run_id: str,
         parent_id: int | None,
         progress: ProgressTracker | None,
+        received_at: datetime,
     ) -> None:
         """Log the incoming message, link it to anything the run created, and
         deliver the reply — the part of the turn that has an answer in hand
@@ -842,6 +889,7 @@ class MessageChannel(ABC):
             embedding=serialize_embedding(incoming_embedding)
             if incoming_embedding is not None
             else None,
+            timestamp=received_at,
         )
         # Link the spawning message to any mechanism this run created, now that the
         # message has an id (#1566) — matched by the unique per-turn run id.

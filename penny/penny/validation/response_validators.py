@@ -39,12 +39,18 @@ import re
 import string
 import unicodedata
 import urllib.parse
+from collections.abc import Collection
 from typing import NamedTuple
 
 from penny.llm.models import LlmResponse
 from penny.llm.refusal import is_refusal
 from penny.responses import PennyResponse
-from penny.text_validity import strip_think_tags
+from penny.text_validity import (
+    half_formed_send_reason,
+    is_degenerate_run,
+    is_embedded_call_as_text,
+    strip_think_tags,
+)
 from penny.tools.link_handles import HandleTable
 from penny.validation.conditions import ConditionKey
 from penny.validation.outcomes import (
@@ -358,6 +364,63 @@ class HallucinatedUrlValidator:
             )
             return Retry(condition=ConditionKey.HALLUCINATED_URLS)
         return Repair(response=_drop_unsourced_link(response, ctx.handles, dangling, bad_urls))
+
+
+# ── The interim-message check (#2837) — drop-only, not a validator ───────────
+#
+# A tool-call step's own prose (content alongside tool_calls, the shape #2837
+# stops dropping) is checked here too, before it is sent as an interim message —
+# but the disposition is DIFFERENT from the chain above: a reason-or-``None``,
+# never Retry/Repair.  Retrying would re-draw the step's CALLS as well as its
+# prose, which the calls — already decided, about to run regardless — don't
+# need and the issue doesn't want; Repair has nothing to repair INTO, since
+# there is no "fixed" interim text to substitute, only sent-or-dropped.  So this
+# is a plain function, reusing the same detection helpers the chain above already
+# proved out, called directly by the loop (``Agent._send_interim_message``)
+# rather than threaded through ``run_validators``.
+
+
+def interim_prose_rejection_reason(
+    content: str, ctx: LoopContext, registered_tools: Collection[str]
+) -> str | None:
+    """Why ``content`` — a tool-call step's own prose — must not be sent as an
+    interim message, or ``None`` when it may be.
+
+    Reuses the SAME checks a final reply gets (XML markup, a refusal, a
+    hallucinated URL or dangling link-handle citation against ``ctx.source_text``
+    — built fresh per step, same as the validator chain's own ``ctx``), plus two
+    more that matter specifically here: a half-formed/degenerate fragment
+    (:func:`penny.text_validity.half_formed_send_reason`,
+    :func:`penny.text_validity.is_degenerate_run` — the same shapes the
+    ``send_message`` tool and the run-health classifier refuse), and a SECOND,
+    textual tool call embedded in the prose itself
+    (:func:`penny.text_validity.is_embedded_call_as_text`) — distinct from the
+    real ``tool_calls`` on the same step, which this never touches.
+
+    Checked against the already-stripped-of-thinking text; every reason is a
+    short, loggable label, not a model-facing message — nothing here is shown to
+    the model, only logged (the calls run regardless of this check's answer)."""
+    effective_content, _ = strip_think_tags(content)
+    if not effective_content:
+        return "empty after stripping thinking"
+    if has_xml_tags(effective_content):
+        return "xml markup"
+    if is_refusal(effective_content):
+        return "refusal"
+    if ctx.source_text:
+        dangling = ctx.handles.dangling(effective_content) if ctx.handles else []
+        bad_urls = find_hallucinated_urls(effective_content, ctx.source_text)
+        if dangling:
+            return "dangling link handle"
+        if bad_urls:
+            return "hallucinated url"
+    if is_embedded_call_as_text(effective_content, registered_tools):
+        return "embedded call as text"
+    if reason := half_formed_send_reason(effective_content):
+        return reason
+    if is_degenerate_run(effective_content):
+        return "degenerate punctuation run"
+    return None
 
 
 class HallucinatedToolCallRepair:

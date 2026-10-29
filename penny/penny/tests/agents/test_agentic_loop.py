@@ -1,5 +1,6 @@
 """Tests for agentic loop changes: reasoning, last step, and after_step hook."""
 
+import json
 import logging
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -69,6 +70,7 @@ from penny.validation.response_validators import (
     RefusalValidator,
     XmlTagValidator,
     find_hallucinated_urls,
+    interim_prose_rejection_reason,
 )
 
 
@@ -2970,6 +2972,138 @@ class TestOnToolStartCallback:
         await agent.close()
 
 
+def _tool_call_with_content_response(
+    request: dict, content: str, tool_name: str, arguments: dict[str, Any]
+) -> LlmResponse:
+    """A step response carrying BOTH prose and a tool call (#2837) — the shape
+    none of ``MockLlmClient``'s own builders produce (every one of them is
+    content-only or tool-call-only), since that was the whole bug: a real draw
+    carries both and the loop used to drop the prose."""
+    return LlmResponse(
+        message=LlmMessage(
+            role="assistant",
+            content=content,
+            tool_calls=[
+                LlmToolCall(
+                    id="call_0", function=LlmToolCallFunction(name=tool_name, arguments=arguments)
+                )
+            ],
+        ),
+        model=request.get("model", "test-model"),
+    )
+
+
+class TestInterimMessage:
+    """A tool-call step's own prose is sent as an interim message before its
+    calls run (#2837), instead of being silently dropped — and the prose stays
+    on the step's own message either way, so the run's own history (what the
+    NEXT model call sees) still carries it."""
+
+    @pytest.mark.asyncio
+    async def test_validated_prose_sent_before_the_calls_run(self, test_db, mock_llm):
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
+
+        sent: list[str] = []
+
+        async def on_interim_message(text: str) -> None:
+            sent.append(text)
+
+        def handler(request, count):
+            if count == 1:
+                return _tool_call_with_content_response(
+                    request, "I'll check that for you now.", "search", {"query": "test"}
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run(
+            "test",
+            max_steps=max_steps,
+            on_interim_message=on_interim_message,
+            call_link=CallLink.new_top(),
+        )
+
+        assert sent == ["I'll check that for you now."]
+        assert response.answer == "done"
+        # The call still ran — the interim send never blocked or replaced it.
+        assert len(response.tool_calls) == 1
+
+        with Session(db.engine) as session:
+            logs = sorted(session.exec(select(PromptLog)).all(), key=lambda row: row.id or 0)
+        # The SECOND call's own input is the step history the first call left behind —
+        # the prose must still be there, beside the tool_calls, exactly as drawn.
+        second_call_messages = json.loads(logs[1].messages)
+        step_one_message = next(m for m in second_call_messages if m.get("tool_calls"))
+        assert step_one_message["content"] == "I'll check that for you now."
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_no_callback_means_no_send_but_content_still_kept(self, test_db, mock_llm):
+        """``on_interim_message=None`` (every background/collector caller, #2837) —
+        the prose is never sent, but nothing about the run changes otherwise."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
+
+        def handler(request, count):
+            if count == 1:
+                return _tool_call_with_content_response(
+                    request, "Looking into it.", "search", {"query": "test"}
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
+
+        assert response.answer == "done"
+        assert len(response.tool_calls) == 1
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_shaped_prose_is_dropped_but_the_call_still_runs(
+        self, test_db, mock_llm
+    ):
+        """The interim check is DROP-ONLY (#2837): a prose that fails it never
+        reaches ``on_interim_message``, but the step's own calls run regardless
+        — never a retry, never a block."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
+
+        sent: list[str] = []
+
+        async def on_interim_message(text: str) -> None:
+            sent.append(text)
+
+        def handler(request, count):
+            if count == 1:
+                return _tool_call_with_content_response(
+                    request,
+                    "I'm sorry, I can't help with that.",
+                    "search",
+                    {"query": "test"},
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run(
+            "test",
+            max_steps=max_steps,
+            on_interim_message=on_interim_message,
+            call_link=CallLink.new_top(),
+        )
+
+        assert sent == []
+        assert response.answer == "done"
+        assert len(response.tool_calls) == 1
+
+        await agent.close()
+
+
 class TestPromptLogAnnotations:
     """Test that prompt logs are annotated with agent_name and run_id."""
 
@@ -4119,4 +4253,57 @@ class TestResponseValidators:
             _ctx(tools_available=False),
         )
         assert isinstance(stripped, Proceed)
-        assert stripped.response is not None and stripped.response.message.tool_calls is None
+
+
+class TestInterimProseRejectionReason:
+    """``interim_prose_rejection_reason`` (#2837) — the DROP-ONLY check behind
+    the interim-message send, exercised directly as a pure function since its
+    disposition (a reason-or-``None``) isn't one of ``ValidationOutcome``'s own
+    shapes and so isn't run through ``run_validators``."""
+
+    def test_clean_prose_passes(self):
+        assert interim_prose_rejection_reason("I'll check that for you now.", _ctx(), set()) is None
+
+    def test_xml_markup_is_rejected(self):
+        reason = interim_prose_rejection_reason("<function=search>x</function>", _ctx(), set())
+        assert reason == "xml markup"
+
+    def test_a_refusal_is_rejected(self):
+        reason = interim_prose_rejection_reason(
+            "I'm sorry, but I can't help with that.", _ctx(), set()
+        )
+        assert reason == "refusal"
+
+    def test_a_hallucinated_url_is_rejected(self):
+        reason = interim_prose_rejection_reason(
+            "Checking https://made-up.example/never now.",
+            _ctx(source_text="unrelated text"),
+            set(),
+        )
+        assert reason == "hallucinated url"
+
+    def test_a_dangling_link_handle_is_rejected(self):
+        table = HandleTable()
+        table.register("https://source.example/page-1")
+        reason = interim_prose_rejection_reason(
+            "Let me pull up [27] for you.", _ctx(source_text="some source", handles=table), set()
+        )
+        assert reason == "dangling link handle"
+
+    def test_a_second_call_written_as_text_in_the_prose_is_rejected(self):
+        """Distinct from the step's own REAL ``tool_calls`` (never touched by this
+        check): a SECOND, textual call stuffed into the prose itself."""
+        reason = interim_prose_rejection_reason(
+            'On it — {"name": "browse", "arguments": {"queries": []}}',
+            _ctx(),
+            {"browse"},
+        )
+        assert reason == "embedded call as text"
+
+    def test_a_half_formed_fragment_is_rejected(self):
+        reason = interim_prose_rejection_reason("...", _ctx(), set())
+        assert reason is not None
+
+    def test_empty_after_stripping_thinking_is_rejected(self):
+        reason = interim_prose_rejection_reason("<think>just planning</think>", _ctx(), set())
+        assert reason == "empty after stripping thinking"

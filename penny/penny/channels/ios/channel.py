@@ -1208,9 +1208,19 @@ class IosChannel(MessageChannel):
         await self._send_ws(conn.ws, IosTyping(active=typing))
         return True
 
-    def _make_handle_kwargs(self, message: IncomingMessage, progress=None) -> dict:
-        """Attach structured foreground progress to the requesting device."""
-        return {"on_progress": self.make_foreground_progress_callback(message.sender)}
+    def _make_handle_kwargs(
+        self, message: IncomingMessage, progress=None, run_id: str = ""
+    ) -> dict:
+        """Attach structured foreground progress to the requesting device.
+
+        Starts from the base default (#2837) and adds ``on_progress`` on top,
+        so the ``on_interim_message`` hook the base builds from ``run_id`` still
+        reaches this channel — replacing the dict outright, as this override
+        used to, would silently drop it.
+        """
+        kwargs = super()._make_handle_kwargs(message, progress, run_id)
+        kwargs["on_progress"] = self.make_foreground_progress_callback(message.sender)
+        return kwargs
 
     @staticmethod
     def _redact_progress_arguments(tool_name: str, arguments: dict) -> dict[str, object]:
