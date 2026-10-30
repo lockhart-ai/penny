@@ -78,17 +78,47 @@ def recorded_prs(log: Memory) -> set[int]:
     return recorded
 
 
-def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> int:
+def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[ChangelogEntry]:
     """Append every entry not already recorded in ``log``, each stamped with
     the log's own clock (the deploy time). Idempotent: an entry recorded on
-    one call is never appended again on a later one. Returns how many landed.
+    one call is never appended again on a later one. Returns the entries that
+    were actually appended — this deploy's own new ones (#2846), which is what
+    the startup changelog delivery turn renders; a caller that only wants a
+    count takes ``len()`` of it.
     """
     already = recorded_prs(log)
     missing = [entry for entry in entries if entry.pr not in already]
     if not missing:
-        return 0
+        return []
     log.append(
         [LogEntryInput(content=entry.render()) for entry in missing],
         author=PennyConstants.CHANGELOG_LOG_AUTHOR,
     )
-    return len(missing)
+    return missing
+
+
+# ── The startup delivery turn's own render (#2846) ───────────────────────────
+#
+# The framework renders this deploy's new entries verbatim — never model-written
+# — as the input of ONE chat-agent turn (``ChatAgent.handle_changelog_report``):
+# her persona, standing rules, history and full tool surface, over a fixed list
+# of facts.  The PR-number prefix each entry already carries (``render()``) is
+# kept here too: it is the same anchor a later ``log_read('changelog')`` shows,
+# so a reply that cites a change and a reader checking the log against it are
+# looking at the same text.
+
+_CHANGELOG_LEAD = "These changes to your tools and behaviour reached you with this deploy:"
+_CHANGELOG_ASK = "Let the user know what changed, in your own words."
+
+
+def render_changelog_announcement(entries: list[ChangelogEntry]) -> str:
+    """The whole delivery turn's input, rendered from framework-assembled facts
+    alone — pure and deterministic, so the exact text the chat agent reads is
+    pinned by a whole-render test rather than by whatever a live run produced.
+
+    ``entries`` is never empty here — the caller (``Penny._send_changelog_announcement``)
+    skips the turn entirely when a deploy records nothing new."""
+    lines = [_CHANGELOG_LEAD, ""]
+    lines.extend(f"- {entry.render()}" for entry in entries)
+    lines.extend(["", _CHANGELOG_ASK])
+    return "\n".join(lines)

@@ -19,9 +19,7 @@ RUN uv pip install --system -r pyproject.toml --group dev
 
 # Accept build args for git info (after deps so changing them doesn't bust the cache)
 ARG GIT_COMMIT=unknown
-ARG GIT_COMMIT_MESSAGE=unknown
 ENV GIT_COMMIT=${GIT_COMMIT}
-ENV GIT_COMMIT_MESSAGE=${GIT_COMMIT_MESSAGE}
 
 # Copy source
 COPY penny/ ./penny/

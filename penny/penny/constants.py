@@ -368,6 +368,12 @@ class ChatPromptType(StrEnum):
     # context.  Its own type so a run trace shows the delivery apart from the
     # user-initiated turns on the same agent.
     JOB_REPORT = "job_report"
+    # The startup delivery turn for a deploy's new changelog entries (#2846): the
+    # framework renders them (PR number + text, never model-written) and the chat
+    # agent writes the message from it with its whole context.  Its own type for
+    # the same reason JOB_REPORT has one — a run trace shows this delivery apart
+    # from an ordinary user turn.
+    CHANGELOG = "changelog"
 
 
 class PennyConstants:

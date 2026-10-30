@@ -8,19 +8,6 @@ Parameterized strings use .format() style templates.
 class PennyResponse:
     """All user-facing response strings, organized by feature area."""
 
-    # ── General ──────────────────────────────────────────────────────────────
-
-    # The restart announcement's own fallback (startup.py): used when there's no
-    # commit to announce (not a model matter at all) and when the model runner is
-    # unreachable (#2370) — nobody asked it anything yet, so there's nothing to
-    # narrate either way.
-    RESTART_FALLBACK = "I just restarted!"
-
-    # A commit landed but the model's transformation of it came back empty or
-    # unusably long (#2370) — reachable, so no apology; a plain note built from
-    # the commit information itself, with no second model call.
-    RESTART_UPDATE_NO_SUMMARY = "I just restarted — a new commit landed: {commit_message}"
-
     # ── Agent Errors ─────────────────────────────────────────────────────────
 
     # The one fixed message a chat turn can still answer with (#2370, docs/principles.md

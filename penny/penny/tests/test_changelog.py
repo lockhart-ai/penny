@@ -3,7 +3,13 @@ behind #2845's startup step (``Penny._record_changelog_entries``)."""
 
 from __future__ import annotations
 
-from penny.changelog import CHANGELOG_PATH, ChangelogEntry, load_entries, record_new_entries
+from penny.changelog import (
+    CHANGELOG_PATH,
+    ChangelogEntry,
+    load_entries,
+    record_new_entries,
+    render_changelog_announcement,
+)
 from penny.constants import PennyConstants
 from penny.tests.conftest import require_memory
 
@@ -39,11 +45,11 @@ def test_record_new_entries_is_idempotent(db):
     ]
 
     added = record_new_entries(changelog, entries)
-    assert added == 2
+    assert added == entries
     assert [row.content for row in changelog.read_all()] == [e.render() for e in entries]
 
     again = record_new_entries(changelog, entries)
-    assert again == 0
+    assert again == []
     assert len(changelog.read_all()) == 2
 
 
@@ -61,8 +67,26 @@ def test_record_new_entries_only_appends_the_missing_ones(db):
             ChangelogEntry(pr=9202, text="second change"),
         ],
     )
-    assert added == 1
+    assert added == [ChangelogEntry(pr=9202, text="second change")]
     assert [row.content for row in changelog.read_all()] == [
         "PR #9201: first change",
         "PR #9202: second change",
     ]
+
+
+def test_render_changelog_announcement_is_whole_literal():
+    """The startup delivery turn's input (#2846) is framework-rendered verbatim —
+    never model-written — so the exact text the chat agent reads is pinned here
+    rather than left to whatever a live run happens to produce."""
+    entries = [
+        ChangelogEntry(pr=9101, text="We added a new way to save a note."),
+        ChangelogEntry(pr=9102, text="We renamed the lookup tool."),
+    ]
+    assert render_changelog_announcement(entries) == (
+        "These changes to your tools and behaviour reached you with this deploy:\n"
+        "\n"
+        "- PR #9101: We added a new way to save a note.\n"
+        "- PR #9102: We renamed the lookup tool.\n"
+        "\n"
+        "Let the user know what changed, in your own words."
+    )

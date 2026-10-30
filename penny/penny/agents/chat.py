@@ -14,6 +14,7 @@ from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.conversation_map import ConversationMap
 from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
 from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
+from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, RunOutcome
 from penny.datetime_utils import current_datetime_line
@@ -393,6 +394,34 @@ class ChatAgent(Agent):
             prompt_type=ChatPromptType.JOB_REPORT,
             progress_scope="background",
             handles=handles,
+        )
+
+    async def handle_changelog_report(
+        self, entries: list[ChangelogEntry], sender: str, *, call_link: CallLink
+    ) -> ControllerResponse:
+        """The startup delivery turn (#2846): write the message that tells the
+        user what this deploy's new changelog entries are.
+
+        The input is the framework-rendered entries (``render_changelog_announcement``)
+        — each PR number and its text, never anything model-written. Everything else
+        the message needs is the turn's own ambient state: her persona and voice, the
+        standing rules, and the full chat tool surface — so a change that names
+        something she can look at stays reachable before she writes about it.
+
+        ``sender`` is the user the message is written for; ``call_link`` (#2458) is
+        REQUIRED, as on every run starter. The reply is NOT delivered here — the
+        caller (``Penny._send_changelog_announcement``) gates and enqueues it, so it
+        is logged and delivered exactly like any other autonomous send. No link
+        table: changelog entries are authored, reviewed prose about Penny's own
+        tools — never user-sourced content carrying real URLs."""
+        prompt = render_changelog_announcement(entries)
+        logger.info("Handling changelog announcement (%d entries)", len(entries))
+        return await self._dispatch_turn(
+            prompt,
+            sender,
+            call_link=call_link,
+            prompt_type=ChatPromptType.CHANGELOG,
+            progress_scope="background",
         )
 
     async def _dispatch_turn(

@@ -3735,7 +3735,7 @@ class TestLogTools:
                 ChangelogEntry(pr=9002, text="We renamed the lookup tool."),
             ],
         )
-        assert added == 2
+        assert len(added) == 2
         entries = changelog.read_all()
         result = await LogReadTool(db, agent_name="chat", scope=None).execute(
             CallLink.new_top(), log=PennyConstants.MEMORY_CHANGELOG_LOG
@@ -3747,7 +3747,7 @@ class TestLogTools:
             f"2. [{format_log_timestamp(entries[1].created_at)}] id={entries[1].id} "
             "PR #9002: We renamed the lookup tool."
         )
-        assert record_new_entries(changelog, [ChangelogEntry(pr=9001, text="x")]) == 0
+        assert record_new_entries(changelog, [ChangelogEntry(pr=9001, text="x")]) == []
 
 
 class TestEmissionProvenanceRender:

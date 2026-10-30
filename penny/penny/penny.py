@@ -6,6 +6,7 @@ import asyncio
 import logging
 import signal
 import sys
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -15,7 +16,7 @@ from penny.agents import (
     ChatAgent,
     Collector,
 )
-from penny.changelog import load_entries, record_new_entries
+from penny.changelog import ChangelogEntry, load_entries, record_new_entries
 from penny.channels import MessageChannel, create_channel_manager
 from penny.channels.browser import BrowserChannel
 from penny.channels.ios.channel import IosChannel
@@ -29,11 +30,13 @@ from penny.database import Database
 from penny.database.migrate import migrate
 from penny.database.models import MemoryEntry
 from penny.email.protocol import EmailClient
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.decision_client import DecisionClient, decision_api_url
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import MfluxImageClient
 from penny.llm.models import LlmError, ProviderPin
+from penny.notification import withheld_reason
 from penny.plugins import Plugin, load_plugins
 from penny.plugins.fastmail import JmapClient
 from penny.plugins.zoho.mail_client import ZohoClient
@@ -46,7 +49,7 @@ from penny.scheduler import (
     Schedule,
 )
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
-from penny.startup import commit_message_from_env, get_restart_message
+from penny.text_validity import half_formed_send_reason
 from penny.tools import Tool
 from penny.tools.draft_email import DraftEmailTool
 from penny.tools.list_emails import ListEmailsTool
@@ -565,12 +568,12 @@ class Penny:
 
         await self._run_preflight()
         await self._run_startup_backfills()
-        self._record_changelog_entries()
+        new_changelog_entries = self._record_changelog_entries()
 
         listen_task = asyncio.create_task(self.channel.listen(), name="channel.listen")
         scheduler_task = asyncio.create_task(self.scheduler.run(), name="scheduler.run")
         startup_task = asyncio.create_task(
-            self._run_startup_notifications(), name="startup.notifications"
+            self._run_startup_notifications(new_changelog_entries), name="startup.notifications"
         )
         tasks = {listen_task, scheduler_task, startup_task}
         try:
@@ -612,24 +615,30 @@ class Penny:
         if total_messages:
             logger.info("Startup embedding backfill complete: %d messages", total_messages)
 
-    def _record_changelog_entries(self) -> None:
-        """Record any changelog entry (#2845) this deploy hasn't recorded yet.
+    def _record_changelog_entries(self) -> list[ChangelogEntry]:
+        """Record any changelog entry (#2845) this deploy hasn't recorded yet, and
+        return exactly those — this deploy's own new ones, which the startup
+        changelog delivery turn (#2846) announces.
 
         Deterministic and idempotent: ``record_new_entries`` reads the
         `changelog` log's own existing rows to decide what's missing, so a
-        PR already recorded on an earlier startup is never appended twice.
+        PR already recorded on an earlier startup is never appended twice —
+        and a restart on the same deploy returns nothing new the second time.
         Synchronous and DB-only — no model, no channel — so it runs right
         after the embedding backfill, before anything the user can see.
         """
         changelog = self.db.memory(PennyConstants.MEMORY_CHANGELOG_LOG)
         if changelog is None:
             logger.warning("No `changelog` memory row — migration 0132 didn't run?")
-            return
+            return []
         added = record_new_entries(changelog, load_entries())
         if added:
-            logger.info("Recorded %d new changelog entr%s", added, "y" if added == 1 else "ies")
+            logger.info(
+                "Recorded %d new changelog entr%s", len(added), "y" if len(added) == 1 else "ies"
+            )
+        return added
 
-    async def _run_startup_notifications(self) -> None:
+    async def _run_startup_notifications(self, new_changelog_entries: list[ChangelogEntry]) -> None:
         """Send startup notifications after the outgoing channel is ready."""
         try:
             await self.channel.wait_until_ready()
@@ -639,38 +648,58 @@ class Penny:
             logger.warning("Startup notifications skipped; channel never became ready: %s", e)
             return
 
-        await self._send_startup_announcement()
+        await self._send_changelog_announcement(new_changelog_entries)
         await self._prompt_for_missing_profiles()
 
-    async def _send_startup_announcement(self) -> None:
-        """Send a startup announcement to the user's default device."""
+    async def _send_changelog_announcement(self, entries: list[ChangelogEntry]) -> None:
+        """Dispatch the changelog delivery turn for this deploy's new entries
+        (#2846), and queue what it writes like any other autonomous send.
+
+        A deploy that recorded nothing new (harness-only, CI-only, or a restart on
+        an already-recorded commit) sends nothing — no model call, nothing
+        queued. The same profile/history gates the retired restart announcement
+        used stay: a fresh install, or the watcher's rapid per-deploy restarts
+        before any real conversation, never spend a model call on a user who has
+        never chatted. iOS keeps its own simple operational push instead,
+        unchanged by this feature — prod's default device is Signal.
+        """
+        if not entries:
+            return
         try:
             sender = self.db.users.get_primary_sender()
             if not sender:
-                logger.info("No user profile found for startup announcement")
+                logger.info("No user profile found for changelog announcement")
                 return
 
-            # Only announce if the user has chatted before (not a fresh profile).
-            # This same gate covers the iOS push path so a fresh install (or the
-            # watcher's per-deploy restarts before any conversation) can't spam a
-            # notification.
             user_messages = self.db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG)
             if user_messages is None or not user_messages.newest_entries(k=1):
-                logger.info("No message history yet, skipping startup announcement")
+                logger.info("No message history yet, skipping changelog announcement")
                 return
 
             if await self._send_ios_operational_announcement():
                 return
 
-            restart_msg = await get_restart_message(
-                self.db, self.model_client, commit_message_from_env()
+            run_id = uuid.uuid4().hex
+            response = await self.chat_agent.handle_changelog_report(
+                entries, sender, call_link=CallLink.top(run_id)
             )
-            announcement = f"👋 {restart_msg}"
+            answer = (response.answer or "").strip() if response is not None else ""
+            if not answer:
+                logger.warning("Changelog delivery turn produced no reply")
+                return
+            half_formed = half_formed_send_reason(answer)
+            if half_formed is not None:
+                logger.warning("Changelog delivery reply was not whole (%s)", half_formed)
+                return
+            reason = withheld_reason(self.db, answer)
+            if reason is not None:
+                logger.info("Changelog announcement withheld — %s", reason)
+                return
 
-            logger.info("Sending startup announcement to %s", sender)
-            await self.channel.send_message(sender, announcement)
+            logger.info("Queuing changelog announcement for %s", sender)
+            self.db.send_queue.enqueue(answer, collection=PennyConstants.CHANGELOG_LOG_AUTHOR)
         except Exception as e:
-            logger.warning("Failed to send startup announcement: %s", e)
+            logger.warning("Failed to send changelog announcement: %s", e)
 
     async def _send_ios_operational_announcement(self) -> bool:
         """Send a simple startup notification when iOS is the default channel."""

@@ -69,14 +69,13 @@ penny/
   constants.py        — Enums (SearchTrigger), reaction emojis, browse constants
   prompts.py          — LLM prompt templates (chat conversation, email-summarize).  Collector prompts live on memory rows (extraction_prompt) instead
   responses.py        — All user-facing response strings (PennyResponse class)
-  startup.py          — Startup announcement message generation (git commit info)
   preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on the decision model/image/browser/channel issues
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
   notification.py     — The finished cycle's report hand-off (#1911, reshaped #2656): the report row the cycle enqueues, the typed JobReport + its deterministic render, the outcome vocabulary the run record is stamped from, and the send gate
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
     models.py         — ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
-    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the static-leading system message split (static identity/rules/instructions + Jobs + the store map + the conversation map at its end, #2814, then the growing history, then a dynamic clock/page/activity/user-facts system message right before the user's own turn, #2756; previously two leading messages, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656)
+    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the static-leading system message split (static identity/rules/instructions + Jobs + the store map + the conversation map at its end, #2814, then the growing history, then a dynamic clock/page/activity/user-facts system message right before the user's own turn, #2756; previously two leading messages, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656); `handle_changelog_report` is the startup delivery turn a deploy's new changelog entries ride (#2846)
     conversation_map.py — `ConversationMap`: renders the conversation older than the history window as an append-only line-per-exchange map appended to the END of the static leading system message (#2752, placed there by #2757 to keep the map inside the reused cache prefix) — user's clipped words, recorded outcomes, the items her reply marked; bounded by `CHAT_MAP_DAYS`/`CHAT_MAP_MAX_LINES`; shares `Agent._history_window_size` with the history so the two never disagree about where the window starts
     self_state.py     — `SelfStateHeader`: renders Penny's operational self-state, split across both chat messages (#2814): Jobs + the store map ride the STATIC leading message (`render_static`, pure registry renders, byte-identical unless a job or collection changes), recent activity + durable user facts ride the per-turn DYNAMIC message right before the user's own turn (`render_dynamic`, #2756; previously the whole header rode there, #2745)
     collector.py      — Collector: single dispatcher agent driving every per-collection extractor
@@ -168,7 +167,7 @@ penny/
       test_context.py
     channels/         — Channel integration tests
       test_signal_channel.py, test_signal_reactions.py, test_signal_vision.py,
-      test_signal_formatting.py, test_startup_announcement.py
+      test_signal_formatting.py, test_changelog_announcement.py
     commands/         — Per-command tests
       test_commands.py, test_config.py, test_debug.py,
       test_system.py, test_test_mode.py
