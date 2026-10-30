@@ -65,6 +65,7 @@ def _prompt(
     messages: str = "[]",
     trailing: str | None = None,
     run_id: str = "r",
+    thinking: str | None = None,
 ) -> PromptLog:
     """One promptlog row.  Only the run's LAST row carries outcome/tool_failures
     (that's how ``set_run_outcome`` stamps it); ``messages`` holds the tool-result
@@ -72,7 +73,9 @@ def _prompt(
     ``trailing`` the tail no later call carried (#1778 — NULL for the overwhelming
     majority of runs, which round-trip every result).  ``target`` is ``None`` for
     chat-run fixtures (chat stamps no run_target); ``run_id`` is fixed per fixture
-    so whole-render literals are exact."""
+    so whole-render literals are exact.  ``thinking`` (#2841) is this CALL's own
+    raw thinking — ``None`` (the default) for the overwhelming majority of
+    fixtures, which predate the feature and render identically either way."""
     message: dict = {"role": "assistant", "content": "", "tool_calls": calls}
     return PromptLog(
         model="m",
@@ -84,6 +87,7 @@ def _prompt(
         run_reason=reason,
         tool_failures=tool_failures,
         trailing_messages=trailing,
+        thinking=thinking,
     )
 
 
@@ -269,9 +273,9 @@ def test_logged_log_call_renders_its_log_argument_under_either_key():
     however the row was logged: a call logged before the rename stored ``memory``,
     and the read projection — never the stored row — maps it to ``log``."""
     run = [_prompt([_call("log_read", {"memory": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read(log='user-messages')" in render_run_calls(run)
+    assert "step 1: log_read(log='user-messages')" in render_run_calls(run, with_thinking=False)
     fresh = [_prompt([_call("log_read", {"log": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read(log='user-messages')" in render_run_calls(fresh)
+    assert "step 1: log_read(log='user-messages')" in render_run_calls(fresh, with_thinking=False)
 
 
 def test_no_writes_flagged_when_browses_fail_and_nothing_written():
@@ -368,7 +372,7 @@ browse(['a', 'b'])
 collection_write(collection='games', entries='x')"""
     )
     assert (
-        render_run_calls(run)
+        render_run_calls(run, with_thinking=False)
         == """\
 run wrote-fixed
 [games]
@@ -581,7 +585,7 @@ def test_render_run_calls_chat_kitchen_sink_full_literal():
     gate outcomes (written / duplicate-rejected) and the failed call render
     honestly, and the egress trace names the delivered media by typed id — so a
     delivery is inspected by a read, not confabulated."""
-    assert render_run_calls(_chat_kitchen_sink_run()) == (
+    assert render_run_calls(_chat_kitchen_sink_run(), with_thinking=False) == (
         "run run-fixed\n"
         "user: draw me a cartoon fox and log any new fox shows\n"
         "    step 1: browse(['new fox cartoons']) => "
@@ -631,7 +635,7 @@ def test_render_run_calls_collector_run_full_literal():
             ),
         ),
     ]
-    assert render_run_calls(run) == (
+    assert render_run_calls(run, with_thinking=False) == (
         "run coll-fixed\n"
         "[games]\n"
         "    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget\n"
@@ -639,6 +643,131 @@ def test_render_run_calls_collector_run_full_literal():
         "Wrote 1 entry: pocket-go.\n"
         "done: worked"
     )
+
+
+# A short thinking string the examples below attach to step 2 (the write) — short
+# enough to render WHOLE even by default, so the excerpt-vs-full distinction (the
+# next test) needs its own longer fixture.
+_SHORT_THINKING = (
+    "Pocket Go looked like the clear budget pick on this page, so I'm writing it down now."
+)
+
+# A thinking string over the 600-character cap, built so the excerpt
+# (``_thinking_excerpt``'s own cut: the last 600 characters, advanced to the next
+# sentence boundary) is known and asserted whole below — computed once, by hand,
+# against the same algorithm, never re-derived from the implementation under test.
+_LONG_THINKING = (
+    "Looking at the budget handhelds page, nothing here stands out yet. " * 10
+    + "Pocket Go is clearly the strongest budget pick on this page, so I will write it down now."
+)
+_LONG_THINKING_EXCERPT = (
+    "Looking at the budget handhelds page, nothing here stands out yet. " * 7
+    + "Pocket Go is clearly the strongest budget pick on this page, so I will write it down now."
+)
+
+
+def _collector_run_with_thinking(thinking: str) -> list[PromptLog]:
+    """The same two-step collector run ``test_render_run_calls_collector_run_full_
+    literal`` uses, with ``thinking`` attached to step 2's own call (the write) —
+    shared by the thinking-specific tests below so each one only states what it
+    adds over the plain literal."""
+    return [
+        _prompt([_call("browse", {"queries": ["budget handhelds"]})], run_id="coll-fixed"),
+        _prompt(
+            [
+                _call(
+                    "collection_write",
+                    {
+                        "memory": "games",
+                        "entries": [{"key": "pocket-go", "content": "Pocket Go pick"}],
+                    },
+                    call_id="w1",
+                ),
+                _DONE_OK,
+            ],
+            run_id="coll-fixed",
+            outcome="worked",
+            thinking=thinking,
+            messages=json.dumps(
+                [
+                    _tool_result("browse", "## browse: https://example.com/budget\nBudget picks."),
+                    _tool_result("w1", "Wrote 1 entry: pocket-go."),
+                ]
+            ),
+        ),
+    ]
+
+
+def test_render_run_calls_with_thinking_shows_a_short_thinking_whole():
+    """``with_thinking=True`` (run_get's own call, #2841) renders a step's thinking
+    — short enough to sit under the excerpt cap, so it shows WHOLE either way —
+    on its own line right before that step's call line."""
+    run = _collector_run_with_thinking(_SHORT_THINKING)
+    assert render_run_calls(run, with_thinking=True) == (
+        "run coll-fixed\n"
+        "[games]\n"
+        "    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget\n"
+        f"    step 2 thinking: {_SHORT_THINKING}\n"
+        "    step 2: collection_write(collection='games', entries='Pocket Go pick') => "
+        "Wrote 1 entry: pocket-go.\n"
+        "done: worked"
+    )
+
+
+def test_render_run_calls_with_thinking_false_shows_nothing_even_when_logged():
+    """``with_thinking=False`` (``run_list``'s own call, #2841) renders no thinking
+    line at all, even for a step whose call DID log one — the batch reader states
+    it wants none, rather than relying on every step happening to carry none."""
+    run = _collector_run_with_thinking(_SHORT_THINKING)
+    rendered = render_run_calls(run, with_thinking=False)
+    assert "thinking" not in rendered
+
+    # And a step with NO logged thinking renders identically whichever flag is
+    # passed — the excerpt is ABSENT, not merely empty.
+    bare = [
+        _prompt([_call("browse", {"queries": ["budget handhelds"]})], run_id="coll-fixed"),
+        _prompt([_DONE_OK], run_id="coll-fixed", outcome="worked"),
+    ]
+    assert render_run_calls(bare, with_thinking=True) == render_run_calls(bare, with_thinking=False)
+
+
+def test_render_run_calls_thinking_excerpt_cuts_to_last_600_chars_at_sentence_boundary():
+    """Thinking over the 600-character cap renders only its closing part — the
+    last ~600 characters, advanced to the NEXT sentence boundary inside that tail
+    so the excerpt opens on a whole sentence rather than a severed one (#2841)."""
+    run = _collector_run_with_thinking(_LONG_THINKING)
+    rendered = render_run_calls(run, with_thinking=True)
+    assert f"    step 2 thinking: {_LONG_THINKING_EXCERPT}\n" in rendered
+    assert _LONG_THINKING not in rendered  # the excerpt, never the whole thing
+
+
+def test_render_run_calls_step_arg_shows_that_steps_full_thinking():
+    """``run_get(run=…, step=2)`` (#2841) renders step 2's thinking WHOLE — the
+    text the default excerpted render cuts — while every other step (none here
+    with thinking) stays excerpted."""
+    run = _collector_run_with_thinking(_LONG_THINKING)
+    rendered = render_run_calls(run, with_thinking=True, step=2)
+    assert f"    step 2 thinking: {_LONG_THINKING}\n" in rendered
+    assert f"    step 2 thinking: {_LONG_THINKING_EXCERPT}\n" not in rendered
+
+
+def test_render_run_calls_unmatched_step_appends_an_honest_line_not_a_no_op():
+    """A ``step`` naming no step this run rendered (#2841) gets the run's full
+    record PLUS one trailing line saying so and naming the valid range — never a
+    silent no-op, which would read as "that step has no thinking" rather than
+    "that step doesn't exist"."""
+    run = _collector_run_with_thinking(_SHORT_THINKING)
+    rendered = render_run_calls(run, with_thinking=True, step=9)
+    assert rendered.startswith(render_run_calls(run, with_thinking=True))
+    assert rendered.endswith("\nrun coll-fixed has no step 9; its steps are 1–2")
+
+
+def test_render_run_calls_unmatched_step_on_a_run_with_no_steps():
+    """A run that rendered no steps at all (every call was ``done()``) gets the
+    "has no steps" line rather than a fabricated range."""
+    run = [_prompt([_DONE_OK], run_id="bail-fixed", outcome="no_work")]
+    rendered = render_run_calls(run, with_thinking=True, step=1)
+    assert rendered.endswith("\nrun bail-fixed has no steps")
 
 
 def test_render_run_calls_write_gate_stop_conclusion_full_literal():
@@ -670,7 +799,7 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
         )
     ]
     assert (
-        render_run_calls(run)
+        render_run_calls(run, with_thinking=False)
         == """\
 run stop-fixed
 [games]
@@ -706,7 +835,7 @@ def test_render_run_calls_pure_reply_run_full_literal():
         run_target=None,
     )
     assert (
-        render_run_calls([only])
+        render_run_calls([only], with_thinking=False)
         == """\
 run chat-quiet
 user: how are you?
@@ -731,7 +860,7 @@ def test_render_run_calls_bare_utterance_origin_full_literal():
         run_target=None,
     )
     assert (
-        render_run_calls([only])
+        render_run_calls([only], with_thinking=False)
         == """\
 run chat-bare
 user: how are you?
@@ -796,7 +925,7 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
     )
     run = _terminal_write_run(trailing=tail)
     assert (
-        render_run_calls(run)
+        render_run_calls(run, with_thinking=False)
         == """\
 run tail-fixed
 user: log the new shelf price
@@ -806,7 +935,7 @@ user: log the new shelf price
     # Without the tail (every pre-#1778 row) the same run renders the call bare — the
     # gap this closes.
     assert (
-        render_run_calls(_terminal_write_run(trailing=None))
+        render_run_calls(_terminal_write_run(trailing=None), with_thinking=False)
         == """\
 run tail-fixed
 user: log the new shelf price
@@ -816,7 +945,7 @@ user: log the new shelf price
 
 def test_render_run_calls_empty_history():
     """No prompts → the honest empty marker, not a fabricated frame."""
-    assert render_run_calls([]) == "(no data)"
+    assert render_run_calls([], with_thinking=False) == "(no data)"
 
 
 def test_render_run_calls_first_line_whole():
@@ -834,4 +963,7 @@ def test_render_run_calls_first_line_whole():
             messages=json.dumps([_tool_result("browse", f"{long_line}\npage body")]),
         )
     ]
-    assert render_run_calls(run) == f"run run-long\n    step 1: browse(['a']) => {long_line}"
+    assert (
+        render_run_calls(run, with_thinking=False)
+        == f"run run-long\n    step 1: browse(['a']) => {long_line}"
+    )

@@ -767,8 +767,11 @@ def assert_the_failed_turn_record_is_the_only_route(db: Database) -> None:
         f"it did not:\n{header}"
     )
     run_id = seeded_run_id("failed-browse-turn")
+    # Simulates a real run_get call, which passes with_thinking=True (#2841).
     rendered = render_run_calls(
-        db.messages.get_run_prompts(run_id), db.messages.get_child_draws(run_id)
+        db.messages.get_run_prompts(run_id),
+        db.messages.get_child_draws(run_id),
+        with_thinking=True,
     )
     assert _BROWSE in rendered, "the seeded run's own browse call must render in run_get"
     assert "cancelled" in rendered, (

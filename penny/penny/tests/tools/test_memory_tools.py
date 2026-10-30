@@ -3399,7 +3399,8 @@ class TestLogTools:
         result = await GetEventTool(db).run(CallLink.new_top(), run="run news-1")
 
         # Whole-render: the tool returns the canonical projection byte-for-byte.
-        expected = render_run_calls(db.messages.get_run_prompts("news-1"))
+        # run_get passes with_thinking=True (#2841), so the comparison must too.
+        expected = render_run_calls(db.messages.get_run_prompts("news-1"), with_thinking=True)
         assert result.message == expected
         assert result.message.startswith("run news-1")
         assert "collection_write(collection='ai-news'" in result.message
@@ -3476,6 +3477,21 @@ class TestLogTools:
         framed = await GetEventTool(db).run(CallLink.new_top(), run="(run news-1)")
         assert framed.message == bare.message
         assert framed.success is True
+
+    @pytest.mark.asyncio
+    async def test_run_get_resolves_a_bare_id_with_no_prefix(self, db):
+        """A real run id is ``uuid.uuid4().hex`` — 32 lowercase hex characters
+        (#2841) — so it is unambiguously a run id even with no ``run `` prefix,
+        and costs no retry: ``run_get`` resolves it exactly as it resolves the
+        prefixed form."""
+        run_id = "d58ae2d1" * 4
+        await self._create_collection(db, "ai-news")
+        self._log_run(db, run_id=run_id, target="ai-news", summary="wrote 1", write_key="mixtral")
+
+        prefixed = await GetEventTool(db).run(CallLink.new_top(), run=f"run {run_id}")
+        bare = await GetEventTool(db).run(CallLink.new_top(), run=run_id)
+        assert bare.message == prefixed.message
+        assert bare.success is True
 
     @pytest.mark.asyncio
     async def test_run_get_untyped_id_is_actionable(self, db):

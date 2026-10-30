@@ -1194,17 +1194,29 @@ class LoggedToolCall(BaseModel):
         return render_tool_call(self.tool, self.arguments)
 
 
-def _run_logged_steps(prompts: list[PromptLog]) -> list[tuple[str | None, LoggedToolCall]]:
-    """Every tool call across a run's prompts as ``(call_id, LoggedToolCall)``, in
-    order — the canonical projection paired with the id that keys its result."""
-    steps: list[tuple[str | None, LoggedToolCall]] = []
+def _run_logged_steps(
+    prompts: list[PromptLog],
+) -> list[tuple[str | None, LoggedToolCall, str | None]]:
+    """Every tool call across a run's prompts as ``(call_id, LoggedToolCall,
+    thinking)``, in order — the canonical projection paired with the id that keys
+    its result and the owning model call's raw thinking (``None`` when that call
+    made or logged none).  Several calls from the SAME completion (a parallel
+    draw) share that completion's one thinking string — there is one decision per
+    model call, not per call it emits."""
+    steps: list[tuple[str | None, LoggedToolCall, str | None]] = []
     for prompt in prompts:
         response = json.loads(prompt.response) if prompt.response else {}
         for choice in response.get("choices", []):
             message = choice.get("message") or {}
             for tool_call in message.get("tool_calls") or []:
                 function = tool_call.get("function") or {}
-                steps.append((tool_call.get("id"), LoggedToolCall.from_function(function)))
+                steps.append(
+                    (
+                        tool_call.get("id"),
+                        LoggedToolCall.from_function(function),
+                        prompt.thinking,
+                    )
+                )
     return steps
 
 
@@ -1728,6 +1740,55 @@ def _step_line(index: int, call: LoggedToolCall, result: str | None) -> str:
     return f"{rendered} => {preview}" if preview else rendered
 
 
+# A step's thinking is bounded by default (#2841) — a run can carry many steps, and
+# showing every one's reasoning in full would bloat the very surface the model is
+# trying to scan.  The excerpt is the CLOSING part, where a decision gets made, not
+# the opening (where a model restates what it's about to do) — capped to the last
+# ~600 characters, then advanced to the next sentence boundary inside that tail so
+# the excerpt opens on a whole sentence rather than a severed clause.
+_THINKING_EXCERPT_CHARS = 600
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]\s+")
+
+
+def _thinking_excerpt(thinking: str | None) -> str | None:
+    """The closing ~600 characters of a step's thinking, cut at a sentence
+    boundary — ``None`` for a step that made or logged no thinking (renders as
+    today, #2841)."""
+    text = (thinking or "").strip()
+    if not text:
+        return None
+    if len(text) <= _THINKING_EXCERPT_CHARS:
+        return text
+    tail = text[-_THINKING_EXCERPT_CHARS:]
+    match = _SENTENCE_BOUNDARY_RE.search(tail)
+    return tail[match.end() :] if match else tail
+
+
+def _step_thinking_lines(index: int, thinking: str | None, *, full: bool) -> list[str]:
+    """The ``    step <N> thinking: <text>`` line preceding a step's call — the
+    excerpted closing part of its thinking by default, or the WHOLE thing
+    verbatim when ``full`` (the one step a ``run_get(step=N)`` ask names, #2841).
+    No line at all for a step that made no thinking — identical to the
+    pre-#2841 render."""
+    text = (thinking or "").strip() if full else _thinking_excerpt(thinking)
+    return [f"    step {index} thinking: {text}"] if text else []
+
+
+# The honest refusal when a ``step`` the caller named matches no rendered step of
+# THIS run (#2841) — appended to the full record rather than replacing it, so a
+# bad step number still returns everything the render would have shown anyway.
+_UNMATCHED_STEP_LINE = "{run_line} has no step {step}; its steps are 1–{max_step}"
+_NO_STEPS_LINE = "{run_line} has no steps"
+
+
+def _unmatched_step_line(run_line: str, step: int, rendered_indices: list[int]) -> str:
+    """One honest line naming why ``step`` named nothing — the valid range when
+    this run rendered any steps, or that it rendered none at all."""
+    if not rendered_indices:
+        return _NO_STEPS_LINE.format(run_line=run_line)
+    return _UNMATCHED_STEP_LINE.format(run_line=run_line, step=step, max_step=max(rendered_indices))
+
+
 def _draw_outcome_clause(draw: PromptLog) -> str:
     """How ONE child draw ended, for its nested ``model call:`` line (#2355 part D):
     ``completed`` reads as plain ``completed``, every other outcome adds its duration
@@ -1767,7 +1828,13 @@ def _draws_by_tool_call(
     return by_call_id, unanchored
 
 
-def render_run_calls(prompts: list[PromptLog], child_draws: list[PromptLog] | None = None) -> str:
+def render_run_calls(
+    prompts: list[PromptLog],
+    child_draws: list[PromptLog] | None = None,
+    *,
+    with_thinking: bool,
+    step: int | None = None,
+) -> str:
     """One run as its tool-call SEQUENCE: ``run id → origin → the numbered steps →
     conclusion → egress``.
 
@@ -1787,6 +1854,21 @@ def render_run_calls(prompts: list[PromptLog], child_draws: list[PromptLog] | No
     inspect its own turn's delivery (tools + outcomes + what went out) instead of
     confabulating it, every referenced neighbour named, never guessed (#1560).
 
+    ``with_thinking`` is REQUIRED, no default (#2841): a step's thinking is a
+    one-caller feature.  ``run_get`` passes ``True`` — a single named run, where
+    seeing WHY each step happened is the point.  ``run_list`` passes ``False`` — a
+    batch of runs, where every step of every run showing an excerpt would bloat the
+    read; a caller states its own need rather than inheriting a shared default.
+    When ``True``, each step whose owning model call logged thinking gets a
+    ``step <N> thinking: <excerpt>`` line before its call line — the closing ~600
+    characters, cut at a sentence boundary (``_thinking_excerpt``); a step with no
+    thinking renders exactly as it did before this existed.  ``step`` (only
+    meaningful with ``with_thinking=True``) names the ONE step whose thinking
+    should render WHOLE rather than excerpted — the ``run_get(run='run <id>',
+    step=N)`` ask — and a ``step`` that names nothing this run rendered gets one
+    honest trailing line (``_unmatched_step_line``) rather than a silent no-op: the
+    record still comes back in full, plus why the ask didn't change it.
+
     ``child_draws`` (#2355 part D) are the model calls a micro-context made ON
     BEHALF of this run — a browse-extract draw, say — linked by ``parent_run_id``/
     ``parent_tool_call_id`` rather than sharing this run's own ``run_id`` (a
@@ -1797,10 +1879,16 @@ def render_run_calls(prompts: list[PromptLog], child_draws: list[PromptLog] | No
         return "(no data)"
     results = _tool_results_by_id(prompts)
     by_call_id, unanchored = _draws_by_tool_call(child_draws or [])
-    lines = [_run_header(prompts), _run_origin(prompts)]
-    for index, (call_id, call) in enumerate(_run_logged_steps(prompts), start=1):
+    steps = _run_logged_steps(prompts)
+    run_line = _run_header(prompts)
+    lines = [run_line, _run_origin(prompts)]
+    rendered_indices: list[int] = []
+    for index, (call_id, call, thinking) in enumerate(steps, start=1):
         if call.tool == PennyConstants.DONE_TOOL_NAME:
             continue  # consumes the coordinate (gap, never renumber), not shown
+        rendered_indices.append(index)
+        if with_thinking:
+            lines.extend(_step_thinking_lines(index, thinking, full=(step == index)))
         lines.append(_step_line(index, call, results.get(call_id) if call_id else None))
         if call_id:
             lines.extend(_draw_line(draw) for draw in by_call_id.get(call_id, []))
@@ -1809,6 +1897,8 @@ def render_run_calls(prompts: list[PromptLog], child_draws: list[PromptLog] | No
     if conclusion:
         lines.append(conclusion)
     lines.extend(_egress_media_lines(prompts))
+    if with_thinking and step is not None and step not in rendered_indices:
+        lines.append(_unmatched_step_line(run_line, step, rendered_indices))
     return "\n".join(line for line in lines if line)
 
 

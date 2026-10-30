@@ -19,6 +19,7 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Field,
     ValidationInfo,
     model_validator,
 )
@@ -417,9 +418,16 @@ class GetEventArgs(ToolArgs):
     both the run lines and each mutation line's ``(run <id>)`` cause.  The tool
     parses the type tag and routes; the model copies the rendered token verbatim
     (the n≤1 anchor discipline), so no field here validates the tag — that's the
-    tool's enumerated-cases dispatch, which names what IS addressable on a miss."""
+    tool's enumerated-cases dispatch, which names what IS addressable on a miss.
+
+    ``step`` (#2841) names the one step — by the number its own ``step <N>``
+    line rendered — whose thinking should come back WHOLE rather than excerpted.
+    Optional, and ``ge=1`` since step numbers are 1-based ordinals: a caller
+    passing 0 or a negative number gets Pydantic's own actionable rejection
+    rather than a tool that silently treats it as "no step named"."""
 
     run: str
+    step: int | None = Field(default=None, ge=1)
 
 
 # ── Collection writes ───────────────────────────────────────────────────────

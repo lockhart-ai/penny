@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 from abc import abstractmethod
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
@@ -2875,7 +2876,10 @@ class ReadRunCallsTool(CursorReadTool):
             MemoryEntry(
                 memory_name=key,
                 key=None,
-                content=render_run_calls(group),
+                # A batch of runs, not one named run (#2841) — every step of every
+                # run showing its thinking would bloat this read, so run_list
+                # states explicitly that it wants none.
+                content=render_run_calls(group, with_thinking=False),
                 author=PennyConstants.MessageAuthor.COLLECTOR,
                 created_at=group[-1].timestamp,
             )
@@ -2899,6 +2903,11 @@ _GET_EVENT_UNTYPED = (
     "now; to resolve a collection or log by meaning use find(query=<text>), "
     "and your activity block names every recent event.)"
 )
+
+# Every run id is a bare ``uuid.uuid4().hex`` — 32 lowercase hex characters
+# (``CallLink``) — so a bare token in exactly that shape is unambiguously a run
+# id and needs no ``run `` prefix to be recognised (#2841).
+_BARE_RUN_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 # A well-formed run token that matched no recorded run — say so and point at the
 # lists that carry valid ids, rather than an empty read that reads as "clean run".
@@ -2938,11 +2947,15 @@ class GetEventTool(Tool):
     advises = ("run_list", "find")
     description = (
         "Look up ONE run from your activity log by the typed id it rendered — a "
-        "`run <id>` line, or a change's `(run <id>)` cause.  Pass the whole token, "
+        "`run <id>` line, or a change's `(run <id>)` cause (the bare id works too, "
+        "with or without the `run ` prefix).  Pass the whole token, "
         "run_get(run='run <id>'), copying the id exactly as rendered, and "
-        "get that run's tool-call sequence: what it did, step by step.  Use it to "
-        "inspect a specific run you saw in your current state; to browse a source's "
-        "run history instead use run_list(source=<'chat' or a collector name>)."
+        "get that run's tool-call sequence: what it did, step by step, with each "
+        "step's thinking shown where it made any — the closing part, where the "
+        "decision happened.  Use it to inspect a specific run you saw in your "
+        "current state; to browse a source's run history instead use "
+        "run_list(source=<'chat' or a collector name>).  Pass step=<N> to see "
+        "that one step's WHOLE thinking instead of the excerpt."
     )
     parameters = {
         "type": "object",
@@ -2951,9 +2964,16 @@ class GetEventTool(Tool):
                 "type": "string",
                 "description": (
                     "The typed run id, verbatim as your activity block rendered "
-                    "it — the whole `run <id>` token."
+                    "it — the whole `run <id>` token (the bare id also works)."
                 ),
-            }
+            },
+            "step": {
+                "type": "integer",
+                "description": (
+                    "Optional. A step number this run showed you (its `step <N>` "
+                    "line) to see that step's FULL thinking instead of the excerpt."
+                ),
+            },
         },
         "required": ["run"],
     }
@@ -2984,22 +3004,32 @@ class GetEventTool(Tool):
         # draw, say — nested under the step that made them, so a run whose tool
         # succeeded but whose own extraction didn't finish shows BOTH facts here.
         child_draws = self._db.messages.get_child_draws(run_id)
-        return ToolResult(message=render_run_calls(prompts, child_draws))
+        # A single named run, not a batch (#2841) — the one caller that wants each
+        # step's thinking, since inspecting WHY a run did what it did is the point
+        # of a point lookup.
+        return ToolResult(
+            message=render_run_calls(prompts, child_draws, with_thinking=True, step=args.step)
+        )
 
     @staticmethod
     def _parse_run_id(event_id: str) -> str | None:
-        """The run id from a rendered ``run <id>`` token, or ``None`` when the token
-        carries no recognised type tag.
+        """The run id from a rendered ``run <id>`` token, or a BARE id in its own
+        production shape, or ``None`` when neither matches (#2841).
 
         Tolerates the paren framing the mutation line renders (``(run <id>)``) so
         both rendered forms resolve verbatim; ``RUN_EVENT_PREFIX`` is the one shared
-        constant the render emits and this parse strips, so they can't drift."""
+        constant the render emits and this parse strips, so they can't drift.
+        Every run id is minted as ``uuid.uuid4().hex`` (``CallLink``) — 32 lowercase
+        hex characters — so a bare token in exactly that shape is unambiguously a
+        run id and needs no prefix to be recognised; any other bare token (a name,
+        a typo, a different kind of id) still gets the untyped refusal, so this
+        stays strictly MORE permissive than before, never less precise."""
         token = event_id.strip().strip("()").strip()
         prefix = PennyConstants.RUN_EVENT_PREFIX
-        if not token.lower().startswith(prefix):
-            return None
-        run_id = token[len(prefix) :].strip()
-        return run_id or None
+        if token.lower().startswith(prefix):
+            run_id = token[len(prefix) :].strip()
+            return run_id or None
+        return token if _BARE_RUN_ID_RE.fullmatch(token) else None
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────

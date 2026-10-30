@@ -1006,8 +1006,11 @@ def _seed_world(db: Database) -> None:
         tool="run_get",
         arguments={"run_id": worked_run},
         result=ToolResult(
+            # Simulates a real run_get call, which passes with_thinking=True (#2841).
             message=render_run_calls(
-                db.messages.get_run_prompts(worked_run), db.messages.get_child_draws(worked_run)
+                db.messages.get_run_prompts(worked_run),
+                db.messages.get_child_draws(worked_run),
+                with_thinking=True,
             )
         ),
         reply=_EX4_REPLY,
