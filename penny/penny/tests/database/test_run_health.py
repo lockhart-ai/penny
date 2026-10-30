@@ -13,12 +13,14 @@ import json
 import pytest
 
 from penny.agents.models import ModelCallError, RunAbort
-from penny.constants import PennyConstants
+from penny.constants import CycleTrigger, PennyConstants
 from penny.database.memory import (
     LoggedToolCall,
+    RunHealthLog,
     classify_run,
     half_formed_send_reason,
     render_run_calls,
+    render_run_health,
     render_run_record,
 )
 from penny.database.models import PromptLog
@@ -66,6 +68,9 @@ def _prompt(
     trailing: str | None = None,
     run_id: str = "r",
     thinking: str | None = None,
+    discard_reason: str | None = None,
+    completion_tokens: int | None = None,
+    duration_ms: int | None = None,
 ) -> PromptLog:
     """One promptlog row.  Only the run's LAST row carries outcome/tool_failures
     (that's how ``set_run_outcome`` stamps it); ``messages`` holds the tool-result
@@ -75,7 +80,10 @@ def _prompt(
     chat-run fixtures (chat stamps no run_target); ``run_id`` is fixed per fixture
     so whole-render literals are exact.  ``thinking`` (#2841) is this CALL's own
     raw thinking — ``None`` (the default) for the overwhelming majority of
-    fixtures, which predate the feature and render identically either way."""
+    fixtures, which predate the feature and render identically either way.
+    ``discard_reason``/``completion_tokens``/``duration_ms`` (#2843) are per-row
+    facts the facts clause tallies/sums across every row of a run, not just the
+    last."""
     message: dict = {"role": "assistant", "content": "", "tool_calls": calls}
     return PromptLog(
         model="m",
@@ -88,12 +96,34 @@ def _prompt(
         tool_failures=tool_failures,
         trailing_messages=trailing,
         thinking=thinking,
+        discard_reason=discard_reason,
+        completion_tokens=completion_tokens,
+        duration_ms=duration_ms,
     )
 
 
 # The argless ``done()`` sentinel (#1569): no ``success``/``summary`` — the run
 # record is generated from the ledger, so the header shows the structural outcome.
 _DONE_OK = _call("done", {})
+
+
+def _facts(
+    calls: int,
+    *,
+    discarded: str = "none",
+    tool_errors: str = "none",
+    sent: str = "sent 0 messages",
+) -> str:
+    """The trailing facts clause ``render_run_calls``/``render_run_health`` both
+    append (#2843) — assembled from plain parts, never by calling the renderer
+    under test, so these literals pin the exact FORMAT rather than echo the
+    code.  None of this file's fixtures set ``completion_tokens``/``duration_ms``,
+    so those two fields are always ``0``; a dedicated test below pins them with
+    non-zero values."""
+    return (
+        f"{calls} calls · 0 output tok · 0 seconds · discarded: {discarded} · "
+        f"tool errors: {tool_errors} · {sent}"
+    )
 
 
 def test_bailed_run_is_flagged():
@@ -373,12 +403,13 @@ collection_write(collection='games', entries='x')"""
     )
     assert (
         render_run_calls(run, with_thinking=False)
-        == """\
+        == f"""\
 run wrote-fixed
 [games]
     step 1: browse(['a', 'b'])
     step 2: collection_write(collection='games', entries='x')
-done: worked"""
+done: worked
+{_facts(1)}"""
     )
 
 
@@ -599,7 +630,8 @@ def test_render_run_calls_chat_kitchen_sink_full_literal():
         "    step 6: collection_write(collection='shows', entries='Fox Tales again') => "
         "Duplicate of fox-tales.\n"
         "penny: Done — logged the new season and drew your fox!\n"
-        "    attached: image #7"
+        "    attached: image #7\n"
+        f"{_facts(4)}"
     )
 
 
@@ -641,7 +673,8 @@ def test_render_run_calls_collector_run_full_literal():
         "    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget\n"
         "    step 2: collection_write(collection='games', entries='Pocket Go pick') => "
         "Wrote 1 entry: pocket-go.\n"
-        "done: worked"
+        "done: worked\n"
+        f"{_facts(2)}"
     )
 
 
@@ -710,7 +743,8 @@ def test_render_run_calls_with_thinking_shows_a_short_thinking_whole():
         f"    step 2 thinking: {_SHORT_THINKING}\n"
         "    step 2: collection_write(collection='games', entries='Pocket Go pick') => "
         "Wrote 1 entry: pocket-go.\n"
-        "done: worked"
+        "done: worked\n"
+        f"{_facts(2)}"
     )
 
 
@@ -800,12 +834,13 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
     ]
     assert (
         render_run_calls(run, with_thinking=False)
-        == """\
+        == f"""\
 run stop-fixed
 [games]
     step 1: collection_write(collection='games', entries='$42') => Unchanged: 'price' \
 already holds the same value — no change since the last write (entry).
-stopped: the value was unchanged since the last observation"""
+stopped: the value was unchanged since the last observation
+{_facts(1)}"""
     )
 
 
@@ -836,10 +871,11 @@ def test_render_run_calls_pure_reply_run_full_literal():
     )
     assert (
         render_run_calls([only], with_thinking=False)
-        == """\
+        == f"""\
 run chat-quiet
 user: how are you?
-penny: doing great — thanks for asking!"""
+penny: doing great — thanks for asking!
+{_facts(1)}"""
     )
 
 
@@ -861,10 +897,11 @@ def test_render_run_calls_bare_utterance_origin_full_literal():
     )
     assert (
         render_run_calls([only], with_thinking=False)
-        == """\
+        == f"""\
 run chat-bare
 user: how are you?
-penny: doing great!"""
+penny: doing great!
+{_facts(1)}"""
     )
 
 
@@ -926,20 +963,22 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
     run = _terminal_write_run(trailing=tail)
     assert (
         render_run_calls(run, with_thinking=False)
-        == """\
+        == f"""\
 run tail-fixed
 user: log the new shelf price
     step 1: collection_write(collection='shelf', entries='$42') => Memory 'shelf' not found \
-— did you mean 'shelves'?"""
+— did you mean 'shelves'?
+{_facts(1, tool_errors="collection_write×1")}"""
     )
     # Without the tail (every pre-#1778 row) the same run renders the call bare — the
     # gap this closes.
     assert (
         render_run_calls(_terminal_write_run(trailing=None), with_thinking=False)
-        == """\
+        == f"""\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write(collection='shelf', entries='$42')"""
+    step 1: collection_write(collection='shelf', entries='$42')
+{_facts(1)}"""
     )
 
 
@@ -965,5 +1004,145 @@ def test_render_run_calls_first_line_whole():
     ]
     assert (
         render_run_calls(run, with_thinking=False)
-        == f"run run-long\n    step 1: browse(['a']) => {long_line}"
+        == f"run run-long\n    step 1: browse(['a']) => {long_line}\n{_facts(1)}"
     )
+
+
+# ── Per-run operational facts (#2843) ─────────────────────────────────────────
+
+
+def test_run_facts_line_reports_cost_discards_and_tool_errors_whole():
+    """The facts clause sums calls/output-tokens/time across EVERY row of the
+    run (not just the last), and tallies discards and tool errors across every
+    row too — whole-render literal.  Two rows: 4000 + 123 output tokens,
+    1500ms + 2000ms, one discarded draw on the first row, and a failed
+    ``browse`` call (the structural ``tool_success`` stamp, #1600) on the
+    second's own tool-result turn."""
+    run = [
+        _prompt(
+            [],
+            run_id="facts-1",
+            completion_tokens=4000,
+            duration_ms=1500,
+            discard_reason="hallucinated_urls",
+        ),
+        _prompt(
+            [_call("browse", {"queries": ["a"]}, call_id="b1"), _DONE_OK],
+            run_id="facts-1",
+            outcome="worked",
+            completion_tokens=123,
+            duration_ms=2000,
+            messages=json.dumps(
+                [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "b1",
+                        "content": "could not reach the page",
+                        PennyConstants.TOOL_RESULT_SUCCESS_KEY: False,
+                    }
+                ]
+            ),
+        ),
+    ]
+    assert (
+        render_run_calls(run, with_thinking=False)
+        == """\
+run facts-1
+[games]
+    step 1: browse(['a']) => could not reach the page
+done: worked
+2 calls · 4123 output tok · 3 seconds · discarded: hallucinated_urls×1 · \
+tool errors: browse×1 · sent 0 messages"""
+    )
+
+
+def test_run_facts_line_reports_a_link_only_when_the_delivered_text_has_one():
+    """``delivered_text`` (#2843) is tested for a URL verbatim — never
+    reconstructed from a tool call's arguments (there is no ``send_message``
+    tool any more, #1911).  A run that sent nothing names zero; one that sent
+    a message with no link names zero links; one whose delivered text carries
+    a URL names one."""
+    run = [_prompt([_DONE_OK], run_id="facts-2", outcome="worked")]
+    assert "sent 0 messages" in render_run_calls(run, with_thinking=False)
+    assert "sent 1 message, links: 0" in render_run_calls(
+        run, with_thinking=False, delivered_text="all done!"
+    )
+    assert "sent 1 message, links: 1" in render_run_calls(
+        run,
+        with_thinking=False,
+        delivered_text="done — see https://example.com/report for the details",
+    )
+
+
+def test_render_run_health_names_chat_and_collector_sources():
+    """``render_run_health`` (the ``run-health`` facade's record): a collector
+    run's header carries its target AND its structural outcome; a chat run
+    carries no stamped outcome on an ordinary turn (#2355 part D), so its
+    header names only the source — never a guessed outcome."""
+    collector_run = [_prompt([_DONE_OK], run_id="coll-x", target="games", outcome="worked")]
+    assert render_run_health(collector_run, None) == (
+        "run coll-x [games] worked · 1 calls · 0 output tok · 0 seconds · "
+        "discarded: none · tool errors: none · sent 0 messages"
+    )
+    chat_run = [_prompt([], run_id="chat-x", target=None)]
+    assert render_run_health(chat_run, "hi!") == (
+        "run chat-x [chat] · 1 calls · 0 output tok · 0 seconds · "
+        "discarded: none · tool errors: none · sent 1 message, links: 0"
+    )
+
+
+def test_run_delivered_text_reads_the_chat_direct_reply(db):
+    """A chat run's own reply is linked by ``messagelog.run_id`` (#2630) — the
+    STORED, already-delivered text, read back verbatim."""
+    db.messages.log_message(
+        PennyConstants.MessageDirection.OUTGOING,
+        "penny",
+        "here's what I found: https://example.com/page",
+        run_id="chat-run-1",
+    )
+    assert (
+        db.messages.delivered_text_for_run("chat-run-1")
+        == "here's what I found: https://example.com/page"
+    )
+    assert db.messages.delivered_text_for_run("no-such-run") is None
+
+
+def test_run_delivered_text_reads_a_delivered_collector_report(db):
+    """A collector's notifying close hands off through the send queue
+    (``report_run_id``, #2656) — the DELIVERED row's own stored content, read
+    only once ``sent_at`` is stamped; an undelivered (never-sent) compose
+    names nothing, never a guess at what it would have said."""
+    item_id = db.send_queue.enqueue_report("games", CycleTrigger.CADENCE, "coll-run-1")
+    db.send_queue.store_composed(item_id, "a new deal dropped")
+    # Not yet delivered — composed but no ``sent_at`` stamp.
+    assert db.messages.delivered_text_for_run("coll-run-1") is None
+    db.send_queue.mark_sent(item_id)
+    assert db.messages.delivered_text_for_run("coll-run-1") == "a new deal dropped"
+
+
+def test_run_health_facade_covers_chat_and_collector_runs(db):
+    """Unlike ``collector-runs`` (which excludes chat — it stamps no
+    completion row), the ``run-health`` facade's dispatch is ``RunHealthLog``
+    and its read covers BOTH a chat turn and a collector cycle."""
+    memory = db.memory(PennyConstants.MEMORY_RUN_HEALTH_LOG)
+    assert isinstance(memory, RunHealthLog)
+    db.messages.log_prompt(
+        model="m",
+        messages=[],
+        response={"choices": [{"message": {"content": "hi there!"}}]},
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+        run_id="health-chat-1",
+    )
+    db.messages.log_prompt(
+        model="m",
+        messages=[],
+        response={"choices": [{"message": {"tool_calls": [_DONE_OK]}}]},
+        agent_name="collector",
+        run_id="health-coll-1",
+        run_target="games",
+    )
+    db.messages.set_run_outcome("health-coll-1", "worked", "")
+    entries = memory.newest_entries(k=10)
+    contents = [entry.content for entry in entries]
+    assert any("[chat]" in c and "run health-chat-1" in c for c in contents)
+    assert any("[games] worked" in c and "run health-coll-1" in c for c in contents)

@@ -869,6 +869,12 @@ class PennyConstants:
     RESTART_ANNOUNCEMENT_MAX_CHARS = 150
     MEMORY_PENNY_MESSAGES_LOG = "penny-messages"
     MEMORY_BROWSE_RESULTS_LOG = "browse-results"
+    # The per-run operational-facts facade (#2843): one line per run, across chat
+    # AND every collector (unlike ``collector-runs``, which is collector-only by
+    # design — the seeded ``quality`` prompt reads it expecting only collector
+    # records). Read via ``log_read`` (cursor/day); the same facts also render on
+    # ``run_list``/``run_get`` (``render_run_calls``), which filter by source.
+    MEMORY_RUN_HEALTH_LOG = "run-health"
     # Typed-id separator for an entry handle (``<memory>#<id>``).  A browse
     # micro-context returns this handle to the main loop so the full stored page
     # content stays retrievable (``Memory.entry_by_id``) without the bulk body
@@ -888,6 +894,7 @@ class PennyConstants:
             MEMORY_PENNY_MESSAGES_LOG,
             MEMORY_BROWSE_RESULTS_LOG,
             MEMORY_COLLECTOR_RUNS_LOG,
+            MEMORY_RUN_HEALTH_LOG,
         }
     )
 

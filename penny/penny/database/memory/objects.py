@@ -76,7 +76,7 @@ from penny.database.memory.types import (
     slug,
     wrong_shape_message,
 )
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog, SendQueueItem
 from penny.database.mutation_store import EnumeratedDecision
 from penny.datetime_utils import format_duration_plain_words
 from penny.llm.models import strip_harmony_control_tokens
@@ -1390,6 +1390,145 @@ def _io_tally_line(prompts: list[PromptLog]) -> str | None:
     return " · ".join(segments)
 
 
+# ── Per-run operational facts (#2843) ─────────────────────────────────────────
+# One line per run — calls/output tokens/time, discards, tool errors (by
+# tool), and whether a message went out and carried a link — read off existing
+# columns only, never inferred from wording.  Shared by the ``run-health``
+# facade (every run, cursor/day via ``log_read``) and ``render_run_calls``
+# (the ``run_list``/``run_get`` view, already source-filterable).
+
+# A bare ``http(s)://`` URL anywhere in text — the shape ``link_handles``
+# registers a handle for.  Duplicated here rather than imported across the
+# tools/database layering boundary (neither this module nor ``message_store``
+# imports from ``tools/`` today; migration 0036 duplicates this same shape for
+# the same reason).  Only ever tested against the FINAL, already-expanded text
+# a run actually delivered — never a handle placeholder.
+_LINK_RE = re.compile(r"https?://\S+")
+
+
+def _run_calls_and_cost(prompts: list[PromptLog]) -> tuple[int, int, int]:
+    """``(calls, output_tok, duration_ms)`` — one model-loop step per prompt
+    row; ``completion_tokens``/``duration_ms`` summed across them, NULL read
+    as 0 (the existing convention — a runner that never reported usage is
+    never faked one, it's simply absent from the total)."""
+    calls = len(prompts)
+    output_tok = sum(p.completion_tokens or 0 for p in prompts)
+    duration_ms = sum(p.duration_ms or 0 for p in prompts)
+    return calls, output_tok, duration_ms
+
+
+def _tally_clause(label: str, counts: dict[str, int]) -> str:
+    """``"<label>: a×2, b×1"`` in first-seen order, or ``"<label>: none"`` —
+    the shared shape for both the discard and the tool-error tally."""
+    if not counts:
+        return f"{label}: none"
+    parts = ", ".join(f"{name}×{n}" for name, n in counts.items())
+    return f"{label}: {parts}"
+
+
+def _run_discard_tally(prompts: list[PromptLog]) -> str:
+    """Every discarded draw in the run, grouped by its structural
+    ``discard_reason`` (a ``ConditionKey`` string) — across ALL of the run's
+    rows, not just the last, since more than one draw can be discarded before
+    one lands.  Never a fixed reason list: a reason nothing here enumerates
+    still tallies by its own stored string (the coming ``thinking_loop``
+    reason needs no code change)."""
+    counts: dict[str, int] = {}
+    for prompt in prompts:
+        if prompt.discard_reason:
+            counts[prompt.discard_reason] = counts.get(prompt.discard_reason, 0) + 1
+    return _tally_clause("discarded", counts)
+
+
+def _run_tool_error_tally(prompts: list[PromptLog]) -> str:
+    """Failed tool calls, BY TOOL — read off the structural per-call
+    ``tool_success`` stamp (#1600) on the run's complete tool-result turns
+    (``_run_tool_turns``), matched back to the calling tool via
+    ``_run_logged_steps``'s ``(call_id, tool)`` pairing.  Never a text-content
+    guess: a result logged before the stamp existed carries no key and reads
+    as succeeded — the same convention ``_run_tool_failures`` already uses."""
+    tool_by_call_id = {
+        call_id: call.tool for call_id, call, _thinking in _run_logged_steps(prompts) if call_id
+    }
+    counts: dict[str, int] = {}
+    for message in _run_tool_turns(prompts):
+        if message.get(PennyConstants.TOOL_RESULT_SUCCESS_KEY) is False:
+            tool = tool_by_call_id.get(message.get("tool_call_id") or "", "?")
+            counts[tool] = counts.get(tool, 0) + 1
+    return _tally_clause("tool errors", counts)
+
+
+def run_delivered_text(session: Session, run_id: str) -> str | None:
+    """The text actually delivered to the user BECAUSE of this run, or
+    ``None`` when nothing went out — read off the two structural links a send
+    can carry, never reconstructed from a tool call's arguments (there is no
+    ``send_message`` tool any more, #1911, so there is nothing to reconstruct
+    from): a chat run's own direct reply is ``messagelog.run_id`` (#2630); a
+    collector run's notifying close hands off through the send queue
+    (``SendQueueItem.report_run_id``, #2656) — the DELIVERED row's own stored
+    content, read only once ``sent_at`` is stamped (a cancelled or failed
+    compose never reached the user).  At most one of the two ever matches a
+    given run — a run is a chat turn or a collector cycle, never both."""
+    direct = session.exec(select(MessageLog.content).where(MessageLog.run_id == run_id)).first()
+    if direct is not None:
+        return direct
+    return session.exec(
+        select(SendQueueItem.content).where(
+            SendQueueItem.report_run_id == run_id,
+            col(SendQueueItem.sent_at).isnot(None),
+        )
+    ).first()
+
+
+def _sent_and_links_clause(delivered_text: str | None) -> str:
+    """``"sent 1 message, links: 1"`` / ``"sent 0 messages"`` — a run is a chat
+    turn or a collector cycle, each capable of at most one delivered message
+    (``run_delivered_text``), so this is always 0 or 1.  ``links`` tests the
+    STORED, already-expanded delivered text for a URL — never a handle
+    placeholder, and never reconstructed from what a tool call argued for."""
+    if delivered_text is None:
+        return "sent 0 messages"
+    links = 1 if _LINK_RE.search(delivered_text) else 0
+    return f"sent 1 message, links: {links}"
+
+
+def run_facts_line(prompts: list[PromptLog], delivered_text: str | None) -> str:
+    """The shared per-run facts clause: calls, output tokens, time, discards,
+    tool errors (by tool), and what was sent — appended after a run's header
+    (the ``run-health`` facade's one-liner, ``render_run_health``) or its
+    conclusion (``render_run_calls``).  Facts only: every field reads an
+    existing column, never inferred from wording."""
+    calls, output_tok, duration_ms = _run_calls_and_cost(prompts)
+    return " · ".join(
+        [
+            f"{calls} calls",
+            f"{output_tok} output tok",
+            format_duration_plain_words(duration_ms),
+            _run_discard_tally(prompts),
+            _run_tool_error_tally(prompts),
+            _sent_and_links_clause(delivered_text),
+        ]
+    )
+
+
+def render_run_health(prompts: list[PromptLog], delivered_text: str | None) -> str:
+    """One run as a single operational-facts line: ``run <id> [<source>]
+    [<outcome>]`` then the shared facts clause (#2843) — the ``run-health``
+    facade's record.  ``source`` is ``"chat"`` or the collector's own name,
+    the same vocabulary ``run_list``'s ``source`` argument takes; ``outcome``
+    is the stamped structural result when one exists (a collector always
+    stamps one; an ordinary, successful chat turn stamps none) and is omitted
+    — never guessed — when it doesn't."""
+    if not prompts:
+        return "(no data)"
+    outcome, reason, target = _run_outcome(prompts)
+    header = f"{_run_header(prompts)} [{target or PennyConstants.CHAT_AGENT_NAME}]"
+    result = reason or outcome
+    if result:
+        header = f"{header} {result}"
+    return f"{header} · {run_facts_line(prompts, delivered_text)}"
+
+
 def _is_degenerate_send(content: str) -> bool:
     """True if a sent message has no real content the user should have received.
 
@@ -1834,6 +1973,7 @@ def render_run_calls(
     *,
     with_thinking: bool,
     step: int | None = None,
+    delivered_text: str | None = None,
 ) -> str:
     """One run as its tool-call SEQUENCE: ``run id → origin → the numbered steps →
     conclusion → egress``.
@@ -1849,10 +1989,12 @@ def render_run_calls(
     Step numbers are the run's FULL tool-call ordinals (``done`` consumes an index
     but isn't shown), so they are stable coordinates: a view that omits steps shows
     gaps, never renumbers — future skill selection can name ``(run_id, steps 2–5)``
-    unambiguously (#1471).  Leads with the run's own id and closes with the egress/
-    media trace — what was attached/delivered alongside the reply — so a reader can
-    inspect its own turn's delivery (tools + outcomes + what went out) instead of
-    confabulating it, every referenced neighbour named, never guessed (#1560).
+    unambiguously (#1471).  Leads with the run's own id, the egress/media trace
+    names what was attached/delivered alongside the reply — so a reader can inspect
+    its own turn's delivery (tools + outcomes + what went out) instead of
+    confabulating it, every referenced neighbour named, never guessed (#1560) — and
+    the facts clause (below) closes it, with the unmatched-step note (also below)
+    trailing that when both apply.
 
     ``with_thinking`` is REQUIRED, no default (#2841): a step's thinking is a
     one-caller feature.  ``run_get`` passes ``True`` — a single named run, where
@@ -1866,15 +2008,23 @@ def render_run_calls(
     meaningful with ``with_thinking=True``) names the ONE step whose thinking
     should render WHOLE rather than excerpted — the ``run_get(run='run <id>',
     step=N)`` ask — and a ``step`` that names nothing this run rendered gets one
-    honest trailing line (``_unmatched_step_line``) rather than a silent no-op: the
-    record still comes back in full, plus why the ask didn't change it.
+    honest trailing line (``_unmatched_step_line``) AFTER the facts clause, rather
+    than a silent no-op: the record still comes back in full, plus why the ask
+    didn't change it.
 
     ``child_draws`` (#2355 part D) are the model calls a micro-context made ON
     BEHALF of this run — a browse-extract draw, say — linked by ``parent_run_id``/
     ``parent_tool_call_id`` rather than sharing this run's own ``run_id`` (a
     micro-context mints its own, for its own ledger attribution).  ``None`` (the
     default, used by every caller that hasn't fetched them) renders exactly as
-    before this existed; an empty list and ``None`` are identical."""
+    before this existed; an empty list and ``None`` are identical.
+
+    ``delivered_text`` (#2843) appends ONE trailing facts line — calls, output
+    tokens, time, discards, tool errors by tool, and what was sent — the same
+    clause the ``run-health`` facade renders (``run_facts_line``), computed
+    from ``run_delivered_text``.  A separate, appended piece on purpose: this
+    is a different lens (facts, not the call sequence) added by a different
+    change, so it never touches the step/conclusion rendering above it."""
     if not prompts:
         return "(no data)"
     results = _tool_results_by_id(prompts)
@@ -1897,6 +2047,7 @@ def render_run_calls(
     if conclusion:
         lines.append(conclusion)
     lines.extend(_egress_media_lines(prompts))
+    lines.append(run_facts_line(prompts, delivered_text))
     if with_thinking and step is not None and step not in rendered_indices:
         lines.append(_unmatched_step_line(run_line, step, rendered_indices))
     return "\n".join(line for line in lines if line)
@@ -2013,16 +2164,140 @@ class RunLog(Log):
 
     @staticmethod
     def _group_prompts(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:
-        rows = session.exec(
-            select(PromptLog)
-            .where(col(PromptLog.run_id).in_(run_ids))
-            .order_by(col(PromptLog.timestamp).asc())
-        ).all()
-        grouped: dict[str, list[PromptLog]] = {}
-        for prompt in rows:
-            if prompt.run_id is not None:
-                grouped.setdefault(prompt.run_id, []).append(prompt)
-        return grouped
+        return _group_prompts_by_run_id(session, run_ids)
+
+
+def _group_prompts_by_run_id(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:
+    """``{run_id: its prompts, ascending}`` — the raw-row grouping both
+    ``RunLog`` (collector completions only) and ``RunHealthLog`` (every run,
+    #2843) build their rendered records from."""
+    rows = session.exec(
+        select(PromptLog)
+        .where(col(PromptLog.run_id).in_(run_ids))
+        .order_by(col(PromptLog.timestamp).asc())
+    ).all()
+    grouped: dict[str, list[PromptLog]] = {}
+    for prompt in rows:
+        if prompt.run_id is not None:
+            grouped.setdefault(prompt.run_id, []).append(prompt)
+    return grouped
+
+
+class RunHealthLog(Log):
+    """Read facade over ``promptlog`` for the ``run-health`` log (#2843).
+
+    Unlike ``collector-runs`` (``RunLog``, scoped to collector completions by
+    design — the seeded ``quality`` prompt reads it expecting ONLY collector
+    records), this covers EVERY run: an ordinary, successful chat turn stamps
+    no completion row at all (``RunLog``'s own filter would miss it, #2355
+    part D), so the run index here is simply every distinct ``run_id`` under
+    ``promptlog``, newest completion (``MAX(timestamp)``) first — the same
+    grouping shape ``MessageStore.run_call_groups`` uses for ``run_list``.
+    Each run renders as ONE line (``render_run_health``): its header, then
+    the shared facts clause (calls/tokens/time, discards, tool errors by
+    tool, what was sent) — never the full call-sequence trace (that's
+    ``run_list``/``run_get``'s job, which carries the same facts via
+    ``render_run_calls``).  Read-only; has no embeddings (so ``read_similar``
+    is empty)."""
+
+    def append(
+        self, entries: list[LogEntryInput], author: str, run_id: str | None = None
+    ) -> list[MemoryEntry]:
+        raise ReadOnlyMemoryError(
+            f"'{self.name}' is a read view over run history (promptlog) — "
+            "runs are recorded by the framework, not appended here."
+        )
+
+    def read_window(self, window_seconds: int, limit: int | None = None) -> list[MemoryEntry]:
+        # Bounded per read like the cursored batch, same as ``RunLog``.
+        return self.read_recent(window_seconds, limit or PennyConstants.LOG_READ_LIMIT)
+
+    def _all_rows(self) -> list[MemoryEntry]:
+        return self._records(newest_first=False)
+
+    def _newest_rows(self, k: int | None, offset: int, search: str | None) -> list[MemoryEntry]:
+        # ``search`` doesn't apply — runs are activity, not searchable entries.
+        return self._records(newest_first=True, limit=k, offset=offset)
+
+    def _rows_since(
+        self, cursor: datetime, cap: int | None, until: datetime | None = None
+    ) -> list[MemoryEntry]:
+        return self._records(newest_first=False, cursor=cursor, limit=cap, until=until)
+
+    def _embedded_rows(self) -> list[MemoryEntry]:
+        return []
+
+    def _records(
+        self,
+        *,
+        newest_first: bool,
+        cursor: datetime | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        until: datetime | None = None,
+    ) -> list[MemoryEntry]:
+        """Every run in scope → its rendered facts line as a ``MemoryEntry``
+        (content = the line, created_at = the run's own completion time)."""
+        with self._session() as session:
+            rows = self._run_index_rows(session, newest_first, cursor, limit, offset, until)
+            if not rows:
+                return []
+            grouped = _group_prompts_by_run_id(session, [run_id for run_id, _, _ in rows])
+            return [
+                self._to_record(run_id, ts, last_id, grouped, session)
+                for run_id, ts, last_id in rows
+            ]
+
+    @staticmethod
+    def _run_index_rows(
+        session: Session,
+        newest_first: bool,
+        cursor: datetime | None,
+        limit: int | None,
+        offset: int,
+        until: datetime | None,
+    ) -> list:
+        """The ``(run_id, finished, last_prompt_id)`` index rows — one per
+        EVERY run, chat and every collector alike, no completion stamp
+        required (mirrors ``MessageStore.run_call_groups``'s own grouping)."""
+        finished = func.max(PromptLog.timestamp)
+        last_id = func.max(PromptLog.id)
+        query = (
+            select(PromptLog.run_id, finished.label("finished"), last_id.label("last_id"))
+            .where(col(PromptLog.run_id).isnot(None))
+            .group_by(PromptLog.run_id)
+        )
+        if cursor is not None:
+            query = query.having(finished > cursor)
+        if until is not None:
+            query = query.having(finished < until)
+        order = finished.desc() if newest_first else finished.asc()
+        query = query.order_by(order)
+        if offset:
+            query = query.offset(offset)
+        if limit is not None:
+            query = query.limit(limit)
+        return [row for row in session.exec(query).all() if row[0] is not None]
+
+    def _to_record(
+        self,
+        run_id: str,
+        timestamp: datetime,
+        last_id: int,
+        grouped: dict[str, list[PromptLog]],
+        session: Session,
+    ) -> MemoryEntry:
+        """One run → its facts-line ``MemoryEntry``."""
+        prompts = grouped.get(run_id) or []
+        delivered_text = run_delivered_text(session, run_id)
+        return MemoryEntry(
+            id=last_id,
+            memory_name=self.name,
+            key=None,
+            content=render_run_health(prompts, delivered_text),
+            author=PennyConstants.MessageAuthor.COLLECTOR,
+            created_at=timestamp,
+        )
 
 
 __all__ = [
@@ -2032,9 +2307,13 @@ __all__ = [
     "render_tool_call",
     "render_run_record",
     "render_run_calls",
+    "render_run_health",
+    "run_facts_line",
+    "run_delivered_text",
     "classify_run",
     "RunHealth",
     "LoggedToolCall",
     "MessageLogMemory",
     "RunLog",
+    "RunHealthLog",
 ]

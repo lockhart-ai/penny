@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 130
+        assert count == 131
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 130
+        assert count1 == 131
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 129 migrations
-        assert count == 129
+        # 0001 is skipped; the rest run = 130 migrations
+        assert count == 130
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 130  # all migrations applied
+        assert count == 131  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -907,7 +907,7 @@ class TestMigrate:
         0097 removed eight generic catch-alls and kept ``dislikes`` as "very narrow and
         specific"; the ruling retires that exemption too — no intermediate legacy
         structure is left standing.  Asserted as the whole end-state rather than by
-        name: the only ``memory`` rows left are the four log markers — Python-populated
+        name: the only ``memory`` rows left are the five log markers — Python-populated
         perception rather than collections anybody would rebuild — plus the ONE
         collection 0119 (#2633) deliberately re-introduced: the seeded, EMPTY ``rules``
         collection, with no entries, no cursors, and no stored ``extraction_prompt`` —
@@ -939,6 +939,7 @@ class TestMigrate:
             "browse-results",
             "collector-runs",
             "rules",
+            "run-health",
         }
         assert entries == 0
         assert cursors == 0

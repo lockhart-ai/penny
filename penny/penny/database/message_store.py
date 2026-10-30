@@ -15,7 +15,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from penny.agents.models import MessageRole
 from penny.clock import Clock
 from penny.constants import PennyConstants, RunOutcome
-from penny.database.memory.objects import classify_run, render_run_record
+from penny.database.memory.objects import classify_run, render_run_record, run_delivered_text
 from penny.database.models import (
     CommandLog,
     Device,
@@ -1460,6 +1460,15 @@ class MessageStore:
                     .order_by(col(PromptLog.timestamp).asc())
                 ).all()
             )
+
+    def delivered_text_for_run(self, run_id: str) -> str | None:
+        """The text actually delivered to the user because of this run, or
+        ``None`` when nothing went out (#2843) — the facts ``run_list``/
+        ``run_get`` and the ``run-health`` facade render alongside a run's
+        cost.  See ``run_delivered_text`` for the structural link (messagelog
+        by ``run_id``, or the send queue by ``report_run_id``)."""
+        with self._session() as session:
+            return run_delivered_text(session, run_id)
 
     def get_child_draws(self, run_id: str) -> list[PromptLog]:
         """Every model call a micro-context made ON BEHALF of ``run_id`` (#2355 part

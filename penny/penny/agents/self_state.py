@@ -42,7 +42,7 @@ one guess-free tool call from the detail). Sections:
 - **Your memory** — the map of stores: EVERY live collection and log, no cap
   (#2288), names + one-line scope — the index for an anchored lookup, never the
   content. Its entry count is shown for a collection or log the user or a job
-  owns (moves only on a real write); the four system-log facades
+  owns (moves only on a real write); the five system-log facades
   (``PennyConstants.SYSTEM_LOGS``) show their name and scope with NO live count
   (#2814) — that count ticks on every ordinary turn, and this section rides the
   cached static prefix now, so showing it would rebuild the prefix every turn.
@@ -503,9 +503,9 @@ class SelfStateHeader:
         line below (``_archived_line``) rather than a count that hides them.
 
         This section rides the static prefix (#2814, ``render_static``), so the
-        count is OMITTED for the four system-log facades
+        count is OMITTED for the five system-log facades
         (``PennyConstants.SYSTEM_LOGS`` — ``user-messages``/``penny-messages``/
-        ``browse-results``/``collector-runs``): their ``entry_counts()`` value is
+        ``browse-results``/``collector-runs``/``run-health``): their ``entry_counts()`` value is
         read straight off ``messagelog``/``promptlog``, which grows on every
         ordinary turn (an incoming message, a reply, a browse call), not on a job
         or collection changing — showing it here would rebuild the cached prefix

@@ -1110,10 +1110,10 @@ def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> 
 
     The regression pin for the defect that failed all eight dispatch cases at the probe on
     their first live run, before a single sample was driven: the claim was read through a
-    helper that returns every ``memory`` row, and migration 0026 seeds four system LOG
-    markers into every database that has ever migrated — so the probe was asserting
-    something no Penny has ever been true of.  Both directions, since a read that filtered
-    everything out would pass this as vacuously as the correct one: the four markers —
+    helper that returns every ``memory`` row, and migration 0026 (plus 0131, #2843) seeds
+    system LOG markers into every database that has ever migrated — so the probe was
+    asserting something no Penny has ever been true of.  Both directions, since a read that
+    filtered everything out would pass this as vacuously as the correct one: the markers —
     and, since #2633, the seeded empty ``rules`` collection — are invisible to it, and a
     real collection is not."""
     assert sorted(row.name for row in db.memories.list_all()) == [
@@ -1121,6 +1121,7 @@ def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> 
         "collector-runs",
         "penny-messages",
         "rules",
+        "run-health",
         "user-messages",
     ]
     assert collection_names(db) == []

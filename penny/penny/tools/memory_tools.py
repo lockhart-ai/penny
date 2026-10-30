@@ -56,6 +56,7 @@ from penny.database.memory import (
     ResolvedKind,
     ResolvedMatch,
     ResolvedMessage,
+    RunHealthLog,
     RunLog,
     WriteResult,
     plan_entries,
@@ -72,7 +73,7 @@ from penny.database.memory.identity import (
     EntryDecider,
     collection_name_rule,
 )
-from penny.database.models import MemoryEntry, MemoryRow
+from penny.database.models import MemoryEntry, MemoryRow, PromptLog
 from penny.database.mutation_store import render_mutation
 from penny.datetime_utils import (
     format_log_timestamp,
@@ -2681,10 +2682,12 @@ class LogReadTool(CursorReadTool):
     def _shows_ids(memory: Memory) -> bool:
         """``show_ids`` only for a REAL stored log — the entries' ids are then
         consumable with ``log_get`` (``Memory.entry_by_id``).  The message facades
-        and the run log render other backings entirely, so an id beside their
+        and the run facades render other backings entirely, so an id beside their
         lines would be an anchor nothing reads back; their renders stay
         byte-identical."""
-        return isinstance(memory, Log) and not isinstance(memory, (MessageLogMemory, RunLog))
+        return isinstance(memory, Log) and not isinstance(
+            memory, (MessageLogMemory, RunLog, RunHealthLog)
+        )
 
     def _read_cursor(self, memory: Memory) -> list[MemoryEntry]:
         """The next bounded batch since this agent's committed cursor.  The log
@@ -2747,7 +2750,7 @@ class LogGetTool(MemoryTool):
             return ToolResult(message=self._collection_refusal(args.log), success=False)
         if isinstance(memory, MessageLogMemory):
             return ToolResult(message=self._message_log_refusal(args.log), success=False)
-        if isinstance(memory, RunLog):
+        if isinstance(memory, (RunLog, RunHealthLog)):
             return ToolResult(message=self._run_log_refusal(args.log), success=False)
         entry = memory.entry_by_id(args.id)
         if entry is None:
@@ -2872,23 +2875,29 @@ class ReadRunCallsTool(CursorReadTool):
         groups = self._db.messages.run_call_groups(
             args.source, cursor, PennyConstants.RUN_CALLS_LIMIT
         )
-        entries = [
-            MemoryEntry(
-                memory_name=key,
-                key=None,
-                # A batch of runs, not one named run (#2841) — every step of every
-                # run showing its thinking would bloat this read, so run_list
-                # states explicitly that it wants none.
-                content=render_run_calls(group, with_thinking=False),
-                author=PennyConstants.MessageAuthor.COLLECTOR,
-                created_at=group[-1].timestamp,
-            )
-            for group in groups
-            if group
-        ]
+        entries = [self._to_entry(key, group) for group in groups if group]
         self._advance_pending(key, [entry.created_at for entry in entries])
         return ToolResult(
             message=format_entries(entries, source=args.source, ordering="oldest first")
+        )
+
+    def _to_entry(self, key: str, group: list[PromptLog]) -> MemoryEntry:
+        """One run's prompt group → its rendered ``MemoryEntry``, the facts
+        clause (#2843) carrying what was actually delivered — ``group`` is
+        never empty and every row shares a non-``None`` ``run_id`` (how
+        ``run_call_groups`` built it).  ``with_thinking=False`` (#2841): a batch
+        of runs, not one named run — every step of every run showing its
+        thinking would bloat this read, so run_list states explicitly that it
+        wants none."""
+        run_id = group[0].run_id
+        assert run_id is not None
+        delivered_text = self._db.messages.delivered_text_for_run(run_id)
+        return MemoryEntry(
+            memory_name=key,
+            key=None,
+            content=render_run_calls(group, with_thinking=False, delivered_text=delivered_text),
+            author=PennyConstants.MessageAuthor.COLLECTOR,
+            created_at=group[-1].timestamp,
         )
 
 
@@ -3004,11 +3013,18 @@ class GetEventTool(Tool):
         # draw, say — nested under the step that made them, so a run whose tool
         # succeeded but whose own extraction didn't finish shows BOTH facts here.
         child_draws = self._db.messages.get_child_draws(run_id)
+        delivered_text = self._db.messages.delivered_text_for_run(run_id)
         # A single named run, not a batch (#2841) — the one caller that wants each
         # step's thinking, since inspecting WHY a run did what it did is the point
         # of a point lookup.
         return ToolResult(
-            message=render_run_calls(prompts, child_draws, with_thinking=True, step=args.step)
+            message=render_run_calls(
+                prompts,
+                child_draws,
+                with_thinking=True,
+                step=args.step,
+                delivered_text=delivered_text,
+            )
         )
 
     @staticmethod

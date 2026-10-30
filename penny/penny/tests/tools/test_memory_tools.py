@@ -3515,7 +3515,7 @@ class TestLogTools:
 
     @pytest.mark.asyncio
     async def test_append_to_system_log_is_refused(self, db, mock_llm):
-        """Invariant #1: the four framework-managed system logs are written
+        """Invariant #1: the five framework-managed system logs are written
         only by Python side-effects.  ``log_append`` from any agent gets a
         readable refusal and writes nothing — guarding the conversation-turn
         reconstruction and the run audit trail from model-authored entries."""

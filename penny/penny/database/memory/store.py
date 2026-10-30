@@ -32,7 +32,14 @@ from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.memory import _similarity as sim
 from penny.database.memory.journal import CycleJournal
-from penny.database.memory.objects import Collection, Log, Memory, MessageLogMemory, RunLog
+from penny.database.memory.objects import (
+    Collection,
+    Log,
+    Memory,
+    MessageLogMemory,
+    RunHealthLog,
+    RunLog,
+)
 from penny.database.memory.types import (
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
@@ -369,6 +376,10 @@ class MemoryStore:
             )
         if row.name == PennyConstants.MEMORY_COLLECTOR_RUNS_LOG:
             return RunLog(row, self.engine, on_changed=self._notify_changed, clock=self._clock)
+        if row.name == PennyConstants.MEMORY_RUN_HEALTH_LOG:
+            return RunHealthLog(
+                row, self.engine, on_changed=self._notify_changed, clock=self._clock
+            )
         if row.type == MemoryType.COLLECTION:
             return Collection(
                 row,
@@ -538,9 +549,17 @@ class MemoryStore:
                     col(PromptLog.run_target).isnot(None),
                 )
             ).one()
+            # ``run-health`` (#2843) covers every run, not just stamped collector
+            # completions — one distinct ``run_id``, chat or collector alike.
+            all_run_count = session.exec(
+                select(func.count(func.distinct(col(PromptLog.run_id)))).where(
+                    col(PromptLog.run_id).isnot(None)
+                )
+            ).one()
         for log_name, direction in _MESSAGE_LOG_DIRECTIONS.items():
             counts[log_name] = by_direction.get(direction, 0)
         counts[PennyConstants.MEMORY_COLLECTOR_RUNS_LOG] = run_count or 0
+        counts[PennyConstants.MEMORY_RUN_HEALTH_LOG] = all_run_count or 0
         return counts
 
     def writes_by_run(self, run_ids: list[str]) -> dict[str, list[RunWrite]]:

@@ -296,7 +296,7 @@ async def test_static_system_prefix_unaffected_by_an_activity_only_change(db, te
     touching any job or collection — the near-miss #2814 almost shipped with:
     the store map's live count for ``penny-messages`` would otherwise have
     ticked on every ordinary turn, since every reply is an outgoing message.
-    The fix is that the four system-log facades (``PennyConstants.SYSTEM_LOGS``)
+    The fix is that the five system-log facades (``PennyConstants.SYSTEM_LOGS``)
     render their name and scope with NO live count (``_memory_map_line``), so
     this send moves the count but not anything the static prefix shows."""
     agent = ChatAgent.__new__(ChatAgent)
@@ -1566,6 +1566,8 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "- playlists (collection, 1 entries) — favorite playlists\n"
     "- rules (collection, 0 entries) — Standing instructions the user has given: things "
     "to always or never do\n"
+    "- run-health (log) — One line per run: cost, discards, tool errors, and what was "
+    "sent — chat and every job\n"
     "- secrets (collection, 1 entries) — hidden\n"
     "- tips (log, 1 entries) — useful tips\n"
     "- user-messages (log) — Every incoming user message\n"
