@@ -204,6 +204,25 @@ def is_call_fragment_reply(content: str) -> bool:
 # The tool-call envelope the model also emits as TEXT: ``{"name": …, "arguments": {…}}``.
 _CALL_ENVELOPE_KEYS = frozenset({"name", "arguments"})
 
+# An inline code span — text between single backticks, never crossing a newline
+# (CommonMark inline code is one line; a backtick pair that spans lines is stray
+# punctuation, not a code span).  A FENCED ``` block is a different shape and never
+# matches this pattern, so it stays checked.
+_INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+
+
+def _strip_inline_code(content: str) -> str:
+    """``content`` with every inline code span removed (#2855).
+
+    A tool call quoted inside inline code — e.g. a rule proposal's "**Tool call:**
+    `find(query=\"Biscuit\")`" — is a mention, not a call the model is trying to
+    route through the tool channel.  The embedded-call-as-text detectors below
+    scan the result of this, not the raw reply, so a quoted example never trips
+    them while the same call written bare in prose, or inside a fenced ``` block
+    (never touched by this pattern), still does.
+    """
+    return _INLINE_CODE_SPAN_RE.sub(" ", content)
+
 
 def _lone_json_object(content: str) -> dict | None:
     """The parsed object when ``content`` is nothing but one JSON object, else ``None``.
@@ -298,6 +317,12 @@ def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) ->
     key, with no tool name anywhere in it, also tripped this.  That field is gone
     and nothing replaces the signal — see :func:`is_call_as_text_bail` for what
     still catches a bare-args leak with no name in it.)
+
+    Both shapes scan with inline code spans stripped first (#2855, via
+    :func:`_strip_inline_code`), so a call QUOTED in inline code — a rule
+    proposal's own worked example — reads as a mention rather than a leak; a bare
+    call in prose, or one inside a fenced ``` block, is untouched by the strip and
+    still trips this.
     """
     return _has_embedded_call_object(content, registered_tools) or _has_textual_call_syntax(
         content, registered_tools
@@ -317,7 +342,11 @@ def call_as_text_tool_name(content: str, registered_tools: Collection[str]) -> s
     carry a name now also HAS one, per #2813's removal of the nameless
     reasoning-only signal — see :func:`is_call_as_text_bail` and
     :func:`is_embedded_call_as_text` — so ``None`` is no longer reachable through
-    a genuinely call-shaped draft; callers still handle it as a fallback.)"""
+    a genuinely call-shaped draft; callers still handle it as a fallback.)
+
+    The two mirrored legs scan with inline code stripped (#2855), the same text
+    :func:`is_embedded_call_as_text` matched against — so the retry note always
+    names the tool the check actually flagged, never one read off the raw reply."""
     whole = _lone_json_object(content)
     if whole is not None and isinstance(whole.get("name"), str):
         return whole["name"]
@@ -329,25 +358,27 @@ def call_as_text_tool_name(content: str, registered_tools: Collection[str]) -> s
 
 def _textual_call_syntax_name(content: str, registered_tools: Collection[str]) -> str | None:
     """The registered tool name matched by :func:`_has_textual_call_syntax`'s own
-    pattern, or ``None`` — same anchoring, returning the match instead of a bool."""
+    pattern, or ``None`` — same anchoring (including the inline-code strip), returning
+    the match instead of a bool."""
     if not registered_tools:
         return None
     names = "|".join(re.escape(name) for name in registered_tools)
     pattern = re.compile(rf"\b({names})\(\s*[A-Za-z_]\w*\s*=")
-    match = pattern.search(content)
+    match = pattern.search(_strip_inline_code(content))
     return match.group(1) if match else None
 
 
 def _embedded_call_object_tool_name(content: str, registered_tools: Collection[str]) -> str | None:
     """The registered tool a JSON object embedded anywhere in ``content`` names as a
-    string value — see :func:`_has_embedded_call_object`, returning the name instead
-    of a bool."""
+    string value — see :func:`_has_embedded_call_object` (including the inline-code
+    strip), returning the name instead of a bool."""
+    stripped = _strip_inline_code(content)
     decoder = json.JSONDecoder()
-    for index, character in enumerate(content):
+    for index, character in enumerate(stripped):
         if character != "{":
             continue
         try:
-            parsed, _ = decoder.raw_decode(content, index)
+            parsed, _ = decoder.raw_decode(stripped, index)
         except json.JSONDecodeError:
             continue
         if not isinstance(parsed, dict):
@@ -360,13 +391,19 @@ def _embedded_call_object_tool_name(content: str, registered_tools: Collection[s
 
 def _has_embedded_call_object(content: str, registered_tools: Collection[str]) -> bool:
     """A JSON object anywhere in ``content`` that names a registered tool as a
-    string value — see :func:`is_embedded_call_as_text`."""
+    string value — see :func:`is_embedded_call_as_text`.
+
+    Scans the content with inline code spans stripped (#2855) — a call QUOTED in
+    inline code (e.g. a rule proposal's own example) is a mention, not a leak; a
+    fenced ``` block is a different shape and stays checked.
+    """
+    stripped = _strip_inline_code(content)
     decoder = json.JSONDecoder()
-    for index, character in enumerate(content):
+    for index, character in enumerate(stripped):
         if character != "{":
             continue
         try:
-            parsed, _ = decoder.raw_decode(content, index)
+            parsed, _ = decoder.raw_decode(stripped, index)
         except json.JSONDecodeError:
             continue
         if isinstance(parsed, dict) and _is_call_shaped_object(parsed, registered_tools):
@@ -392,12 +429,16 @@ def _has_textual_call_syntax(content: str, registered_tools: Collection[str]) ->
     textual call syntax some drafts fall back to instead of JSON (e.g.
     ``generate_image(description="…")``).  One compiled alternation over every
     registered name, each ``re.escape``d and ``\\b``-anchored so a longer word
-    ending in a tool's name (``rebrowse(``) never matches."""
+    ending in a tool's name (``rebrowse(``) never matches.
+
+    Scans with inline code spans stripped (#2855), so a call quoted in inline
+    code (e.g. a rule proposal's own example) reads as a mention, not a leak; a
+    bare call in prose, or one inside a fenced ``` block, still matches."""
     if not registered_tools:
         return False
     names = "|".join(re.escape(name) for name in registered_tools)
     pattern = re.compile(rf"\b(?:{names})\(\s*[A-Za-z_]\w*\s*=")
-    return bool(pattern.search(content))
+    return bool(pattern.search(_strip_inline_code(content)))
 
 
 def has_leaked_harmony_envelope(content: str) -> bool:

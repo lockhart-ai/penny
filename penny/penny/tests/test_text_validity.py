@@ -11,6 +11,7 @@ shapes captured from the prompt log that must always match.
 from __future__ import annotations
 
 from penny.text_validity import (
+    call_as_text_tool_name,
     degenerate_reason,
     is_degenerate_run,
     is_degenerate_tool_name,
@@ -19,7 +20,9 @@ from penny.text_validity import (
 )
 
 # A chat agent's registered tool names, for the embedded-call-as-text tests below.
-REGISTERED_TOOLS = frozenset({"browse", "generate_image", "collection_configure"})
+REGISTERED_TOOLS = frozenset(
+    {"browse", "generate_image", "collection_configure", "find", "memory_get"}
+)
 
 # Legitimate punctuation that must NEVER be flagged — conversational ellipses,
 # emphatic marks, list/code notation.  A hit here would throw out good output.
@@ -162,6 +165,39 @@ def test_is_embedded_call_as_text_never_flags_ordinary_prose_or_mentions():
     ]
     flagged = [text for text in negatives if is_embedded_call_as_text(text, REGISTERED_TOOLS)]
     assert flagged == [], f"false positives: {flagged}"
+
+
+def test_is_embedded_call_as_text_never_flags_a_call_quoted_in_inline_code():
+    """The prod leak (#2855): a rule proposal that QUOTES the calls it would make,
+    each inside inline code, is a worked example — not a leak — so it must not be
+    discarded and rerolled.  ``call_as_text_tool_name`` must agree there is no
+    tool name to retry against."""
+    reply = (
+        "Here's a rule for looking things up in memory:\n\n"
+        "1. **Trigger:** the user asks where something is.\n"
+        '2. **Tool call:** `find(query="Biscuit")`\n'
+        '3. **Fallback:** if nothing turns up, try `memory_get(memory="pets")`.\n\n'
+        "Want me to save this as a rule?"
+    )
+    assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
+
+
+def test_is_embedded_call_as_text_still_flags_the_same_call_written_bare():
+    """The identical call, written bare in prose rather than quoted in inline
+    code, is still the leak #2787 caught — the inline-code strip must not widen
+    into a blanket exemption."""
+    reply = 'Let me check. find(query="Biscuit")'
+    assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "find"
+
+
+def test_is_embedded_call_as_text_still_flags_a_call_inside_a_fenced_block():
+    """A FENCED ``` block is a different shape than inline code and is never
+    stripped — a call written there still leaks exactly as before."""
+    reply = 'Here you go:\n\n```\nfind(query="Biscuit")\n```\n'
+    assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "find"
 
 
 def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():
