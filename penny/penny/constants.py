@@ -875,6 +875,18 @@ class PennyConstants:
     # records). Read via ``log_read`` (cursor/day); the same facts also render on
     # ``run_list``/``run_get`` (``render_run_calls``), which filter by source.
     MEMORY_RUN_HEALTH_LOG = "run-health"
+    # The changelog system log (#2845, migration seeds the row — see
+    # ``database/migrations``): entries written FOR Penny, one per PR that changed
+    # her tools, prompts or behaviour, recorded at startup from
+    # ``penny/penny/changelog.yaml`` (``penny.changelog.record_new_entries``). A
+    # plain append-only ``Log`` facade (no special dispatch class — unlike
+    # ``collector-runs``/the message logs, its rows ARE its own stored content),
+    # read like any other log via ``log_read``.
+    MEMORY_CHANGELOG_LOG = "changelog"
+    # The ``memory_entry.author`` every changelog row is written with — not a
+    # conversational author (``MessageAuthor`` above), since no agent or user
+    # produced it: the deploy process did, deterministically, from the YAML file.
+    CHANGELOG_LOG_AUTHOR = "deploy"
     # Typed-id separator for an entry handle (``<memory>#<id>``).  A browse
     # micro-context returns this handle to the main loop so the full stored page
     # content stays retrievable (``Memory.entry_by_id``) without the bulk body
@@ -895,6 +907,7 @@ class PennyConstants:
             MEMORY_BROWSE_RESULTS_LOG,
             MEMORY_COLLECTOR_RUNS_LOG,
             MEMORY_RUN_HEALTH_LOG,
+            MEMORY_CHANGELOG_LOG,
         }
     )
 

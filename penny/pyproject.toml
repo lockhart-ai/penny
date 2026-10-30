@@ -40,6 +40,8 @@ dependencies = [
     # Renders gemma's own vendored chat template for the raw-template transport
     # (#2829) — penny.llm.raw_template.
     "jinja2>=3.1.0",
+    # Parses penny/penny/changelog.yaml (#2845) — penny.changelog.
+    "PyYAML>=6.0",
 
 ]
 

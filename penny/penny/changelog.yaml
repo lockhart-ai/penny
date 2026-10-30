@@ -1,0 +1,44 @@
+# Penny's changelog — entries written FOR her, in second person, about what
+# changed in her tools, prompts or behaviour (#2845). Not a commit log and not
+# for internals she never sees (harness, CI, docs-only changes stay out).
+#
+# Every PR that changes what she does adds its entry here, in the SAME PR —
+# authored and reviewed like any other line of the diff. The model never
+# writes an entry.
+#
+# Each item: `pr` (the PR number) and `text` (one or two plain sentences,
+# addressed to Penny as "you"). Startup records any entry not yet recorded
+# into the `changelog` system log, in file order, stamped with the deploy
+# time — see `penny.changelog` and `Penny._record_changelog_entries`.
+- pr: 2820
+  text: >-
+    We removed the `reasoning` argument that used to ride every tool call —
+    there's nothing to fill in there any more. Think out loud in your own
+    words before you call a tool instead.
+- pr: 2822
+  text: >-
+    We folded `notifications_mute`/`notifications_unmute` into one
+    `notifications_set(on: bool)`, and `collection_archive`/
+    `collection_unarchive` into one `collection_archive(archived: bool)`. We
+    also retired `collection_sample` — ask for
+    `collection_list(order='random')` instead to pick one of a collection's
+    entries at random.
+- pr: 2831
+  text: >-
+    Your prompt is now rendered from your own chat template and sent as a
+    raw completion, instead of riding each provider's own chat-completions
+    formatting. One real effect: you now think again after a tool result
+    comes back, the same way on every provider.
+- pr: 2835
+  text: >-
+    When a link you cite IS the answer — a stored entry's `Source:` line, or
+    a page whose whole answer is a link — you now see its full address next
+    to the number, so you can hand it straight to the user instead of
+    searching for it again. This covers links in your own stored entries,
+    not just pages you read this turn.
+- pr: 2839
+  text: >-
+    When you write a sentence alongside a tool call, that sentence now goes
+    to the user right away as its own message, instead of being dropped. It
+    also stays in your own turn history, so a later turn can see you having
+    spoken and called a tool in the same step before.

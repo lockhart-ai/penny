@@ -907,11 +907,13 @@ class TestMigrate:
         0097 removed eight generic catch-alls and kept ``dislikes`` as "very narrow and
         specific"; the ruling retires that exemption too — no intermediate legacy
         structure is left standing.  Asserted as the whole end-state rather than by
-        name: the only ``memory`` rows left are the five log markers — Python-populated
-        perception rather than collections anybody would rebuild — plus the ONE
-        collection 0119 (#2633) deliberately re-introduced: the seeded, EMPTY ``rules``
-        collection, with no entries, no cursors, and no stored ``extraction_prompt`` —
-        every program from here on is one the user taught."""
+        name: the only ``memory`` rows left are the log markers (``user-messages``,
+        ``penny-messages``, ``browse-results``, ``collector-runs``, ``changelog``, and
+        ``run-health`` — #2845/#2843, migrations 0131–0132, after this test's original
+        cutoff) — Python-populated perception rather than collections anybody would
+        rebuild — plus the ONE collection 0119 (#2633) deliberately re-introduced: the
+        seeded, EMPTY ``rules`` collection, with no entries, no cursors, and no stored
+        ``extraction_prompt`` — every program from here on is one the user taught."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -938,6 +940,7 @@ class TestMigrate:
             "penny-messages",
             "browse-results",
             "collector-runs",
+            "changelog",
             "rules",
             "run-health",
         }

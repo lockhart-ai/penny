@@ -39,7 +39,7 @@ Either way: work only inside your worktree, with absolute paths (your shell's cw
 
 ## 4. Docs land in the same PR
 
-Update `CLAUDE.md` / `README.md` / the relevant doc as part of this PR, not a follow-up, whenever the change warrants it.
+Update `CLAUDE.md` / `README.md` / the relevant doc as part of this PR, not a follow-up, whenever the change warrants it. A PR that changes Penny's tools, prompts or behaviour also adds its entry to `penny/penny/changelog.yaml` (#2845) — written in second person, addressed to Penny, about what changed for her.
 
 ## 5. Quality review — before the gate
 

@@ -19,6 +19,7 @@ from sqlmodel import Session, select
 
 from penny.agents.chat import ChatAgent
 from penny.agents.models import ToolCallRecord
+from penny.changelog import ChangelogEntry, record_new_entries
 from penny.constants import CollectionConfigureOutcome, PennyConstants
 from penny.database import Database
 from penny.database.memory import (
@@ -3717,6 +3718,36 @@ class TestLogTools:
         agent_b = LogReadTool(db, agent_name="b", scope="b")
         rendered = await agent_b.execute(CallLink.new_top(), log="events")
         assert "hello" in rendered.message
+
+    @pytest.mark.asyncio
+    async def test_log_read_renders_changelog_entries_whole(self, db):
+        """`log_read('changelog')` (#2845) is a plain `Log` like `browse-results`
+        — no special facade class — so two `record_new_entries`-written rows
+        render byte-for-byte through the ordinary log render, PR number and
+        all. A second `record_new_entries` call with an already-recorded PR
+        adds nothing (the idempotency `startup` relies on)."""
+        db.memories.create_log(PennyConstants.MEMORY_CHANGELOG_LOG, "test fixture")
+        changelog = require_memory(db, PennyConstants.MEMORY_CHANGELOG_LOG)
+        added = record_new_entries(
+            changelog,
+            [
+                ChangelogEntry(pr=9001, text="We added a new way to save a note."),
+                ChangelogEntry(pr=9002, text="We renamed the lookup tool."),
+            ],
+        )
+        assert added == 2
+        entries = changelog.read_all()
+        result = await LogReadTool(db, agent_name="chat", scope=None).execute(
+            CallLink.new_top(), log=PennyConstants.MEMORY_CHANGELOG_LOG
+        )
+        assert result.message == (
+            "2 entries from `changelog` (oldest first):\n"
+            f"1. [{format_log_timestamp(entries[0].created_at)}] id={entries[0].id} "
+            "PR #9001: We added a new way to save a note.\n"
+            f"2. [{format_log_timestamp(entries[1].created_at)}] id={entries[1].id} "
+            "PR #9002: We renamed the lookup tool."
+        )
+        assert record_new_entries(changelog, [ChangelogEntry(pr=9001, text="x")]) == 0
 
 
 class TestEmissionProvenanceRender:

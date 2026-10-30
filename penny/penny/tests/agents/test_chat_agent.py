@@ -20,6 +20,7 @@ from sqlmodel import select
 
 from penny.agents.chat import ChatAgent
 from penny.agents.conversation_map import ConversationMap
+from penny.changelog import load_entries
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog, PromptLog
@@ -68,9 +69,9 @@ async def test_basic_message_flow(
         assert len(signal_server._websockets) == 1, "Penny should have connected to WebSocket"
 
         # Memory seed: exercise every rendering path in one verbatim assertion.
-        # Test-only names avoid colliding with the four system LOG markers created
-        # by migration 0026 (user-messages, penny-messages, browse-results,
-        # collector-runs).  No COLLECTION is seeded any more — 0097 nuked the generic
+        # Test-only names avoid colliding with the five system LOG markers created
+        # by migration 0026/0131 (user-messages, penny-messages, browse-results,
+        # collector-runs, changelog).  No COLLECTION is seeded any more — 0097 nuked the generic
         # catch-alls and 0108 dropped the last one (#1911's soft reboot), which is why
         # the mechanisms section below is empty and the memory list is logs + the
         # collections this test made.
@@ -1460,6 +1461,36 @@ async def test_startup_backfill_fills_missing_key_vector(
         assert penny.db.memories.get_entries_without_embeddings(limit=100) == []
 
 
+@pytest.mark.asyncio
+async def test_startup_records_changelog_entries_once(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """The real startup step (``Penny._record_changelog_entries``, #2845)
+    records every ``changelog.yaml`` entry into the `changelog` log on the
+    first startup, each stamped with that startup's own time — then adds
+    nothing on a second call, the idempotency a redeploy relies on."""
+    config = make_config()
+    entries = load_entries()
+    # Naive-or-aware tolerant: compare both sides with tzinfo stripped, within a
+    # generous window, rather than assume which shape SQLite round-trips.
+    now_naive = datetime.now(UTC).replace(tzinfo=None)
+
+    async with running_penny(config) as penny:
+        changelog = penny.db.memory(PennyConstants.MEMORY_CHANGELOG_LOG)
+        assert changelog is not None
+        recorded = changelog.read_all()
+        assert [row.content for row in recorded] == [entry.render() for entry in entries]
+        for row in recorded:
+            stamp = row.created_at.replace(tzinfo=None)
+            assert abs((stamp - now_naive).total_seconds()) < 300, (
+                "each entry should be stamped with this startup's own time"
+            )
+
+        # A second startup call is idempotent — nothing new is recorded.
+        penny._record_changelog_entries()
+        assert len(changelog.read_all()) == len(entries)
+
+
 _BASIC_FLOW_STATIC_EXPECTED = (
     "## Identity\n"
     "You are Penny. You and the user are friends who text regularly. This is "
@@ -1560,6 +1591,8 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "\n"
     "### Your memory\n"
     "- browse-results (log) — Every browse-tool fetch result\n"
+    "- changelog (log) — Changes made to your tools, prompts and behaviour, "
+    "recorded at each deploy\n"
     "- collector-runs (log) — One entry per Collector cycle: the target + its "
     "generated structural record (outcome, counts, tool trace)\n"
     "- penny-messages (log) — Every outgoing Penny reply\n"

@@ -15,6 +15,7 @@ from penny.agents import (
     ChatAgent,
     Collector,
 )
+from penny.changelog import load_entries, record_new_entries
 from penny.channels import MessageChannel, create_channel_manager
 from penny.channels.browser import BrowserChannel
 from penny.channels.ios.channel import IosChannel
@@ -564,6 +565,7 @@ class Penny:
 
         await self._run_preflight()
         await self._run_startup_backfills()
+        self._record_changelog_entries()
 
         listen_task = asyncio.create_task(self.channel.listen(), name="channel.listen")
         scheduler_task = asyncio.create_task(self.scheduler.run(), name="scheduler.run")
@@ -609,6 +611,23 @@ class Penny:
         total_messages = await self._backfill_message_embeddings(batch_limit)
         if total_messages:
             logger.info("Startup embedding backfill complete: %d messages", total_messages)
+
+    def _record_changelog_entries(self) -> None:
+        """Record any changelog entry (#2845) this deploy hasn't recorded yet.
+
+        Deterministic and idempotent: ``record_new_entries`` reads the
+        `changelog` log's own existing rows to decide what's missing, so a
+        PR already recorded on an earlier startup is never appended twice.
+        Synchronous and DB-only — no model, no channel — so it runs right
+        after the embedding backfill, before anything the user can see.
+        """
+        changelog = self.db.memory(PennyConstants.MEMORY_CHANGELOG_LOG)
+        if changelog is None:
+            logger.warning("No `changelog` memory row — migration 0131 didn't run?")
+            return
+        added = record_new_entries(changelog, load_entries())
+        if added:
+            logger.info("Recorded %d new changelog entr%s", added, "y" if added == 1 else "ies")
 
     async def _run_startup_notifications(self) -> None:
         """Send startup notifications after the outgoing channel is ready."""
