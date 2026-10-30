@@ -18,7 +18,7 @@ import pytest
 
 from penny.changelog import ChangelogEntry
 from penny.config import Config
-from penny.constants import PennyConstants
+from penny.constants import CycleTrigger, PennyConstants
 from penny.llm.call_link import CallLink
 from penny.notification import withheld_reason
 from penny.penny import Penny
@@ -99,7 +99,15 @@ async def _deliver_changelog(
     assert answer, "the changelog delivery turn produced no reply"
     assert half_formed_send_reason(answer) is None, "the changelog delivery reply was not whole"
     assert withheld_reason(penny.db, answer) is None, "the changelog delivery reply was withheld"
-    penny.db.send_queue.enqueue(answer, collection=PennyConstants.CHANGELOG_LOG_AUTHOR)
+    # The same shape ``store_composed`` leaves a job report in — content AND its
+    # own run id both set — so the drainer reads it as an ordinary row below
+    # while the delivered message still carries the run that wrote it.
+    penny.db.send_queue.enqueue_composed(
+        answer,
+        collection=PennyConstants.MEMORY_CHANGELOG_LOG,
+        origin=CycleTrigger.CADENCE,
+        report_run_id=run_id,
+    )
     delivered = await penny.send_queue_drainer.execute()
     assert delivered, "the changelog announcement was queued but never delivered"
 

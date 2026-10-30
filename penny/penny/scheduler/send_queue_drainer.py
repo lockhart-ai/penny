@@ -10,7 +10,12 @@ carries ``report_run_id`` and no content yet is a composing report — the notif
 cycle's hand-off.  For one of those the drainer builds the :class:`JobReport` from
 the cycle's written entries (FULL, never cut), runs ONE chat-agent turn on it, and
 the message the turn writes is what gets gated, stored on the row and delivered.
-Every ordinary row (content already set) goes out with no model call at all.
+Every ordinary row (content already set) goes out with no model call at all — and
+an ordinary row MAY still carry ``report_run_id`` (#2846's startup changelog
+announcement composes its own turn up front via ``enqueue_composed``, the same
+shape ``store_composed`` leaves a job report in once composed): the delivered
+message is stamped with that run id rather than ``None``, so the row's own run is
+never lost — whether it was composed here or handed in already composed.
 
 The cooldown logic is identical to the gate the retired ``send_message`` tool
 used to apply inline: bypassed when the user has spoken since Penny's last message (the queued
@@ -98,7 +103,15 @@ class SendQueueDrainer:
             if item.id is not None:
                 self._db.send_queue.store_composed(item.id, content)
         else:
-            content, composed_run_id = item.content, None
+            # An ordinary row (content already set, no model call here) still
+            # carries whatever run wrote it — ``None`` when there never was one
+            # (a plain ``enqueue``), or that run's own id when a caller composed
+            # it up front (``enqueue_composed``) or an EARLIER tick already
+            # composed and stored it (a report row whose first delivery attempt
+            # found no recipient: ``item.content`` is no longer empty, so this
+            # branch is taken without re-composing, and ``report_run_id`` is
+            # still the turn that wrote it, not lost to a bare ``None``).
+            content, composed_run_id = item.content, item.report_run_id
         recipient = self._resolve_recipient()
         if recipient is None:
             return False
@@ -115,9 +128,9 @@ class SendQueueDrainer:
             # report this is what keeps "what you last told the user" (#2385) a
             # read: the newest outgoing row stamped with this collection.
             mechanism=item.collection,
-            # The run whose reply this delivery carries (#2630), for a composed
-            # report: the chat turn that wrote the message.  An ordinary queued
-            # message has no run behind it and passes None.
+            # The run whose reply this delivery carries (#2630) — the chat turn
+            # that wrote the message, whether composed here or handed in already
+            # composed.  ``None`` only for a row with no real run behind it at all.
             run_id=composed_run_id,
         )
         if item.id is not None:

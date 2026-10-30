@@ -94,6 +94,43 @@ class SendQueueStore:
             )
             return row.id
 
+    def enqueue_composed(
+        self, content: str, collection: str, origin: CycleTrigger, report_run_id: str
+    ) -> int:
+        """Queue an ALREADY-COMPOSED message that still names the run that wrote it,
+        and return its assigned id.
+
+        For a caller that runs its own delivery turn up front (#2846's startup
+        changelog announcement) rather than handing the drainer a bare run id to
+        compose from later (``enqueue_report``).  The row lands in the exact shape
+        ``store_composed`` leaves a composing job report in — content AND
+        ``report_run_id`` both set — so the drainer's own structural read
+        (``_is_report``) sees it as an ordinary row (content is no longer empty)
+        while still carrying the run id the delivered message is stamped with.
+        Every argument is required: a caller with no real run behind it uses
+        ``enqueue`` instead, deliberately, rather than passing a hollow id here."""
+        with self._session() as session:
+            row = SendQueueItem(
+                content=content,
+                collection=collection,
+                origin=origin,
+                report_run_id=report_run_id,
+                created_at=self._clock.now(),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            if row.id is None:
+                raise RuntimeError("send_queue row was inserted but has no id")
+            logger.info(
+                "Queued composed message %d from %s (run %s, %d chars)",
+                row.id,
+                collection,
+                report_run_id,
+                len(content),
+            )
+            return row.id
+
     def store_composed(self, item_id: int, content: str) -> None:
         """Store the message the delivery chat turn wrote for this report row."""
         with self._session() as session:

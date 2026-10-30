@@ -25,7 +25,7 @@ from penny.channels.permission_manager import PermissionManager
 from penny.channels.signal.channel import SignalChannel
 from penny.commands import create_command_registry
 from penny.config import Config, setup_logging
-from penny.constants import ChannelType, PennyConstants
+from penny.constants import ChannelType, CycleTrigger, PennyConstants
 from penny.database import Database
 from penny.database.migrate import migrate
 from penny.database.models import MemoryEntry
@@ -653,53 +653,86 @@ class Penny:
 
     async def _send_changelog_announcement(self, entries: list[ChangelogEntry]) -> None:
         """Dispatch the changelog delivery turn for this deploy's new entries
-        (#2846), and queue what it writes like any other autonomous send.
-
-        A deploy that recorded nothing new (harness-only, CI-only, or a restart on
-        an already-recorded commit) sends nothing — no model call, nothing
-        queued. The same profile/history gates the retired restart announcement
-        used stay: a fresh install, or the watcher's rapid per-deploy restarts
-        before any real conversation, never spend a model call on a user who has
-        never chatted. iOS keeps its own simple operational push instead,
-        unchanged by this feature — prod's default device is Signal.
-        """
-        if not entries:
+        (#2846), and queue what it writes like any other autonomous send —
+        summary method: who it's for (and whether it should run at all), then
+        compose, then queue."""
+        sender = self._changelog_announcement_recipient(entries)
+        if sender is None:
             return
         try:
-            sender = self.db.users.get_primary_sender()
-            if not sender:
-                logger.info("No user profile found for changelog announcement")
+            composed = await self._compose_changelog_announcement(entries, sender)
+            if composed is None:
                 return
-
-            user_messages = self.db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG)
-            if user_messages is None or not user_messages.newest_entries(k=1):
-                logger.info("No message history yet, skipping changelog announcement")
-                return
-
-            if await self._send_ios_operational_announcement():
-                return
-
-            run_id = uuid.uuid4().hex
-            response = await self.chat_agent.handle_changelog_report(
-                entries, sender, call_link=CallLink.top(run_id)
-            )
-            answer = (response.answer or "").strip() if response is not None else ""
-            if not answer:
-                logger.warning("Changelog delivery turn produced no reply")
-                return
-            half_formed = half_formed_send_reason(answer)
-            if half_formed is not None:
-                logger.warning("Changelog delivery reply was not whole (%s)", half_formed)
-                return
-            reason = withheld_reason(self.db, answer)
-            if reason is not None:
-                logger.info("Changelog announcement withheld — %s", reason)
-                return
-
-            logger.info("Queuing changelog announcement for %s", sender)
-            self.db.send_queue.enqueue(answer, collection=PennyConstants.CHANGELOG_LOG_AUTHOR)
+            answer, run_id = composed
+            self._queue_changelog_announcement(answer, run_id)
         except Exception as e:
             logger.warning("Failed to send changelog announcement: %s", e)
+
+    def _changelog_announcement_recipient(self, entries: list[ChangelogEntry]) -> str | None:
+        """Who the changelog turn should write to, or ``None`` when it shouldn't
+        run at all: no new entries (harness-only, CI-only, or a restart on an
+        already-recorded commit), no profile, or the user has never chatted —
+        the same gates the retired restart announcement used, so a fresh
+        install or the watcher's rapid per-deploy restarts never spend a model
+        call on a user who has never chatted."""
+        if not entries:
+            return None
+        sender = self.db.users.get_primary_sender()
+        if not sender:
+            logger.info("No user profile found for changelog announcement")
+            return None
+        user_messages = self.db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG)
+        if user_messages is None or not user_messages.newest_entries(k=1):
+            logger.info("No message history yet, skipping changelog announcement")
+            return None
+        return sender
+
+    async def _compose_changelog_announcement(
+        self, entries: list[ChangelogEntry], sender: str
+    ) -> tuple[str, str] | None:
+        """Run the delivery turn; ``None`` means nothing reaches the queue —
+        iOS's own shortcut fired instead (unchanged by this feature — prod's
+        default device is Signal), or the gate below declined what it wrote."""
+        if await self._send_ios_operational_announcement():
+            return None
+        run_id = uuid.uuid4().hex
+        response = await self.chat_agent.handle_changelog_report(
+            entries, sender, call_link=CallLink.top(run_id)
+        )
+        answer = (response.answer or "").strip() if response is not None else ""
+        if not self._changelog_reply_is_sendable(answer):
+            return None
+        return answer, run_id
+
+    def _changelog_reply_is_sendable(self, answer: str) -> bool:
+        """The same content gates a composed job report passes before delivery:
+        non-empty, whole, and not withheld. Logged either way."""
+        if not answer:
+            logger.warning("Changelog delivery turn produced no reply")
+            return False
+        half_formed = half_formed_send_reason(answer)
+        if half_formed is not None:
+            logger.warning("Changelog delivery reply was not whole (%s)", half_formed)
+            return False
+        reason = withheld_reason(self.db, answer)
+        if reason is not None:
+            logger.info("Changelog announcement withheld — %s", reason)
+            return False
+        return True
+
+    def _queue_changelog_announcement(self, answer: str, run_id: str) -> None:
+        """Queue the composed reply in the same shape ``store_composed`` leaves a
+        job report in — content AND its own run id both set — so the drainer
+        reads it as an ordinary row while the delivered message still carries
+        the run that wrote it (the run-health facts read ``messagelog.run_id``,
+        #2849)."""
+        logger.info("Queuing changelog announcement (run %s)", run_id)
+        self.db.send_queue.enqueue_composed(
+            answer,
+            collection=PennyConstants.MEMORY_CHANGELOG_LOG,
+            origin=CycleTrigger.CADENCE,
+            report_run_id=run_id,
+        )
 
     async def _send_ios_operational_announcement(self) -> bool:
         """Send a simple startup notification when iOS is the default channel."""

@@ -11,11 +11,13 @@ import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlmodel import col, select
 
 from penny.agents.models import ControllerResponse
 from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.constants import ChannelType, PennyConstants
+from penny.database.models import PromptLog
 from penny.penny import Penny
 from penny.preflight import CheckStatus, PreflightCheck, PreflightError
 from penny.tests.conftest import TEST_SENDER, wait_until
@@ -28,6 +30,21 @@ def _find_request(mock_llm, needle: str) -> str:
             if needle in message["content"]:
                 return message["content"]
     raise AssertionError(f"No LLM request containing {needle!r}")
+
+
+def _prompt_log_for(session, needle: str) -> PromptLog:
+    """The logged ``PromptLog`` row whose messages contain ``needle`` — the REAL
+    run record, stamped by ``LlmClient.chat()`` itself. Read this for the actual
+    run id a call carried: ``mock_llm.requests`` is built from the SDK-level
+    intercept (``_MockOpenAIClient.create``), several layers below
+    ``LlmClient.chat()``'s own Python-level ``call_link``/``agent_name``/
+    ``prompt_type`` arguments — those never reach the wire, so the mock's own
+    request log carries none of them, and asserting against it there would
+    compare the wrong thing."""
+    rows = session.exec(select(PromptLog).where(col(PromptLog.messages).contains(needle))).all()
+    if not rows:
+        raise AssertionError(f"No logged prompt containing {needle!r}")
+    return rows[0]
 
 
 class StartupReadyChannel(MessageChannel):
@@ -121,11 +138,15 @@ async def test_changelog_announcement_dispatches_the_whole_literal_render(test_c
     assert await_args is not None
     assert await_args.args[0] == _ENTRIES
     assert await_args.args[1] == TEST_SENDER
+    # The real run id the delivery turn was dispatched with — read off the
+    # SAME ``CallLink`` production built, not re-derived here.
+    delivery_run_id = await_args.kwargs["call_link"].run_id
 
     pending = penny.db.send_queue.pending_items()
     assert len(pending) == 1
     assert pending[0].content == _REPLY
-    assert pending[0].collection == PennyConstants.CHANGELOG_LOG_AUTHOR
+    assert pending[0].collection == PennyConstants.MEMORY_CHANGELOG_LOG
+    assert pending[0].report_run_id == delivery_run_id
 
     drained = await penny.send_queue_drainer.execute()
     assert drained is True
@@ -133,6 +154,11 @@ async def test_changelog_announcement_dispatches_the_whole_literal_render(test_c
     _, call_kwargs = channel.send_response.call_args
     assert call_kwargs["content"] == _REPLY
     assert call_kwargs["recipient"] == TEST_SENDER
+    # #2849's run-health facts read ``messagelog.run_id`` off the delivered row —
+    # this is what keeps that read from landing on ``None`` (the channel here is
+    # a bare mock, so the real messagelog write is asserted in the channel-ready
+    # test below, which drives a real channel through ``send_response``).
+    assert call_kwargs["run_id"] == delivery_run_id
 
 
 @pytest.mark.asyncio
@@ -201,6 +227,19 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
 
         prompt = _find_request(mock_llm, "reached you with this deploy")
         assert prompt == render_changelog_announcement(_ENTRIES)
+
+        # #2849's run-health facts read ``messagelog.run_id`` off the delivered
+        # row — a real channel's own ``send_response`` wrote it here, so this is
+        # the end-to-end proof it is the delivery turn's run id, not None. Read
+        # against the REAL promptlog row (``LlmClient.chat()``'s own stamp), not
+        # ``mock_llm.requests`` — that list is built from the SDK-level intercept,
+        # below ``call_link``'s own Python-level plumbing, and carries none of it.
+        with penny.db.get_session() as session:
+            delivery_log = _prompt_log_for(session, "reached you with this deploy")
+            delivery_run_id = delivery_log.run_id
+        delivered_row = penny.db.messages.find_outgoing_by_content(_REPLY)
+        assert delivered_row is not None
+        assert delivered_row.run_id == delivery_run_id
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

@@ -11,8 +11,11 @@ only know from having been told.
 
 One unrelated ordinary turn follows the announcement, so the question is never the
 very next message after it — then the question itself, which never says "reasoning"
-or names the argument: it only asks, in plain words, whether something changed about
-how her tool calls work.
+or names the argument. It also never asks the open "did anything change" version: her
+changelog holds several real tool changes (#2822, #2844 among them), so a question
+that broad admits more than one true answer. The question instead points at the one
+change this case measures without naming it: something was TAKEN OFF her tool calls —
+what was it.
 
 **What is claimed.** The reply to that LATER question mentions the reasoning argument
 (a regex on ``reasoning``) — a planted, checkable fact, not a paraphrase word list. On
@@ -64,12 +67,15 @@ assert any(_REASON_WORD in entry.text for entry in _ENTRIES if entry.pr == _REAS
 # question is never the very first message after the delivery turn.
 _UNRELATED_TURN = "quick one — what's a fun fact about octopuses?"
 
-# The question never says "reasoning" and never names the argument — only asks, in
-# plain words, whether something changed about how her tool calls work.
-_ASK = "hey, did something change about how you make your tool calls?"
+# The question never says "reasoning" and never names the argument, and never asks the
+# open "did anything change" form — her changelog holds several real tool changes
+# (#2822, #2844 among them), so that broad a question admits more than one true
+# answer. It points at the one change this case measures without naming it: something
+# was taken OFF her tool calls — what was it.
+_ASK = "did that update take something off your tool calls? what was it?"
 _ALSO_PHRASED = (
-    "quick question — has anything changed with your tool calls recently?",
-    "did one of the recent updates change how tool calls work for you?",
+    "you got a deploy earlier — was something removed from your tool calls? what?",
+    "that deploy — did it drop something from how your tool calls work? what was it?",
 )
 for _wording in (_ASK, *_ALSO_PHRASED, _UNRELATED_TURN):
     assert _REASON_WORD not in _wording.casefold(), (
@@ -91,9 +97,10 @@ def _reply_mentions_the_reasoning_argument(sample: SampleObservation, _world: Wo
 async def test_a_later_question_is_answered_from_the_changelog_she_was_told(
     changelog_eval: ChangelogEval, model: str
 ) -> None:
-    """A later turn asking about her tool calls, in general terms, is answered from what
-    the real changelog delivery turn actually told her — not guessed, since the fact it
-    measures (the retired `reasoning` argument) appears nowhere else in this world."""
+    """A later turn asking what was taken off her tool calls — without naming it — is
+    answered from what the real changelog delivery turn actually told her — not
+    guessed, since the fact it measures (the retired `reasoning` argument) appears
+    nowhere else in this world."""
     cohort = await changelog_eval(
         case_id="changelog-reference",
         behaviour=(
