@@ -141,6 +141,11 @@ class _MetadataUpdate(BaseModel):
     # copied back on every later call.  Ignored when ``replace_schedule`` is set: a new
     # rule already carries both end conditions and overwrites them whole.
     clear_expiry: bool = False
+    # Setting a prompt and CLEARING one are two different asks, same shape as
+    # ``clear_expiry`` above (#2857): ``None`` means "not stated" everywhere else on
+    # this model, so clearing a prompt that can never run (the schedule-less case)
+    # needs its own explicit signal rather than overloading a bare ``None``.
+    clear_extraction_prompt: bool = False
     replace_schedule: bool = False
 
     def apply_to(self, memory: MemoryRow) -> list[str]:
@@ -154,6 +159,9 @@ class _MetadataUpdate(BaseModel):
             changed.append("notify")
         if self.extraction_prompt is not None:
             memory.extraction_prompt = self.extraction_prompt
+            changed.append("extraction_prompt")
+        elif self.clear_extraction_prompt and memory.extraction_prompt is not None:
+            memory.extraction_prompt = None
             changed.append("extraction_prompt")
         changed.extend(self._apply_schedule(memory))
         return changed
@@ -793,6 +801,7 @@ class MemoryStore:
         max_runs: int | None = None,
         expires_at: datetime | None = None,
         clear_expiry: bool = False,
+        clear_extraction_prompt: bool = False,
         replace_schedule: bool = False,
         run_id: str | None = None,
     ) -> MemoryRow:
@@ -808,6 +817,10 @@ class MemoryStore:
         non-``NULL`` one it could never detect.
         ``clear_expiry`` is how a caller says the job is UNBOUNDED, which a bare
         ``expires_at=None`` cannot say on a model where ``None`` means "not stated" (#1944).
+        ``clear_extraction_prompt`` is the same shape for the prompt axis (#2857): a
+        caller clearing a stored prompt that can never run (no schedule) says so
+        explicitly, since a bare ``extraction_prompt=None`` already means "not stated"
+        here too.
         """
         name = slug(name)
         self._require_collection(name)
@@ -820,6 +833,7 @@ class MemoryStore:
             max_runs=max_runs,
             expires_at=expires_at,
             clear_expiry=clear_expiry,
+            clear_extraction_prompt=clear_extraction_prompt,
             replace_schedule=replace_schedule,
         )
         with self._session() as session:

@@ -79,9 +79,14 @@ ReadCount = Annotated[int | None, AfterValidator(_reject_nonpositive_count)]
 
 # What each optional string argument on the collection surface actually accepts, so a
 # blank rejection can NAME the form instead of only refusing.  Total over the fields
-# typed ``OptionalText`` / ``OptionalSkill`` on the three collection arg models (pinned
-# by a test), so the lookup indexes directly: a field declaring one of those types with
-# no entry here is a programming error, not a case to absorb behind a vague default.
+# typed ``OptionalText`` / ``OptionalSkill`` anywhere across the three collection arg
+# models (pinned by a test), so the lookup indexes directly: a field declaring one of
+# those types with no entry here is a programming error, not a case to absorb behind a
+# vague default.  ``prompt`` keeps its entry for ``CollectionCreateArgs`` (a brand-new
+# collection has nothing to clear, so a blank one there is still refused at the gate);
+# on the update surface ``prompt`` carries no such validator at all (see
+# ``PromptSetterText`` below) — a blank there can mean "clear an unused one" (#2857),
+# a decision only the tool can make with the row in hand.
 OPTIONAL_ARG_FORMS: dict[str, str] = {
     "description": "what the collection is for, in the user's own words",
     "prompt": "the instructions this job's cycles follow, as free text",
@@ -125,6 +130,16 @@ def _reject_blank_optional(value: object, info: ValidationInfo) -> object:
 # Optional text on the collection surface: a blank is refused with the teaching
 # rejection above, never silently read as "omitted".
 OptionalText = Annotated[str | None, BeforeValidator(_reject_blank_optional)]
+
+# `prompt` on the UPDATE surface — `CollectionSetArgs` / `CollectionUpdateArgs`, the
+# `collection_configure` front door and its update path (#2857) — carries no
+# blank-refusing validator at all: whether a blank means "clear the stored prompt"
+# or "this would leave a job blank" depends on whether the collection has a schedule,
+# a fact the arg gate has no DB access to read. That split lives in `CollectionUpdateTool`
+# itself (`_clear_prompt` / `_no_schedule_refusal`), which refuses a blank on a
+# scheduled job with the SAME teaching text the gate used to produce, and otherwise
+# clears a prompt nothing was ever going to run.
+PromptSetterText = str | None
 
 # `find`'s own blank-`memory` refusal (#2289) — kept SEPARATE from
 # `_reject_blank_optional`/`OPTIONAL_ARG_FORMS` (the `collection_configure` surface's
@@ -297,13 +312,17 @@ class CollectionSetArgs(ToolArgs):
     (#2455 naive baseline) — it is written straight into the collection's
     ``extraction_prompt``, verbatim; a wrong prompt is fixed by passing a new one.
 
-    Every optional string here refuses a blank (#1776): omitting an argument and
-    passing ``""`` for it are different calls, and only the first means "leave this
-    alone" — the second is a half-expressed intention, corrected at the gate."""
+    Every optional string here refuses a blank (#1776) EXCEPT ``prompt``
+    (``PromptSetterText``, #2857): omitting an argument and passing ``""`` for it are
+    different calls, and for ``description`` / ``schedule`` / ``expires_at`` only the
+    first means "leave this alone" — the second is a half-expressed intention,
+    corrected at the gate.  ``prompt`` is the one field where a blank is its OWN
+    intention (clear a prompt that can never run) on a schedule-less collection, so
+    the tool itself decides — see ``CollectionUpdateTool._clear_prompt``."""
 
     collection: MemoryName
     description: OptionalText = None
-    prompt: OptionalText = None
+    prompt: PromptSetterText = None
     schedule: OptionalText = None
     expires_at: OptionalText = None
     notify: bool | None = None
@@ -320,7 +339,12 @@ class CollectionUpdateArgs(ToolArgs):
 
     ``prompt`` is the job's instructions axis (#2455 naive baseline): supplying it
     REPLACES the collection's ``extraction_prompt`` verbatim with the new free text.
-    Omitting it leaves the prompt untouched (a plain metadata edit).
+    Omitting it leaves the prompt untouched (a plain metadata edit).  A BLANK
+    ``prompt`` is not the gate's ordinary blank refusal (``PromptSetterText``, #2857):
+    on a collection with no schedule and none set in this same call, it CLEARS a
+    stored prompt nothing was ever going to run; on a scheduled job it is still
+    refused, now by the tool rather than the gate.  See
+    ``CollectionUpdateTool._clear_prompt`` / ``_no_schedule_refusal``.
 
     The **schedule** is the apply-time job axis — the SAME one-arg RRULE
     ``collection_configure`` accepts (``parse_schedule``, #1857).  Present → the schedule is
@@ -334,7 +358,9 @@ class CollectionUpdateArgs(ToolArgs):
     description: OptionalText = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     # Replace the stored extraction_prompt verbatim; None = leave prompt as-is (#2455).
-    prompt: OptionalText = None
+    # PromptSetterText, not OptionalText (#2857): a blank is the tool's own clear-or-
+    # refuse decision, not the gate's uniform blank rejection.
+    prompt: PromptSetterText = None
     # Schedule — one arg, one grammar (parse_schedule, #1857), mirroring collection_configure.
     # Present → replaces the whole schedule atomically; OMITTED → schedule untouched (a
     # blank is refused, #1776).

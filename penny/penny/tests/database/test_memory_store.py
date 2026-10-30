@@ -286,6 +286,8 @@ name: hedgehog-sightings
 type: collection
 description: neighbourhood hedgehog sightings
 
+No entries in `hedgehog-sightings` yet (not an error).
+
 What it does each cycle — the prompt below is the collection's actual behaviour.  \
 When explaining the collection, read THIS, not the operational settings.
 prompt: 1. browse for hedgehog news. 2. done().
@@ -301,6 +303,61 @@ last collected: never
 
 Recent changes (newest first):
   2026-03-05 08:10 UTC archived by user-run (run run-t9)
+  2026-03-05 08:00 UTC created by user-run (run run-t1)"""
+        )
+
+    def test_metadata_full_render_with_no_schedule_and_entries(self, db):
+        """The memory_get render contract for a collection with NO schedule and some
+        entries (#2857): the entries lead (count + keys, newest first), a stray
+        prompt is labelled unused and clearable rather than read as "what it does
+        each cycle", and the schedule line reads ``none`` — never a half-formed
+        clause."""
+        db.memories.create_collection(
+            "standing-notes",
+            "a stand-in for a standing-rules-shaped collection",
+            extraction_prompt="A stray prompt that merely lists the notes below.",
+            created_by_run_id="run-t1",
+        )
+        require_memory(db, "standing-notes").write_rule_decided(
+            [
+                EntryInput(key="first-note", content="The first stored note."),
+                EntryInput(key="second-note", content="The second stored note."),
+            ],
+            author="chat",
+        )
+        _pin_provenance_timestamps(
+            db,
+            "standing-notes",
+            created=datetime(2026, 3, 5, 8, 0, tzinfo=UTC),
+            updated=datetime(2026, 3, 5, 8, 0, tzinfo=UTC),
+        )
+        result = asyncio.run(
+            MemoryMetadataTool(db).execute(CallLink.new_top(), memory="standing-notes")
+        )
+        assert (
+            result.message
+            == """\
+name: standing-notes
+type: collection
+description: a stand-in for a standing-rules-shaped collection
+
+2 entries in `standing-notes`, newest first: key='second-note', key='first-note'
+
+No schedule runs this collection, so no prompt executes — what it holds is its \
+entries, above.
+prompt (unused, since no schedule runs it; clear it by setting an empty prompt): \
+A stray prompt that merely lists the notes below.
+
+Operational settings (cadence — secondary):
+notify: False
+schedule: none
+status: active
+expires: never
+created: 2026-03-05 08:00 UTC by run run-t1
+updated: 2026-03-05 08:00 UTC
+last collected: never
+
+Recent changes (newest first):
   2026-03-05 08:00 UTC created by user-run (run run-t1)"""
         )
 

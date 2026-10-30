@@ -23,6 +23,7 @@ from penny.changelog import ChangelogEntry, record_new_entries
 from penny.constants import CollectionConfigureOutcome, PennyConstants
 from penny.database import Database
 from penny.database.memory import (
+    EntryInput,
     WriteGateOutcome,
     WriteResult,
     render_run_calls,
@@ -62,12 +63,13 @@ from penny.tools.memory_args import (
     _reject_blank_optional,
 )
 from penny.tools.memory_tools import (
+    _BLANK_PROMPT_ON_SCHEDULED_JOB,
     _INERT_JOB_ARGS_REFUSAL,
-    _NO_SCHEDULE_NOTE,
+    _PROMPT_CLEARED_MESSAGE,
+    _PROMPT_NEEDS_SCHEDULE_REFUSAL,
     _RULES_GUARD_REFUSAL,
     _SAME_JOB_UPDATED,
     EXPIRES_AT_PARAM_DESCRIPTION,
-    PROMPT_PARAM_DESCRIPTION,
     SCHEDULE_PARAM_DESCRIPTION,
     CollectionArchiveTool,
     CollectionCreateTool,
@@ -1031,6 +1033,25 @@ class TestInertCollections:
         assert "description: track the trail-runner shoe deals" in result.message
 
     @pytest.mark.asyncio
+    async def test_memory_get_caps_entries_like_collection_list(self, db):
+        """``memory_get``'s entries line is bounded like ``collection_list``'s own
+        default cap (#2857) — reusing the SAME disclosure header, naming the real
+        total and the calls that reach the rest, rather than returning (or hiding)
+        every key."""
+        _seed_collection(db, name="big-pile", schedule=None, extraction_prompt=None)
+        entries = [EntryInput(key=f"item-{i:02d}", content=f"content {i}") for i in range(22)]
+        require_memory(db, "big-pile").write_rule_decided(entries, author="chat")
+        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="big-pile")
+        assert (
+            "Showing 20 of 22 entries in big-pile, newest first. For more, "
+            "collection_list(big-pile, k=<n>); for an overview, "
+            "collection_keys(big-pile); to search, find(...)"
+        ) in result.message
+        assert "keys: " in result.message
+        assert "key='item-21'" in result.message  # the newest, shown
+        assert "key='item-00'" not in result.message  # the oldest, cut
+
+    @pytest.mark.asyncio
     async def test_job_arg_on_skill_less_create_is_refused(self, db):
         """A schedule / notify / expiry on a skill-less create has no job to attach to —
         refused naming the two-step fix (whole render), nothing created."""
@@ -1134,18 +1155,21 @@ class TestBlankOptionalArgsAreRefused:
     async def test_every_optional_string_names_its_own_form(self, db):
         """Uniform across the surface — each optional string refuses a blank with ITS
         accepted form, so the guard isn't special-cased to ``expires_at``.  A
-        whitespace-only value is the same miss as an empty one.  ``expires_at``,
-        ``schedule`` and ``prompt`` each carry their own schema descriptor
-        (#2250/#2222, each shared across create/update/set; ``prompt``'s came with
-        #2719), so their lines also name them; ``description`` is still bare in this
-        tool's schema."""
+        whitespace-only value is the same miss as an empty one.  ``expires_at`` and
+        ``schedule`` each carry their own schema descriptor (#2250/#2222, each shared
+        across create/update/set), so their lines also name them; ``description`` is
+        still bare in this tool's schema.  ``prompt`` is EXCLUDED here (#2857): on the
+        update surface a blank is no longer a gate-level refusal for every field
+        alike — it's the tool's own clear-or-refuse decision, covered by its own
+        tests below."""
         tool = CollectionSetTool(db, cast(Any, MockLlmClient()))
         descriptors = {
             "expires_at": EXPIRES_AT_PARAM_DESCRIPTION,
-            "prompt": PROMPT_PARAM_DESCRIPTION,
             "schedule": SCHEDULE_PARAM_DESCRIPTION,
         }
         for field, form in OPTIONAL_ARG_FORMS.items():
+            if field == "prompt":
+                continue
             result = await tool.run(CallLink.new_top(), collection="deals-watch", **{field: "   "})
             assert result.success is False
             descriptor = (
@@ -1159,6 +1183,80 @@ class TestBlankOptionalArgsAreRefused:
                 f"Call collection_configure(<valid arguments>) again."
             )
         assert db.memories.get("deals-watch") is None
+
+    @pytest.mark.asyncio
+    async def test_blank_prompt_on_create_is_still_refused(self, db):
+        """CREATE has nothing to clear — a brand-new collection never carried a
+        prompt — so a blank ``prompt`` there stays the ordinary gate-level teaching
+        rejection (#1776); #2857's clear path is update-only."""
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
+            CallLink.new_top(), name="deals-watch", description="track the shoe deals", prompt="   "
+        )
+        assert result.success is False
+        assert result.message == (
+            "prompt (string: OPTIONAL. The job's instructions, as free text: what to "
+            "read, what to do with it, and what to remember. Omit for an inert "
+            "storage collection.): an empty string sets nothing — omit prompt "
+            "entirely to leave it unset, or pass the instructions this job's cycles "
+            "follow, as free text. Call collection_configure(<valid arguments>) again."
+        )
+        assert db.memories.get("deals-watch") is None
+
+    @pytest.mark.asyncio
+    async def test_blank_prompt_clears_an_unused_one(self, db):
+        """A blank ``prompt`` on a collection with no schedule clears the stored prompt
+        (#2857) — nothing was running it anyway — and says so plainly; the collection's
+        entries are untouched."""
+        _seed_collection(
+            db,
+            name="rules-ish",
+            description="a stand-in for the standing-rules shape",
+            extraction_prompt="a stray prompt that merely lists the rules below",
+            schedule=None,
+        )
+        require_memory(db, "rules-ish").write_rule_decided(
+            [EntryInput(key="no-shoes-inside", content="Take shoes off at the door.")],
+            author="chat",
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), name="rules-ish", prompt=""
+        )
+        assert result.success
+        assert result.message == _PROMPT_CLEARED_MESSAGE.format(name="rules-ish")
+        row = db.memories.get("rules-ish")
+        assert row.extraction_prompt is None
+        assert row.schedule is None
+        assert [e.key for e in require_memory(db, "rules-ish").read_all()] == ["no-shoes-inside"]
+
+    @pytest.mark.asyncio
+    async def test_blank_prompt_on_scheduled_job_is_still_refused(self, db):
+        """A blank ``prompt`` on a SCHEDULED job is not a clear — it's the chronic
+        "I meant to omit this" (#1776) — so it's still refused, now by the tool with
+        the gate's own text rather than by the gate itself."""
+        _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), name="watch", prompt=""
+        )
+        assert result.success is False
+        assert result.message == _BLANK_PROMPT_ON_SCHEDULED_JOB
+        row = db.memories.get("watch")
+        assert row.extraction_prompt == "test fixture extraction prompt"
+
+    @pytest.mark.asyncio
+    async def test_blank_prompt_is_refused_when_this_call_sets_a_schedule(self, db):
+        """A schedule-less collection whose SAME call also sets ``schedule`` is about
+        to become a scheduled job — a blank ``prompt`` there is refused too, not
+        cleared, since the effective schedule (not just the row's own) is what
+        decides."""
+        _seed_collection(db, name="rules-ish", extraction_prompt="a stray prompt", schedule=None)
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), name="rules-ish", prompt="", schedule="FREQ=DAILY;BYHOUR=8"
+        )
+        assert result.success is False
+        assert result.message == _BLANK_PROMPT_ON_SCHEDULED_JOB
+        row = db.memories.get("rules-ish")
+        assert row.extraction_prompt == "a stray prompt"
+        assert row.schedule is None
 
     @pytest.mark.asyncio
     async def test_blank_is_refused_identically_on_create_and_update(self, db):
@@ -1349,12 +1447,11 @@ class TestCollectionUpdateScheduleAtApply:
         )
 
     @pytest.mark.asyncio
-    async def test_adopt_without_schedule_warns_it_wont_run(self, db):
-        """Adopting a prompt onto an inert collection with NO schedule leaves it with
-        nothing to run on — the echo renders ``schedule: none`` (never a half-formed
-        clause, #1666) and carries a visible no-schedule note (#1629), not a silent
-        won't-run.  Whole render, so the honest schedule line and the tail note are both
-        pinned."""
+    async def test_adopt_without_schedule_is_refused(self, db):
+        """Adopting a prompt onto an inert collection with NO schedule, and none given
+        in this same call, can never run — refused (#2857) naming the fix, rather than
+        landing with a won't-run note.  Nothing changes: the collection stays
+        prompt-less."""
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), name="deals-watch", description="track the trail-runner shoe deals"
         )
@@ -1363,19 +1460,29 @@ class TestCollectionUpdateScheduleAtApply:
             name="deals-watch",
             prompt="Check Cinder Peak's elevation above sea level and save it.",
         )
-        assert result.success
-        expected_echo = (
-            "I'll run against 'deals-watch' and quietly store what it finds.\n"
-            "Re-configured collection 'deals-watch':\n"
-            "  description: track the trail-runner shoe deals\n"
-            "  schedule: none\n"
-            "  notify: False\n"
-            "  expires: never\n"
-            "  prompt: |\n"
-            "    Check Cinder Peak's elevation above sea level and save it."
+        assert result.success is False
+        assert result.message == _PROMPT_NEEDS_SCHEDULE_REFUSAL.format(name="deals-watch")
+        row = db.memories.get("deals-watch")
+        assert row.extraction_prompt is None
+        assert row.schedule is None
+
+    @pytest.mark.asyncio
+    async def test_adopt_without_schedule_but_with_one_in_the_same_call_succeeds(self, db):
+        """The refusal above is about EFFECTIVE schedule, not the row's own: pairing the
+        adopt with a `schedule` in the SAME call is unaffected."""
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), name="deals-watch", description="track the trail-runner shoe deals"
         )
-        assert result.message == expected_echo + _NO_SCHEDULE_NOTE.format(name="deals-watch")
-        assert db.memories.get("deals-watch").schedule is None
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            name="deals-watch",
+            prompt="Check Cinder Peak's elevation above sea level and save it.",
+            schedule="FREQ=HOURLY",
+        )
+        assert result.success
+        row = db.memories.get("deals-watch")
+        assert row.extraction_prompt == "Check Cinder Peak's elevation above sea level and save it."
+        assert row.schedule == "FREQ=HOURLY"
 
     @pytest.mark.asyncio
     async def test_plain_update_on_schedule_less_collection_echoes_none(self, db):
@@ -1546,6 +1653,7 @@ class TestCollectionUpdateScheduleAtApply:
             CallLink.new_top(),
             name="deals-watch",
             prompt="Check Cinder Peak's elevation above sea level and save it.",
+            schedule="FREQ=HOURLY",
         )
         assert result.success
         assert "removed:" not in result.message

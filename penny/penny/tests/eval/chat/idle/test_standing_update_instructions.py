@@ -993,7 +993,7 @@ def _seed_world(db: Database) -> None:
         tool="memory_get",
         arguments={"memory": _JOB_CONTAINER},
         result=ToolResult(
-            message=MemoryMetadataTool(db)._format(require_memory(db, _JOB_CONTAINER).row)
+            message=MemoryMetadataTool(db)._format(require_memory(db, _JOB_CONTAINER))
         ),
         reply=_EX3_REPLY,
     )
