@@ -235,8 +235,10 @@ _ON_THE_MACHINES_CLOCK = {
     "database/models.py": 22,
     # When a migration was applied, in the runner's own bookkeeping table.
     "database/migrate.py": 1,
-    # How long a model call took.
-    "llm/client.py": 2,
+    # How long a model call took, and (#2842) a streamed raw-template attempt's
+    # own time, separate from the whole call's — read to log a cut draw's own
+    # duration, distinct from the continuation that follows it.
+    "llm/client.py": 3,
     # When an OAuth token the service issued runs out.
     "plugins/zoho/base_client.py": 1,
     "plugins/zoho/mail_client.py": 1,

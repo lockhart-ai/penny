@@ -17,7 +17,7 @@ import httpx
 import openai
 import pytest
 from openai.types.chat import ChatCompletion
-from sqlmodel import select
+from sqlmodel import col, select
 
 from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PennyConstants
@@ -32,6 +32,7 @@ from penny.llm.client import (
     _summarize_llm_error,
 )
 from penny.llm.models import (
+    CallOutcome,
     LlmConnectionError,
     LlmError,
     LlmFault,
@@ -49,6 +50,7 @@ from penny.llm.models import (
     fault_for_status,
     usage_timing_from_response,
 )
+from penny.llm.thinking_loop import ThoughtStreamTracker
 
 _HTML_ERROR_BODY = (
     f"<!DOCTYPE html><html><head><title>404</title></head><body>{'x' * 5000}</body></html>"
@@ -1427,30 +1429,90 @@ class TestImageDataUri:
 _GEMMA_MODEL = "google/gemma-4-26b-a4b-it"
 
 
-def _text_completion(text: str, finish_reason: str = "stop", usage: dict | None = None):
-    """A minimal raw-completions-shaped response (#2829) — what the SDK hands
-    the raw template transport back from ``client.completions.create``."""
+class _RawChoice:
+    def __init__(self, text: str, reason: str | None) -> None:
+        self.text = text
+        self.finish_reason = reason
 
-    class _Choice:
-        def __init__(self, text: str, reason: str) -> None:
-            self.text = text
-            self.finish_reason = reason
+    def model_copy(self, update: dict | None = None):
+        update = update or {}
+        return _RawChoice(
+            update.get("text", self.text), update.get("finish_reason", self.finish_reason)
+        )
 
-    class _Completion:
-        model = "m"
-        model_extra: dict = {}
+    def _dump(self) -> dict:
+        return {"text": self.text, "finish_reason": self.finish_reason}
 
-        def __init__(self, text: str, reason: str, usage: dict | None) -> None:
-            self.choices = [_Choice(text, reason)]
-            self.usage = usage
 
-        def model_dump(self) -> dict:
-            dumped: dict = {"choices": [{"text": text, "finish_reason": finish_reason}]}
-            if usage is not None:
-                dumped["usage"] = usage
-            return dumped
+class _RawCompletionDouble:
+    """A minimal raw-completions-shaped chunk (#2829) — what the SDK hands the
+    raw template transport back from ``client.completions.create``.  Carries
+    ``model_copy`` too (#2842): the streaming transport reconstructs the final
+    completion from the last chunk via ``model_copy``, the same as the real
+    SDK's pydantic objects."""
 
-    return _Completion(text, finish_reason, usage)
+    model = "m"
+    model_extra: dict = {}
+
+    def __init__(self, choices: list[_RawChoice], usage: dict | None = None) -> None:
+        self.choices = choices
+        self.usage = usage
+
+    def model_copy(self, update: dict | None = None):
+        update = update or {}
+        return _RawCompletionDouble(
+            update.get("choices", self.choices), update.get("usage", self.usage)
+        )
+
+    def model_dump(self) -> dict:
+        dumped: dict = {"choices": [choice._dump() for choice in self.choices]}
+        if self.usage is not None:
+            dumped["usage"] = self.usage
+        return dumped
+
+
+class _FakeRawStream:
+    """A minimal stand-in for ``openai.AsyncStream`` (#2842): any number of
+    chunks, no real HTTP underneath — supports exactly the two protocols
+    ``LlmClient._stream_raw_completion`` consumes, ``async with`` and
+    ``async for``."""
+
+    def __init__(self, chunks: list[_RawCompletionDouble]) -> None:
+        self._chunks = chunks
+
+    async def __aenter__(self) -> _FakeRawStream:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+    async def _iterate(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    def __aiter__(self):
+        return self._iterate()
+
+
+def _text_completion(
+    text: str, finish_reason: str = "stop", usage: dict | None = None
+) -> _FakeRawStream:
+    """A minimal raw-completions-shaped STREAM (#2829, streamed since #2842) —
+    what the SDK hands the raw template transport back from
+    ``client.completions.create`` under ``stream=True``: one chunk carrying
+    the whole text, matching a provider that answers in a single piece."""
+    return _FakeRawStream([_RawCompletionDouble([_RawChoice(text, finish_reason)], usage)])
+
+
+def _chunked_text_completion(pieces: list[str], finish_reason: str = "stop") -> _FakeRawStream:
+    """A raw-completions STREAM delivered as several small deltas (#2842) —
+    what a looping draw's own repeated text looks like arriving over real
+    streaming, piece by piece, rather than already whole. Only the LAST
+    chunk carries ``finish_reason``, matching a real provider's own stream
+    (every earlier chunk's is ``None``, mid-generation)."""
+    chunks = [_RawCompletionDouble([_RawChoice(piece, None)]) for piece in pieces[:-1]]
+    chunks.append(_RawCompletionDouble([_RawChoice(pieces[-1], finish_reason)]))
+    return _FakeRawStream(chunks)
 
 
 class TestRawTemplateTransport:
@@ -1509,6 +1571,78 @@ class TestRawTemplateTransport:
         logged_message = json.loads(row.response)["choices"][0]["message"]
         assert logged_message["tool_calls"][0]["function"]["name"] == "collection_list"
         assert logged_message["reasoning_content"] == "checking"
+
+    @pytest.mark.asyncio
+    async def test_a_looping_thought_is_cut_mid_stream_and_the_turn_continues(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """The client-level wiring for a thinking-loop cut (#2842): the
+        detector fires on real STREAMED chunks (not one whole response), the
+        stream closes, one more raw call continues the SAME turn from the
+        kept thinking — ``chat()`` still returns exactly one ``LlmResponse``,
+        the continuation's, and the discarded cut draw lands as its own row,
+        discarded, ahead of the continuation's normal completed one.
+        """
+        opener = "<|channel>thought\n"
+        sentence = "The user is asking about todays meeting. "
+        pieces = [sentence] * 20
+
+        # Computed independently, off the exact same chunk sequence the fake
+        # stream below delivers — never hand-predicted, so this test isn't
+        # fragile to exactly where the real tracker happens to cut.
+        tracker = ThoughtStreamTracker()
+        buffer = opener
+        expected_cut = None
+        for piece in pieces:
+            buffer += piece
+            expected_cut = tracker.feed(buffer)
+            if expected_cut is not None:
+                break
+        assert expected_cut is not None, "fixture must actually trigger the detector"
+
+        calls: list[dict] = []
+
+        async def raw_create(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return _chunked_text_completion([opener, *pieces])
+            return _text_completion("<|channel>thought\nokay, settled\n<channel|>Sounds good.")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        response = await client.chat(
+            [LlmMessage(role="user", content="what's up with the meeting")],
+            agent_name="chat",
+            call_link=CallLink.top("run-loop"),
+        )
+        await client.close()
+
+        assert len(calls) == 2, "the cut draw + its continuation are TWO raw calls"
+        assert calls[1]["prompt"] == calls[0]["prompt"] + expected_cut.continuation_suffix()
+
+        # chat()'s own interface stays untouched: ONE LlmResponse out — the
+        # CONTINUATION's, never the discarded draw's.
+        assert response.content == "Sounds good."
+        assert response.thinking == "okay, settled"
+
+        with db.get_session() as session:
+            rows = session.exec(select(PromptLog).order_by(col(PromptLog.id))).all()
+        assert len(rows) == 2, "the cut draw and its continuation are TWO promptlog rows"
+        cut_row, continuation_row = rows
+        assert cut_row.discard_reason == "thinking_loop"
+        assert cut_row.discard_detail == expected_cut.discard_detail()
+        assert cut_row.call_outcome == CallOutcome.COMPLETED.value
+        assert cut_row.thinking == expected_cut.kept_body
+        assert continuation_row.discard_reason is None
+        assert continuation_row.call_outcome == CallOutcome.COMPLETED.value
+        assert continuation_row.thinking == "okay, settled"
 
     @pytest.mark.asyncio
     async def test_an_image_bearing_call_still_uses_chat_even_on_a_vendored_model(

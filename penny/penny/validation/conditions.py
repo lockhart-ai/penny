@@ -57,6 +57,11 @@ class ConditionKey(StrEnum):
     # A draw cut by its own token budget (finish_reason="length") — a transport
     # fact on a single response, caught live wherever the budget is sent (#2475).
     BUDGET_CUT = "budget_cut"
+    # A raw-template draw whose thinking started repeating itself word for
+    # word, cut mid-stream and continued in one more call (#2842) — a
+    # transport fact caught live on the streaming raw-template transport,
+    # the same way BUDGET_CUT is caught on the token-budget transport fact.
+    THINKING_LOOP = "thinking_loop"
     # A structured-JSON draw that failed its Pydantic parse (e.g. a /profile
     # extraction draw) — the output is rejected at the parse boundary.
     PARSE_ERROR = "parse_error"
@@ -188,6 +193,11 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     _condition(
         ConditionKey.BUDGET_CUT,
         "Draw ran past its own token budget before reaching an answer",
+        live=True,
+    ),
+    _condition(
+        ConditionKey.THINKING_LOOP,
+        "Draw's thinking repeated itself word for word and was cut short",
         live=True,
     ),
     _condition(

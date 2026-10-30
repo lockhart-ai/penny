@@ -17,7 +17,7 @@ import httpx
 import openai
 
 from penny.constants import PennyConstants
-from penny.llm import raw_template
+from penny.llm import raw_template, thinking_loop
 from penny.llm.call_link import CallLink
 
 if TYPE_CHECKING:
@@ -48,6 +48,13 @@ from penny.llm.models import (
     fault_for_status,
     usage_timing_from_response,
 )
+
+# NOT a top-level import (#2842): ``penny.validation``'s package init pulls in
+# ``outcomes.py`` -> ``penny.agents.models`` -> ``penny.agents``'s own init ->
+# ``agents/base.py``, which imports ``penny.llm`` for ``LlmClient`` -- a real
+# cycle back to THIS module while it is still mid-import. Deferred into
+# ``_log_thinking_loop_cut`` itself, where every module above is already
+# fully loaded by the time anything actually calls it.
 
 logger = logging.getLogger(__name__)
 
@@ -232,16 +239,73 @@ def _extract_model_ids(payload: Any) -> list[str]:
 _RawCompletion = openai.types.chat.ChatCompletion | openai.types.completion.Completion
 
 
+class _ThinkingLoopCutLog(NamedTuple):
+    """What ``chat()``'s own logging needs to write the discarded draw a
+    thinking-loop cut threw away as its OWN ``promptlog`` row (#2842) —
+    everything but the ids/snapshot ``chat()`` already has from its own
+    ``call_link``/``messages_snapshot``. ``kept_thinking`` is the thought text
+    kept up to the cut (this row's own ``thinking`` column); ``detail`` is the
+    discard detail naming the repeat (window/threshold, characters kept);
+    ``duration_ms`` is the CUT attempt's own wall time, not the
+    continuation's."""
+
+    kept_thinking: str
+    detail: str
+    duration_ms: int
+
+
+class _RawTemplateDraw(NamedTuple):
+    """One raw-template attempt's result (#2842): ``raw`` is the completion
+    ``_attempt_chat_request`` parses as usual — the CONTINUATION's, when a
+    loop was cut, so the caller never has to tell the two apart. ``cut`` is
+    the discarded draw's own logging detail, or ``None`` when nothing was
+    cut."""
+
+    raw: openai.types.completion.Completion
+    cut: _ThinkingLoopCutLog | None
+
+
+class _StreamOutcome(NamedTuple):
+    """One streamed raw-completions call's own outcome (#2842): ``raw`` is
+    ``None`` exactly when ``cut`` fired (the stream was closed before a real
+    completion ever arrived) — never both at once."""
+
+    raw: openai.types.completion.Completion | None
+    cut: thinking_loop.ThinkingLoopCut | None
+    duration_ms: int
+
+
+def _completed_raw(outcome: _StreamOutcome) -> openai.types.completion.Completion:
+    """``outcome.raw`` narrowed to non-``None`` (#2842) — true by construction
+    whenever ``outcome.cut`` is ``None`` (``_stream_raw_completion`` never
+    returns one without the other), but the type checker has no way to read
+    that invariant off a plain ``NamedTuple``; this is the one place that
+    narrowing is spelled out, rather than an unchecked cast at each call site.
+    Raises, never asserts (an ``assert`` is stripped under ``python -O``,
+    which would let a broken invariant through as a typed ``None``) — this
+    branch is unreachable today, so a raise here names a real defect in
+    ``_stream_raw_completion`` itself, not a caller's mistake.
+    """
+    if outcome.raw is None:
+        raise LlmResponseError("a stream outcome with no cut must carry a completion")
+    return outcome.raw
+
+
 class _ChatAttemptResult(NamedTuple):
     """One chat attempt's own outcome: the raw completion the attempt drew, and
     its parsed response — or ``None`` for ``response`` when the completion
     carried no choices at all. ``_chat_attempts`` reads ``response`` to tell
     the two apart rather than the shape of what came back, so a successful
     draw and a 200-with-no-completion draw are the same return type.
+    ``thinking_loop_cut`` (#2842) is the raw-template transport's own discarded
+    cut draw, logged separately by ``chat()`` alongside this attempt's real
+    response — ``None`` on the chat transport, which never streams, and on a
+    raw-template attempt that never looped.
     """
 
     raw: _RawCompletion
     response: LlmResponse | None
+    thinking_loop_cut: _ThinkingLoopCutLog | None = None
 
 
 class _RawTemplateParseError(Exception):
@@ -364,6 +428,15 @@ class LlmClient:
         runs. Everything from here down is unchanged: it always dealt in dicts
         and still does — only the one hand-off at this boundary is new.
 
+        On the raw-template transport (#2829), a looping thought is cut mid-stream
+        and the SAME model turn continues in one more raw call (#2842,
+        ``_send_raw_template_request``) — invisibly to this method's own
+        interface: exactly one ``LlmResponse`` still comes out, and the retry
+        loop sees exactly one attempt. The discarded cut draw is logged as its
+        OWN, separately discarded ``promptlog`` row right before this call's
+        normal completed one (``_log_thinking_loop_cut``), reusing the same
+        discard machinery a budget cut is marked with — no new column.
+
         Logs ONE ``promptlog`` row for this call, however it ends — completed,
         cancelled, timed out, or raised (#2355 part A) — written once at the END,
         whichever way it ends, rather than inserted at send and completed later: that
@@ -415,7 +488,7 @@ class LlmClient:
         # both still dealing purely in dicts, exactly as before this call's entry.
         messages_snapshot = [message.to_log_dict() for message in messages]
         try:
-            response, raw = await self._chat_attempts(
+            response, raw, thinking_loop_cut = await self._chat_attempts(
                 messages_snapshot, tools, format, token_budget, thinking_enabled, transport
             )
         except asyncio.CancelledError:
@@ -475,6 +548,18 @@ class LlmClient:
             )
             raise
 
+        if thinking_loop_cut is not None:
+            self._log_thinking_loop_cut(
+                thinking_loop_cut,
+                messages_snapshot,
+                tools,
+                agent_name,
+                prompt_type,
+                resolved_run_id,
+                run_target,
+                parent_run_id,
+                parent_tool_call_id,
+            )
         return self._log_successful_call(
             response,
             raw,
@@ -582,6 +667,97 @@ class LlmClient:
             error=error,
         )
 
+    def _log_thinking_loop_cut(
+        self,
+        cut: _ThinkingLoopCutLog,
+        messages_snapshot: list[dict],
+        tools: list[dict] | None,
+        agent_name: str | None,
+        prompt_type: str | None,
+        run_id: str | None,
+        run_target: str | None,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+    ) -> None:
+        """Log the draw a thinking-loop cut threw away as its OWN ``promptlog``
+        row (#2842) — reusing the same discard machinery a budget cut is
+        marked with (``ConditionKey``/``mark_prompt_discarded``), not a new
+        column: this row's ``call_outcome`` is COMPLETED (a real draw came
+        back, it was just not the one used), and ``discard_reason``/
+        ``discard_detail`` name why. The CONTINUATION's own row is the normal
+        one ``_log_successful_call`` writes right after this one, carrying the
+        response ``chat()``'s caller actually gets.
+        """
+        if not self.db:
+            return
+        row_id = self.db.messages.log_prompt(
+            **self._thinking_loop_cut_log_kwargs(
+                cut,
+                messages_snapshot,
+                tools,
+                agent_name,
+                prompt_type,
+                run_id,
+                run_target,
+                parent_run_id,
+                parent_tool_call_id,
+            )
+        )
+        if row_id is not None:
+            self._mark_thinking_loop_discarded(row_id, cut.detail)
+
+    def _thinking_loop_cut_log_kwargs(
+        self,
+        cut: _ThinkingLoopCutLog,
+        messages_snapshot: list[dict],
+        tools: list[dict] | None,
+        agent_name: str | None,
+        prompt_type: str | None,
+        run_id: str | None,
+        run_target: str | None,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+    ) -> dict[str, Any]:
+        """The cut draw's own ``log_prompt`` kwargs (#2842) — ``call_outcome``
+        is COMPLETED (a real draw came back) with no usage/timing fields: the
+        stream was closed before any usage ever arrived, so there is none to
+        report, not a guessed zero."""
+        return {
+            "model": self.model,
+            "messages": messages_snapshot,
+            "response": _thinking_loop_cut_dump(cut.kept_thinking),
+            "tools": tools,
+            "thinking": cut.kept_thinking,
+            "duration_ms": cut.duration_ms,
+            "agent_name": agent_name,
+            "prompt_type": prompt_type,
+            "run_id": run_id,
+            "run_target": run_target,
+            "parent_run_id": parent_run_id,
+            "parent_tool_call_id": parent_tool_call_id,
+            "transport": PromptTransport.RAW_TEMPLATE.value,
+            "call_outcome": CallOutcome.COMPLETED.value,
+        }
+
+    def _mark_thinking_loop_discarded(self, row_id: int, detail: str) -> None:
+        """Stamp the cut draw's own row with the shared discard machinery
+        (#2842) — the same ``ConditionKey``/``mark_prompt_discarded`` path a
+        budget cut is marked with, no new column.
+
+        Deferred import: ``penny.validation``'s package init pulls in
+        ``outcomes.py`` -> ``penny.agents.models`` -> ``penny.agents``'s own
+        init -> ``agents/base.py``, which imports ``penny.llm`` for
+        ``LlmClient`` — a real cycle back to THIS module while it is still
+        mid-import. Safe here: every module above is already fully loaded by
+        the time anything actually calls this.
+        """
+        from penny.validation.conditions import ConditionKey
+
+        # Only ever called right after this same call's own successful
+        # ``db.messages.log_prompt`` (see ``_log_thinking_loop_cut``), so
+        # ``self.db`` is already known truthy here — no re-check needed.
+        self.db.messages.mark_prompt_discarded(row_id, ConditionKey.THINKING_LOOP.value, detail)
+
     def _log_successful_call(
         self,
         response: LlmResponse,
@@ -666,7 +842,7 @@ class LlmClient:
         token_budget: int | None,
         thinking_enabled: bool,
         transport: PromptTransport,
-    ) -> tuple[LlmResponse, _RawCompletion]:
+    ) -> tuple[LlmResponse, _RawCompletion, _ThinkingLoopCutLog | None]:
         """The retry loop over individual network attempts.
 
         Unchanged in substance from before #2355 — each attempt's own outcome
@@ -674,8 +850,13 @@ class LlmClient:
         one per attempt) — except it no longer writes the call's ``promptlog`` row
         itself: ``chat()`` does that once, for the WHOLE call, from whichever way
         this returns or raises.  Returns the parsed response alongside the raw
-        completion the caller persists; raises an ``LlmError`` subclass (or lets a
-        ``CancelledError`` through untouched) when no attempt produced one.
+        completion the caller persists, and the attempt's own discarded
+        thinking-loop cut, if any (#2842 — ``None`` on every attempt that didn't
+        loop, or that failed outright: a failed CONTINUATION call goes through
+        this same retry loop with no special path, so its own cut draw is
+        simply never logged, exactly like any other failed attempt's work);
+        raises an ``LlmError`` subclass (or lets a ``CancelledError`` through
+        untouched) when no attempt produced one.
         """
         last_error: Exception | None = None
 
@@ -696,7 +877,7 @@ class LlmClient:
                 last_error = await self._retry_after_openai_error(attempt, error)
             else:
                 if result.response is not None:
-                    return result.response, result.raw
+                    return result.response, result.raw, result.thinking_loop_cut
                 last_error = await self._retry_after_no_choices(attempt, result.raw)
 
         logger.error("LLM chat failed after %d attempts: %s", self.max_retries, last_error)
@@ -725,12 +906,17 @@ class LlmClient:
         """
         logger.debug("Sending chat request (attempt %d/%d)", attempt + 1, self.max_retries)
         translated_messages = self._translate_messages(messages)
+        thinking_loop_cut: _ThinkingLoopCutLog | None = None
         if transport is PromptTransport.RAW_TEMPLATE:
-            raw = await self._send_raw_template_request(
+            draw = await self._send_raw_template_request(
                 translated_messages, tools, token_budget, thinking_enabled
             )
+            raw = draw.raw
+            thinking_loop_cut = draw.cut
             if not raw.choices:
-                return _ChatAttemptResult(raw=raw, response=None)
+                return _ChatAttemptResult(
+                    raw=raw, response=None, thinking_loop_cut=thinking_loop_cut
+                )
             try:
                 response = self._parse_raw_template_response(raw)
             except LlmToolParseError as error:
@@ -752,7 +938,7 @@ class LlmClient:
             response = self._parse_response(raw)
 
         self._log_attempt(attempt, fault=None, provider=response.provider, detail="")
-        return _ChatAttemptResult(raw=raw, response=response)
+        return _ChatAttemptResult(raw=raw, response=response, thinking_loop_cut=thinking_loop_cut)
 
     async def _send_raw_template_request(
         self,
@@ -760,24 +946,125 @@ class LlmClient:
         tools: list[dict] | None,
         token_budget: int | None,
         thinking_enabled: bool,
-    ) -> openai.types.completion.Completion:
-        """Render the vendored template and send the result as a raw completion
-        (#2829) — the provider pin rides the same ``extra_body`` passthrough as
-        the chat transport (:meth:`_provider_pin_extra_body`); ``thinking_enabled``
-        is already baked into the rendered prompt's own bytes, so it is not sent
-        as a separate field here.
+    ) -> _RawTemplateDraw:
+        """Render the vendored template and STREAM the result as a raw
+        completion (#2829, streamed since #2842): streaming lets a looping
+        thought be cut mid-generation (both oMLX and OpenRouter/CoreWeave
+        confirmed stopping real generation the moment the stream closes,
+        rather than finishing it unseen) instead of running to its token
+        budget. On a cut, one more raw call continues the SAME model turn
+        from the kept thinking, closed — ``draw.raw`` is always that
+        continuation's completion when a cut happened, so
+        ``_attempt_chat_request`` never has to tell the two apart.
+        ``thinking_enabled`` is already baked into the rendered prompt's own
+        bytes, so it is not sent as a separate field here.
         """
         translated_tools = self._translate_tools(tools) if tools else None
         prompt = raw_template.render_prompt(messages, translated_tools, thinking_enabled)
+        outcome = await self._stream_raw_completion(
+            await self._create_raw_completion(prompt, token_budget), detect_loop=True
+        )
+        if outcome.cut is None:
+            return _RawTemplateDraw(raw=_completed_raw(outcome), cut=None)
+        continuation_prompt = prompt + outcome.cut.continuation_suffix()
+        continuation = await self._stream_raw_completion(
+            await self._create_raw_completion(continuation_prompt, token_budget), detect_loop=False
+        )
+        cut_log = _ThinkingLoopCutLog(
+            kept_thinking=outcome.cut.kept_body,
+            detail=outcome.cut.discard_detail(),
+            duration_ms=outcome.duration_ms,
+        )
+        return _RawTemplateDraw(raw=_completed_raw(continuation), cut=cut_log)
+
+    async def _create_raw_completion(
+        self, prompt: str, token_budget: int | None
+    ) -> openai.AsyncStream[openai.types.completion.Completion]:
+        """One streaming raw-completions request (#2842) — the provider pin
+        rides the same ``extra_body`` passthrough as the chat transport
+        (:meth:`_provider_pin_extra_body`); ``stream_options.include_usage``
+        asks for a final usage-bearing chunk so a non-cut draw still reports
+        token counts and timing, exactly as the non-streamed call used to.
+        """
         kwargs: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
+            "stream": True,
+            "stream_options": {"include_usage": True},
             "stop": list(raw_template.STOP_SEQUENCES),
             "extra_body": self._provider_pin_extra_body(),
         }
         if token_budget is not None:
             kwargs["max_tokens"] = token_budget
         return await self.client.completions.create(**kwargs)
+
+    async def _stream_raw_completion(
+        self,
+        stream: openai.AsyncStream[openai.types.completion.Completion],
+        *,
+        detect_loop: bool,
+    ) -> _StreamOutcome:
+        """Consume one streamed raw-completions call chunk by chunk (#2842),
+        closing it (``async with`` — the SDK's own ``AsyncStream.close()``)
+        the moment a loop is detected rather than reading it to the end.
+
+        ``detect_loop=False`` on the continuation call: its own prompt already
+        shows the thought channel closed, so a model that nonetheless opens a
+        NEW one there is vanishingly unlikely — and is deliberately not
+        chased with a second cut-and-continue, since the issue scopes this to
+        one extra call per turn, not open-ended recursion.
+        """
+        start = time.time()
+        tracker = thinking_loop.ThoughtStreamTracker() if detect_loop else None
+        last_chunk, last_choice, buffer, cut = await self._consume_stream(stream, tracker)
+        if cut is not None:
+            return _StreamOutcome(raw=None, cut=cut, duration_ms=self._elapsed_ms(start))
+        if last_chunk is None:
+            # A stream that closed with literally no chunks at all — not even
+            # a trailing usage-only one. Never seen against oMLX or CoreWeave
+            # (confirmed both always send at least one); raised rather than
+            # guessed at, the same way any other genuinely empty response is
+            # (``_no_payload_detail``) rather than silently treated as a cut.
+            raise LlmResponseError(
+                "raw-template stream closed with no chunks at all", fault=LlmFault.NO_CHOICES
+            )
+        return _StreamOutcome(
+            raw=_reconstruct_completion(last_chunk, last_choice, buffer),
+            cut=None,
+            duration_ms=self._elapsed_ms(start),
+        )
+
+    @staticmethod
+    async def _consume_stream(
+        stream: openai.AsyncStream[openai.types.completion.Completion],
+        tracker: thinking_loop.ThoughtStreamTracker | None,
+    ) -> tuple[
+        openai.types.completion.Completion | None,
+        openai.types.completion_choice.CompletionChoice | None,
+        str,
+        thinking_loop.ThinkingLoopCut | None,
+    ]:
+        """Read ``stream`` chunk by chunk, closing it (``async with`` —
+        ``_stream_raw_completion``'s own docstring covers why) the moment
+        ``tracker`` detects a cut rather than reading to the end. Returns the
+        last chunk/choice seen (``None``/``None`` for a stream with no chunks
+        at all), the accumulated text, and the cut if one fired — the three
+        pieces ``_stream_raw_completion`` needs to build its own result,
+        whichever way this ends.
+        """
+        buffer = ""
+        last_chunk: openai.types.completion.Completion | None = None
+        last_choice: openai.types.completion_choice.CompletionChoice | None = None
+        async with stream:
+            async for chunk in stream:
+                last_chunk = chunk
+                if chunk.choices:
+                    last_choice = chunk.choices[0]
+                    buffer += last_choice.text
+                cut = tracker.feed(buffer) if tracker is not None else None
+                if cut is not None:
+                    return last_chunk, last_choice, buffer, cut
+        return last_chunk, last_choice, buffer, None
 
     def _provider_pin_extra_body(self) -> dict[str, Any]:
         """The provider pin's own ``extra_body`` passthrough (#2829) — the ONE
@@ -1542,6 +1829,48 @@ def _raw_template_log_shape(dumped: dict, response: LlmResponse | None) -> dict:
     if response.thinking:
         message["reasoning_content"] = response.thinking
     return {**dumped, _CHOICES_FIELD: [{**choices[0], _MESSAGE_FIELD: message}]}
+
+
+def _reconstruct_completion(
+    last_chunk: openai.types.completion.Completion,
+    last_choice: openai.types.completion_choice.CompletionChoice | None,
+    full_text: str,
+) -> openai.types.completion.Completion:
+    """The one faithful ``Completion`` a streamed raw-template call produces
+    (#2842) — every delta chunk's own text concatenated into ``full_text``,
+    everything else (id/model/usage/``finish_reason``) read off the LAST
+    chunk that carried it. ``last_choice`` is tracked separately from
+    ``last_chunk`` because a provider's own trailing usage-only chunk (sent
+    only when ``stream_options.include_usage`` is set) can carry an EMPTY
+    ``choices`` alongside the real usage, with the ``finish_reason``'s own
+    owning chunk one step earlier.
+    """
+    if last_choice is None:
+        return last_chunk
+    choice = last_choice.model_copy(update={"text": full_text})
+    return last_chunk.model_copy(update={"choices": [choice]})
+
+
+def _thinking_loop_cut_dump(kept_thinking: str) -> dict:
+    """The discarded cut draw's own ``promptlog.response`` dump (#2842) —
+    already in the chat-shape ``_raw_template_log_shape`` reshapes a real
+    completion INTO, built directly since there is no raw completion object
+    for a stream closed by Penny itself mid-generation (no ``choices[].text``
+    worth keeping — the text that mattered is ``kept_thinking``, already the
+    row's own ``thinking`` column)."""
+    return {
+        _CHOICES_FIELD: [
+            {
+                "index": 0,
+                "finish_reason": None,
+                _MESSAGE_FIELD: {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": kept_thinking,
+                },
+            }
+        ]
+    }
 
 
 # Base64 prefixes of each supported image format's magic bytes — the first bytes

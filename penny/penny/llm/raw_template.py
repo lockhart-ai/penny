@@ -144,6 +144,18 @@ _THOUGHT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\A<think>\n?(?P<body>.*?)\n?</think>\n?", re.DOTALL),
 )
 
+# The same two spellings as ``(opener, closer)`` pairs, for a reader that must
+# find where a thought channel OPENS incrementally, from a partial streamed
+# buffer — ``thinking_loop.py`` (#2842), which cuts a looping thought short
+# mid-generation rather than waiting for the whole completion to arrive.  Kept
+# alongside ``_THOUGHT_PATTERNS`` so the two spellings are named in exactly one
+# place; a third provider's own spelling (see the note above) extends both.
+THOUGHT_MARKER_PAIRS: tuple[tuple[str, str], ...] = (
+    ("<|channel>thought\n", "<channel|>"),
+    ("<think>\n", "</think>"),
+    ("<think>", "</think>"),
+)
+
 _template_cache: jinja2.Template | None = None
 
 
