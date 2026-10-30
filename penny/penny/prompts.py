@@ -214,6 +214,18 @@ class Prompt:
         "That reply was words, not a tool call, and this step can only act through a "
         "tool call — nothing in it ran."
     )
+    # The raw-template transport's own tool-call grammar failed to read that
+    # draft (#2854) — a transport-level parse failure, but still the model's
+    # own CHOICE of what to write, so the redraw is shown what was there
+    # (the draft) and why it never ran, the same as the other model-choice
+    # notes above. ``{reason}`` is the parser's own message — never a fixed
+    # list of malformed shapes, since the grammar it's checking against never
+    # changes and a tool/argument shape nobody has seen yet still reads as
+    # exactly this: a call that couldn't be read.
+    TOOL_PARSE_ERROR_RETRY_NOTE = (
+        "That tool call couldn't be read, so it never ran: {reason}. Make the "
+        "call again in your tool-call format."
+    )
 
     # What a chat run that tried to keep something is shown before its reply is written
     # (#1946/#2185) — the answer to what a turn actually left behind.  A run's own memory

@@ -170,8 +170,8 @@ class ChatAgent(Agent):
         covered with no change here — falling back to the unnamed wording on the rare
         chance ``call_as_text_tool_name`` can't resolve one (see its own docstring:
         every reachable CALL_AS_TEXT shape names a tool since #2813).  EMPTY has
-        nothing worth echoing back as a draft (``_append_retry_note``'s
-        ``include_draft=False`` handles that at the call site)."""
+        nothing worth echoing back as a draft (the call site passes
+        ``_append_retry_note`` a ``None`` draft for it)."""
         if condition == ConditionKey.CALL_AS_TEXT:
             registered_tools = frozenset(tool.name for tool in self._tool_registry.get_all())
             content = response.message.content or ""

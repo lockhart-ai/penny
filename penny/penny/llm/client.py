@@ -350,9 +350,16 @@ class _RawTemplateParseError(Exception):
     the caller actually sees raised. Not a public error class, and not a new
     fault — purely plumbing so the prompt-log row can keep the raw completion
     text instead of discarding it.
+
+    ``raw`` is typed as the raw-completions shape specifically (``choices[].text``,
+    #2854), not the broader ``_RawCompletion`` union every OTHER transport-agnostic
+    log parameter uses — this error is only ever raised from the raw-template
+    branch of ``_attempt_chat_request``, which never produces the chat transport's
+    ``choices[].message`` shape, and ``chat()``'s own handler reads ``.text`` off
+    it directly to split the thinking from the rest of the draft.
     """
 
-    def __init__(self, error: LlmToolParseError, raw: _RawCompletion) -> None:
+    def __init__(self, error: LlmToolParseError, raw: openai.types.completion.Completion) -> None:
         super().__init__(str(error))
         self.error = error
         self.raw = raw
@@ -543,7 +550,17 @@ class LlmClient:
             # response" `{}` (#2833), so what the model actually wrote survives
             # for diagnosis. The error the caller sees is the original
             # `LlmToolParseError`, unchanged — this wrapper never escapes here.
-            self._log_failed_call(
+            #
+            # Its own row is stamped TOOL_PARSE_ERROR (#2854) below, with the
+            # thinking split off the raw text the same way a parsed draw's is
+            # (``raw_template.split_thought`` — no second parser). ``draft`` —
+            # the text left after that split, the call the model actually
+            # drafted — is stamped on the error itself, the only value this
+            # handler can hand the agent loop's own reroll: it is what shows
+            # the redraw what never ran.
+            thinking, draft = raw_template.split_thought(failure.raw.choices[0].text or "")
+            failure.error.draft = draft
+            row_id = self._log_failed_call(
                 messages_snapshot,
                 tools,
                 start,
@@ -557,7 +574,10 @@ class LlmClient:
                 CallOutcome.RAISED,
                 error=failure.error,
                 raw=failure.raw,
+                thinking=thinking,
             )
+            if row_id is not None:
+                self._mark_tool_parse_error_discarded(row_id, str(failure.error))
             raise failure.error from failure.__cause__
         except LlmError as error:
             outcome = (
@@ -669,23 +689,28 @@ class LlmClient:
         *,
         error: Exception | None = None,
         raw: _RawCompletion | None = None,
-    ) -> None:
+        thinking: str | None = None,
+    ) -> int | None:
         """Log this call's ONE ``promptlog`` row for a cancelled, timed-out, or
         raised call (#2355 part A) — no parsed response to persist, so
-        ``thinking`` goes through as ``None``.
+        ``thinking`` goes through as ``None`` for every caller but one.
 
         ``raw`` is ``None`` for every outcome except a raw-template tool-call
         parse failure (#2833), whose caller passes the completion already
         fetched before parsing failed — ``_log_call`` dumps it unreshaped
         (no parsed ``LlmResponse`` to reshape it around), so the row keeps the
-        raw completion text instead of the usual ``{}``.
+        raw completion text instead of the usual ``{}``. That same caller is
+        the one that passes ``thinking`` (#2854, split off the raw text the
+        same way a parsed draw's is) and reads this method's returned row id
+        back, to stamp the row's own discard reason afterwards — every other
+        caller ignores the return.
         """
-        self._log_call(
+        return self._log_call(
             messages_snapshot,
             raw,
             None,
             tools,
-            None,
+            thinking,
             self._elapsed_ms(start),
             agent_name,
             prompt_type,
@@ -788,6 +813,22 @@ class LlmClient:
         # ``db.messages.log_prompt`` (see ``_log_thinking_loop_cut``), so
         # ``self.db`` is already known truthy here — no re-check needed.
         self.db.messages.mark_prompt_discarded(row_id, ConditionKey.THINKING_LOOP.value, detail)
+
+    def _mark_tool_parse_error_discarded(self, row_id: int, detail: str) -> None:
+        """Stamp a raw-template tool-call parse failure's own row with the
+        shared discard machinery (#2854) — the same ``ConditionKey``/
+        ``mark_prompt_discarded`` path ``THINKING_LOOP`` is marked with, no
+        new column. This is what makes the failure show up in the run's own
+        discard tally (``run-health``, ``run_list``, ``run_get``) — it never
+        did before, since nothing stamped this row at all.
+
+        Only ever called right after this same call's own ``_log_failed_call``
+        returned a row id (see ``chat()``'s ``_RawTemplateParseError`` handler),
+        so ``self.db`` is already known truthy here — no re-check needed.
+        """
+        from penny.validation.conditions import ConditionKey
+
+        self.db.messages.mark_prompt_discarded(row_id, ConditionKey.TOOL_PARSE_ERROR.value, detail)
 
     def _log_successful_call(
         self,

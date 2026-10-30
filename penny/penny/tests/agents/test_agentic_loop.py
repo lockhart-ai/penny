@@ -6,7 +6,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.agents.base import Agent, BackgroundAgent, _any_text
 from penny.agents.chat import ChatAgent
@@ -22,6 +22,7 @@ from penny.config import Config
 from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
 from penny.database import Database
+from penny.database.memory.objects import run_facts_line
 from penny.database.models import PromptLog
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
@@ -35,6 +36,7 @@ from penny.llm.models import (
     LlmToolCallFunction,
     LlmToolParseError,
 )
+from penny.llm.raw_template import parse_completion, split_thought
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
@@ -1010,6 +1012,176 @@ class TestToolParseErrorReroll:
 
         with pytest.raises(RuntimeError, match="unexpected programmer bug"):
             await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
+
+        await agent.close()
+
+
+# The raw-template transport (#2829) renders its own prompt bytes and streams back
+# ``choices[].text`` rather than ``choices[].message`` — ``mock_llm`` (above) only
+# ever answers the chat-completions shape, so TestToolParseErrorOnRawTemplate below
+# drives a REAL ``LlmClient`` pointed at a vendored model, with its own
+# ``completions.create`` monkeypatched directly (mirroring
+# ``tests/test_llm_client.py``'s own raw-template doubles, trimmed to the
+# single-chunk case this test needs — no mid-stream cut).
+_GEMMA_MODEL = "google/gemma-4-26b-a4b-it"
+
+
+class _RawChoice:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.finish_reason = "stop"
+
+    def model_copy(self, update: dict | None = None):
+        update = update or {}
+        choice = _RawChoice(update.get("text", self.text))
+        choice.finish_reason = update.get("finish_reason", self.finish_reason)
+        return choice
+
+    def _dump(self) -> dict:
+        return {"text": self.text, "finish_reason": self.finish_reason}
+
+
+class _RawCompletionDouble:
+    model = "m"
+    model_extra: dict = {}
+
+    def __init__(self, text: str) -> None:
+        self.choices = [_RawChoice(text)]
+        self.usage = None
+
+    def model_copy(self, update: dict | None = None):
+        update = update or {}
+        copy = _RawCompletionDouble.__new__(_RawCompletionDouble)
+        copy.choices = update.get("choices", self.choices)
+        copy.usage = update.get("usage", self.usage)
+        return copy
+
+    def model_dump(self) -> dict:
+        dumped: dict = {"choices": [choice._dump() for choice in self.choices]}
+        if self.usage is not None:
+            dumped["usage"] = self.usage
+        return dumped
+
+
+class _FakeRawStream:
+    """A minimal stand-in for ``openai.AsyncStream`` carrying ONE chunk — enough
+    for ``LlmClient._stream_raw_completion``'s ``async with``/``async for``, with
+    no mid-stream cut to simulate."""
+
+    def __init__(self, text: str) -> None:
+        self._chunk = _RawCompletionDouble(text)
+
+    async def __aenter__(self) -> _FakeRawStream:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+    async def _iterate(self):
+        yield self._chunk
+
+    def __aiter__(self):
+        return self._iterate()
+
+
+def _make_raw_template_agent(test_db, monkeypatch: pytest.MonkeyPatch, raw_create):
+    """A plain ``Agent`` backed by a REAL ``LlmClient`` pointed at the vendored
+    raw-template model, ``completions.create`` monkeypatched to ``raw_create`` —
+    the one way to drive the raw-template transport's own parsing (and its
+    parse-failure stamping, #2854) through the agent's public entry point.
+    Mirrors ``_make_agent``'s plain setup, swapping ``mock_llm`` for a direct
+    patch since the chat-shaped mock never produces a raw-completions draw."""
+    db = Database(test_db)
+    db.create_tables()
+    config = Config(
+        channel_type="signal",
+        signal_number="+15551234567",
+        signal_api_url="http://localhost:8080",
+        discord_bot_token=None,
+        discord_channel_id=None,
+        llm_api_url="http://localhost:11434",
+        llm_model=_GEMMA_MODEL,
+        llm_embedding_model="test-embedding-model",
+        log_level="DEBUG",
+        db_path=test_db,
+        runtime=RuntimeParams(db=db, env_overrides={}),
+    )
+    client = LlmClient(
+        api_url="http://localhost:11434", model=_GEMMA_MODEL, db=db, max_retries=1, retry_delay=0.0
+    )
+    monkeypatch.setattr(client.client.completions, "create", raw_create)
+    agent = Agent(
+        system_prompt="test",
+        model_client=client,
+        embedding_model_client=client,
+        tools=[StubSearchTool()],
+        db=db,
+        config=config,
+    )
+    agent._keep_tools_on_final_step = False
+    return agent, db
+
+
+class TestToolParseErrorOnRawTemplate:
+    """A raw-template draw whose tool call doesn't parse (#2854) is stamped
+    TOOL_PARSE_ERROR with its thinking kept, and the redraw is shown the
+    discarded draft plus a note naming what went wrong — unlike the
+    chat-transport's own parse failure (``TestToolParseErrorReroll`` above),
+    which carries no raw completion to split and stays a blind reroll."""
+
+    @pytest.mark.asyncio
+    async def test_parse_failure_is_discarded_and_the_redraw_is_shown_the_draft(
+        self, test_db, monkeypatch
+    ):
+        malformed = (
+            "<|channel>thought\nchecking the catalog\n<channel|>"
+            "<|tool_call>call:search{query}<tool_call|>"
+        )
+        valid = (
+            "<|channel>thought\nnow calling properly\n<channel|><|tool_call>call:search"
+            '{query:<|"|>widgets<|"|>}<tool_call|>'
+        )
+        final = "<|channel>thought\nwrapping up\n<channel|>Here are the results."
+
+        # Derived off the SAME parser the client calls, never hand-predicted —
+        # the exact reason a real draw would carry, and the exact draft text
+        # left after its thought block is split off.
+        with pytest.raises(LlmToolParseError) as exc_info:
+            parse_completion(malformed)
+        expected_reason = str(exc_info.value)
+        _expected_thinking, expected_draft = split_thought(malformed)
+        expected_note = Prompt.TOOL_PARSE_ERROR_RETRY_NOTE.format(reason=expected_reason)
+
+        requests: list[dict] = []
+
+        async def raw_create(**kwargs):
+            requests.append(kwargs)
+            text = {1: malformed, 2: valid}.get(len(requests), final)
+            return _FakeRawStream(text)
+
+        agent, db = _make_raw_template_agent(test_db, monkeypatch, raw_create)
+
+        response = await agent.run(
+            "find me some widgets", max_steps=3, call_link=CallLink.new_top()
+        )
+        assert response.answer == "Here are the results."
+
+        with Session(db.engine) as session:
+            rows = session.exec(select(PromptLog).order_by(col(PromptLog.id))).all()
+        assert len(rows) == 3
+        first_row = rows[0]
+        assert first_row.discard_reason == "tool_parse_error"
+        assert first_row.thinking == "checking the catalog"
+
+        # The redraw (the SECOND raw completion) is built from a prompt that
+        # renders the discarded draft and the note — both whole literals, not
+        # fragments of either.
+        assert len(requests) == 3
+        second_prompt = requests[1]["prompt"]
+        assert expected_draft in second_prompt
+        assert expected_note in second_prompt
+
+        assert "tool_parse_error×1" in run_facts_line(list(rows), None)
 
         await agent.close()
 

@@ -382,9 +382,21 @@ class LlmToolParseError(LlmError):
     This is a model formatting failure, not a transient server error.
     Retrying with the same messages won't help — the agent must re-prompt with a
     format reminder so the model knows to return only a valid JSON tool call.
+
+    ``draft`` (#2854) is the raw text the model actually drafted as its call —
+    the raw-template transport's own completion text, with its thought block
+    already split off — stamped on the error post-hoc by ``LlmClient.chat()``'s
+    ``_RawTemplateParseError`` handler, the only place with the raw completion
+    in scope. ``None`` when nothing is raised from there, including every
+    chat-transport parse failure, which carries no raw completion to split in
+    the first place.
     """
 
     default_fault: ClassVar[LlmFault] = LlmFault.TOOL_PARSE
+
+    def __init__(self, *args: Any, fault: LlmFault | None = None, draft: str | None = None) -> None:
+        super().__init__(*args, fault=fault)
+        self.draft = draft
 
 
 # ── Response types ───────────────────────────────────────────────────────

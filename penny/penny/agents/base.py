@@ -1133,7 +1133,7 @@ class Agent:
                         # to the redraw via the same shared mechanism (#2790) — this is
                         # what first actually CONSUMES it; the field has carried the
                         # note since #2729 with no reader.
-                        self._append_retry_note(messages, response, note, include_draft=True)
+                        self._append_retry_note(messages, response.message, note)
                     response = await self._invoke_nondegenerate(
                         messages, effective_tools, call_link, prompt_type
                     )
@@ -1295,11 +1295,29 @@ class Agent:
                 )
             except LlmToolParseError as error:
                 # The backend refused to parse the draw as a tool call, so there is no
-                # response to inspect — the draw is unusable by the same rule, and a
-                # fresh one on the unchanged context is the only move.
+                # response to inspect — the draw is unusable by the same rule. On the
+                # raw-template transport, the client has already stamped this draw's
+                # own row TOOL_PARSE_ERROR (#2854) and kept its thinking; what's left
+                # here is telling the redraw what happened, the same way every other
+                # model-choice condition below does — the call never ran, named the
+                # parser's own way, shown alongside the draft it never ran as.
+                #
+                # ``error.draft`` is ``None`` only for the chat transport's OWN
+                # tool-parse failure (raised straight off a 500 with no raw completion
+                # ever fetched, #1839's original case) — that one stays a BLIND reroll,
+                # unchanged: there is no draft to show, and nothing here was raised
+                # from the raw-template wrapper that would have set it.
                 logger.debug("Tool parse error: %s", error)
                 self._log_reroll(ConditionKey.TOOL_PARSE_ERROR, attempt, attempts)
                 discarded.append(ConditionKey.TOOL_PARSE_ERROR)
+                if attempt + 1 < attempts and error.draft is not None:
+                    draft = (
+                        LlmMessage(role=MessageRole.ASSISTANT, content=error.draft)
+                        if error.draft
+                        else None
+                    )
+                    note = Prompt.TOOL_PARSE_ERROR_RETRY_NOTE.format(reason=error)
+                    self._append_retry_note(messages, draft, note)
                 continue
             if (
                 response.finish_reason == PennyConstants.FINISH_REASON_LENGTH
@@ -1320,9 +1338,8 @@ class Agent:
             if attempt + 1 < attempts:
                 note = self._retry_note_for_condition(condition, response)
                 if note is not None:
-                    self._append_retry_note(
-                        messages, response, note, include_draft=condition != ConditionKey.EMPTY
-                    )
+                    draft = response.message if condition != ConditionKey.EMPTY else None
+                    self._append_retry_note(messages, draft, note)
         logger.error(
             "Model output still unusable after %d re-rolls (%s) — aborting run",
             attempts,
@@ -1371,14 +1388,18 @@ class Agent:
         return None
 
     @staticmethod
-    def _append_retry_note(
-        messages: list[LlmMessage], response: LlmResponse, note: str, *, include_draft: bool
-    ) -> None:
-        """Show the redraw the discarded draft (assistant turn) plus the note naming
-        what was wrong (user turn) — the one case a reroll is not blind (#2790,
-        extending the dangling-link design, #2729).  ``include_draft=False`` omits
-        the assistant turn — the EMPTY condition's draft has nothing worth echoing
-        back, so only the note is appended.
+    def _append_retry_note(messages: list[LlmMessage], draft: LlmMessage | None, note: str) -> None:
+        """Show the redraw the discarded draft (assistant turn, when there is one)
+        plus the note naming what was wrong (user turn) — the one case a reroll is
+        not blind (#2790, extending the dangling-link design, #2729).  ``draft=None``
+        omits the assistant turn — the EMPTY condition's draft has nothing worth
+        echoing back, so only the note is appended.
+
+        ``draft`` is a plain ``LlmMessage``, not the whole response it came from
+        (#2854): a raw-template tool-call parse failure never parses to a response
+        at all, so its own draft is a bare assistant turn built straight from the
+        completion's raw text, with the same shape every OTHER caller's
+        ``response.message`` already has.
 
         Mutates the run's OWN ``messages`` — never a copy: a note shown mid-turn may
         be answered by a tool call that continues the SAME turn on these messages, so
@@ -1389,8 +1410,8 @@ class Agent:
         the note is ever stored history, and nothing here revisits #1937 (an invalid
         draw's nudge used to become part of the conversation's own turn structure,
         re-read by every later draw; this is confined to resolving one call)."""
-        if include_draft:
-            messages.append(response.message)
+        if draft is not None:
+            messages.append(draft)
         messages.append(LlmMessage(role=MessageRole.USER, content=note))
 
     def _unusable_output_condition(self, response: LlmResponse) -> ConditionKey | None:

@@ -237,13 +237,24 @@ def parse_completion(text: str) -> tuple[str | None, list[LlmToolCall] | None, s
     into on the chat path today (no retry — the agent's own format-nudge
     retry is what follows).
     """
-    thinking, rest = _split_thought(text)
+    thinking, rest = split_thought(text)
     tool_calls, rest = _split_tool_calls(rest)
     content = _strip_trailing_markers(rest).strip()
     return thinking, tool_calls, content
 
 
-def _split_thought(text: str) -> tuple[str | None, str]:
+def split_thought(text: str) -> tuple[str | None, str]:
+    """``(thinking, rest)`` — the thought block at the top of ``text``, split
+    off and returned separately, and everything after it unchanged.
+
+    Public (#2854): ``parse_completion`` uses it on a clean draw; a raw-template
+    tool-call parse failure reuses this SAME splitter on the raw completion's
+    text — ``LlmClient.chat()`` calls it directly from its own
+    ``_RawTemplateParseError`` handler — so the discarded draw's thinking is
+    still kept, and the text after it (what the model actually drafted as a
+    call) is exactly the "rest" this returns, with no second parser written
+    for it.
+    """
     for pattern in _THOUGHT_PATTERNS:
         match = pattern.match(text)
         if match:
