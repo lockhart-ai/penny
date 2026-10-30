@@ -4,11 +4,11 @@ collection's prompt (#2857).
 The contract is `docs/eval-case-design.md`.
 
 **The failure this reproduces.** Penny drafted a new standing rule, the user confirmed
-it, and she called `memory_get('rules')`, read back a STRAY prompt an earlier bad turn
-had already written onto the collection, and merged the new rule into that prompt via
-`collection_configure(prompt=...)` instead of writing an entry. `rules` has no schedule,
-so nothing ever reads that prompt — standing rules render from the collection's
-ENTRIES — and her reply claimed the rule was now permanent when it wasn't.
+it, and she read `rules` back with `memory_get`, found a STRAY prompt an earlier bad
+turn had already written onto the collection, and merged the new rule into that prompt
+with `collection_configure` instead of writing an entry. `rules` has no schedule, so
+nothing ever reads that prompt — standing rules render from the collection's ENTRIES —
+and her reply claimed the rule was now permanent when it wasn't.
 
 **ONE case**, `standing-rule-lands-as-entry`. `rules` starts with four entries and the
 same stray prompt the failure needs: a prose paragraph that merely lists those four
@@ -22,8 +22,9 @@ from scratch.
 
 **What this case asserts. Two claims, both facts, both survival.**
 
-- `rules` holds an entry whose content carries the planted phrase from Penny's own
-  drafted rule — the new rule landed as an ENTRY, not folded into the prompt.
+- `rules` holds an entry whose content carries the drafted rule's subject (the words
+  "basil" and "sunday", nothing else in the world mentions either) — the new rule
+  landed as an ENTRY, not folded into the prompt.
 - The four seeded entries survive with their content unchanged — the fix must not
   touch what was already there, including the stray prompt's own listing of them
   (its removal, if any, is a separate `prompt`-clearing move this case does not ask
@@ -33,9 +34,19 @@ What is NOT claimed: which tool she calls, how many turns she takes, whether she
 touches the stray `prompt` at all, or how she words the reply — variance, measured in
 the tool sequence and the reply spread.
 
-REPORT-ONLY (`min_pass_rate=None`) on its first run — a case-only commit, expected to
-reproduce the prompt rewrite — then measured again on the fix. Every name and rule
-here is invented and unrelated to any real conversation, because the repo is public.
+**What the case-only run on main showed.** In this particular world — a short
+conversation where the rule's own content sits one exchange back and the live turn is
+just a confirmation — gemma wrote the new rule as an entry via `collection_write` in
+all 15 samples and never touched the stray prompt in any of them: this specific shape
+does not reproduce the `memory_get`-driven prompt rewrite the issue describes, because
+the model never called `memory_get` here at all. The case stays in the suite as a
+durable, passing contract for the behaviour it does state (a confirmed drafted rule
+lands as an entry) and as the regression guard for the render/refusal change; the
+code owner may want a second case that forces a `memory_get` read before the
+confirmation to exercise the exact mechanism the issue reported.
+
+REPORT-ONLY (`min_pass_rate=None`). Every name and rule here is invented and unrelated
+to any real conversation, because the repo is public.
 """
 
 from __future__ import annotations
@@ -73,7 +84,10 @@ _USER_TIMEZONE = "America/Winnipeg"
 # Four standing rules already in force — the content this case must see survive
 # byte-for-byte, whatever the live turn does.
 _SEEDED_RULES: tuple[tuple[str, str], ...] = (
-    ("shoes_off_at_door", "Always take your shoes off at the door before walking through the house."),
+    (
+        "shoes_off_at_door",
+        "Always take your shoes off at the door before walking through the house.",
+    ),
     ("recycling_out_tuesday", "Put the recycling bin out every Tuesday night."),
     ("dishwasher_before_bed", "Start the dishwasher before going to bed if it's full."),
     ("no_phones_at_dinner", "No phones at the dinner table."),
@@ -88,10 +102,14 @@ _STRAY_PROMPT = (
     "phones at the dinner table."
 )
 
-# Penny's own drafted rule, in the one prior exchange — the planted phrase
-# ("the quiet-hour watering") is distinctive enough that only a model that actually
-# carried this rule's content into a write could produce it; nothing else in the
-# world repeats it.
+# Penny's own drafted rule, in the one prior exchange — "basil" and "sunday" are
+# distinctive enough that only a model that actually carried this rule's content into
+# a write could produce them; nothing else in the world mentions either. The claim
+# matches on these two words rather than the drafted sentence verbatim (#2857, measured
+# on the case-only run): gemma reliably writes the rule's SUBJECT as a new entry but
+# freely paraphrases the sentence itself — dropping or reshaping "the quiet-hour
+# watering" descriptor every time — so an exact-phrase match was asserting wording the
+# model was never asked to preserve, not a fact about what landed.
 _USER_PROMPT_FOR_DRAFT = (
     "ugh, the basil on the windowsill died again, I keep forgetting to water it"
 )
@@ -100,7 +118,7 @@ _PENNY_DRAFTED_RULE = (
     "water the windowsill basil every Sunday morning, the quiet-hour watering? I can "
     "add it to your rules if you like."
 )
-_PLANTED_PHRASE = "the quiet-hour watering"
+_PLANTED_SUBJECT_WORDS = ("basil", "sunday")
 
 ASK = "yes, write that as a rule"
 ALSO_PHRASED: tuple[str, ...] = (
@@ -109,22 +127,26 @@ ALSO_PHRASED: tuple[str, ...] = (
 )
 
 
-def _assert_the_planted_phrase_is_distinctive() -> None:
-    """ENFORCED at import: the planted phrase lives only in Penny's drafted rule, and
+def _assert_the_planted_subject_is_distinctive() -> None:
+    """ENFORCED at import: the rule's subject lives only in Penny's drafted rule, and
     no live ask carries any of the rule's own content — the point of the two-turn
     shape."""
-    assert _PLANTED_PHRASE in _PENNY_DRAFTED_RULE
+    drafted_folded = _PENNY_DRAFTED_RULE.casefold()
+    for word in _PLANTED_SUBJECT_WORDS:
+        assert word in drafted_folded
     for seeded_key, seeded_content in _SEEDED_RULES:
-        assert _PLANTED_PHRASE not in seeded_content
-        assert _PLANTED_PHRASE not in seeded_key
-    assert _PLANTED_PHRASE not in _STRAY_PROMPT
+        for word in _PLANTED_SUBJECT_WORDS:
+            assert word not in seeded_content.casefold()
+            assert word not in seeded_key.casefold()
+    for word in _PLANTED_SUBJECT_WORDS:
+        assert word not in _STRAY_PROMPT.casefold()
     for wording in (ASK, *ALSO_PHRASED):
         assert "water" not in wording.casefold(), (
             f"a live ask must carry no rule content of its own: {wording!r}"
         )
 
 
-_assert_the_planted_phrase_is_distinctive()
+_assert_the_planted_subject_is_distinctive()
 
 
 def _seed_world(db: Database) -> None:
@@ -165,8 +187,7 @@ def _premise() -> Preparer:
         db = penny.db
         held = require_memory(db, RULES).read_all()
         assert {e.key for e in held} == {key for key, _content in _SEEDED_RULES}, (
-            f"`{RULES}` must start with the four seeded rules, it holds "
-            f"{[e.key for e in held]!r}"
+            f"`{RULES}` must start with the four seeded rules, it holds {[e.key for e in held]!r}"
         )
         row = db.memories.get(RULES)
         assert row is not None
@@ -183,11 +204,17 @@ def _rules_contents(sample: SampleObservation) -> list[str]:
     return [entry.content for entry in sample.held if entry.collection == RULES]
 
 
-def _new_rule_lands_with_the_planted_phrase(sample: SampleObservation, _world: World) -> Answer:
-    """STORE: an entry in `rules` carries the planted phrase from Penny's own
-    drafted rule — it landed as an entry, not folded into the collection's prompt."""
+def _new_rule_lands_with_the_planted_subject(sample: SampleObservation, _world: World) -> Answer:
+    """STORE: an entry in `rules` carries the drafted rule's subject (basil, Sunday) —
+    it landed as an entry, not folded into the collection's prompt. Matched by subject
+    rather than the drafted sentence's exact wording, which the model paraphrases
+    freely (measured on the case-only run)."""
     held = _rules_contents(sample)
-    matched = [content for content in held if _PLANTED_PHRASE in content]
+    matched = [
+        content
+        for content in held
+        if all(word in content.casefold() for word in _PLANTED_SUBJECT_WORDS)
+    ]
     return bool(matched), f"`{RULES}` holds {held!r}"
 
 
@@ -226,8 +253,8 @@ async def test_a_confirmed_drafted_rule_lands_as_an_entry(chat_eval: ChatEval, m
         timeout=120.0,
     )
     cohort.claim(
-        "state: an entry in `rules` carries the planted phrase from the drafted rule",
-        _new_rule_lands_with_the_planted_phrase,
+        "state: an entry in `rules` carries the drafted rule's subject (basil, Sunday)",
+        _new_rule_lands_with_the_planted_subject,
         SpecCategory.STORE,
     )
     cohort.claim(
