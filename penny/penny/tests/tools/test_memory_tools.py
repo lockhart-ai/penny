@@ -3400,7 +3400,9 @@ class TestLogTools:
 
         # Whole-render: the tool returns the canonical projection byte-for-byte.
         # run_get passes with_thinking=True (#2841), so the comparison must too.
-        expected = render_run_calls(db.messages.get_run_prompts("news-1"), with_thinking=True)
+        expected = render_run_calls(
+            db.messages.get_run_prompts("news-1"), with_thinking=True, delivered_text=None
+        )
         assert result.message == expected
         assert result.message.startswith("run news-1")
         assert "collection_write(collection='ai-news'" in result.message

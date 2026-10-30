@@ -2890,7 +2890,8 @@ class ReadRunCallsTool(CursorReadTool):
         thinking would bloat this read, so run_list states explicitly that it
         wants none."""
         run_id = group[0].run_id
-        assert run_id is not None
+        if run_id is None:
+            raise ValueError("run_call_groups returned a group with no run_id")
         delivered_text = self._db.messages.delivered_text_for_run(run_id)
         return MemoryEntry(
             memory_name=key,

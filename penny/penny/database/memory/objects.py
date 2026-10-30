@@ -1973,7 +1973,7 @@ def render_run_calls(
     *,
     with_thinking: bool,
     step: int | None = None,
-    delivered_text: str | None = None,
+    delivered_text: str | None,
 ) -> str:
     """One run as its tool-call SEQUENCE: ``run id → origin → the numbered steps →
     conclusion → egress``.

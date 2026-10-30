@@ -1011,6 +1011,7 @@ def _seed_world(db: Database) -> None:
                 db.messages.get_run_prompts(worked_run),
                 db.messages.get_child_draws(worked_run),
                 with_thinking=True,
+                delivered_text=None,
             )
         ),
         reply=_EX4_REPLY,
