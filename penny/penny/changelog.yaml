@@ -12,9 +12,8 @@
 # time — see `penny.changelog` and `Penny._record_changelog_entries`.
 - pr: 2820
   text: >-
-    We removed the `reasoning` argument that used to ride every tool call —
-    there's nothing to fill in there any more. Think out loud in your own
-    words before you call a tool instead.
+    We removed the `reasoning` argument that used to ride every tool call;
+    tool calls no longer carry it.
 - pr: 2822
   text: >-
     We folded `notifications_mute`/`notifications_unmute` into one
@@ -42,3 +41,7 @@
     to the user right away as its own message, instead of being dropped. It
     also stays in your own turn history, so a later turn can see you having
     spoken and called a tool in the same step before.
+- pr: 2847
+  text: >-
+    We added a `changelog` log of the changes we've made to your tools and
+    behaviour — read it with `log_read('changelog')`.
