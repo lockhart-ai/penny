@@ -2254,12 +2254,13 @@ class CollectionUpdateTool(MemoryTool):
         if isinstance(parsed, ToolResult):
             return parsed
         schedule, expires_at = parsed
-        if args.prompt is None:
+        prompt = args.prompt
+        if prompt is None:
             return await self._edit_metadata(args, schedule, expires_at)
         row = self._db.memories.get(args.name)
-        if args.prompt.strip() == "":
+        if prompt.strip() == "":
             return self._clear_prompt(args, row, schedule)
-        return await self._replace_prompt(args, row, schedule, expires_at)
+        return await self._replace_prompt(args, row, prompt, schedule, expires_at)
 
     def _parse_schedule(
         self, args: CollectionUpdateArgs
@@ -2335,38 +2336,40 @@ class CollectionUpdateTool(MemoryTool):
         self,
         args: CollectionUpdateArgs,
         row: MemoryRow | None,
+        prompt: str,
         schedule: Schedule | None,
         expires_at: datetime | None,
     ) -> ToolResult:
-        """Replace the collection's ``extraction_prompt`` wholesale with ``args.prompt``
+        """Replace the collection's ``extraction_prompt`` wholesale with ``prompt``
         (#2455 naive baseline) — an edit to a running job, a swap to a different job, or
         adopting a prompt onto a legacy inert (prompt-less) collection for the first
-        time.  Refused when no schedule is in effect — neither the row's own nor one
-        this call is setting (#2857): the prompt could never run, so landing it would
-        read back as a job that doesn't exist.  Otherwise the prompt the model wrote
-        IS the prompt the collector runs; there is no rendering seam to validate
+        time.  ``prompt`` is the caller's own already-non-blank ``args.prompt`` (#2857)
+        — a required parameter rather than a re-narrowed optional, so there is nothing
+        to assert here.  Refused when no schedule is in effect — neither the row's own
+        nor one this call is setting (#2857): the prompt could never run, so landing it
+        would read back as a job that doesn't exist.  Otherwise the prompt the model
+        wrote IS the prompt the collector runs; there is no rendering seam to validate
         against, only the same length check authoring takes — plus the summary-line
         refusal (#2685): a ``prompt`` that is this job's own current-state summary
         line would replace the instructions with a rendering of them, so it's refused
         and she retries."""
-        assert args.prompt is not None and args.prompt.strip() != ""
         if (no_schedule := _no_schedule_refusal(args.name, row, schedule)) is not None:
             return no_schedule
         prompt_before = row.extraction_prompt if row is not None else None
         if row is not None:
-            summary_refusal = _summary_as_prompt_refusal(row, args.prompt)
+            summary_refusal = _summary_as_prompt_refusal(row, prompt)
             if summary_refusal is not None:
                 return ToolResult(message=summary_refusal, success=False)
-        if (too_short := check_extraction_prompt(args.prompt)) is not None:
+        if (too_short := check_extraction_prompt(prompt)) is not None:
             return ToolResult(message=too_short, success=False)
         embedding = await self._description_embedding(args)
-        memory = self._apply_update(args, args.prompt, embedding, schedule, expires_at)
+        memory = self._apply_update(args, prompt, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
         echo = render_reinstantiation_echo(memory, user_timezone_name(self._db))
         # A replacement of an EXISTING prompt carries the line diff (#2719): what the old
         # prompt had that the new one doesn't, verbatim, so a rebuild-from-the-summary sees
         # the lines it dropped.  Reported, never blocked — the model may rewrite a job.
-        diff = render_prompt_replacement_diff(prompt_before, args.prompt)
+        diff = render_prompt_replacement_diff(prompt_before, prompt)
         diff_block = f"\n{diff}" if diff is not None else ""
         unchanged_note = self._unchanged_description_note(row, prompt_before, args)
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)

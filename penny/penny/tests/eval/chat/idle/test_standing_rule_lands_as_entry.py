@@ -34,16 +34,12 @@ What is NOT claimed: which tool she calls, how many turns she takes, whether she
 touches the stray `prompt` at all, or how she words the reply — variance, measured in
 the tool sequence and the reply spread.
 
-**What the case-only run on main showed.** In this particular world — a short
-conversation where the rule's own content sits one exchange back and the live turn is
-just a confirmation — gemma wrote the new rule as an entry via `collection_write` in
-all 15 samples and never touched the stray prompt in any of them: this specific shape
-does not reproduce the `memory_get`-driven prompt rewrite the issue describes, because
-the model never called `memory_get` here at all. The case stays in the suite as a
-durable, passing contract for the behaviour it does state (a confirmed drafted rule
-lands as an entry) and as the regression guard for the render/refusal change; the
-code owner may want a second case that forces a `memory_get` read before the
-confirmation to exercise the exact mechanism the issue reported.
+**This case guards the behaviour, not the prod trigger.** In this world she never
+reads `memory_get` first, so the case-only run (re-scored with the subject claim)
+passed 15/15 on main — it does not reproduce the `memory_get`-driven prompt rewrite
+the issue describes. The fix's protection against that exact path is the
+deterministic refusal in `CollectionUpdateTool`, covered by the unit tests in
+`test_memory_tools.py`.
 
 REPORT-ONLY (`min_pass_rate=None`). Every name and rule here is invented and unrelated
 to any real conversation, because the repo is public.

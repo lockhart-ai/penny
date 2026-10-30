@@ -68,3 +68,10 @@
     When a tool call you write can't be read, you're now shown your draft and
     why it couldn't be read, so you can make the call again, instead of being
     asked to start the step over blind.
+- pr: 2860
+  text: >-
+    A collection's prompt is a job's instructions and only runs on a
+    schedule. It's never what the collection holds; those are its entries,
+    written with `collection_write`. `memory_get` now shows a collection's
+    entries, a prompt on a collection with no schedule is refused, and an
+    empty prompt clears one that was never going to run.
