@@ -27,6 +27,7 @@ or oMLX's own rendering of it as ``<think>...</think>``).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from penny.llm.raw_template import THOUGHT_MARKER_PAIRS
@@ -34,6 +35,14 @@ from penny.llm.raw_template import THOUGHT_MARKER_PAIRS
 REPEAT_WINDOW_CHARS = 400
 REPEAT_THRESHOLD = 3
 CHECK_INTERVAL_CHARS = 200
+
+# The clean-boundary fallback chain (#2843): a cut landing mid-draft let a
+# real prod continuation just resume an unfinished list item, loop again, and
+# run to its own token budget (`digest-set-up-in-chat-carries-every-item`).
+# A blank line between paragraphs; matched with DOTALL-insensitive `\n\n` is
+# enough — the model's own prose paragraphs are blank-line separated.
+_PARAGRAPH_BREAK = "\n\n"
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 
 
 @dataclass(frozen=True)
@@ -89,14 +98,73 @@ def find_loop_cut(opener: str, thought_body: str) -> ThinkingLoopCut | None:
     first = _first_occurrence_if_repeated(thought_body, window, REPEAT_THRESHOLD)
     if first is None:
         return None
+    boundary = _clean_boundary(thought_body[:first])
     closer = next(c for o, c in THOUGHT_MARKER_PAIRS if o == opener)
     return ThinkingLoopCut(
         opener=opener,
-        kept_body=thought_body[:first],
+        kept_body=thought_body[:boundary],
         closer=closer,
         window=window,
-        discarded_chars=len(thought_body) - first,
+        discarded_chars=len(thought_body) - boundary,
     )
+
+
+@dataclass(frozen=True)
+class RepeatCut:
+    """Where a SECOND loop — on the CONTINUATION's own output, content
+    included (#2843) — should be cut. No opener/closer: this never builds a
+    further continuation prompt, so there is no channel to reopen or close;
+    it hands the draw to Penny's EXISTING budget-cut discard-and-reroll path
+    instead (``client.py``'s own ``_budget_cut_raw``), bounding a repeat to
+    two cycles rather than the full token budget."""
+
+    kept_text: str
+    window: str
+    discarded_chars: int
+
+    def discard_detail(self) -> str:
+        """Mirrors ``ThinkingLoopCut.discard_detail`` — same shape, read by
+        the same discard machinery, naming the SECOND repeat."""
+        return (
+            f"continuation's last {REPEAT_WINDOW_CHARS} characters repeated "
+            f"{REPEAT_THRESHOLD}+ times; kept {len(self.kept_text)} chars, "
+            f"discarded {self.discarded_chars}"
+        )
+
+
+def find_repeat_cut(text: str) -> RepeatCut | None:
+    """Whether ``text`` (the continuation's WHOLE output so far — thinking
+    and content both, since a second loop is as likely in the reply content
+    as in thinking once the first cut already closed the thought channel in
+    its own prompt, #2843) is looping, and if so, where to cut it. Same
+    window/threshold/overlap rules as :func:`find_loop_cut`, with no
+    opener/closer to track."""
+    if len(text) < REPEAT_WINDOW_CHARS:
+        return None
+    window = text[-REPEAT_WINDOW_CHARS:]
+    first = _first_occurrence_if_repeated(text, window, REPEAT_THRESHOLD)
+    if first is None:
+        return None
+    boundary = _clean_boundary(text[:first])
+    return RepeatCut(kept_text=text[:boundary], window=window, discarded_chars=len(text) - boundary)
+
+
+def _clean_boundary(prefix: str) -> int:
+    """Where to actually cut within ``prefix`` (#2843) — backed up from the
+    repeat's own start to the end of the last COMPLETE paragraph (a blank
+    line), so a continuation never resumes a half-written line (the bug: a
+    cut landing mid-list-item let the continuation just keep writing that
+    same unfinished item, loop again, and run to the token budget). Falls
+    back to the last sentence end when ``prefix`` has no paragraph break at
+    all, and to ``prefix`` unchanged (the repeat's own start) when neither
+    exists — better than refusing to cut at all."""
+    paragraph_break = prefix.rfind(_PARAGRAPH_BREAK)
+    if paragraph_break != -1:
+        return paragraph_break + len(_PARAGRAPH_BREAK)
+    sentence_ends = list(_SENTENCE_END.finditer(prefix))
+    if sentence_ends:
+        return sentence_ends[-1].end()
+    return len(prefix)
 
 
 def _first_occurrence_if_repeated(text: str, sub: str, min_count: int) -> int | None:
@@ -163,3 +231,47 @@ class ThoughtStreamTracker:
             return None
         self._checked_through = len(body)
         return find_loop_cut(opener, body)
+
+    def final_check(self, buffer: str) -> ThinkingLoopCut | None:
+        """One last check at end-of-stream (#2843), bypassing the interval
+        gate — a stream that ends with less than ``CHECK_INTERVAL_CHARS`` of
+        growth since the last check (the usual case: most streams end well
+        short of a round interval boundary) would otherwise let a loop
+        sitting in the final stretch go undetected entirely. The close-marker
+        branch in ``feed`` already covers an ORDINARY close; this covers a
+        draw that never got the chance to close at all (cut by its own token
+        budget mid-thought)."""
+        if self.closed:
+            return None
+        opened = _opened_thought(buffer)
+        if opened is None:
+            return None
+        opener, body, closed = opened
+        self.closed = closed
+        return find_loop_cut(opener, body)
+
+
+class RepeatStreamTracker:
+    """Fed the raw completion text accumulated so far after every streamed
+    chunk, same as :class:`ThoughtStreamTracker` — but guards the
+    CONTINUATION call (#2843), watching its WHOLE output (thinking and
+    content both) with no marker-awareness at all, since the continuation's
+    own loop (if any) is as likely to be in its reply content as its
+    thinking now that the first cut already closed the thought channel in
+    its own prompt."""
+
+    def __init__(self) -> None:
+        self._checked_through = 0
+
+    def feed(self, buffer: str) -> RepeatCut | None:
+        if len(buffer) - self._checked_through < CHECK_INTERVAL_CHARS:
+            return None
+        self._checked_through = len(buffer)
+        return find_repeat_cut(buffer)
+
+    def final_check(self, buffer: str) -> RepeatCut | None:
+        """One last check at end-of-stream (#2843), bypassing the interval
+        gate — there is no "closed" signal at all for this tracker (it never
+        watches for a channel marker), so every stream end relies on this to
+        catch a loop sitting in the final, sub-interval stretch."""
+        return find_repeat_cut(buffer)

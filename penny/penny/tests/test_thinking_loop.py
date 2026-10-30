@@ -9,8 +9,10 @@ from penny.llm.thinking_loop import (
     CHECK_INTERVAL_CHARS,
     REPEAT_THRESHOLD,
     REPEAT_WINDOW_CHARS,
+    RepeatStreamTracker,
     ThoughtStreamTracker,
     find_loop_cut,
+    find_repeat_cut,
 )
 
 _GEMMA_OPENER = "<|channel>thought\n"
@@ -217,6 +219,101 @@ class TestThoughtStreamTracker:
         for char in full:
             buffer += char
             assert tracker.feed(buffer) is None
+
+
+class TestCleanBoundary:
+    """#2843: a cut landing mid-draft let a real prod continuation resume an
+    unfinished line and loop again. ``find_loop_cut``/``find_repeat_cut`` must
+    both back the cut up to a clean boundary — a paragraph break, or failing
+    that a sentence end — never leave a half-written line as the kept text."""
+
+    def test_thought_cut_backs_up_to_the_last_paragraph_break(self) -> None:
+        """The digest shape: the repeat starts mid-list-item, with a
+        complete earlier paragraph (a markdown-style digest entry) before
+        it."""
+        complete_entry = "- [A story about an appeal][1] after a two-year wait.\n\n"
+        mid_draft_entry = "- [Another story, still being drafted"
+        looping_tail = (" after a two-year appeal][2]. Continuing to draft the same entry. ") * 10
+        body = complete_entry + mid_draft_entry + looping_tail
+        cut = find_loop_cut(_GEMMA_OPENER, body)
+        assert cut is not None
+        assert cut.kept_body == complete_entry
+        assert cut.kept_body.endswith("\n\n")
+        assert mid_draft_entry not in cut.kept_body
+
+    def test_thought_cut_falls_back_to_the_last_sentence_end(self) -> None:
+        """No blank line anywhere before the repeat — the next-best clean
+        boundary is the end of the last complete sentence."""
+        prefix = "First I considered the weather. Then I started on the next point"
+        looping_tail = (" about whether to reschedule, still deciding whether to reschedule. ") * 10
+        body = prefix + looping_tail
+        cut = find_loop_cut(_GEMMA_OPENER, body)
+        assert cut is not None
+        assert cut.kept_body == "First I considered the weather."
+
+    def test_with_neither_a_paragraph_break_nor_a_sentence_end(self) -> None:
+        """No clean boundary exists at all before the repeat — falls back to
+        the repeat's own start (today's prior behaviour), never crashes."""
+        body = "no punctuation here at all " + _distinct_window() * 3
+        cut = find_loop_cut(_GEMMA_OPENER, body)
+        assert cut is not None
+        assert cut.kept_body == "no punctuation here at all "
+
+    def test_repeat_cut_also_backs_up_to_a_paragraph_break(self) -> None:
+        """``find_repeat_cut`` (the continuation's own second-loop guard,
+        content included) gets the identical clean-boundary treatment."""
+        complete_entry = "Here is the first full point, settled.\n\n"
+        mid_draft = "Now starting the second point, which keeps repeating"
+        looping_tail = " itself over and over without ever finishing. " * 14
+        text = complete_entry + mid_draft + looping_tail
+        cut = find_repeat_cut(text)
+        assert cut is not None
+        assert cut.kept_text == complete_entry
+
+
+class TestRepeatStreamTrackerAndFindRepeatCut:
+    """The continuation's own guard (#2843) — the WHOLE output, content
+    included, no thought-channel marker awareness at all."""
+
+    def test_short_text_never_cuts(self) -> None:
+        assert find_repeat_cut("not nearly enough text to loop") is None
+
+    def test_a_repeat_in_plain_reply_content_is_cut(self) -> None:
+        """No thought markers anywhere — exactly what a continuation's own
+        reply CONTENT looks like once its prompt already closed thinking."""
+        sentence = "I will keep listing this same point. "
+        text = sentence * 16
+        cut = find_repeat_cut(text)
+        assert cut is not None
+        assert cut.discarded_chars > 0
+
+    def test_tracker_catches_a_loop_in_streamed_content(self) -> None:
+        """Mirrors ``_consume_stream``'s own calling convention: ``feed`` on
+        every chunk, then ONE ``final_check`` once the stream ends (#2843) —
+        without it, a stream that ends short of another interval boundary
+        (the common case) would miss a loop sitting in that final stretch,
+        exactly what this fixture's own length triggers."""
+        sentence = "I will keep listing this same point. "
+        full = sentence * 16
+        tracker = RepeatStreamTracker()
+        buffer = ""
+        cut = None
+        for chunk in _chunks(full):
+            buffer += chunk
+            cut = tracker.feed(buffer)
+            if cut is not None:
+                break
+        if cut is None:
+            cut = tracker.final_check(buffer)
+        assert cut is not None
+
+    def test_tracker_never_cuts_long_non_looping_content(self) -> None:
+        tracker = RepeatStreamTracker()
+        buffer = ""
+        for chunk in _chunks(_non_looping_thinking()):
+            buffer += chunk
+            assert tracker.feed(buffer) is None
+        assert tracker.final_check(buffer) is None
 
 
 def _chunks(text: str, size: int = 23) -> list[str]:

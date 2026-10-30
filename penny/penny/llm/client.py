@@ -266,13 +266,23 @@ class _RawTemplateDraw(NamedTuple):
 
 
 class _StreamOutcome(NamedTuple):
-    """One streamed raw-completions call's own outcome (#2842): ``raw`` is
-    ``None`` exactly when ``cut`` fired (the stream was closed before a real
-    completion ever arrived) — never both at once."""
+    """One streamed raw-completions call's own outcome (#2842/#2843): ``raw``
+    is ``None`` exactly when ``cut`` fired (the stream was closed before a
+    real completion ever arrived) — never both at once. ``cut`` is a
+    ``ThinkingLoopCut`` on the FIRST call's own ``ThoughtStreamTracker``
+    (thought only), or a ``RepeatCut`` on the CONTINUATION's own
+    ``RepeatStreamTracker`` (whole output) — the caller tells them apart by
+    type, since they're handled completely differently (build a second
+    continuation vs. hand off to the existing budget-cut path).
+    ``last_chunk``/``last_choice`` are kept even when ``cut`` fired, so a
+    caller that needs to build ITS OWN completion from the kept text (the
+    budget-cut hand-off) has a real chunk to ``model_copy`` from."""
 
     raw: openai.types.completion.Completion | None
-    cut: thinking_loop.ThinkingLoopCut | None
+    cut: thinking_loop.ThinkingLoopCut | thinking_loop.RepeatCut | None
     duration_ms: int
+    last_chunk: openai.types.completion.Completion | None = None
+    last_choice: openai.types.completion_choice.CompletionChoice | None = None
 
 
 def _completed_raw(outcome: _StreamOutcome) -> openai.types.completion.Completion:
@@ -289,6 +299,27 @@ def _completed_raw(outcome: _StreamOutcome) -> openai.types.completion.Completio
     if outcome.raw is None:
         raise LlmResponseError("a stream outcome with no cut must carry a completion")
     return outcome.raw
+
+
+def _budget_cut_raw(outcome: _StreamOutcome) -> openai.types.completion.Completion:
+    """Build a completion reporting AS IF the token budget had been hit
+    (#2843) — the CONTINUATION looped a SECOND time; rather than a third
+    cut-and-continue (open-ended recursion the issue doesn't want), this
+    hands the draw to Penny's EXISTING budget-cut discard-and-reroll path
+    (``agents/base.py``'s own ``finish_reason == FINISH_REASON_LENGTH`` ->
+    ``ConditionKey.BUDGET_CUT``) by reporting the SAME transport fact a real
+    budget cut reports, with the cleanly-trimmed kept text as the final
+    content. Bounds a repeat to two cycles instead of the full budget.
+    """
+    cut = outcome.cut
+    if not isinstance(cut, thinking_loop.RepeatCut):
+        raise LlmResponseError("a RepeatStreamTracker must only ever produce a RepeatCut")
+    if outcome.last_chunk is None or outcome.last_choice is None:
+        raise LlmResponseError("a repeated continuation must carry at least one streamed chunk")
+    choice = outcome.last_choice.model_copy(
+        update={"text": cut.kept_text, "finish_reason": PennyConstants.FINISH_REASON_LENGTH}
+    )
+    return outcome.last_chunk.model_copy(update={"choices": [choice]})
 
 
 class _ChatAttemptResult(NamedTuple):
@@ -958,23 +989,39 @@ class LlmClient:
         ``_attempt_chat_request`` never has to tell the two apart.
         ``thinking_enabled`` is already baked into the rendered prompt's own
         bytes, so it is not sent as a separate field here.
+
+        The continuation is ITSELF guarded (#2843, ``RepeatStreamTracker`` —
+        its whole output, content included, not just thinking): a cut
+        landing mid-draft let a real prod continuation just resume an
+        unfinished line and loop again under its own token budget. A second
+        loop there is not given a THIRD call — it hands off to Penny's
+        existing budget-cut path instead (:func:`_budget_cut_raw`), bounding
+        a repeat to two cycles rather than the full budget.
         """
         translated_tools = self._translate_tools(tools) if tools else None
         prompt = raw_template.render_prompt(messages, translated_tools, thinking_enabled)
         outcome = await self._stream_raw_completion(
-            await self._create_raw_completion(prompt, token_budget), detect_loop=True
+            await self._create_raw_completion(prompt, token_budget),
+            tracker=thinking_loop.ThoughtStreamTracker(),
         )
         if outcome.cut is None:
             return _RawTemplateDraw(raw=_completed_raw(outcome), cut=None)
+        if not isinstance(outcome.cut, thinking_loop.ThinkingLoopCut):
+            raise LlmResponseError(
+                "a ThoughtStreamTracker must only ever produce a ThinkingLoopCut"
+            )
         continuation_prompt = prompt + outcome.cut.continuation_suffix()
         continuation = await self._stream_raw_completion(
-            await self._create_raw_completion(continuation_prompt, token_budget), detect_loop=False
+            await self._create_raw_completion(continuation_prompt, token_budget),
+            tracker=thinking_loop.RepeatStreamTracker(),
         )
         cut_log = _ThinkingLoopCutLog(
             kept_thinking=outcome.cut.kept_body,
             detail=outcome.cut.discard_detail(),
             duration_ms=outcome.duration_ms,
         )
+        if continuation.cut is not None:
+            return _RawTemplateDraw(raw=_budget_cut_raw(continuation), cut=cut_log)
         return _RawTemplateDraw(raw=_completed_raw(continuation), cut=cut_log)
 
     async def _create_raw_completion(
@@ -1002,23 +1049,30 @@ class LlmClient:
         self,
         stream: openai.AsyncStream[openai.types.completion.Completion],
         *,
-        detect_loop: bool,
+        tracker: thinking_loop.ThoughtStreamTracker | thinking_loop.RepeatStreamTracker,
     ) -> _StreamOutcome:
         """Consume one streamed raw-completions call chunk by chunk (#2842),
         closing it (``async with`` — the SDK's own ``AsyncStream.close()``)
-        the moment a loop is detected rather than reading it to the end.
+        the moment ``tracker`` detects a cut rather than reading to the end.
 
-        ``detect_loop=False`` on the continuation call: its own prompt already
-        shows the thought channel closed, so a model that nonetheless opens a
-        NEW one there is vanishingly unlikely — and is deliberately not
-        chased with a second cut-and-continue, since the issue scopes this to
-        one extra call per turn, not open-ended recursion.
+        ``tracker`` names which guard applies: a ``ThoughtStreamTracker`` on
+        the FIRST call (thought only), a ``RepeatStreamTracker`` on the
+        CONTINUATION (#2843 — its whole output, content included, since a
+        cut landing mid-draft is exactly what let a real prod continuation
+        loop again under its own token budget). Either way this is never
+        chased past one cut per call — the caller (``_send_raw_template_request``)
+        decides what a cut on EACH tracker means, never a THIRD call.
         """
         start = time.time()
-        tracker = thinking_loop.ThoughtStreamTracker() if detect_loop else None
         last_chunk, last_choice, buffer, cut = await self._consume_stream(stream, tracker)
         if cut is not None:
-            return _StreamOutcome(raw=None, cut=cut, duration_ms=self._elapsed_ms(start))
+            return _StreamOutcome(
+                raw=None,
+                cut=cut,
+                duration_ms=self._elapsed_ms(start),
+                last_chunk=last_chunk,
+                last_choice=last_choice,
+            )
         if last_chunk is None:
             # A stream that closed with literally no chunks at all — not even
             # a trailing usage-only one. Never seen against oMLX or CoreWeave
@@ -1037,20 +1091,25 @@ class LlmClient:
     @staticmethod
     async def _consume_stream(
         stream: openai.AsyncStream[openai.types.completion.Completion],
-        tracker: thinking_loop.ThoughtStreamTracker | None,
+        tracker: thinking_loop.ThoughtStreamTracker | thinking_loop.RepeatStreamTracker,
     ) -> tuple[
         openai.types.completion.Completion | None,
         openai.types.completion_choice.CompletionChoice | None,
         str,
-        thinking_loop.ThinkingLoopCut | None,
+        thinking_loop.ThinkingLoopCut | thinking_loop.RepeatCut | None,
     ]:
         """Read ``stream`` chunk by chunk, closing it (``async with`` —
         ``_stream_raw_completion``'s own docstring covers why) the moment
         ``tracker`` detects a cut rather than reading to the end. Returns the
         last chunk/choice seen (``None``/``None`` for a stream with no chunks
-        at all), the accumulated text, and the cut if one fired — the three
+        at all), the accumulated text, and the cut if one fired — the four
         pieces ``_stream_raw_completion`` needs to build its own result,
         whichever way this ends.
+
+        Runs ``tracker.final_check`` once after the stream ends with no cut
+        found mid-way (#2843): the stream almost never ends exactly on a
+        ``CHECK_INTERVAL_CHARS`` boundary, so without this a loop sitting in
+        that last, sub-interval stretch would go undetected entirely.
         """
         buffer = ""
         last_chunk: openai.types.completion.Completion | None = None
@@ -1061,10 +1120,10 @@ class LlmClient:
                 if chunk.choices:
                     last_choice = chunk.choices[0]
                     buffer += last_choice.text
-                cut = tracker.feed(buffer) if tracker is not None else None
+                cut = tracker.feed(buffer)
                 if cut is not None:
                     return last_chunk, last_choice, buffer, cut
-        return last_chunk, last_choice, buffer, None
+        return last_chunk, last_choice, buffer, tracker.final_check(buffer)
 
     def _provider_pin_extra_body(self) -> dict[str, Any]:
         """The provider pin's own ``extra_body`` passthrough (#2829) — the ONE

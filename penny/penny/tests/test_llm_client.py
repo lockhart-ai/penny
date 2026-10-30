@@ -50,7 +50,7 @@ from penny.llm.models import (
     fault_for_status,
     usage_timing_from_response,
 )
-from penny.llm.thinking_loop import ThoughtStreamTracker
+from penny.llm.thinking_loop import RepeatStreamTracker, ThoughtStreamTracker
 
 _HTML_ERROR_BODY = (
     f"<!DOCTYPE html><html><head><title>404</title></head><body>{'x' * 5000}</body></html>"
@@ -1643,6 +1643,82 @@ class TestRawTemplateTransport:
         assert continuation_row.discard_reason is None
         assert continuation_row.call_outcome == CallOutcome.COMPLETED.value
         assert continuation_row.thinking == "okay, settled"
+
+    @pytest.mark.asyncio
+    async def test_a_looping_continuation_hands_off_to_the_budget_cut_path(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """#2843: the digest bug — a cut landing mid-draft let a real prod
+        continuation just resume the unfinished line and loop AGAIN, running
+        to its own 16,000-token budget. The continuation is itself guarded
+        (``RepeatStreamTracker``, whole output, content included): a second
+        loop there gets no THIRD call — it's reported as if the token budget
+        had been hit (``finish_reason="length"``), handing off to Penny's
+        EXISTING budget-cut discard-and-reroll path at the agent level.
+        """
+        opener = "<|channel>thought\n"
+        first_sentence = "The user is asking about todays meeting. "
+        first_pieces = [first_sentence] * 20
+
+        tracker = ThoughtStreamTracker()
+        buffer = opener
+        first_cut = None
+        for piece in first_pieces:
+            buffer += piece
+            first_cut = tracker.feed(buffer)
+            if first_cut is not None:
+                break
+        assert first_cut is not None, "fixture must trigger the FIRST cut"
+
+        # The continuation's own output loops too — in plain CONTENT, no
+        # thought markers at all (exactly the digest bug's own shape: the
+        # repeat was in the resumed list item, not a new thought).
+        second_sentence = "Here is the same unfinished point again. "
+        second_pieces = [second_sentence] * 20
+        repeat_tracker = RepeatStreamTracker()
+        buffer2 = ""
+        second_cut = None
+        for piece in second_pieces:
+            buffer2 += piece
+            second_cut = repeat_tracker.feed(buffer2)
+            if second_cut is not None:
+                break
+        assert second_cut is not None, "fixture must trigger the SECOND cut"
+
+        calls: list[dict] = []
+
+        async def raw_create(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return _chunked_text_completion([opener, *first_pieces])
+            return _chunked_text_completion(second_pieces)
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        response = await client.chat(
+            [LlmMessage(role="user", content="what's up with the meeting")],
+            agent_name="chat",
+            call_link=CallLink.top("run-double-loop"),
+        )
+        await client.close()
+
+        assert len(calls) == 2, "a second loop gets NO third call"
+        assert response.finish_reason == PennyConstants.FINISH_REASON_LENGTH
+        assert response.content == second_cut.kept_text
+
+        with db.get_session() as session:
+            rows = session.exec(select(PromptLog).order_by(col(PromptLog.id))).all()
+        assert len(rows) == 2
+        cut_row, continuation_row = rows
+        assert cut_row.discard_reason == "thinking_loop"
+        assert continuation_row.call_outcome == CallOutcome.COMPLETED.value
 
     @pytest.mark.asyncio
     async def test_an_image_bearing_call_still_uses_chat_even_on_a_vendored_model(
