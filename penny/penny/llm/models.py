@@ -385,7 +385,7 @@ class LlmToolParseError(LlmError):
 
     ``draft`` (#2854) is the raw text the model actually drafted as its call —
     the raw-template transport's own completion text, with its thought block
-    already split off — stamped on the error post-hoc by ``LlmClient.chat()``'s
+    already split off — carried on a new error raised by ``LlmClient.chat()``'s
     ``_RawTemplateParseError`` handler, the only place with the raw completion
     in scope. ``None`` when nothing is raised from there, including every
     chat-transport parse failure, which carries no raw completion to split in
