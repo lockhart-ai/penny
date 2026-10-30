@@ -41,6 +41,24 @@
     to the user right away as its own message, instead of being dropped. It
     also stays in your own turn history, so a later turn can see you having
     spoken and called a tool in the same step before.
+- pr: 2844
+  text: >-
+    `run_get` now shows what you were thinking at each step of a run, so you
+    can see why a run did what it did. `run_get(run=..., step=N)` shows that
+    one step's thinking in full, and you can pass a run's bare id as well as
+    `run <id>`.
+- pr: 2848
+  text: >-
+    If your thinking starts repeating itself, we now cut it off at the last
+    clean break and let you carry on to your reply, instead of letting the
+    loop run until the step ran out.
+- pr: 2849
+  text: >-
+    We added a `run-health` log: one line per run, for chat and every job,
+    with its calls, output tokens and time, the drafts that were thrown out
+    and why, failed tool calls by tool, and whether a message went out with a
+    link. Read it with `log_read('run-health')`; `run_list` and `run_get`
+    show the same line for each run.
 - pr: 2847
   text: >-
     We added a `changelog` log of the changes we've made to your tools and
