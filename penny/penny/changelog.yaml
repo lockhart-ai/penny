@@ -63,3 +63,8 @@
   text: >-
     We added a `changelog` log of the changes we've made to your tools and
     behaviour — read it with `log_read('changelog')`.
+- pr: 2858
+  text: >-
+    When a tool call you write can't be read, you're now shown your draft and
+    why it couldn't be read, so you can make the call again, instead of being
+    asked to start the step over blind.
