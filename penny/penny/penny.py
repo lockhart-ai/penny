@@ -623,7 +623,7 @@ class Penny:
         """
         changelog = self.db.memory(PennyConstants.MEMORY_CHANGELOG_LOG)
         if changelog is None:
-            logger.warning("No `changelog` memory row — migration 0131 didn't run?")
+            logger.warning("No `changelog` memory row — migration 0132 didn't run?")
             return
         added = record_new_entries(changelog, load_entries())
         if added:
