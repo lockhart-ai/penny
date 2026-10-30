@@ -48,6 +48,19 @@ EVAL_CATALOGUE = ../docs/eval-catalogue.md
 EVAL_PROVIDER_LOCK_DIR ?= /tmp/penny-eval-provider-locks
 EVAL_PROVIDER_LOCK_WAIT ?= 3600
 
+# --- Eval artifact pruning (#2851) -------------------------------------------
+# `data/eval-artifacts` only ever grows — nothing ever deleted a run, and reports are
+# posted to the PRs they measure, so an old run dir serves local diagnosis only (almost
+# always the last few days). `make eval-remote` prunes run dirs older than
+# EVAL_ARTIFACT_KEEP_DAYS (by the run dir NAME's own stamp, never file mtime) before it does
+# anything else — well before the provider lock above, so a long wait on a busy provider
+# never delays the prune and a disk-filling backlog never waits on a lock either. The one
+# script run both automatically here and on demand (`make eval-prune`) is
+# scripts/eval-prune.sh — see its header for what it refuses to touch (a run still writing,
+# one whose pid still holds a provider lock, anything that isn't a `run-…` dir).
+# EVAL_ARTIFACT_KEEP_DAYS=0 disables pruning for a run that needs to keep its history.
+EVAL_ARTIFACT_KEEP_DAYS ?= 7
+
 # --- Durable eval artifacts (#1734) ------------------------------------------
 # Eval artifacts (per-sample DBs, results.jsonl, manifests, transcripts) must
 # survive the worktree that ran them being swept post-merge. The `./data` bind
@@ -144,7 +157,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote eval-prune eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -351,6 +364,8 @@ pytest: $(if $(LOCAL),,build)
 # iteration run stays ephemeral (no artifacts, no lever requirement) as before.
 eval-remote: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"; \
+	. "$(CURDIR)/scripts/eval-prune.sh"; \
+	prune_run "$(EVAL_ARTIFACTS_HOST)" "$${EVAL_ARTIFACT_KEEP_DAYS:-$(EVAL_ARTIFACT_KEEP_DAYS)}" "$(EVAL_PROVIDER_LOCK_DIR)"; \
 	banner="$$($(EVAL_RUN) python -m penny.tests.eval.utils.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
 	if [ -n "$$banner" ]; then printf '%s\n' "$$banner"; fi; \
 	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | sed -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"; }; \
@@ -429,6 +444,16 @@ eval-remote: $(if $(LOCAL),,build)
 		EVAL_COMMIT="$$commit" \
 		EVAL_DIRTY_DIFF="$$(git diff HEAD 2>/dev/null)" \
 		pytest $(EVAL_PYTEST_ARGS) $$( [ "$$workers" -gt 1 ] && echo "-n $$workers" )
+
+# The same prune `make eval-remote` runs automatically (above), on demand — e.g. after
+# raising/lowering the window, or to reclaim space without starting a run.
+# `make eval-prune KEEP_DAYS=<n>` overrides EVAL_ARTIFACT_KEEP_DAYS for one call; plain
+# `make eval-prune` uses the default (7 days). Pure host-side filesystem work — no build,
+# no container, no provider lock.
+eval-prune:
+	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"; \
+	. "$(CURDIR)/scripts/eval-prune.sh"; \
+	prune_run "$(EVAL_ARTIFACTS_HOST)" "$${KEEP_DAYS:-$(EVAL_ARTIFACT_KEEP_DAYS)}" "$(EVAL_PROVIDER_LOCK_DIR)"
 
 # Assemble a completed eval run's artifacts (manifest.json + results.jsonl + the
 # per-case <case_id>.md transcripts) into THE postable PR comment (#1717) and

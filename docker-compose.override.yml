@@ -16,6 +16,9 @@ services:
       # The provider lock `make eval-remote` takes is a shell file the recipe sources, and its
       # test drives that real file from several shells at once — for the same reason.
       - ./scripts/eval-provider-lock.sh:/penny/scripts/eval-provider-lock.sh:ro
+      # The eval artifact prune `make eval-remote` runs before anything else is the same kind
+      # of sourced shell file (#2851), tested the same way.
+      - ./scripts/eval-prune.sh:/penny/scripts/eval-prune.sh:ro
       # The catalogue of supported behaviours is generated from the eval cases inside the
       # container: `make fix` writes docs/eval-catalogue.md and `make check` compares it.
       - ./docs:/docs

@@ -426,6 +426,26 @@ run stays ephemeral (no artifacts, no lever requirement). The Makefile derives t
 time, so `make -n eval-remote` shows the concrete `-v <primary>/data/eval-artifacts:/penny/eval-artifacts`
 from any worktree.
 
+### Pruning old run directories (#2851)
+
+**Pruning old run directories (#2851).** That durable home only ever grows — nothing deleted a
+run, and reports are posted to the PRs they measure, so an old run dir serves local diagnosis
+only (almost always the last few days). So `make eval-remote` prunes run dirs older than
+`EVAL_ARTIFACT_KEEP_DAYS` (default 7) **before it does anything else** — before even the
+unreviewed-run banner above, and well before the provider lock — so neither a long provider wait
+nor a disk-filling backlog holds the other up. Age comes from the run dir **name's own stamp**
+(`run-<stamp>-<pid>-<commit>`), never file mtime, which a `.posted` marker or an `assemble` read
+would otherwise disturb. Three things are never pruned, whatever their age: anything that isn't a
+`run-…` directory; a run with no `manifest.json` yet (still writing, or died before finishing); and
+a run whose embedded pid still names a file in a provider's lock directory
+(`scripts/eval-provider-lock.sh`'s own layout) — live or a reused pid colliding by coincidence,
+either way left alone. `EVAL_ARTIFACT_KEEP_DAYS=0` disables pruning for a run that needs to keep
+its history, and `make eval-prune KEEP_DAYS=<n>` runs the same prune on demand, printing what it
+removed and the bytes it freed. The logic lives in the sourced shell helper
+`scripts/eval-prune.sh` (the same pattern as the provider lock script, run directly in the
+recipe's own host shell — the lock directories it checks are host-side `/tmp`, never mounted into
+the container).
+
 ### Posting a run: `make eval-report` one-shot + the unreviewed-run banner (#1757)
 
 **Posting a run: `make eval-report` one-shot + the unreviewed-run banner (#1757).** Posting a run's
