@@ -420,7 +420,8 @@ class Collector(BackgroundAgent):
         occurrence-attempt record."""
         if trigger is CycleTrigger.ON_DEMAND:
             return _DispatchDecision(due_at=None, reason=DispatchReason.ON_DEMAND)
-        assert due_at is not None  # a CADENCE dispatch always has its occurrence
+        if due_at is None:
+            raise ValueError(f"cadence dispatch of '{name}' has no due occurrence")
         prior = self._occurrence_attempts.get(name)
         if prior is not None and prior.due_at == due_at:
             reason = (
