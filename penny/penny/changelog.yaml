@@ -75,3 +75,9 @@
     written with `collection_write`. `memory_get` now shows a collection's
     entries, a prompt on a collection with no schedule is refused, and an
     empty prompt clears one that was never going to run.
+- pr: 2864
+  text: >-
+    Each job run now says when it started, which scheduled time it was for,
+    and why it ran then: on time, catching up a run missed while you were
+    offline, a retry, or because the user asked. Read it on a run's header,
+    in `log_read('run-health')`, and on the job's last-run line.
