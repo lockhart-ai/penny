@@ -491,6 +491,77 @@ class TestTheBlockARunPrintsAboutItself:
         )
 
 
+class TestTheRefusalNamesWhatVoidedTheSamples:
+    """The REFUSED line used to blame provider faults on a cohort even when nothing a
+    provider did voided a single sample — the real cause lived only in the per-sample
+    ``voided before it could be measured`` log line, never in the health block itself
+    (#2865). ``void_causes`` is recorded structurally at the moment a sample is voided,
+    so the verdict reads it instead of a fault tally that counts every model-call attempt
+    the RUN made and has nothing to say about a sample that never reached one."""
+
+    def test_a_cohort_voided_by_a_prepare_hook_assertion_names_it_not_429s(self) -> None:
+        """Every sample of this case died in ``prepare``, before any model call — and the
+        run also carries a pile of 429s from unrelated preflight retries elsewhere. The
+        line must name the assertion, not the noise."""
+        cohort = CohortRecord(
+            case_id="stale-fixture",
+            intended=5,
+            completed=0,
+            void_causes={"AssertionError: must render cut in the self-state": 5},
+        )
+        health = RunHealth(
+            cohorts=[cohort],
+            calls=1122,
+            faults={LlmFault.RATE_LIMITED: 1122},
+            providers={
+                "cloudflare": ProviderTally(calls=1122, faults={LlmFault.RATE_LIMITED: 1122})
+            },
+        )
+        assert health.render().splitlines()[-1] == (
+            "REFUSED: 1 case(s) scored a fraction of their intended cohort — "
+            "AssertionError: must render cut in the self-state (5). A result computed "
+            "from a fraction of the cohort is not a result."
+        )
+
+    def test_a_cohort_cut_short_by_429s_renders_unchanged(self) -> None:
+        """No voiding exception at all — every lost sample's model call simply never
+        completed — so the line stays exactly what it was before #2865."""
+        cohort = CohortRecord(case_id="rate-limited", intended=5, completed=2)
+        health = RunHealth(
+            cohorts=[cohort],
+            calls=40,
+            faults={LlmFault.RATE_LIMITED: 12},
+            providers={"cloudflare": ProviderTally(calls=40, faults={LlmFault.RATE_LIMITED: 12})},
+        )
+        assert health.render().splitlines()[-1] == (
+            "REFUSED: 1 case(s) scored a fraction of their intended cohort — "
+            "mostly 429 (12). A result computed from a fraction of the cohort is not a "
+            "result."
+        )
+
+    def test_a_cohort_with_both_names_each_with_its_own_count(self) -> None:
+        """Some of the case's samples were voided by the assertion; the rest were lost to
+        429s that kept their model calls from ever completing — both belong on the line,
+        each with its own count."""
+        cohort = CohortRecord(
+            case_id="mixed-loss",
+            intended=5,
+            completed=1,
+            void_causes={"AssertionError: must render cut in the self-state": 2},
+        )
+        health = RunHealth(
+            cohorts=[cohort],
+            calls=30,
+            faults={LlmFault.RATE_LIMITED: 2},
+            providers={"cloudflare": ProviderTally(calls=30, faults={LlmFault.RATE_LIMITED: 2})},
+        )
+        assert health.render().splitlines()[-1] == (
+            "REFUSED: 1 case(s) scored a fraction of their intended cohort — "
+            "AssertionError: must render cut in the self-state (2) · mostly 429 (2). A "
+            "result computed from a fraction of the cohort is not a result."
+        )
+
+
 class TestMergingWhatSeveralProcessesSaw:
     """Under xdist the cases are spread across processes; the run is their sum.
 
@@ -656,9 +727,17 @@ class TestASampleTheRigNeverStarted:
         assert [(s.name, s.complete, s.exclusion) for s in voided] == [
             ("boot-failure-8", False, _STAND_UP_FAULT)
         ]
-        # The cohort the viability gate rules on: the case asked for 15 and got 14.
+        # The cohort the viability gate rules on: the case asked for 15 and got 14 — and
+        # names the ONE exception that voided the sample it lost (#2865).
         assert run_health.process_health().cohorts == [
-            CohortRecord(case_id="boot-failure", intended=15, completed=14)
+            CohortRecord(
+                case_id="boot-failure",
+                intended=15,
+                completed=14,
+                void_causes={
+                    "RuntimeError: LLM endpoint unreachable: Request timed out": 1,
+                },
+            )
         ]
         # A sample that never started spent nothing, so the per-sample cost stays honest.
         assert perf.calls == 14
@@ -698,9 +777,24 @@ class TestASampleTheRigNeverStarted:
         assert results == []
         assert [sample.exclusion for sample in voided] == [_STAND_UP_FAULT] * 3
         health = run_health.process_health()
-        assert health.cohorts == [CohortRecord(case_id="dead-cohort", intended=3, completed=0)]
+        # Every lost sample names the same exception, so the health block can say so
+        # instead of blaming a provider fault that had nothing to do with the loss.
+        assert health.cohorts == [
+            CohortRecord(
+                case_id="dead-cohort",
+                intended=3,
+                completed=0,
+                void_causes={
+                    "RuntimeError: LLM endpoint unreachable: Request timed out": 3,
+                },
+            )
+        ]
         assert not health.viable
-        assert "REFUSED: 1 case(s) scored a fraction of their intended cohort" in health.render()
+        assert health.render().splitlines()[-1] == (
+            "REFUSED: 1 case(s) scored a fraction of their intended cohort — "
+            "RuntimeError: LLM endpoint unreachable: Request timed out (3). A result "
+            "computed from a fraction of the cohort is not a result."
+        )
 
     @pytest.mark.asyncio
     async def test_a_preflight_that_times_out_once_is_booted_again_from_a_fresh_world(
@@ -757,7 +851,17 @@ class TestASampleTheRigNeverStarted:
             ("preflight-1", eval_conftest.NEVER_SPOKEN, False, _PREFLIGHT_FAULT)
         ]
         assert run_health.process_health().cohorts == [
-            CohortRecord(case_id="preflight", intended=1, completed=0, retried_boots=2)
+            CohortRecord(
+                case_id="preflight",
+                intended=1,
+                completed=0,
+                retried_boots=2,
+                void_causes={
+                    "PreflightError: ✗ embedding-model: embedding endpoint unreachable at "
+                    "http://localhost:11434: timed out. Penny's memory (dedup + recall) "
+                    "requires it.": 1,
+                },
+            )
         ]
 
     @pytest.mark.asyncio
@@ -787,7 +891,19 @@ class TestASampleTheRigNeverStarted:
         assert (results, len(boots)) == ([], 1)
         assert [sample.exclusion for sample in voided] == [_PREFLIGHT_FAULT]
         assert run_health.process_health().cohorts == [
-            CohortRecord(case_id="preflight", intended=1, completed=0)
+            CohortRecord(
+                case_id="preflight",
+                intended=1,
+                completed=0,
+                void_causes={
+                    "PreflightError: ✗ embedding-model: embedding model "
+                    "'test-embedding-model' not listed by /v1/models at "
+                    "http://localhost:11434, and /v1/embeddings/models could not verify "
+                    "it: HTTP 401: invalid key. Memory (dedup + recall) depends on it. "
+                    "Pull it (`ollama pull test-embedding-model`) or fix "
+                    "LLM_EMBEDDING_MODEL.": 1,
+                },
+            )
         ]
 
     @pytest.mark.asyncio

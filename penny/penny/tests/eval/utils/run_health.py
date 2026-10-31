@@ -94,6 +94,27 @@ def _add_counts(left: dict[LlmFault, int], right: dict[LlmFault, int]) -> dict[L
     return dict(Counter(left) + Counter(right))
 
 
+def _merge_void_causes(cohorts: list[CohortRecord]) -> dict[str, int]:
+    """Every voiding-exception label across these cohorts, counts summed."""
+    merged: Counter[str] = Counter()
+    for cohort in cohorts:
+        merged.update(cohort.void_causes)
+    return dict(merged)
+
+
+def void_cause_label(fault_type: str, message: str) -> str:
+    """One voiding exception's refusal-line label: its class, and the first line of its
+    message when it has one (#2865).
+
+    Built once, structurally, at the moment a sample is voided — never re-derived later
+    by parsing the per-sample log line that already names the same exception in prose.
+    The message's first line only, because a traceback or a multi-line assertion message
+    would otherwise make two samples killed by the same check read as different causes.
+    """
+    first_line = next((line for line in message.splitlines() if line.strip()), "")
+    return f"{fault_type}: {first_line}" if first_line else fault_type
+
+
 def render_faults(faults: dict[LlmFault, int]) -> str:
     """A fault tally as one line, worst first — the run's and each provider's, one rule.
 
@@ -136,6 +157,12 @@ class CohortRecord(BaseModel):
     most of a case's samples were excluded used to read as fully viable, because viability
     only ever asked whether the turn ran — so a rate-limited run that answered no claim at
     all could still print "this run is a result."
+
+    ``void_causes`` (#2865) is every sample this cohort lost to an exception in world
+    setup or ``prepare`` — never a model call — keyed by :func:`void_cause_label`, counted
+    at the moment each one is voided.  A dead cohort's REFUSED line reads this before it
+    ever reads a provider fault: a fault tally counts every model-call attempt the RUN
+    made, which has nothing to say about a sample that never reached one.
     """
 
     case_id: str
@@ -143,6 +170,7 @@ class CohortRecord(BaseModel):
     completed: int
     excluded: int = 0
     retried_boots: int = 0
+    void_causes: dict[str, int] = Field(default_factory=dict)
 
     @property
     def dead(self) -> int:
@@ -316,12 +344,33 @@ class RunHealth(BaseModel):
     def _verdict_line(self) -> str:
         if self.viable:
             return "verdict: this run is a result."
-        blamed = self.dominant_fault
-        cause = f" — mostly {blamed[0].value} ({blamed[1]})" if blamed else ""
         return (
             f"REFUSED: {len(self.dead_cohorts)} case(s) scored a fraction of their intended "
-            f"cohort{cause}. A result computed from a fraction of the cohort is not a result."
+            f"cohort{self._refusal_cause()}. A result computed from a fraction of the cohort "
+            "is not a result."
         )
+
+    def _refusal_cause(self) -> str:
+        """What actually stopped the dead cohorts' samples (#2865): the exception(s) that
+        voided them, the provider fault that kept the rest from completing, or both —
+        never a fault tallied from calls that had nothing to do with the loss.
+
+        A provider fault is named only when the dead cohorts' void causes do not already
+        account for every sample they lost — the fault tally counts every model-call
+        attempt the whole RUN made, so a fault that voided nothing here must not be
+        blamed for samples a setup exception already explains.
+        """
+        dead = self.dead_cohorts
+        void_causes = _merge_void_causes(dead)
+        total_dead = sum(cohort.dead for cohort in dead)
+        parts = [
+            f"{label} ({count})"
+            for label, count in sorted(void_causes.items(), key=lambda item: (-item[1], item[0]))
+        ]
+        blamed = self.dominant_fault
+        if blamed and total_dead > sum(void_causes.values()):
+            parts.append(f"mostly {blamed[0].value} ({blamed[1]})")
+        return f" — {' · '.join(parts)}" if parts else ""
 
 
 # ── The live tally: one handler, reading the fields the client stamps ────────
@@ -406,9 +455,10 @@ def record_cohort(
     completed: int,
     excluded: int = 0,
     retried_boots: int = 0,
+    void_causes: dict[str, int] | None = None,
 ) -> None:
     """Record what one case asked for, what it got, how many of those it could not pool,
-    and how many boots it had to retry."""
+    how many boots it had to retry, and what voided the samples it never got at all."""
     _cohorts.append(
         CohortRecord(
             case_id=case_id,
@@ -416,6 +466,7 @@ def record_cohort(
             completed=completed,
             excluded=excluded,
             retried_boots=retried_boots,
+            void_causes=dict(void_causes or {}),
         )
     )
 
