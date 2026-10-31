@@ -80,4 +80,9 @@
     Each job run now says when it started, which scheduled time it was for,
     and why it ran then: on time, catching up a run missed while you were
     offline, a retry, or because the user asked. Read it on a run's header,
-    in `log_read('run-health')`, and on the job's last-run line.
+    in `log_read{'run-health'}`, and on the job's last-run line.
+- pr: 2863
+  text: >-
+    Tool calls in your instructions and run records are now written the way
+    you write them, `name{arg: value}`, not `name(arg=value)` — the old form
+    was teaching you a call your own parser can't read.
