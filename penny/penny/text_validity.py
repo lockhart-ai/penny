@@ -308,10 +308,12 @@ def is_embedded_call_as_text(content: str, registered_tools: Collection[str]) ->
         a value that merely *contains* a tool's name, or a sentence that mentions
         one, must not trip this); or
       - the textual call syntax a draft sometimes falls back to instead of JSON —
-        ``registered_tool_name(`` followed by an argument name and ``=`` (e.g.
-        ``generate_image(description="…")``), word-boundary anchored on the tool
-        name so it never fires inside a longer word (``rebrowse(`` is not
-        ``browse(``).
+        the old paren form, ``registered_tool_name(`` followed by an argument name
+        and ``=`` (e.g. ``generate_image(description="…")``), or gemma's brace form
+        (#2863/#2867), ``registered_tool_name{`` followed by either ``}`` (argless)
+        or an argument name and ``:`` (e.g. ``run_get{run: '…'}``) — both
+        word-boundary anchored on the tool name so neither ever fires inside a
+        longer word (``rebrowse(`` is not ``browse(``).
 
     (Before #2813 a JSON object carrying only the framework-injected ``reasoning``
     key, with no tool name anywhere in it, also tripped this.  That field is gone
@@ -356,6 +358,15 @@ def call_as_text_tool_name(content: str, registered_tools: Collection[str]) -> s
     return _embedded_call_object_tool_name(content, registered_tools)
 
 
+# The textual call syntax a draft sometimes falls back to instead of JSON,
+# right after a registered tool's name — the old paren form (an argument name
+# then ``=``), or gemma's brace form (#2863/#2867): either an empty ``{}``
+# (argless, e.g. ``done{}``) or an argument name then ``:`` (e.g.
+# ``run_get{run: '…'}``).  One constant shared by :func:`_has_textual_call_syntax`
+# and :func:`_textual_call_syntax_name` so their patterns can't drift apart.
+_TEXTUAL_CALL_SYNTAX_SUFFIX = r"(?:\(\s*[A-Za-z_]\w*\s*=|\{\s*(?:\}|[A-Za-z_]\w*\s*:))"
+
+
 def _textual_call_syntax_name(content: str, registered_tools: Collection[str]) -> str | None:
     """The registered tool name matched by :func:`_has_textual_call_syntax`'s own
     pattern, or ``None`` — same anchoring (including the inline-code strip), returning
@@ -363,7 +374,7 @@ def _textual_call_syntax_name(content: str, registered_tools: Collection[str]) -
     if not registered_tools:
         return None
     names = "|".join(re.escape(name) for name in registered_tools)
-    pattern = re.compile(rf"\b({names})\(\s*[A-Za-z_]\w*\s*=")
+    pattern = re.compile(rf"\b({names}){_TEXTUAL_CALL_SYNTAX_SUFFIX}")
     match = pattern.search(_strip_inline_code(content))
     return match.group(1) if match else None
 
@@ -425,11 +436,15 @@ def _is_call_shaped_object(parsed: dict, registered_tools: Collection[str]) -> b
 
 
 def _has_textual_call_syntax(content: str, registered_tools: Collection[str]) -> bool:
-    """``registered_tool_name(`` followed by an argument name and ``=`` — the
-    textual call syntax some drafts fall back to instead of JSON (e.g.
-    ``generate_image(description="…")``).  One compiled alternation over every
-    registered name, each ``re.escape``d and ``\\b``-anchored so a longer word
-    ending in a tool's name (``rebrowse(``) never matches.
+    """``registered_tool_name(`` followed by an argument name and ``=`` (the old
+    paren form), or ``registered_tool_name{`` followed by either ``}`` (argless)
+    or an argument name and ``:`` (gemma's brace form, #2863/#2867 — e.g.
+    ``run_get{run: '…'}``) — the textual call syntax some drafts fall back to
+    instead of JSON.  One compiled alternation over every registered name, each
+    ``re.escape``d and ``\\b``-anchored so a longer word ending in a tool's name
+    (``rebrowse(``) never matches, built from :data:`_TEXTUAL_CALL_SYNTAX_SUFFIX`
+    — the one pattern :func:`_textual_call_syntax_name` also matches against, so
+    the two can't drift apart.
 
     Scans with inline code spans stripped (#2855), so a call quoted in inline
     code (e.g. a rule proposal's own example) reads as a mention, not a leak; a
@@ -437,7 +452,7 @@ def _has_textual_call_syntax(content: str, registered_tools: Collection[str]) ->
     if not registered_tools:
         return False
     names = "|".join(re.escape(name) for name in registered_tools)
-    pattern = re.compile(rf"\b(?:{names})\(\s*[A-Za-z_]\w*\s*=")
+    pattern = re.compile(rf"\b(?:{names}){_TEXTUAL_CALL_SYNTAX_SUFFIX}")
     return bool(pattern.search(_strip_inline_code(content)))
 
 

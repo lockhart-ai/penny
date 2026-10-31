@@ -21,7 +21,7 @@ from penny.text_validity import (
 
 # A chat agent's registered tool names, for the embedded-call-as-text tests below.
 REGISTERED_TOOLS = frozenset(
-    {"browse", "generate_image", "collection_configure", "find", "memory_get"}
+    {"browse", "generate_image", "collection_configure", "find", "memory_get", "run_get", "done"}
 )
 
 # Legitimate punctuation that must NEVER be flagged — conversational ellipses,
@@ -198,6 +198,53 @@ def test_is_embedded_call_as_text_still_flags_a_call_inside_a_fenced_block():
     reply = 'Here you go:\n\n```\nfind(query="Biscuit")\n```\n'
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
     assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "find"
+
+
+def test_is_embedded_call_as_text_catches_a_bare_brace_call():
+    """Gemma's brace form (#2863/#2867 — the prod leak: her reply apologised,
+    said she'd investigate right now, then ended with ``run_get{run: '…'}`` as
+    plain text, no ``<|tool_call>`` wrapper, so nothing ran).  Caught the same
+    way the old paren form is, keyed to the live registry."""
+    reply = (
+        "I'm going to investigate that run right now.\n\n"
+        "run_get{run: '0123456789abcdef0123456789abcdef'}"
+    )
+    assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "run_get"
+
+
+def test_is_embedded_call_as_text_catches_a_fenced_brace_call():
+    """A FENCED ``` block is never stripped — the brace form leaks there exactly
+    like the paren form does."""
+    reply = "Here you go:\n\n```\nrun_get{run: '0123456789abcdef0123456789abcdef'}\n```\n"
+    assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "run_get"
+
+
+def test_is_embedded_call_as_text_never_flags_a_brace_call_quoted_in_inline_code():
+    """The same inline-code exemption (#2855) applies to the brace form: a
+    worked example quoted in inline code is a mention, not a leak."""
+    reply = "**Tool call:** `run_get{run: '0123456789abcdef0123456789abcdef'}`"
+    assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
+
+
+def test_is_embedded_call_as_text_catches_an_argless_brace_call():
+    """``done{}`` — a brace call with no arguments at all — is still a call,
+    not a mention, so the suffix must accept a bare ``{}`` as well as an
+    argument name and ``:``."""
+    reply = "All set — done{}"
+    assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "done"
+
+
+def test_is_embedded_call_as_text_never_flags_a_json_dict_naming_no_tool():
+    """A JSON-looking object in prose that names no registered tool — as a key
+    before ``{`` or as a string value inside it — is ordinary data, not a
+    leaked call."""
+    reply = 'Sure, here\'s the config I used: {"retries": 3, "timeout": 10}'
+    assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
 
 
 def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():
