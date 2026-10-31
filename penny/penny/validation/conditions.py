@@ -166,7 +166,7 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     ),
     _condition(
         ConditionKey.DONE_JSON_BAIL,
-        "Collector emitted done()'s arguments as JSON text instead of calling the tool",
+        "Collector emitted done's arguments as JSON text instead of calling the tool",
         live=True,
         collector_only=True,
     ),
@@ -213,7 +213,7 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
         collector_only=True,
         marker="NO WORK DONE",
         detail=(
-            "reached done() (or made no tool call) without any read/write/browse "
+            "reached done (or made no tool call) without any read/write/browse "
             "step first; the collector is not following its instructions"
         ),
     ),
@@ -232,7 +232,7 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
         collector_only=True,
         marker="INCOMPLETE",
         detail=(
-            "hit the step ceiling without a closing done(); work landed but the "
+            "hit the step ceiling without a closing done; work landed but the "
             "cycle never finished cleanly"
         ),
     ),

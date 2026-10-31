@@ -179,7 +179,7 @@ class Collector(BackgroundAgent):
     _RUNTIME_RULES_HEAD = "## Runtime rules (always apply)"
     _RUNTIME_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
-            "- Single batched `collection_write(entries=[...])` per cycle — not one call "
+            "- Single batched `collection_write{entries: [...]}` per cycle — not one call "
             "per entry.",
             ("collection_write",),
         ),
@@ -187,7 +187,7 @@ class Collector(BackgroundAgent):
             "- To correct an entry: `collection_write` it under the key it is stored "
             "under — the store keeps one value per key and replaces the stored content "
             "in place. If the entry should be removed instead: "
-            "`collection_remove(key=<key>)`.",
+            "`collection_remove{key: <key>}`.",
             ("collection_write", "collection_remove"),
         ),
         (
@@ -294,7 +294,7 @@ class Collector(BackgroundAgent):
             return (
                 False,
                 f"Collection '{collection_name}' is archived — restore it first with "
-                f"collection_archive('{collection_name}', archived=False), or test a "
+                f"collection_archive{{'{collection_name}', archived: false}}, or test a "
                 f"different collection.",
             )
         if collection.extraction_prompt is None:

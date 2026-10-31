@@ -300,16 +300,17 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 
 ### Canonical Call Notation (Model-Facing Prompts)
 
-Every model-facing string that names a tool call — agent system prompts, tool descriptions, collector `extraction_prompt`s (in migrations), nudge/error text, and history/run renderings — writes it in the one canonical dialect. The spec is [`prompt-writing-guide.md` → "The canonical call notation"](prompt-writing-guide.md#the-canonical-call-notation); this checklist enforces it at review time so the notation doesn't erode.
+Every model-facing string that names a tool call — agent system prompts, tool descriptions, collector `extraction_prompt`s (in migrations), nudge/error text, and history/run renderings — writes it in the one canonical dialect: gemma's own brace form, `tool{args}`, never Python's `tool(args)` (#2859). Gemma's real calls, and the tool declarations her own chat template shows her, are written `call:name{key:value, …}` — a prompt or a rendered record that showed her `tool(args)` taught a body her raw-template parser cannot read, and measured in prod she sometimes wrote exactly that hybrid (her template's `call:` opener around a Python-parenthesised body), which always failed to parse. The spec is [`prompt-writing-guide.md` → "The canonical call notation"](prompt-writing-guide.md#the-canonical-call-notation); this checklist enforces it at review time so the notation doesn't erode.
 
-- [ ] **Steps are bare calls: `N. tool(args) — purpose`.** No `Call`/`Run` verb in front of the call, no backticks around it inside a numbered step
-- [ ] **Every tool mention carries its parens+args** — `browse(queries=["<seed topic>"])`, never a bare `browse`. A parens-less mention reads as "a thing that exists," not "the call to make," and trains the model to invent one (it once hallucinated a nonexistent `search` tool)
+- [ ] **Steps are bare calls: `N. tool{args} — purpose`.** No `Call`/`Run` verb in front of the call, no backticks around it inside a numbered step
+- [ ] **Every tool mention carries its braces+args** — `browse{queries: ["<seed topic>"]}`, never a bare `browse`. A braces-less mention reads as "a thing that exists," not "the call to make," and trains the model to invent one (it once hallucinated a nonexistent `search` tool)
 - [ ] **Backtick dialect is uniform:** single markdown backticks ONLY, and only for a tool name mentioned inline in prose (`` `browse` `` in a sentence). No RST double-backticks (```` ``tool`` ````) anywhere in a model-facing string
 - [ ] **Quoted literals are deliberate sentinels only.** A quoted example value is copied verbatim ~82% of the time — quote a literal ONLY when you want it copied as a fixed machine-readable token that a downstream consumer keys on the exact string of. Anything the model must compose is a placeholder, never a quoted string
 - [ ] **`<angle placeholders>` for every composed value** — `<seed topic>`, `<collection>`, `<one concise paragraph combining the sources>`. Never `[square brackets]` as a placeholder: the entry renderer used to display keys as `[key]`, and the model copied the display brackets straight into the argument (`key="[key]"` → "not found"); keys now render in invocation form (`key='<key>'`, `render_key`), and brackets stay reserved for non-copyable display metadata
-- [ ] **Kwargs when non-obvious, positional only for one obvious arg** — `tool(name=<x>, k=5)` whenever a call has more than one argument or any optional one; a single obvious argument may be positional (`collection_list("<collection>")`). Never a bare positional list of two-plus values — the model mis-slots them
+- [ ] **Kwargs when non-obvious, positional only for one obvious arg** — `tool{name: <x>, k: 5}` whenever a call has more than one argument or any optional one; a single obvious argument may be positional (`collection_list{<collection>}`). Never a bare positional list of two-plus values — the model mis-slots them
 - [ ] **No raw JSON/payload snippets** (`{"name": "done", "arguments": {…}}`) in any written example — a payload-shaped example gets adopted as the model's *output* format, so it emits calls as plain text instead of real tool calls. Show the call, never its wire form. (No tool schema carries a `reasoning` param any more — #2813 dropped the framework's per-call injection)
-- [ ] **`done()` is argless (#1569):** the collector terminator takes NO arguments — it just marks the cycle finished, and the run record is GENERATED from the ledger (tool calls + write-gate outcomes + structural counts), never a model-authored `success`/`summary`. Write `done()`, never `done(success=…, summary=…)` (the args model is `NoArgs` / `extra="forbid"`, so any argument fails validation)
+- [ ] **`done{}` is argless (#1569):** the collector terminator takes NO arguments — it just marks the cycle finished, and the run record is GENERATED from the ledger (tool calls + write-gate outcomes + structural counts), never a model-authored `success`/`summary`. Write `done{}` in an instruction, never `done(success=…, summary=…)` in either bracket form (the args model is `NoArgs` / `extra="forbid"`, so any argument fails validation). A RENDERED past call (a run trace, a history line) renders an argless call bare — `done`, no braces — since there is nothing to put in them
+- [ ] **No `call:` prefix and no `<|"|>` string delimiters anywhere in a model-facing string.** Those are gemma's own wire tokens, inside the raw completions prompt itself — never written out in prose, a prompt, or a rendered record, which would risk the raw-template parser reading rendered history as a real call
 
 **Paired process rules** — enforced in full elsewhere; verify the PR honored them, don't re-litigate them here:
 
@@ -320,9 +321,10 @@ Every model-facing string that names a tool call — agent system prompts, tool 
 
 **Notation smells** — pattern-match these in the diff:
 
-- A tool name with no parens (`use browse to …`) where a call shape belongs
+- A tool name with no braces (`use browse to …`) where a call shape belongs
+- A call written in Python's `tool(args)` instead of `tool{args}` — the parens form, however familiar, is a body gemma's own parser cannot read
 - A payload-shaped example — a `{"name": …, "arguments": {…}}` envelope
-- A quoted example value the model shouldn't copy verbatim — a composed, cycle-specific value quoted as if it were a fixed sentinel (`done()` is argless (#1569) — this is exactly the mistake that made it so)
+- A quoted example value the model shouldn't copy verbatim — a composed, cycle-specific value quoted as if it were a fixed sentinel (`done{}` is argless (#1569) — this is exactly the mistake that made it so)
 - Mixed backtick dialects in one file — single and RST double-backticks together, or backticked calls inside numbered steps
 - A `[square-bracket]` placeholder standing in for "fill this in"
 - A new model-facing prompt string added outside its established home (`prompts.py`, a tool description, a migration's `extraction_prompt`, `constants.py`) with no justification

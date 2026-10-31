@@ -539,8 +539,8 @@ async def test_browse_without_extract_is_rejected_at_the_gate(tmp_path):
     )
     assert dead.success is False
     assert (
-        'browse(items=[{"query": "https://x.test", "looking_for": "the price"}, '
-        '{"query": "https://y.test", "looking_for": "the price"}])' in dead.message
+        'browse{items: [{"query": "https://x.test", "looking_for": "the price"}, '
+        '{"query": "https://y.test", "looking_for": "the price"}]}' in dead.message
     )
     assert model.requests == []  # nothing ran
 
@@ -1715,7 +1715,7 @@ def test_render_tool_call_names_the_micro_context_browse_step():
     """The run-trace line for a micro-context browse step names the extract
     instruction; a plain browse is unchanged."""
     expected = (
-        "browse(items=[('https://auctions.example/lot/42' looking for 'the current bid amount')])"
+        "browse{items: [('https://auctions.example/lot/42' looking for 'the current bid amount')]}"
     )
     assert (
         render_tool_call("browse", {"items": [{"query": _PAGE_URL, "looking_for": _INSTRUCTION}]})
@@ -1724,12 +1724,12 @@ def test_render_tool_call_names_the_micro_context_browse_step():
     # A row recorded before the items shape renders in the CURRENT dialect: the
     # old queries+extract call IS one item per query with looking_for=extract.
     expected = (
-        "browse(items=[('https://auctions.example/lot/42' looking for 'the current bid amount')])"
+        "browse{items: [('https://auctions.example/lot/42' looking for 'the current bid amount')]}"
     )
     assert render_tool_call("browse", {"queries": [_PAGE_URL], "extract": _INSTRUCTION}) == expected
     # A bare queries row (older than the required extract) keeps its plain render.
     assert render_tool_call("browse", {"queries": [_PAGE_URL]}) == (
-        "browse(['https://auctions.example/lot/42'])"
+        "browse{['https://auctions.example/lot/42']}"
     )
 
 

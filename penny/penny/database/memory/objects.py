@@ -1021,26 +1021,28 @@ def render_tool_call(name: str, args: object) -> str:
 
     The single shared format for the ``collector-runs`` run trace, so the model
     reads what a cycle did the same way everywhere.  Every call renders under its
-    **real** tool name in the canonical ``tool(args)`` shape — the same dialect a
-    prompt writes a call in (``docs/prompt-writing-guide.md`` → "The canonical call
-    notation", point 6), so what the model reads of its past matches how it's told
-    to act, and a wrong-shape or hallucinated sibling name is identifiable against
-    the real one.  kwargs form (``collection=…, key=…``) when a call carries more
-    than one argument; a single obvious argument stays positional.  Kept compact
-    (the salient args only, content never truncated) — the aliases these replaced
-    saved a few tokens per line; the real names cost them back, and nothing else
-    is added.
+    **real** tool name in gemma's own brace shape, ``tool{args}`` — the same
+    dialect a prompt writes a call in (``docs/prompt-writing-guide.md`` → "The
+    canonical call notation", point 6), so what the model reads of its past
+    matches how it's told to act (and a shape her own parser can read, #2859),
+    and a wrong-shape or hallucinated sibling name is identifiable against the
+    real one.  kwargs form (``collection: …, key: …``) when a call carries more
+    than one argument; a single obvious argument stays positional.  An argless
+    call (``done``) renders bare — there is nothing to put in braces.  Kept
+    compact (the salient args only, content never truncated) — the aliases
+    these replaced saved a few tokens per line; the real names cost them back,
+    and nothing else is added.
     """
     fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
     if name == PennyConstants.COLLECTION_WRITE_TOOL_NAME:
         return (
-            f"collection_write(collection={_collection_field(fields)!r}, "
-            f"entries={_write_contents(fields)!r})"
+            f"collection_write{{collection: {_collection_field(fields)!r}, "
+            f"entries: {_write_contents(fields)!r}}}"
         )
     if name in (PennyConstants.LOG_READ_TOOL_NAME, PennyConstants.LOG_APPEND_TOOL_NAME):
-        return f"{name}(log={_log_field(fields)!r})"
+        return f"{name}{{log: {_log_field(fields)!r}}}"
     if name == PennyConstants.SEND_MESSAGE_TOOL_NAME:
-        return f"send_message({fields.get('content', '')!r})"
+        return f"send_message{{{fields.get('content', '')!r}}}"
     if name == PennyConstants.BROWSE_TOOL_NAME:
         # The items shape (#2718) renders each item's query and its looking-for.
         # A row recorded before the items shape renders in the CURRENT dialect
@@ -1057,14 +1059,14 @@ def render_tool_call(name: str, args: object) -> str:
                 for item in fields.get("items", [])
                 if isinstance(item, dict)
             )
-            return f"browse(items=[{rendered}])"
+            return f"browse{{items: [{rendered}]}}"
         queries = fields.get("queries", list(fields.values()))
         extract = fields.get("extract")
         if extract:
             rendered = ", ".join(f"({q!r} looking for {extract!r})" for q in queries)
-            return f"browse(items=[{rendered}])"
-        return f"browse({queries!r})"
-    # A dict (incl. the empty dict of an argless call, e.g. ``done()``, #1569)
+            return f"browse{{items: [{rendered}]}}"
+        return f"browse{{{queries!r}}}"
+    # A dict (incl. the empty dict of an argless call, e.g. ``done``, #1569)
     # renders its fields; a non-dict / malformed args string shows its repr so the
     # trace still names what the model tried.  ``reasoning`` is filtered here, not
     # at the source: a row logged before #2813 dropped the framework-injected
@@ -1073,12 +1075,14 @@ def render_tool_call(name: str, args: object) -> str:
     # a while — this run trace is model-facing and no longer shows it either way.
     if isinstance(args, dict):
         rendered = ", ".join(
-            f"{key}={value!r}"
+            f"{key}: {value!r}"
             for key, value in args.items()
             if key != PennyConstants.STRAY_REASONING_ARG_KEY
         )
-        return f"{name}({rendered})"
-    return f"{name}({args!r})"
+        if not rendered:
+            return name
+        return f"{name}{{{rendered}}}"
+    return f"{name}{{{args!r}}}"
 
 
 def _parse_tool_args(function: dict) -> object:

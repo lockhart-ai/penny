@@ -900,7 +900,7 @@ class TestCreateAndList:
             "Keep it an accurate summary of the subject matter.): an empty string sets "
             "nothing — omit description entirely to leave it unset, or pass what the "
             "collection is for, in the user's own words. "
-            "Call collection_configure(<valid arguments>) again."
+            "Call collection_configure{<valid arguments>} again."
         )
         untouched = db.memories.get("notes")
         assert untouched.extraction_prompt == original_prompt
@@ -994,8 +994,8 @@ _INERT_ECHO_LITERAL = (
     "  description: track the trail-runner shoe deals\n"
     "  status: inert (no prompt attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until it has a "
-    "prompt. Attach one with collection_configure(collection='deals-watch', "
-    "prompt=<what the job's cycles should do>, schedule=<recurrence rule>)."
+    "prompt. Attach one with collection_configure{collection: 'deals-watch', "
+    "prompt: <what the job's cycles should do>, schedule: <recurrence rule>}."
 )
 
 
@@ -1044,8 +1044,8 @@ class TestInertCollections:
         result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="big-pile")
         assert (
             "Showing 20 of 22 entries in big-pile, newest first. For more, "
-            "collection_list(big-pile, k=<n>); for an overview, "
-            "collection_keys(big-pile); to search, find(...)"
+            "collection_list{big-pile, k: <n>}; for an overview, "
+            "collection_keys{big-pile}; to search, find{...}"
         ) in result.message
         assert "keys: " in result.message
         assert "key='item-21'" in result.message  # the newest, shown
@@ -1125,8 +1125,8 @@ class TestBlankOptionalArgsAreRefused:
             "written with no zone, like '2026-11-02T22:00:00'. Leave it out when "
             "there's no end date.): an empty string sets nothing — omit expires_at "
             "entirely to leave it unset, or pass when it ends, e.g. "
-            '2026-03-01T09:00:00Z or "in two weeks". Call collection_configure(<valid '
-            "arguments>) again."
+            '2026-03-01T09:00:00Z or "in two weeks". Call collection_configure{<valid '
+            "arguments>} again."
         )
         assert db.memories.get("deals-watch") is None
 
@@ -1180,7 +1180,7 @@ class TestBlankOptionalArgsAreRefused:
             assert result.message == (
                 f"{descriptor}: an empty string sets nothing — omit {field} entirely "
                 f"to leave it unset, or pass {form}. "
-                f"Call collection_configure(<valid arguments>) again."
+                f"Call collection_configure{{<valid arguments>}} again."
             )
         assert db.memories.get("deals-watch") is None
 
@@ -1198,7 +1198,7 @@ class TestBlankOptionalArgsAreRefused:
             "read, what to do with it, and what to remember. Omit for an inert "
             "storage collection.): an empty string sets nothing — omit prompt "
             "entirely to leave it unset, or pass the instructions this job's cycles "
-            "follow, as free text. Call collection_configure(<valid arguments>) again."
+            "follow, as free text. Call collection_configure{<valid arguments>} again."
         )
         assert db.memories.get("deals-watch") is None
 
@@ -1271,8 +1271,8 @@ class TestBlankOptionalArgsAreRefused:
         assert result.message == (
             f"schedule (string: {SCHEDULE_PARAM_DESCRIPTION}): an empty string sets "
             "nothing — omit schedule entirely to leave it unset, or pass one RRULE "
-            'line, e.g. "FREQ=HOURLY" for hourly. Call collection_configure(<valid '
-            "arguments>) again."
+            'line, e.g. "FREQ=HOURLY" for hourly. Call collection_configure{<valid '
+            "arguments>} again."
         )
         # The existing row is untouched — the refusal happens before execute.
         row = db.memories.get("deals-watch")
@@ -1932,7 +1932,7 @@ class TestCollectionWritesAndReads:
         assert (
             "Its description is only a placeholder (\"auto-created to hold 'oats'\"). "
             "Give it one that says what the collection is for: "
-            "collection_configure(collection='trail-recipes', description=<what it holds>)."
+            "collection_configure{collection: 'trail-recipes', description: <what it holds>}."
         ) in result.message
         row = db.memories.get("trail-recipes")
         assert row is not None and row.created_by_run_id == "run-materialize"
@@ -2031,8 +2031,8 @@ class TestCollectionWritesAndReads:
         assert "matched as the same thing as 'Genesis (band)'" in merged
         assert 'It held: "Genesis, the prog band"' in merged
         assert (
-            "collection_write(collection='likes', "
-            "entries=[{'key': 'genesis', 'content': \"Genesis, the prog band\"}])" in merged
+            "collection_write{collection: 'likes', "
+            "entries: [{'key': 'genesis', 'content': \"Genesis, the prog band\"}]}" in merged
         )
         assert "write yours under its own key ('Genesis (band)')" in merged
         exact = _format_updated(
@@ -2106,8 +2106,8 @@ class TestCollectionWritesAndReads:
         assert "'2026-10-21' was written as a new entry" in asked
         assert "also holds '2026-10-20'" in asked
         assert (
-            "collection_write(collection='daily_headlines', "
-            "entries=[{'key': '2026-10-20', 'content': <the value>}])" in asked
+            "collection_write{collection: 'daily_headlines', "
+            "entries: [{'key': '2026-10-20', 'content': <the value>}]}" in asked
         )
         assert "if it is a different thing, the new entry stands as written" in asked
 
@@ -2148,8 +2148,8 @@ class TestCollectionWritesAndReads:
         assert "'dark roast coffee' was written as a new entry" in result.message
         assert "also holds 'dark roast'" in result.message
         assert (
-            "collection_write(collection='likes', "
-            "entries=[{'key': 'dark roast', 'content': <the value>}])" in result.message
+            "collection_write{collection: 'likes', "
+            "entries: [{'key': 'dark roast', 'content': <the value>}]}" in result.message
         )
         assert "if it is a different thing, the new entry stands as written" in result.message
         assert len(db.memories.memory("likes").read_all()) == 2
@@ -2188,8 +2188,8 @@ class TestCollectionWritesAndReads:
         assert "matched as the same thing as 'dark roast coffee'" in result.message
         assert 'It held: "first body"' in result.message
         assert (
-            "collection_write(collection='likes', "
-            "entries=[{'key': 'dark roast', 'content': \"first body\"}])" in result.message
+            "collection_write{collection: 'likes', "
+            "entries: [{'key': 'dark roast', 'content': \"first body\"}]}" in result.message
         )
         entries = db.memories.memory("likes").read_all()
         assert len(entries) == 1
@@ -2328,7 +2328,7 @@ class TestCollectionWritesAndReads:
             "Already recorded: 'morning roast selection' is already stored as 'dark roast'"
             in same_value.message
         )
-        assert "collection_write(" not in same_value.message
+        assert "collection_write{" not in same_value.message
         assert "was not written" not in same_value.message
 
     @pytest.mark.asyncio
@@ -2439,8 +2439,8 @@ class TestCollectionWritesAndReads:
         )
         assert changed.message == (
             "Updated 'price'. It held: \"$42\". If they are different things, "
-            "restore it with collection_write(collection='watch', "
-            "entries=[{'key': 'price', 'content': \"$42\"}]) and write yours "
+            "restore it with collection_write{collection: 'watch', "
+            "entries: [{'key': 'price', 'content': \"$42\"}]} and write yours "
             "under its own key ('price')."
         )
         assert changed.mutated is True
@@ -2465,8 +2465,8 @@ class TestCollectionWritesAndReads:
         )
         assert chat_changed.message == (
             "Updated 'note'. It held: \"v1\". If they are different things, "
-            "restore it with collection_write(collection='watch', "
-            "entries=[{'key': 'note', 'content': \"v1\"}]) and write yours "
+            "restore it with collection_write{collection: 'watch', "
+            "entries: [{'key': 'note', 'content': \"v1\"}]} and write yours "
             "under its own key ('note')."
         )
         assert chat_changed.mutated is True
@@ -2614,7 +2614,7 @@ class TestEmbedFailureRefusesWrite:
         assert result.mutated is False
         assert "transient embedding error" in result.message
         assert "'dark roast'" in result.message
-        assert "collection_write(collection='likes'" in result.message
+        assert "collection_write{collection: 'likes'" in result.message
         # Nothing persisted — the invariant "every stored entry has a vector" holds.
         with Session(db.engine) as session:
             rows = session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == "likes")).all()
@@ -2658,7 +2658,7 @@ class TestEmbedFailureRefusesWrite:
         assert result.success is False
         assert result.mutated is False
         assert "transient embedding error" in result.message
-        assert "log_append(log='events'" in result.message
+        assert "log_append{log: 'events'" in result.message
         with Session(db.engine) as session:
             rows = session.exec(
                 select(MemoryEntry).where(MemoryEntry.memory_name == "events")
@@ -2713,11 +2713,11 @@ class TestEmbedFailureRefusesWrite:
         # rejection now closes the residual write-vs-update decision: once the model
         # finds the entry under a different key it must UPDATE that entry, not
         # collection_write it (which the dedup rejects as a duplicate).
-        assert "collection_keys('likes')" in missing.message
-        assert "find(query=<what you're looking for>, memory='likes')" in missing.message
+        assert "collection_keys{'likes'}" in missing.message
+        assert "find{query: <what you're looking for>, memory: 'likes'}" in missing.message
         assert (
-            "collection_write(collection='likes', entries=[{'key': <the key you found>, "
-            "'content': <the new content>}])" in missing.message
+            "collection_write{collection: 'likes', entries: [{'key': <the key you found>, "
+            "'content': <the new content>}]}" in missing.message
         )
         assert "the store replaces the content of the key you name" in missing.message
         # A bracket-wrapped key (the model's ingrained habit from the old `[key]`
@@ -2866,8 +2866,8 @@ class TestEmbedFailureRefusesWrite:
         )
         expected = (
             f"Showing {limit} of {total} entries in ai-news, newest first. For more, "
-            f"collection_list(ai-news, k=<n>); for an overview, collection_keys(ai-news); "
-            f"to search, find(...)\n{newest_first}"
+            f"collection_list{{ai-news, k: <n>}}; for an overview, collection_keys{{ai-news}}; "
+            f"to search, find{{...}}\n{newest_first}"
         )
         assert rendered.message == expected
         assert "item-03" not in rendered.message  # the 3 oldest are the ones left out
@@ -2908,8 +2908,8 @@ class TestEmbedFailureRefusesWrite:
         )
         expected = (
             "Showing 3 of 5 entries in recipes, newest first. For more, "
-            "collection_list(recipes, k=<n>); for an overview, collection_keys(recipes); "
-            f"to search, find(...)\n{newest_first}"
+            "collection_list{recipes, k: <n>}; for an overview, collection_keys{recipes}; "
+            f"to search, find{{...}}\n{newest_first}"
         )
         assert rendered.message == expected
 
@@ -2931,8 +2931,8 @@ class TestEmbedFailureRefusesWrite:
 
         header = (
             f"Showing {limit} of {total} entries in trivia, random sample. For more, "
-            f"collection_list(trivia, k=<n>); for an overview, collection_keys(trivia); "
-            f"to search, find(...)"
+            f"collection_list{{trivia, k: <n>}}; for an overview, collection_keys{{trivia}}; "
+            f"to search, find{{...}}"
         )
         assert rendered.message.startswith(f"{header}\n")
         body_lines = rendered.message[len(header) + 1 :].splitlines()
@@ -3024,10 +3024,10 @@ class TestDidYouMeanSuggestions:
         assert result.message == (
             "Memory 'aurora-deone' not found — did you mean 'aurora-deck-2'? Check the "
             "name (it may be misspelled), or find it by meaning with "
-            "find(query=<what it's about>) — it resolves your collections, logs, and "
+            "find{query: <what it's about>} — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_configure(collection='aurora-deone') / "
-            "log_create(log='aurora-deone') if it should exist."
+            "with collection_configure{collection: 'aurora-deone'} / "
+            "log_create{log: 'aurora-deone'} if it should exist."
         )
 
     @pytest.mark.asyncio
@@ -3039,10 +3039,10 @@ class TestDidYouMeanSuggestions:
         assert result.success is False
         assert result.message == (
             "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
-            "it by meaning with find(query=<what it's about>) — it resolves your "
+            "it by meaning with find{query: <what it's about>} — it resolves your "
             "collections, logs, and skills (archived included) and names the exact tool "
-            "for each. Or create it with collection_configure(collection='xyzzy') / "
-            "log_create(log='xyzzy') if it should exist."
+            "for each. Or create it with collection_configure{collection: 'xyzzy'} / "
+            "log_create{log: 'xyzzy'} if it should exist."
         )
 
     @pytest.mark.asyncio
@@ -3059,10 +3059,10 @@ class TestDidYouMeanSuggestions:
         assert result.message == (
             "Memory 'oil changes and tire rotations' not found — did you mean 'garage'? "
             "Check the name (it may be misspelled), or find it by meaning with "
-            "find(query=<what it's about>) — it resolves your collections, logs, and "
+            "find{query: <what it's about>} — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_configure(collection='oil changes and tire rotations') / "
-            "log_create(log='oil changes and tire rotations') if it should exist."
+            "with collection_configure{collection: 'oil changes and tire rotations'} / "
+            "log_create{log: 'oil changes and tire rotations'} if it should exist."
         )
 
     @pytest.mark.asyncio
@@ -3089,7 +3089,7 @@ class TestDidYouMeanSuggestions:
         assert result.message == (
             "No entry with key 'quarterly-reprot' in 'notes' — did you mean key "
             "'quarterly-report'? Nothing to delete. List the current keys with "
-            "collection_keys('notes') to find it."
+            "collection_keys{'notes'} to find it."
         )
         # No close key → byte-identical to today's message.
         far = await CollectionRemoveTool(db).execute(
@@ -3097,7 +3097,7 @@ class TestDidYouMeanSuggestions:
         )
         assert far.message == (
             "No entry with key 'zzzzz' in 'notes' — nothing to delete. "
-            "List the current keys with collection_keys('notes') to find it."
+            "List the current keys with collection_keys{'notes'} to find it."
         )
 
 
@@ -3161,14 +3161,14 @@ class TestLogTools:
         assert messages.success is False
         assert messages.message == (
             f"'{user_log}' holds messages, and a message is not read by id. "
-            f"Read them with log_read('{user_log}')."
+            f"Read them with log_read{{'{user_log}'}}."
         )
         run_log = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
         runs = await tool.execute(CallLink.new_top(), log=run_log, id=1)
         assert runs.success is False
         assert runs.message == (
             f"'{run_log}' holds run records, and a run is read by the `run <id>` shown "
-            f"beside it, not by an entry id. Read them with log_read('{run_log}')."
+            f"beside it, not by an entry id. Read them with log_read{{'{run_log}'}}."
         )
 
     @pytest.mark.asyncio
@@ -3181,7 +3181,7 @@ class TestLogTools:
         result = await LogGetTool(db).execute(CallLink.new_top(), log="events", id=99)
         assert result.success is False
         assert result.message == (
-            "No entry 99 in 'events'. Read it with log_read('events') to see its "
+            "No entry 99 in 'events'. Read it with log_read{'events'} to see its "
             "entries and their ids."
         )
 
@@ -3413,14 +3413,14 @@ class TestLogTools:
 
         collector = await tool.run(CallLink.new_top(), source="espresso-gear")
         assert "[espresso-gear]" in collector.message
-        assert "collection_write(collection='espresso-gear'" in collector.message
+        assert "collection_write{collection: 'espresso-gear'" in collector.message
         # Argless done() → the conclusion is the run's STRUCTURAL outcome (#1569),
         # never a model summary.
         assert "done: worked" in collector.message
 
         chat = await tool.run(CallLink.new_top(), source="chat")
         assert "user: find me a grinder" in chat.message
-        assert "browse(['espresso grinder'])" in chat.message
+        assert "browse{['espresso grinder']}" in chat.message
         assert "penny: Here's a good grinder." in chat.message
         # Each rendered run names its own id, so the surface is an anchor: a reader
         # can reference the run it's inspecting rather than guess it (#1560).
@@ -3437,10 +3437,10 @@ class TestLogTools:
         assert unknown.message == (
             "Memory 'esspreso-gear' not found — did you mean 'espresso-gear'? Check "
             "the name (it may be misspelled), or find it by meaning with "
-            "find(query=<what it's about>) — it resolves your collections, logs, and "
+            "find{query: <what it's about>} — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create "
-            "it with collection_configure(collection='esspreso-gear') / "
-            "log_create(log='esspreso-gear') if it should exist. Valid sources: "
+            "it with collection_configure{collection: 'esspreso-gear'} / "
+            "log_create{log: 'esspreso-gear'} if it should exist. Valid sources: "
             "chat, espresso-gear."
         )
 
@@ -3497,7 +3497,7 @@ class TestLogTools:
 
     @pytest.mark.asyncio
     async def test_run_get_resolves_a_run_id_to_its_canonical_projection(self, db):
-        """``run_get(run='run <id>')`` consumes the header's typed run anchor
+        """``run_get{run: 'run <id>'}`` consumes the header's typed run anchor
         VERBATIM and returns exactly the run's canonical tool-call projection — the
         same ``render_run_calls`` view ``run_list`` renders, but for the single
         run the id names (#1580, the run-id ↔ target anchor unification).  The result
@@ -3514,7 +3514,7 @@ class TestLogTools:
         )
         assert result.message == expected
         assert result.message.startswith("run news-1")
-        assert "collection_write(collection='ai-news'" in result.message
+        assert "collection_write{collection: 'ai-news'" in result.message
 
     @pytest.mark.asyncio
     async def test_run_get_lists_a_draw_made_on_the_runs_behalf(self, db):
@@ -3570,7 +3570,7 @@ class TestLogTools:
         result = await GetEventTool(db).run(CallLink.new_top(), run="run news-1")
 
         lines = result.message.splitlines()
-        browse_index = next(i for i, line in enumerate(lines) if "browse(" in line)
+        browse_index = next(i for i, line in enumerate(lines) if "browse{" in line)
         assert (
             "model call: browse-extract — cancelled after 300000ms (5 minutes)"
             in lines[browse_index + 1]
@@ -3612,7 +3612,7 @@ class TestLogTools:
         result = await GetEventTool(db).run(CallLink.new_top(), run="news-1")
         assert result.success is False
         assert "news-1" in result.message
-        assert "find(query=" in result.message
+        assert "find{query: " in result.message
 
     @pytest.mark.asyncio
     async def test_run_get_unknown_run_is_actionable(self, db):
@@ -3829,7 +3829,7 @@ class TestLogTools:
 
     @pytest.mark.asyncio
     async def test_log_read_renders_changelog_entries_whole(self, db):
-        """`log_read('changelog')` (#2845) is a plain `Log` like `browse-results`
+        """`log_read{'changelog'}` (#2845) is a plain `Log` like `browse-results`
         — no special facade class — so two `record_new_entries`-written rows
         render byte-for-byte through the ordinary log render, PR number and
         all. A second `record_new_entries` call with an already-recorded PR
@@ -4463,14 +4463,14 @@ class TestFind:
     _KITCHEN_SINK = (
         'Found 3 things matching "aurora beacon cascade", best first:\n'
         "1. aurora-watch — active collection: aurora beacon cascade\n"
-        "   how to use it: read it with collection_list('aurora-watch'), "
-        "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-        "with collection_archive('aurora-watch', archived=True)\n"
+        "   how to use it: read it with collection_list{'aurora-watch'}, "
+        "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
+        "with collection_archive{'aurora-watch', archived: true}\n"
         "2. aurora-archive — archived collection: aurora beacon delta\n"
-        "   how to use it: restore it with collection_archive('aurora-archive', "
-        "archived=False); its entries stay readable with collection_list('aurora-archive')\n"
+        "   how to use it: restore it with collection_archive{'aurora-archive', "
+        "archived: false}; its entries stay readable with collection_list{'aurora-archive'}\n"
         "3. aurora-log — active log: aurora echo foxtrot\n"
-        "   how to use it: read it with log_read('aurora-log')\n"
+        "   how to use it: read it with log_read{'aurora-log'}\n"
         "Ranked by closeness — if one is what you meant, use its addressing above; "
         "otherwise narrow by its exact name."
     )
@@ -4527,9 +4527,9 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list('solo-watch'), "
-            "reconfigure it with collection_configure(collection='solo-watch', ...), archive it "
-            "with collection_archive('solo-watch', archived=True)"
+            "   how to use it: read it with collection_list{'solo-watch'}, "
+            "reconfigure it with collection_configure{collection: 'solo-watch', ...}, archive it "
+            "with collection_archive{'solo-watch', archived: true}"
         )
 
     @pytest.mark.asyncio
@@ -4545,13 +4545,13 @@ class TestFind:
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list('watch-primary'), reconfigure "
-            "it with collection_configure(collection='watch-primary', ...), archive it "
-            "with collection_archive('watch-primary', archived=True)\n"
+            "   how to use it: read it with collection_list{'watch-primary'}, reconfigure "
+            "it with collection_configure{collection: 'watch-primary', ...}, archive it "
+            "with collection_archive{'watch-primary', archived: true}\n"
             "2. watch-secondary — active collection: aurora beacon delta\n"
-            "   how to use it: read it with collection_list('watch-secondary'), reconfigure "
-            "it with collection_configure(collection='watch-secondary', ...), archive it "
-            "with collection_archive('watch-secondary', archived=True)\n"
+            "   how to use it: read it with collection_list{'watch-secondary'}, reconfigure "
+            "it with collection_configure{collection: 'watch-secondary', ...}, archive it "
+            "with collection_archive{'watch-secondary', archived: true}\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
         )
@@ -4578,7 +4578,7 @@ class TestFind:
         )
         assert result.success is False
         assert "Couldn't embed your query" in result.message
-        assert "find(query=" in result.message
+        assert "find{query: " in result.message
 
     @pytest.mark.asyncio
     async def test_stored_entry_carries_content_and_addressing(self, db, mock_llm):
@@ -4603,7 +4603,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
-            "   read it: collection_get(collection='knowledge-notes', key='aurora beacon')"
+            "   read it: collection_get{collection: 'knowledge-notes', key: 'aurora beacon'}"
         )
 
     @pytest.mark.asyncio
@@ -4626,11 +4626,11 @@ class TestFind:
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list('aurora-watch'), "
-            "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-            "with collection_archive('aurora-watch', archived=True)\n"
+            "   how to use it: read it with collection_list{'aurora-watch'}, "
+            "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
+            "with collection_archive{'aurora-watch', archived: true}\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
-            "   read it: collection_get(collection='aurora-watch', key='aurora beacon')\n"
+            "   read it: collection_get{collection: 'aurora-watch', key: 'aurora beacon'}\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
         )
@@ -4661,7 +4661,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora echo foxtrot":\n'
             f'1. entry #{entry_id} in `aurora-log` (log) — "{long_entry}"\n'
-            f"   read it: log_get(log='aurora-log', id={entry_id})"
+            f"   read it: log_get{{log: 'aurora-log', id: {entry_id}}}"
         )
 
     @pytest.mark.asyncio
@@ -4707,9 +4707,9 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list('aurora-watch'), "
-            "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-            "with collection_archive('aurora-watch', archived=True)\n"
+            "   how to use it: read it with collection_list{'aurora-watch'}, "
+            "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
+            "with collection_archive{'aurora-watch', archived: true}\n"
             "\n"
             "From the conversation:\n"
             f"1. user-messages [{user_stamp}]: aurora beacon cascade delta\n"
@@ -4744,9 +4744,9 @@ class TestFind:
         assert result.message.startswith(
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list('aurora-watch'), "
-            "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
-            "with collection_archive('aurora-watch', archived=True)\n"
+            "   how to use it: read it with collection_list{'aurora-watch'}, "
+            "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
+            "with collection_archive{'aurora-watch', archived: true}\n"
             "\n"
             "From the conversation:\n"
         )

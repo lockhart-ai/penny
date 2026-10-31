@@ -156,9 +156,9 @@ def test_bailed_run_is_flagged():
         render_run_record(run)
         == """\
 [games] no_work
-⚠ NO WORK DONE — reached done() (or made no tool call) without any \
+⚠ NO WORK DONE — reached done (or made no tool call) without any \
 read/write/browse step first; the collector is not following its instructions
-done()"""
+done"""
     )
 
 
@@ -176,9 +176,9 @@ def test_incomplete_run_is_flagged_and_shows_trace():
         == """\
 [games] max steps exceeded
 writes: 1
-⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
+⚠ INCOMPLETE — hit the step ceiling without a closing done; work landed but \
 the cycle never finished cleanly
-collection_write(collection='games', entries='x')"""
+collection_write{collection: 'games', entries: 'x'}"""
     )
 
 
@@ -196,7 +196,7 @@ def test_no_tool_call_run_is_incomplete_not_bailed():
         render_run_record(run)
         == """\
 [games] max steps exceeded — no done() call
-⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
+⚠ INCOMPLETE — hit the step ceiling without a closing done; work landed but \
 the cycle never finished cleanly"""
     )
 
@@ -247,7 +247,7 @@ def test_tool_failure_count_is_flagged():
 [games] worked
 writes: 1
 ⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
-collection_write(collection='games', entries='x')"""
+collection_write{collection: 'games', entries: 'x'}"""
     )
 
 
@@ -276,8 +276,8 @@ def test_half_formed_send_is_flagged_on_a_worked_run():
 writes: 0 · sends: 2
 ⚠ HALF-FORMED SEND — a message went out with no real content (empty, \
 punctuation-only, or an unfinished fragment)
-send_message('Hi there! ......???')
-send_message('Heads up — a new title dropped, details inside.')"""
+send_message{'Hi there! ......???'}
+send_message{'Heads up — a new title dropped, details inside.'}"""
     )
 
 
@@ -294,7 +294,7 @@ def test_healthy_worked_run_has_no_flags():
         == """\
 [games] worked
 writes: 1
-collection_write(collection='games', entries='x')"""
+collection_write{collection: 'games', entries: 'x'}"""
     )
 
 
@@ -317,11 +317,11 @@ def test_logged_log_call_renders_its_log_argument_under_either_key():
     however the row was logged: a call logged before the rename stored ``memory``,
     and the read projection — never the stored row — maps it to ``log``."""
     run = [_prompt([_call("log_read", {"memory": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read(log='user-messages')" in render_run_calls(
+    assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
         run, with_thinking=False, delivered_text=None
     )
     fresh = [_prompt([_call("log_read", {"log": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read(log='user-messages')" in render_run_calls(
+    assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
         fresh, with_thinking=False, delivered_text=None
     )
 
@@ -350,7 +350,7 @@ def test_no_writes_flagged_when_browses_fail_and_nothing_written():
 [games] no_work
 browses: 1 ok, 2 failed · writes: 0
 ⚠ NO WRITES — one or more browses failed this cycle and the run wrote nothing
-browse(['a', 'b'])"""
+browse{['a', 'b']}"""
     )
 
 
@@ -416,16 +416,16 @@ def test_browse_failures_but_wrote_is_not_no_writes(emitted_suffix):
         == """\
 [games] worked
 browses: 1 ok, 1 failed · writes: 1
-browse(['a', 'b'])
-collection_write(collection='games', entries='x')"""
+browse{['a', 'b']}
+collection_write{collection: 'games', entries: 'x'}"""
     )
     assert (
         render_run_calls(run, with_thinking=False, delivered_text=None)
         == f"""\
 run wrote-fixed
 [games]
-    step 1: browse(['a', 'b'])
-    step 2: collection_write(collection='games', entries='x')
+    step 1: browse{{['a', 'b']}}
+    step 2: collection_write{{collection: 'games', entries: 'x'}}
 done: worked
 {_facts(1)}"""
     )
@@ -444,7 +444,7 @@ def test_a_call_that_named_only_control_tokens_named_no_tool():
         render_run_record(run)
         == """\
 [games] worked
-?()"""
+?"""
     )
 
 
@@ -475,7 +475,7 @@ def test_write_gate_stop_ended_run_shows_trace_and_reason():
         == """\
 [games] the value was unchanged since the last observation
 writes: 1
-collection_write(collection='games', entries='$42')"""
+collection_write{collection: 'games', entries: '$42'}"""
     )
 
 
@@ -637,15 +637,15 @@ def test_render_run_calls_chat_kitchen_sink_full_literal():
     assert render_run_calls(_chat_kitchen_sink_run(), with_thinking=False, delivered_text=None) == (
         "run run-fixed\n"
         "user: draw me a cartoon fox and log any new fox shows\n"
-        "    step 1: browse(['new fox cartoons']) => "
+        "    step 1: browse{['new fox cartoons']} => "
         "## browse: https://example.com/fox-cartoons\n"
-        "    step 2: collection_write(collection='shows', entries='Fox Tales S2') => "
+        "    step 2: collection_write{collection: 'shows', entries: 'Fox Tales S2'} => "
         "Wrote 1 entry: fox-tales.\n"
-        "    step 4: generate_image(description='a cartoon fox') => "
+        "    step 4: generate_image{description: 'a cartoon fox'} => "
         "Generated image #7 of: a cartoon fox.\n"
-        "    step 5: collection_get(collection='old-shelf', key='fox tales') => "
+        "    step 5: collection_get{collection: 'old-shelf', key: 'fox tales'} => "
         "Memory 'old-shelf' not found.\n"
-        "    step 6: collection_write(collection='shows', entries='Fox Tales again') => "
+        "    step 6: collection_write{collection: 'shows', entries: 'Fox Tales again'} => "
         "Duplicate of fox-tales.\n"
         "penny: Done — logged the new season and drew your fox!\n"
         "    attached: image #7\n"
@@ -688,8 +688,8 @@ def test_render_run_calls_collector_run_full_literal():
     assert render_run_calls(run, with_thinking=False, delivered_text=None) == (
         "run coll-fixed\n"
         "[games]\n"
-        "    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget\n"
-        "    step 2: collection_write(collection='games', entries='Pocket Go pick') => "
+        "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
+        "    step 2: collection_write{collection: 'games', entries: 'Pocket Go pick'} => "
         "Wrote 1 entry: pocket-go.\n"
         "done: worked\n"
         f"{_facts(2)}"
@@ -757,9 +757,9 @@ def test_render_run_calls_with_thinking_shows_a_short_thinking_whole():
     assert render_run_calls(run, with_thinking=True, delivered_text=None) == (
         "run coll-fixed\n"
         "[games]\n"
-        "    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget\n"
+        "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
         f"    step 2 thinking: {_SHORT_THINKING}\n"
-        "    step 2: collection_write(collection='games', entries='Pocket Go pick') => "
+        "    step 2: collection_write{collection: 'games', entries: 'Pocket Go pick'} => "
         "Wrote 1 entry: pocket-go.\n"
         "done: worked\n"
         f"{_facts(2)}"
@@ -857,7 +857,7 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
         == f"""\
 run stop-fixed
 [games]
-    step 1: collection_write(collection='games', entries='$42') => Unchanged: 'price' \
+    step 1: collection_write{{collection: 'games', entries: '$42'}} => Unchanged: 'price' \
 already holds the same value — no change since the last write (entry).
 stopped: the value was unchanged since the last observation
 {_facts(1)}"""
@@ -986,7 +986,7 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
         == f"""\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write(collection='shelf', entries='$42') => Memory 'shelf' not found \
+    step 1: collection_write{{collection: 'shelf', entries: '$42'}} => Memory 'shelf' not found \
 — did you mean 'shelves'?
 {_facts(1, tool_errors="collection_write×1")}"""
     )
@@ -999,7 +999,7 @@ user: log the new shelf price
         == f"""\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write(collection='shelf', entries='$42')
+    step 1: collection_write{{collection: 'shelf', entries: '$42'}}
 {_facts(1)}"""
     )
 
@@ -1026,7 +1026,7 @@ def test_render_run_calls_first_line_whole():
     ]
     assert (
         render_run_calls(run, with_thinking=False, delivered_text=None)
-        == f"run run-long\n    step 1: browse(['a']) => {long_line}\n{_facts(1)}"
+        == f"run run-long\n    step 1: browse{{['a']}} => {long_line}\n{_facts(1)}"
     )
 
 
@@ -1071,7 +1071,7 @@ def test_run_facts_line_reports_cost_discards_and_tool_errors_whole():
         == """\
 run facts-1
 [games]
-    step 1: browse(['a']) => could not reach the page
+    step 1: browse{['a']} => could not reach the page
 done: worked
 2 calls · 4123 output tok · 3 seconds · discarded: hallucinated_urls×1 · \
 tool errors: browse×1 · sent 0 messages"""

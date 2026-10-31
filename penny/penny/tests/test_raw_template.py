@@ -188,6 +188,22 @@ class TestParseCompletion:
         assert calls is None
         assert content == "Sure, here you go."
 
+    def test_a_rendered_past_call_in_reply_text_is_not_read_as_a_call(self) -> None:
+        """A run render (``render_tool_call``, #2859) writes a past call as
+        ``name{args}`` with no ``call:`` opener and no ``<|"|>`` string
+        delimiters.  The parser only opens a tool call on its own literal
+        ``<|tool_call>call:`` marker (``_TOOL_CALL_HEAD``), so quoting a
+        rendered call inside ordinary reply text — e.g. the model explaining
+        what it just did — must never be read as a real one."""
+        text = (
+            "Earlier I ran collection_write{collection: 'rules', entries: "
+            "['be nice']} and browse{items: [('x' looking for 'y')]}, then done.<turn|>"
+        )
+        thinking, calls, content = parse_completion(text)
+        assert thinking is None
+        assert calls is None
+        assert "collection_write{collection: 'rules'" in content
+
     def test_nested_object_and_array_arguments_and_parallel_calls(self) -> None:
         text = (
             '<|tool_call>call:foo{items:[<|"|>a<|"|>,<|"|>b<|"|>],nested:{x:1,y:3.5}}'

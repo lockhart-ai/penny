@@ -17,8 +17,8 @@ from penny.tools.models import ReadEmailsArgs, ToolResult
 logger = logging.getLogger(__name__)
 
 NO_EMAILS_TO_READ = (
-    "No emails to read — pass one or more ids from a prior `search_emails(text=<keywords>)` "
-    "or `list_emails(folder=<folder>)` call (those return the ids this tool expects)."
+    "No emails to read — pass one or more ids from a prior `search_emails{text: <keywords>}` "
+    "or `list_emails{folder: <folder>}` call (those return the ids this tool expects)."
 )
 
 # The account a backend failure gets (#2368): what happened, with no order attached — the
@@ -40,7 +40,7 @@ class ReadEmailsTool(Tool):
     advises = ("search_emails", "list_emails")
     description = (
         "Read the full content of one or more emails by their ids. Run this after a search "
-        "(`search_emails(text=<keywords>)`) or a folder listing to get the complete "
+        "(`search_emails{text: <keywords>}`) or a folder listing to get the complete "
         "bodies — pass every relevant id in ONE call, not one at a time."
     )
     parameters: dict[str, Any] = {

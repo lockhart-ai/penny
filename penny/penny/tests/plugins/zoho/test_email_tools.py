@@ -233,7 +233,7 @@ async def test_create_email_rule_rejects_empty_condition(db):
         "condition (object: Rule condition. Supported fields: 'from' (sender email/domain), "
         "'subject_contains' (text in subject), 'body_contains' (text in body)): a rule condition "
         "needs at least one of: from, subject_contains, body_contains. "
-        "Call create_email_rule(<valid arguments>) again."
+        "Call create_email_rule{<valid arguments>} again."
     )
     assert db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO) == []
 
@@ -253,7 +253,7 @@ async def test_create_email_rule_rejects_unknown_field(db):
     assert result.message == (
         "unknown parameter 'condition.sender' "
         "(valid parameters: from, subject_contains, body_contains). "
-        "Call create_email_rule(<valid arguments>) again."
+        "Call create_email_rule{<valid arguments>} again."
     )
     assert db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO) == []
 

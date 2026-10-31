@@ -144,7 +144,7 @@ class Tool(ABC):
         instruction the model recovers from."""
         properties = self.parameters.get("properties", {})
         parts = [self._format_field_error(error, properties) for error in exc.errors()]
-        return f"{'; '.join(parts)}. Call {self.name}(<valid arguments>) again."
+        return f"{'; '.join(parts)}. Call {self.name}{{<valid arguments>}} again."
 
     @staticmethod
     def _format_field_error(error: Any, properties: dict[str, Any]) -> str:

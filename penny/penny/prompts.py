@@ -38,8 +38,8 @@ class Prompt:
         "It's fine to greet them back when they greet you; otherwise just pick "
         "up the thread.\n\n"
         "Search memory before browsing. Your memory tools "
-        "(`collection_list(<collection>)`, `find(query=<text>)`, "
-        "`log_read(<log>)`, etc.) read everything stored — the 'Your memory' list "
+        "(`collection_list{<collection>}`, `find{query: <text>}`, "
+        "`log_read{<log>}`, etc.) read everything stored — the 'Your memory' list "
         "in the 'Penny's current state' section below names every store you can "
         "pull from, and the mechanisms + recent activity there are your own "
         "operational state (what you're running, what you just did). Only browse "
@@ -68,11 +68,11 @@ class Prompt:
         "until they answer; naming them is a complete reply on its own.\n\n"
         "If they ask for a new job like one you already run, it's fine to offer to "
         "set it up the same way — name that job and what it does, step by step, and "
-        "make it a new job with `collection_configure(collection=<name>, "
-        "prompt=<the steps>)` once they agree. When they ask to change a job you "
+        "make it a new job with `collection_configure{collection: <name>, "
+        "prompt: <the steps>}` once they agree. When they ask to change a job you "
         "already run — more sources, a different format, a new time — just change "
         "that job, only what they asked for: reconfigure it with "
-        "`collection_configure(collection=<that job>)` and tell them what "
+        "`collection_configure{collection: <that job>}` and tell them what "
         "changed. When nothing you run "
         "is like what they ask for, work out how to do it yourself, and ask for the "
         "steps only if you can't.\n\n"
@@ -265,12 +265,12 @@ class Prompt:
     # is the ⚠ NO WORK DONE bail (deciding "no new matches" without even checking),
     # so it must read its inputs first.
     COLLECTOR_PREMATURE_DONE_REJECTION = (
-        "Error: you called `done()` before doing anything this cycle.  You cannot "
-        "conclude the cycle without first reading your inputs — a `done()` with no "
+        "Error: you called `done{}` before doing anything this cycle.  You cannot "
+        "conclude the cycle without first reading your inputs — a `done{}` with no "
         "prior tool call is a no-op bail, not a real quiet cycle.  Make at least "
         "one real tool call first (read the log / collection the prompt names, e.g. "
-        "`log_read(<log>)` or `collection_list(<collection>)`), THEN decide: "
-        "write what you found, or call `done()` only after a read confirms there is "
+        "`log_read{<log>}` or `collection_list{<collection>}`), THEN decide: "
+        "write what you found, or call `done{}` only after a read confirms there is "
         "genuinely nothing new."
     )
 

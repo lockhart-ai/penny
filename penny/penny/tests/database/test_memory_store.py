@@ -481,7 +481,7 @@ Recent changes (newest first):
         # A wrong-name miss (incl. the entry-vs-collection footgun: a skill key
         # addressed as a collection) names the resolve-by-meaning recovery, so the
         # error is never a dead end (#1558).
-        assert "find(query=" in result.message
+        assert "find{query: " in result.message
 
 
 class TestCollectionWrites:

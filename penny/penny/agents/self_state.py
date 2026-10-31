@@ -176,16 +176,16 @@ class SelfStateHeader:
     # the remainder is one guess-free call away (nothing is silently dropped; n≤1
     # holds). Mechanisms and the store map carry no cap (#2288): the whole
     # registry renders, so there is no overflow tail to name for either.
-    MORE_ACTIVITY = "+ older activity — run_list(<source>)"
+    MORE_ACTIVITY = "+ older activity — run_list{<source>}"
 
     # The store map's compact index of archived names (#2288) — the complete list,
     # not a remainder: an archived collection with no job appears nowhere else.
     ARCHIVED_LABEL = "archived:"
 
     POINTERS = (
-        "To look deeper: memory_get(<name>) for a collection's full config and "
-        "change history, run_get(run <id>) for one run's tool calls, "
-        "collection_list(<name>) reads a store's entries, and find(query=<text>) "
+        "To look deeper: memory_get{<name>} for a collection's full config and "
+        "change history, run_get{run <id>} for one run's tool calls, "
+        "collection_list{<name>} reads a store's entries, and find{query: <text>} "
         "searches them all by meaning — a collection, a stored entry, or "
         "something said in the conversation."
     )

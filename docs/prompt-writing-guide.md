@@ -180,6 +180,15 @@ reads the same and the specific footguns below stay closed. It's derived from a
 two-deployment promptlog analysis (~59k tool-argument payloads); every number here was
 measured (aggregated and sanitized).
 
+**The shape is gemma's own brace form, `tool{args}`, not Python's `tool(args)`** (#2859).
+Gemma's real tool calls, and the tool declarations her own chat template shows her, are
+written `call:name{key:value, …}` — never with parentheses. Every surface that showed her a
+call wrapped in parens was teaching her a body her raw-template parser cannot read; measured
+in prod, she occasionally wrote exactly that hybrid — her template's `call:` opener around a
+Python-parenthesised body — and every one of those failed to parse. The brace form matches
+the shape she already produces and reads, so a prompt or a rendered record never teaches her
+a notation her own parser rejects.
+
 Why a *canonical* shape rather than "the most reliable" one: the load-bearing choice —
 numbered steps with an **explicit call shape** — is already settled (prose-only instructions
 bail 11–25% of cycles; call-shaped ones bail 0.2–2%). But *among* the explicit shapes we've
@@ -187,16 +196,19 @@ mixed (prose-verb `Call X(...)`, bare `X("a", 1)`, kwargs `X(memory=..., k=5)`, 
 placeholders), production outcomes show **no consistent reliability separation**. So the
 canonical shape is chosen for **consistency and copy-through safety**, not for a raw win one
 dialect has over another — a prompt that mixes dialects teaches the model to improvise, and
-the improvisations are where the footguns live.
+the improvisations are where the footguns live. (The measurements below predate the
+parens→brace change and describe the *structural* choices — explicit shape, quoting,
+placeholders — which the brace form keeps; only the bracket and the `=`/`:` separator
+changed.)
 
-**1. Steps — a bare call, `N. tool(args) — purpose`.** In a numbered step, write the call
+**1. Steps — a bare call, `N. tool{args} — purpose`.** In a numbered step, write the call
 bare: no `Call`/`Run` verb in front of it, no backticks around it. Reserve single markdown
 backticks for a tool name mentioned **inline in prose** (`` `browse` `` in a sentence); RST
 double-backticks (```` ``tool`` ````) never appear in a model-facing prompt. And the rule
 that closes the worst footgun: **a tool name in instructional text ALWAYS carries its
-parens+args** — `browse(queries=["<seed topic>"])`, never a bare `browse`. A parens-less
-mention of the browse tool once trained the model to hallucinate recurring calls to a
-nonexistent `search` tool; giving every mention an explicit call shape fixed it. A bare
+braces+args** — `browse{queries: ["<seed topic>"]}`, never a bare `browse`. A parens-less (now
+braces-less) mention of the browse tool once trained the model to hallucinate recurring calls
+to a nonexistent `search` tool; giving every mention an explicit call shape fixed it. A bare
 tool name reads to the model as "a thing that exists," not "the call to make," and it fills
 the gap with an invented one.
 
@@ -225,9 +237,9 @@ highest-leverage rule, and it's counter-intuitive:
   non-copyable display metadata (timestamps); never use `[like this]` to mean "fill in."
 
 **3. Argument style — kwargs when it's non-obvious, positional only for one obvious arg.**
-Use `tool(name=<x>, k=5)` keyword form whenever a call has more than one argument or any
+Use `tool{name: <x>, k: 5}` keyword form whenever a call has more than one argument or any
 optional one, so which value is which is unambiguous. A single, obvious argument may be
-positional (`collection_list("<collection>")`). Don't show a bare positional list of
+positional (`collection_list{<collection>}`). Don't show a bare positional list of
 two-plus values — the model mis-slots them.
 
 **4. Never put a raw JSON envelope or payload-shaped snippet in a written example**
@@ -238,18 +250,20 @@ Show the *call*, never its wire form. (No tool schema carries a `reasoning` para
 #2813 dropped the framework's per-call injection, so there's nothing left to accidentally
 teach the model to hand-write.)
 
-**5. The terminal `done()` is argless (#1569).** Write `done()` — no arguments, ever.
+**5. The terminal `done{}` is argless (#1569).** Write `done{}` — no arguments, ever.
 The run record is GENERATED from the ledger (tool calls + write-gate outcomes + structural
-counts), never a model-authored `success`/`summary`; `done(success=…, summary=…)` fails
-validation (the args model is `NoArgs` / `extra="forbid"`). This closes the quoting trap
-rule 2 describes above by removing the argument that trap lived in: there is no worked-cycle
-summary left for the model to compose, quote, or copy wrong.
+counts), never a model-authored `success`/`summary`; `done(success=…, summary=…)` (in either
+bracket form) fails validation (the args model is `NoArgs` / `extra="forbid"`). This closes
+the quoting trap rule 2 describes above by removing the argument that trap lived in: there is
+no worked-cycle summary left for the model to compose, quote, or copy wrong.
 
-**6. History / run renders use REAL tool names in this same shape.** When a rendered record
-plays back a call the model made (a run trace, a history line), it uses the actual tool name
-with `(args)`, identical to how a prompt writes one — so what the model reads of its past
-matches how it's told to act. (The renderer conformance pass itself is tracked separately in
-the prompt-audit backlog; this is the standard it conforms to.)
+**6. History / run renders use REAL tool names in this same shape — bare when argless.**
+When a rendered record plays back a call the model made (a run trace, a history line), it
+uses the actual tool name with `{args}`, identical to how a prompt writes one — so what the
+model reads of its past matches how it's told to act. An argless call (`done`) renders with
+no braces at all — there is nothing to put in them — so a clean cycle close reads `done`,
+never `done{}`. (The renderer conformance pass itself is tracked separately in the
+prompt-audit backlog; this is the standard it conforms to.)
 
 **Reviewer enforcement.** This notation is checked at review time — see `pr-review-guide.md` → "Canonical Call Notation (Model-Facing Prompts)" (§7) for the reviewer checklist and the notation smells to pattern-match.
 
