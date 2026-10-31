@@ -1348,6 +1348,65 @@ async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
         assert discard_reasons == [ConditionKey.CALL_AS_TEXT.value]
 
 
+@pytest.mark.asyncio
+async def test_call_written_as_text_in_brace_form_is_rerolled_not_sent(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """A reply that leads with prose and ends with the call written as TEXT in
+    gemma's brace form (#2867 — a regression from #2863, which moved every
+    model-facing call example to the brace form without teaching the
+    call-as-text check to recognise it) is discarded and re-rolled exactly
+    like the parenthesized textual syntax already is (see the test above) —
+    never reaching the user, with the retry note naming the tool.
+
+    The draft is the prod leak verbatim, with the run id swapped: her
+    thinking ended "Let's use run_get to investigate," her reply apologised
+    and said she'd investigate the run right now, then ended with
+    ``run_get{run: '…'}`` as plain text — no ``<|tool_call>`` wrapper, so
+    nothing ran and the line went to the user.
+    """
+    config = make_config()
+    draft = (
+        "I'm going to investigate that run right now. 🕵️‍♀️\n\n"
+        "run_get{run: '0123456789abcdef0123456789abcdef'}"
+    )
+
+    def handler(request: dict, count: int):
+        if count == 1:
+            return mock_llm._make_text_response(request, draft)
+        return mock_llm._make_text_response(request, "all done looking into that run! 🕵️")
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(config) as penny:
+        await signal_server.push_message(
+            sender=TEST_SENDER, content="can you look into that bad job report?"
+        )
+        reply = await signal_server.wait_for_message_containing("all done", timeout=10.0)
+
+        # The redrawn step is shown the draft plus a note naming the tool it
+        # never ran (#2790) — not a blind re-roll on the unchanged context.
+        assert len(mock_llm.requests) == 2
+        redraw = mock_llm.requests[1]["messages"]
+        assert redraw[:-2] == mock_llm.requests[0]["messages"]
+        draft_turn, note_turn = redraw[-2], redraw[-1]
+        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
+        assert note_turn["role"] == "user"
+        assert note_turn["content"] == Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="run_get")
+
+        # The raw call-as-text never reached the user, in this reply or any
+        # other the channel sent.
+        assert "run_get{" not in (reply.get("message") or "")
+        for sent in signal_server.outgoing_messages:
+            assert "run_get{" not in (sent.get("message") or "")
+
+        # The discarded draw's own promptlog row says why (#2702).
+        with penny.db.get_session() as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        discard_reasons = [row.discard_reason for row in rows if row.discard_reason]
+        assert discard_reasons == [ConditionKey.CALL_AS_TEXT.value]
+
+
 # ── 7. Quote-reply handling ───────────────────────────────────────────────
 
 
