@@ -70,6 +70,36 @@ class CycleTrigger(StrEnum):
     ON_DEMAND = "on_demand"
 
 
+class DispatchReason(StrEnum):
+    """Why a collector cycle started when it did (#2862) — a closed set, decided
+    at dispatch by the same code that already decides whether a collection is
+    ready, and stamped on the run.  Never inferred from the run's own text.
+
+    ``on_time`` — the occurrence came due and the cycle started within
+    ``COLLECTOR_ON_TIME_WINDOW_SECONDS`` of it ·
+    ``catch_up`` — the occurrence came due more than that window earlier, and
+    Penny was running the whole time (no process restart crossed the due
+    instant) ·
+    ``catch_up_offline`` — the same lateness, but Penny's own process started
+    AFTER the occurrence came due — she was not running across it ·
+    ``retry_preempted`` — an earlier attempt at this SAME occurrence was cut off
+    by foreground activity ·
+    ``retry_failed`` — an earlier attempt at this same occurrence ended without
+    reaching a healthy close (the attempt's own reason lives on that attempt's
+    own run record, one ``run_list`` read away — never copied here) ·
+    ``on_demand`` — the user asked for this run directly (``CycleTrigger.ON_DEMAND``);
+    it carries no occurrence, so it is this unconditionally, whatever a retry
+    count would otherwise say.
+    """
+
+    ON_TIME = "on_time"
+    CATCH_UP = "catch_up"
+    CATCH_UP_OFFLINE = "catch_up_offline"
+    RETRY_PREEMPTED = "retry_preempted"
+    RETRY_FAILED = "retry_failed"
+    ON_DEMAND = "on_demand"
+
+
 class WriteGateOutcome(StrEnum):
     """The closed, deterministic outcome of one ``collection_write`` entry at the
     write chokepoint — the change-gate (#1587, epic #1554 via mini-epic #1562).
@@ -827,6 +857,13 @@ class PennyConstants:
     # whatever happened.  3 covers a burst of foreground activity or a transport
     # wobble without letting a collection that fails every time hold the dispatcher.
     COLLECTOR_RETRY_ATTEMPTS = 3
+    # How close to its due occurrence a cycle has to START to count as "on time"
+    # rather than "catching up a missed run" (#2862).  A cycle's own dispatch is
+    # never instantaneous — the cycle lock, a busy tick, a few seconds of
+    # scheduling jitter — so a narrow miss should never read as a missed run.
+    # 5 minutes covers ordinary dispatch jitter without hiding a run that
+    # genuinely started hours late.
+    COLLECTOR_ON_TIME_WINDOW_SECONDS = 300
     # How far ahead a stated end date stops being a date and starts being a
     # date-shaped way of writing "forever" (#1944).  An apply turn asked to set up a
     # job that runs indefinitely wrote ``expires_at = 2099-12-31``; the sentinel then

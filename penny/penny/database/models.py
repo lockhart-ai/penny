@@ -113,6 +113,20 @@ class PromptLog(SQLModel, table=True):
     # that existed then); migration 0130 backfills the column's default for
     # new rows rather than rewriting history.
     transport: str | None = None
+    # Why a collector cycle started when it did (#2862), stamped once on the
+    # run's last prompt row alongside ``run_outcome`` — never re-derived at
+    # render time.  ``run_due_at`` is the occurrence the dispatcher picked this
+    # cycle up for, read off the SAME schedule computation ``_schedule_due``
+    # already made (NULL for an on-demand run, which carries no occurrence).
+    # ``run_dispatch_reason`` is a ``DispatchReason`` value.  ``run_dispatch_attempt``
+    # is the attempt number at THIS occurrence, set only for the two retry
+    # reasons (``retry_preempted``/``retry_failed``) — the prior attempt's own
+    # detail lives on that attempt's own run record, one ``run_list`` read away,
+    # never copied here.  All three NULL for a chat run and for every row
+    # logged before this column existed.
+    run_due_at: datetime | None = None
+    run_dispatch_reason: str | None = None
+    run_dispatch_attempt: int | None = None
 
     def get_trailing_messages(self) -> list[dict]:
         """The trailing turns as message dicts — empty when the run round-tripped

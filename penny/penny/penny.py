@@ -8,7 +8,7 @@ import signal
 import sys
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from penny.agents import (
@@ -70,7 +70,10 @@ class Penny:
     def __init__(self, config: Config, channel: MessageChannel | None = None):
         """Initialize Penny — summary method."""
         self.config = config
-        self.start_time = datetime.now()
+        # Timezone-aware (#2862): the collector reads this back against a due
+        # occurrence's own aware UTC instant, so a naive value would compare
+        # unusably rather than merely displaying wrong.
+        self.start_time = datetime.now(UTC)
         self._init_database(config)
         self._init_llm_clients(config)
         self._init_email(config)
@@ -267,6 +270,7 @@ class Penny:
             db=self.db,
             config=config,
             embedding_model_client=self.embedding_model_client,
+            process_started_at=self.start_time,
         )
         # Delivers queued autonomous messages once the autonomous-send cooldown
         # clears.  Mostly deterministic — its one model-shaped step (#2656) is

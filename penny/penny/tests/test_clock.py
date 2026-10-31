@@ -298,7 +298,11 @@ def test_the_dispatcher_reads_readiness_on_the_databases_clock(test_config, tmp_
         api_url="http://localhost:11434", model="test-model", max_retries=1, retry_delay=0.0
     )
     collector = Collector(
-        model_client=client, db=db, config=test_config, embedding_model_client=client
+        model_client=client,
+        db=db,
+        config=test_config,
+        embedding_model_client=client,
+        process_started_at=long_ago,
     )
     db.memories.create_collection(
         "hourly",

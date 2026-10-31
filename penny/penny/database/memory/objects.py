@@ -50,6 +50,7 @@ from penny.config_params import RuntimeParams
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
     WRITE_GATE_STOP_REASONS,
+    DispatchReason,
     PennyConstants,
     RunOutcome,
     WriteGateOutcome,
@@ -78,7 +79,7 @@ from penny.database.memory.types import (
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog, SendQueueItem
 from penny.database.mutation_store import EnumeratedDecision
-from penny.datetime_utils import format_duration_plain_words
+from penny.datetime_utils import format_duration_plain_words, format_user_clock_time
 from penny.llm.models import strip_harmony_control_tokens
 from penny.text_validity import LEGACY_TOOL_RENAMES, degenerate_reason, half_formed_send_reason
 from penny.validation.conditions import ConditionKey, run_flag_conditions
@@ -1234,6 +1235,68 @@ def _run_outcome(prompts: list[PromptLog]) -> tuple[str | None, str | None, str 
     return None, None, prompts[0].run_target if prompts else None
 
 
+def _run_dispatch(prompts: list[PromptLog]) -> tuple[datetime | None, str | None, int | None]:
+    """Due occurrence / dispatch reason / attempt (#2862) from the last prompt
+    carrying them — the SAME stamp-location convention ``_run_outcome`` reads,
+    since both are set once, on the run's last prompt row."""
+    for prompt in reversed(prompts):
+        if prompt.run_dispatch_reason is not None:
+            return prompt.run_due_at, prompt.run_dispatch_reason, prompt.run_dispatch_attempt
+    return None, None, None
+
+
+# ``ON_TIME``/``ON_DEMAND`` are dead branches from ``dispatch_line``'s own call
+# (both return early above it) — live only for the self-state jobs-list tail
+# (``dispatch_reason_clause`` called directly, #2862), which has no header to
+# short-circuit into.
+_DISPATCH_TAILS: dict[DispatchReason, str] = {
+    DispatchReason.ON_TIME: "on time",
+    DispatchReason.CATCH_UP: "catching up a missed run",
+    DispatchReason.ON_DEMAND: "on demand",
+}
+
+
+def dispatch_reason_clause(reason: DispatchReason, due: str, attempt: int | None) -> str:
+    """The clause after the ``·`` — why this cycle started when it did, never the
+    attempt it ended on: a retry names which prior attempt it follows (preempted
+    by foreground activity, or failed) and its own attempt number; a catch-up
+    across a restart names the due time Penny was offline at (#2862)."""
+    if reason is DispatchReason.CATCH_UP_OFFLINE:
+        return f"catching up a missed run: Penny was offline at {due}"
+    if reason is DispatchReason.RETRY_PREEMPTED:
+        return f"retrying after an interrupted attempt (attempt {attempt})"
+    if reason is DispatchReason.RETRY_FAILED:
+        return f"retrying after a failed attempt (attempt {attempt})"
+    return _DISPATCH_TAILS.get(reason, "")
+
+
+def dispatch_line(prompts: list[PromptLog], timezone_name: str | None, schedule_words: str) -> str:
+    """The run's own dispatch-reason line (#2862): ``started <time> for the
+    <cadence> <due time> run · <why>`` — or, for an on-demand run, just
+    ``started <time> on demand``.  Empty for a chat run and for a row logged
+    before this stamp existed.
+
+    ``schedule_words`` is the collection's CURRENT cadence in plain words (e.g.
+    "daily"), fetched by the caller off its live ``schedule`` — empty when the
+    collection no longer carries one (archived/deleted/retired since this run),
+    in which case the clause drops the word rather than inventing one."""
+    if not prompts:
+        return ""
+    due_at, reason_value, attempt = _run_dispatch(prompts)
+    if reason_value is None:
+        return ""
+    reason = DispatchReason(reason_value)
+    started = format_user_clock_time(prompts[0].timestamp, timezone_name)
+    if reason is DispatchReason.ON_DEMAND:
+        return f"started {started} on demand"
+    assert due_at is not None  # every non-on-demand reason stamps its occurrence
+    due = format_user_clock_time(due_at, timezone_name)
+    words = f"{schedule_words} " if schedule_words else ""
+    header = f"started {started} for the {words}{due} run"
+    tail = dispatch_reason_clause(reason, due, attempt)
+    return f"{header} · {tail}" if tail else header
+
+
 def run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
     """Ordered (tool, arguments) for every tool call across the run's prompts.
 
@@ -1511,14 +1574,21 @@ def run_facts_line(prompts: list[PromptLog], delivered_text: str | None) -> str:
     )
 
 
-def render_run_health(prompts: list[PromptLog], delivered_text: str | None) -> str:
-    """One run as a single operational-facts line: ``run <id> [<source>]
-    [<outcome>]`` then the shared facts clause (#2843) — the ``run-health``
-    facade's record.  ``source`` is ``"chat"`` or the collector's own name,
-    the same vocabulary ``run_list``'s ``source`` argument takes; ``outcome``
-    is the stamped structural result when one exists (a collector always
-    stamps one; an ordinary, successful chat turn stamps none) and is omitted
-    — never guessed — when it doesn't."""
+def render_run_health(
+    prompts: list[PromptLog],
+    delivered_text: str | None,
+    *,
+    timezone_name: str | None = None,
+    schedule_words: str = "",
+) -> str:
+    """One run as its dispatch line (#2862, when it carries one) then a single
+    operational-facts line: ``run <id> [<source>] [<outcome>]`` then the
+    shared facts clause (#2843) — the ``run-health`` facade's record.
+    ``source`` is ``"chat"`` or the collector's own name, the same vocabulary
+    ``run_list``'s ``source`` argument takes; ``outcome`` is the stamped
+    structural result when one exists (a collector always stamps one; an
+    ordinary, successful chat turn stamps none) and is omitted — never
+    guessed — when it doesn't."""
     if not prompts:
         return "(no data)"
     outcome, reason, target = _run_outcome(prompts)
@@ -1526,7 +1596,9 @@ def render_run_health(prompts: list[PromptLog], delivered_text: str | None) -> s
     result = reason or outcome
     if result:
         header = f"{header} {result}"
-    return f"{header} · {run_facts_line(prompts, delivered_text)}"
+    facts_line = f"{header} · {run_facts_line(prompts, delivered_text)}"
+    dispatch = dispatch_line(prompts, timezone_name, schedule_words)
+    return f"{dispatch}\n{facts_line}" if dispatch else facts_line
 
 
 def _is_degenerate_send(content: str) -> bool:
@@ -1974,6 +2046,8 @@ def render_run_calls(
     with_thinking: bool,
     step: int | None = None,
     delivered_text: str | None,
+    timezone_name: str | None = None,
+    schedule_words: str = "",
 ) -> str:
     """One run as its tool-call SEQUENCE: ``run id → origin → the numbered steps →
     conclusion → egress``.
@@ -2024,7 +2098,12 @@ def render_run_calls(
     clause the ``run-health`` facade renders (``run_facts_line``), computed
     from ``run_delivered_text``.  A separate, appended piece on purpose: this
     is a different lens (facts, not the call sequence) added by a different
-    change, so it never touches the step/conclusion rendering above it."""
+    change, so it never touches the step/conclusion rendering above it.
+
+    ``timezone_name``/``schedule_words`` (#2862) feed one more leading line —
+    why this cycle started when it did (``dispatch_line``) — empty, and so
+    rendering nothing, for a chat run or a row logged before that stamp
+    existed."""
     if not prompts:
         return "(no data)"
     results = _tool_results_by_id(prompts)
@@ -2032,6 +2111,9 @@ def render_run_calls(
     steps = _run_logged_steps(prompts)
     run_line = _run_header(prompts)
     lines = [run_line, _run_origin(prompts)]
+    dispatch = dispatch_line(prompts, timezone_name, schedule_words)
+    if dispatch:
+        lines.insert(0, dispatch)
     rendered_indices: list[int] = []
     for index, (call_id, call, thinking) in enumerate(steps, start=1):
         if call.tool == PennyConstants.DONE_TOOL_NAME:
@@ -2316,4 +2398,6 @@ __all__ = [
     "MessageLogMemory",
     "RunLog",
     "RunHealthLog",
+    "dispatch_line",
+    "dispatch_reason_clause",
 ]

@@ -101,6 +101,7 @@ from penny.tools.collection_instantiation import (
     render_prompt_replacement_diff,
     render_reinstantiation_echo,
     render_tombstone_duplicate,
+    schedule_cadence_word,
     sentinel_expiry_note,
 )
 from penny.tools.job_summary import job_summary_line
@@ -352,6 +353,20 @@ _BRACKET_KEY_REJECTION = (
     "of the key — entry listings show keys as key='...' and the key is passed "
     "bare, without brackets. This entry's key is '{bare}'. Retry with key='{bare}'."
 )
+
+
+def _run_schedule_words(db: Database, run_target: str | None) -> str:
+    """The cadence word (#2862) a dispatched run's own reason line names its
+    schedule by — read off the collection's CURRENT ``schedule``, never a
+    snapshot.  Empty for a chat run (``run_target`` is ``None``), a collection
+    since deleted, or one with no schedule any more — ``dispatch_line`` drops
+    the word rather than inventing one."""
+    if run_target is None:
+        return ""
+    row = db.memories.get(run_target)
+    if row is None or row.schedule is None:
+        return ""
+    return schedule_cadence_word(row.schedule)
 
 
 def _named(arguments: dict, arg_key: str, fallback: str) -> str:
@@ -3034,7 +3049,13 @@ class ReadRunCallsTool(CursorReadTool):
         return MemoryEntry(
             memory_name=key,
             key=None,
-            content=render_run_calls(group, with_thinking=False, delivered_text=delivered_text),
+            content=render_run_calls(
+                group,
+                with_thinking=False,
+                delivered_text=delivered_text,
+                timezone_name=user_timezone_name(self._db),
+                schedule_words=_run_schedule_words(self._db, group[0].run_target),
+            ),
             author=PennyConstants.MessageAuthor.COLLECTOR,
             created_at=group[-1].timestamp,
         )
@@ -3163,6 +3184,8 @@ class GetEventTool(Tool):
                 with_thinking=True,
                 step=args.step,
                 delivered_text=delivered_text,
+                timezone_name=user_timezone_name(self._db),
+                schedule_words=_run_schedule_words(self._db, prompts[0].run_target),
             )
         )
 

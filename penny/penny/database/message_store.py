@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -164,10 +164,18 @@ class ChatFailureActivity(BaseModel):
 class RunOutcomeStamp(BaseModel):
     """A collector's most recent completed run \u2014 its ``RunOutcome`` value and
     finish time.  The mechanism-inventory 'last run' line reads one of these per
-    mechanism (#1555)."""
+    mechanism (#1555).
+
+    ``due_at``/``dispatch_reason``/``dispatch_attempt`` (#2862) are the same
+    dispatch stamp ``run_list``/``run_get`` read \u2014 carried here so the
+    jobs-list last-run line can name why the run started when it did, without
+    a second query.  All three NULL on a run that predates the stamp."""
 
     outcome: str
     finished_at: datetime
+    due_at: datetime | None = None
+    dispatch_reason: str | None = None
+    dispatch_attempt: int | None = None
 
 
 class EmissionActivity(BaseModel):
@@ -1247,6 +1255,30 @@ class MessageStore:
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
 
+    def set_run_dispatch(
+        self,
+        run_id: str,
+        due_at: datetime | None,
+        reason: str,
+        attempt: int | None,
+    ) -> None:
+        """Stamp why this cycle started when it did (#2862) onto the last prompt
+        log row for ``run_id`` — a sibling stamp to ``set_run_outcome``, decided
+        at dispatch and recorded once, never re-derived from the run's own
+        text.  ``due_at`` is NULL for an on-demand run (no occurrence);
+        ``attempt`` is set only for the two retry reasons."""
+        try:
+            with self._session() as session:
+                last_prompt = self._last_run_prompt(session, run_id)
+                if last_prompt:
+                    last_prompt.run_due_at = due_at
+                    last_prompt.run_dispatch_reason = reason
+                    last_prompt.run_dispatch_attempt = attempt
+                    session.add(last_prompt)
+                    session.commit()
+        except Exception as e:
+            logger.error("Failed to set run dispatch reason for %s: %s", run_id, e)
+
     def set_run_link_handles(self, run_id: str, handles: dict[int, str]) -> None:
         """Stamp the run's numbered link table (#2717) — number → URL, as JSON —
         onto the last prompt row for ``run_id``.
@@ -1628,19 +1660,24 @@ class MessageStore:
 
     def latest_run_outcomes(self) -> dict[str, RunOutcomeStamp]:
         """Each collector's most recent completed run outcome + finish time, keyed
-        by ``run_target`` — one grouped query (#1555).
+        by ``run_target`` — one grouped query (#1555) plus one fetch-by-id.
 
         The self-state mechanism inventory reads one of these per mechanism for
-        its 'last run' line.  ``run_outcome`` is the value from the row carrying
-        the max timestamp per target (SQLite resolves a bare column alongside
-        ``MAX()`` to that row).  Cancelled runs are excluded so 'last run' reports
+        its 'last run' line.  The grouped query finds each target's own LAST
+        PROMPT ROW by ``id`` (``func.max(PromptLog.id)`` — monotonic with
+        insertion order, so it names the same row ``func.max(timestamp)``
+        would); fetching that row directly, rather than selecting six columns
+        in one grouped query, is what keeps this inside SQLModel's typed
+        ``select()`` overloads (capped at four) — ``run_outcome`` and the
+        dispatch stamp alongside it (#2862) are read straight off the row
+        ``get()`` returns.  Cancelled runs are excluded so 'last run' reports
         the last real cycle, not a preemption."""
         with self._session() as session:
-            rows = session.exec(
+            index = session.exec(
                 select(
                     PromptLog.run_target,
-                    PromptLog.run_outcome,
                     func.max(PromptLog.timestamp),
+                    func.max(PromptLog.id),
                 )
                 .where(
                     col(PromptLog.run_outcome).isnot(None),
@@ -1649,11 +1686,33 @@ class MessageStore:
                 )
                 .group_by(PromptLog.run_target)
             ).all()
-        return {
-            target: RunOutcomeStamp(outcome=outcome, finished_at=finished)
-            for target, outcome, finished in rows
-            if target is not None and outcome is not None
+            return self._stamps_for(session, index)
+
+    @staticmethod
+    def _stamps_for(
+        session: Session, index: Sequence[tuple[str | None, datetime, int]]
+    ) -> dict[str, RunOutcomeStamp]:
+        """The last-prompt row for each ``(target, finished_at, last_id)`` triple,
+        fetched by id and turned into its ``RunOutcomeStamp``."""
+        rows_by_id = {
+            row.id: row
+            for row in session.exec(
+                select(PromptLog).where(col(PromptLog.id).in_([last_id for _, _, last_id in index]))
+            ).all()
         }
+        stamps: dict[str, RunOutcomeStamp] = {}
+        for target, finished, last_id in index:
+            row = rows_by_id.get(last_id)
+            if target is None or row is None or row.run_outcome is None:
+                continue
+            stamps[target] = RunOutcomeStamp(
+                outcome=row.run_outcome,
+                finished_at=finished,
+                due_at=row.run_due_at,
+                dispatch_reason=row.run_dispatch_reason,
+                dispatch_attempt=row.run_dispatch_attempt,
+            )
+        return stamps
 
     @staticmethod
     def _group_runs(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:

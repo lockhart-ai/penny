@@ -30,7 +30,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from penny.agents.base import CycleResult
-from penny.agents.collector import Collector
+from penny.agents.collector import Collector, _DispatchDecision, _OccurrenceAttempt
 from penny.agents.models import ControllerResponse, ModelCallError, RunAbort, ToolCallRecord
 from penny.constants import (
     CYCLE_END_RETRY_REASONS,
@@ -38,6 +38,7 @@ from penny.constants import (
     WRITE_GATE_STOP_REASONS,
     CycleEnd,
     CycleTrigger,
+    DispatchReason,
     MutationAction,
     MutationActor,
     PennyConstants,
@@ -78,13 +79,22 @@ def _llm_client(db: Database | None = None) -> LlmClient:
     )
 
 
-def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
+_FAR_PAST = datetime(2000, 1, 1, tzinfo=UTC)
+
+
+def _make_collector(
+    test_config, tmp_path, *, process_started_at: datetime = _FAR_PAST
+) -> tuple[Collector, Database]:
+    """``process_started_at`` defaults far enough in the past that no
+    existing-behaviour test's due occurrence ever falls before it — only a
+    dispatch-reason test naming a real restart passes its own value."""
     db = schema_only_db(str(tmp_path / "t.db"))
     collector = Collector(
         model_client=_llm_client(db),
         db=db,
         config=test_config,
         embedding_model_client=_llm_client(),
+        process_started_at=process_started_at,
     )
     return collector, db
 
@@ -2590,6 +2600,135 @@ def test_tool_failures_counts_failed_calls():
         ],
     )
     assert Collector._tool_failures(response) == 2
+
+
+# ── Dispatch reason (#2862) ──────────────────────────────────────────────
+#
+# ``_dispatch_decision`` is the closed-set decision itself — pure over its own
+# arguments, so these read it directly rather than threading a whole cycle
+# through just to exercise the branch.  The end-to-end wiring (a real cycle's
+# promptlog row carrying the stamp) is proven separately below.
+
+_DUE = datetime(2026, 7, 20, 13, 30, tzinfo=UTC)
+
+
+def test_dispatch_decision_on_demand_is_unconditional(test_config, tmp_path):
+    """ON_DEMAND is read off the trigger alone — never the timing, never a
+    retry count at the schedule's own occurrence."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    decision = collector._dispatch_decision(
+        "watcher", CycleTrigger.ON_DEMAND, None, datetime.now(UTC)
+    )
+    assert decision == _DispatchDecision(due_at=None, reason=DispatchReason.ON_DEMAND)
+
+
+def test_dispatch_decision_on_time_within_the_window(test_config, tmp_path):
+    collector, _ = _make_collector(test_config, tmp_path)
+    now = _DUE + timedelta(minutes=2)
+    decision = collector._dispatch_decision("watcher", CycleTrigger.CADENCE, _DUE, now)
+    assert decision == _DispatchDecision(due_at=_DUE, reason=DispatchReason.ON_TIME)
+
+
+def test_dispatch_decision_catch_up_without_a_restart(test_config, tmp_path):
+    """Past the on-time window, and Penny's process started before the
+    occurrence came due — she was running the whole time."""
+    collector, _ = _make_collector(
+        test_config, tmp_path, process_started_at=_DUE - timedelta(days=1)
+    )
+    now = _DUE + timedelta(hours=10)
+    decision = collector._dispatch_decision("watcher", CycleTrigger.CADENCE, _DUE, now)
+    assert decision == _DispatchDecision(due_at=_DUE, reason=DispatchReason.CATCH_UP)
+
+
+def test_dispatch_decision_catch_up_across_a_restart(test_config, tmp_path):
+    """Same lateness, but Penny's process started AFTER the due instant — she
+    was not running across it."""
+    collector, _ = _make_collector(
+        test_config, tmp_path, process_started_at=_DUE + timedelta(hours=1)
+    )
+    now = _DUE + timedelta(hours=10)
+    decision = collector._dispatch_decision("watcher", CycleTrigger.CADENCE, _DUE, now)
+    assert decision == _DispatchDecision(due_at=_DUE, reason=DispatchReason.CATCH_UP_OFFLINE)
+
+
+def test_dispatch_decision_retry_after_a_preemption(test_config, tmp_path):
+    """A prior CADENCE attempt at this SAME occurrence was preempted — the next
+    dispatch at it reads as a retry, attempt 2."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    collector._occurrence_attempts["watcher"] = _OccurrenceAttempt(
+        due_at=_DUE, attempt=1, preempted=True
+    )
+    decision = collector._dispatch_decision(
+        "watcher", CycleTrigger.CADENCE, _DUE, _DUE + timedelta(minutes=4)
+    )
+    assert decision == _DispatchDecision(
+        due_at=_DUE, reason=DispatchReason.RETRY_PREEMPTED, attempt=2
+    )
+
+
+def test_dispatch_decision_retry_after_a_failure(test_config, tmp_path):
+    collector, _ = _make_collector(test_config, tmp_path)
+    collector._occurrence_attempts["watcher"] = _OccurrenceAttempt(
+        due_at=_DUE, attempt=1, preempted=False
+    )
+    decision = collector._dispatch_decision(
+        "watcher", CycleTrigger.CADENCE, _DUE, _DUE + timedelta(minutes=5)
+    )
+    assert decision == _DispatchDecision(due_at=_DUE, reason=DispatchReason.RETRY_FAILED, attempt=2)
+
+
+def test_dispatch_decision_retry_at_a_different_occurrence_is_not_a_retry(test_config, tmp_path):
+    """A record left over from a PRIOR occurrence (one that has since been
+    consumed and come round again) never reads as a retry of the new one —
+    the due instant has to match exactly."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    collector._occurrence_attempts["watcher"] = _OccurrenceAttempt(
+        due_at=_DUE - timedelta(days=1), attempt=2, preempted=False
+    )
+    decision = collector._dispatch_decision(
+        "watcher", CycleTrigger.CADENCE, _DUE, _DUE + timedelta(minutes=1)
+    )
+    assert decision == _DispatchDecision(due_at=_DUE, reason=DispatchReason.ON_TIME)
+
+
+@pytest.mark.asyncio
+async def test_execute_stamps_catch_up_offline_across_a_real_restart(
+    mock_llm, test_config, tmp_path
+):
+    """End-to-end (#2862): a cycle dispatched hours after its due occurrence,
+    on a Collector whose own process started AFTER that occurrence, stamps
+    ``run_due_at``/``run_dispatch_reason``/``run_dispatch_attempt`` on the
+    promptlog row — the full wiring from dispatch through settle, not just
+    the pure decision."""
+    collector, db = _make_collector(test_config, tmp_path, process_started_at=datetime.now(UTC))
+    _seed_daily_briefing(db)
+    due_at = collector._due_occurrence(_get(db, "morning-briefing"))
+    assert due_at is not None
+
+    mock_llm.set_response_handler(_writes_then_closes(mock_llm))
+    assert await collector.execute() is True
+
+    run_id = db.messages.get_prompt_log_runs()[0]["run_id"]
+    stamped = db.messages.get_run_prompts(run_id)[-1]
+    assert stamped.run_due_at is not None
+    assert stamped.run_dispatch_reason == DispatchReason.CATCH_UP_OFFLINE.value
+
+
+@pytest.mark.asyncio
+async def test_on_demand_run_stamps_no_due_occurrence(mock_llm, test_config, tmp_path):
+    """``run_for`` (on demand) stamps ``on_demand`` with no occurrence — it
+    bypasses readiness entirely, so there is none to name."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+    mock_llm.set_response_handler(_writes_then_closes(mock_llm))
+
+    success, _ = await collector.run_for("morning-briefing")
+    assert success is True
+
+    run_id = db.messages.get_prompt_log_runs()[0]["run_id"]
+    stamped = db.messages.get_run_prompts(run_id)[-1]
+    assert stamped.run_due_at is None
+    assert stamped.run_dispatch_reason == DispatchReason.ON_DEMAND.value
 
 
 # ── Promptlog run-outcome tagging ────────────────────────────────────────

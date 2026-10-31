@@ -82,6 +82,19 @@ def format_user_timestamp(when: datetime, timezone_name: str | None) -> str:
     return local.strftime(PennyConstants.CURRENT_DATETIME_FORMAT)
 
 
+_USER_CLOCK_TIME_FORMAT = "%I:%M %p %Z"
+
+
+def format_user_clock_time(when: datetime, timezone_name: str | None) -> str:
+    """The TIME-OF-DAY half of ``format_user_timestamp`` — ``"9:30 AM EDT"``, no
+    weekday or date — for a line that already states which day it means, or
+    where two instants (a run's own start and the occurrence it was for, #2862)
+    sit side by side and restating a shared date on both would only repeat it.
+    Same zone/naive-is-UTC handling as ``format_user_timestamp``."""
+    local = stored_as_utc(when).astimezone(zone_or_utc(timezone_name))
+    return local.strftime(_USER_CLOCK_TIME_FORMAT)
+
+
 async def get_timezone(location: str) -> str | None:
     """
     Derive IANA timezone from natural language location.

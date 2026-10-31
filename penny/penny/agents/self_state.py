@@ -79,10 +79,16 @@ from __future__ import annotations
 from itertools import groupby
 from typing import TYPE_CHECKING
 
-from penny.constants import PennyConstants
+from penny.constants import DispatchReason, PennyConstants
+from penny.database.memory import dispatch_reason_clause
 from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
-from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
+from penny.datetime_utils import (
+    format_log_timestamp,
+    format_user_clock_time,
+    format_user_timestamp,
+    user_timezone_name,
+)
 from penny.tools.collection_instantiation import describe_schedule
 from penny.tools.job_summary import job_summary_line
 
@@ -337,13 +343,35 @@ class SelfStateHeader:
             return f"ends after {row.max_runs} runs"
         return ""
 
-    @staticmethod
-    def _last_run(stamp: RunOutcomeStamp | None) -> str:
+    def _last_run(self, stamp: RunOutcomeStamp | None) -> str:
         """``last run <OUTCOME> <when>`` for the mechanism's most recent completed
-        cycle, or ``no runs yet`` when it has never completed one."""
+        cycle, or ``no runs yet`` when it has never completed one.
+
+        An ON-TIME run (#2862) renders exactly as before — this line rides the
+        cached prefix of every chat prompt, so an on-time run must stay
+        byte-identical.  Anything else — catching up a missed run, a retry, or
+        on demand — appends why, short (no repeat of the schedule, already on
+        this mechanism's own cadence clause)."""
         if stamp is None:
             return "no runs yet"
-        return f"last run {stamp.outcome.upper()} {format_log_timestamp(stamp.finished_at)}"
+        line = f"last run {stamp.outcome.upper()} {format_log_timestamp(stamp.finished_at)}"
+        tail = self._dispatch_tail(stamp)
+        return f"{line}, {tail}" if tail else line
+
+    def _dispatch_tail(self, stamp: RunOutcomeStamp) -> str:
+        """Why the last run started when it did (#2862), or empty for an
+        on-time run / a row logged before the stamp existed."""
+        if stamp.dispatch_reason is None:
+            return ""
+        reason = DispatchReason(stamp.dispatch_reason)
+        if reason is DispatchReason.ON_TIME:
+            return ""
+        due = (
+            format_user_clock_time(stamp.due_at, user_timezone_name(self.db))
+            if stamp.due_at is not None
+            else ""
+        )
+        return dispatch_reason_clause(reason, due, stamp.dispatch_attempt)
 
     # ── Recent activity ──────────────────────────────────────────────────────
 

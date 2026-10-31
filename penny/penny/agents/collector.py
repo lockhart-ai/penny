@@ -45,7 +45,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -60,6 +61,7 @@ from penny.constants import (
     WRITE_GATE_STOP_REASONS,
     CycleEnd,
     CycleTrigger,
+    DispatchReason,
     MutationActor,
     PennyConstants,
     RunOutcome,
@@ -123,6 +125,31 @@ _LAST_TOLD_NEVER = "You have never sent them anything about this collection."
 _LAST_TOLD_LINE = 'The last thing you told the user: "{snippet}" ({when})'
 
 
+@dataclass(frozen=True)
+class _OccurrenceAttempt:
+    """What a CADENCE dispatch already tried at one occurrence (#2862) — tracked
+    in memory, per collection, so the NEXT dispatch at the same due instant reads
+    as a retry rather than a fresh catch-up.  Popped the moment the occurrence
+    is consumed; a restart starts the next dispatch as a fresh occurrence, same
+    as the retry bound (``_retry_attempts``) above already does — there is
+    nothing durable to read this back from, and there shouldn't be."""
+
+    due_at: datetime
+    attempt: int
+    preempted: bool  # the prior attempt was CANCELLED, vs. it failed
+
+
+@dataclass(frozen=True)
+class _DispatchDecision:
+    """Why a cycle is starting now (#2862) — decided ONCE at dispatch, before
+    the cycle runs, and stamped on the run record unchanged by how the cycle
+    itself goes on to end."""
+
+    due_at: datetime | None
+    reason: DispatchReason
+    attempt: int | None = None
+
+
 class Collector(BackgroundAgent):
     """Single dispatcher agent — picks the most-overdue ready collection per cycle."""
 
@@ -181,6 +208,7 @@ class Collector(BackgroundAgent):
         config: Config,
         *,
         embedding_model_client: LlmClient,
+        process_started_at: datetime,
     ) -> None:
         super().__init__(
             model_client=model_client,
@@ -188,6 +216,11 @@ class Collector(BackgroundAgent):
             config=config,
             embedding_model_client=embedding_model_client,
         )
+        # When THIS process came up (#2862) — ``Penny.start_time``, handed down
+        # rather than read ambiently.  A catch-up dispatch reads Penny's own
+        # offline stretch off this: the due occurrence fell before this instant
+        # iff nothing of hers was running across it.
+        self._process_started_at = process_started_at
         # Set per-cycle inside ``_execute_cycle``.  The scheduler runs cycles
         # one at a time, but on-demand triggers (chat's extraction-prompt test
         # tool, the addon's "run extractor" button) call ``run_for`` off the
@@ -205,13 +238,25 @@ class Collector(BackgroundAgent):
         # user's "run this now" are two different things attempting the same fire, and
         # a user's clicks must not leave the schedule's own attempt with nothing.
         self._retry_attempts: dict[tuple[str, CycleTrigger], int] = {}
+        # What a CADENCE dispatch already tried at a collection's current occurrence
+        # (#2862) — keyed by collection name alone (the occurrence is ONE thing
+        # whichever trigger is attempting it).  Read at dispatch to tell a fresh
+        # catch-up from a retry; written at settle; popped once the occurrence is
+        # consumed.  In memory for the same reason ``_retry_attempts`` is: nothing
+        # durable to read it back from, and a restart is a fresh start.
+        self._occurrence_attempts: dict[str, _OccurrenceAttempt] = {}
 
     async def execute(self) -> bool:
         self._retire_expired()
         target = self._next_ready_collection()
         if target is None:
             return False
-        success, _ = await self._execute_cycle(target, trigger=CycleTrigger.CADENCE)
+        # The exact occurrence readiness already found this collection due for
+        # (#2862) — read off the SAME pure ``_due_occurrence`` computation
+        # ``_is_ready`` made for it, a second call with identical inputs,
+        # never a second judgment.
+        due_at = self._due_occurrence(target)
+        success, _ = await self._execute_cycle(target, trigger=CycleTrigger.CADENCE, due_at=due_at)
         return success
 
     def _retire_expired(self) -> None:
@@ -260,10 +305,13 @@ class Collector(BackgroundAgent):
             )
         if error := check_extraction_prompt(collection.extraction_prompt):
             return False, error
-        return await self._execute_cycle(collection, trigger=CycleTrigger.ON_DEMAND)
+        # ``run_for`` bypasses readiness entirely, so there is no occurrence to name
+        # (#2862) — the dispatch reason is unconditionally "the user asked to run it
+        # now", whatever a retry count at the schedule's own occurrence would say.
+        return await self._execute_cycle(collection, trigger=CycleTrigger.ON_DEMAND, due_at=None)
 
     async def _execute_cycle(
-        self, collection: MemoryRow, *, trigger: CycleTrigger
+        self, collection: MemoryRow, *, trigger: CycleTrigger, due_at: datetime | None
     ) -> tuple[bool, str]:
         """Run one full agent cycle bound to ``collection`` with audit cleanup.
 
@@ -276,13 +324,17 @@ class Collector(BackgroundAgent):
         are logged, and so neighbouring cycles can't smear into each other's
         promptlog rows.
 
+        ``due_at`` (#2862) is the occurrence the caller already found this cycle
+        due for — ``None`` for an on-demand run, which has none — carried through
+        to decide and stamp WHY this cycle started when it did, never re-derived.
+
         The locked run-and-settle work is ``_run_locked_cycle``'s; this is just
         the mint, the delegation, and the report back to the caller.
         """
         run_id = uuid.uuid4().hex
         call_link = CallLink.top(run_id)
         success, response, outcome, reason = await self._run_locked_cycle(
-            collection, trigger, run_id, call_link
+            collection, trigger, run_id, call_link, due_at
         )
         return success, self._cycle_message(outcome, reason, response)
 
@@ -292,6 +344,7 @@ class Collector(BackgroundAgent):
         trigger: CycleTrigger,
         run_id: str,
         call_link: CallLink,
+        due_at: datetime | None,
     ) -> tuple[bool, ControllerResponse | None, RunOutcome, str]:
         """Run the bound target under the cycle lock, then settle it — the whole
         try/except/finally a cancellation has to see through cleanly.
@@ -307,7 +360,13 @@ class Collector(BackgroundAgent):
         ``trigger`` says what set this cycle running — the schedule, or the user — and
         is carried, never inferred: the notification reads it to pick its delivery lane
         and the retry budget is keyed on it (#1939).
+
+        ``dispatch`` (#2862) is decided here, BEFORE the lock — why this cycle is
+        starting now, off ``due_at`` and whatever the collection's last CADENCE
+        attempt at this same occurrence left behind — then carried unchanged
+        through however the cycle itself goes on to end.
         """
+        dispatch = self._dispatch_decision(collection.name, trigger, due_at, self.db.clock.now())
         success = False
         response: ControllerResponse | None = None
         reads: tuple[CursorReadTool, ...] = ()
@@ -338,10 +397,42 @@ class Collector(BackgroundAgent):
                 raise
             finally:
                 outcome, reason = self._settle_cycle(
-                    collection, run_id, trigger, cancelled, response, reads, notified
+                    collection, run_id, trigger, cancelled, response, reads, notified, dispatch
                 )
                 self._bind(None)
         return success, response, outcome, reason
+
+    def _dispatch_decision(
+        self,
+        name: str,
+        trigger: CycleTrigger,
+        due_at: datetime | None,
+        now: datetime,
+    ) -> _DispatchDecision:
+        """Why this cycle is starting now (#2862) — the closed set, decided at
+        dispatch, where the dispatcher already decided readiness and the trigger.
+
+        ``on_demand`` is unconditional on the trigger alone: a user-requested run
+        carries no occurrence, whatever a retry count at the schedule's own
+        occurrence would otherwise say.  A CADENCE dispatch always carries its
+        ``due_at`` (``execute`` reads it off the same pure computation readiness
+        already made); everything else is read off it and the collection's own
+        occurrence-attempt record."""
+        if trigger is CycleTrigger.ON_DEMAND:
+            return _DispatchDecision(due_at=None, reason=DispatchReason.ON_DEMAND)
+        assert due_at is not None  # a CADENCE dispatch always has its occurrence
+        prior = self._occurrence_attempts.get(name)
+        if prior is not None and prior.due_at == due_at:
+            reason = (
+                DispatchReason.RETRY_PREEMPTED if prior.preempted else DispatchReason.RETRY_FAILED
+            )
+            return _DispatchDecision(due_at=due_at, reason=reason, attempt=prior.attempt + 1)
+        on_time_window = timedelta(seconds=PennyConstants.COLLECTOR_ON_TIME_WINDOW_SECONDS)
+        if now - due_at <= on_time_window:
+            return _DispatchDecision(due_at=due_at, reason=DispatchReason.ON_TIME)
+        offline = due_at < self._process_started_at
+        reason = DispatchReason.CATCH_UP_OFFLINE if offline else DispatchReason.CATCH_UP
+        return _DispatchDecision(due_at=due_at, reason=reason)
 
     def _settle_cycle(
         self,
@@ -352,6 +443,7 @@ class Collector(BackgroundAgent):
         response: ControllerResponse | None,
         reads: tuple[CursorReadTool, ...],
         notified: NotificationOutcome | None,
+        dispatch: _DispatchDecision,
     ) -> tuple[RunOutcome, str]:
         """How the cycle ended, and everything that follows from it (#1936) —
         determined ONCE and read by everything that has to know whether it was real.
@@ -363,11 +455,20 @@ class Collector(BackgroundAgent):
         question — a cycle that never reached its conclusion is thrown out whole and
         retried from the state it started in.  Runs while the program is still
         bound, since the deterministic arm is read off it; the caller unbinds after.
+
+        ``dispatch`` (#2862) is stamped on the run unconditionally, whatever end
+        this cycle reaches — WHY it started is independent of HOW it finished —
+        and ``_track_occurrence`` remembers it for the next dispatch at the same
+        occurrence, if any.
         """
         end = self._cycle_end(cancelled, response, notified)
         landed = self._settle_writes(collection.name, end)
         self.settle_reads(reads, landed)
         deferred = self._settle_occurrence(collection.name, trigger, end, response)
+        self._track_occurrence(collection.name, trigger, dispatch, end, deferred)
+        self.db.messages.set_run_dispatch(
+            run_id, dispatch.due_at, dispatch.reason.value, dispatch.attempt
+        )
         if cancelled:
             self._tag_promptlog_run_cancelled(run_id)
             return RunOutcome.FAILED, ""
@@ -378,6 +479,28 @@ class Collector(BackgroundAgent):
         if not deferred:
             self._retire_if_ended(collection, run_id)
         return outcome, reason
+
+    def _track_occurrence(
+        self,
+        name: str,
+        trigger: CycleTrigger,
+        dispatch: _DispatchDecision,
+        end: CycleEnd,
+        deferred: bool,
+    ) -> None:
+        """Remember this occurrence's attempt count (#2862) so the NEXT dispatch
+        at the same due instant reads as a retry.  Only a CADENCE cycle carries
+        an occurrence to track; an on-demand run neither reads nor writes this."""
+        if trigger is not CycleTrigger.CADENCE or dispatch.due_at is None:
+            return
+        if not deferred:
+            self._occurrence_attempts.pop(name, None)
+            return
+        self._occurrence_attempts[name] = _OccurrenceAttempt(
+            due_at=dispatch.due_at,
+            attempt=dispatch.attempt or 1,
+            preempted=end is CycleEnd.CANCELLED,
+        )
 
     def _cycle_message(
         self, outcome: RunOutcome, reason: str, response: ControllerResponse | None
@@ -1194,14 +1317,14 @@ class Collector(BackgroundAgent):
         # readiness from archival).
         if memory.expires_at is not None and now >= stored_as_utc(memory.expires_at):
             return False
-        if not self._schedule_due(memory, schedule, now):
+        if not self._schedule_due(memory, now):
             return False
         # The schedule says it's time.  Now the cursor gate: a log-driven
         # collection caught up on every live input is skipped without entering the
         # model — the watermark, not the clock, says there's work.
         return self._input_pending(memory) is not False
 
-    def _schedule_due(self, memory: MemoryRow, schedule: str, now: datetime) -> bool:
+    def _schedule_due(self, memory: MemoryRow, now: datetime) -> bool:
         """Whether the collection's RRULE has come round again (#1857).
 
         Ready iff ``now`` has reached the occurrence the collection is WAITING ON.  On
@@ -1223,9 +1346,20 @@ class Collector(BackgroundAgent):
         only mean a hand-edited row: it is logged and skipped rather than crashing the
         dispatcher for every other collection (visible degradation over a silent stall).
         """
+        next_fire = self._due_occurrence(memory)
+        return next_fire is not None and now >= next_fire
+
+    def _due_occurrence(self, memory: MemoryRow) -> datetime | None:
+        """The occurrence ``_schedule_due`` is waiting on, or ``None`` for no
+        schedule / an unreadable one — the one place ``next_occurrence`` is
+        called for readiness, so a dispatched cycle's own due time (#2862) is
+        read off this SAME result rather than a second computation.  Pure and
+        clock-independent: the next-fire instant doesn't depend on ``now``."""
+        if memory.schedule is None:
+            return None
         try:
-            next_fire = next_occurrence(
-                schedule,
+            return next_occurrence(
+                memory.schedule,
                 memory.created_at,
                 user_timezone_name(self.db),
                 after=memory.last_collected_at,
@@ -1235,11 +1369,10 @@ class Collector(BackgroundAgent):
                 "Skipping collection '%s': schedule %r isn't a readable rule (%s) — "
                 "set a valid one via collection_configure",
                 memory.name,
-                schedule,
+                memory.schedule,
                 exc,
             )
-            return False
-        return next_fire is not None and now >= next_fire
+            return None
 
     # ── Cursor gate (skip-when-no-new-input) ──────────────────────────────
 

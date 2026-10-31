@@ -30,6 +30,7 @@ from penny.config import Config
 from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.database import Database
+from penny.database.message_store import RunOutcomeStamp
 from penny.database.models import (
     MemoryEntry,
     MemoryRow,
@@ -149,7 +150,14 @@ def _add_run(
     calls: int,
     finished_at: datetime,
     reason: str = "",
+    due_at: datetime | None = None,
+    dispatch_reason: str | None = None,
+    dispatch_attempt: int | None = None,
 ) -> None:
+    """``due_at``/``dispatch_reason``/``dispatch_attempt`` (#2862) are the run's
+    own dispatch stamp — ``None`` (the default) on every existing caller, so
+    the jobs-list last-run line renders exactly as before unless a test
+    names one."""
     response = {"choices": [{"message": {"tool_calls": [{"id": str(i)} for i in range(calls)]}}]}
     session.add(
         PromptLog(
@@ -162,6 +170,9 @@ def _add_run(
             run_reason=reason,
             run_target=target,
             timestamp=finished_at,
+            run_due_at=due_at,
+            run_dispatch_reason=dispatch_reason,
+            run_dispatch_attempt=dispatch_attempt,
         )
     )
 
@@ -447,6 +458,60 @@ def test_self_state_schedule_mechanism_render(db):
         session.commit()
     _add_user(db)
     assert SelfStateHeader(db, USER).render() == _SCHEDULE_MECH
+
+
+# ── 1c. The last-run line states WHY a cycle started when it did (#2862) ──
+
+
+def test_last_run_line_on_time_stays_byte_identical(db):
+    """An ON-TIME run's last-run line renders exactly as it always has — this
+    line rides the cached prefix of every chat prompt, so an on-time run must
+    never grow a tail."""
+    stamp = RunOutcomeStamp(
+        outcome="worked",
+        finished_at=_t(13, 32),
+        due_at=_t(13, 30),
+        dispatch_reason="on_time",
+    )
+    assert SelfStateHeader(db, None)._last_run(stamp) == "last run WORKED 2026-07-11 13:32 UTC"
+
+
+def test_last_run_line_catch_up_across_a_restart_appends_the_reason(db):
+    """Catching up a missed run across a restart names the due time Penny was
+    offline at, on the user's own clock — ``_t(13, 30)`` UTC is 9:30 AM EDT in
+    July on ``America/New_York``, the seeded user's zone."""
+    _add_user(db)
+    stamp = RunOutcomeStamp(
+        outcome="worked",
+        finished_at=_t(23, 12),
+        due_at=_t(13, 30),
+        dispatch_reason="catch_up_offline",
+    )
+    assert SelfStateHeader(db, USER)._last_run(stamp) == (
+        "last run WORKED 2026-07-11 23:12 UTC, catching up a missed run: "
+        "Penny was offline at 09:30 AM EDT"
+    )
+
+
+def test_last_run_line_retry_appends_the_attempt(db):
+    _add_user(db)
+    stamp = RunOutcomeStamp(
+        outcome="worked",
+        finished_at=_t(13, 35),
+        due_at=_t(13, 30),
+        dispatch_reason="retry_failed",
+        dispatch_attempt=2,
+    )
+    assert SelfStateHeader(db, USER)._last_run(stamp) == (
+        "last run WORKED 2026-07-11 13:35 UTC, retrying after a failed attempt (attempt 2)"
+    )
+
+
+def test_last_run_line_with_no_dispatch_stamp_is_unchanged(db):
+    """A run logged before #2862 carries no dispatch stamp — the line renders
+    exactly as it always did, no tail guessed."""
+    stamp = RunOutcomeStamp(outcome="worked", finished_at=_t(9, 32))
+    assert SelfStateHeader(db, None)._last_run(stamp) == "last run WORKED 2026-07-11 09:32 UTC"
 
 
 # ── 2. Empty state — a fresh deployment ───────────────────────────────────

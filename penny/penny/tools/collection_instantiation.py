@@ -547,6 +547,39 @@ def _cadence_phrase(parts: Mapping[str, str]) -> str:
     return f"{every} {noun} at {hours}" if hours else f"{every} {noun}"
 
 
+_FREQ_WORD = {
+    "SECONDLY": "secondly",
+    "MINUTELY": "minutely",
+    "HOURLY": "hourly",
+    "DAILY": "daily",
+    "WEEKLY": "weekly",
+    "MONTHLY": "monthly",
+    "YEARLY": "yearly",
+}
+
+
+def schedule_cadence_word(schedule: str) -> str:
+    """The rule's cadence ALONE, with no time-of-day clause — ``daily``,
+    ``weekdays``, ``every 3 days`` — the word a dispatched run's own reason line
+    names its schedule by (#2862).  Read fresh off the collection's CURRENT rule
+    (never a stored snapshot), the same parsed parts ``_cadence_phrase`` reads for
+    the richer ``describe_schedule`` clause.  Empty for an unreadable rule — the
+    caller drops the word rather than inventing one."""
+    canonical = _canonical_lines(schedule)
+    rule_line = _rule_line(canonical)
+    if rule_line is None:
+        return ""
+    parts = _rule_parts(rule_line)
+    freq = parts.get("FREQ", "").upper()
+    interval = parts.get("INTERVAL")
+    if interval not in (None, "1"):
+        unit = _FREQ_UNIT.get(freq, freq.lower() or "cycle")
+        return f"every {interval} {unit}s"
+    if freq == "WEEKLY" and "BYDAY" in parts:
+        return _days_phrase(parts["BYDAY"])
+    return _FREQ_WORD.get(freq, freq.lower())
+
+
 def _has_dtstart(canonical: str) -> bool:
     """Whether the schedule states its own start — the only other line a stored rule
     can carry alongside its one rule line (#1857's grammar)."""

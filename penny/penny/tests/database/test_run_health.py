@@ -9,15 +9,17 @@ worked run and a healthy quiet read carry no flags.
 """
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 
 from penny.agents.models import ModelCallError, RunAbort
-from penny.constants import CycleTrigger, PennyConstants
+from penny.constants import CycleTrigger, DispatchReason, PennyConstants
 from penny.database.memory import (
     LoggedToolCall,
     RunHealthLog,
     classify_run,
+    dispatch_line,
     half_formed_send_reason,
     render_run_calls,
     render_run_health,
@@ -71,6 +73,10 @@ def _prompt(
     discard_reason: str | None = None,
     completion_tokens: int | None = None,
     duration_ms: int | None = None,
+    timestamp: datetime | None = None,
+    due_at: datetime | None = None,
+    dispatch_reason: str | None = None,
+    dispatch_attempt: int | None = None,
 ) -> PromptLog:
     """One promptlog row.  Only the run's LAST row carries outcome/tool_failures
     (that's how ``set_run_outcome`` stamps it); ``messages`` holds the tool-result
@@ -83,23 +89,31 @@ def _prompt(
     fixtures, which predate the feature and render identically either way.
     ``discard_reason``/``completion_tokens``/``duration_ms`` (#2843) are per-row
     facts the facts clause tallies/sums across every row of a run, not just the
-    last."""
+    last.  ``timestamp`` (defaults to the model's own ``now()`` when omitted) and
+    ``due_at``/``dispatch_reason``/``dispatch_attempt`` (#2862) are the run's own
+    dispatch stamp, carried on the same last row as ``outcome``."""
     message: dict = {"role": "assistant", "content": "", "tool_calls": calls}
-    return PromptLog(
-        model="m",
-        messages=messages,
-        response=json.dumps({"choices": [{"message": message}]}),
-        run_id=run_id,
-        run_target=target,
-        run_outcome=outcome,
-        run_reason=reason,
-        tool_failures=tool_failures,
-        trailing_messages=trailing,
-        thinking=thinking,
-        discard_reason=discard_reason,
-        completion_tokens=completion_tokens,
-        duration_ms=duration_ms,
-    )
+    kwargs: dict = {
+        "model": "m",
+        "messages": messages,
+        "response": json.dumps({"choices": [{"message": message}]}),
+        "run_id": run_id,
+        "run_target": target,
+        "run_outcome": outcome,
+        "run_reason": reason,
+        "tool_failures": tool_failures,
+        "trailing_messages": trailing,
+        "thinking": thinking,
+        "discard_reason": discard_reason,
+        "completion_tokens": completion_tokens,
+        "duration_ms": duration_ms,
+        "run_due_at": due_at,
+        "run_dispatch_reason": dispatch_reason,
+        "run_dispatch_attempt": dispatch_attempt,
+    }
+    if timestamp is not None:
+        kwargs["timestamp"] = timestamp
+    return PromptLog(**kwargs)
 
 
 # The argless ``done()`` sentinel (#1569): no ``success``/``summary`` — the run
@@ -1096,6 +1110,166 @@ def test_render_run_health_names_chat_and_collector_sources():
     assert render_run_health(chat_run, "hi!") == (
         "run chat-x [chat] · 1 calls · 0 output tok · 0 seconds · "
         "discarded: none · tool errors: none · sent 1 message, links: 0"
+    )
+
+
+# ── The dispatch-reason line (#2862) ───────────────────────────────────────
+#
+# A job's run record states, in one line, when it started, which occurrence it
+# was for, and WHY it ran then — a closed set, decided at dispatch and read
+# back here from the three stamped columns, never re-derived.  ``dispatch_line``
+# is pure over its three arguments, so these fixtures need no DB: a
+# collector cycle due at 9:30 AM, on America/New_York's clock (EDT in July).
+
+_NY = "America/New_York"
+_DUE = datetime(2026, 7, 20, 13, 30, tzinfo=UTC)  # 9:30 AM EDT
+
+
+def test_dispatch_line_on_time():
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r1",
+            timestamp=datetime(2026, 7, 20, 13, 32, tzinfo=UTC),  # 9:32 AM EDT
+            due_at=_DUE,
+            dispatch_reason=DispatchReason.ON_TIME.value,
+        )
+    ]
+    assert dispatch_line(prompts, _NY, "daily") == (
+        "started 09:32 AM EDT for the daily 09:30 AM EDT run · on time"
+    )
+
+
+def test_dispatch_line_catch_up_across_a_restart():
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r2",
+            timestamp=datetime(2026, 7, 20, 23, 12, tzinfo=UTC),  # 7:12 PM EDT
+            due_at=_DUE,
+            dispatch_reason=DispatchReason.CATCH_UP_OFFLINE.value,
+        )
+    ]
+    assert dispatch_line(prompts, _NY, "daily") == (
+        "started 07:12 PM EDT for the daily 09:30 AM EDT run · "
+        "catching up a missed run: Penny was offline at 09:30 AM EDT"
+    )
+
+
+def test_dispatch_line_catch_up_without_a_restart():
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r3",
+            timestamp=datetime(2026, 7, 20, 23, 12, tzinfo=UTC),  # 7:12 PM EDT
+            due_at=_DUE,
+            dispatch_reason=DispatchReason.CATCH_UP.value,
+        )
+    ]
+    assert dispatch_line(prompts, _NY, "daily") == (
+        "started 07:12 PM EDT for the daily 09:30 AM EDT run · catching up a missed run"
+    )
+
+
+def test_dispatch_line_retry_after_a_preemption():
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r4",
+            timestamp=datetime(2026, 7, 20, 13, 34, tzinfo=UTC),  # 9:34 AM EDT
+            due_at=_DUE,
+            dispatch_reason=DispatchReason.RETRY_PREEMPTED.value,
+            dispatch_attempt=2,
+        )
+    ]
+    assert dispatch_line(prompts, _NY, "daily") == (
+        "started 09:34 AM EDT for the daily 09:30 AM EDT run · "
+        "retrying after an interrupted attempt (attempt 2)"
+    )
+
+
+def test_dispatch_line_retry_after_a_failure():
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r5",
+            timestamp=datetime(2026, 7, 20, 13, 35, tzinfo=UTC),  # 9:35 AM EDT
+            due_at=_DUE,
+            dispatch_reason=DispatchReason.RETRY_FAILED.value,
+            dispatch_attempt=2,
+        )
+    ]
+    assert dispatch_line(prompts, _NY, "daily") == (
+        "started 09:35 AM EDT for the daily 09:30 AM EDT run · "
+        "retrying after a failed attempt (attempt 2)"
+    )
+
+
+def test_dispatch_line_on_demand():
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r6",
+            timestamp=datetime(2026, 7, 20, 18, 14, tzinfo=UTC),  # 2:14 PM EDT
+            dispatch_reason=DispatchReason.ON_DEMAND.value,
+        )
+    ]
+    assert dispatch_line(prompts, _NY, "daily") == "started 02:14 PM EDT on demand"
+
+
+def test_dispatch_line_empty_for_a_row_predating_the_stamp():
+    """A chat run, or any collector row logged before #2862, carries no
+    dispatch stamp — ``dispatch_line`` renders nothing, never a guess."""
+    prompts = [_prompt([], run_id="old", target=None)]
+    assert dispatch_line(prompts, _NY, "daily") == ""
+
+
+def test_render_run_health_prepends_the_dispatch_line():
+    """``render_run_health`` carries the dispatch line (#2862) as its own
+    leading line, ahead of the existing header/facts line, unchanged."""
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r7",
+            target="games",
+            timestamp=datetime(2026, 7, 20, 13, 32, tzinfo=UTC),
+            due_at=_DUE,
+            dispatch_reason=DispatchReason.ON_TIME.value,
+        )
+    ]
+    assert render_run_health(prompts, None, timezone_name=_NY, schedule_words="daily") == (
+        "started 09:32 AM EDT for the daily 09:30 AM EDT run · on time\n"
+        "run r7 [games] worked · 1 calls · 0 output tok · 0 seconds · "
+        "discarded: none · tool errors: none · sent 0 messages"
+    )
+
+
+def test_render_run_calls_prepends_the_dispatch_line():
+    """``render_run_calls`` (``run_list``/``run_get``) carries the same leading
+    dispatch line (#2862), ahead of the ``run <id>`` anchor line."""
+    prompts = [
+        _prompt(
+            [_DONE_OK],
+            outcome="worked",
+            run_id="r8",
+            target="games",
+            timestamp=datetime(2026, 7, 20, 13, 32, tzinfo=UTC),
+            due_at=_DUE,
+            dispatch_reason=DispatchReason.ON_TIME.value,
+        )
+    ]
+    rendered = render_run_calls(
+        prompts, with_thinking=False, delivered_text=None, timezone_name=_NY, schedule_words="daily"
+    )
+    assert rendered.startswith(
+        "started 09:32 AM EDT for the daily 09:30 AM EDT run · on time\nrun r8\n"
     )
 
 
