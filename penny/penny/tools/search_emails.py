@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 NO_EMAILS_FOUND = (
     "No emails found matching that query. Try a broader or differently worded search "
-    "(fewer terms, or a sender or subject keyword), or `list_folders()` to confirm where "
+    "(fewer terms, or a sender or subject keyword), or `list_folders{}` to confirm where "
     "to look."
 )
 
@@ -54,7 +54,7 @@ class SearchEmailsTool(Tool):
     description = (
         "Search the user's email by keyword, sender, subject, or date range. Returns "
         "matching email summaries — each with an id, subject, sender, date, and preview. "
-        "Find candidates here, then pass their ids to `read_emails(email_ids=[<id>])` for "
+        "Find candidates here, then pass their ids to `read_emails{email_ids: [<id>]}` for "
         "the full bodies."
     )
     parameters: dict[str, Any] = {

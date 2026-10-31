@@ -52,15 +52,16 @@ from penny.tools.browse import BrowseTool  # noqa: F401  (registers browse)
 from penny.tools.choose import ChooseTool  # noqa: F401  (registers choose)
 from penny.tools.memory_tools import build_memory_tools  # noqa: F401  (registers memory)
 
-# A call reference in rendered text: a registered tool's name followed by ``(``, or the
-# name in backticks.  Both are how these messages name a tool the model should call.
+# A call reference in rendered text: a registered tool's name followed by ``{``
+# (gemma's own brace call shape, #2859 — never the retired ``(``), or the name in
+# backticks.  Both are how these messages name a tool the model should call.
 #
-# Matched on a WORD BOUNDARY, because tool names nest: ``collection_list(``
-# contains ``list(``, and a plain substring test reads one call as two.  The
-# paren is ATTACHED, because a call is written ``tool(`` and never ``tool (`` — the
+# Matched on a WORD BOUNDARY, because tool names nest: ``collection_list{``
+# contains ``list{``, and a plain substring test reads one call as two.  The
+# brace is ATTACHED, because a call is written ``tool{`` and never ``tool {`` — the
 # space-separated form is ordinary prose ("search (the meaning leg)") and reading it as
 # a call would make the invariant fail on sentences.
-_CALL_REFERENCE = r"\b{name}\("
+_CALL_REFERENCE = r"\b{name}\{{"
 _QUOTED_REFERENCE = r"`{name}`"
 
 
@@ -73,8 +74,8 @@ def _names_tool(text: str, name: str) -> bool:
 
 
 _PROGRAM = (
-    "1. browse(queries=['https://ex.example/t'], extract='the dawn sailing')\n"
-    "2. collection_write(memory='ferry-departures', entries=[{'key': 'x'}])"
+    "1. browse{queries: ['https://ex.example/t'], extract: 'the dawn sailing'}\n"
+    "2. collection_write{memory: 'ferry-departures', entries: [{'key': 'x'}]}"
 )
 
 

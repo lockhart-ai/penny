@@ -943,10 +943,10 @@ async def test_build_system_prompt_carries_no_job_identity(test_config, tmp_path
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
-        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
+        "- Single batched `collection_write{entries: [...]}` per cycle — not one call per entry.\n"
         "- To correct an entry: `collection_write` it under the key it is stored under — the store "
         "keeps one value per key and replaces the stored content in place. If the entry should "
-        "be removed instead: `collection_remove(key=<key>)`.\n"
+        "be removed instead: `collection_remove{key: <key>}`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
@@ -1411,7 +1411,7 @@ def _bad_done_then_close(mock_llm, bad_args: dict):
                 },
             )
         last = _last_tool_result(request)
-        if "Call done(" in last and "notify" in last:
+        if "Call done{" in last and "notify" in last:
             return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
         return mock_llm._make_tool_call_response(request, DoneTool.name, bad_args)
 
@@ -2229,10 +2229,10 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
-        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
+        "- Single batched `collection_write{entries: [...]}` per cycle — not one call per entry.\n"
         "- To correct an entry: `collection_write` it under the key it is stored under — the store "
         "keeps one value per key and replaces the stored content in place. If the entry should "
-        "be removed instead: `collection_remove(key=<key>)`.\n"
+        "be removed instead: `collection_remove{key: <key>}`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
@@ -3174,7 +3174,7 @@ async def test_run_for_archived_collection(test_config, tmp_path):
     assert success is False
     assert "archived" in message
     # names the exact recovery move — restore this collection (#2812: the folded tool)
-    assert "collection_archive('archived-col', archived=False)" in message
+    assert "collection_archive{'archived-col', archived: false}" in message
 
 
 @pytest.mark.asyncio

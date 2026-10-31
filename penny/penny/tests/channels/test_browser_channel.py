@@ -428,7 +428,7 @@ class TestBrowseTool:
         # The recovery is spelled as the exact next call with bound args (canonical
         # call notation), not a bare "browse" mention, and the ceiling is named as
         # the per-call TOTAL (#2662).
-        assert "browse(items=['https://d.com'])" in result.message
+        assert "browse{items: ['https://d.com']}" in result.message
         assert "beyond the 3-per-call total" in result.message
 
         # The narration names only what ran (#2661) — the requested list past the
@@ -545,7 +545,7 @@ class TestBrowseTool:
         assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://d.com" not in result.message
         assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
         assert "beyond the 3-per-call total" in result.message
-        assert "browse(items=['https://d.com'])" in result.message
+        assert "browse{items: ['https://d.com']}" in result.message
 
     @pytest.mark.asyncio
     async def test_checks_permission_before_browsing(self, db: Database):

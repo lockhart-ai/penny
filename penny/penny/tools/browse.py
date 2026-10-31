@@ -153,7 +153,7 @@ NARRATION_FAILURE_SUFFIX = (
 # dialect ages out; the rejection teaches the new one in one round trip.
 _DEAD_DIALECT_TRANSLATION = (
     "browse takes items now, one per lookup, each with what it is looking for. "
-    "That call, translated, is: browse(items={items}) — pass it like that."
+    "Pass that as browse's items: browse{{items: {items}}}."
 )
 _SEARCH_LOOKING_LINE = "Looking for: {looking_for}."
 # The picker's honest escape (no usable answer) renders the trimmed results list
@@ -1117,7 +1117,7 @@ class BrowseTool(Tool):
         return (
             f"{PennyConstants.BROWSE_DROPPED_HEADER}only the first {ran} run; "
             f"{count} beyond the {total}-per-call total were not run: {dropped_list}. "
-            f"Call browse(items=[{dropped_list}]) again if you still need the results."
+            f"Call browse{{items: [{dropped_list}]}} again if you still need the results."
         )
 
     async def _read_page(self, url: str) -> BrowsePage:

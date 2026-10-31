@@ -44,12 +44,12 @@ _EXPECTED_DESCRIPTION = (
 _TOO_FEW_REFUSAL = (
     "options (array: The options to choose among (2 or more).): provide at least 2 "
     "options to choose among — a random pick needs two or more to pick between. "
-    "Call choose(<valid arguments>) again."
+    "Call choose{<valid arguments>} again."
 )
 _BLANK_REFUSAL = (
     "options (array: The options to choose among (2 or more).): every option must be "
     "real text — one or more options were blank or whitespace only. "
-    "Call choose(<valid arguments>) again."
+    "Call choose{<valid arguments>} again."
 )
 
 

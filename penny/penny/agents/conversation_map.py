@@ -403,7 +403,7 @@ class ConversationMap:
                 self._Line(
                     text=(
                         f"- {oldest_date} · {covered} {self.DAY_LINE_TAIL} — "
-                        f"log_read('user-messages', day='{oldest_iso}')"
+                        f"log_read{{'user-messages', day: '{oldest_iso}'}}"
                     ),
                     date=oldest_date,
                     date_iso=oldest_iso,
@@ -420,6 +420,6 @@ class ConversationMap:
         the horizon rolls and break the byte-identical-prefix property the map's
         cache stability rests on."""
         return (
-            f"{self.ANCHOR_PREFIX}log_read('user-messages', day='YYYY-MM-DD'), "
-            "log_read('penny-messages', day='YYYY-MM-DD')"
+            f"{self.ANCHOR_PREFIX}log_read{{'user-messages', day: 'YYYY-MM-DD'}}, "
+            "log_read{'penny-messages', day: 'YYYY-MM-DD'}"
         )

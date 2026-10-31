@@ -260,7 +260,7 @@ def test_past_the_ceiling_the_oldest_whole_day_collapses(db) -> None:
     day_lines = [line for line in content_lines if "exchanges — log_read" in line]
     assert len(day_lines) == 1, rendered
     assert day_lines[0].startswith("- ")
-    assert "log_read('user-messages', day='" in day_lines[0]
+    assert "log_read{'user-messages', day: '" in day_lines[0]
     assert len(content_lines) <= 5
     # Never trimmed line-by-line: every exchange the day line replaced is gone whole.
     assert "exchange ask 0" not in rendered and "exchange ask 4" not in rendered

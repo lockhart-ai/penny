@@ -213,8 +213,8 @@ def format_entries(
 # entries out — named total, named follow-up calls, so the cut is never silent.
 _BOUNDED_READ_CUT_HEADER = (
     "Showing {shown} of {total} entries in {collection}, {ordering}. For more, "
-    "{tool}({collection}, k=<n>); for an overview, collection_keys({collection}); "
-    "to search, find(...)"
+    "{tool}{{{collection}, k: <n>}}; for an overview, collection_keys{{{collection}}}; "
+    "to search, find{{...}}"
 )
 
 
@@ -730,8 +730,8 @@ _INERT_JOB_ARGS_REFUSAL = (
     "Can't set a schedule, notify, or expiry on '{name}' without a prompt — those describe "
     "a JOB, and a prompt-less collection is inert storage with no job to run. Create it as "
     "storage now (name + description only), then attach a job later with "
-    "collection_configure(collection='{name}', prompt=<what the job's cycles should do>, "
-    "schedule=<recurrence rule>, notify=<true/false>)."
+    "collection_configure{{collection: '{name}', prompt: <what the job's cycles should do>, "
+    "schedule: <recurrence rule>, notify: <true/false>}}."
 )
 
 # A job create with no schedule: the collection wouldn't know when to run, so it's
@@ -1154,7 +1154,7 @@ class CollectionListTool(MemoryTool):
         "order='random', a sampled) 20; name `k` to read more (or fewer) — however "
         "large, it's honoured in full. `order` is 'newest' (default, most recent "
         "first) or 'random' (a uniform random sample — for variety rather than "
-        "recency). Collections only — to read a log use `log_read(<log>)`."
+        "recency). Collections only — to read a log use `log_read{<log>}`."
     )
     parameters = {
         "type": "object",
@@ -1258,11 +1258,11 @@ class CollectionGetTool(MemoryTool):
             return ToolResult(
                 message=f"Key '{args.key}' not found in '{args.collection}'{did_you_mean or '.'} "
                 f"List the available "
-                f"keys with collection_keys('{args.collection}'), or search by meaning with "
-                f"find(query=<what you're looking for>, memory='{args.collection}'). "
+                f"keys with collection_keys{{'{args.collection}'}}, or search by meaning with "
+                f"find{{query: <what you're looking for>, memory: '{args.collection}'}}. "
                 f"If it exists under a different key, write the new content there: "
-                f"collection_write(collection='{args.collection}', "
-                f"entries=[{{'key': <the key you found>, 'content': <the new content>}}]) — "
+                f"collection_write{{collection: '{args.collection}', "
+                f"entries: [{{'key': <the key you found>, 'content': <the new content>}}]}} — "
                 f"the store replaces the content of the key you name."
             )
         return ToolResult(
@@ -1361,8 +1361,8 @@ _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '
 # a cross-key merge the ladder decided alike.
 _UPDATED_REPLY = (
     "Updated '{matched}'{matched_as}. It held: \"{prior}\". If they are different "
-    "things, restore it with collection_write(collection='{collection}', entries=[{{'key': "
-    "'{matched}', 'content': \"{prior}\"}}]) and write yours under its own key ('{key}')."
+    "things, restore it with collection_write{{collection: '{collection}', entries: [{{'key': "
+    "'{matched}', 'content': \"{prior}\"}}]}} and write yours under its own key ('{key}')."
 )
 
 
@@ -1395,8 +1395,8 @@ def _format_updated(collection: str, result: WriteResult) -> str:
 _UNSURE_REPLY = (
     "'{key}' was written as a new entry. This collection also holds '{candidate}', "
     "which looks similar — if what you wrote is the same thing as that entry, update it "
-    "with collection_write(collection='{collection}', entries=[{{'key': '{candidate}', "
-    "'content': <the value>}}]); if it is a different thing, the new entry stands as "
+    "with collection_write{{collection: '{collection}', entries: [{{'key': '{candidate}', "
+    "'content': <the value>}}]}}; if it is a different thing, the new entry stands as "
     "written."
 )
 
@@ -1479,12 +1479,12 @@ def _format_unexpected(results: list[WriteResult]) -> str:
 _EMBED_WRITE_FAILURE_COLLECTION = (
     "Couldn't embed {keys} (a transient embedding error) — nothing was written, "
     "since an entry is only stored once it has a similarity vector. Retry "
-    "collection_write(collection='{collection}', entries=<the same entries>) in a moment."
+    "collection_write{{collection: '{collection}', entries: <the same entries>}} in a moment."
 )
 _EMBED_WRITE_FAILURE_LOG = (
     "Couldn't embed this entry (a transient embedding error) — nothing was "
     "appended, since an entry is only stored once it has a similarity vector. "
-    "Retry log_append(log='{log}', content=<the same content>) in a moment."
+    "Retry log_append{{log: '{log}', content: <the same content>}} in a moment."
 )
 
 
@@ -1897,7 +1897,7 @@ def _no_schedule_refusal(
 _BLANK_PROMPT_ON_SCHEDULED_JOB = (
     "prompt (string: " + PROMPT_PARAM_DESCRIPTION + "): an empty string sets nothing — "
     "omit prompt entirely to leave it unset, or pass the instructions this job's "
-    "cycles follow, as free text. Call collection_configure(<valid arguments>) again."
+    "cycles follow, as free text. Call collection_configure{<valid arguments>} again."
 )
 
 # The clear (#2857): a blank `prompt` on a collection with no schedule in effect removes
@@ -2110,8 +2110,8 @@ _SET_BIRTH_NEEDS_DESCRIPTION = (
 _SAME_JOB_UPDATED = (
     "'{requested}' is the same job as '{existing}', which already exists — so I "
     "updated '{existing}' instead of creating a second collection for it. It's "
-    "'{existing}' from here on: read it with collection_list('{existing}') or "
-    "adjust it with collection_configure(collection='{existing}', ...). If this really is a "
+    "'{existing}' from here on: read it with collection_list{{'{existing}'}} or "
+    "adjust it with collection_configure{{collection: '{existing}', ...}}. If this really is a "
     "separate task, set it up again with a name that carries what makes it "
     "different.\n"
 )
@@ -2191,7 +2191,7 @@ class CollectionUpdateTool(MemoryTool):
         "\n"
         "IMPORTANT: `prompt` is a FULL replacement — the whole "
         "prompt body, never a diff or a fragment; read the current body via "
-        "`memory_get(<collection>)` first if you need to keep any of it."
+        "`memory_get{<collection>}` first if you need to keep any of it."
     )
     parameters = {
         "type": "object",
@@ -2676,7 +2676,7 @@ class CollectionRemoveTool(MemoryTool):
                 lead = f"No entry with key '{args.key}' in '{args.collection}' — nothing to delete."
             return ToolResult(
                 message=f"{lead} "
-                f"List the current keys with collection_keys('{args.collection}') to find it."
+                f"List the current keys with collection_keys{{'{args.collection}'}} to find it."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.collection}'.", mutated=True)
 
@@ -2910,7 +2910,7 @@ class LogGetTool(MemoryTool):
             return ToolResult(
                 message=(
                     f"No entry {args.id} in '{args.log}'. Read it with "
-                    f"log_read('{args.log}') to see its entries and their ids."
+                    f"log_read{{'{args.log}'}} to see its entries and their ids."
                 ),
                 success=False,
             )
@@ -2924,14 +2924,14 @@ class LogGetTool(MemoryTool):
     def _message_log_refusal(name: str) -> str:
         return (
             f"'{name}' holds messages, and a message is not read by id. "
-            f"Read them with log_read('{name}')."
+            f"Read them with log_read{{'{name}'}}."
         )
 
     @staticmethod
     def _run_log_refusal(name: str) -> str:
         return (
             f"'{name}' holds run records, and a run is read by the `run <id>` shown beside "
-            f"it, not by an entry id. Read them with log_read('{name}')."
+            f"it, not by an entry id. Read them with log_read{{'{name}'}}."
         )
 
 
@@ -3067,9 +3067,9 @@ class ReadRunCallsTool(CursorReadTool):
 # one recovers).
 _GET_EVENT_UNTYPED = (
     "'{run}' isn't a typed run id.  Pass a run token exactly as your "
-    "current-state activity block renders it — run_get(run='run <id>'), "
+    "current-state activity block renders it — run_get{{run: 'run <id>'}}, "
     "copying the whole `run <id>` token.  (Runs are the addressable events right "
-    "now; to resolve a collection or log by meaning use find(query=<text>), "
+    "now; to resolve a collection or log by meaning use find{{query: <text>}}, "
     "and your activity block names every recent event.)"
 )
 
@@ -3083,7 +3083,7 @@ _BARE_RUN_ID_RE = re.compile(r"[0-9a-f]{32}")
 _GET_EVENT_NO_RUN = (
     "No run found with id '{run_id}'.  It must be an id your current-state activity "
     "block rendered (a `run <id>` line, or a change's `(run <id>)` cause); "
-    "run_list(source='chat') — or a collector's name — lists recent run ids "
+    "run_list{{source: 'chat'}} — or a collector's name — lists recent run ids "
     "if you need to find a valid one."
 )
 
@@ -3118,12 +3118,12 @@ class GetEventTool(Tool):
         "Look up ONE run from your activity log by the typed id it rendered — a "
         "`run <id>` line, or a change's `(run <id>)` cause (the bare id works too, "
         "with or without the `run ` prefix).  Pass the whole token, "
-        "run_get(run='run <id>'), copying the id exactly as rendered, and "
+        "run_get{run: 'run <id>'}, copying the id exactly as rendered, and "
         "get that run's tool-call sequence: what it did, step by step, with each "
         "step's thinking shown where it made any — the closing part, where the "
         "decision happened.  Use it to inspect a specific run you saw in your "
         "current state; to browse a source's run history instead use "
-        "run_list(source=<'chat' or a collector name>).  Pass step=<N> to see "
+        "run_list{source: <'chat' or a collector name>}.  Pass step: <N> to see "
         "that one step's WHOLE thinking instead of the excerpt."
     )
     parameters = {
@@ -3276,7 +3276,7 @@ class LogAppendTool(MemoryTool):
 
 _FIND_EMBED_FAILURE = (
     "Couldn't embed your query (a transient embedding error) — the meaning search "
-    "needs it. Retry find(query=<what the thing is about>) in a moment, or check "
+    "needs it. Retry find{query: <what the thing is about>} in a moment, or check "
     "the list in your current-state header."
 )
 
@@ -3331,16 +3331,16 @@ def _find_addressing(match: ResolvedMatch) -> str:
     model never derives this mapping — it copies the call verbatim."""
     name = match.name
     if match.kind == ResolvedKind.LOG:
-        return f"read it with log_read('{name}')"
+        return f"read it with log_read{{'{name}'}}"
     if match.archived:
         return (
-            f"restore it with collection_archive('{name}', archived=False); its entries "
-            f"stay readable with collection_list('{name}')"
+            f"restore it with collection_archive{{'{name}', archived: false}}; its entries "
+            f"stay readable with collection_list{{'{name}'}}"
         )
     return (
-        f"read it with collection_list('{name}'), reconfigure it with "
-        f"collection_configure(collection='{name}', ...), archive it with "
-        f"collection_archive('{name}', archived=True)"
+        f"read it with collection_list{{'{name}'}}, reconfigure it with "
+        f"collection_configure{{collection: '{name}', ...}}, archive it with "
+        f"collection_archive{{'{name}', archived: true}}"
     )
 
 
@@ -3365,8 +3365,8 @@ def _entry_addressing(entry: ResolvedEntry) -> str:
     the find already carried); a keyless log entry is one ``log_get`` away, by the
     id the find itself shows in its identity line (#1640)."""
     if entry.key is None:
-        return f"log_get(log='{entry.memory_name}', id={entry.entry_id})"
-    return f"collection_get(collection='{entry.memory_name}', key='{entry.key}')"
+        return f"log_get{{log: '{entry.memory_name}', id: {entry.entry_id}}}"
+    return f"collection_get{{collection: '{entry.memory_name}', key: '{entry.key}'}}"
 
 
 def _render_entry_hit(index: int, entry: ResolvedEntry, handles: HandleTable | None = None) -> str:

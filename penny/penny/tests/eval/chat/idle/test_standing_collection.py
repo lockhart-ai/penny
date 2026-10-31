@@ -1083,7 +1083,7 @@ def _assert_the_long_prompt_renders_cut(db: Database, container: str) -> None:
     rendered whole would measure the model's restraint rather than the gap the failure
     lived in."""
     rendered = SelfStateHeader(db, TEST_SENDER).render()
-    assert f"more sentences cut — memory_get('{container}') shows the whole prompt" in rendered, (
+    assert f"more sentences cut — memory_get{{'{container}'}} shows the whole prompt" in rendered, (
         f"{container}'s prompt must render cut in the self-state:\n{rendered}"
     )
 

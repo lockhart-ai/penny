@@ -28,7 +28,7 @@ class ListFoldersTool(Tool):
     description = (
         "List every email folder in the user's mailbox. Returns each folder's name and "
         "type (Inbox, Sent, Drafts, etc.). Use this to discover what folders exist before "
-        "`list_emails(folder=<folder name>)`."
+        "`list_emails{folder: <folder name>}`."
     )
     parameters: dict[str, Any] = {
         "type": "object",

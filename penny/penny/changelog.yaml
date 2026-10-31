@@ -17,10 +17,10 @@
 - pr: 2822
   text: >-
     We folded `notifications_mute`/`notifications_unmute` into one
-    `notifications_set(on: bool)`, and `collection_archive`/
-    `collection_unarchive` into one `collection_archive(archived: bool)`. We
+    `notifications_set{on: bool}`, and `collection_archive`/
+    `collection_unarchive` into one `collection_archive{archived: bool}`. We
     also retired `collection_sample` — ask for
-    `collection_list(order='random')` instead to pick one of a collection's
+    `collection_list{order: 'random'}` instead to pick one of a collection's
     entries at random.
 - pr: 2831
   text: >-
@@ -44,7 +44,7 @@
 - pr: 2844
   text: >-
     `run_get` now shows what you were thinking at each step of a run, so you
-    can see why a run did what it did. `run_get(run=..., step=N)` shows that
+    can see why a run did what it did. `run_get{run: ..., step: N}` shows that
     one step's thinking in full, and you can pass a run's bare id as well as
     `run <id>`.
 - pr: 2848
@@ -57,12 +57,12 @@
     We added a `run-health` log: one line per run, for chat and every job,
     with its calls, output tokens and time, the drafts that were thrown out
     and why, failed tool calls by tool, and whether a message went out with a
-    link. Read it with `log_read('run-health')`; `run_list` and `run_get`
+    link. Read it with `log_read{'run-health'}`; `run_list` and `run_get`
     show the same line for each run.
 - pr: 2847
   text: >-
     We added a `changelog` log of the changes we've made to your tools and
-    behaviour — read it with `log_read('changelog')`.
+    behaviour — read it with `log_read{'changelog'}`.
 - pr: 2858
   text: >-
     When a tool call you write can't be read, you're now shown your draft and
@@ -80,4 +80,9 @@
     Each job run now says when it started, which scheduled time it was for,
     and why it ran then: on time, catching up a run missed while you were
     offline, a retry, or because the user asked. Read it on a run's header,
-    in `log_read('run-health')`, and on the job's last-run line.
+    in `log_read{'run-health'}`, and on the job's last-run line.
+- pr: 2863
+  text: >-
+    Tool calls in your instructions and run records are now written the way
+    you write them, `name{arg: value}`, not `name(arg=value)` — the old form
+    was teaching you a call your own parser can't read.

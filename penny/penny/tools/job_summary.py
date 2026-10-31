@@ -86,10 +86,12 @@ def _instructions(row: MemoryRow) -> str:
     # When the FIRST sentence itself is cut (because it's longer than cap) and
     # it's the only sentence, say "the rest is cut". Otherwise, count additional sentences.
     if len(sentences) == 1 and first_was_longer_than_cap:
-        return f"{first} (the rest is cut — memory_get('{row.name}') shows the whole prompt)"
+        return f"{first} (the rest is cut — memory_get{{'{row.name}'}} shows the whole prompt)"
     else:
         noun = "sentence" if cut == 1 else "sentences"
-        return f"{first} ({cut} more {noun} cut — memory_get('{row.name}') shows the whole prompt)"
+        return (
+            f"{first} ({cut} more {noun} cut — memory_get{{'{row.name}'}} shows the whole prompt)"
+        )
 
 
 def _sentences(prompt: str) -> list[str]:

@@ -84,10 +84,10 @@ def render_memory_not_found(name: str, suggestion: str | None = None) -> str:
         lead = f"Memory '{name}' not found."
     return (
         f"{lead} Check the name (it may be misspelled), or find "
-        f"it by meaning with find(query=<what it's about>) — it resolves your "
+        f"it by meaning with find{{query: <what it's about>}} — it resolves your "
         f"collections, logs, and skills (archived included) and names the exact tool "
-        f"for each. Or create it with collection_configure(collection='{name}') / "
-        f"log_create(log='{name}') if it should exist."
+        f"for each. Or create it with collection_configure{{collection: '{name}'}} / "
+        f"log_create{{log: '{name}'}} if it should exist."
     )
 
 
@@ -119,11 +119,11 @@ def wrong_shape_message(name: str, actual_type: str) -> str:
     if actual_type == MemoryType.LOG:
         return (
             f"Refused: '{name}' is a log, not a collection.  Read a log with "
-            f"log_read('{name}') (recent batch / cursored, oldest-first)."
+            f"log_read{{'{name}'}} (recent batch / cursored, oldest-first)."
         )
     return (
         f"Refused: '{name}' is a collection, not a log.  Read a collection with "
-        f"collection_list('{name}') / collection_get(collection='{name}', key=<key>)."
+        f"collection_list{{'{name}'}} / collection_get{{collection: '{name}', key: <key>}}."
     )
 
 

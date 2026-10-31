@@ -98,8 +98,8 @@ OPTIONAL_ARG_FORMS: dict[str, str] = {
     "expires_at": 'when it ends, e.g. 2026-03-01T09:00:00Z or "in two weeks"',
 }
 
-# No trailing period: the arg-validation envelope appends ". Call <tool>(<valid
-# arguments>) again." after each field's reason.
+# No trailing period: the arg-validation envelope appends ". Call <tool>{<valid
+# arguments>} again." after each field's reason.
 _BLANK_OPTIONAL_ARG = (
     "an empty string sets nothing — omit {field} entirely to leave it unset, or pass {form}"
 )

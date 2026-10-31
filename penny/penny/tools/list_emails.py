@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_FOLDER = "Inbox"
 
 NO_EMAILS_FOUND = (
-    "No emails found in that folder. Confirm the folder name with `list_folders()`, or try "
+    "No emails found in that folder. Confirm the folder name with `list_folders{}`, or try "
     "a different folder."
 )
 
@@ -38,7 +38,7 @@ class ListEmailsTool(Tool):
         "List emails from one folder of the user's mailbox (Inbox, Sent, Drafts, Trash, "
         "Spam; defaults to Inbox). Returns email summaries — each with an id, subject, "
         "sender, date, and preview. Browse a folder here, then pass ids to "
-        "`read_emails(email_ids=[<id>])` for full bodies. Call `list_folders()` first if "
+        "`read_emails{email_ids: [<id>]}` for full bodies. Call `list_folders{}` first if "
         "you are unsure which folders exist."
     )
     parameters: dict[str, Any] = {

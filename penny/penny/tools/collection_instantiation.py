@@ -51,7 +51,7 @@ from penny.datetime_utils import (
 
 _TOMBSTONE_DUPLICATE = (
     "There's an archived collection for this: '{name}' (archived {archived_at}) — I didn't "
-    "create a duplicate. Bring it back with collection_archive('{name}', archived=False) to "
+    "create a duplicate. Bring it back with collection_archive{{'{name}', archived: false}} to "
     "resume it, or set up a fresh one with a clearly different name and description."
 )
 
@@ -1047,8 +1047,8 @@ def render_autocreate_placeholder_note(collection: str, description: str) -> str
     carried."""
     return (
         f'Its description is only a placeholder ("{description}"). Give it one that '
-        f"says what the collection is for: collection_configure(collection='{collection}', "
-        "description=<what it holds>)."
+        f"says what the collection is for: collection_configure{{collection: '{collection}', "
+        "description: <what it holds>}."
     )
 
 
@@ -1059,8 +1059,8 @@ _INERT_ECHO = (
     "  description: {description}\n"
     "  status: inert (no prompt attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until it has a "
-    "prompt. Attach one with collection_configure(collection='{name}', prompt=<what the "
-    "job's cycles should do>, schedule=<recurrence rule>)."
+    "prompt. Attach one with collection_configure{{collection: '{name}', prompt: <what the "
+    "job's cycles should do>, schedule: <recurrence rule>}}."
 )
 
 

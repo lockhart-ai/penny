@@ -34,7 +34,7 @@ class DraftEmailTool(Tool):
     description = (
         "Compose an email and save it as a draft for the user to review — it is saved to "
         "the Drafts folder for them to edit and send, and is NEVER sent automatically. Use "
-        "this after `read_emails(email_ids=[<id>])` when the user asks you to reply."
+        "this after `read_emails{email_ids: [<id>]}` when the user asks you to reply."
     )
     parameters: dict[str, Any] = {
         "type": "object",
