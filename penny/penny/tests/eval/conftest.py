@@ -2332,6 +2332,11 @@ async def _run_samples(
     limit = asyncio.Semaphore(EVAL_CONCURRENCY)
     perf = _Perf()
     retried_boots = 0
+    # What voided each lost sample, by its exception's class and the first line of its
+    # message (#2865) — read by the health block's refusal line instead of the fault
+    # tally, which counts every model-call attempt in the run and has nothing to say
+    # about a sample that never reached one.
+    void_causes: dict[str, int] = {}
 
     async def _attempt(sample_index: int, stand_up: int, retryable: bool) -> SampleResult:
         """ONE stand-up of one sample: its own channel, its own database, its own Penny."""
@@ -2399,6 +2404,8 @@ async def _run_samples(
                 # about.  The class is recorded on the sample's exclusion, the message is
                 # printed beside it, and the cohort comes back one short — so a run can SEE it.
                 except Exception as error:
+                    label = run_health.void_cause_label(type(error).__name__, str(error))
+                    void_causes[label] = void_causes.get(label, 0) + 1
                     return _never_started(case_id, sample_index, error)
         return None
 
@@ -2418,6 +2425,7 @@ async def _run_samples(
         intended=samples,
         completed=len(results),
         excluded=excluded,
+        void_causes=void_causes,
         retried_boots=retried_boots,
     )
     return _Drive(results=results, perf=perf, voided=voided)
