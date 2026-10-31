@@ -131,6 +131,31 @@ def _parse_plugins_env(value: str | None) -> list[str]:
     return [name.strip() for name in value.split(",") if name.strip()]
 
 
+def _parse_extra_headers_env(value: str | None) -> dict[str, str]:
+    """Parse the LLM_EXTRA_HEADERS env var as a JSON object of header name to value.
+
+    Example:
+        LLM_EXTRA_HEADERS={"X-Tosh-Agent": "off"}
+    """
+    if not value or not value.strip():
+        return {}
+    try:
+        headers = json.loads(value)
+    except json.JSONDecodeError:
+        raise ValueError(
+            "LLM_EXTRA_HEADERS must be a JSON object of header names to values, "
+            'e.g. {"X-Tosh-Agent": "off"}'
+        ) from None
+    if not isinstance(headers, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
+    ):
+        raise ValueError(
+            "LLM_EXTRA_HEADERS must be a JSON object of header names to values, "
+            'e.g. {"X-Tosh-Agent": "off"}'
+        )
+    return headers
+
+
 def _validate_embedding_config() -> None:
     """Ensure the required embedding model is configured.
 
@@ -161,6 +186,7 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_model": os.getenv("LLM_MODEL", "gpt-oss:20b"),
         "llm_api_key": os.getenv("LLM_API_KEY", "not-needed"),
         "llm_provider": os.getenv("LLM_PROVIDER"),
+        "llm_extra_headers": _parse_extra_headers_env(os.getenv("LLM_EXTRA_HEADERS")),
         "llm_image_model": os.getenv("LLM_IMAGE_MODEL"),
         "llm_embedding_model": os.getenv("LLM_EMBEDDING_MODEL"),
         "llm_embedding_api_url": os.getenv("LLM_EMBEDDING_API_URL"),
@@ -264,6 +290,10 @@ class Config:
     # from several providers. A hard pin, fallbacks off: every call goes to exactly this
     # provider, and which provider answered is still recorded per call.
     llm_provider: str | None = None
+    # Extra HTTP headers sent on every LLM API request (LLM_EXTRA_HEADERS, a JSON
+    # object). Use for endpoint-specific switches, e.g. {"X-Tosh-Agent": "off"}
+    # bypasses ToshLLM's server-side agent so Penny owns the agent loop.
+    llm_extra_headers: dict[str, str] = field(default_factory=dict)
     # The local mflux image server (image_server/), bound to 127.0.0.1:8765 on the
     # host; reached from Docker via host.docker.internal (#2792).
     image_api_url: str = "http://host.docker.internal:8765"

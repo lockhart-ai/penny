@@ -270,6 +270,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `BROWSER_PORT`: WebSocket port (default: 9090, must be exposed in docker-compose)
 
 **LLM** (OpenAI-compatible endpoint — no Ollama-specific dependencies in the runtime):
+- `LLM_EXTRA_HEADERS`: Extra HTTP headers sent on every LLM API request, as a JSON object (e.g. `{"X-Tosh-Agent": "off"}` bypasses ToshLLM's server-side agent so Penny owns the agent loop and tool execution). Default: none
 - `LLM_API_URL`: API endpoint (default: http://host.docker.internal:11434)
 - `LLM_MODEL`: Single text model for all penny agents — chat, thinking, history, notify (default: gpt-oss:20b). Image attachments ride the chat turn's own user message for this model to read directly (it must understand images — a non-vision model fails the turn honestly rather than silently dropping the image; the separate `LLM_VISION_MODEL` captioning setup retired in #2635)
 - `LLM_API_KEY`: API key for the chat endpoint (default: "not-needed")

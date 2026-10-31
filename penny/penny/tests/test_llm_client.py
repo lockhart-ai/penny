@@ -68,6 +68,48 @@ def _make_status_error(
     return openai.NotFoundError("Error code: 404", response=response, body=body)
 
 
+async def _capture_list_models_request(monkeypatch, **client_kwargs) -> httpx.Request:
+    """Run one list_models call and return the HTTP request the SDK sent."""
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"object": "list", "data": []})
+
+    sdk_client = openai.AsyncOpenAI
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        monkeypatch.setattr(
+            openai,
+            "AsyncOpenAI",
+            lambda **kwargs: sdk_client(http_client=http_client, **kwargs),
+        )
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="test-model",
+            max_retries=1,
+            retry_delay=0.0,
+            **client_kwargs,
+        )
+        try:
+            await client.list_models()
+        finally:
+            await client.close()
+    assert len(requests) == 1
+    return requests[0]
+
+
+@pytest.mark.asyncio
+async def test_extra_headers_sent_on_requests(monkeypatch) -> None:
+    request = await _capture_list_models_request(monkeypatch, extra_headers={"X-Tosh-Agent": "off"})
+    assert request.headers.get("X-Tosh-Agent") == "off"
+
+
+@pytest.mark.asyncio
+async def test_no_extra_headers_by_default(monkeypatch) -> None:
+    request = await _capture_list_models_request(monkeypatch)
+    assert "X-Tosh-Agent" not in request.headers
+
+
 class TestSummarizeLlmError:
     def test_html_error_body_is_not_dumped(self) -> None:
         """A 404 served as an HTML page is summarized by type + length, never dumped."""

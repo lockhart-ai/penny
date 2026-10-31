@@ -317,6 +317,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - `LLM_API_URL`: API endpoint (default: `http://host.docker.internal:11434`)
 - `LLM_MODEL`: Single text model for all agents (default: `gpt-oss:20b`). Photo attachments ride the chat turn's own user message to this model, so it must understand images
 - `LLM_API_KEY`: API key (default: `"not-needed"`, fine for unauthenticated local backends)
+- `LLM_EXTRA_HEADERS`: Extra HTTP headers sent on every LLM API request, as a JSON object (default: none). For endpoint-specific switches — e.g., `{"X-Tosh-Agent": "off"}` bypasses ToshLLM's server-side agent so Penny keeps control of the agent loop and tool calls
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., `embeddinggemma`) that backs preference/knowledge/message embeddings — Penny fails fast at startup if it is unset
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override API URL/key for the embedding model
 - `LLM_IMAGE_MODEL`: Image generation model (e.g., `x/z-image-turbo`). Optional; enables the `generate_image` chat tool (ask Penny to draw). Image generation is the one non-OpenAI endpoint — it talks to Ollama's `/api/generate` directly
