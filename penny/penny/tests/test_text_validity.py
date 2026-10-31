@@ -21,7 +21,16 @@ from penny.text_validity import (
 
 # A chat agent's registered tool names, for the embedded-call-as-text tests below.
 REGISTERED_TOOLS = frozenset(
-    {"browse", "generate_image", "collection_configure", "find", "memory_get", "run_get", "done"}
+    {
+        "browse",
+        "generate_image",
+        "collection_configure",
+        "find",
+        "memory_get",
+        "log_read",
+        "run_get",
+        "done",
+    }
 )
 
 # Legitimate punctuation that must NEVER be flagged — conversational ellipses,
@@ -236,6 +245,24 @@ def test_is_embedded_call_as_text_catches_an_argless_brace_call():
     reply = "All set — done{}"
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
     assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "done"
+
+
+def test_is_embedded_call_as_text_catches_a_positional_brace_call():
+    """Positional brace calls like ``log_read{'run-health'}`` — a brace call with
+    a quoted argument (single or double quote) or list syntax (``<``) — are still
+    calls, not mentions, so the suffix must accept quotes and angle brackets
+    after the opening brace."""
+    reply = "Let me look. log_read{'run-health'}"
+    assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "log_read"
+
+
+def test_is_embedded_call_as_text_never_flags_a_positional_brace_call_in_inline_code():
+    """A positional brace call quoted in inline code is a worked example, not a
+    leak — the inline-code exemption (#2855) applies to this form too."""
+    reply = "**Tool call:** `log_read{'run-health'}`"
+    assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
+    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
 
 
 def test_is_embedded_call_as_text_never_flags_a_json_dict_naming_no_tool():

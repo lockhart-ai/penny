@@ -361,10 +361,12 @@ def call_as_text_tool_name(content: str, registered_tools: Collection[str]) -> s
 # The textual call syntax a draft sometimes falls back to instead of JSON,
 # right after a registered tool's name — the old paren form (an argument name
 # then ``=``), or gemma's brace form (#2863/#2867): either an empty ``{}``
-# (argless, e.g. ``done{}``) or an argument name then ``:`` (e.g.
-# ``run_get{run: '…'}``).  One constant shared by :func:`_has_textual_call_syntax`
-# and :func:`_textual_call_syntax_name` so their patterns can't drift apart.
-_TEXTUAL_CALL_SYNTAX_SUFFIX = r"(?:\(\s*[A-Za-z_]\w*\s*=|\{\s*(?:\}|[A-Za-z_]\w*\s*:))"
+# (argless, e.g. ``done{}``), an argument name then ``:`` (e.g.
+# ``run_get{run: '…'}``), or a positional argument (a quote or ``<`` for list
+# syntax, e.g. ``memory_get{'film-finds'}``).  One constant shared by
+# :func:`_has_textual_call_syntax` and :func:`_textual_call_syntax_name` so
+# their patterns can't drift apart.
+_TEXTUAL_CALL_SYNTAX_SUFFIX = r"(?:\(\s*[A-Za-z_]\w*\s*=|\{\s*(?:\}|[A-Za-z_]\w*\s*:|['\"<]))"
 
 
 def _textual_call_syntax_name(content: str, registered_tools: Collection[str]) -> str | None:
