@@ -33,6 +33,15 @@ Run inside the penny container (the prod DB is mounted at /penny/data):
     docker compose run --rm --no-deps penny \
         env LLM_API_URL=http://host.docker.internal:11434 LLM_MODEL=gpt-oss:20b \
         python -m penny.tests.eval.utils.replay --id 138385 --samples 12 --mode both
+
+A remote provider (OpenRouter) additionally needs ``LLM_API_KEY`` and, per the
+project's always-pin-the-provider rule, ``LLM_PROVIDER`` — both optional env vars
+read the same way ``make eval-remote`` reads them, never hardcoded here:
+
+    docker compose run --rm --no-deps penny \
+        env LLM_API_URL=https://openrouter.ai/api LLM_MODEL=google/gemma-4-26b-a4b-it \
+        LLM_API_KEY=$OPENROUTER_KEY LLM_PROVIDER=Cloudflare \
+        python -m penny.tests.eval.utils.replay --id 138385 --samples 12 --mode plain
 """
 
 from __future__ import annotations
@@ -43,10 +52,11 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass, field
+from typing import Any
 
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmError, LlmMessage
+from penny.llm.models import LlmError, LlmMessage, ProviderPin
 
 _DEFAULT_DB = "/penny/data/penny/penny.db"
 _RUNTIME_MARKER = "## Runtime rules"
@@ -195,7 +205,13 @@ def _compose(
 
 
 async def _replay(
-    client: LlmClient, messages: list[dict], tools: list[dict] | None, samples: int, label: str
+    client: LlmClient,
+    messages: list[dict],
+    tools: list[dict] | None,
+    samples: int,
+    label: str,
+    *,
+    dump_thinking: bool = False,
 ) -> _Tally:
     tally = _Tally()
     # The one conversion at this call site (#2563): this script works in the
@@ -221,23 +237,37 @@ async def _replay(
         thinking = response.thinking or response.message.thinking
         tally.record(first, thinking)
         print(f"  [{label} {index + 1}/{samples}] first={first or '—'} tools={names}")
+        if dump_thinking and thinking:
+            print(f"    thinking: {thinking}")
     return tally
 
 
 async def _main(args: argparse.Namespace) -> None:
     messages, tools = _load_prompt(args.db, args.id)
-    client = LlmClient(
-        api_url=os.environ.get("LLM_API_URL", "http://host.docker.internal:11434"),
-        model=os.environ.get("LLM_MODEL", "gpt-oss:20b"),
-        max_retries=3,
-        retry_delay=1.0,
-        timeout=120.0,
-    )
+    client_kwargs: dict[str, Any] = {
+        "api_url": os.environ.get("LLM_API_URL", "http://host.docker.internal:11434"),
+        "model": os.environ.get("LLM_MODEL", "gpt-oss:20b"),
+        "max_retries": 3,
+        "retry_delay": 1.0,
+        "timeout": 120.0,
+        # A remote provider (OpenRouter) needs a real key and, per the project's
+        # always-pin-the-provider rule, a hard pin — neither of which a local Ollama
+        # replay ever needed, so both stay optional and leave LlmClient's own
+        # no-op defaults (no key override, no pin) standing when unset.
+        "provider_pin": ProviderPin.pin(os.environ.get("LLM_PROVIDER")),
+    }
+    if os.environ.get("LLM_API_KEY"):
+        client_kwargs["api_key"] = os.environ["LLM_API_KEY"]
+    client = LlmClient(**client_kwargs)
     if args.mode == "plain" or not _is_collector_prompt(messages):
         # Non-collector (e.g. a chat turn): replay the verbatim messages as-is —
         # the placement split doesn't apply.  ``no_tool`` in the tally is the bail
         # signal here (the model narrated "done" instead of calling a tool).
-        (await _replay(client, messages, tools, args.samples, "verbatim")).report("verbatim")
+        (
+            await _replay(
+                client, messages, tools, args.samples, "verbatim", dump_thinking=args.dump_thinking
+            )
+        ).report("verbatim")
         return
     date, body, runtime, rest = _parse_system(messages)
     if args.body_file:
@@ -272,6 +302,13 @@ def main() -> None:
         "--nudge",
         help="fill the otherwise-empty user turn with this generic string while the "
         "body stays in the system prompt (only applies to system placement)",
+    )
+    parser.add_argument(
+        "--dump-thinking",
+        action="store_true",
+        help="print each sample's full thinking (same EVAL_DUMP_THINKING idea the "
+        "eval harness uses) — needed to read WHY a sample engaged the way it did, "
+        "not just which tool it picked first",
     )
     asyncio.run(_main(parser.parse_args()))
 
