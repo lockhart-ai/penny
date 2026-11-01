@@ -44,6 +44,7 @@ from penny.llm.models import (
     ProviderPin,
     RawFaithfulnessOutcome,
     RawFaithfulnessResult,
+    SentRequest,
     UsageTiming,
     fault_for_status,
     usage_timing_from_response,
@@ -252,6 +253,9 @@ class _ThinkingLoopCutLog(NamedTuple):
     kept_thinking: str
     detail: str
     duration_ms: int
+    # The CUT draw's own exact request (#2875) — the INITIAL prompt, never the
+    # continuation's (that one rides the main row via ``_RawTemplateDraw.sent_request``).
+    sent_request: SentRequest
 
 
 class _RawTemplateDraw(NamedTuple):
@@ -259,10 +263,13 @@ class _RawTemplateDraw(NamedTuple):
     ``_attempt_chat_request`` parses as usual — the CONTINUATION's, when a
     loop was cut, so the caller never has to tell the two apart. ``cut`` is
     the discarded draw's own logging detail, or ``None`` when nothing was
-    cut."""
+    cut. ``sent_request`` (#2875) is likewise the CONTINUATION's exact request
+    when a cut happened, the original's otherwise — whichever one produced
+    ``raw``."""
 
     raw: openai.types.completion.Completion
     cut: _ThinkingLoopCutLog | None
+    sent_request: SentRequest
 
 
 class _StreamOutcome(NamedTuple):
@@ -336,7 +343,29 @@ class _ChatAttemptResult(NamedTuple):
 
     raw: _RawCompletion
     response: LlmResponse | None
+    sent_request: SentRequest
     thinking_loop_cut: _ThinkingLoopCutLog | None = None
+
+
+class _AttemptFailedError(Exception):
+    """Internal-only (#2875): pairs whatever exception ends one attempt — an SDK
+    error (``openai.NotFoundError``/``APITimeoutError``/``APIConnectionError``/
+    ``OpenAIError``, none of which this codebase can construct with extra fields) or
+    an ``LlmError`` raised deep in the raw-template stream — with the ``SentRequest``
+    THIS attempt sent, attached at the one point in ``_attempt_chat_request`` (or the
+    raw-template helpers it calls) where both the built request and the failure are
+    in scope.
+
+    Never escapes ``_chat_attempts``: it is caught there, unwrapped, and the ORIGINAL
+    exception is what every caller downstream still sees and classifies by type —
+    this wrapper is purely plumbing so ``sent_request`` travels as a constructor
+    argument rather than through a box mutated after the fact.
+    """
+
+    def __init__(self, sent_request: SentRequest, original: Exception) -> None:
+        super().__init__(str(original))
+        self.sent_request = sent_request
+        self.original = original
 
 
 class _RawTemplateParseError(Exception):
@@ -359,10 +388,16 @@ class _RawTemplateParseError(Exception):
     it directly to split the thinking from the rest of the draft.
     """
 
-    def __init__(self, error: LlmToolParseError, raw: openai.types.completion.Completion) -> None:
+    def __init__(
+        self,
+        error: LlmToolParseError,
+        raw: openai.types.completion.Completion,
+        sent_request: SentRequest,
+    ) -> None:
         super().__init__(str(error))
         self.error = error
         self.raw = raw
+        self.sent_request = sent_request
 
 
 class LlmClient:
@@ -408,6 +443,11 @@ class LlmClient:
             "api_key": api_key,
             "max_retries": 0,  # We handle retries ourselves
         }
+        # Names only (#2875) — never the configured values, which ``LLM_EXTRA_HEADERS``
+        # lets an operator set to anything, credentials included; the API key never
+        # rides on a ``SentRequest`` at all. Stamped on every call's own logged request
+        # so a reader can tell which headers a call carried without exposing them.
+        self._extra_header_names: list[str] = sorted(extra_headers) if extra_headers else []
         if extra_headers:
             client_kwargs["default_headers"] = dict(extra_headers)
         if timeout is not None:
@@ -529,10 +569,15 @@ class LlmClient:
         # both still dealing purely in dicts, exactly as before this call's entry.
         messages_snapshot = [message.to_log_dict() for message in messages]
         try:
-            response, raw, thinking_loop_cut = await self._chat_attempts(
+            response, raw, thinking_loop_cut, sent_request = await self._chat_attempts(
                 messages_snapshot, tools, format, token_budget, thinking_enabled, transport
             )
         except asyncio.CancelledError:
+            # No attempt's own ``SentRequest`` is known here: a cancellation can land
+            # before the body was even built, or mid-network-call, and there is no
+            # exception instance to carry one off (``CancelledError`` is a
+            # ``BaseException``, never wrapped). ``request`` is ``None`` on this row,
+            # same as ``raw``/``thinking`` already are for a cancelled call.
             self._log_failed_call(
                 messages_snapshot,
                 tools,
@@ -545,6 +590,7 @@ class LlmClient:
                 parent_tool_call_id,
                 transport,
                 CallOutcome.CANCELLED,
+                sent_request=None,
             )
             raise
         except _RawTemplateParseError as failure:
@@ -577,6 +623,7 @@ class LlmClient:
                 error=failure.error,
                 raw=failure.raw,
                 thinking=thinking,
+                sent_request=failure.sent_request,
             )
             if row_id is not None:
                 self._mark_tool_parse_error_discarded(row_id, str(failure.error))
@@ -600,6 +647,7 @@ class LlmClient:
                 transport,
                 outcome,
                 error=error,
+                sent_request=error.sent_request,
             )
             raise
 
@@ -628,6 +676,7 @@ class LlmClient:
             parent_run_id,
             parent_tool_call_id,
             transport,
+            sent_request,
         )
 
     def _resolve_transport(
@@ -691,6 +740,7 @@ class LlmClient:
         transport: PromptTransport,
         outcome: CallOutcome,
         *,
+        sent_request: SentRequest | None,
         error: Exception | None = None,
         raw: _RawCompletion | None = None,
         thinking: str | None = None,
@@ -708,6 +758,11 @@ class LlmClient:
         same way a parsed draw's is) and reads this method's returned row id
         back, to stamp the row's own discard reason afterwards — every other
         caller ignores the return.
+
+        ``sent_request`` (#2875) is the failing attempt's own exact request — read
+        off the exception every caller already has in hand (``LlmError.sent_request``,
+        ``_RawTemplateParseError.sent_request``), or ``None`` for a cancelled call,
+        which carries no exception to read one off.
         """
         return self._log_call(
             messages_snapshot,
@@ -724,6 +779,7 @@ class LlmClient:
             parent_tool_call_id,
             transport,
             outcome,
+            sent_request,
             error=error,
         )
 
@@ -781,7 +837,8 @@ class LlmClient:
         """The cut draw's own ``log_prompt`` kwargs (#2842) — ``call_outcome``
         is COMPLETED (a real draw came back) with no usage/timing fields: the
         stream was closed before any usage ever arrived, so there is none to
-        report, not a guessed zero."""
+        report, not a guessed zero. ``request`` (#2875) is this cut draw's own
+        exact request — the INITIAL prompt, not the continuation's."""
         return {
             "model": self.model,
             "messages": messages_snapshot,
@@ -797,6 +854,7 @@ class LlmClient:
             "parent_tool_call_id": parent_tool_call_id,
             "transport": PromptTransport.RAW_TEMPLATE.value,
             "call_outcome": CallOutcome.COMPLETED.value,
+            "request": cut.sent_request.model_dump(),
         }
 
     def _mark_thinking_loop_discarded(self, row_id: int, detail: str) -> None:
@@ -848,13 +906,17 @@ class LlmClient:
         parent_run_id: str | None,
         parent_tool_call_id: str | None,
         transport: PromptTransport,
+        sent_request: SentRequest,
     ) -> LlmResponse:
         """Log the response and this call's ONE completed ``promptlog`` row
         (#2355 part A), then hand the response back to ``chat()``'s caller.
 
         The row's id is stamped on the response (#2702) — logging identity only,
         so a rejection site that discards this draw's output can mark its own
-        row afterwards; ``None`` when no row was written (no ``db``)."""
+        row afterwards; ``None`` when no row was written (no ``db``).
+
+        ``sent_request`` (#2875) is this call's own exact request — read straight off
+        the ``_chat_attempts`` return, never re-derived here."""
         thinking = response.thinking or response.message.thinking
         self._log_response(response, thinking)
         response.prompt_log_id = self._log_call(
@@ -872,6 +934,7 @@ class LlmClient:
             parent_tool_call_id,
             transport,
             CallOutcome.COMPLETED,
+            sent_request,
         )
         return response
 
@@ -918,7 +981,7 @@ class LlmClient:
         token_budget: int | None,
         thinking_enabled: bool,
         transport: PromptTransport,
-    ) -> tuple[LlmResponse, _RawCompletion, _ThinkingLoopCutLog | None]:
+    ) -> tuple[LlmResponse, _RawCompletion, _ThinkingLoopCutLog | None, SentRequest]:
         """The retry loop over individual network attempts.
 
         Unchanged in substance from before #2355 — each attempt's own outcome
@@ -926,13 +989,16 @@ class LlmClient:
         one per attempt) — except it no longer writes the call's ``promptlog`` row
         itself: ``chat()`` does that once, for the WHOLE call, from whichever way
         this returns or raises.  Returns the parsed response alongside the raw
-        completion the caller persists, and the attempt's own discarded
+        completion the caller persists, the attempt's own discarded
         thinking-loop cut, if any (#2842 — ``None`` on every attempt that didn't
         loop, or that failed outright: a failed CONTINUATION call goes through
         this same retry loop with no special path, so its own cut draw is
-        simply never logged, exactly like any other failed attempt's work);
-        raises an ``LlmError`` subclass (or lets a ``CancelledError`` through
-        untouched) when no attempt produced one.
+        simply never logged, exactly like any other failed attempt's work), and
+        that SAME attempt's own exact ``SentRequest`` (#2875); raises an
+        ``LlmError`` subclass (or lets a ``CancelledError`` through untouched)
+        when no attempt produced one — that error already carries its own
+        ``sent_request`` (see ``_handle_attempt_failure``), so a caller never
+        needs a second return path for a failed call's request.
         """
         last_error: Exception | None = None
 
@@ -941,25 +1007,49 @@ class LlmClient:
                 result = await self._attempt_chat_request(
                     messages, tools, format, token_budget, thinking_enabled, attempt, transport
                 )
-            except LlmError:
-                raise
-            except openai.NotFoundError as error:
-                raise self._not_found_error(attempt, error) from error
-            except openai.APITimeoutError as error:
-                last_error = await self._retry_after_timeout(attempt, error)
-            except openai.APIConnectionError as error:
-                last_error = await self._retry_after_connection_error(attempt, error)
-            except openai.OpenAIError as error:
-                last_error = await self._retry_after_openai_error(attempt, error)
+            except _AttemptFailedError as failure:
+                last_error = await self._handle_attempt_failure(attempt, failure)
             else:
                 if result.response is not None:
-                    return result.response, result.raw, result.thinking_loop_cut
-                last_error = await self._retry_after_no_choices(attempt, result.raw)
+                    return (
+                        result.response,
+                        result.raw,
+                        result.thinking_loop_cut,
+                        result.sent_request,
+                    )
+                last_error = await self._retry_after_no_choices(
+                    attempt, result.raw, result.sent_request
+                )
 
         logger.error("LLM chat failed after %d attempts: %s", self.max_retries, last_error)
         if last_error is None:
             raise LlmResponseError("LLM chat exhausted retries without a recorded error")
         raise last_error
+
+    async def _handle_attempt_failure(
+        self, attempt: int, failure: _AttemptFailedError
+    ) -> Exception:
+        """Classify one attempt's wrapped failure (#2875) — the same branching
+        ``_chat_attempts`` always did on the SDK's own exception types, now unified
+        behind ``_AttemptFailedError`` since ``sent_request`` only reaches this far
+        wrapped (an SDK exception type has no constructor Penny controls, so it
+        cannot carry one itself). Raises immediately for a terminal, non-retryable
+        fault (an ``LlmError`` already raised deep in a raw-template stream; a
+        model-not-found; an unretryable tool-parse error); returns the retryable
+        ``last_error`` otherwise, for the loop above to retry or eventually exhaust.
+        """
+        error, sent_request = failure.original, failure.sent_request
+        if isinstance(error, LlmError):
+            raise error
+        if isinstance(error, openai.NotFoundError):
+            raise self._not_found_error(attempt, error, sent_request) from error
+        if isinstance(error, openai.APITimeoutError):
+            return await self._retry_after_timeout(attempt, error, sent_request)
+        if isinstance(error, openai.APIConnectionError):
+            return await self._retry_after_connection_error(attempt, error, sent_request)
+        if isinstance(error, openai.OpenAIError):
+            return await self._retry_after_openai_error(attempt, error, sent_request)
+        raise error
 
     async def _attempt_chat_request(
         self,
@@ -976,9 +1066,15 @@ class LlmClient:
         ``result.response`` is ``None`` when the 200 carried no completion at
         all — ``_retry_after_no_choices`` is what classifies that as a
         retryable fault: an ``LlmError`` raised from here would re-raise
-        untried (the first ``except`` clause in ``_chat_attempts``), and a
+        untried (``_handle_attempt_failure``'s own classification), and a
         provider answering 200-with-no-completion is exactly the transient
         another attempt usually gets past.
+
+        Every exception this method can raise carries the attempt's own
+        ``SentRequest`` (#2875) — either directly, when it is already an
+        ``LlmError``/``_RawTemplateParseError`` constructed right here with it in
+        scope, or wrapped in ``_AttemptFailedError`` for an SDK exception type this
+        codebase cannot construct with extra fields.
         """
         logger.debug("Sending chat request (attempt %d/%d)", attempt + 1, self.max_retries)
         translated_messages = self._translate_messages(messages)
@@ -989,9 +1085,13 @@ class LlmClient:
             )
             raw = draw.raw
             thinking_loop_cut = draw.cut
+            sent_request = draw.sent_request
             if not raw.choices:
                 return _ChatAttemptResult(
-                    raw=raw, response=None, thinking_loop_cut=thinking_loop_cut
+                    raw=raw,
+                    response=None,
+                    sent_request=sent_request,
+                    thinking_loop_cut=thinking_loop_cut,
                 )
             try:
                 response = self._parse_raw_template_response(raw)
@@ -1003,18 +1103,33 @@ class LlmClient:
                 # so that line names the offending text with no change needed
                 # on its side. Wrapped so the raw completion, already fetched,
                 # reaches ``chat()``'s own logging instead of being discarded.
-                raise _RawTemplateParseError(error, raw) from error
+                raise _RawTemplateParseError(error, raw, sent_request) from error
         else:
             kwargs = self._build_chat_kwargs(
                 translated_messages, tools, format, token_budget, thinking_enabled
             )
-            raw = await self.client.chat.completions.create(**kwargs)
+            sent_request = SentRequest(
+                transport=PromptTransport.CHAT,
+                endpoint=self.api_url,
+                model=self.model,
+                body=kwargs,
+                header_names=self._extra_header_names,
+            )
+            try:
+                raw = await self.client.chat.completions.create(**kwargs)
+            except Exception as error:
+                raise _AttemptFailedError(sent_request, error) from error
             if not raw.choices:
-                return _ChatAttemptResult(raw=raw, response=None)
+                return _ChatAttemptResult(raw=raw, response=None, sent_request=sent_request)
             response = self._parse_response(raw)
 
         self._log_attempt(attempt, fault=None, provider=response.provider, detail="")
-        return _ChatAttemptResult(raw=raw, response=response, thinking_loop_cut=thinking_loop_cut)
+        return _ChatAttemptResult(
+            raw=raw,
+            response=response,
+            sent_request=sent_request,
+            thinking_loop_cut=thinking_loop_cut,
+        )
 
     async def _send_raw_template_request(
         self,
@@ -1045,38 +1160,58 @@ class LlmClient:
         """
         translated_tools = self._translate_tools(tools) if tools else None
         prompt = raw_template.render_prompt(messages, translated_tools, thinking_enabled)
-        outcome = await self._stream_raw_completion(
-            await self._create_raw_completion(prompt, token_budget),
-            tracker=thinking_loop.ThoughtStreamTracker(),
+        stream, sent_request = await self._create_raw_completion(prompt, token_budget)
+        outcome = await self._stream_consumption(
+            stream, tracker=thinking_loop.ThoughtStreamTracker(), sent_request=sent_request
         )
         if outcome.cut is None:
-            return _RawTemplateDraw(raw=_completed_raw(outcome), cut=None)
+            return _RawTemplateDraw(
+                raw=_completed_raw(outcome), cut=None, sent_request=sent_request
+            )
         if not isinstance(outcome.cut, thinking_loop.ThinkingLoopCut):
             raise LlmResponseError(
                 "a ThoughtStreamTracker must only ever produce a ThinkingLoopCut"
             )
         continuation_prompt = prompt + outcome.cut.continuation_suffix()
-        continuation = await self._stream_raw_completion(
-            await self._create_raw_completion(continuation_prompt, token_budget),
+        continuation_stream, continuation_sent_request = await self._create_raw_completion(
+            continuation_prompt, token_budget
+        )
+        continuation = await self._stream_consumption(
+            continuation_stream,
             tracker=thinking_loop.RepeatStreamTracker(),
+            sent_request=continuation_sent_request,
         )
         cut_log = _ThinkingLoopCutLog(
             kept_thinking=outcome.cut.kept_body,
             detail=outcome.cut.discard_detail(),
             duration_ms=outcome.duration_ms,
+            sent_request=sent_request,
         )
         if continuation.cut is not None:
-            return _RawTemplateDraw(raw=_budget_cut_raw(continuation), cut=cut_log)
-        return _RawTemplateDraw(raw=_completed_raw(continuation), cut=cut_log)
+            return _RawTemplateDraw(
+                raw=_budget_cut_raw(continuation),
+                cut=cut_log,
+                sent_request=continuation_sent_request,
+            )
+        return _RawTemplateDraw(
+            raw=_completed_raw(continuation), cut=cut_log, sent_request=continuation_sent_request
+        )
 
     async def _create_raw_completion(
         self, prompt: str, token_budget: int | None
-    ) -> openai.AsyncStream[openai.types.completion.Completion]:
+    ) -> tuple[openai.AsyncStream[openai.types.completion.Completion], SentRequest]:
         """One streaming raw-completions request (#2842) — the provider pin
         rides the same ``extra_body`` passthrough as the chat transport
         (:meth:`_provider_pin_extra_body`); ``stream_options.include_usage``
         asks for a final usage-bearing chunk so a non-cut draw still reports
         token counts and timing, exactly as the non-streamed call used to.
+
+        Returns this request's own ``SentRequest`` alongside the stream (#2875) —
+        built from the SAME ``kwargs`` handed to ``create()``, so nothing here is
+        re-derived from a wire shape a caller would otherwise have to rebuild. A
+        failure from ``create()`` itself is wrapped in ``_AttemptFailedError`` carrying
+        THIS request, constructed right here where both are in scope — the only
+        place this request exists, since ``create()`` never got to return it.
         """
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -1088,7 +1223,36 @@ class LlmClient:
         }
         if token_budget is not None:
             kwargs["max_tokens"] = token_budget
-        return await self.client.completions.create(**kwargs)
+        sent_request = SentRequest(
+            transport=PromptTransport.RAW_TEMPLATE,
+            endpoint=self.api_url,
+            model=self.model,
+            body=kwargs,
+            header_names=self._extra_header_names,
+        )
+        try:
+            stream = await self.client.completions.create(**kwargs)
+        except Exception as error:
+            raise _AttemptFailedError(sent_request, error) from error
+        return stream, sent_request
+
+    async def _stream_consumption(
+        self,
+        stream: openai.AsyncStream[openai.types.completion.Completion],
+        *,
+        tracker: thinking_loop.ThoughtStreamTracker | thinking_loop.RepeatStreamTracker,
+        sent_request: SentRequest,
+    ) -> _StreamOutcome:
+        """``_stream_raw_completion`` wrapped so a failure mid-stream (an SDK
+        error, or the "no chunks at all" ``LlmResponseError`` it can raise
+        directly) carries THIS stream's own ``sent_request`` out to
+        ``_chat_attempts`` (#2875) — already built by ``_create_raw_completion``
+        before this call started, so it rides in as a parameter rather than
+        being rebuilt here."""
+        try:
+            return await self._stream_raw_completion(stream, tracker=tracker)
+        except Exception as error:
+            raise _AttemptFailedError(sent_request, error) from error
 
     async def _stream_raw_completion(
         self,
@@ -1201,35 +1365,39 @@ class LlmClient:
             finish_reason=choice.finish_reason,
         )
 
-    def _not_found_error(self, attempt: int, error: openai.NotFoundError) -> LlmNotFoundError:
-        """Log, then build the terminal error for a model that doesn't exist — never retried."""
+    def _not_found_error(
+        self, attempt: int, error: openai.NotFoundError, sent_request: SentRequest
+    ) -> LlmNotFoundError:
+        """Log, then build the terminal error for a model that doesn't exist — never
+        retried. ``sent_request`` (#2875) is this attempt's own exact request, given
+        at construction so the error it returns carries it with no later mutation."""
         summary = _summarize_llm_error(error)
         self._log_attempt(attempt, fault=LlmFault.NOT_FOUND, provider=None, detail=summary)
         logger.error("LLM chat failed (model not found, no retry): %s", summary)
-        return LlmNotFoundError(summary)
+        return LlmNotFoundError(summary, sent_request=sent_request)
 
     async def _retry_after_timeout(
-        self, attempt: int, error: openai.APITimeoutError
+        self, attempt: int, error: openai.APITimeoutError, sent_request: SentRequest
     ) -> LlmTimeoutError:
         """Log a request timeout, then back off before the next attempt, if one remains."""
-        last_error = LlmTimeoutError(str(error))
+        last_error = LlmTimeoutError(str(error), sent_request=sent_request)
         self._log_attempt(attempt, fault=LlmFault.TIMEOUT, provider=None, detail=str(error))
         if attempt < self.max_retries - 1:
             await self._backoff(attempt)
         return last_error
 
     async def _retry_after_connection_error(
-        self, attempt: int, error: openai.APIConnectionError
+        self, attempt: int, error: openai.APIConnectionError, sent_request: SentRequest
     ) -> LlmConnectionError:
         """Log a connection failure, then back off before the next attempt, if one remains."""
-        last_error = LlmConnectionError(str(error))
+        last_error = LlmConnectionError(str(error), sent_request=sent_request)
         self._log_attempt(attempt, fault=LlmFault.CONNECTION, provider=None, detail=str(error))
         if attempt < self.max_retries - 1:
             await self._backoff(attempt)
         return last_error
 
     async def _retry_after_openai_error(
-        self, attempt: int, error: openai.OpenAIError
+        self, attempt: int, error: openai.OpenAIError, sent_request: SentRequest
     ) -> LlmResponseError:
         """Classify a generic OpenAI error, raising immediately for an unretryable
         tool-parse failure; otherwise log it and back off before the next
@@ -1242,22 +1410,24 @@ class LlmClient:
         if getattr(error, "status_code", None) == 500 and "error parsing tool call" in str(error):
             self._log_attempt(attempt, fault=LlmFault.TOOL_PARSE, provider=None, detail=summary)
             logger.warning("Tool parse error — model returned plain text instead of JSON tool call")
-            raise LlmToolParseError(summary) from error
+            raise LlmToolParseError(summary, sent_request=sent_request) from error
         fault = fault_for_status(getattr(error, "status_code", None))
-        last_error = LlmResponseError(summary, fault=fault)
+        last_error = LlmResponseError(summary, fault=fault, sent_request=sent_request)
         self._log_attempt(attempt, fault=fault, provider=None, detail=summary)
         if attempt < self.max_retries - 1:
             await self._backoff(attempt)
         return last_error
 
     async def _retry_after_no_choices(
-        self, attempt: int, raw: openai.types.chat.ChatCompletion
+        self, attempt: int, raw: openai.types.chat.ChatCompletion, sent_request: SentRequest
     ) -> LlmResponseError:
         """Log a 200 that carried no completion as a retryable fault — checked
         BEFORE parsing rather than raised (see ``_attempt_chat_request``) —
         then back off before the next attempt, if one remains.
         """
-        last_error = LlmResponseError(_no_payload_detail(raw, "choices"), fault=LlmFault.NO_CHOICES)
+        last_error = LlmResponseError(
+            _no_payload_detail(raw, "choices"), fault=LlmFault.NO_CHOICES, sent_request=sent_request
+        )
         self._log_attempt(
             attempt, fault=LlmFault.NO_CHOICES, provider=_provider_of(raw), detail=str(last_error)
         )
@@ -1406,21 +1576,33 @@ class LlmClient:
         """
         last_error: LlmError | None = None
         for attempt in range(self.max_retries):
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "prompt": raw_template.RAW_FAITHFULNESS_PROMPT,
+                "max_tokens": raw_template.RAW_FAITHFULNESS_MAX_TOKENS,
+                "extra_body": self._provider_pin_extra_body(),
+            }
+            # Built even though this probe never logs a ``promptlog`` row (#2875)
+            # — ``sent_request`` is a required field on the shared retry helpers
+            # below, same as every OTHER caller's; this one just never reads it
+            # back off ``last_error``.
+            sent_request = SentRequest(
+                transport=PromptTransport.RAW_TEMPLATE,
+                endpoint=self.api_url,
+                model=self.model,
+                body=kwargs,
+                header_names=self._extra_header_names,
+            )
             try:
-                raw = await self.client.completions.create(
-                    model=self.model,
-                    prompt=raw_template.RAW_FAITHFULNESS_PROMPT,
-                    max_tokens=raw_template.RAW_FAITHFULNESS_MAX_TOKENS,
-                    extra_body=self._provider_pin_extra_body(),
-                )
+                raw = await self.client.completions.create(**kwargs)
             except openai.APITimeoutError as error:
-                last_error = await self._retry_after_timeout(attempt, error)
+                last_error = await self._retry_after_timeout(attempt, error, sent_request)
                 continue
             except openai.APIConnectionError as error:
-                last_error = await self._retry_after_connection_error(attempt, error)
+                last_error = await self._retry_after_connection_error(attempt, error, sent_request)
                 continue
             except openai.OpenAIError as error:
-                last_error = await self._retry_after_openai_error(attempt, error)
+                last_error = await self._retry_after_openai_error(attempt, error, sent_request)
                 continue
             prompt_tokens = raw.usage.prompt_tokens if raw.usage else None
             outcome = (
@@ -1744,6 +1926,7 @@ class LlmClient:
         parent_tool_call_id: str | None,
         transport: PromptTransport,
         outcome: CallOutcome,
+        sent_request: SentRequest | None,
         *,
         error: Exception | None = None,
     ) -> int | None:
@@ -1775,6 +1958,9 @@ class LlmClient:
         new computation — it is what lets a reader tell a provider-side refusal
         (429/5xx) from Penny's own malformed or oversized request (4xx) without
         re-parsing the free-text message.
+
+        ``sent_request`` (#2875) is the exact wire request this call sent — ``None``
+        only for a cancelled call, which never got far enough to leave one behind.
         """
         if not self.db:
             return None
@@ -1795,6 +1981,7 @@ class LlmClient:
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
             transport=transport.value,
+            request=sent_request.model_dump() if sent_request is not None else None,
             call_outcome=outcome.value,
             call_error_class=type(error).__name__ if error is not None else None,
             call_error_message=str(error) if error is not None else None,

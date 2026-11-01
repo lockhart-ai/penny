@@ -127,6 +127,15 @@ class PromptLog(SQLModel, table=True):
     run_due_at: datetime | None = None
     run_dispatch_reason: str | None = None
     run_dispatch_attempt: int | None = None
+    # The exact wire request this call sent (#2875), zlib-compressed JSON of a
+    # ``penny.llm.models.SentRequest`` dump — not a re-render: literally the kwargs
+    # ``LlmClient`` handed the OpenAI SDK (chat transport), or those plus the
+    # already-rendered raw-template prompt string, so a prod failure replays byte
+    # for byte. Carries the configured EXTRA HEADER NAMES only — never their
+    # values (``LLM_EXTRA_HEADERS`` can carry anything, credentials included) and
+    # never the API key. NULL on every row logged before this column existed and
+    # on a cancelled call, which never got far enough to leave one behind.
+    request: bytes | None = None
 
     def get_trailing_messages(self) -> list[dict]:
         """The trailing turns as message dicts — empty when the run round-tripped

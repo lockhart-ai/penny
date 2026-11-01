@@ -28,11 +28,29 @@ framing + runtime rules stay in the (now static, cacheable) system message, and 
 collection-specific body + date move into the user turn — then replays again so the
 two structures are compared on identical content.
 
+``--mode verbatim-request`` (#2875) is a DIFFERENT kind of replay from every other
+mode here: it never re-renders anything. Every other mode re-derives its wire body
+through today's code (``LlmClient.chat()`` — its own template, its own sampling
+defaults, no token budget) from the row's ``messages``/``tools`` alone, so a replay is
+always a reconstruction at whatever commit happens to be checked out. This mode
+instead reads the row's own ``request`` column — the exact kwargs ``LlmClient`` handed
+the OpenAI SDK at send time (#2875) — and sends that body straight through a bare
+``openai.AsyncOpenAI`` of its own, overriding only ``model`` (``--model``/``LLM_MODEL``)
+and the provider pin inside ``extra_body`` (``--provider``/``LLM_PROVIDER``) when
+retargeting a different runner than the one that originally served it. Everything
+else — messages/prompt, tools, every sampling field, stop sequences, the token
+budget — rides unchanged, proving the bytes match rather than approximating them.
+
 Run inside the penny container (the prod DB is mounted at /penny/data):
 
     docker compose run --rm --no-deps penny \
         env LLM_API_URL=http://host.docker.internal:11434 LLM_MODEL=gpt-oss:20b \
         python -m penny.tests.eval.utils.replay --id 138385 --samples 12 --mode both
+
+    docker compose run --rm --no-deps penny \
+        env LLM_API_URL=http://host.docker.internal:11434 LLM_MODEL=gpt-oss:20b \
+        python -m penny.tests.eval.utils.replay --id 138385 --samples 5 \
+            --mode verbatim-request
 """
 
 from __future__ import annotations
@@ -42,11 +60,21 @@ import asyncio
 import json
 import os
 import sqlite3
+import zlib
 from dataclasses import dataclass, field
 
+import openai
+
+from penny.llm import raw_template
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmError, LlmMessage
+from penny.llm.models import (
+    PROVIDER_REQUEST_FIELD,
+    LlmError,
+    LlmMessage,
+    PromptTransport,
+    ProviderPin,
+)
 
 _DEFAULT_DB = "/penny/data/penny/penny.db"
 _RUNTIME_MARKER = "## Runtime rules"
@@ -120,6 +148,118 @@ def _load_prompt(db_path: str, prompt_id: int) -> tuple[list[dict], list[dict] |
     messages, tools, agent_name, run_target = row
     print(f"loaded id={prompt_id} agent={agent_name} target={run_target}")
     return json.loads(messages), (json.loads(tools) if tools else None)
+
+
+def _load_request(db_path: str, prompt_id: int) -> dict:
+    """Read the EXACT request off one promptlog row's ``request`` column (#2875) —
+    the zlib-compressed JSON dump of the ``SentRequest`` ``LlmClient`` stamped at
+    send time: ``{"transport", "endpoint", "model", "body", "header_names"}``,
+    where ``body`` is literally the kwargs handed to the OpenAI SDK. Never a
+    re-render — there is nothing here for this tool to reconstruct."""
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT request, agent_name, run_target FROM promptlog WHERE id = ?",
+            (prompt_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        raise SystemExit(f"no promptlog row with id={prompt_id} in {db_path}")
+    request_blob, agent_name, run_target = row
+    if request_blob is None:
+        raise SystemExit(
+            f"promptlog row id={prompt_id} carries no stored request (#2875) — "
+            "logged before the column existed, or a cancelled call that never "
+            "got far enough to leave one behind"
+        )
+    print(f"loaded id={prompt_id} agent={agent_name} target={run_target}")
+    return json.loads(zlib.decompress(request_blob))
+
+
+def _retargeted_body(sent_request: dict, model: str | None, provider: str | None) -> dict:
+    """Override ONLY what differs about the TARGET RUNNER (#2875) — ``model`` and
+    the provider pin inside ``extra_body`` — leaving the prompt/messages, tools,
+    every sampling field, and the stop sequences exactly as recorded. ``None``
+    for either argument changes nothing (replay against the same runner that
+    served the original call)."""
+    body = dict(sent_request["body"])
+    if model:
+        body["model"] = model
+    if provider:
+        extra_body = dict(body.get("extra_body") or {})
+        extra_body[PROVIDER_REQUEST_FIELD] = ProviderPin(provider=provider).as_request_field()
+        body["extra_body"] = extra_body
+    return body
+
+
+async def _send_verbatim_request(
+    client: openai.AsyncOpenAI, transport: str, body: dict
+) -> tuple[str | None, list[str], str]:
+    """Send ``body`` straight through the bare SDK client — no ``LlmClient``, no
+    template re-render, no sampling default of this tool's own — and parse the
+    response the SAME way prod parses it on this transport. Returns
+    ``(thinking, tool_call_names, reply_content)``.
+
+    A raw-template body recorded with ``stream: true`` is sent with streaming
+    turned OFF instead (``stream_options`` dropped along with it): sampling is
+    unaffected either way (streaming only changes HOW the bytes arrive, never
+    what is asked for), and this tool has no need for the mid-stream cut
+    behaviour streaming exists to support in production — only the final text,
+    parsed once, the same way a non-cut draw always was.
+    """
+    if transport == PromptTransport.RAW_TEMPLATE.value:
+        body = dict(body)
+        body.pop("stream_options", None)
+        body["stream"] = False
+        raw = await client.completions.create(**body)
+        thinking, tool_calls, content = raw_template.parse_completion(raw.choices[0].text or "")
+        return thinking, [call.function.name for call in (tool_calls or [])], content
+    raw = await client.chat.completions.create(**body)
+    message = raw.choices[0].message
+    extras = message.model_extra or {}
+    thinking = extras.get("reasoning_content") or extras.get("reasoning")
+    names = [call.function.name for call in (message.tool_calls or [])]
+    return thinking, names, message.content or ""
+
+
+async def _replay_verbatim_request(db_path: str, prompt_id: int, samples: int) -> None:
+    """``--mode verbatim-request`` (#2875): replay the row's own exact wire
+    request, unchanged, N times — see the module docstring for why this mode
+    is not a re-render like every other one here.
+
+    The target runner comes from the SAME env vars every other mode in this
+    module reads: ``LLM_API_URL``/``LLM_API_KEY`` pick where this sends it
+    (required — there is no runner to default to); ``LLM_MODEL``/
+    ``LLM_PROVIDER`` are overrides, read with NO default, so leaving either
+    unset replays against the EXACT model/pin the row's own request already
+    carries rather than silently retargeting it.
+    """
+    sent_request = _load_request(db_path, prompt_id)
+    transport = sent_request["transport"]
+    body = _retargeted_body(
+        sent_request, os.environ.get("LLM_MODEL"), os.environ.get("LLM_PROVIDER")
+    )
+    api_url = os.environ.get("LLM_API_URL", "http://host.docker.internal:11434")
+    client = openai.AsyncOpenAI(
+        base_url=f"{api_url.rstrip('/')}/v1",
+        api_key=os.environ.get("LLM_API_KEY", "not-needed"),
+    )
+    print(
+        f"replaying id={prompt_id} transport={transport} model={body.get('model')} "
+        f"against {api_url}"
+    )
+    for index in range(samples):
+        try:
+            thinking, names, content = await _send_verbatim_request(client, transport, body)
+        except openai.OpenAIError as error:
+            print(f"  [{index + 1}/{samples}] ERROR {type(error).__name__}: {error}")
+            continue
+        tail = (thinking or "")[-200:]
+        print(
+            f"  [{index + 1}/{samples}] tools={names or '—'} "
+            f"thinking_tail={tail!r} reply={content[:200]!r}"
+        )
 
 
 def _is_collector_prompt(messages: list[dict]) -> bool:
@@ -225,6 +365,9 @@ async def _replay(
 
 
 async def _main(args: argparse.Namespace) -> None:
+    if args.mode == "verbatim-request":
+        await _replay_verbatim_request(args.db, args.id, args.samples)
+        return
     messages, tools = _load_prompt(args.db, args.id)
     client = LlmClient(
         api_url=os.environ.get("LLM_API_URL", "http://host.docker.internal:11434"),
@@ -258,10 +401,13 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=12, help="replays per placement")
     parser.add_argument(
         "--mode",
-        choices=("system", "user", "both", "plain"),
+        choices=("system", "user", "both", "plain", "verbatim-request"),
         default="both",
         help="where the collector body goes: system (current shape) / user (split) / both; "
-        "'plain' forces a verbatim replay (auto-selected for non-collector prompts)",
+        "'plain' forces a verbatim replay of messages/tools, re-rendered through today's "
+        "code (auto-selected for non-collector prompts); 'verbatim-request' (#2875) sends "
+        "the row's own stored EXACT request unchanged — no re-render at all, see the "
+        "module docstring",
     )
     parser.add_argument(
         "--body-file",
