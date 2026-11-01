@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -338,16 +339,49 @@ def _compose(
     return rebuilt
 
 
-async def _replay(
-    client: LlmClient, messages: list[dict], tools: list[dict] | None, samples: int, label: str
-) -> _Tally:
-    tally = _Tally()
-    # The one conversion at this call site (#2563): this script works in the
-    # internal dict shape throughout (loaded verbatim off the promptlog, recomposed
-    # by ``_compose``) — ``from_dict`` lifts it to typed history only here, right
-    # before the one place it reaches ``LlmClient.chat()``.
-    typed_messages = [LlmMessage.from_dict(message) for message in messages]
-    for index in range(samples):
+def _sample_record(label: str, index: int, response, error: LlmError | None) -> dict:
+    """One sample's full, structured draw (#repro-set) — the tool calls with their
+    arguments, the FULL thinking, and the FULL reply — everything a later pass needs
+    to classify the sample against a failure definition without re-running it. Kept
+    separate from the live ``print`` (which still shows truncated tails for a human
+    watching the run) so the JSONL output never drops anything to a slice.
+    """
+    if error is not None:
+        return {
+            "label": label,
+            "sample": index + 1,
+            "error": f"{type(error).__name__}: {error}",
+            "tool_calls": [],
+            "thinking": None,
+            "reply": None,
+        }
+    calls = response.message.tool_calls or []
+    thinking = response.thinking or response.message.thinking
+    return {
+        "label": label,
+        "sample": index + 1,
+        "error": None,
+        "tool_calls": [
+            {"name": call.function.name, "arguments": call.function.arguments} for call in calls
+        ],
+        "thinking": thinking,
+        "reply": response.message.content or "",
+    }
+
+
+async def _replay_one(
+    client: LlmClient,
+    typed_messages: list[LlmMessage],
+    tools: list[dict] | None,
+    label: str,
+    index: int,
+    samples: int,
+    semaphore: asyncio.Semaphore,
+) -> dict:
+    """One sample's call, gated by ``semaphore`` (``--concurrency``) so a batch of
+    samples can run several draws at once against a runner that can take it, while
+    still printing and tallying in the SAME shape as the serial path."""
+    async with semaphore:
         try:
             response = await client.chat(
                 typed_messages,
@@ -356,19 +390,57 @@ async def _replay(
                 prompt_type=f"replay-{label}",
             )
         except LlmError as error:
-            tally.record_error()
             print(f"  [{label} {index + 1}/{samples}] ERROR {type(error).__name__}: {error}")
-            continue
-        calls = response.message.tool_calls or []
-        names = [call.function.name for call in calls]
-        first = names[0] if names else None
-        thinking = response.thinking or response.message.thinking
-        tally.record(first, thinking)
-        reply = response.message.content or ""
-        thinking_tail = (thinking or "")[-300:]
-        print(f"  [{label} {index + 1}/{samples}] first={first or '—'} tools={names}")
-        print(f"    thinking-tail: {thinking_tail!r}")
-        print(f"    reply: {reply!r}")
+            return _sample_record(label, index, None, error)
+    calls = response.message.tool_calls or []
+    names = [call.function.name for call in calls]
+    first = names[0] if names else None
+    thinking = response.thinking or response.message.thinking
+    reply = response.message.content or ""
+    thinking_tail = (thinking or "")[-300:]
+    print(f"  [{label} {index + 1}/{samples}] first={first or '—'} tools={names}")
+    print(f"    thinking-tail: {thinking_tail!r}")
+    print(f"    reply: {reply!r}")
+    return _sample_record(label, index, response, None)
+
+
+async def _replay(
+    client: LlmClient,
+    messages: list[dict],
+    tools: list[dict] | None,
+    samples: int,
+    label: str,
+    *,
+    concurrency: int = 1,
+    jsonl_path: str | None = None,
+) -> _Tally:
+    tally = _Tally()
+    # The one conversion at this call site (#2563): this script works in the
+    # internal dict shape throughout (loaded verbatim off the promptlog, recomposed
+    # by ``_compose``) — ``from_dict`` lifts it to typed history only here, right
+    # before the one place it reaches ``LlmClient.chat()``.
+    typed_messages = [LlmMessage.from_dict(message) for message in messages]
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    tasks = [
+        _replay_one(client, typed_messages, tools, label, index, samples, semaphore)
+        for index in range(samples)
+    ]
+    records = await asyncio.gather(*tasks)
+    # Tally and (optionally) persist in SAMPLE-NUMBER order, not completion order —
+    # concurrency reorders arrivals, and a reader matching a JSONL row back to its
+    # printed console line needs the same order both places.
+    records.sort(key=lambda record: record["sample"])
+    with contextlib.ExitStack() as stack:
+        handle = stack.enter_context(open(jsonl_path, "w")) if jsonl_path else None
+        for record in records:
+            if record["error"] is not None:
+                tally.record_error()
+            else:
+                calls = record["tool_calls"]
+                first = calls[0]["name"] if calls else None
+                tally.record(first, record["thinking"])
+            if handle is not None:
+                handle.write(json.dumps(record) + "\n")
     return tally
 
 
@@ -392,7 +464,17 @@ async def _main(args: argparse.Namespace) -> None:
         # Non-collector (e.g. a chat turn): replay the verbatim messages as-is —
         # the placement split doesn't apply.  ``no_tool`` in the tally is the bail
         # signal here (the model narrated "done" instead of calling a tool).
-        (await _replay(client, messages, tools, args.samples, "verbatim")).report("verbatim")
+        (
+            await _replay(
+                client,
+                messages,
+                tools,
+                args.samples,
+                "verbatim",
+                concurrency=args.concurrency,
+                jsonl_path=args.jsonl,
+            )
+        ).report("verbatim")
         return
     date, body, runtime, rest = _parse_system(messages)
     if args.body_file:
@@ -403,7 +485,22 @@ async def _main(args: argparse.Namespace) -> None:
     for placement in placements:
         composed = _compose(date, body, runtime, rest, placement=placement, nudge=args.nudge)
         label = f"{placement}+nudge" if (args.nudge and placement == "system") else placement
-        (await _replay(client, composed, tools, args.samples, label)).report(label)
+        jsonl_path = (
+            f"{args.jsonl.rsplit('.', 1)[0]}-{label}.jsonl"
+            if (args.jsonl and len(placements) > 1)
+            else args.jsonl
+        )
+        (
+            await _replay(
+                client,
+                composed,
+                tools,
+                args.samples,
+                label,
+                concurrency=args.concurrency,
+                jsonl_path=jsonl_path,
+            )
+        ).report(label)
 
 
 def main() -> None:
@@ -430,6 +527,21 @@ def main() -> None:
         "--nudge",
         help="fill the otherwise-empty user turn with this generic string while the "
         "body stays in the system prompt (only applies to system placement)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="how many samples to run in flight at once against the runner (default "
+        "1 — serial); size this to what the target endpoint actually sustains, "
+        "never to the sample count",
+    )
+    parser.add_argument(
+        "--jsonl",
+        help="write one JSON object per sample (tool calls with arguments, the FULL "
+        "thinking, the FULL reply — no truncation) to this path, one line per "
+        "sample in sample-number order; with --mode both this is suffixed per "
+        "placement (e.g. foo.jsonl -> foo-system.jsonl, foo-user.jsonl)",
     )
     asyncio.run(_main(parser.parse_args()))
 
