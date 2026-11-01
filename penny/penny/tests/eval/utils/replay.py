@@ -134,8 +134,12 @@ class _Tally:
 
 
 def _load_prompt(db_path: str, prompt_id: int) -> tuple[list[dict], list[dict] | None]:
-    """Read the verbatim messages + tools off one promptlog row."""
-    connection = sqlite3.connect(db_path)
+    """Read the verbatim messages + tools off one promptlog row.
+
+    Opened read-only (URI ``mode=ro``): this script's whole point is to read a
+    production row without any chance of writing to the DB it came from.
+    """
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         row = connection.execute(
             "SELECT messages, tools, agent_name, run_target FROM promptlog WHERE id = ?",
@@ -360,7 +364,11 @@ async def _replay(
         first = names[0] if names else None
         thinking = response.thinking or response.message.thinking
         tally.record(first, thinking)
+        reply = response.message.content or ""
+        thinking_tail = (thinking or "")[-300:]
         print(f"  [{label} {index + 1}/{samples}] first={first or '—'} tools={names}")
+        print(f"    thinking-tail: {thinking_tail!r}")
+        print(f"    reply: {reply!r}")
     return tally
 
 
@@ -372,6 +380,10 @@ async def _main(args: argparse.Namespace) -> None:
     client = LlmClient(
         api_url=os.environ.get("LLM_API_URL", "http://host.docker.internal:11434"),
         model=os.environ.get("LLM_MODEL", "gpt-oss:20b"),
+        api_key=os.environ.get("LLM_API_KEY") or "not-needed",
+        # A remote gateway (OpenRouter) pin — ``None`` on a direct local endpoint,
+        # which has never heard of the routing field and ignores it.
+        provider_pin=ProviderPin.pin(os.environ.get("LLM_PROVIDER")),
         max_retries=3,
         retry_delay=1.0,
         timeout=120.0,
