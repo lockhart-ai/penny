@@ -35,7 +35,8 @@ The path, in order. Each step says who does it, what it produces, and where the 
 1. **Observe** (the code owner). He says what went wrong, at whatever level he likes.
 2. **Diagnose** (the coordinator, reading only — wide reading goes to a read-only kitten). Find the
    turn or cycle and read it off the runtime log and the prompt log. §5 "Distilling a failure"
-   below.
+   below. The diagnosis also states how mainstream agent harnesses handle the thing that failed
+   and whether Penny departs from it ([`docs/principles.md`](principles.md) §2 item 3).
 3. **Classify the failure** (the coordinator) — a wrong decision on what the model was shown, a
    sensible decision on a wrong or missing input, or a deterministic defect below the model —
    because it decides what gets built. §5 below.
@@ -233,7 +234,7 @@ and the step cap already bounds them — the code owner ruled that variance out 
 spend a round chasing it.
 
 **The one-call rule as an audit.** Any fact in Penny's stores should be one call from what she is
-shown, with no guessed argument ([`docs/principles.md` §2.5](principles.md)). Samples that took
+shown, with no guessed argument ([`docs/principles.md` §2.6](principles.md)). Samples that took
 several calls to reach one fact point at an anchor that is not rendered — read the tool-sequence
 outliers with this rule in mind before assuming the model was merely being thorough.
 
@@ -859,7 +860,7 @@ then code — never "make the model smarter"
 
 - **A rule keyed to a tool name, an argument position, or the failing sample's own phrasing is
   wrong by construction**, however well it fits the case that motivated it — it will not fire for
-  a shape nobody enumerated ([`docs/principles.md` §2.6](principles.md)).
+  a shape nobody enumerated ([`docs/principles.md` §2.7](principles.md)).
 - **Wording is plain** — states the situation and what is permitted as well as what is not — and
   after a second patch to the same passage, the passage is rewritten whole, not given a third
   clause ([`docs/principles.md` §3.3](principles.md); the craft is in
