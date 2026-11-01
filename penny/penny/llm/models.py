@@ -154,6 +154,29 @@ class PromptTransport(StrEnum):
     RAW_TEMPLATE = "raw_template"
 
 
+class SentRequest(BaseModel):
+    """The exact wire request ONE call attempt sent (#2875) — not a re-render: literally
+    the kwargs ``LlmClient`` handed the OpenAI SDK's own ``create()`` (chat transport), or
+    those same kwargs plus the already-rendered prompt string (raw-template transport),
+    stamped on this attempt's own ``promptlog`` row so a prod failure replays byte for
+    byte rather than through whatever the current code's template renders later.
+
+    ``body`` is JSON-serializable by construction — it IS exactly what ``**body`` was
+    unpacked into for ``create()`` — so a replay sends it back unchanged, overriding only
+    ``model`` and the provider pin (inside ``body["extra_body"]``) when retargeting a
+    different runner. ``header_names`` never carries header VALUES — ``LLM_EXTRA_HEADERS``
+    can carry anything, credentials included, and the API key never rides on this at all —
+    only the configured names, so a reader can tell which headers a call carried without
+    exposing them.
+    """
+
+    transport: PromptTransport
+    endpoint: str
+    model: str
+    body: dict[str, Any]
+    header_names: list[str] = Field(default_factory=list)
+
+
 _RATE_LIMITED_STATUS = 429
 _SERVER_ERROR_STATUS = 500
 _CLIENT_ERROR_STATUS = 400
@@ -345,13 +368,25 @@ class LlmError(Exception):
     names the fault it always is; the one shape that varies — a server error response,
     which is a 429 or a 5xx or a 4xx depending on the status — takes its fault explicitly
     from the client that read the status.
+
+    ``sent_request`` (#2875) is the failed attempt's own ``SentRequest`` — passed at
+    construction, from the one place in ``LlmClient`` each raise site already has it in
+    scope, never set onto an existing instance afterwards.  ``None`` only for an error
+    raised outside ``LlmClient.chat()``'s own attempt loop (there are none today) or
+    before this field existed.
     """
 
     default_fault: ClassVar[LlmFault] = LlmFault.OTHER
 
-    def __init__(self, *args: Any, fault: LlmFault | None = None) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        fault: LlmFault | None = None,
+        sent_request: SentRequest | None = None,
+    ) -> None:
         super().__init__(*args)
         self.fault = fault or self.default_fault
+        self.sent_request = sent_request
 
 
 class LlmNotFoundError(LlmError):
@@ -394,8 +429,14 @@ class LlmToolParseError(LlmError):
 
     default_fault: ClassVar[LlmFault] = LlmFault.TOOL_PARSE
 
-    def __init__(self, *args: Any, fault: LlmFault | None = None, draft: str | None = None) -> None:
-        super().__init__(*args, fault=fault)
+    def __init__(
+        self,
+        *args: Any,
+        fault: LlmFault | None = None,
+        draft: str | None = None,
+        sent_request: SentRequest | None = None,
+    ) -> None:
+        super().__init__(*args, fault=fault, sent_request=sent_request)
         self.draft = draft
 
 

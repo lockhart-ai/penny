@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import zlib
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from typing import Any, NamedTuple
@@ -197,6 +198,16 @@ def _emission_snippet(content: str) -> str:
     """The delivered autonomous send as one line — whitespace collapsed so a
     multi-line body reads as one line, rendered whole (no cap, #2642)."""
     return " ".join(content.split())
+
+
+def _compressed_request(request: dict | None) -> bytes | None:
+    """``PromptLog.request``'s own wire shape (#2875) — zlib-compressed JSON, never
+    stored plain: this dict duplicates most of ``messages``/``tools`` on the SAME
+    row, and the JSON text it serializes to compresses well. ``None`` passes
+    through (a cancelled call logs no request at all)."""
+    if request is None:
+        return None
+    return zlib.compress(json.dumps(request).encode())
 
 
 def _count_run_tool_calls(prompts: list[PromptLog]) -> int:
@@ -494,8 +505,17 @@ class MessageStore:
         prefill_ms: int | None = None,
         generation_ms: int | None = None,
         transport: str | None = None,
+        request: dict | None = None,
     ) -> int | None:
         """Log a prompt/response exchange with Ollama.
+
+        ``request`` (#2875) is the call's own exact wire request — the plain dict a
+        ``SentRequest`` dumps to (``LlmClient``'s own Pydantic model: transport,
+        endpoint, model, the literal body sent, extra-header NAMES only, never
+        values or the API key) — stored zlib-compressed (its JSON text compresses
+        well, and it roughly doubles what this row already carries in
+        ``messages``/``tools``). ``None`` only for a cancelled call, which never
+        got far enough to leave one behind.
 
         ``response`` is ``None`` for a call that never got one — cancelled, timed
         out, or raised (#2355 part A).  The row still carries the literal ``"{}"``
@@ -523,6 +543,7 @@ class MessageStore:
                     messages=json.dumps(messages),
                     tools=json.dumps(tools) if tools else None,
                     response=json.dumps(response_payload),
+                    request=_compressed_request(request),
                     thinking=thinking,
                     duration_ms=duration_ms,
                     agent_name=agent_name,

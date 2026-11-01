@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zlib
 from types import SimpleNamespace
 
 import httpx
@@ -996,6 +997,50 @@ class TestCallLoggedHoweverItEnds:
         assert json.loads(row.response)["choices"][0]["message"]["content"] == "ok"
 
     @pytest.mark.asyncio
+    async def test_the_exact_request_sent_is_stored_on_the_row(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """The row's own ``request`` column (#2875) decompresses to EXACTLY the
+        kwargs the mocked chat-completions transport received — not a re-render
+        of ``messages``/``tools``, the literal wire body, so a replay can send it
+        back unchanged. Never the API key, and extra headers ride as NAMES only."""
+        captured: dict = {}
+
+        async def answer(**kwargs):
+            captured.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            api_key="super-secret-key",
+            extra_headers={"X-Tosh-Agent": "off"},
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer)
+
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            agent_name="chat",
+            call_link=CallLink.top("run-request"),
+        )
+        await client.close()
+
+        row = self._one_row(db)
+        assert row.request is not None
+        dumped = zlib.decompress(row.request).decode()
+        stored = json.loads(dumped)
+        assert stored["transport"] == PromptTransport.CHAT.value
+        assert stored["endpoint"] == "http://localhost:11434"
+        assert stored["model"] == "m"
+        assert stored["body"] == captured
+        assert stored["header_names"] == ["X-Tosh-Agent"]
+        assert "super-secret-key" not in dumped
+        assert "off" not in dumped  # the header's own VALUE never rides, only its name
+
+    @pytest.mark.asyncio
     async def test_a_completed_calls_usage_timing_is_persisted_on_the_row(
         self, monkeypatch, db: Database
     ) -> None:
@@ -1613,6 +1658,14 @@ class TestRawTemplateTransport:
         logged_message = json.loads(row.response)["choices"][0]["message"]
         assert logged_message["tool_calls"][0]["function"]["name"] == "collection_list"
         assert logged_message["reasoning_content"] == "checking"
+        # The row's own exact request (#2875) decompresses to EXACTLY the kwargs
+        # the mocked raw-completions transport received — the rendered prompt
+        # string included, never a re-render of ``messages``/``tools``.
+        assert row.request is not None
+        stored = json.loads(zlib.decompress(row.request))
+        assert stored["transport"] == PromptTransport.RAW_TEMPLATE.value
+        assert stored["model"] == _GEMMA_MODEL
+        assert stored["body"] == captured
 
     @pytest.mark.asyncio
     async def test_a_looping_thought_is_cut_mid_stream_and_the_turn_continues(
