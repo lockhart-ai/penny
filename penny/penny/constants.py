@@ -488,6 +488,16 @@ class PennyConstants:
     # Provider-specific endpoint some OpenAI-compatible backends (e.g. openrouter)
     # use to list embedding-capable models that ``/v1/models`` omits.
     LLM_EMBEDDING_MODELS_ENDPOINT = "/v1/embeddings/models"
+    # Sampling settings sent explicitly on every model call (#2877) — gemma's own
+    # recommended values (``generation_config.json``), which prod's oMLX already
+    # resolves on its own, so sending them explicitly leaves prod's behaviour
+    # unchanged. Every OTHER provider (an eval provider, a future backend) applies
+    # its own default otherwise — some omit top_k entirely — so an identical model
+    # build samples differently depending on who serves it. Sending the same three
+    # values everywhere is what lets the eval suite predict prod again.
+    LLM_SAMPLING_TEMPERATURE = 1.0
+    LLM_SAMPLING_TOP_P = 0.95
+    LLM_SAMPLING_TOP_K = 64
     # The finish_reason a provider returns when a token cap cut the draw.
     FINISH_REASON_LENGTH = "length"
     MAX_SEARCH_LINKS = 10

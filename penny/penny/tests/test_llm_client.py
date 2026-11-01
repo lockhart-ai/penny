@@ -238,8 +238,86 @@ class TestReasoningAlwaysOn:
         assert sent["extra_body"] == {
             "reasoning": {"enabled": True},
             "chat_template_kwargs": {"enable_thinking": True},
+            "top_k": PennyConstants.LLM_SAMPLING_TOP_K,
         }
         await client.close()
+
+
+class TestExplicitSamplingSettings:
+    """Every model call sends ``temperature``/``top_p``/``top_k`` explicitly
+    (#2877) — gemma's own recommended values, so prod and every eval provider
+    sample the same way rather than each applying its own default (some omit
+    ``top_k`` entirely)."""
+
+    @pytest.mark.asyncio
+    async def test_chat_transport_sends_all_three_alongside_the_provider_pin(
+        self, monkeypatch
+    ) -> None:
+        """``temperature``/``top_p`` ride the top-level kwargs (plain OpenAI-schema
+        fields); ``top_k`` is not an OpenAI field, so it rides in ``extra_body``
+        alongside whatever that already carries — here, a configured provider pin."""
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="https://gateway.example/api",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            provider_pin=ProviderPin.pin("Cloudflare"),
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
+        await client.close()
+
+        assert sent["temperature"] == PennyConstants.LLM_SAMPLING_TEMPERATURE
+        assert sent["top_p"] == PennyConstants.LLM_SAMPLING_TOP_P
+        assert sent["extra_body"]["top_k"] == PennyConstants.LLM_SAMPLING_TOP_K
+        assert sent["extra_body"]["provider"] == {
+            "order": ["Cloudflare"],
+            "allow_fallbacks": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_raw_template_transport_sends_all_three_alongside_the_provider_pin(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """Same three values on the raw-completions transport (#2829's vendored
+        chat template), with ``top_k`` sharing ``extra_body`` with the provider
+        pin exactly as the chat transport does — one place, one shape, both
+        transports."""
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi")
+
+        client = LlmClient(
+            api_url="https://gateway.example/api",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            provider_pin=ProviderPin.pin("CoreWeave"),
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            agent_name="chat",
+            call_link=CallLink.top("run-sampling"),
+        )
+        await client.close()
+
+        assert captured["temperature"] == PennyConstants.LLM_SAMPLING_TEMPERATURE
+        assert captured["top_p"] == PennyConstants.LLM_SAMPLING_TOP_P
+        assert captured["extra_body"]["top_k"] == PennyConstants.LLM_SAMPLING_TOP_K
+        assert captured["extra_body"]["provider"] == {
+            "order": ["CoreWeave"],
+            "allow_fallbacks": False,
+        }
 
 
 class TestTokenBudgetResolution:
@@ -324,6 +402,7 @@ class TestTokenBudgetAndFinishReason:
         assert sent["extra_body"] == {
             "reasoning_effort": "none",
             "chat_template_kwargs": {"enable_thinking": False},
+            "top_k": PennyConstants.LLM_SAMPLING_TOP_K,
         }
         assert "reasoning" not in sent["extra_body"]
 
@@ -336,6 +415,7 @@ class TestTokenBudgetAndFinishReason:
         assert sent["extra_body"] == {
             "reasoning": {"enabled": True},
             "chat_template_kwargs": {"enable_thinking": True},
+            "top_k": PennyConstants.LLM_SAMPLING_TOP_K,
         }
         assert "reasoning_effort" not in sent["extra_body"]
         await client.close()
@@ -773,6 +853,7 @@ class TestAConfiguredProviderIsPinned:
             "reasoning": {"enabled": True},
             "chat_template_kwargs": {"enable_thinking": True},
             "provider": {"order": ["Cloudflare"], "allow_fallbacks": False},
+            "top_k": PennyConstants.LLM_SAMPLING_TOP_K,
         }
         await client.close()
 
@@ -795,6 +876,7 @@ class TestAConfiguredProviderIsPinned:
         assert sent["extra_body"] == {
             "reasoning": {"enabled": True},
             "chat_template_kwargs": {"enable_thinking": True},
+            "top_k": PennyConstants.LLM_SAMPLING_TOP_K,
         }
         await client.close()
 
@@ -1386,9 +1468,12 @@ FROZEN_WIRE_MESSAGES = [
 FROZEN_KWARGS = {
     "model": "frozen-test-model",
     "messages": FROZEN_WIRE_MESSAGES,
+    "temperature": PennyConstants.LLM_SAMPLING_TEMPERATURE,
+    "top_p": PennyConstants.LLM_SAMPLING_TOP_P,
     "extra_body": {
         "reasoning": {"enabled": True},
         "chat_template_kwargs": {"enable_thinking": True},
+        "top_k": PennyConstants.LLM_SAMPLING_TOP_K,
     },
 }
 
@@ -1486,6 +1571,7 @@ class TestTypedMessagesMatchTheFrozenPayload:
         assert sent["extra_body"] == {
             "reasoning": {"enabled": True},
             "chat_template_kwargs": {"enable_thinking": True},
+            "top_k": PennyConstants.LLM_SAMPLING_TOP_K,
         }
         await client.close()
 
