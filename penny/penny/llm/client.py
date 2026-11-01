@@ -1219,7 +1219,8 @@ class LlmClient:
             "stream": True,
             "stream_options": {"include_usage": True},
             "stop": list(raw_template.STOP_SEQUENCES),
-            "extra_body": self._provider_pin_extra_body(),
+            **self._sampling_kwargs(),
+            "extra_body": self._with_sampling_top_k(self._provider_pin_extra_body()),
         }
         if token_budget is not None:
             kwargs["max_tokens"] = token_budget
@@ -1347,6 +1348,27 @@ class LlmClient:
         extra_body: dict[str, Any] = {}
         if self.provider_pin is not None:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
+        return extra_body
+
+    @staticmethod
+    def _sampling_kwargs() -> dict[str, Any]:
+        """Explicit sampling settings sent on every model call (#2877) —
+        ``temperature``/``top_p`` are plain OpenAI-schema fields, so they ride
+        straight in the top-level kwargs both transports build. ``top_k`` is
+        not an OpenAI SDK field, so it goes through ``_with_sampling_top_k``
+        into whatever ``extra_body`` the caller already built instead.
+        """
+        return {
+            "temperature": PennyConstants.LLM_SAMPLING_TEMPERATURE,
+            "top_p": PennyConstants.LLM_SAMPLING_TOP_P,
+        }
+
+    @staticmethod
+    def _with_sampling_top_k(extra_body: dict[str, Any]) -> dict[str, Any]:
+        """Add the explicit ``top_k`` (#2877) to an already-built ``extra_body``,
+        alongside whatever it already carries (the provider pin, the
+        thinking on/off switch) — never a second, competing passthrough."""
+        extra_body["top_k"] = PennyConstants.LLM_SAMPLING_TOP_K
         return extra_body
 
     @staticmethod
@@ -1696,9 +1718,11 @@ class LlmClient:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
+            **self._sampling_kwargs(),
             # Not an OpenAI-schema field, so it rides in the vendor passthrough the SDK
-            # provides. Reasoning comes back where ``_parse_response`` already reads it.
-            "extra_body": extra_body,
+            # provides. Reasoning comes back where ``_parse_response`` already reads it;
+            # ``top_k`` (#2877, also not an OpenAI-schema field) rides alongside it.
+            "extra_body": self._with_sampling_top_k(extra_body),
         }
         if token_budget is not None:
             # Sent under BOTH names (#2474's probes, against local Ollama's
