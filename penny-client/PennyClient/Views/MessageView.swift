@@ -1035,7 +1035,7 @@ private struct IncomingMessageArrivalModifier: ViewModifier {
     }
 }
 
-private struct TypingRow: View {
+struct TypingRow: View {
     let status: String
     let isFadingOut: Bool
 
@@ -1045,17 +1045,18 @@ private struct TypingRow: View {
                 .id(status)
                 .font(.subheadline)
                 .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .transition(.opacity)
-            Spacer(minLength: 8)
             TypingDots()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(isFadingOut ? 0 : 1)
         .animation(.easeInOut(duration: 0.14), value: status)
-        .accessibilityLabel("Penny is typing")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status)
     }
 }
 
@@ -1147,7 +1148,7 @@ private struct AgentActivityView: View {
                 .font(.headline)
             ForEach(run.steps) { step in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(step.maxSteps.map { "Step \(step.number) of \($0)" } ?? "Step \(step.number)")
+                    Text("Step \(step.number)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     ForEach(step.tools) { tool in
@@ -1162,11 +1163,12 @@ private struct AgentActivityView: View {
 
 }
 
-private extension AgentProgressRunItem {
+extension AgentProgressRunItem {
     var currentStatus: String {
         guard let step = steps.last else { return "Penny is working" }
-        if let tool = step.tools.last { return agentProgressToolLabel(tool) }
-        return step.maxSteps.map { "Working · step \(step.number) of \($0)" } ?? "Working · step \(step.number)"
+        let status = "Working • Step \(step.number)"
+        if let tool = step.tools.last { return "\(status): \(agentProgressToolLabel(tool))" }
+        return status
     }
 }
 
@@ -1202,4 +1204,15 @@ private func formattedURLHost(from string: String) -> String? {
 
 #Preview {
     MessageView()
+}
+
+#Preview("Progress sizes") {
+    VStack(spacing: 12) {
+        TypingRow(status: "Working • Step 1", isFadingOut: false)
+        TypingRow(status: "Working • Step 1: Reading example.com", isFadingOut: false)
+        TypingRow(status: "Working • Step 2: Searching emails", isFadingOut: false)
+        TypingRow(status: "Working • Step 3: Searching \"a longer query that wraps onto multiple lines\"", isFadingOut: false)
+    }
+    .padding()
+    .background(Color(.systemGroupedBackground))
 }

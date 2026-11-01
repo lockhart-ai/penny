@@ -7,6 +7,66 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct MessageViewModelTests {
+    @Test func progressStatusKeepsStepWhileToolsChangeAndOmitsMaximum() {
+        var run = AgentProgressRunItem(id: "progress", agent: "chat", scope: .foreground)
+        #expect(run.currentStatus == "Penny is working")
+
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        #expect(run.currentStatus == "Working • Step 1")
+
+        run.steps[0].tools.append(AgentProgressToolItem(name: "browse", arguments: [
+            "queries": .array([.string("https://www.example.com/article")])
+        ]))
+        #expect(run.currentStatus == "Working • Step 1: Reading example.com")
+
+        run.steps[0].tools.append(AgentProgressToolItem(name: "search_emails", arguments: [:]))
+        #expect(run.currentStatus == "Working • Step 1: Searching emails")
+
+        run.steps.append(AgentProgressStepItem(number: 2, maxSteps: nil))
+        #expect(run.currentStatus == "Working • Step 2")
+    }
+
+    @Test func progressStatusFormatsSearchesAndUnknownTools() {
+        var run = AgentProgressRunItem(id: "progress", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 3, maxSteps: 20, tools: [
+            AgentProgressToolItem(name: "browse", arguments: ["queries": .array([.string("sample query")])])
+        ]))
+        #expect(run.currentStatus == "Working • Step 3: Searching \"sample query\"")
+
+        run.steps[0].tools = [AgentProgressToolItem(name: "custom_tool", arguments: [:])]
+        #expect(run.currentStatus == "Working • Step 3: Using custom_tool")
+    }
+
+    @Test func typingRowWrapsLongStatusAndSupportsLargerText() throws {
+        let status = "Working • Step 1: Searching \"a longer query that wraps onto multiple lines\""
+        let regular = ImageRenderer(content: TypingRow(status: status, isFadingOut: false))
+        regular.proposedSize = ProposedViewSize(width: 280, height: nil)
+        let regularImage = try #require(regular.uiImage)
+
+        let wide = ImageRenderer(content: TypingRow(status: status, isFadingOut: false))
+        wide.proposedSize = ProposedViewSize(width: 600, height: nil)
+        let wideImage = try #require(wide.uiImage)
+        #expect(regularImage.size.height > wideImage.size.height)
+
+        let large = ImageRenderer(content: TypingRow(status: status, isFadingOut: false).dynamicTypeSize(.accessibility3))
+        large.proposedSize = ProposedViewSize(width: 280, height: nil)
+        let largeImage = try #require(large.uiImage)
+        #expect(largeImage.size.width == 280)
+        #expect(largeImage.size.height > regularImage.size.height)
+
+        let preview = ImageRenderer(content: VStack(spacing: 12) {
+            TypingRow(status: "Working • Step 1", isFadingOut: false)
+            TypingRow(status: "Working • Step 1: Reading example.com", isFadingOut: false)
+            TypingRow(status: status, isFadingOut: false)
+        }
+        .padding()
+        .background(Color(.systemGroupedBackground))
+        .environment(\.colorScheme, .light))
+        preview.proposedSize = ProposedViewSize(width: 360, height: nil)
+        let previewData = try #require(preview.uiImage?.pngData())
+        try previewData.write(to: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("progress-layouts.png"))
+    }
+
     @Test func messageLayoutDefaultsToCurrentMessageStyle() {
         let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
 
