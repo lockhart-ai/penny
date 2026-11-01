@@ -34,8 +34,9 @@ The path, in order. Each step says who does it, what it produces, and where the 
 
 1. **Observe** (the code owner). He says what went wrong, at whatever level he likes.
 2. **Diagnose** (the coordinator, reading only — wide reading goes to a read-only kitten). Find the
-   turn or cycle and read it off the runtime log and the prompt log. §5 "Distilling a failure"
-   below.
+   turn or cycle and read it off the runtime log and the prompt log. The diagnosis also states how
+   mainstream agent harnesses handle the thing that failed and whether Penny departs from it
+   ([`docs/principles.md`](principles.md) §2 item 14). §5 "Distilling a failure" below.
 3. **Classify the failure** (the coordinator) — a wrong decision on what the model was shown, a
    sensible decision on a wrong or missing input, or a deterministic defect below the model —
    because it decides what gets built. §5 below.

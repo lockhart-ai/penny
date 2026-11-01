@@ -189,6 +189,18 @@ Quotes are the code owner's own words.
     set relation, it does. A similarity cutoff drifts and has to be re-tuned, and a structural
     rule has nothing to tune.
 
+14. **Penny follows industry-standard agent-harness practice.** *"penny should follow the
+    industry standard practices for agent harness design"*
+    - How turns, tool calls, tool results, thinking and harness feedback are represented,
+      and how history is kept and trimmed, follows the conventions of mainstream model APIs
+      and agent harnesses: Anthropic Messages, OpenAI, the model's own chat template, Claude
+      Code and the Agent SDK. The model was trained on those conventions and reasons as if
+      they hold.
+    - A departure needs a measured reason, recorded where the mechanism lives: the
+      convention it departs from and the measurement that justified it.
+    - When Penny misbehaves, a departure from convention is the first suspect: a diagnosis
+      names the convention and whether Penny follows it before anything else.
+
 ## 3. How the model is presented with state
 
 1. **The model reacts rationally to what it is shown.** *"the model is
