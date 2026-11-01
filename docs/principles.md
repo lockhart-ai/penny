@@ -85,7 +85,7 @@ Quotes are the code owner's own words.
         becomes a different one.
      2. How does the tool check it? Deterministically where it can; where it
         takes judgement, a micro-context behind the tool boundary picks from
-        a declared set (item 8).
+        a declared set (item 7).
      3. What does the rejection teach? What was wrong, why, and the call that
         would succeed: *"there is no tool called `functions.done`; did you
         mean `done`?"* followed by how `done` works.
@@ -96,19 +96,7 @@ Quotes are the code owner's own words.
      surfaces, or a micro-context that decides what the model does next.
      Each fails as soon as a user leaves the path it encodes.
 
-3. **Penny follows industry-standard agent-harness practice.** *"penny should follow the
-   industry standard practices for agent harness design"*
-   - How turns, tool calls, tool results, thinking and harness feedback are represented,
-     and how history is kept and trimmed, follows the conventions of mainstream model APIs
-     and agent harnesses: Anthropic Messages, OpenAI, the model's own chat template, Claude
-     Code and the Agent SDK. The model was trained on those conventions and reasons as if
-     they hold.
-   - A departure needs a measured reason, recorded where the mechanism lives: the
-     convention it departs from and the measurement that justified it.
-   - When Penny misbehaves, a departure from convention is the first suspect: a diagnosis
-     names the convention and whether Penny follows it before anything else.
-
-4. **The model never writes historical records.** *"don't make the model do it at all."*
+3. **The model never writes historical records.** *"don't make the model do it at all."*
    - Ledgers, run records, mutation events and what a turn wrote are all
      derived by the framework at chokepoints.
    - The model acts; the system remembers.
@@ -117,10 +105,10 @@ Quotes are the code owner's own words.
 
    Logs keep calls verbatim and never paraphrase them.
 
-5. **Structural state over model judgment.** "Has this happened?" is a cursor, a flag or a row
+4. **Structural state over model judgment.** "Has this happened?" is a cursor, a flag or a row
    that is read. It is never re-decided by the model each time.
 
-6. **Nothing is more than one guess-free call away.**
+5. **Nothing is more than one guess-free call away.**
    - Every name, key and id the model needs is rendered verbatim where it reads. A guessed
      argument is a rendering bug.
    - Metadata renders where its data renders. A lookup tool for a join the row already
@@ -128,14 +116,14 @@ Quotes are the code owner's own words.
    - A design that changes what the model reads carries this reachability sketch on its
      ticket before it is built.
 
-7. **A job's tool sequence is arbitrary.**
+6. **A job's tool sequence is arbitrary.**
    - Nothing may be keyed to a tool name, an argument position, or the wording of the example
      in front of you.
    - Ask: *what happens when a tool I have never heard of does this?*
    - Prefer a structural mark set once and read everywhere.
    - In model-facing text, name the state, not the verb.
 
-8. **Micro-contexts sit behind tool boundaries; their decisions are enumerated.**
+7. **Micro-contexts sit behind tool boundaries; their decisions are enumerated.**
    - A fuzzy input that has to land in a closed set (what a page carries, whether a text
      names a time) is decided by a micro-context the tool calls, on the far side of the
      tool boundary. The tool validates its output and returns it as part of its honest
@@ -159,14 +147,14 @@ Quotes are the code owner's own words.
      keeps thinking. A micro-context that reads, extracts or phrases runs without it, and on
      local hardware that is the difference between seconds and minutes.
 
-9. **Degrade visibly, never silently.**
+8. **Degrade visibly, never silently.**
    - An unmet prerequisite, a failed capability or a degraded mode shows as an actionable
      signal.
    - Penny never claims an action succeeded unless the tool result says it did.
    - There are no silent fallbacks and no silent cuts: anything shortened says what it left
      out.
 
-10. **Penny reports honestly on what she actually did.** *"penny reports honestly on her
+9. **Penny reports honestly on what she actually did.** *"penny reports honestly on her
    actual actions."*
    - Every action ends in an account of itself: what was tried, how far it got, what it
      produced and what it did not. A failure is handled inside the tool: a tool that cannot
@@ -180,12 +168,12 @@ Quotes are the code owner's own words.
    - What she can say in the turn she can look up afterwards. The account is in the record,
      one call away, so asked later what went wrong she can answer.
 
-11. **A few composable primitives, not bespoke mechanisms.** Every recurring intent is a
+10. **A few composable primitives, not bespoke mechanisms.** Every recurring intent is a
     configuration of a small vocabulary the model can reason about. **Machinery needs a second
     customer:** fix the one instance, and build no guard, registry or tool
     for a class with one member.
 
-12. **Change behaviour through data before code.** Prefer the highest rung that works:
+11. **Change behaviour through data before code.** Prefer the highest rung that works:
     1. the user teaches Penny;
     2. a direct edit in the UI;
     3. a prompt change measured by the eval;
@@ -193,13 +181,25 @@ Quotes are the code owner's own words.
 
     The goal is to manage Penny through Penny.
 
-13. **Weight the ambient space toward Penny's own state.** The user's data can be re-reached
+12. **Weight the ambient space toward Penny's own state.** The user's data can be re-reached
     from their next message; Penny's internal state can't be. So the self-state is rendered
     every turn, and the user's store appears as a map, not as its contents.
 
-14. **Structural rules over tuned thresholds.** Where a decision can rest on identity or a
+13. **Structural rules over tuned thresholds.** Where a decision can rest on identity or a
     set relation, it does. A similarity cutoff drifts and has to be re-tuned, and a structural
     rule has nothing to tune.
+
+14. **Penny follows industry-standard agent-harness practice.** *"penny should follow the
+    industry standard practices for agent harness design"*
+    - How turns, tool calls, tool results, thinking and harness feedback are represented,
+      and how history is kept and trimmed, follows the conventions of mainstream model APIs
+      and agent harnesses: Anthropic Messages, OpenAI, the model's own chat template, Claude
+      Code and the Agent SDK. The model was trained on those conventions and reasons as if
+      they hold.
+    - A departure needs a measured reason, recorded where the mechanism lives: the
+      convention it departs from and the measurement that justified it.
+    - When Penny misbehaves, a departure from convention is the first suspect: a diagnosis
+      names the convention and whether Penny follows it before anything else.
 
 ## 3. How the model is presented with state
 
