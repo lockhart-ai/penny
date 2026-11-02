@@ -83,9 +83,16 @@ runner's output. 30 samples per row.
 - `--samples N` sets the replay count (default 12; use 30 for this measurement).
 - `--db` points at the SQLite DB holding the `promptlog` row.
 
-The tool has no built-in sample concurrency or JSONL output: it runs `--samples` replays
-sequentially in one process and prints a per-placement tally. Comparing N runners means
-running it once per runner, pointed at that runner's endpoint.
+On `main`, the tool runs `--samples` replays sequentially in one process and prints a
+per-placement tally; comparing N runners means running it once per runner, pointed at that
+runner's endpoint. Five more flags — `--concurrency` (run samples in parallel instead of
+one at a time), `--jsonl` (write one JSON record per sample, for the classifier to read,
+instead of only the tally), per-sample timing (each sample's own prefill/decode time,
+alongside its record, instead of a separate benchmark run), `--mode ollama-native` (send the
+request through Ollama's native `/api/generate` with `raw: true`, so a raw-faithful replay
+of an Ollama row needs no script outside this tool), and `--dump-thinking` (write each
+sample's reasoning content out alongside its record, for reading a failure instead of only
+classifying it) — arrive with #2884, in progress at the time of writing.
 
 A runner is only comparable if it is **raw-template faithful** — it serves gemma's own
 vendored chat template byte-for-byte, rather than wrapping the prompt in a template of its
