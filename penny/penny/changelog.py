@@ -109,6 +109,10 @@ def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[Chang
 
 _CHANGELOG_LEAD = "These changes to your tools and behaviour reached you with this deploy:"
 _CHANGELOG_ASK = "Let the user know what changed, in your own words."
+_CHANGELOG_NONE_LEAD = (
+    "You've just restarted. This deploy changed nothing in your tools or behaviour."
+)
+_CHANGELOG_NONE_ASK = "Send the user a short message letting them know you're back."
 
 
 def render_changelog_announcement(entries: list[ChangelogEntry]) -> str:
@@ -116,8 +120,12 @@ def render_changelog_announcement(entries: list[ChangelogEntry]) -> str:
     alone — pure and deterministic, so the exact text the chat agent reads is
     pinned by a whole-render test rather than by whatever a live run produced.
 
-    ``entries`` is never empty here — the caller (``Penny._send_changelog_announcement``)
-    skips the turn entirely when a deploy records nothing new."""
+    ``entries`` may be empty — a restart, or a deploy that brought only
+    harness/CI/doc changes, still runs this turn (Penny announces on every
+    startup); the render just states that nothing changed and asks for a
+    short "I'm back" message instead of listing entries."""
+    if not entries:
+        return "\n".join([_CHANGELOG_NONE_LEAD, "", _CHANGELOG_NONE_ASK])
     lines = [_CHANGELOG_LEAD, ""]
     lines.extend(f"- {entry.render()}" for entry in entries)
     lines.extend(["", _CHANGELOG_ASK])
