@@ -71,7 +71,7 @@ also draws 5 samples at once and keeps each one's full record as it lands:
 
     docker compose run --rm --no-deps penny \
         env LLM_API_URL=https://openrouter.ai/api LLM_MODEL=google/gemma-4-26b-a4b-it \
-        LLM_API_KEY=$OPENROUTER_KEY LLM_PROVIDER=Cloudflare \
+        LLM_API_KEY=$OPENROUTER_KEY LLM_PROVIDER=CoreWeave \
         python -m penny.tests.eval.utils.replay --id 138385 --samples 12 --mode plain \
             --concurrency 5 --jsonl /tmp/replay-138385.jsonl --dump-thinking
 """
