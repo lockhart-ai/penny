@@ -34,6 +34,10 @@ kind, with one line on when to read it. Start here before opening any one of the
   informal checks on a model's JSON response (use, nudge, repair, reject, stop); read
   before changing that decision logic, as the counterpart to the static tool-argument
   validators.
+- [`reference/model-builds.md`](reference/model-builds.md) — which gemma build prod runs
+  and why, and the measured effect of weight precision on Penny's behaviour; read before
+  changing prod's model build, or before trusting the eval suite to predict a prod failure
+  it doesn't reproduce.
 - [`browser-extension-architecture.md`](browser-extension-architecture.md) — the browser
   extension's vision and architecture; read before changing `browser/` or the browser
   channel's design.
