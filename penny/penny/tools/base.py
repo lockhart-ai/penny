@@ -70,9 +70,17 @@ def as_plan_result(result: ToolResult) -> ToolResult:
     fixed headline every mutating tool shares, in front of the SAME
     description the tool built for what the call would do.  Always
     ``mutated=False`` — nothing really changed, whatever the real call would
-    have done."""
+    have done.
+
+    ``result.success`` decides which headline: a would-succeed description
+    reads "this call would — {message}"; a refusal (``success=False`` —
+    collection_configure's same-job near-match, a bad schedule, #2946) reads
+    "this call would be refused — {message}", and KEEPS ``success=False`` —
+    a plan that correctly foresees a refusal is an honest plan, not a failed
+    one, but it must never claim the refused call would otherwise succeed."""
+    verb = "" if result.success else "be refused "
     return result.model_copy(
-        update={"message": f"{PLAN_MESSAGE_PREFIX} — {result.message}", "mutated": False}
+        update={"message": f"{PLAN_MESSAGE_PREFIX} {verb}— {result.message}", "mutated": False}
     )
 
 
