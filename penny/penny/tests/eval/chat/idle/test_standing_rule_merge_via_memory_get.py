@@ -31,7 +31,7 @@ through the fuller, memory_get-inducing path instead of a single-exchange shortc
 **What this case asserts. Three claims, all facts, all survival.**
 
 - `rules` holds an entry whose content carries the drafted rule's subject (the words
-  "pepperjack" and "cabin" — nothing else in the world mentions either): the new rule
+  "marmalade" and "lighthouse" — nothing else in the world mentions either): the new rule
   landed as an ENTRY, not folded into the prompt.
 - The four seeded entries survive with their content unchanged.
 - `rules`' stored `extraction_prompt` is still exactly the seeded stray prompt — the
@@ -158,15 +158,15 @@ _EXCHANGES: tuple[tuple[str, str], ...] = (
     (
         "it's all good, take your time, I'm taking a look too",
         "Okay, here's an actual draft: **Proactive Reference Check** — before "
-        "answering, if you bring up a specific nickname like 'pepperjack' for "
-        "something, or mention 'the spring cabin trip', I check memory first instead "
-        "of guessing. I'd call it the pepperjack-and-cabin rule so we both remember "
+        "answering, if you bring up a specific nickname like 'marmalade' for "
+        "something, or mention 'the spring lighthouse trip', I check memory first instead "
+        "of guessing. I'd call it the marmalade-and-lighthouse rule so we both remember "
         "what it's for. Want me to lock that in as a standing rule?",
     ),
 )
 
 _PENNY_DRAFTED_RULE = _EXCHANGES[-1][1]
-_PLANTED_SUBJECT_WORDS = ("pepperjack", "cabin")
+_PLANTED_SUBJECT_WORDS = ("marmalade", "lighthouse")
 
 ASK = (
     f"yeah exactly that — go ahead and write that up as an actual rule, and then once "
@@ -516,8 +516,8 @@ def _rules_contents(sample: SampleObservation) -> list[str]:
 
 
 def _new_rule_lands_with_the_planted_subject(sample: SampleObservation, _world: World) -> Answer:
-    """STORE: an entry in `rules` carries the drafted rule's subject (pepperjack,
-    cabin) — it landed as an entry, not folded into the collection's prompt."""
+    """STORE: an entry in `rules` carries the drafted rule's subject (marmalade,
+    lighthouse) — it landed as an entry, not folded into the collection's prompt."""
     held = _rules_contents(sample)
     matched = [
         content
@@ -579,7 +579,7 @@ async def test_a_confirmed_rule_lands_as_an_entry_after_memory_get(
         timeout=120.0,
     )
     cohort.claim(
-        "state: an entry in `rules` carries the drafted rule's subject (pepperjack, cabin)",
+        "state: an entry in `rules` carries the drafted rule's subject (marmalade, lighthouse)",
         _new_rule_lands_with_the_planted_subject,
         SpecCategory.STORE,
     )
