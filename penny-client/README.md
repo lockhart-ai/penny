@@ -8,6 +8,11 @@ build verification on a freshly booted simulator). For service-only changes,
 building or launching an app target. CI runs the complete gate on pull requests
 touching `penny-client/`.
 
+While Penny works, a left-aligned progress bubble sizes itself to its text and wraps
+long labels. It shows `Working • Step 1`, then `Working • Step 1: Reading example.com`
+when a tool starts. Step labels omit the maximum step budget in both the chat and
+the activity sheet. Tap the Penny header to see the active steps and tools.
+
 Settings → Image Attachments controls automatic images for the entire iOS channel:
 cited-page images, same-site images, and broader related images. All switches start
 enabled. Changes save immediately to the server with confirmation and error state;
