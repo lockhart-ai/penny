@@ -119,6 +119,13 @@ POSTED_MARKER := .posted
 # passes the literal text to that module, it never greps for it itself.
 EVAL_REPORT_MARKER := <!-- penny-eval-report -->
 EVAL_COMPARE_MARKER := <!-- penny-eval-compare -->
+# Stamped by `assemble --comments` into the comment-parts dir when a run's case count collapsed
+# the per-case/summary report into ONE comment (#2939) — above that many cases, one document per
+# case was the ~100-comment notification storm #2918 produced, and a collapsed comment already
+# folds the branch-vs-main table into itself. The recipe reads this host-side to skip posting a
+# second, now-duplicate standalone comparison comment when `BASELINE` is also given, sweeping any
+# earlier one instead. Must match `penny.tests.eval.utils.assemble.COLLAPSED_MARKER_FILENAME`.
+EVAL_REPORT_COLLAPSED_MARKER := .collapsed
 # How the invoking tree's HEAD is derived — ONE definition, expanded into BOTH eval recipes.
 # `eval-remote` records it in the run manifest as EVAL_COMMIT; `eval-report` matches a bare RUN against
 # that recorded value (#2098), so the two derivations must agree byte-for-byte or every bare
@@ -539,6 +546,15 @@ assemble: $(if $(LOCAL),,build)
 # inside the comment when the baseline commit is not an ancestor of the branch's. Without
 # `BASELINE`, no comparison is touched at all. `DRY_RUN=1` prints what would be deleted and
 # posted on both fronts and stops — no `gh` write of any kind runs.
+# ABOVE A SMALL CASE-COUNT THRESHOLD (#2939): a whole-suite run (~100 cases, #2918) posted one
+# document per case plus the run summary — about 100 comments, each one a notification. Past
+# that threshold `assemble --comments` posts ONE document instead: the run summary unchanged,
+# the branch-vs-main table (every case's count) folded in rather than a second comment, and
+# per-case detail only for a case that moved against the baseline or carries a failing claim,
+# each under its own `<details>`. It stamps `$(EVAL_REPORT_COLLAPSED_MARKER)` into
+# `$(COMMENT_SUBDIR)/` when it does this, and the recipe reads that host-side to skip the
+# standalone `compare` pass below (sweeping any earlier one instead) rather than posting its
+# table a second time. A run at or under the threshold is untouched by any of this.
 eval-report: $(if $(LOCAL),,build)
 	@if [ -z "$(PR)" ]; then \
 		echo "eval-report: PR is required — usage: make eval-report PR=<n> [RUN=\"<run-dir> [<run-dir>...]\"] [BASELINE=<run-dir>] [FORCE=1] [DRY_RUN=1]" >&2; \
@@ -619,6 +635,20 @@ eval-report: $(if $(LOCAL),,build)
 		echo "eval-report: posted $$run → PR #$(PR) as $$(printf '%s\n' $$names | wc -l | tr -d ' ') comment(s); marker → $$first"; \
 	fi; \
 	if [ -z "$(BASELINE)" ]; then exit 0; fi; \
+	if [ -f "$$host_parts/$(EVAL_REPORT_COLLAPSED_MARKER)" ]; then \
+		echo "eval-report: $$run collapsed into one comment (#2939) — its branch-vs-main table rode inside that comment already; sweeping any earlier standalone comparison comment instead of posting a duplicate"; \
+		to_delete_compare="$$(printf '%s' "$$existing" | $(EVAL_RUN) python -m penny.tests.eval.utils.pr_comments "$(EVAL_COMPARE_MARKER)" "$$app_login")"; \
+		if [ -n "$(DRY_RUN)" ]; then \
+			echo "eval-report: would delete $$(printf '%s\n' "$$to_delete_compare" | grep -c .) earlier marked comparison comment(s) on PR #$(PR):"; \
+			printf '%s\n' "$$to_delete_compare" | grep . | sed 's/^/  - /'; \
+		else \
+			printf '%s\n' "$$to_delete_compare" | grep . | cut -f1 | while read -r cid; do \
+				GH_TOKEN=$$tok gh api -X DELETE "repos/{owner}/{repo}/issues/comments/$$cid" >/dev/null \
+					&& echo "eval-report: deleted earlier comparison comment $$cid"; \
+			done; \
+		fi; \
+		exit 0; \
+	fi; \
 	baseline_host_dir="$(EVAL_ARTIFACTS_HOST)/$(BASELINE)"; \
 	if [ ! -d "$$baseline_host_dir" ]; then \
 		echo "eval-report: baseline run dir not found: $$baseline_host_dir" >&2; \

@@ -10,8 +10,10 @@ compute for each case (``CaseArtifact.timings`` divided by ``CaseArtifact.sample
 re-derived from rendered markdown.
 
 Pure artifact consumption over two already-completed runs' ``manifest.json`` +
-``results.jsonl`` (``artifacts.py`` via ``assemble.py``'s loaders) — no model, no git, no
-network, so the comparison builder is exercised by plain (non-eval) whole-render tests.
+``results.jsonl`` (``artifacts.py``'s own ``load_manifest``/``load_case_artifacts`` — shared
+with ``assemble.py``, which also reads them, so the two customers of one pair of files import
+the SAME loaders at the top level rather than one importing the other's) — no model, no git,
+no network, so the comparison builder is exercised by plain (non-eval) whole-render tests.
 
 The one check this module cannot make itself is whether the branch's merge base is the
 baseline's own commit — that needs ``git``, which the eval container never runs against a
@@ -34,8 +36,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from penny.tests.eval.utils import cohort, comment_split
-from penny.tests.eval.utils.artifacts import CaseArtifact, RunManifest
-from penny.tests.eval.utils.assemble import load_case_artifacts, load_manifest
+from penny.tests.eval.utils.artifacts import (
+    CaseArtifact,
+    RunManifest,
+    load_case_artifacts,
+    load_manifest,
+)
 from penny.tests.eval.utils.pr_comments import COMPARE_MARKER
 
 # The move (in percentage points of the passing rate) that gets flagged — a case moving less

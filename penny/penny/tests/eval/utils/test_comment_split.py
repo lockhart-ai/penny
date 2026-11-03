@@ -34,6 +34,7 @@ from penny.tests.eval.utils.comment_split import (
     partition_on_sample_folds,
     partition_on_table_rows,
     sample_fold_segments,
+    split_collapsed_summary,
     split_run_comment,
     split_run_summary,
 )
@@ -437,3 +438,70 @@ def test_a_table_that_fits_is_one_unheaded_part() -> None:
     it did before the row splitter existed — byte-identical, no header, no repeated columns."""
     document = _bare_table(rows=3, cell_size=20)
     assert split_run_summary(document) == [document]
+
+
+# ── The collapsed whole-suite summary's splitter: a whole BLOCK boundary (#2939) ─────
+#
+# The collapsed summary nests a case's own per-sample folds INSIDE its own outer per-case
+# ``<details>`` — a shape neither existing splitter was built for: the sample-fold cut
+# (``split_run_comment``) looks only for the blank line before a ``sample N`` fold and has no
+# idea that fold sits inside a still-open outer one, so it could split a case's fold across two
+# comments; the table-row cut (``split_run_summary``) has no fold awareness at all. This drives
+# ``split_collapsed_summary`` over a document shaped exactly like that: several case-level
+# folds, each nesting two sample folds.
+
+
+def _case_fold(case_id: str, inner_size: int) -> str:
+    """One case's detail fold as the collapsed summary renders it (#2939): a case-level
+    ``<details>`` nesting two sample-level folds — never split by a cut that only knows about
+    the inner ones."""
+    inner = "\n\n".join(
+        [
+            fold_sample(1, "✅ pass", "x" * inner_size),
+            fold_sample(2, "✅ pass", "y" * inner_size),
+        ]
+    )
+    return f"<details><summary>`{case_id}`</summary>\n\n{inner}\n\n</details>"
+
+
+def _collapsed_document(cases: int, inner_size: int) -> str:
+    """A collapsed-summary-shaped document: the run summary's heading, then several case-level
+    folds back to back, then the footer — the same ``\\n\\n`` block joins
+    ``assemble.render_collapsed_summary`` produces."""
+    folds = [_case_fold(f"case-{number}", inner_size) for number in range(1, cases + 1)]
+    return "\n\n".join(["## Run summary", "#### Per-case detail", *folds, FOOTER]) + "\n"
+
+
+def test_a_document_that_fits_is_one_unheaded_part_for_the_collapsed_summary() -> None:
+    """Under the budget there is no "more" to announce — byte-identical to the input, exactly
+    like the other two splitters at their own small size."""
+    document = _collapsed_document(cases=2, inner_size=50)
+    assert split_collapsed_summary(document) == [document]
+
+
+def test_collapsed_summary_cuts_between_case_folds_never_inside_one() -> None:
+    """An over-cap collapsed summary is cut between whole CASE folds — never between the two
+    sample folds a case nests, which a sample-fold-boundary cut could not tell were still
+    inside a still-open outer fold. Every part stays under the hard cap, every fold stays
+    balanced, and the parts rejoin byte-identically to the input."""
+    document = _collapsed_document(cases=6, inner_size=15000)
+    parts = split_collapsed_summary(document, budget=30000)
+    assert len(parts) >= 2, "the fixture genuinely outgrew one part"
+    assert all(len(part) <= GITHUB_COMMENT_LIMIT for part in parts)
+    assert "".join(part.split("\n\n", 1)[1] for part in parts) == document
+    for part in parts:
+        assert part.count("<details>") == part.count("</details>"), (
+            "no case fold — or the sample folds it nests — is cut in half"
+        )
+
+
+def test_collapsed_summary_over_the_cap_with_no_fold_seam_is_cut_and_names_its_file() -> None:
+    """A single case fold alone over GitHub's hard cap — no seam left anywhere, since it is one
+    block to this splitter — is cut on a line boundary and names the run artifact that holds it
+    whole, exactly like the sample-fold splitter's own last resort."""
+    document = _collapsed_document(cases=1, inner_size=40000)
+    parts = split_collapsed_summary(document, artifact_file=_ARTIFACT_FILE)
+    assert all(len(part) <= GITHUB_COMMENT_LIMIT for part in parts)
+    assert any(_ARTIFACT_FILE in part for part in parts)
+    with pytest.raises(OversizedPartError):
+        enforce_part_cap(split_collapsed_summary(document))

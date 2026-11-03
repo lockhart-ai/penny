@@ -40,14 +40,14 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from penny.tests.eval.utils import cohort, comment_split, report
+from penny.tests.eval.utils import cohort, comment_split, compare, report
 from penny.tests.eval.utils.artifacts import (
-    MANIFEST_FILENAME,
     CaseArtifact,
     CheckCell,
     RunManifest,
     VarianceReading,
-    load_results_lines,
+    load_case_artifacts,
+    load_manifest,
     render_manifest_header,
 )
 from penny.tests.eval.utils.baseline import Baseline, resolve_baseline
@@ -102,28 +102,6 @@ def assemble_run_comment(report_dir: Path) -> str:
     # An EMPTY section is dropped rather than joined: a single-case run emits no roll-up, and
     # separating nothing from the first case would open the comment on a blank band.
     return SECTION_SEPARATOR.join(part for part in sections if part) + "\n"
-
-
-# ── Artifact loading (the manifest is required; results/transcripts tolerate absence) ──
-def load_manifest(report_dir: Path) -> RunManifest:
-    """Read the run's ``manifest.json``, or fail with an actionable message if it's absent."""
-    path = report_dir / MANIFEST_FILENAME
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"No {MANIFEST_FILENAME} in {report_dir} — is this a completed eval run's report "
-            f"directory? Run `EVAL_REPORT_DIR={report_dir} … make eval-remote` first."
-        )
-    return RunManifest.model_validate_json(path.read_text())
-
-
-def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
-    """Read every case record in the run dir (one per non-blank line), in file order.
-
-    A run under xdist writes one results file per worker, so the whole run is the union of
-    them — reading only ``results.jsonl`` would silently report a fraction of the cases as
-    if it were all of them.  No files → no cases: a manifest can exist before any case has
-    recorded."""
-    return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
 
 
 # ── The run header (verdict · identity table · flips) ────────────────────────
@@ -446,11 +424,14 @@ def main(argv: list[str]) -> int:
 def _write_comments(argv: list[str]) -> int:
     """Write every postable part for the runs named, in post order, into ``argv[0]``.
 
-    A case document SPLITS on sample-fold boundaries (a single case can outgrow the comment cap
-    on its own); the run summary carries no folds at all, so it splits on its COVERAGE table's
-    row boundaries instead (#2256) — two different documents, two different legal seams. A part
-    the fold cut still leaves over the cap is re-cut at whole-block boundaries (#2696), with
-    each case's own ``.md`` named as where a last-resort cut's content lives.
+    Above :data:`DETAIL_CASE_THRESHOLD` cases this delegates to :func:`_write_collapsed_comment`
+    instead (#2939) — a whole-suite run posting one document per case was the ~100-comment
+    notification storm #2918 produced. At or under the threshold, nothing here changed: a case
+    document SPLITS on sample-fold boundaries (a single case can outgrow the comment cap on its
+    own); the run summary carries no folds at all, so it splits on its COVERAGE table's row
+    boundaries instead (#2256) — two different documents, two different legal seams. A part the
+    fold cut still leaves over the cap is re-cut at whole-block boundaries (#2696), with each
+    case's own ``.md`` named as where a last-resort cut's content lives.
 
     Build noise is checked BEFORE anything is split: it is a caller error (a hand-piped
     ``make assemble``) and refusing it is the answer."""
@@ -458,7 +439,13 @@ def _write_comments(argv: list[str]) -> int:
         print(USAGE, file=sys.stderr)
         return 2
     out_dir, report_dirs = Path(argv[0]), [Path(one) for one in argv[1:]]
+    # A re-post may follow a run that collapsed with one that did not (or the reverse) — clear
+    # the prior run's sentinel so the Makefile's own read of it never sees a stale answer.
+    Path(out_dir / COLLAPSED_MARKER_FILENAME).unlink(missing_ok=True)
     try:
+        total_cases = sum(len(started_cases(report_dir)) for report_dir in report_dirs)
+        if total_cases > DETAIL_CASE_THRESHOLD:
+            return _write_collapsed_comment(report_dirs, out_dir)
         case_documents = [
             (document, artifact_file)
             for report_dir in report_dirs
@@ -907,6 +894,168 @@ def _excluded(artifact: CaseArtifact) -> int:
     """The samples the case's pool excluded — its DEAD standings, a never-started one among
     them.  Zero for a case that drove no cohort, which pooled nothing to exclude from."""
     return artifact.standing_counts.get(cohort.Standing.DEAD.value, 0)
+
+
+# ── The collapsed whole-suite comment (#2939) ─────────────────────────────────
+#
+# A run of more than a handful of cases used to post one document per case — about 100 on a
+# whole-suite run (#2918), each its own GitHub comment, each its own notification. Above
+# DETAIL_CASE_THRESHOLD this posts ONE document instead: the run summary unchanged, the
+# branch-vs-main comparison table with every case's count folded in rather than a second
+# standalone comment, and per-case DETAIL only for the cases a reader would actually want to
+# open — each folded under its own ``<details>``, never expanded by default. A case that is
+# both clean (no failing claim) and unmoved against the baseline has nothing a fold would add:
+# its row in the tables above already says so.
+DETAIL_CASE_THRESHOLD = 8
+# How far a case's scored checks must move against the baseline — in raw passed-count, the
+# closest reading a comparison has to "how many samples flipped" — before its detail earns a
+# reader's click. Independent of ``compare.HIGHLIGHT_POINTS`` (a percentage-point flag on the
+# comparison table's own row): this one decides whether a FOLD is worth opening at all.
+DETAIL_MOVED_SAMPLES = 2
+# Stamped into the comments dir on a collapsed post (#2939) so the Makefile recipe — which also
+# runs ``compare.py`` as its OWN standalone comment when ``BASELINE`` is given — can tell a
+# collapsed run posted the branch-vs-main table already, folded into the one report comment, and
+# skip the second, now-duplicate posting rather than re-deriving the threshold or the case count
+# itself in shell.
+COLLAPSED_MARKER_FILENAME = ".collapsed"
+
+_DETAIL_HEADING = "#### Per-case detail"
+_DETAIL_LEAD = (
+    "_Folded below: every case that moved against the baseline by "
+    f"{DETAIL_MOVED_SAMPLES} or more checks, or that carries a failing claim. A case with "
+    "neither is clean and unmoved — its row above already says so._"
+)
+
+
+def _has_failing_claim(artifact: CaseArtifact) -> bool:
+    """Whether ``artifact`` carries a scored check that did not pass on every sample — a case
+    fully green has nothing a detail fold would add."""
+    return any(check.scored and check.passed < check.total for check in artifact.checks)
+
+
+def _moved_against_baseline(artifact: CaseArtifact, baseline: Baseline | None) -> bool:
+    """Whether ``artifact``'s checks moved against ``baseline`` by :data:`DETAIL_MOVED_SAMPLES`
+    or more — the raw difference in passed-check count, read off the SAME scored totals the
+    comparison table's own cells render (:func:`_scored_checks`). No baseline, or the case
+    absent from it, is not a move: there is nothing to compare against."""
+    if baseline is None:
+        return False
+    prior = baseline.by_case.get(artifact.case_id)
+    if prior is None:
+        return False
+    branch_passed, _ = _scored_checks(artifact)
+    prior_passed, _ = _scored_checks(prior)
+    return abs(branch_passed - prior_passed) >= DETAIL_MOVED_SAMPLES
+
+
+def _needs_detail(artifact: CaseArtifact, baseline: Baseline | None) -> bool:
+    """Whether ``artifact`` earns its own folded detail in a collapsed summary: it moved
+    against the baseline by enough to matter, or it is carrying a failing claim at all."""
+    return _has_failing_claim(artifact) or _moved_against_baseline(artifact, baseline)
+
+
+def _case_detail_fold(report_dir: Path, manifest: RunManifest, artifact: CaseArtifact) -> str:
+    """One case's full report, under its own ``<details>`` (#2939) — the same heading +
+    measures + transcript :func:`_case_documents` gives its own comment, minus the run-wide
+    footer a comment with several of these would otherwise repeat once per case."""
+    case_id = artifact.case_id
+    body = report.headed(
+        _transcript_block(report_dir, manifest, artifact),
+        glyph=_case_glyph(artifact),
+        case_id=case_id,
+        model=manifest.model,
+        index=case_index(report_dir, case_id),
+        run=_case_run_facts(manifest),
+    )
+    summary = f"{_case_glyph(artifact)} `{case_id}` — {_row_checks(artifact)}"
+    return report.fold(summary, body)
+
+
+def _collapsed_detail(report_dirs: Sequence[Path], baseline: Baseline | None) -> str:
+    """Every case across ``report_dirs`` that earns a fold (:func:`_needs_detail`) — empty
+    when none do, so a run that is clean and unmoved everywhere adds no section a reader would
+    find empty."""
+    folds = []
+    for report_dir in report_dirs:
+        manifest = load_manifest(report_dir)
+        by_id = {artifact.case_id: artifact for artifact in load_case_artifacts(report_dir)}
+        for case_id in started_cases(report_dir):
+            artifact = by_id.get(case_id)
+            if artifact is None or not _needs_detail(artifact, baseline):
+                continue
+            folds.append(_case_detail_fold(report_dir, manifest, artifact))
+    if not folds:
+        return ""
+    return "\n\n".join([_DETAIL_HEADING, "", _DETAIL_LEAD, *folds])
+
+
+def _collapsed_comparison(report_dir: Path, baseline: Baseline | None) -> str:
+    """The branch-vs-main checks table, every case, folded into the collapsed summary rather
+    than compare.py's standalone comment (#2939) — ``None``/no baseline renders nothing, the
+    same off-diff state the standalone posting takes."""
+    if baseline is None:
+        return ""
+    comparisons = compare.build_case_comparisons(
+        load_case_artifacts(report_dir), list(baseline.by_case.values())
+    )
+    if not comparisons:
+        return ""
+    return f"{compare.COMPARE_HEADING}\n\n{compare.render_comparison_table(comparisons)}"
+
+
+def render_collapsed_summary(report_dirs: Sequence[Path]) -> str:
+    """The run's ONE whole-suite comment (#2939, the summary method): the run summary(ies)
+    (:func:`render_run_summary`, unchanged), the branch-vs-main comparison table for the
+    PRIMARY run when a baseline is recorded, and per-case detail folded for only the cases
+    worth a reader's click (:func:`_collapsed_detail`). Used above
+    :data:`DETAIL_CASE_THRESHOLD` cases; a run at or under it keeps posting one document per
+    case instead, unchanged.
+
+    The comparison reads the PRIMARY run dir's own recorded/overridden baseline
+    (:func:`resolve_baseline` — the same durable reference the single-run flips index reads),
+    matching the ``eval-report`` recipe's standalone ``compare`` pass, which also only ever
+    diffs the primary run."""
+    primary = report_dirs[0]
+    baseline = resolve_baseline(load_manifest(primary).baseline)
+    sections = [render_run_summary(report_dirs).rstrip("\n")]
+    comparison = _collapsed_comparison(primary, baseline)
+    if comparison:
+        sections.append(comparison)
+    detail = _collapsed_detail(report_dirs, baseline)
+    if detail:
+        sections.append(detail)
+    sections.append(render_footer(primary))
+    return SECTION_SEPARATOR.join(sections) + "\n"
+
+
+def _write_collapsed_comment(report_dirs: Sequence[Path], out_dir: Path) -> int:
+    """The above-:data:`DETAIL_CASE_THRESHOLD` path (#2939): ONE document — written through
+    the same contract :func:`_write_comments` holds for the per-case path (noise refusal, the
+    report marker, the part-cap invariant, file names printed in post order) — split on whole
+    BLOCK boundaries rather than a sample fold, since this document nests a case's own
+    per-sample folds inside its own outer ``<details>`` and a sample-fold cut could land inside
+    a still-open case fold and split it across two comments.
+
+    Stamps :data:`COLLAPSED_MARKER_FILENAME` into ``out_dir`` once the parts are written — the
+    recipe's own signal that the branch-vs-main table, when there was a baseline, already rode
+    inside this comment, so its separate ``compare`` pass has nothing left to post."""
+    try:
+        document = render_collapsed_summary(report_dirs)
+    except FileNotFoundError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    refusal = _build_noise_refusal([document])
+    if refusal:
+        print(f"assemble: refusing to post — {refusal}", file=sys.stderr)
+        return 1
+    parts = [
+        f"{part}\n\n{REPORT_MARKER}" for part in comment_split.split_collapsed_summary(document)
+    ]
+    comment_split.enforce_part_cap(parts)
+    for name in comment_split.write_parts(parts, out_dir):
+        print(name)
+    (out_dir / COLLAPSED_MARKER_FILENAME).write_text("")
+    return 0
 
 
 if __name__ == "__main__":
