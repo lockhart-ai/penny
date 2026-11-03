@@ -23,11 +23,19 @@ as a distractor (Varsity Bike & Transit), and the parts named (a 32-hole rim, DT
 Alpine III spokes, a Park Tool TM-1 tension/truing stand) are all real.  The page
 bodies, the price and the turnaround are the fixture's own invented numeric facts.
 
-**What is asserted.  Facts only.**  The reply names the shop and its page-only price —
-a value that exists NOWHERE except on the page the world serves, so stating it proves a
-real browse happened this turn.  Whether she calls `browse` directly, or first calls
-`run_list`/`run_get` to check what the earlier turn actually did, is tool-sequence
-variance, never asserted.
+**What is asserted.  Facts only — the OUTCOME the ask asked for, not the route to it.**
+The ask is "find a shop ... that builds custom wheels", and in this world only
+Perennial Cycle's own page says it builds wheels in-house (Varsity Bike & Transit's page
+says it sends that work out to a partner shop) — so the reply naming Perennial Cycle is
+what the ask owes, read from the pages the world serves.  An earlier version of this
+claim also required the reply to state the page's invented price, which judged *how*
+she answered rather than *what* the ask asked for: the coordinator's review of the first
+baseline run found every one of that claim's misses had already done the real work —
+reasoned "I haven't actually searched yet", browsed, and named Perennial Cycle — but
+spent the rest of the reply on the user's own stated concern (sourcing the specific DT
+Swiss Alpine III spokes) instead of restating a number nobody had asked for.  Whether
+she calls `browse` directly, or first calls `run_list`/`run_get` to check what the
+earlier turn actually did, is tool-sequence variance, never asserted.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code
 owner's to accept once the numbers have been read.
@@ -198,18 +206,19 @@ def _probe_world(penny: Penny) -> None:
     assert names == (), f"the seeded run must show NO tool calls, it shows {names}"
 
 
-def _the_reply_names_the_shop_with_its_page_fact(
+def _the_reply_names_a_custom_wheel_building_shop(
     sample: SampleObservation, _world: World
 ) -> Answer:
-    """The reply names the shop AND its page-only price — the price lives nowhere but
-    the shop's own page, so stating it is evidence a browse happened this turn (directly,
-    or after a `run_list`/`run_get` check of the stalled earlier run)."""
+    """The reply names a shop the fixture PAGES show builds custom wheels — the outcome
+    the ask asked for ("find a shop ... that builds custom wheels"), read from page
+    content alone.  Only Perennial Cycle's own page says it builds wheels in-house;
+    Varsity Bike & Transit's page says it sends that work out, so naming Varsity alone
+    does not answer what was asked.  Whether the reply also states the price, or spends
+    its words on the user's own stated spoke-sourcing concern instead, is not claimed —
+    neither was what the ask asked for."""
     said = fold_typography(sample.reply)
     names_shop = fold_typography(_SHOP) in said
-    has_price = _PRICE_FACT in said
-    return names_shop and has_price, (
-        f"named the shop: {names_shop}, stated the price: {has_price} — reply: {sample.reply!r}"
-    )
+    return names_shop, f"the reply never names {_SHOP!r} — reply: {sample.reply!r}"
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -237,10 +246,11 @@ async def test_announced_lookup_gets_done_when_asked_again(chat_eval: ChatEval, 
     # STORE — a read-only ask; nothing the case seeded is touched.
     cohort.assert_what_the_store_held_survives()
 
-    # PROVENANCE — the one thing the ask owes: the shop and its page-only price.
+    # PROVENANCE — the one thing the ask owes: a shop the pages show builds custom
+    # wheels.
     cohort.claim(
-        "reply: it names the shop and its page-only price",
-        _the_reply_names_the_shop_with_its_page_fact,
+        "reply: it names a shop the pages show builds custom wheels",
+        _the_reply_names_a_custom_wheel_building_shop,
         SpecCategory.PROVENANCE,
         kind="reply",
     )
