@@ -37,6 +37,7 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
+from penny.database.memory import MemoryType
 from penny.database.memory.objects import run_tool_calls
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER
@@ -140,7 +141,13 @@ def _probe_world(penny: Penny) -> None:
     assert group, f"the seeded run {_RUN_NAME!r} must have its own prompt-log record"
     names = tuple(dict.fromkeys(name for name, _ in run_tool_calls(group)))
     assert names == (), f"the seeded run must show NO write call, it shows {names}"
+    # COLLECTIONS only — the same scope ``_held_entries`` reads the claim's own
+    # ``sample.held`` from. A LOG-type memory (``user-messages``, the migration-seeded
+    # verbatim mirror of every message) necessarily already holds this text, since it is
+    # exactly what the seeded ask said; that is not a write anybody could duplicate into.
     for row in db.memories.list_all():
+        if row.type != MemoryType.COLLECTION:
+            continue
         memory = db.memory(row.name)
         if memory is None:
             continue
