@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field, computed_field
 
 from penny.channels.base import PageContext
 from penny.constants import PageReading
@@ -272,10 +272,9 @@ class MemoryRecord(BaseModel):
     name: str
     type: str  # "collection" | "log"
     description: str
-    # Notify-on-new. Wire field kept as ``published`` (the addon/iOS clients still send
-    # and read that key); server-side it maps to the ``memory.notify`` column — the
-    # ``published`` pub/sub side-channel was retired in #1557.
-    published: bool
+    # Notify-on-new; maps to the ``memory.notify`` column (the ``published`` pub/sub
+    # side-channel was retired in #1557).
+    notify: bool
     archived: bool
     extraction_prompt: str | None
     # The collection's schedule as one RRULE (#1857).  The wire field the interval it
@@ -290,6 +289,14 @@ class MemoryRecord(BaseModel):
     schedule_description: str | None
     last_collected_at: str | None
     entry_count: int
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def published(self) -> bool:
+        """iOS compatibility until #2926: duplicates ``notify`` under the old
+        wire key, so the current iOS app (which still reads ``published``)
+        keeps working. Drop this once #2926 ships."""
+        return self.notify
 
 
 class CursorRecord(BaseModel):
@@ -402,9 +409,10 @@ class BrowserMemoryCreate(BaseModel):
     type: str
     name: str
     description: str
-    # Notify-on-new (default silent). Wire field kept as ``published``; maps to the
-    # ``memory.notify`` column server-side (#1557 retired the pub/sub side-channel).
-    published: bool = False
+    # Notify-on-new (default silent); maps to the ``memory.notify`` column (#1557
+    # retired the pub/sub side-channel). Accepts the old ``published`` key too —
+    # iOS compatibility until #2926.
+    notify: bool = Field(default=False, validation_alias=AliasChoices("notify", "published"))
     extraction_prompt: str | None = None
     # One RRULE (#1857) — the interval field it replaced is no longer read; an addon
     # still sending ``collector_interval_seconds`` has it ignored as an extra key.
@@ -423,9 +431,10 @@ class BrowserMemoryUpdate(BaseModel):
     type: str
     name: str
     description: str | None = None
-    # Flip notify-on-new; None = leave unchanged. Wire field kept as ``published``;
-    # maps to the ``memory.notify`` column server-side (#1557).
-    published: bool | None = None
+    # Flip notify-on-new; None = leave unchanged; maps to the ``memory.notify``
+    # column (#1557). Accepts the old ``published`` key too — iOS compatibility
+    # until #2926.
+    notify: bool | None = Field(default=None, validation_alias=AliasChoices("notify", "published"))
     extraction_prompt: str | None = None
     # One RRULE (#1857), or None for no schedule.  The addon's form always resends its
     # full current picker state, so the handler applies this as a full replace (clearing

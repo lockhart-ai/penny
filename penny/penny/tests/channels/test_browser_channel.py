@@ -2512,6 +2512,9 @@ class TestBrowserMemoryHandlers:
         assert "board-games" in by_name and "collector-runs" in by_name
         assert by_name["board-games"]["type"] == "collection"
         assert by_name["board-games"]["entry_count"] == 1
+        # `published` rides alongside `notify` — iOS compatibility until #2926.
+        assert by_name["board-games"]["notify"] is False
+        assert by_name["board-games"]["published"] is False
         assert by_name["board-games"]["extraction_prompt"] == "extract games"
         assert by_name["board-games"]["schedule"] == "FREQ=MINUTELY;INTERVAL=5"
         # The plain-words reading (#2428) the addon's schedule picker shows under its
@@ -2925,7 +2928,7 @@ class TestBrowserMemoryHandlers:
                     "type": "memory_create",
                     "name": "board-games",
                     "description": "board games",
-                    "published": True,
+                    "notify": True,
                     "extraction_prompt": "extract games",
                     "schedule": "FREQ=MINUTELY;INTERVAL=10",
                 },
@@ -2934,9 +2937,31 @@ class TestBrowserMemoryHandlers:
         memory = db.memories.get("board-games")
         assert memory is not None
         assert memory.type == "collection"
-        assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
+        assert memory.notify is True  # wire `notify` mapped to the `notify` column
         assert memory.extraction_prompt == "extract games"
         assert memory.schedule == "FREQ=MINUTELY;INTERVAL=10"
+
+    def test_memory_create_accepts_legacy_published_key(self, tmp_path):
+        """The current iOS app still sends the old ``published`` key (#2926
+        removes this compatibility); the server accepts it the same as
+        ``notify`` until then."""
+        channel, db = self._channel(tmp_path)
+        asyncio.run(
+            channel._handle_memory_create(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_create",
+                    "name": "board-games",
+                    "description": "board games",
+                    "published": True,
+                    "extraction_prompt": "extract games",
+                    "schedule": "FREQ=MINUTELY;INTERVAL=10",
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.notify is True
 
     def test_memory_create_lifts_count_into_max_runs(self, tmp_path):
         """A custom schedule's COUNT= is lifted into max_runs on create (#1857's
@@ -3025,7 +3050,7 @@ class TestBrowserMemoryHandlers:
                     # A stale `intent` key from an older client is ignored — the field
                     # was dropped with the surface collapse (#1631).
                     "intent": "track only co-op games now",
-                    "published": True,  # flip notify-on-new; other unsupplied fields stay put
+                    "notify": True,  # flip notify-on-new; other unsupplied fields stay put
                     "extraction_prompt": None,
                     "schedule": "FREQ=MINUTELY;INTERVAL=5",
                 },
@@ -3034,7 +3059,7 @@ class TestBrowserMemoryHandlers:
         memory = db.memories.get("board-games")
         assert memory is not None
         assert memory.description == "new description"
-        assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
+        assert memory.notify is True  # wire `notify` mapped to the `notify` column
         assert memory.extraction_prompt == "old prompt"
         assert memory.schedule == "FREQ=MINUTELY;INTERVAL=5"
 

@@ -1028,7 +1028,7 @@ class BrowserChannel(MessageChannel):
             name=memory.name,
             type=memory.type,
             description=memory.description,
-            published=memory.notify,  # wire field `published` ← the `notify` column (#1557)
+            notify=memory.notify,
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
             schedule=memory.schedule,
@@ -1084,7 +1084,7 @@ class BrowserChannel(MessageChannel):
                 max_runs=parsed.max_runs if parsed else None,
                 expires_at=parsed.expires_at if parsed else None,
                 description_embedding=description_embedding,
-                notify=req.published,  # wire field `published` → the `notify` column (#1557)
+                notify=req.notify,
             )
         except MemoryAlreadyExistsError:
             logger.warning("memory_create with duplicate name: %s", req.name)
@@ -1125,7 +1125,7 @@ class BrowserChannel(MessageChannel):
                 expires_at=(parsed.expires_at if parsed else None) if replace_schedule else None,
                 replace_schedule=replace_schedule,
                 description_embedding=description_embedding,
-                notify=req.published,  # wire field `published` → the `notify` column (#1557)
+                notify=req.notify,
             )
         except (MemoryNotFoundError, MemoryTypeError) as exc:
             logger.warning("memory_update failed for %s: %s", req.name, exc)

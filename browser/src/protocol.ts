@@ -377,8 +377,8 @@ export interface MemoryRecord {
   name: string;
   type: "collection" | "log";
   description: string;
-  /** Pub/sub: when true the notifier delivers new entries to the user. */
-  published: boolean;
+  /** When true the notifier delivers new entries to the user. */
+  notify: boolean;
   archived: boolean;
   extraction_prompt: string | null;
   /** The collection's cadence as one RRULE (#1857), or null for a
@@ -875,8 +875,8 @@ export interface RuntimeMemoryCreate {
   type: typeof RuntimeMessageType.MemoryCreate;
   name: string;
   description: string;
-  /** Pub/sub: notify the user of new entries (default false). */
-  published?: boolean;
+  /** Notify the user of new entries (default false). */
+  notify?: boolean;
   extraction_prompt?: string | null;
   /** One RRULE (#1857), or null/omitted for a storage-only collection. */
   schedule?: string | null;
@@ -887,8 +887,8 @@ export interface RuntimeMemoryUpdate {
   type: typeof RuntimeMessageType.MemoryUpdate;
   name: string;
   description?: string | null;
-  /** Pub/sub: flip notify-on-new; omit/null leaves it unchanged. */
-  published?: boolean | null;
+  /** Flip notify-on-new; omit/null leaves it unchanged. */
+  notify?: boolean | null;
   extraction_prompt?: string | null;
   /** One RRULE (#1857); omitted/null leaves the schedule unchanged. */
   schedule?: string | null;

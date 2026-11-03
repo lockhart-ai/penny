@@ -240,8 +240,8 @@ function createCollectorRow(memory: MemoryRecord): HTMLElement {
 
   if (memory.archived) {
     left.appendChild(createChip("archived", "collector-chip-muted", "Archived — hidden unless shown"));
-  } else if (memory.published) {
-    left.appendChild(createChip("published", "chip--accent", "Notifies on new entries"));
+  } else if (memory.notify) {
+    left.appendChild(createChip("notify", "chip--accent", "Notifies on new entries"));
   }
 
   const description = document.createElement("span");
@@ -352,8 +352,8 @@ function createCollectorDetailHeader(memory: MemoryRecord): HTMLElement {
   title.textContent = memory.name;
   header.appendChild(title);
 
-  if (memory.published) {
-    header.appendChild(createChip("published", "chip--accent", "Notifies on new entries"));
+  if (memory.notify) {
+    header.appendChild(createChip("notify", "chip--accent", "Notifies on new entries"));
   }
   if (memory.archived) {
     header.appendChild(createChip("archived", "collector-chip-muted", "Archived — hidden from the active list"));
@@ -461,7 +461,7 @@ function appendLogConfig(card: HTMLElement, memory: MemoryRecord): void {
 function appendCollectionConfig(card: HTMLElement, memory: MemoryRecord): void {
   const fields = createCollectorFormFields({
     description: memory.description,
-    published: memory.published,
+    notify: memory.notify,
     extraction_prompt: memory.extraction_prompt ?? "",
   });
   const schedulePicker = createSchedulePicker({
@@ -473,8 +473,8 @@ function appendCollectionConfig(card: HTMLElement, memory: MemoryRecord): void {
   card.appendChild(
     toggleRow(
       "collector-notify",
-      "Notify on new (published)",
-      fields.published,
+      "Notify on new entries",
+      fields.notify,
       "When on, Penny delivers each new entry to you as it's collected.",
     ),
   );
@@ -612,7 +612,7 @@ function createConfigActions(
       type: RuntimeMessageType.MemoryUpdate,
       name: memory.name,
       description: fields.description.value.trim(),
-      published: fields.published.checked,
+      notify: fields.notify.checked,
       extraction_prompt: fields.extractionPrompt.value.trim() || null,
       schedule: schedulePicker.getValue(),
     });
@@ -687,7 +687,7 @@ function createNewCollectorForm(): HTMLElement {
 
   const fields = createCollectorFormFields({
     description: "",
-    published: false,
+    notify: false,
     extraction_prompt: "",
   });
   const schedulePicker = createSchedulePicker({ schedule: null, description: null });
@@ -697,8 +697,8 @@ function createNewCollectorForm(): HTMLElement {
   card.appendChild(
     toggleRow(
       "new-collector-notify",
-      "Notify on new (published)",
-      fields.published,
+      "Notify on new entries",
+      fields.notify,
       "When on, Penny delivers each new entry to you as it's collected.",
     ),
   );
@@ -727,7 +727,7 @@ function createNewCollectorForm(): HTMLElement {
       type: RuntimeMessageType.MemoryCreate,
       name,
       description: fields.description.value.trim(),
-      published: fields.published.checked,
+      notify: fields.notify.checked,
       extraction_prompt: promptValue || null,
       schedule: schedulePicker.getValue(),
     });
@@ -747,13 +747,13 @@ function createNewCollectorForm(): HTMLElement {
 
 interface CollectorFormFields {
   description: HTMLTextAreaElement;
-  published: HTMLInputElement;
+  notify: HTMLInputElement;
   extractionPrompt: HTMLTextAreaElement;
 }
 
 function createCollectorFormFields(initial: {
   description: string;
-  published: boolean;
+  notify: boolean;
   extraction_prompt: string;
 }): CollectorFormFields {
   const description = document.createElement("textarea");
@@ -761,10 +761,10 @@ function createCollectorFormFields(initial: {
   description.rows = 2;
   description.value = initial.description;
 
-  // Pub/sub: when checked, the notifier delivers new entries to the user.
-  const published = document.createElement("input");
-  published.type = "checkbox";
-  published.checked = initial.published;
+  // When checked, the notifier delivers new entries to the user.
+  const notify = document.createElement("input");
+  notify.type = "checkbox";
+  notify.checked = initial.notify;
 
   const extractionPrompt = document.createElement("textarea");
   extractionPrompt.className = "collector-field-input mono";
@@ -776,7 +776,7 @@ function createCollectorFormFields(initial: {
   // value naturally.
   extractionPrompt.value = unescapeNewlines(initial.extraction_prompt);
 
-  return { description, published, extractionPrompt };
+  return { description, notify, extractionPrompt };
 }
 
 function fieldRow(label: string, control: HTMLElement): HTMLElement {
