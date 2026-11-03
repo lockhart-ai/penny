@@ -35,17 +35,29 @@ read.  The failure this case targets is the model applying that license to a pag
 read, because the address arrived as a number rather than as text — an over-read of "don't
 invent" into "don't trust what you were handed."
 
-**The page is read directly, not through a search** — a direct URL named in the job's own
-prompt, the same shape ``collector/test_collector_honesty.py`` already uses, so the only
-thing in play is the handle-trust decision itself, not the separate picker/ranking
-machinery a text search would add.  It carries SEVEN links — the one the ask names and six
-unrelated decoys — real astronomy and space-science domains (NOIRLab/Rubin, ESA, NASA, NRAO,
-Keck, the Space Telescope Science Institute, ESO), because the real production page named
-real domains too and a `.test` placeholder would make "it carries a real domain" trivially
+**The roundup is read directly, not through a search** — a direct URL named in the job's
+own prompt, the same shape ``collector/test_collector_honesty.py`` already uses for its
+own first page.  It carries SEVEN links — the one the ask names and six unrelated decoys
+— real astronomy and space-science domains (NOIRLab/Rubin, ESA, NASA, NRAO, Keck, the
+Space Telescope Science Institute, ESO), because the real production page named real
+domains too and a `.test` placeholder would make "it carries a real domain" trivially
 true of every handle rather than a fact a claim can fail to find.  The specific story is
 swapped for a different real one (Vera Rubin Observatory's first-light asteroid count,
 rather than the one actually recorded), per the project's replay-to-case rule: real proper
 nouns swap for other real ones of the same kind, never an invented placeholder.
+
+**The roundup alone is not what row 419's own run did.**  After reading a roundup shaped
+just like this one, that run browsed TWICE more, each time asking explicitly "URL for the
+article …", and each read landed on a page whose whole relevant content — once converted
+to a handle, the SAME table the roundup already fed — was nothing but that bare citation.
+A bare handle as the ENTIRE answer to an explicit "what is the URL" question is exactly
+what the model's thinking called "internal identifiers," and exactly the shape #2835's
+`annotate()` targets (a page reader's answer that IS, in its entirety, one handle — never
+a bare number sitting in a page's body, which the roundup's OWN read already handles).
+So every story's world also carries a two-hop "what is the URL" lookup (search page →
+destination stub, ``_url_lookup_pages``): available to whichever story a sample picks,
+however many times it goes looking, never forced — a natural input leads the model to
+act, and the real gate answers whatever it draws.
 
 **The arms are five wordings of one instruction, over five voices of one page.**  The target
 headline, its address and its one-line fact are byte-identical across all five — what
@@ -203,7 +215,8 @@ _ALL_DECOYS = (
 
 class Story(NamedTuple):
     """One of the seven stories the page carries: the distinctive words that identify
-    which one an entry is ABOUT, and the real address that story's own page holds.
+    which one an entry is ABOUT, its real address, and the one word that picks it out
+    of a search query naming it.
 
     ``keyword`` is the smallest span unique to this story's headline (two FRB decoys
     share "Fast Radio Burst", so each keeps its OWN distinguishing words) — never a word
@@ -211,10 +224,16 @@ class Story(NamedTuple):
     describes this story," not "this entry mentions the ask." ``url_fragment`` is the
     smallest span unique to this story's URL — the bare domain where no other story or
     seeded entry shares it (Rubin), the full distinguishing path where one does (Europa
-    Clipper shares its domain, nasa.gov, with the SEEDED entry's own URL)."""
+    Clipper shares its domain, nasa.gov, with the SEEDED entry's own URL). ``url`` is
+    the story's real address, byte-identical to the one the roundup page's own body
+    carries. ``search_hint`` is a single lowercase word, present in every spelling of
+    this story's headline and no other's, that a "<headline> source URL"-shaped search
+    query will carry verbatim — what the world's url-lookup pages (below) match on."""
 
     keyword: str
     url_fragment: str
+    url: str
+    search_hint: str
 
 
 # Which story is "most significant" is the model's own judgement call — the job's ask
@@ -223,13 +242,38 @@ class Story(NamedTuple):
 # story, by its own distinguishing words, so detection never depends on the model having
 # picked the one this fixture considers biggest.
 _STORIES = (
-    Story("Rubin", "rubinobservatory.org"),
-    Story("Euclid", "euclid-einstein-ring"),
-    Story("Europa Clipper", "europa-clipper-first-images"),
-    Story("Record-Breaking Fast Radio Burst", "record-frb"),
-    Story("Dwarf Planet", "new-dwarf-planet-candidate"),
-    Story("Triple Shadow Transit", "triple-shadow-transit"),
-    Story("Most Distant Fast Radio Burst", "distant-frb"),
+    Story("Rubin", "rubinobservatory.org", _TARGET_URL, "rubin"),
+    Story("Euclid", "euclid-einstein-ring", "https://esa.int/euclid-einstein-ring", "euclid"),
+    Story(
+        "Europa Clipper",
+        "europa-clipper-first-images",
+        "https://www.nasa.gov/europa-clipper-first-images",
+        "europa",
+    ),
+    Story(
+        "Record-Breaking Fast Radio Burst",
+        "record-frb",
+        "https://public.nrao.edu/record-frb",
+        "record",
+    ),
+    Story(
+        "Dwarf Planet",
+        "new-dwarf-planet-candidate",
+        "https://keckobservatory.org/new-dwarf-planet-candidate",
+        "dwarf",
+    ),
+    Story(
+        "Triple Shadow Transit",
+        "triple-shadow-transit",
+        "https://hubblesite.org/triple-shadow-transit",
+        "shadow",
+    ),
+    Story(
+        "Most Distant Fast Radio Burst",
+        "distant-frb",
+        "https://www.eso.org/distant-frb",
+        "distant",
+    ),
 )
 
 
@@ -335,6 +379,63 @@ def _page(voice: Voice) -> CannedPage:
     return CannedPage(match=_MATCH, text=body)
 
 
+# ── the two follow-up "URL for the article" browses row 419's run actually made ──
+#
+# The roundup alone does not mirror row 419: its OWN run, after reading a roundup shaped
+# just like this one, went on to browse TWICE more, each `looking_for` literally "URL for
+# the article …", and each read landed on a page whose entire relevant content — once
+# converted to a handle, the same handle table the roundup already fed — was nothing BUT
+# that bare citation.  That bare-handle-is-the-whole-answer shape, to an explicit "what is
+# the URL" question, is exactly what the model's own thinking called "internal
+# identifiers" — and exactly the shape #2835's `annotate()` targets (a page reader's
+# answer that IS, in its entirety, one handle).  Mirrored here as a two-hop lookup any
+# story's own search can land on: a one-result search page, read to a destination stub
+# whose only content is the bare real address the roundup already registered — so the
+# handle number stays the SAME one the roundup cited, never a fresh one.
+_LOOKUP_HOST = "linkcheck.example"
+
+
+def _lookup_destination(story: Story) -> str:
+    """Where this story's "source URL" search leads — a throwaway verification-stub
+    domain, never a real org's, since the real address lives INSIDE this page's body,
+    not in its own URL."""
+    return f"https://{_LOOKUP_HOST}/{story.search_hint}-source"
+
+
+def _url_lookup_pages(story: Story) -> tuple[CannedPage, CannedPage]:
+    """This story's two-hop "what is the URL" answer: a search result naming a link
+    checker, and that checker's own page — whose ENTIRE body, once handle-converted, is
+    the bare real address and nothing else.  ``search=True`` matches a plain-text query
+    carrying this story's own distinguishing word (``search_hint``) — the shape "<headline>
+    source URL" takes; ``search=False`` matches the destination it links to."""
+    destination = _lookup_destination(story)
+    search_page = CannedPage(
+        match=story.search_hint,
+        search=True,
+        text=(
+            "Title: search results\n"
+            f"[Source check: {story.keyword}]({destination})\n"
+            "Confirms where a story's own link leads.\n"
+        ),
+    )
+    destination_page = CannedPage(
+        match=f"{_LOOKUP_HOST}/{story.search_hint}-source",
+        text=f"Title: Link checker\n{story.url}\n",
+    )
+    return search_page, destination_page
+
+
+def _all_pages(voice: Voice) -> list[CannedPage]:
+    """Every page this arm's world answers against: the roundup first, then every
+    story's own two-hop url-lookup pair — available whichever story a sample picks, and
+    however many times (row 419's own run made the "URL for the article" browse twice)
+    it goes looking for "the real URL" after the roundup already named one."""
+    pages = [_page(voice)]
+    for story in _STORIES:
+        pages.extend(_url_lookup_pages(story))
+    return pages
+
+
 def _prompt(voice: Voice) -> str:
     """The job's free-text instructions (#2455 naive baseline) — what a job's own
     ``extraction_prompt`` carries verbatim, with no skill/program rendering seam."""
@@ -393,12 +494,12 @@ def _assert_the_world(db: Database, voice: Voice) -> None:
 
 
 def _arm(voice: Voice) -> CycleArm:
-    page = _page(voice)
+    pages = _all_pages(voice)
     return CycleArm(
         text=voice.extract,
         seed=_seeder(voice),
-        pages=[page],
-        world=World(name=voice.name, pages=(page,), keeps=(), excludes=()),
+        pages=pages,
+        world=World(name=voice.name, pages=tuple(pages), keeps=(), excludes=()),
     )
 
 
