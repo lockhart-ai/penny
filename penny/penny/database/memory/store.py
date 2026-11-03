@@ -1117,7 +1117,8 @@ class MemoryStore:
         to the same live (non-archived) containers the embedding leg's
         ``_entry_candidates`` filters to."""
         sql = text(
-            "SELECT e.id, e.memory_name, e.key, e.content FROM memory_entry_fts f "
+            "SELECT e.id, e.memory_name, e.key, e.content, e.created_at "
+            "FROM memory_entry_fts f "
             "JOIN memory_entry e ON e.id = f.rowid "
             "WHERE memory_entry_fts MATCH :q ORDER BY bm25(memory_entry_fts) LIMIT :pool"
         )
@@ -1149,6 +1150,7 @@ class MemoryStore:
                 container_kind=kinds[row.memory_name],
                 key=row.key,
                 content=row.content,
+                created_at=row.created_at,
             )
             candidates.append((hit, len(candidates) + 1))
         return candidates
@@ -1373,6 +1375,7 @@ class MemoryStore:
                 container_kind=container_kind,
                 key=entry.key,
                 content=entry.content,
+                created_at=entry.created_at,
             )
             if entry.content_embedding is not None:
                 pairs.append((hit, entry.content_embedding))

@@ -2034,7 +2034,12 @@ async def test_draw_clean_cut_draw_gets_one_thinking_off_last_draw(db: Database)
         )
     )
     text = await MicroContext(cast(Any, model), db=db)._draw_clean(
-        _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=True
+        MicroContext._messages(_PAGE_BODY, _INSTRUCTION),
+        None,
+        call_link=CallLink.new_top(),
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+        thinking_enabled=True,
     )
     assert text == _EXTRACTED_VALUE
     assert len(model.requests) == 2
@@ -2071,7 +2076,12 @@ async def test_draw_clean_cut_draw_row_carries_its_reason(tmp_path, mock_llm):
         )
     )
     text = await MicroContext(cast(Any, client), db=db)._draw_clean(
-        _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=True
+        MicroContext._messages(_PAGE_BODY, _INSTRUCTION),
+        None,
+        call_link=CallLink.new_top(),
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+        thinking_enabled=True,
     )
     assert text == _EXTRACTED_VALUE
     assert len(mock_llm.requests) == 2
@@ -2096,7 +2106,12 @@ async def test_draw_clean_skips_the_cut_retry_when_already_thinking_off(db: Data
         )
     )
     text = await MicroContext(cast(Any, model), db=db)._draw_clean(
-        _PAGE_BODY, _INSTRUCTION, None, call_link=CallLink.new_top(), thinking_enabled=False
+        MicroContext._messages(_PAGE_BODY, _INSTRUCTION),
+        None,
+        call_link=CallLink.new_top(),
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+        thinking_enabled=False,
     )
     assert text is None  # every attempt drew the same empty, cut response
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
