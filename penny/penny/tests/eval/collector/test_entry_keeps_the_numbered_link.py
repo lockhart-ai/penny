@@ -55,11 +55,16 @@ five prose variants of one page.
 **What is asserted.**  The collection already holds one earlier, differently-sourced entry
 (matching the real run, which checked its own existing entry on a different topic before
 writing); after the cycle it holds that entry UNCHANGED plus exactly one new one, and the
-new entry's content
-carries the real address the target headline's handle stood for — whether the model wrote
-the handle number (which `collection_write` expands before it reaches the store) or the bare
-address itself.  Which tool calls got there, how many, and whether it re-browsed hunting for
-"the real URL" first are route, and are measured as variance, never claimed.
+new entry carries the REAL address of whichever story it is about — never the fixture's
+own favourite. Which of the page's seven stories counts as "most significant" is the
+model's own judgement call, so picking a different, equally real one is variance, not a
+miss; the claim detects the story an entry names by its own distinguishing words and
+checks THAT story's own address, so a correctly-sourced entry about a decoy passes
+exactly as a correctly-sourced entry about the intended target does. Whether the model
+wrote the handle number (which `collection_write` expands before it reaches the store)
+or the bare address itself, how many tool calls it took, and whether it re-browsed
+hunting for "the real URL" first are route, and are measured as variance, never
+claimed.
 
 Report-only (``min_pass_rate=None``) on this run: this is the first run on today's
 presentation, to show whether the drop still happens, not to grade it.
@@ -127,14 +132,17 @@ _EXISTING_CONTENT = (
 
 # ── the target story, byte-identical across every voice ──────────────────────
 #
-# The real address the job's ask is answered by, and the one-line fact every claim below
-# names — constant so a claim can say what the store holds, not just that something is
-# there.  A different real discovery than the one recorded in production (#2907): per the
-# replay-to-case rule, a real proper noun swaps for another real one of the same kind,
-# never an invented placeholder.
+# The story every voice puts FIRST on the page — the one this fixture considers the
+# single most significant — and the one-line fact every claim below names, constant so
+# a claim can say what the store holds, not just that something is there.  A different
+# real discovery than the one recorded in production (#2907): per the replay-to-case
+# rule, a real proper noun swaps for another real one of the same kind, never an
+# invented placeholder.  Its own real address lives in ``_STORIES`` below, alongside
+# every other story the page carries — "most significant" is the model's own
+# judgement call, so no claim treats this one as privileged over a decoy it might
+# reasonably pick instead.
 _TARGET_HEADLINE = "Vera C. Rubin Observatory's First Look Reveals Thousands of New Asteroids"
 _TARGET_URL = "https://rubinobservatory.org/news/first-look-reveals-asteroids"
-_URL_PREFIX = "rubinobservatory.org"
 _TARGET_FACT = (
     "In its first ten hours of science observations, the observatory's camera charted "
     "over two thousand previously unknown asteroids in the solar system, none of them a "
@@ -190,6 +198,38 @@ _ALL_DECOYS = (
     _DECOY_DWARF_PLANET,
     _DECOY_HUBBLE,
     _DECOY_ESO_FRB,
+)
+
+
+class Story(NamedTuple):
+    """One of the seven stories the page carries: the distinctive words that identify
+    which one an entry is ABOUT, and the real address that story's own page holds.
+
+    ``keyword`` is the smallest span unique to this story's headline (two FRB decoys
+    share "Fast Radio Burst", so each keeps its OWN distinguishing words) — never a word
+    the ask or the job's prompt also uses, so a match only ever means "this entry
+    describes this story," not "this entry mentions the ask." ``url_fragment`` is the
+    smallest span unique to this story's URL — the bare domain where no other story or
+    seeded entry shares it (Rubin), the full distinguishing path where one does (Europa
+    Clipper shares its domain, nasa.gov, with the SEEDED entry's own URL)."""
+
+    keyword: str
+    url_fragment: str
+
+
+# Which story is "most significant" is the model's own judgement call — the job's ask
+# says so — so WHICH of these seven an entry is about is never claimed; only that
+# whichever one it names, that story's own real address came with it.  One entry per
+# story, by its own distinguishing words, so detection never depends on the model having
+# picked the one this fixture considers biggest.
+_STORIES = (
+    Story("Rubin", "rubinobservatory.org"),
+    Story("Euclid", "euclid-einstein-ring"),
+    Story("Europa Clipper", "europa-clipper-first-images"),
+    Story("Record-Breaking Fast Radio Burst", "record-frb"),
+    Story("Dwarf Planet", "new-dwarf-planet-candidate"),
+    Story("Triple Shadow Transit", "triple-shadow-transit"),
+    Story("Most Distant Fast Radio Burst", "distant-frb"),
 )
 
 
@@ -383,17 +423,35 @@ def _wrote_exactly_one_new_entry(sample: SampleObservation, _world: World) -> An
     return count == 2, f"the collection holds {count} entries: {[e.key for e in sample.held]}"
 
 
-def _new_entry_carries_the_source(sample: SampleObservation, _world: World) -> Answer:
-    """The claim this case exists for: the new entry's content carries the real address
-    the target headline's handle stood for — ``collection_write`` expands a cited handle
-    to its real URL before the row is stored (``penny/penny/tools/memory_tools.py``), so
-    whether the model wrote the handle number or the bare address makes no difference to
-    what lands here; what matters is whether either survived at all."""
+def _story_named_in(text: str) -> Story | None:
+    """Which story ``text`` is about, by its own distinguishing words — or ``None`` when
+    text names none of the seven.  Read over the WHOLE entry (key and content, #2017's
+    "a fact in the key and a blurb in the body is a perfectly good way to store it"), so
+    detection never misses a headline the model put in the key and left out of the body."""
+    return next((story for story in _STORIES if story.keyword in text), None)
+
+
+def _new_entry_carries_its_own_source(sample: SampleObservation, _world: World) -> Answer:
+    """The claim this case exists for: the new entry carries the REAL address of
+    whichever story it is about — never a fixed one.  Which story is "most
+    significant" is the model's own judgement call (the ask says so), so a sample that
+    picked a different, equally-real story off the same page is not a miss on that
+    account; this claim reads the story the entry itself names and checks THAT story's
+    own address, not the fixture's favourite.  ``collection_write`` expands a cited
+    handle to its real URL before the row is stored
+    (``penny/penny/tools/memory_tools.py``), so whether the model wrote the handle
+    number or the bare address makes no difference to what lands here."""
     entry = _new_entry(sample)
     if entry is None:
         return False, "no new entry was written"
-    hit = _URL_PREFIX in entry.content
-    return hit, f"expected {_URL_PREFIX!r} in the new entry; it holds {entry.content!r}"
+    story = _story_named_in(entry.text)
+    if story is None:
+        return False, f"the new entry names none of this case's seven stories: {entry.text!r}"
+    hit = story.url_fragment in entry.text
+    return hit, (
+        f"expected {story.url_fragment!r} (the {story.keyword!r} story's own address) "
+        f"in the new entry; it holds {entry.text!r}"
+    )
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -426,8 +484,8 @@ async def test_the_entry_keeps_the_numbered_links_source(
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: the new entry carries the target story's real address",
-        _new_entry_carries_the_source,
+        "state: the new entry carries its own story's real address",
+        _new_entry_carries_its_own_source,
         SpecCategory.STORE,
     )
 
