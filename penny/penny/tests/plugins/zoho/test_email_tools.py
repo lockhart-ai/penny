@@ -325,3 +325,169 @@ async def test_list_labels_reports_a_raised_listing():
 
     assert result.success is False
     assert result.message == LIST_LABELS_FAILED.format(e="connection refused")
+
+
+# ── Plan mode (#2947): resolve (the folder/label lookup) always runs, since
+# it's read-only; the mutating call(s) never run under ``plan=True`` — not
+# even the create-if-missing step when the folder/label doesn't exist yet —
+# and run exactly once with the same resolved values under ``plan=False``.
+
+
+@pytest.mark.asyncio
+async def test_move_emails_plan_never_moves_existing_folder():
+    client = MagicMock()
+    folder = MagicMock(folder_id="F123", folder_name="Invoices")
+    client.get_folder_by_name = AsyncMock(return_value=folder)
+    client.move_messages = AsyncMock(return_value=True)
+
+    result = await MoveEmailsTool(client).execute(
+        CallLink.new_top(),
+        plan=True,
+        message_ids=["F001:M1", "F001:M2"],
+        folder_path="Invoices",
+    )
+
+    client.move_messages.assert_not_awaited()
+    assert result.mutated is False
+    assert result.message.startswith("PLAN — nothing was changed: this call would")
+    assert "move 2 email(s) to 'Invoices'" in result.message
+
+
+@pytest.mark.asyncio
+async def test_move_emails_plan_never_creates_the_missing_folder():
+    """Even the create-if-missing branch stays unrun under ``plan`` — resolve
+    only LOOKS UP the folder, it never calls ``create_nested_folder``."""
+    client = MagicMock()
+    client.get_folder_by_name = AsyncMock(return_value=None)
+    client.create_nested_folder = AsyncMock(return_value="should not be called")
+    client.move_messages = AsyncMock(return_value=True)
+
+    result = await MoveEmailsTool(client).execute(
+        CallLink.new_top(),
+        plan=True,
+        message_ids=["F001:M1"],
+        folder_path="Accounting/Expenses/AWS",
+    )
+
+    client.create_nested_folder.assert_not_awaited()
+    client.move_messages.assert_not_awaited()
+    assert "doesn't exist yet" in result.message
+
+
+@pytest.mark.asyncio
+async def test_move_emails_apply_moves_once_to_the_resolved_folder():
+    client = MagicMock()
+    folder = MagicMock(folder_id="F123", folder_name="Invoices")
+    client.get_folder_by_name = AsyncMock(return_value=folder)
+    client.move_messages = AsyncMock(return_value=True)
+
+    result = await MoveEmailsTool(client).execute(
+        CallLink.new_top(), message_ids=["F001:M1", "F001:M2"], folder_path="Invoices"
+    )
+
+    client.move_messages.assert_awaited_once_with(["F001:M1", "F001:M2"], "F123")
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_create_folder_plan_never_creates_and_previews_the_call():
+    client = MagicMock()
+    client.create_nested_folder = AsyncMock(return_value="should not be called")
+
+    result = await CreateFolderTool(client).execute(
+        CallLink.new_top(), plan=True, folder_path="Clients/Acme"
+    )
+
+    client.create_nested_folder.assert_not_awaited()
+    assert result.mutated is False
+    assert (
+        result.message
+        == "PLAN — nothing was changed: this call would — create folder 'Clients/Acme'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_folder_apply_creates_once_with_the_same_path():
+    client = MagicMock()
+    folder = MagicMock(folder_id="F123")
+    client.create_nested_folder = AsyncMock(return_value=folder)
+
+    result = await CreateFolderTool(client).execute(CallLink.new_top(), folder_path="Clients/Acme")
+
+    client.create_nested_folder.assert_awaited_once_with("Clients/Acme")
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_apply_label_plan_never_applies_and_never_creates_missing_label():
+    client = MagicMock()
+    client.get_label_by_name = AsyncMock(return_value=None)
+    client.create_label = AsyncMock(return_value="should not be called")
+    client.apply_label = AsyncMock(return_value=True)
+
+    result = await ApplyLabelTool(client).execute(
+        CallLink.new_top(), plan=True, message_ids=["F001:M1"], label_name="Done"
+    )
+
+    client.create_label.assert_not_awaited()
+    client.apply_label.assert_not_awaited()
+    assert "doesn't exist yet" in result.message
+
+
+@pytest.mark.asyncio
+async def test_apply_label_apply_creates_once_then_applies_once():
+    client = MagicMock()
+    client.get_label_by_name = AsyncMock(return_value=None)
+    client.create_label = AsyncMock(return_value={"labelId": "L123", "displayName": "Done"})
+    client.apply_label = AsyncMock(return_value=True)
+
+    result = await ApplyLabelTool(client).execute(
+        CallLink.new_top(), message_ids=["F001:M1"], label_name="Done"
+    )
+
+    client.create_label.assert_awaited_once_with("Done")
+    client.apply_label.assert_awaited_once_with(["F001:M1"], "L123")
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_create_email_rule_plan_leaves_the_store_untouched(db):
+    """The one mutating call here is a write to Penny's OWN db, not an
+    external API — ``plan`` runs the SAME store call with the SAME rollback
+    mechanism ``_create_memory``/``update_collection_metadata`` use (#2933/
+    #2946), so the store stays byte-identical rather than skipping the call
+    outright."""
+    before = db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO)
+    tool = CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO)
+
+    result = await tool.run(
+        CallLink.new_top(),
+        plan=True,
+        name="AWS invoices",
+        condition={"from": "aws@amazon.com"},
+        action={"move_to": "Accounting/Expenses/AWS"},
+    )
+
+    assert result.success is True
+    assert result.mutated is False
+    assert result.message.startswith("PLAN — nothing was changed: this call would")
+    assert "AWS invoices" in result.message
+    assert db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO) == before
+
+
+@pytest.mark.asyncio
+async def test_create_email_rule_apply_persists_exactly_what_the_plan_described(db):
+    tool = CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO)
+    kwargs = {
+        "name": "AWS invoices",
+        "condition": {"from": "aws@amazon.com"},
+        "action": {"move_to": "Accounting/Expenses/AWS"},
+    }
+
+    await tool.run(CallLink.new_top(), plan=True, **kwargs)
+    result = await tool.run(CallLink.new_top(), **kwargs)
+
+    assert result.mutated is True
+    rules = db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO)
+    assert len(rules) == 1
+    assert rules[0].name == "AWS invoices"

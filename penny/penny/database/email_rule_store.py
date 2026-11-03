@@ -28,8 +28,18 @@ class EmailRuleStore:
     def _session(self) -> Session:
         return Session(self.engine)
 
-    def create(self, provider: str, name: str, condition: str, action: str) -> EmailRule:
-        """Persist a new enabled rule; ``condition``/``action`` are serialized JSON."""
+    def create(
+        self, provider: str, name: str, condition: str, action: str, plan: bool = False
+    ) -> EmailRule:
+        """Persist a new enabled rule; ``condition``/``action`` are serialized JSON.
+
+        ``plan`` (#2947, following #2933/#2946's ``Collection.write``) runs
+        this EXACT same code — the same row, built the same way — then rolls
+        the transaction back instead of committing it, rather than a second,
+        separately-written "describe what this would do" path.  A fresh row
+        never previously persisted, so (as with ``_create_memory``) a
+        rollback just reverts it to transient — no snapshot-before-rollback
+        needed, unlike an edit of an existing loaded row."""
         with self._session() as session:
             rule = EmailRule(
                 provider=provider,
@@ -40,9 +50,17 @@ class EmailRuleStore:
                 created_at=self._clock.now(),
             )
             session.add(rule)
-            session.commit()
-            session.refresh(rule)
-            logger.info("Created email rule '%s' for provider %s", name, provider)
+            if plan:
+                session.rollback()
+            else:
+                session.commit()
+                session.refresh(rule)
+            logger.info(
+                "%s email rule '%s' for provider %s",
+                "Planned" if plan else "Created",
+                name,
+                provider,
+            )
             return rule
 
     def list_active(self, provider: str) -> list[EmailRule]:

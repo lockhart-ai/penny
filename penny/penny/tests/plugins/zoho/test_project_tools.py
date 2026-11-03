@@ -285,3 +285,166 @@ async def test_update_task_reports_a_raised_update():
 
     assert result.success is False
     assert result.message == UPDATE_TASK_FAILED.format(e="connection refused")
+
+
+# ── Plan mode (#2947): resolve (project/task-list/task lookup) always runs,
+# since it's read-only; the mutating call(s) never run under ``plan=True`` —
+# not even the create-if-missing task-list step — and run exactly once with
+# the same resolved values under ``plan=False``.
+
+
+@pytest.mark.asyncio
+async def test_create_project_plan_never_creates_and_previews_the_call():
+    client = MagicMock()
+    client.create_project = AsyncMock(return_value="should not be called")
+
+    result = await CreateProjectTool(client).execute(CallLink.new_top(), plan=True, name="Acme")
+
+    client.create_project.assert_not_awaited()
+    assert result.mutated is False
+    assert result.message == "PLAN — nothing was changed: this call would — create project 'Acme'."
+
+
+@pytest.mark.asyncio
+async def test_create_project_apply_creates_once_with_the_same_name():
+    client = MagicMock()
+    created = MagicMock(id="P1")
+    created.name = "Acme"
+    client.create_project = AsyncMock(return_value=created)
+
+    result = await CreateProjectTool(client).execute(CallLink.new_top(), name="Acme")
+
+    client.create_project.assert_awaited_once_with(
+        name="Acme", description=None, start_date=None, end_date=None
+    )
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_create_task_list_plan_never_creates_and_previews_the_call():
+    project = MagicMock(id="P1")
+    project.name = "Acme"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=project)
+    client.create_task_list = AsyncMock(return_value="should not be called")
+
+    result = await CreateTaskListTool(client).execute(
+        CallLink.new_top(), plan=True, project_name="Acme", name="Phase 2"
+    )
+
+    client.create_task_list.assert_not_awaited()
+    assert result.mutated is False
+    assert "create task list 'Phase 2' in project 'Acme'" in result.message
+
+
+@pytest.mark.asyncio
+async def test_create_task_list_apply_creates_once_with_the_resolved_project():
+    project = MagicMock(id="P1")
+    project.name = "Acme"
+    tasklist = MagicMock(id="TL1")
+    tasklist.name = "Phase 2"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=project)
+    client.create_task_list = AsyncMock(return_value=tasklist)
+
+    result = await CreateTaskListTool(client).execute(
+        CallLink.new_top(), project_name="Acme", name="Phase 2"
+    )
+
+    client.create_task_list.assert_awaited_once_with("P1", "Phase 2")
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_create_task_plan_never_creates_task_or_the_missing_tasklist():
+    """Even the create-if-missing branch stays unrun under ``plan`` —
+    resolve only LOOKS UP the task list, it never calls ``create_task_list``."""
+    project = MagicMock(id="P1")
+    project.name = "Acme"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=project)
+    client.get_task_lists = AsyncMock(return_value=[])
+    client.create_task_list = AsyncMock(return_value="should not be called")
+    client.create_task = AsyncMock(return_value="should not be called")
+
+    result = await CreateTaskTool(client).execute(
+        CallLink.new_top(), plan=True, project_name="Acme", name="Ship it"
+    )
+
+    client.create_task_list.assert_not_awaited()
+    client.create_task.assert_not_awaited()
+    assert result.mutated is False
+    assert "doesn't exist yet" in result.message
+    assert "create task 'Ship it' in project 'Acme'" in result.message
+
+
+@pytest.mark.asyncio
+async def test_create_task_apply_creates_once_with_the_resolved_tasklist():
+    project = MagicMock(id="P1")
+    project.name = "Acme"
+    tasklist = MagicMock(id="TL1")
+    tasklist.name = "General"
+    task = MagicMock()
+    task.name = "Ship it"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=project)
+    client.get_task_lists = AsyncMock(return_value=[])
+    client.create_task_list = AsyncMock(return_value=tasklist)
+    client.create_task = AsyncMock(return_value=task)
+
+    result = await CreateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", name="Ship it"
+    )
+
+    client.create_task_list.assert_awaited_once_with("P1", "General")
+    client.create_task.assert_awaited_once()
+    await_args = client.create_task.await_args
+    assert await_args is not None
+    assert await_args.kwargs["tasklist_id"] == "TL1"
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_update_task_plan_never_updates_and_previews_the_call():
+    task = MagicMock(id="T1")
+    task.name = "Ship it"
+    project = MagicMock(id="P1")
+    project.name = "Acme"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=project)
+    client.get_tasks = AsyncMock(return_value=[task])
+    client.update_task = AsyncMock(return_value="should not be called")
+
+    result = await UpdateTaskTool(client).execute(
+        CallLink.new_top(), plan=True, project_name="Acme", task_name="Ship it", priority="high"
+    )
+
+    client.update_task.assert_not_awaited()
+    assert result.mutated is False
+    assert "update task 'Ship it' in project 'Acme'" in result.message
+    assert "priority -> high" in result.message
+
+
+@pytest.mark.asyncio
+async def test_update_task_apply_updates_once_with_the_resolved_task_id():
+    task = MagicMock(id="T1")
+    task.name = "Ship it"
+    project = MagicMock(id="P1")
+    project.name = "Acme"
+    updated = MagicMock()
+    updated.name = "Ship it"
+    updated.priority = "high"
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=project)
+    client.get_tasks = AsyncMock(return_value=[task])
+    client.update_task = AsyncMock(return_value=updated)
+
+    result = await UpdateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", task_name="Ship it", priority="high"
+    )
+
+    client.update_task.assert_awaited_once()
+    await_args = client.update_task.await_args
+    assert await_args is not None
+    assert await_args.kwargs["task_id"] == "T1"
+    assert result.mutated is True

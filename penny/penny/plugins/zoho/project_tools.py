@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -10,8 +11,9 @@ from pydantic import Field
 
 from penny.constants import PennyConstants
 from penny.llm.call_link import CallLink
-from penny.tools.base import Tool
+from penny.tools.base import PLAN_ARG_DESCRIPTION, Tool
 from penny.tools.models import ToolArgs, ToolResult
+from penny.tools.plan_tool import ResolvingMutationTool
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,11 @@ class CreateProjectArgs(ToolArgs):
     description: str | None = Field(default=None, description="Project description")
     start_date: str | None = Field(default=None, description="Start date (YYYY-MM-DD)")
     end_date: str | None = Field(default=None, description="End date (YYYY-MM-DD)")
+    # The structural plan mark (#2947, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class ListTasksArgs(ToolArgs):
@@ -75,6 +82,7 @@ class CreateTaskArgs(ToolArgs):
     end_date: str | None = Field(default=None, description="End date (YYYY-MM-DD)")
     priority: str = Field(default="none", description="Priority: none, low, medium, high")
     assignees: list[str] | None = Field(default=None, description="List of assignee ZPUIDs")
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class UpdateTaskArgs(ToolArgs):
@@ -89,6 +97,7 @@ class UpdateTaskArgs(ToolArgs):
     completion_percentage: int | None = Field(
         default=None, description="Completion percentage (0-100)"
     )
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class CreateTaskListArgs(ToolArgs):
@@ -96,6 +105,7 @@ class CreateTaskListArgs(ToolArgs):
 
     project_name: str = Field(description="Project name to add task list to")
     name: str = Field(description="Task list name")
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class ListProjectsTool(Tool):
@@ -198,14 +208,17 @@ class GetProjectDetailsTool(Tool):
         return ToolResult(message="\n".join(lines))
 
 
-class CreateProjectTool(Tool):
+class CreateProjectTool(ResolvingMutationTool[CreateProjectArgs]):
     """Create a new project."""
 
     name = "create_project"
+    mutates = True
     description = (
         "Create a new project in the Zoho Projects portal. Specify the project "
         "name and optionally a description and dates. Use this when starting "
-        "new initiatives or organizing work into projects."
+        "new initiatives or organizing work into projects.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -230,6 +243,7 @@ class CreateProjectTool(Tool):
         "required": ["name"],
     }
     args_model = CreateProjectArgs
+    failure_message = CREATE_PROJECT_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -238,27 +252,32 @@ class CreateProjectTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create a new project."""
-        args = CreateProjectArgs(**kwargs)
+    async def resolve(self, args: CreateProjectArgs) -> CreateProjectArgs:
+        """Nothing to look up — the whole call is the args themselves."""
+        return args
 
-        try:
-            project = await self._client.create_project(
-                name=args.name,
-                description=args.description,
-                start_date=args.start_date,
-                end_date=args.end_date,
-            )
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Creating project failed")
-            return ToolResult(message=CREATE_PROJECT_FAILED.format(e=e), success=False)
+    def describe(self, resolved: CreateProjectArgs) -> ToolResult:
+        lines = [f"create project '{resolved.name}'."]
+        if resolved.description:
+            lines.append(f"Description: {resolved.description}")
+        if resolved.start_date or resolved.end_date:
+            lines.append(f"Dates: {resolved.start_date or '?'} to {resolved.end_date or '?'}")
+        return ToolResult(message="\n".join(lines))
 
+    async def apply(self, resolved: CreateProjectArgs) -> ToolResult:
+        """The one mutating call — create the project."""
+        project = await self._client.create_project(
+            name=resolved.name,
+            description=resolved.description,
+            start_date=resolved.start_date,
+            end_date=resolved.end_date,
+        )
         if project:
             return ToolResult(
                 message=f"Project '{project.name}' created successfully (ID: {project.id})",
                 mutated=True,
             )
-        return ToolResult(message=f"Failed to create project: {args.name}", success=False)
+        return ToolResult(message=f"Failed to create project: {resolved.name}", success=False)
 
 
 class ListTaskListsTool(Tool):
@@ -312,14 +331,26 @@ class ListTaskListsTool(Tool):
         return ToolResult(message="\n".join(lines))
 
 
-class CreateTaskListTool(Tool):
+@dataclass
+class _ResolvedCreateTaskList:
+    """What ``CreateTaskListTool.resolve`` works out before the mutating
+    call — the project it belongs to."""
+
+    args: CreateTaskListArgs
+    project: Any
+
+
+class CreateTaskListTool(ResolvingMutationTool[CreateTaskListArgs]):
     """Create a new task list (milestone) in a project."""
 
     name = "create_task_list"
+    mutates = True
     description = (
         "Create a new task list (milestone) in a project. Task lists help "
         "organize tasks into logical groups like phases or categories. "
-        "Use this to structure work within a project."
+        "Use this to structure work within a project.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -336,6 +367,7 @@ class CreateTaskListTool(Tool):
         "required": ["project_name", "name"],
     }
     args_model = CreateTaskListArgs
+    failure_message = CREATE_TASK_LIST_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -344,32 +376,38 @@ class CreateTaskListTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create a task list."""
-        args = CreateTaskListArgs(**kwargs)
+    async def resolve(self, args: CreateTaskListArgs) -> _ResolvedCreateTaskList | ToolResult:
+        """Resolve the target project — read-only, safe under ``plan``."""
+        project = await self._client.get_project_by_name(args.project_name)
+        if not project:
+            return ToolResult(
+                message=f"Project not found: {args.project_name}. "
+                "Check the project name and try again.",
+                success=False,
+            )
+        return _ResolvedCreateTaskList(args=args, project=project)
 
-        try:
-            project = await self._client.get_project_by_name(args.project_name)
-            if not project:
-                return ToolResult(
-                    message=f"Project not found: {args.project_name}. "
-                    "Check the project name and try again.",
-                    success=False,
-                )
+    def describe(self, resolved: _ResolvedCreateTaskList) -> ToolResult:
+        return ToolResult(
+            message=(
+                f"create task list '{resolved.args.name}' in project '{resolved.project.name}'."
+            )
+        )
 
-            tasklist = await self._client.create_task_list(project.id, args.name)
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Creating task list failed")
-            return ToolResult(message=CREATE_TASK_LIST_FAILED.format(e=e), success=False)
+    async def apply(self, resolved: _ResolvedCreateTaskList) -> ToolResult:
+        """The one mutating call — create the task list."""
+        tasklist = await self._client.create_task_list(resolved.project.id, resolved.args.name)
         if tasklist:
             return ToolResult(
                 message=(
-                    f"Task list '{tasklist.name}' created in project '{project.name}' "
+                    f"Task list '{tasklist.name}' created in project '{resolved.project.name}' "
                     f"(ID: {tasklist.id})"
                 ),
                 mutated=True,
             )
-        return ToolResult(message=f"Failed to create task list: {args.name}", success=False)
+        return ToolResult(
+            message=f"Failed to create task list: {resolved.args.name}", success=False
+        )
 
 
 class ListTasksTool(Tool):
@@ -429,14 +467,31 @@ class ListTasksTool(Tool):
         return ToolResult(message="\n".join(lines))
 
 
-class CreateTaskTool(Tool):
+@dataclass
+class _ResolvedCreateTask:
+    """What ``CreateTaskTool.resolve`` works out before the mutating call(s)
+    — the project, the task list's NAME and whether it already exists (as
+    an existing object, or ``None`` meaning "doesn't exist yet, would be
+    created" — resolve never calls ``create_task_list`` itself, that's a
+    mutation deferred to ``apply``)."""
+
+    args: CreateTaskArgs
+    project: Any
+    tasklist_name: str
+    tasklist: Any | None
+
+
+class CreateTaskTool(ResolvingMutationTool[CreateTaskArgs]):
     """Create a new task in a project."""
 
     name = "create_task"
+    mutates = True
     description = (
         "Create a new task in a project. Specify the task name, and optionally "
         "a description, dates, priority, and assignees. Tasks must belong to a "
-        "task list - if not specified, a 'General' task list will be created."
+        "task list - if not specified, a 'General' task list will be created.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -478,6 +533,7 @@ class CreateTaskTool(Tool):
         "required": ["project_name", "name"],
     }
     args_model = CreateTaskArgs
+    failure_message = CREATE_TASK_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -486,52 +542,75 @@ class CreateTaskTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create a task."""
-        args = CreateTaskArgs(**kwargs)
+    async def resolve(self, args: CreateTaskArgs) -> _ResolvedCreateTask | ToolResult:
+        """Resolve the project and look up the task list by name — never
+        create it here, even when it's missing, so a plan never calls a
+        mutating endpoint."""
+        project = await self._client.get_project_by_name(args.project_name)
+        if not project:
+            return ToolResult(
+                message=f"Project not found: {args.project_name}. "
+                "Check the project name and try again.",
+                success=False,
+            )
 
-        try:
-            project = await self._client.get_project_by_name(args.project_name)
-            if not project:
+        tasklist_name = args.tasklist_name or PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST
+        tasklists = await self._client.get_task_lists(project.id)
+        tasklist = next(
+            (tl for tl in tasklists if tl.name.lower() == tasklist_name.lower()),
+            None,
+        )
+        return _ResolvedCreateTask(
+            args=args, project=project, tasklist_name=tasklist_name, tasklist=tasklist
+        )
+
+    def describe(self, resolved: _ResolvedCreateTask) -> ToolResult:
+        """The plan headline — names whether the task list already exists."""
+        tasklist_note = (
+            f"existing task list '{resolved.tasklist_name}'"
+            if resolved.tasklist
+            else f"task list '{resolved.tasklist_name}' (doesn't exist yet, would be created)"
+        )
+        lines = [
+            f"create task '{resolved.args.name}' in project '{resolved.project.name}' "
+            f"({tasklist_note})."
+        ]
+        if resolved.args.priority != "none":
+            lines.append(f"Priority: {resolved.args.priority}")
+        if resolved.args.start_date or resolved.args.end_date:
+            lines.append(
+                f"Dates: {resolved.args.start_date or '?'} to {resolved.args.end_date or '?'}"
+            )
+        return ToolResult(message="\n".join(lines))
+
+    async def apply(self, resolved: _ResolvedCreateTask) -> ToolResult:
+        """Create the task list if it was missing, then the task."""
+        args = resolved.args
+        tasklist = resolved.tasklist
+        if not tasklist:
+            tasklist = await self._client.create_task_list(
+                resolved.project.id, resolved.tasklist_name
+            )
+            if not tasklist:
                 return ToolResult(
-                    message=f"Project not found: {args.project_name}. "
-                    "Check the project name and try again.",
+                    message=f"Failed to create task list: {resolved.tasklist_name}",
                     success=False,
                 )
 
-            tasklist_name = args.tasklist_name or PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST
-            tasklists = await self._client.get_task_lists(project.id)
-            tasklist = next(
-                (tl for tl in tasklists if tl.name.lower() == tasklist_name.lower()),
-                None,
-            )
-
-            if not tasklist:
-                tasklist = await self._client.create_task_list(project.id, tasklist_name)
-                if not tasklist:
-                    return ToolResult(
-                        message=f"Failed to create task list: {tasklist_name}",
-                        success=False,
-                    )
-
-            task = await self._client.create_task(
-                project_id=project.id,
-                name=args.name,
-                tasklist_id=tasklist.id,
-                description=args.description,
-                start_date=args.start_date,
-                end_date=args.end_date,
-                priority=args.priority,
-                owner_zpuids=args.assignees,
-            )
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Creating task failed")
-            return ToolResult(message=CREATE_TASK_FAILED.format(e=e), success=False)
-
+        task = await self._client.create_task(
+            project_id=resolved.project.id,
+            name=args.name,
+            tasklist_id=tasklist.id,
+            description=args.description,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            priority=args.priority,
+            owner_zpuids=args.assignees,
+        )
         if task:
             return ToolResult(
                 message=(
-                    f"Task '{task.name}' created in project '{project.name}' "
+                    f"Task '{task.name}' created in project '{resolved.project.name}' "
                     f"(Task List: {tasklist.name})"
                 ),
                 mutated=True,
@@ -539,14 +618,28 @@ class CreateTaskTool(Tool):
         return ToolResult(message=f"Failed to create task: {args.name}", success=False)
 
 
-class UpdateTaskTool(Tool):
+@dataclass
+class _ResolvedUpdateTask:
+    """What ``UpdateTaskTool.resolve`` works out before the mutating call —
+    the project and the matched task, read-only."""
+
+    args: UpdateTaskArgs
+    project: Any
+    task: Any
+    ambiguity_note: str
+
+
+class UpdateTaskTool(ResolvingMutationTool[UpdateTaskArgs]):
     """Update an existing task."""
 
     name = "update_task"
+    mutates = True
     description = (
         "Update an existing task in a project. Can change the name, description, "
         "priority, status, or completion percentage. Use this to track progress "
-        "or reprioritize work."
+        "or reprioritize work.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -583,6 +676,7 @@ class UpdateTaskTool(Tool):
         "required": ["project_name", "task_name"],
     }
     args_model = UpdateTaskArgs
+    failure_message = UPDATE_TASK_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -591,46 +685,60 @@ class UpdateTaskTool(Tool):
     def __init__(self, projects_client: Any) -> None:
         self._client = projects_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Update a task."""
-        args = UpdateTaskArgs(**kwargs)
-
-        try:
-            project = await self._client.get_project_by_name(args.project_name)
-            if not project:
-                return ToolResult(
-                    message=f"Project not found: {args.project_name}. "
-                    "Check the project name and try again.",
-                    success=False,
-                )
-
-            tasks = await self._client.get_tasks(project.id)
-            matching_tasks = [t for t in tasks if t.name.lower() == args.task_name.lower()]
-
-            if not matching_tasks:
-                return ToolResult(
-                    message=(
-                        f"Task not found: {args.task_name}. Check the task name and try again."
-                    ),
-                    success=False,
-                )
-            task = matching_tasks[0]
-            ambiguity_note = self._ambiguous_match_note(matching_tasks)
-
-            updated = await self._client.update_task(
-                project_id=project.id,
-                task_id=task.id,
-                name=args.new_name,
-                description=args.description,
-                priority=args.priority,
-                status_id=args.status_id,
-                completion_percentage=args.completion_percentage,
+    async def resolve(self, args: UpdateTaskArgs) -> _ResolvedUpdateTask | ToolResult:
+        """Resolve the project and find the task to update — read-only."""
+        project = await self._client.get_project_by_name(args.project_name)
+        if not project:
+            return ToolResult(
+                message=f"Project not found: {args.project_name}. "
+                "Check the project name and try again.",
+                success=False,
             )
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Updating task failed")
-            return ToolResult(message=UPDATE_TASK_FAILED.format(e=e), success=False)
 
-        return self._build_update_result(args, updated, ambiguity_note)
+        tasks = await self._client.get_tasks(project.id)
+        matching_tasks = [t for t in tasks if t.name.lower() == args.task_name.lower()]
+        if not matching_tasks:
+            return ToolResult(
+                message=f"Task not found: {args.task_name}. Check the task name and try again.",
+                success=False,
+            )
+        task = matching_tasks[0]
+        ambiguity_note = self._ambiguous_match_note(matching_tasks)
+        return _ResolvedUpdateTask(
+            args=args, project=project, task=task, ambiguity_note=ambiguity_note
+        )
+
+    def describe(self, resolved: _ResolvedUpdateTask) -> ToolResult:
+        """The plan headline — the changed fields, named from args."""
+        changes = []
+        if resolved.args.new_name is not None:
+            changes.append(f"name -> '{resolved.args.new_name}'")
+        if resolved.args.priority is not None:
+            changes.append(f"priority -> {resolved.args.priority}")
+        if resolved.args.completion_percentage is not None:
+            changes.append(f"progress -> {resolved.args.completion_percentage}%")
+        if resolved.args.description is not None:
+            changes.append(f"description -> {resolved.args.description}")
+        change_str = ", ".join(changes) if changes else "no changes"
+        return ToolResult(
+            message=(
+                f"update task '{resolved.task.name}' in project '{resolved.project.name}': "
+                f"{change_str}{resolved.ambiguity_note}"
+            )
+        )
+
+    async def apply(self, resolved: _ResolvedUpdateTask) -> ToolResult:
+        """The one mutating call — update the task."""
+        updated = await self._client.update_task(
+            project_id=resolved.project.id,
+            task_id=resolved.task.id,
+            name=resolved.args.new_name,
+            description=resolved.args.description,
+            priority=resolved.args.priority,
+            status_id=resolved.args.status_id,
+            completion_percentage=resolved.args.completion_percentage,
+        )
+        return self._build_update_result(resolved.args, updated, resolved.ambiguity_note)
 
     @staticmethod
     def _ambiguous_match_note(matching_tasks: list[Any]) -> str:

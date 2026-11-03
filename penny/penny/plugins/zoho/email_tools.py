@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import httpx
 from pydantic import BaseModel, Field
 
 from penny.llm.call_link import CallLink
+from penny.plugins.zoho.mail_models import ZohoFolder
 from penny.plugins.zoho.rule_models import (
     EmailRuleAction,
     EmailRuleCondition,
     describe_fields,
 )
-from penny.tools.base import Tool
+from penny.tools.base import PLAN_ARG_DESCRIPTION, Tool, as_plan_result
 from penny.tools.models import ToolResult
+from penny.tools.plan_tool import ResolvingMutationTool
 
 if TYPE_CHECKING:
     from penny.database import Database
@@ -47,12 +50,18 @@ class MoveEmailsArgs(BaseModel):
     message_ids: list[str] = Field(description="List of email message IDs to move")
     folder_path: str = Field(description="Destination folder path (e.g., 'Clients/John Smith')")
     create_if_missing: bool = Field(default=True, description="Create folder if it doesn't exist")
+    # The structural plan mark (#2947, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class CreateFolderArgs(BaseModel):
     """Arguments for creating an email folder."""
 
     folder_path: str = Field(description="Folder path to create (e.g., 'Accounting/Expenses/AWS')")
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class ApplyLabelArgs(BaseModel):
@@ -61,6 +70,7 @@ class ApplyLabelArgs(BaseModel):
     message_ids: list[str] = Field(description="List of email message IDs to label")
     label_name: str = Field(description="Label name to apply (e.g., 'completed')")
     create_if_missing: bool = Field(default=True, description="Create label if it doesn't exist")
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class CreateEmailRuleArgs(BaseModel):
@@ -76,17 +86,32 @@ class CreateEmailRuleArgs(BaseModel):
         description="Rule condition (from, subject_contains, etc.)"
     )
     action: EmailRuleAction = Field(description="Rule action (move_to, label, etc.)")
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
-class MoveEmailsTool(Tool):
+@dataclass
+class _ResolvedMoveEmails:
+    """What ``MoveEmailsTool.resolve`` works out before the mutating call(s)
+    — the existing folder, or ``None`` meaning "doesn't exist yet, would be
+    created" (resolve never calls ``create_nested_folder`` itself — that's a
+    mutation, deferred to ``apply``)."""
+
+    args: MoveEmailsArgs
+    folder: ZohoFolder | None
+
+
+class MoveEmailsTool(ResolvingMutationTool[MoveEmailsArgs]):
     """Move emails to a folder, creating the folder if needed."""
 
     name = "move_emails"
+    mutates = True
     description = (
         "Move one or more emails to a destination folder. "
         "The folder path can include nested folders like 'Clients/John Smith' or "
         "'Accounting/Expenses/AWS'. Folders will be created if they don't exist. "
-        "Use this after reading emails to organize them into appropriate folders."
+        "Use this after reading emails to organize them into appropriate folders.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -111,6 +136,7 @@ class MoveEmailsTool(Tool):
         "required": ["message_ids", "folder_path"],
     }
     args_model = MoveEmailsArgs
+    failure_message = MOVE_EMAILS_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -119,37 +145,42 @@ class MoveEmailsTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Move emails to a folder."""
-        args = MoveEmailsArgs(**kwargs)
-
+    async def resolve(self, args: MoveEmailsArgs) -> _ResolvedMoveEmails | ToolResult:
+        """Look up the destination folder — never create it here, even when
+        ``create_if_missing`` — so a plan never calls a mutating endpoint."""
         if not args.message_ids:
-            return ToolResult(
-                message="No message IDs provided.",
-                success=False,
+            return ToolResult(message="No message IDs provided.", success=False)
+
+        folder = await self._client.get_folder_by_name(args.folder_path.split("/")[-1])
+        if not folder and not args.create_if_missing:
+            return ToolResult(message=f"Folder not found: {args.folder_path}", success=False)
+        return _ResolvedMoveEmails(args=args, folder=folder)
+
+    def describe(self, resolved: _ResolvedMoveEmails) -> ToolResult:
+        """The plan headline — names whether the folder already exists."""
+        count = len(resolved.args.message_ids)
+        if resolved.folder:
+            return ToolResult(message=f"move {count} email(s) to '{resolved.args.folder_path}'.")
+        return ToolResult(
+            message=(
+                f"create folder '{resolved.args.folder_path}' (it doesn't exist yet) "
+                f"and move {count} email(s) into it."
             )
+        )
 
-        try:
-            folder = await self._client.get_folder_by_name(args.folder_path.split("/")[-1])
-
-            if not folder and args.create_if_missing:
-                folder = await self._client.create_nested_folder(args.folder_path)
-                if not folder:
-                    return ToolResult(
-                        message=f"Failed to create folder: {args.folder_path}",
-                        success=False,
-                    )
-
+    async def apply(self, resolved: _ResolvedMoveEmails) -> ToolResult:
+        """Create the folder if it was missing, then move the batch."""
+        args = resolved.args
+        folder = resolved.folder
+        if not folder:
+            folder = await self._client.create_nested_folder(args.folder_path)
             if not folder:
                 return ToolResult(
-                    message=f"Folder not found: {args.folder_path}",
+                    message=f"Failed to create folder: {args.folder_path}",
                     success=False,
                 )
 
-            success = await self._client.move_messages(args.message_ids, folder.folder_id)
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Moving emails failed")
-            return ToolResult(message=MOVE_EMAILS_FAILED.format(e=e), success=False)
+        success = await self._client.move_messages(args.message_ids, folder.folder_id)
         if success:
             # The Zoho endpoint moves the whole batch in one call and answers with a
             # single aggregate status, not a per-message confirmation (#2768) — so the
@@ -164,14 +195,17 @@ class MoveEmailsTool(Tool):
         )
 
 
-class CreateFolderTool(Tool):
+class CreateFolderTool(ResolvingMutationTool[CreateFolderArgs]):
     """Create an email folder with optional nesting."""
 
     name = "create_folder"
+    mutates = True
     description = (
         "Create a new email folder. Supports nested folder paths like "
         "'Clients/John Smith' or 'Accounting/Expenses/AWS'. "
-        "Parent folders will be created automatically if they don't exist."
+        "Parent folders will be created automatically if they don't exist.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -184,6 +218,7 @@ class CreateFolderTool(Tool):
         "required": ["folder_path"],
     }
     args_model = CreateFolderArgs
+    failure_message = CREATE_FOLDER_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -192,34 +227,48 @@ class CreateFolderTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create a folder."""
-        args = CreateFolderArgs(**kwargs)
+    async def resolve(self, args: CreateFolderArgs) -> CreateFolderArgs:
+        """Nothing to look up — the whole call is the args themselves."""
+        return args
 
-        try:
-            folder = await self._client.create_nested_folder(args.folder_path)
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Creating folder failed")
-            return ToolResult(message=CREATE_FOLDER_FAILED.format(e=e), success=False)
+    def describe(self, resolved: CreateFolderArgs) -> ToolResult:
+        return ToolResult(message=f"create folder '{resolved.folder_path}'.")
+
+    async def apply(self, resolved: CreateFolderArgs) -> ToolResult:
+        """The one mutating call — create the (possibly nested) folder."""
+        folder = await self._client.create_nested_folder(resolved.folder_path)
         if folder:
             return ToolResult(
-                message=f"Successfully created folder: {args.folder_path}",
+                message=f"Successfully created folder: {resolved.folder_path}",
                 mutated=True,
             )
         return ToolResult(
-            message=f"Failed to create folder: {args.folder_path}",
+            message=f"Failed to create folder: {resolved.folder_path}",
             success=False,
         )
 
 
-class ApplyLabelTool(Tool):
+@dataclass
+class _ResolvedApplyLabel:
+    """What ``ApplyLabelTool.resolve`` works out before the mutating
+    call(s) — the existing label (a plain dict, as ``get_label_by_name``
+    returns it), or ``None`` meaning "doesn't exist yet, would be created"."""
+
+    args: ApplyLabelArgs
+    label: dict[str, Any] | None
+
+
+class ApplyLabelTool(ResolvingMutationTool[ApplyLabelArgs]):
     """Apply a label to emails."""
 
     name = "apply_label"
+    mutates = True
     description = (
         "Apply a label to one or more emails. Labels help categorize emails "
         "without moving them. Common labels include 'completed', 'pending', "
-        "'urgent', etc. The label will be created if it doesn't exist."
+        "'urgent', etc. The label will be created if it doesn't exist.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -241,6 +290,7 @@ class ApplyLabelTool(Tool):
         "required": ["message_ids", "label_name"],
     }
     args_model = ApplyLabelArgs
+    failure_message = APPLY_LABEL_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -249,38 +299,45 @@ class ApplyLabelTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Apply a label to emails."""
-        args = ApplyLabelArgs(**kwargs)
-
+    async def resolve(self, args: ApplyLabelArgs) -> _ResolvedApplyLabel | ToolResult:
+        """Look up the label — never create it here, even when
+        ``create_if_missing`` — so a plan never calls a mutating endpoint."""
         if not args.message_ids:
+            return ToolResult(message="No message IDs provided.", success=False)
+
+        label = await self._client.get_label_by_name(args.label_name)
+        if not label and not args.create_if_missing:
+            return ToolResult(message=f"Label not found: {args.label_name}", success=False)
+        return _ResolvedApplyLabel(args=args, label=label)
+
+    def describe(self, resolved: _ResolvedApplyLabel) -> ToolResult:
+        """The plan headline — names whether the label already exists."""
+        count = len(resolved.args.message_ids)
+        if resolved.label:
             return ToolResult(
-                message="No message IDs provided.",
-                success=False,
+                message=f"apply label '{resolved.args.label_name}' to {count} email(s)."
             )
+        return ToolResult(
+            message=(
+                f"create label '{resolved.args.label_name}' (it doesn't exist yet) "
+                f"and apply it to {count} email(s)."
+            )
+        )
 
-        try:
-            label = await self._client.get_label_by_name(args.label_name)
-
-            if not label and args.create_if_missing:
-                label = await self._client.create_label(args.label_name)
-                if not label:
-                    return ToolResult(
-                        message=f"Failed to create label: {args.label_name}",
-                        success=False,
-                    )
-
+    async def apply(self, resolved: _ResolvedApplyLabel) -> ToolResult:
+        """Create the label if it was missing, then apply it to the batch."""
+        args = resolved.args
+        label = resolved.label
+        if not label:
+            label = await self._client.create_label(args.label_name)
             if not label:
                 return ToolResult(
-                    message=f"Label not found: {args.label_name}",
+                    message=f"Failed to create label: {args.label_name}",
                     success=False,
                 )
 
-            label_id = label.get("labelId", "")
-            success = await self._client.apply_label(args.message_ids, label_id)
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Applying label failed")
-            return ToolResult(message=APPLY_LABEL_FAILED.format(e=e), success=False)
+        label_id = label.get("labelId", "")
+        success = await self._client.apply_label(args.message_ids, label_id)
         if success:
             # Same bulk-endpoint shape as move_messages (#2768): one aggregate status
             # for the whole batch, no per-message confirmation to count.
@@ -335,14 +392,25 @@ class ListLabelsTool(Tool):
 
 
 class CreateEmailRuleTool(Tool):
-    """Create a persistent email rule for automatic organization."""
+    """Create a persistent email rule for automatic organization.
+
+    Unlike the other mutating tools in this plugin, the one mutating call
+    here is a write to Penny's OWN database (``db.email_rules.create``), not
+    an external API — so, unlike ``ResolvingMutationTool`` (#2947), a plan
+    doesn't need to skip the call entirely: it runs the EXACT same store
+    call with ``plan=True``, which rolls the transaction back instead of
+    committing it (mirroring ``Collection.write``/``_create_memory``, #2933/
+    #2946), rather than a second, separately-written "describe what this
+    would do" path."""
 
     name = "create_email_rule"
     description = (
         "Create a persistent email rule that will be automatically applied "
         "during scheduled email checks. Rules can match emails by sender, "
         "subject, or content, and can move emails to folders or apply labels. "
-        "Example: Create a rule to move all emails from AWS to Accounting/Expenses/AWS."
+        "Example: Create a rule to move all emails from AWS to Accounting/Expenses/AWS.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -392,6 +460,7 @@ class CreateEmailRuleTool(Tool):
         },
         "required": ["name", "condition", "action"],
     }
+    mutates = True
     args_model = CreateEmailRuleArgs
 
     @classmethod
@@ -403,7 +472,8 @@ class CreateEmailRuleTool(Tool):
         self._provider = provider
 
     async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create an email rule."""
+        """Create an email rule — under ``plan``, the store call runs
+        identically but rolls back instead of committing (#2947)."""
         args = CreateEmailRuleArgs(**kwargs)
 
         self._db.email_rules.create(
@@ -411,9 +481,10 @@ class CreateEmailRuleTool(Tool):
             name=args.name,
             condition=args.condition.model_dump_json(by_alias=True, exclude_none=True),
             action=args.action.model_dump_json(by_alias=True, exclude_none=True),
+            plan=args.plan,
         )
 
-        return ToolResult(
+        result = ToolResult(
             message=(
                 f"Email rule '{args.name}' saved.\n\n"
                 f"Condition: {describe_fields(args.condition)}\n"
@@ -423,6 +494,7 @@ class CreateEmailRuleTool(Tool):
             ),
             mutated=True,
         )
+        return as_plan_result(result) if args.plan else result
 
 
 class ListEmailRulesTool(Tool):
