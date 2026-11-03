@@ -1813,8 +1813,7 @@ class Agent:
         # collectors and None for chat agents (which keep self.name).
         tools: list[Tool] = build_memory_tools(
             self.db,
-            embedding_client=self._embedding_model_client,
-            model_client=self._model_client,
+            self._embedding_model_client,
             agent_name=scope or self.name,
             scope=scope,
             run_id=run_id,

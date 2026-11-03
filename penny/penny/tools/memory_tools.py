@@ -6,12 +6,11 @@ string the model can reason over.
 
 Author attribution is passed explicitly: write-capable tools take an
 ``author: str`` at construction time (the agent that owns the tool).
-``build_memory_tools(db, embedding_client=..., model_client=..., agent_name=..., decider=...,
-name_decider=...)`` is the factory each agent calls with its own ``self.name`` so writes
-are attributed correctly; the ``decider`` is the entry-identity ladder's decision step
-(#2715) and the ``name_decider`` the collection-name ladder's (#2724), sharing one
-decision client. ``embedding_client``/``model_client`` are keyword-only (#2953) — both
-are plain ``LlmClient``, so as positional arguments the two could be swapped silently.
+``build_memory_tools(db, embedding_client, author, decider, name_decider)`` is the
+factory each agent calls with its own ``self.name`` so writes are attributed
+correctly; the ``decider`` is the entry-identity ladder's decision step (#2715)
+and the ``name_decider`` the collection-name ladder's (#2724), sharing one
+decision client.
 
 Tools that need embeddings (writes, similarity reads) take an
 ``LlmClient`` in ``__init__``. On a transient embed failure at write time the
@@ -3942,22 +3941,12 @@ class SynthesizeTool(Tool):
     def __init__(
         self,
         db: Database,
-        *,
-        embedding_client: LlmClient,
-        model_client: LlmClient,
+        llm_client: LlmClient,
         agent_name: str,
         handles: HandleTable | None = None,
     ) -> None:
         self._db = db
-        # Two separate clients for two separate jobs (#2953): embedding the query is
-        # the embedding client's job; the micro-context draw that reasons over the
-        # retrieved hits is a CHAT call and must run on the chat model client — an
-        # embedding model does not support chat and rejects it outright.  Both
-        # REQUIRED, no default, and KEYWORD-ONLY (both are plain ``LlmClient``, so as
-        # positional parameters the two could be swapped silently with nothing for the
-        # type checker to catch) — a caller can't wire one in place of the other.
-        self._embedding_client = embedding_client
-        self._model_client = model_client
+        self._llm = llm_client
         # The run attribution the micro-context draw carries (#2458) — the agent
         # whose tool surface this instance was built for, exactly as ``BrowseTool``
         # carries its own ``author`` through to ``MicroContext.extract``.
@@ -3966,14 +3955,14 @@ class SynthesizeTool(Tool):
 
     async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         args = SynthesizeArgs(**kwargs)
-        vec = await embed_text(self._embedding_client, args.query)
+        vec = await embed_text(self._llm, args.query)
         if vec is None:
             logger.warning("synthesize: query embedding failed transiently")
             return ToolResult(message=_SYNTHESIZE_EMBED_FAILURE, success=False)
         items = self._gather_items(args, vec)
         if not items:
             return ToolResult(message=_SYNTHESIZE_EMPTY.format(query=args.query))
-        result = await MicroContext(self._model_client, db=self._db).synthesize(
+        result = await MicroContext(self._llm, db=self._db).synthesize(
             self._render_items_for_draw(items),
             args.query,
             call_link=call_link,
@@ -4116,9 +4105,7 @@ class DoneTool(Tool):
 
 def build_memory_tools(
     db: Database,
-    *,
-    embedding_client: LlmClient,
-    model_client: LlmClient,
+    llm_client: LlmClient,
     agent_name: str,
     decider: EntryDecider,
     name_decider: CollectionNameDecider,
@@ -4129,16 +4116,6 @@ def build_memory_tools(
     decision_cache: WriteDecisionCache | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
-
-    ``embedding_client`` and ``model_client`` are two separate, REQUIRED, KEYWORD-ONLY
-    clients (#2953): every tool here but ``synthesize`` only ever embeds a
-    name/description/query, so ``embedding_client`` is what every call in this factory
-    passes them. ``synthesize``'s micro-context draw reasons over retrieved hits — a
-    CHAT call — so it alone also takes ``model_client``; passing the embedding client
-    there was the bug this split fixes (an embedding model rejects a chat request
-    outright). Keyword-only because both are plain ``LlmClient``, so as positional
-    arguments the two could be swapped silently with nothing for the type checker to
-    catch.
 
     **Reads + entry mutations for every agent; lifecycle (registry-shape) tools
     only when ``include_lifecycle`` is set.**  Capability within a tier is not
@@ -4223,24 +4200,18 @@ def build_memory_tools(
         LogGetTool(db),
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
-        FindTool(db, embedding_client, handles),
-        SynthesizeTool(
-            db,
-            embedding_client=embedding_client,
-            model_client=model_client,
-            agent_name=agent_name,
-            handles=handles,
-        ),
+        FindTool(db, llm_client, handles),
+        SynthesizeTool(db, llm_client, agent_name, handles),
     ]
     lifecycle: list[Tool] = [
-        CollectionSetTool(db, embedding_client, run_id=run_id),
+        CollectionSetTool(db, llm_client, run_id=run_id),
         CollectionArchiveTool(db, run_id=run_id),
-        LogCreateTool(db, embedding_client),
+        LogCreateTool(db, llm_client),
     ]
     mutations: list[Tool] = [
         CollectionWriteTool(
             db,
-            embedding_client,
+            llm_client,
             agent_name,
             decider=decider,
             name_decider=name_decider,
@@ -4250,6 +4221,6 @@ def build_memory_tools(
             decision_cache=decision_cache,
         ),
         CollectionRemoveTool(db, scope=scope),
-        LogAppendTool(db, embedding_client, agent_name, run_id=run_id),
+        LogAppendTool(db, llm_client, agent_name, run_id=run_id),
     ]
     return reads + (lifecycle if include_lifecycle else []) + mutations
