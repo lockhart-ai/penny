@@ -705,8 +705,12 @@ class IosChannel(MessageChannel):
             extraction_prompt=memory.extraction_prompt,
             schedule=memory.schedule,
             # The model's own plain-words reading (#2428), matching the browser
-            # channel's record (#2442) — this model is shared between the two.
-            schedule_description=describe_schedule(memory, user_timezone_name(self._db)) or None,
+            # channel's record (#2442) — this model is shared between the two.  An
+            # occurrence already due renders as due now, not a stale past date (#2895).
+            schedule_description=describe_schedule(
+                memory, user_timezone_name(self._db), now=self._db.clock.now()
+            )
+            or None,
             last_collected_at=(
                 memory.last_collected_at.isoformat() if memory.last_collected_at else None
             ),

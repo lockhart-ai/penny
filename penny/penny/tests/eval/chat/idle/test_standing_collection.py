@@ -1883,7 +1883,10 @@ def _log_creation_turn(db: Database) -> None:
     configure_result = Tool.format_result(
         "collection_configure",
         configure_args,
-        ToolResult(message=render_creation_echo(row, user_timezone_name(db)), mutated=True),
+        ToolResult(
+            message=render_creation_echo(row, user_timezone_name(db), now=db.clock.now()),
+            mutated=True,
+        ),
     )
     conversation = [
         *conversation,
