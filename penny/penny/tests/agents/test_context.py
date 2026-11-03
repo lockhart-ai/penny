@@ -132,7 +132,7 @@ async def test_conversation_merges_consecutive_same_role(
         )
 
         conversation = penny.chat_agent._build_conversation(TEST_SENDER)
-        contents = " ".join(c for _, c in conversation)
+        contents = " ".join(turn.content for turn in conversation)
         # Two user messages merged into one turn, then the two outgoing
         # messages merged into the next turn.
         assert len(conversation) == 2
@@ -204,7 +204,7 @@ async def test_conversation_carries_the_replies_and_their_run_ids(
         assert autonomous_id is not None
 
         conversation = penny.chat_agent._build_conversation(TEST_SENDER)
-        assistant_turns = [content for role, content in conversation if role == "assistant"]
+        assistant_turns = [turn.content for turn in conversation if turn.role == "assistant"]
         assert assistant_turns == [
             # The browse read a page, so the reply-side URL fallback had a source
             # to append (#2648): the reply carries the read page's URL.  No tool
@@ -250,7 +250,7 @@ async def test_conversation_window_grows_then_cuts_back(
         # oldest kept turn is turn 1 — everything so far.
         conversation = penny.chat_agent._build_conversation(TEST_SENDER)  # after turn 11
         # The 11th turn's window (size 6) keeps turns 6-11.
-        assert [content for _, content in conversation] == [
+        assert [turn.content for turn in conversation] == [
             "user message 6",
             "reply 6",
             "user message 7",
@@ -292,7 +292,7 @@ async def test_conversation_window_follows_config_value(
             )
 
         conversation = penny.chat_agent._build_conversation(TEST_SENDER)
-        assert [content for _, content in conversation] == [
+        assert [turn.content for turn in conversation] == [
             "user message 3",
             "reply 3",
             "user message 4",
@@ -331,7 +331,7 @@ async def test_thread_history_grows_then_cuts_back(
 
         thread_history = penny.chat_agent.get_history(TEST_SENDER, thread_parent_id=previous_id)
         # 8 exchanges is within the window's growth (5..9) — everything so far.
-        assert [content for _, content in thread_history] == [
+        assert [turn.content for turn in thread_history] == [
             "user message 1",
             "reply 1",
             "user message 2",

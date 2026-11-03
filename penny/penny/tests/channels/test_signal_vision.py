@@ -81,9 +81,9 @@ async def test_image_with_text_goes_to_the_chat_model(
         # turn reads it without the image ever being resent
         history = penny.chat_agent.get_history(TEST_SENDER)
         assert any(
-            role == "user"
-            and f"what's in this photo? {PennyConstants.IMAGE_HISTORY_MARKER}" in content
-            for role, content in history
+            turn.role == "user"
+            and f"what's in this photo? {PennyConstants.IMAGE_HISTORY_MARKER}" in turn.content
+            for turn in history
         )
 
 

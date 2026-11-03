@@ -1361,8 +1361,25 @@ _WRITE_TOOLS = frozenset(
 _ROLE_TOOL = "tool"
 
 
+def _is_history_replay_call_id(call_id: object) -> bool:
+    """Whether ``call_id`` was minted by ``agents.models.new_history_replay_call_id``
+    — read against the shared ``PennyConstants`` prefix directly rather than
+    importing ``penny.agents.models`` here, which would import ``penny.agents``
+    (eagerly pulling in ``agents.base`` -> ``penny.database``) from inside
+    ``penny.database`` itself; the existing circular-import hazard
+    ``tests/eval/utils/replay.py`` documents and works around.  The one other
+    reader of this prefix (chat history rendering, ``agents/base.py``) and this
+    one both read the SAME ``PennyConstants`` value, so the two can never
+    disagree on WHAT the mark is, only, in principle, on this one-line check —
+    which ``test_run_tool_history`` pins against the real minting function."""
+    return isinstance(call_id, str) and call_id.startswith(
+        PennyConstants.HISTORY_REPLAY_CALL_ID_PREFIX
+    )
+
+
 def _run_tool_turns(prompts: list[PromptLog]) -> list[dict]:
-    """Every tool-result turn of a run, in order — the COMPLETE set (#1778).
+    """Every tool-result turn THIS RUN's OWN calls produced, in order — the COMPLETE
+    set (#1778), scoped to calls this run itself made (#2915).
 
     Two halves, read as one sequence.  The run's last prompt's ``messages`` holds the
     full accumulated conversation, where every result that rode into a later call sits
@@ -1371,7 +1388,16 @@ def _run_tool_turns(prompts: list[PromptLog]) -> list[dict]:
     write-gate STOP, ``max_steps`` on a tool step, a reroll abort, an exception) would
     otherwise have written nowhere.  Both are the same wire shape, so this is a
     concatenation, not a merge; a run that round-tripped everything has an empty tail
-    and reads exactly as it always did."""
+    and reads exactly as it always did.
+
+    Once chat history renders a PAST run's own calls ahead of its reply (#2888), a
+    LATER run's ``messages`` carries both its own fresh tool turns and whatever got
+    replayed from an earlier run's record — so a bare ``role == "tool"`` scan over the
+    whole blob would double-count an earlier run's browses/writes into this run's own
+    tally.  ``_is_history_replay_call_id`` excludes exactly those: a replayed turn's
+    ``tool_call_id`` was minted fresh at RENDER time (never the id the call originally
+    logged under), so this run's own results — the only ones that can ever carry this
+    run's own freshly-minted ids — are never excluded by it."""
     if not prompts:
         return []
     last = prompts[-1]
@@ -1380,6 +1406,28 @@ def _run_tool_turns(prompts: list[PromptLog]) -> list[dict]:
         message
         for message in [*turns, *last.get_trailing_messages()]
         if message.get("role") == _ROLE_TOOL
+        and not _is_history_replay_call_id(message.get("tool_call_id"))
+    ]
+
+
+def run_tool_history(prompts: list[PromptLog]) -> list[tuple[LoggedToolCall, str]]:
+    """Every call THIS run made, paired with its own result's content, in call order
+    (#2915) — the primitive chat history rendering reads a past run's own steps off,
+    so a later turn sees the act beside the words rather than the words alone.
+
+    Calls come from ``_run_logged_steps`` (reads each row's own ``response``, so a
+    call is never one this run didn't itself make); results come from the (now
+    run-scoped) ``_run_tool_turns``, matched by ``tool_call_id``.  A call with no
+    logged result — a run that ended mid-step — pairs with the empty string: the
+    caller decides what an empty result renders as, never guesses one that was
+    never recorded."""
+    results = {
+        message.get("tool_call_id"): message.get("content") or ""
+        for message in _run_tool_turns(prompts)
+    }
+    return [
+        (logged, results.get(call_id, ""))
+        for call_id, logged, _thinking in _run_logged_steps(prompts)
     ]
 
 

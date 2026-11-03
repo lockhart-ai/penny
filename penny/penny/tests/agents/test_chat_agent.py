@@ -10,6 +10,7 @@ Test organization:
 """
 
 import base64
+import json
 import re
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -20,6 +21,7 @@ from sqlmodel import select
 
 from penny.agents.chat import ChatAgent
 from penny.agents.conversation_map import ConversationMap
+from penny.agents.models import HistoryTurn
 from penny.changelog import ChangelogEntry
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
@@ -341,7 +343,7 @@ async def test_history_stays_between_static_and_user_state_right_before_user(
     agent._pending_page_context = None
     agent._current_user = TEST_SENDER
 
-    history = [("user", "earlier question"), ("assistant", "earlier answer")]
+    history = [HistoryTurn("user", "earlier question"), HistoryTurn("assistant", "earlier answer")]
     messages = agent._build_messages("hi", history, await agent._build_system_prompt(TEST_SENDER))
 
     assert [m.role for m in messages] == ["system", "user", "assistant", "system", "user"]
@@ -349,6 +351,119 @@ async def test_history_stays_between_static_and_user_state_right_before_user(
     assert messages[2].content == "earlier answer"
     assert messages[3].content.startswith("Current date and time: ")
     assert messages[-1].content == "hi"
+
+
+def _wire_call(call_id: str, name: str, arguments: dict) -> dict:
+    """One tool call as the wire/log stores it — ``arguments`` as a JSON string,
+    the shape ``LoggedToolCall.from_function`` decodes."""
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
+
+
+def test_a_run_that_called_tools_renders_them_natively_into_a_later_turns_history(db):
+    """A reply a run backed with real tool calls (#2915/#2888) expands into that
+    run's own native call + tool-result turns ahead of the reply text — the fix
+    for the false-save failure: a LATER turn sees the act beside the words,
+    never only the words a copy-prone history used to carry alone.
+
+    Three steps of one run: a ``browse`` call, a ``collection_write`` call, then
+    the plain-text close — pinned whole, so the exact shape (assistant
+    ``tool_calls`` with empty content, one ``tool`` message per result, headline
+    only) is the literal contract, not an inference from a partial assert.  The
+    browse result's stored content is EMPTY, pinning the other half of the
+    headline rule: no first line falls back to the tool's own name plus
+    ``(result)``, never a blank message."""
+    run_id = "hist-run-1"
+    first_response = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [_wire_call("call_1", "browse", {"url": "https://example.com"})],
+                }
+            }
+        ]
+    }
+    second_messages = [
+        {"role": "user", "content": "check the weather and save it"},
+        first_response["choices"][0]["message"],
+        {"role": "tool", "tool_call_id": "call_1", "content": ""},
+    ]
+    second_response = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        _wire_call(
+                            "call_2",
+                            "collection_write",
+                            {"collection": "weather_log", "entries": [{"content": "Sunny, 18C"}]},
+                        )
+                    ],
+                }
+            }
+        ]
+    }
+    third_messages = [
+        *second_messages,
+        second_response["choices"][0]["message"],
+        {
+            "role": "tool",
+            "tool_call_id": "call_2",
+            "content": "Wrote 1 entry: weather_log.\nFull record follows for reference.",
+        },
+    ]
+    third_response = {
+        "choices": [
+            {"message": {"role": "assistant", "content": "Checked and saved — sunny, 18C!"}}
+        ]
+    }
+    db.messages.log_prompt(
+        model="m", messages=[second_messages[0]], response=first_response, run_id=run_id
+    )
+    db.messages.log_prompt(
+        model="m", messages=second_messages, response=second_response, run_id=run_id
+    )
+    db.messages.log_prompt(
+        model="m", messages=third_messages, response=third_response, run_id=run_id
+    )
+
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    turn = HistoryTurn("assistant", "Checked and saved — sunny, 18C!", run_id=run_id)
+    expanded = agent._expand_history_turn(turn)
+
+    assert [m.role for m in expanded] == ["assistant", "tool", "assistant", "tool", "assistant"]
+    assert expanded[0].content == "" and expanded[2].content == ""
+    browse_call = expanded[0].tool_calls[0]
+    write_call = expanded[2].tool_calls[0]
+    assert browse_call.function.name == "browse"
+    assert browse_call.function.arguments == {"url": "https://example.com"}
+    assert write_call.function.name == "collection_write"
+    assert write_call.function.arguments == {
+        "collection": "weather_log",
+        "entries": [{"content": "Sunny, 18C"}],
+    }
+    # Each call's own id is freshly minted, never the id it logged under, and
+    # pairs with its OWN result turn by that fresh id — never the other call's.
+    assert browse_call.id != "call_1" and write_call.id != "call_2"
+    assert browse_call.id != write_call.id
+    assert expanded[1].tool_call_id == browse_call.id
+    assert expanded[3].tool_call_id == write_call.id
+    # An empty result falls back to the tool's own name plus "(result)" —
+    # never a blank message; a non-empty one carries ONLY its first line.
+    assert expanded[1].content == "browse (result)"
+    assert expanded[3].content == "Wrote 1 entry: weather_log."
+    assert expanded[1].tool_success is True and expanded[3].tool_success is True
+    # The reply text itself, last, unchanged.
+    assert expanded[-1].content == "Checked and saved — sunny, 18C!"
+    assert expanded[-1].tool_calls is None
 
 
 @pytest.mark.asyncio
@@ -380,8 +495,8 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
             history = penny.chat_agent.get_history(TEST_SENDER)
             table = HandleTable()
             converted = [
-                table.convert(content) if role == "assistant" else content
-                for role, content in (history or [])
+                table.convert(turn.content) if turn.role == "assistant" else turn.content
+                for turn in (history or [])
             ]
             renders.append(converted)
 

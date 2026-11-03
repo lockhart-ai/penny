@@ -15,23 +15,34 @@ from penny.agents.models import (
     BUDGET_EXCEEDED,
     REROLL_EXHAUSTED,
     ControllerResponse,
+    HistoryTurn,
     MessageRole,
     ModelCallAbortedError,
     ModelCallError,
     RunAbort,
     ToolCallRecord,
     account_of,
+    new_history_replay_call_id,
 )
 from penny.config import Config
 from penny.config_params import token_budget_for
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory.identity import CollectionNameDecider, EntryDecider
+from penny.database.memory.objects import run_tool_history
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
 from penny.llm.decision_client import DecisionClient, decision_api_url
-from penny.llm.models import LlmError, LlmMessage, LlmResponse, LlmTimeoutError, LlmToolParseError
+from penny.llm.models import (
+    LlmError,
+    LlmMessage,
+    LlmResponse,
+    LlmTimeoutError,
+    LlmToolCall,
+    LlmToolCallFunction,
+    LlmToolParseError,
+)
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import (
@@ -494,7 +505,7 @@ class Agent:
         max_steps: int,
         *,
         call_link: CallLink,
-        history: list[tuple[str, str]] | None = None,
+        history: list[HistoryTurn] | None = None,
         system_prompt: str | None = None,
         images: list[str] | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
@@ -2202,7 +2213,7 @@ class Agent:
     def _build_messages(
         self,
         prompt: str,
-        history: list[tuple[str, str]] | None = None,
+        history: list[HistoryTurn] | None = None,
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,
@@ -2255,14 +2266,64 @@ class Agent:
 
         messages = [LlmMessage(role=MessageRole.SYSTEM, content=effective)]
         if history:
-            for role, content in history:
-                messages.append(LlmMessage(role=MessageRole(role), content=content))
+            for turn in history:
+                messages.extend(self._expand_history_turn(turn))
 
         dynamic = self._dynamic_system_section(handles=handles)
         if dynamic:
             messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
 
         messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
+        return messages
+
+    def _expand_history_turn(self, turn: HistoryTurn) -> list[LlmMessage]:
+        """One history turn, as the model reads it (#2915/#2888).
+
+        A user turn, or an assistant turn with no run (an autonomous send) or
+        whose run made no calls, renders exactly as it always has: one plain
+        message, the talk-only shape #2646 restored.  A reply a run DID call
+        tools for renders that run's own calls and results first — native
+        ``tool_calls`` on the assistant role, a ``tool`` message per result —
+        then the reply text, so the act is visible beside the words rather
+        than only in the words a later turn might otherwise copy.
+
+        Each call's result is ONLY its headline (the first line), never the
+        full body — history is a reminder of what happened, not a second copy
+        of what it found; an empty headline falls back to the tool's own name
+        plus ``(result)`` rather than rendering a blank line.  Each call's id
+        is freshly minted (``new_history_replay_call_id``), never the id it
+        logged under, so nothing downstream that scans a LATER run's own
+        tool turns mistakes a replayed one for a call that run made itself."""
+        if turn.role != MessageRole.ASSISTANT or turn.run_id is None:
+            return [LlmMessage(role=MessageRole(turn.role), content=turn.content)]
+        history = run_tool_history(self.db.messages.prompts_for_run(turn.run_id))
+        if not history:
+            return [LlmMessage(role=MessageRole.ASSISTANT, content=turn.content)]
+        messages: list[LlmMessage] = []
+        for logged_call, result in history:
+            call_id = new_history_replay_call_id()
+            messages.append(
+                LlmMessage(
+                    role=MessageRole.ASSISTANT,
+                    content="",
+                    tool_calls=[
+                        LlmToolCall(
+                            id=call_id,
+                            function=LlmToolCallFunction(
+                                name=logged_call.tool, arguments=logged_call.arguments
+                            ),
+                        )
+                    ],
+                )
+            )
+            first_line = result.splitlines()[0].strip() if result.strip() else ""
+            headline = first_line or f"{logged_call.tool} (result)"
+            messages.append(
+                LlmMessage(
+                    role=MessageRole.TOOL, tool_call_id=call_id, content=headline, tool_success=True
+                )
+            )
+        messages.append(LlmMessage(role=MessageRole.ASSISTANT, content=turn.content))
         return messages
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
@@ -2371,7 +2432,7 @@ class Agent:
             lines.append(f"- {memory.name} ({memory.type}, {count} entries) — {memory.description}")
         return "\n".join(lines)
 
-    def _build_conversation(self, sender: str) -> list[tuple[str, str]]:
+    def _build_conversation(self, sender: str) -> list[HistoryTurn]:
         """Build conversation history as strict user/assistant alternation.
 
         Fetches a raw pool of recent messages (``MESSAGE_CONTEXT_LIMIT``, no
@@ -2391,15 +2452,19 @@ class Agent:
         uncapped count only ever grows by one per real user turn, so the
         same window math applies forever.
 
-        The history carries the replies as the user received them and nothing
-        else (#2646): the per-run tool line this method used to append (#2630)
-        read as part of how her own replies look, and the model reproduced it
-        as text instead of calling the tool — in one real turn the copy took
-        the place of a real call.  A past turn's calls stay reachable through
-        ``run_get``/``run_list`` and the self-state header, not as prose in
-        the reply's own voice.
+        Each outgoing reply carries the run id it was logged under (#2630), so
+        a reply a real tool call backed renders that call and its result ahead
+        of the words, in ``_build_messages`` (#2915/#2888) — the fix for the
+        prose ``[Tool calls: …]`` line this method used to append (#2630),
+        reverted at #2646 because it read as part of how her own replies look
+        and got reproduced as text instead of a call: a NATIVE call block in
+        the assistant role is not prose to copy, and the act is visible beside
+        the words it backs rather than only in the words that survive into the
+        next turn's history.  A talk-only reply (no run, or a run that made no
+        calls) still renders as the single plain message it always has — see
+        ``_expand_history_turn``, called once the window below is trimmed.
         """
-        conversation: list[tuple[str, str]] = []
+        conversation: list[HistoryTurn] = []
         try:
             limit = int(self.config.runtime.MESSAGE_CONTEXT_LIMIT)
             messages = self.db.messages.get_messages_since(sender, since=datetime.min, limit=limit)
@@ -2409,11 +2474,19 @@ class Agent:
                     if msg.direction == PennyConstants.MessageDirection.INCOMING
                     else MessageRole.ASSISTANT
                 )
-                if conversation and conversation[-1][0] == role:
-                    prev_role, prev_content = conversation[-1]
-                    conversation[-1] = (prev_role, f"{prev_content}\n{msg.content}")
+                run_id = msg.run_id if role == MessageRole.ASSISTANT else None
+                if conversation and conversation[-1].role == role:
+                    prev = conversation[-1]
+                    # Two consecutive outgoing rows with no incoming message between
+                    # them (an autonomous send, then a direct reply) merge into one
+                    # text turn, as always; only the LAST one's run gets its calls
+                    # rendered — the merge already collapses them to one voice, and
+                    # the end of that voice is the reply the run actually backs.
+                    conversation[-1] = HistoryTurn(
+                        prev.role, f"{prev.content}\n{msg.content}", run_id or prev.run_id
+                    )
                 else:
-                    conversation.append((role, msg.content))
+                    conversation.append(HistoryTurn(role, msg.content, run_id))
             total_user_turns = self.db.messages.count_user_turns(sender)
             conversation = self._trim_history_window(conversation, total_user_turns)
             if conversation:
@@ -2423,8 +2496,8 @@ class Agent:
         return conversation
 
     def _trim_history_window(
-        self, history: list[tuple[str, str]], total_user_turns: int | None = None
-    ) -> list[tuple[str, str]]:
+        self, history: list[HistoryTurn], total_user_turns: int | None = None
+    ) -> list[HistoryTurn]:
         """Keep the most recent user turns, with their replies — growing from
         ``CHAT_HISTORY_TURNS`` to twice that minus one, then cutting back
         (#2756; previously a flat last-N, #2746).
@@ -2445,14 +2518,19 @@ class Agent:
         the PR as a smaller, short-chain approximation) falls back to
         ``history``'s own user-turn count, which is exact as long as the
         thread itself never exceeds its own fetch cap.
+
+        Slices by POSITION only, same as before #2915 — each entry still
+        carries exactly one ``MessageLog`` row's worth of history (talk-only
+        or not), so the grow/cut math never sees the turn-call expansion
+        ``_build_messages`` does afterwards.
         """
         window = int(self.config.runtime.CHAT_HISTORY_TURNS)
         if total_user_turns is None:
-            total_user_turns = sum(1 for role, _ in history if role == MessageRole.USER)
+            total_user_turns = sum(1 for turn in history if turn.role == MessageRole.USER)
         size = self._history_window_size(total_user_turns, window)
         seen = 0
         for start in range(len(history) - 1, -1, -1):
-            if history[start][0] == MessageRole.USER:
+            if history[start].role == MessageRole.USER:
                 seen += 1
                 if seen == size:
                     return history[start:]

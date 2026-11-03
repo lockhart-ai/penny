@@ -444,6 +444,17 @@ class PennyConstants:
     # wire in ``LlmClient._translate_messages`` so the model never sees it.
     TOOL_RESULT_SUCCESS_KEY = "tool_success"
 
+    # The structural mark on a tool-call id minted when a PAST run's own calls are
+    # rendered into a LATER turn's history (#2915/#2888) — never the id the call
+    # originally logged under.  A later run's own ``messages`` snapshot carries
+    # both its own fresh calls and whatever got rendered from an earlier run's
+    # record, so every reader that scans a logged run for "the calls THIS run
+    # made" (a self-state tally, an eval transcript, a fragile-sample check) tells
+    # the two apart by this one prefix rather than re-deriving its own rule —
+    # ``agents.models.is_history_replay_call_id``/``new_history_replay_call_id``
+    # are the one place it is minted and read.
+    HISTORY_REPLAY_CALL_ID_PREFIX = "hist_call_"
+
     # Browse tool constants
     URL_BLOCKLIST_DOMAINS = (
         "play.google.com",

@@ -1027,7 +1027,7 @@ async def test_quote_reply_walks_the_quoted_thread_as_history(
     the recent-window fallback distinguishable from the thread."""
     from datetime import datetime
 
-    from penny.agents.models import ControllerResponse, MessageRole
+    from penny.agents.models import ControllerResponse, HistoryTurn, MessageRole
     from penny.constants import PennyConstants
 
     db = Database(test_config.db_path)
@@ -1036,7 +1036,7 @@ async def test_quote_reply_walks_the_quoted_thread_as_history(
     answers = iter(
         ["# Server choices\n\n- **Pro**: fastest\n- Standard: fine\n", "right — the Pro tier it is"]
     )
-    run_history: list[list[tuple[str, str]]] = []
+    run_history: list[list[HistoryTurn]] = []
 
     async def spy_run(*args, **kwargs):
         run_history.append(kwargs.get("history") or [])
@@ -1074,8 +1074,10 @@ async def test_quote_reply_walks_the_quoted_thread_as_history(
 
     # The turn's history is the quoted thread, oldest first, with the reply as
     # the model wrote it — not the recent window (which would carry the
-    # autonomous notice).
-    assert run_history[-1] == [
+    # autonomous notice).  Compared by (role, content) only: the reply's own
+    # run id (#2915) is real but unpredictable here, and is not what this test
+    # is about.
+    assert [(turn.role, turn.content) for turn in run_history[-1]] == [
         (str(MessageRole.USER), "what are the server tiers?"),
         (str(MessageRole.ASSISTANT), "# Server choices\n\n- **Pro**: fastest\n- Standard: fine"),
     ]

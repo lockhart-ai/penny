@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.conversation_map import ConversationMap
-from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
+from penny.agents.models import ControllerResponse, HistoryTurn, MessageRole, ToolCallRecord
 from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
@@ -467,11 +467,12 @@ class ChatAgent(Agent):
             # (#2717).  User turns are the user's own words and stay as typed.
             if history:
                 history = [
-                    (
-                        role,
-                        table.convert(content) if role == str(MessageRole.ASSISTANT) else content,
+                    turn._replace(
+                        content=table.convert(turn.content)
+                        if turn.role == str(MessageRole.ASSISTANT)
+                        else turn.content
                     )
-                    for role, content in history
+                    for turn in history
                 ]
             self._install_tools(self.get_tools(run_id=run_id, handles=table))
             system_prompt = await self._build_system_prompt(sender)
@@ -515,7 +516,7 @@ class ChatAgent(Agent):
     def _build_messages(
         self,
         prompt: str,
-        history: list[tuple[str, str]] | None = None,
+        history: list[HistoryTurn] | None = None,
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,
@@ -686,7 +687,7 @@ class ChatAgent(Agent):
 
     def get_history(
         self, user: str, thread_parent_id: int | None = None
-    ) -> list[tuple[str, str]] | None:
+    ) -> list[HistoryTurn] | None:
         """Recent conversation messages for chat continuity.
 
         When a quote-reply's thread parent is known (resolved by the channel
