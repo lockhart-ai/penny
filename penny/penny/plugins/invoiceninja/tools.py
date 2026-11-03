@@ -9,8 +9,9 @@ import httpx
 from pydantic import Field
 
 from penny.llm.call_link import CallLink
-from penny.tools.base import Tool
+from penny.tools.base import PLAN_ARG_DESCRIPTION, Tool
 from penny.tools.models import ToolArgs, ToolResult
+from penny.tools.plan_tool import ResolvingMutationTool
 
 logger = logging.getLogger(__name__)
 
@@ -146,13 +147,23 @@ class CreateExpenseArgs(ToolArgs):
         description="Optional description shown to clients if the expense is invoiced.",
     )
     private_notes: str | None = Field(default=None, description="Optional internal-only notes.")
+    # The structural plan mark (#2947, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
-class CreateExpenseTool(Tool):
+class CreateExpenseTool(ResolvingMutationTool[CreateExpenseArgs]):
     """Create an expense in InvoiceNinja."""
 
     name = "create_expense"
-    description = "Create a new expense in InvoiceNinja."
+    mutates = True
+    description = (
+        "Create a new expense in InvoiceNinja.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
+    )
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -172,6 +183,7 @@ class CreateExpenseTool(Tool):
         "required": ["amount", "date", "vendor_id", "category_id"],
     }
     args_model = CreateExpenseArgs
+    failure_message = CREATE_EXPENSE_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -180,21 +192,31 @@ class CreateExpenseTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create an expense."""
-        args = CreateExpenseArgs(**kwargs)
-        try:
-            expense = await self._client.create_expense(
-                amount=args.amount,
-                date=args.date,
-                vendor_id=args.vendor_id,
-                category_id=args.category_id,
-                public_notes=args.public_notes,
-                private_notes=args.private_notes,
-            )
-        except httpx.HTTPError as e:
-            logger.exception("Creating InvoiceNinja expense failed")
-            return ToolResult(message=CREATE_EXPENSE_FAILED.format(e=e), success=False)
+    async def resolve(self, args: CreateExpenseArgs) -> CreateExpenseArgs:
+        """Nothing to look up — vendor/category are opaque ids, not names."""
+        return args
+
+    def describe(self, resolved: CreateExpenseArgs) -> ToolResult:
+        lines = [
+            f"create a ${resolved.amount:.2f} expense dated {resolved.date} "
+            f"(vendor {resolved.vendor_id}, category {resolved.category_id})."
+        ]
+        if resolved.public_notes:
+            lines.append(f"Public notes: {resolved.public_notes}")
+        if resolved.private_notes:
+            lines.append(f"Private notes: {resolved.private_notes}")
+        return ToolResult(message="\n".join(lines))
+
+    async def apply(self, resolved: CreateExpenseArgs) -> ToolResult:
+        """The one mutating call — create the expense."""
+        expense = await self._client.create_expense(
+            amount=resolved.amount,
+            date=resolved.date,
+            vendor_id=resolved.vendor_id,
+            category_id=resolved.category_id,
+            public_notes=resolved.public_notes,
+            private_notes=resolved.private_notes,
+        )
         return ToolResult(message=f"Created expense: {expense}", mutated=True)
 
 
@@ -311,13 +333,19 @@ class UpdateExpenseArgs(ToolArgs):
         description="New description shown to clients if the expense is invoiced.",
     )
     private_notes: str | None = Field(default=None, description="New internal-only notes.")
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
-class UpdateExpenseTool(Tool):
+class UpdateExpenseTool(ResolvingMutationTool[UpdateExpenseArgs]):
     """Update an existing expense in InvoiceNinja."""
 
     name = "update_expense"
-    description = "Update an existing expense in InvoiceNinja. Only provided fields are changed."
+    mutates = True
+    description = (
+        "Update an existing expense in InvoiceNinja. Only provided fields are changed.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
+    )
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -335,6 +363,7 @@ class UpdateExpenseTool(Tool):
         "required": ["expense_id"],
     }
     args_model = UpdateExpenseArgs
+    failure_message = UPDATE_EXPENSE_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -343,22 +372,38 @@ class UpdateExpenseTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Update an expense."""
-        args = UpdateExpenseArgs(**kwargs)
-        try:
-            expense = await self._client.update_expense(
-                expense_id=args.expense_id,
-                amount=args.amount,
-                date=args.date,
-                vendor_id=args.vendor_id,
-                category_id=args.category_id,
-                public_notes=args.public_notes,
-                private_notes=args.private_notes,
-            )
-        except httpx.HTTPError as e:
-            logger.exception("Updating InvoiceNinja expense failed")
-            return ToolResult(message=UPDATE_EXPENSE_FAILED.format(e=e), success=False)
+    async def resolve(self, args: UpdateExpenseArgs) -> UpdateExpenseArgs:
+        """Nothing to look up — ``expense_id`` is given directly."""
+        return args
+
+    def describe(self, resolved: UpdateExpenseArgs) -> ToolResult:
+        changes = []
+        if resolved.amount is not None:
+            changes.append(f"amount -> ${resolved.amount:.2f}")
+        if resolved.date is not None:
+            changes.append(f"date -> {resolved.date}")
+        if resolved.vendor_id is not None:
+            changes.append(f"vendor -> {resolved.vendor_id}")
+        if resolved.category_id is not None:
+            changes.append(f"category -> {resolved.category_id}")
+        if resolved.public_notes is not None:
+            changes.append(f"public notes -> {resolved.public_notes}")
+        if resolved.private_notes is not None:
+            changes.append(f"private notes -> {resolved.private_notes}")
+        change_str = ", ".join(changes) if changes else "no changes"
+        return ToolResult(message=f"update expense {resolved.expense_id}: {change_str}.")
+
+    async def apply(self, resolved: UpdateExpenseArgs) -> ToolResult:
+        """The one mutating call — update the expense."""
+        expense = await self._client.update_expense(
+            expense_id=resolved.expense_id,
+            amount=resolved.amount,
+            date=resolved.date,
+            vendor_id=resolved.vendor_id,
+            category_id=resolved.category_id,
+            public_notes=resolved.public_notes,
+            private_notes=resolved.private_notes,
+        )
         return ToolResult(message=f"Updated expense: {expense}", mutated=True)
 
 
@@ -366,13 +411,19 @@ class CreateExpenseCategoryArgs(ToolArgs):
     """Arguments for creating an expense category."""
 
     name: str = Field(description="Name of the new expense category.")
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
-class CreateExpenseCategoryTool(Tool):
+class CreateExpenseCategoryTool(ResolvingMutationTool[CreateExpenseCategoryArgs]):
     """Create an expense category in InvoiceNinja."""
 
     name = "create_expense_category"
-    description = "Create a new expense category in InvoiceNinja."
+    mutates = True
+    description = (
+        "Create a new expense category in InvoiceNinja.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
+    )
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -381,6 +432,7 @@ class CreateExpenseCategoryTool(Tool):
         "required": ["name"],
     }
     args_model = CreateExpenseCategoryArgs
+    failure_message = CREATE_EXPENSE_CATEGORY_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -389,14 +441,16 @@ class CreateExpenseCategoryTool(Tool):
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create an expense category."""
-        args = CreateExpenseCategoryArgs(**kwargs)
-        try:
-            category = await self._client.create_expense_category(args.name)
-        except httpx.HTTPError as e:
-            logger.exception("Creating InvoiceNinja expense category failed")
-            return ToolResult(message=CREATE_EXPENSE_CATEGORY_FAILED.format(e=e), success=False)
+    async def resolve(self, args: CreateExpenseCategoryArgs) -> CreateExpenseCategoryArgs:
+        """Nothing to look up — the whole call is the args themselves."""
+        return args
+
+    def describe(self, resolved: CreateExpenseCategoryArgs) -> ToolResult:
+        return ToolResult(message=f"create expense category '{resolved.name}'.")
+
+    async def apply(self, resolved: CreateExpenseCategoryArgs) -> ToolResult:
+        """The one mutating call — create the expense category."""
+        category = await self._client.create_expense_category(resolved.name)
         return ToolResult(message=f"Created expense category: {category}", mutated=True)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -11,8 +12,9 @@ from pydantic import Field
 
 from penny.llm.call_link import CallLink
 from penny.plugins.zoho.models import ZohoCalendarInfo, ZohoEvent
-from penny.tools.base import Tool
+from penny.tools.base import PLAN_ARG_DESCRIPTION, Tool
 from penny.tools.models import ToolArgs, ToolResult
+from penny.tools.plan_tool import ResolvingMutationTool
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,14 @@ CALENDAR_FREE_SLOTS_FAILED = (
 CALENDAR_EVENT_UPDATE_FAILED = (
     "The calendar event couldn't be updated ({e}), so nothing was changed on the calendar."
 )
+
+# Shared by the plan preview (``UpdateEventTool.describe``) and the real result
+# (``_build_update_result``) — one mapping, so the two never drift (#2947).
+_EDIT_SCOPE_LABELS = {
+    "all": "all occurrences",
+    "following": "this and future occurrences",
+    "only": "only this occurrence",
+}
 
 
 class ListCalendarsArgs(ToolArgs):
@@ -80,6 +90,11 @@ class CreateEventArgs(ToolArgs):
         default=None, description="List of attendee email addresses"
     )
     is_allday: bool = Field(default=False, description="Whether this is an all-day event")
+    # The structural plan mark (#2947, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class FindFreeSlotsArgs(ToolArgs):
@@ -109,6 +124,11 @@ class UpdateEventArgs(ToolArgs):
         description="""For recurring events: 'all' (all occurrences),
         'following' (this and future), 'only' (just this one)""",
     )
+    # The structural plan mark (#2947, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 def _parse_iso_datetime(value: str) -> datetime:
@@ -334,14 +354,29 @@ class CheckAvailabilityTool(Tool):
         return ToolResult(message="\n".join(lines))
 
 
-class CreateEventTool(Tool):
+@dataclass
+class _ResolvedCreateEvent:
+    """What ``CreateEventTool.resolve`` works out before the one mutating
+    call — the calendar + parsed times, alongside the args that carry the
+    rest (title/description/location/attendees/is_allday) unchanged."""
+
+    calendar: ZohoCalendarInfo
+    args: CreateEventArgs
+    start: datetime
+    end: datetime
+
+
+class CreateEventTool(ResolvingMutationTool[CreateEventArgs]):
     """Create a new calendar event."""
 
     name = "create_event"
+    mutates = True
     description = (
         "Create a new event on a calendar. Specify the title, start/end times, "
         "and optionally a description, location, and attendees. "
-        "Use check_availability first to ensure there are no conflicts."
+        "Use check_availability first to ensure there are no conflicts.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -386,6 +421,7 @@ class CreateEventTool(Tool):
         "required": ["title", "start", "end"],
     }
     args_model = CreateEventArgs
+    failure_message = CALENDAR_EVENT_CREATE_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -394,48 +430,65 @@ class CreateEventTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Create a calendar event."""
-        args = CreateEventArgs(**kwargs)
+    async def resolve(self, args: CreateEventArgs) -> _ResolvedCreateEvent | ToolResult:
+        """Resolve the target calendar and parse the times — read-only,
+        safe under ``plan``."""
+        if args.calendar_name:
+            calendar = await self._client.get_calendar_by_name(args.calendar_name)
+            if not calendar:
+                return ToolResult(
+                    message=f"Calendar not found: {args.calendar_name}. "
+                    "Check the calendar name and try again.",
+                    success=False,
+                )
+        else:
+            calendar = await self._client.get_default_calendar()
+            if not calendar:
+                return ToolResult(message="No default calendar found.", success=False)
 
         try:
-            if args.calendar_name:
-                calendar = await self._client.get_calendar_by_name(args.calendar_name)
-                if not calendar:
-                    return ToolResult(
-                        message=f"Calendar not found: {args.calendar_name}. "
-                        "Check the calendar name and try again.",
-                        success=False,
-                    )
-            else:
-                calendar = await self._client.get_default_calendar()
-                if not calendar:
-                    return ToolResult(message="No default calendar found.", success=False)
+            start = _parse_iso_datetime(args.start)
+            end = _parse_iso_datetime(args.end)
+        except ValueError as e:
+            return ToolResult(message=f"Invalid date format: {e}", success=False)
 
-            try:
-                start = _parse_iso_datetime(args.start)
-                end = _parse_iso_datetime(args.end)
-            except ValueError as e:
-                return ToolResult(message=f"Invalid date format: {e}", success=False)
+        return _ResolvedCreateEvent(calendar=calendar, args=args, start=start, end=end)
 
-            event = await self._client.create_event(
-                caluid=calendar.caluid,
-                title=args.title,
-                start=start,
-                end=end,
-                description=args.description,
-                location=args.location,
-                attendees=args.attendees,
-                is_allday=args.is_allday,
-            )
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Calendar event creation failed")
-            return ToolResult(message=CALENDAR_EVENT_CREATE_FAILED.format(e=e), success=False)
+    def describe(self, resolved: _ResolvedCreateEvent) -> ToolResult:
+        """The plan headline — built from the resolved calendar + times,
+        never a real API response."""
+        time_str = (
+            f"{resolved.start.strftime('%Y-%m-%d %H:%M')} to {resolved.end.strftime('%H:%M')}"
+        )
+        lines = [
+            f"create event '{resolved.args.title}' on calendar '{resolved.calendar.name}'.",
+            f"Time: {time_str}",
+        ]
+        if resolved.args.location:
+            lines.append(f"Location: {resolved.args.location}")
+        if resolved.args.attendees:
+            lines.append(f"Attendees: {', '.join(resolved.args.attendees)}")
+        return ToolResult(message="\n".join(lines))
+
+    async def apply(self, resolved: _ResolvedCreateEvent) -> ToolResult:
+        """The one mutating call — create the event."""
+        event = await self._client.create_event(
+            caluid=resolved.calendar.caluid,
+            title=resolved.args.title,
+            start=resolved.start,
+            end=resolved.end,
+            description=resolved.args.description,
+            location=resolved.args.location,
+            attendees=resolved.args.attendees,
+            is_allday=resolved.args.is_allday,
+        )
 
         if event:
-            time_str = f"{start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}"
+            time_str = (
+                f"{resolved.start.strftime('%Y-%m-%d %H:%M')} to {resolved.end.strftime('%H:%M')}"
+            )
             result = [
-                f"Event created successfully on '{calendar.name}':\n",
+                f"Event created successfully on '{resolved.calendar.name}':\n",
                 f"**{event.title}**",
                 f"Time: {time_str}",
             ]
@@ -518,15 +571,36 @@ class FindFreeSlotsTool(Tool):
         return ToolResult(message="\n".join(lines))
 
 
-class UpdateEventTool(Tool):
+@dataclass
+class _ResolvedUpdateEvent:
+    """What ``UpdateEventTool.resolve`` works out before the one mutating
+    call — everything ``_build_update_result`` and ``update_event`` need,
+    read-only (the event search, full-event load, and recurrence math are
+    all pure/read calls)."""
+
+    args: UpdateEventArgs
+    calendar: ZohoCalendarInfo
+    event: ZohoEvent
+    full_event: ZohoEvent
+    new_start: datetime
+    new_end: datetime
+    edittype: str
+    recurrenceid: str | None
+    ambiguity_note: str
+
+
+class UpdateEventTool(ResolvingMutationTool[UpdateEventArgs]):
     """Update an existing calendar event."""
 
     name = "update_event"
+    mutates = True
     description = (
         "Update an existing calendar event. Can change the title, time, description, "
         "or location. For recurring events, you can update all occurrences, just this "
         "one, or this and all future occurrences. First searches for the event by title, "
-        "then updates it with the new values."
+        "then updates it with the new values.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -572,6 +646,7 @@ class UpdateEventTool(Tool):
         "required": ["event_title"],
     }
     args_model = UpdateEventArgs
+    failure_message = CALENDAR_EVENT_UPDATE_FAILED
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
@@ -580,51 +655,85 @@ class UpdateEventTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Update a calendar event: resolve calendar, find event, apply changes."""
-        args = UpdateEventArgs(**kwargs)
+    async def resolve(self, args: UpdateEventArgs) -> _ResolvedUpdateEvent | ToolResult:
+        """Resolve calendar, find the event, load its full detail, and work
+        out the new times + recurrence — every step here is read-only."""
+        calendar = await self._resolve_calendar(args)
+        if isinstance(calendar, ToolResult):
+            return calendar
 
-        try:
-            calendar = await self._resolve_calendar(args)
-            if isinstance(calendar, ToolResult):
-                return calendar
+        found = await self._find_event(calendar, args)
+        if isinstance(found, ToolResult):
+            return found
+        event, ambiguity_note = found
 
-            found = await self._find_event(calendar, args)
-            if isinstance(found, ToolResult):
-                return found
-            event, ambiguity_note = found
+        full_event = await self._load_full_event(calendar, event)
+        if isinstance(full_event, ToolResult):
+            return full_event
 
-            full_event = await self._load_full_event(calendar, event)
-            if isinstance(full_event, ToolResult):
-                return full_event
+        times = self._resolve_new_times(args, full_event, event)
+        if isinstance(times, ToolResult):
+            return times
+        new_start, new_end = times
 
-            times = self._resolve_new_times(args, full_event, event)
-            if isinstance(times, ToolResult):
-                return times
-            new_start, new_end = times
+        edittype, recurrenceid = self._compute_recurrence(args, full_event, event)
+        return _ResolvedUpdateEvent(
+            args=args,
+            calendar=calendar,
+            event=event,
+            full_event=full_event,
+            new_start=new_start,
+            new_end=new_end,
+            edittype=edittype,
+            recurrenceid=recurrenceid,
+            ambiguity_note=ambiguity_note,
+        )
 
-            effective_edittype, recurrenceid = self._compute_recurrence(args, full_event, event)
+    def describe(self, resolved: _ResolvedUpdateEvent) -> ToolResult:
+        """The plan headline — built from the resolved event + new times,
+        never a real API response."""
+        edit_scope = _EDIT_SCOPE_LABELS.get(resolved.args.recurrence_edittype, "all occurrences")
+        time_str = (
+            f"{resolved.new_start.strftime('%Y-%m-%d %H:%M')} to "
+            f"{resolved.new_end.strftime('%H:%M')}"
+        )
+        lines = [
+            f"update event '{resolved.event.title}' ({edit_scope}) on calendar "
+            f"'{resolved.calendar.name}'.",
+            f"Time: {time_str}",
+        ]
+        if resolved.args.new_title:
+            lines.append(f"New title: {resolved.args.new_title}")
+        if resolved.args.new_location:
+            lines.append(f"New location: {resolved.args.new_location}")
+        if resolved.args.new_description:
+            lines.append(f"New description: {resolved.args.new_description}")
+        return ToolResult(message="\n".join(lines) + resolved.ambiguity_note)
 
-            updated_event = await self._client.update_event(
-                caluid=calendar.caluid,
-                event_uid=event.uid,
-                etag=full_event.etag,
-                title=args.new_title,
-                start=new_start,
-                end=new_end,
-                tz=full_event.timezone,
-                description=args.new_description,
-                location=args.new_location,
-                is_allday=full_event.is_allday,
-                recurrence_edittype=effective_edittype,
-                recurrenceid=recurrenceid,
-                rrule=full_event.rrule,
-            )
-        except (httpx.HTTPError, RuntimeError) as e:
-            logger.exception("Calendar event update failed")
-            return ToolResult(message=CALENDAR_EVENT_UPDATE_FAILED.format(e=e), success=False)
-
-        return self._build_update_result(args, updated_event, new_start, new_end, ambiguity_note)
+    async def apply(self, resolved: _ResolvedUpdateEvent) -> ToolResult:
+        """The one mutating call — update the event."""
+        updated_event = await self._client.update_event(
+            caluid=resolved.calendar.caluid,
+            event_uid=resolved.event.uid,
+            etag=resolved.full_event.etag,
+            title=resolved.args.new_title,
+            start=resolved.new_start,
+            end=resolved.new_end,
+            tz=resolved.full_event.timezone,
+            description=resolved.args.new_description,
+            location=resolved.args.new_location,
+            is_allday=resolved.full_event.is_allday,
+            recurrence_edittype=resolved.edittype,
+            recurrenceid=resolved.recurrenceid,
+            rrule=resolved.full_event.rrule,
+        )
+        return self._build_update_result(
+            resolved.args,
+            updated_event,
+            resolved.new_start,
+            resolved.new_end,
+            resolved.ambiguity_note,
+        )
 
     async def _resolve_calendar(self, args: UpdateEventArgs) -> ZohoCalendarInfo | ToolResult:
         """Resolve the target calendar (named or default), else a failure ToolResult."""
@@ -789,11 +898,7 @@ class UpdateEventTool(Tool):
         if not updated_event:
             return ToolResult(message="Failed to update event.", success=False)
 
-        edit_scope = {
-            "all": "all occurrences",
-            "following": "this and future occurrences",
-            "only": "only this occurrence",
-        }.get(args.recurrence_edittype, "all occurrences")
+        edit_scope = _EDIT_SCOPE_LABELS.get(args.recurrence_edittype, "all occurrences")
         start = updated_event.start or new_start
         end = updated_event.end or new_end
 

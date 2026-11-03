@@ -511,3 +511,121 @@ async def test_get_expense_category_tool_reports_a_raised_fetch():
 
     assert result.success is False
     assert result.message == GET_EXPENSE_CATEGORY_FAILED.format(e="connection refused")
+
+
+# ── Plan mode (#2947): each tool's single mutating call never runs under
+# ``plan=True``, and runs exactly once with the same resolved arguments under
+# ``plan=False``. None of these tools has a name-resolution step — vendor,
+# category, and expense ids are opaque — so there's nothing to resolve; the
+# whole args payload IS what's previewed.
+
+
+@pytest.mark.asyncio
+async def test_create_expense_plan_never_creates_and_previews_the_call():
+    client = MagicMock()
+    client.create_expense = AsyncMock(return_value="should not be called")
+
+    result = await CreateExpenseTool(client).execute(
+        CallLink.new_top(),
+        plan=True,
+        amount=45.0,
+        date="2026-07-22",
+        vendor_id="ven1",
+        category_id="cat1",
+    )
+
+    client.create_expense.assert_not_awaited()
+    assert result.success is True
+    assert result.mutated is False
+    assert result.message.startswith("PLAN — nothing was changed: this call would")
+    assert "$45.00" in result.message
+    assert "vendor ven1" in result.message
+    assert "category cat1" in result.message
+
+
+@pytest.mark.asyncio
+async def test_create_expense_apply_creates_once_with_the_same_args():
+    client = MagicMock()
+    client.create_expense = AsyncMock(return_value="Taxi, $45.00")
+
+    result = await CreateExpenseTool(client).execute(
+        CallLink.new_top(),
+        amount=45.0,
+        date="2026-07-22",
+        vendor_id="ven1",
+        category_id="cat1",
+    )
+
+    client.create_expense.assert_awaited_once_with(
+        amount=45.0,
+        date="2026-07-22",
+        vendor_id="ven1",
+        category_id="cat1",
+        public_notes=None,
+        private_notes=None,
+    )
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_update_expense_plan_never_updates_and_previews_the_call():
+    client = MagicMock()
+    client.update_expense = AsyncMock(return_value="should not be called")
+
+    result = await UpdateExpenseTool(client).execute(
+        CallLink.new_top(), plan=True, expense_id="exp1", amount=50.0
+    )
+
+    client.update_expense.assert_not_awaited()
+    assert result.mutated is False
+    assert result.message.startswith("PLAN — nothing was changed: this call would")
+    assert "exp1" in result.message
+
+
+@pytest.mark.asyncio
+async def test_update_expense_apply_updates_once_with_the_same_args():
+    client = MagicMock()
+    client.update_expense = AsyncMock(return_value="Taxi, $50.00")
+
+    result = await UpdateExpenseTool(client).execute(
+        CallLink.new_top(), expense_id="exp1", amount=50.0
+    )
+
+    client.update_expense.assert_awaited_once_with(
+        expense_id="exp1",
+        amount=50.0,
+        date=None,
+        vendor_id=None,
+        category_id=None,
+        public_notes=None,
+        private_notes=None,
+    )
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_create_expense_category_plan_never_creates_and_previews_the_call():
+    client = MagicMock()
+    client.create_expense_category = AsyncMock(return_value="should not be called")
+
+    result = await CreateExpenseCategoryTool(client).execute(
+        CallLink.new_top(), plan=True, name="Travel"
+    )
+
+    client.create_expense_category.assert_not_awaited()
+    assert result.mutated is False
+    assert (
+        result.message
+        == "PLAN — nothing was changed: this call would — create expense category 'Travel'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_expense_category_apply_creates_once_with_the_same_name():
+    client = MagicMock()
+    client.create_expense_category = AsyncMock(return_value="Travel")
+
+    result = await CreateExpenseCategoryTool(client).execute(CallLink.new_top(), name="Travel")
+
+    client.create_expense_category.assert_awaited_once_with("Travel")
+    assert result.mutated is True

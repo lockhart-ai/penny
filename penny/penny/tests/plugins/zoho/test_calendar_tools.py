@@ -396,3 +396,127 @@ async def test_update_event_reports_a_raised_update():
 
     assert result.success is False
     assert result.message == CALENDAR_EVENT_UPDATE_FAILED.format(e="connection refused")
+
+
+# ── Plan mode (#2947): resolve (calendar lookup, date parsing / event search +
+# detail load + recurrence math) always runs, since it's read-only; the single
+# mutating call (``create_event``/``update_event``) never runs under ``plan=True``,
+# and runs exactly once with the same resolved values under ``plan=False``.
+
+
+@pytest.mark.asyncio
+async def test_create_event_plan_never_creates_and_previews_the_call():
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(return_value=_calendar())
+    client.create_event = AsyncMock(return_value="should not be called")
+
+    result = await CreateEventTool(client).execute(
+        CallLink.new_top(),
+        plan=True,
+        title="Standup",
+        start="2026-07-22T10:00:00",
+        end="2026-07-22T11:00:00",
+    )
+
+    client.create_event.assert_not_awaited()
+    assert result.success is True
+    assert result.mutated is False
+    assert result.message.startswith("PLAN — nothing was changed: this call would")
+    assert "create event 'Standup' on calendar 'Default'" in result.message
+    assert "2026-07-22 10:00 to 11:00" in result.message
+
+
+@pytest.mark.asyncio
+async def test_create_event_apply_creates_once_with_the_resolved_calendar():
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(return_value=_calendar())
+    client.create_event = AsyncMock(
+        return_value=ZohoEvent(
+            uid="E1",
+            title="Standup",
+            start=datetime(2026, 7, 22, 10, 0),
+            end=datetime(2026, 7, 22, 11, 0),
+        )
+    )
+
+    result = await CreateEventTool(client).execute(
+        CallLink.new_top(),
+        title="Standup",
+        start="2026-07-22T10:00:00",
+        end="2026-07-22T11:00:00",
+    )
+
+    client.create_event.assert_awaited_once()
+    await_args = client.create_event.await_args
+    assert await_args is not None
+    assert await_args.kwargs["caluid"] == "C1"
+    assert result.mutated is True
+
+
+@pytest.mark.asyncio
+async def test_update_event_plan_never_updates_and_previews_the_call():
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(return_value=_calendar())
+    client.get_events = AsyncMock(
+        return_value=[
+            ZohoEvent(uid="E1", title="Standup", start=datetime(2026, 7, 22, 10, 0, tzinfo=UTC))
+        ]
+    )
+    client.get_event = AsyncMock(
+        return_value=ZohoEvent(
+            uid="E1",
+            title="Standup",
+            start=datetime(2026, 7, 22, 10, 0, tzinfo=UTC),
+            end=datetime(2026, 7, 22, 11, 0, tzinfo=UTC),
+            etag=7,
+            timezone="UTC",
+        )
+    )
+    client.update_event = AsyncMock(return_value="should not be called")
+
+    result = await UpdateEventTool(client).execute(
+        CallLink.new_top(),
+        plan=True,
+        event_title="Standup",
+        new_location="Room 2",
+    )
+
+    client.update_event.assert_not_awaited()
+    assert result.mutated is False
+    assert result.message.startswith("PLAN — nothing was changed: this call would")
+    assert "update event 'Standup' (all occurrences) on calendar 'Default'" in result.message
+    assert "New location: Room 2" in result.message
+
+
+@pytest.mark.asyncio
+async def test_update_event_apply_updates_once_with_the_resolved_etag():
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(return_value=_calendar())
+    client.get_events = AsyncMock(
+        return_value=[
+            ZohoEvent(uid="E1", title="Standup", start=datetime(2026, 7, 22, 10, 0, tzinfo=UTC))
+        ]
+    )
+    client.get_event = AsyncMock(
+        return_value=ZohoEvent(
+            uid="E1",
+            title="Standup",
+            start=datetime(2026, 7, 22, 10, 0, tzinfo=UTC),
+            end=datetime(2026, 7, 22, 11, 0, tzinfo=UTC),
+            etag=7,
+            timezone="UTC",
+        )
+    )
+    client.update_event = AsyncMock(
+        return_value=ZohoEvent(uid="E1", title="Standup", location="Room 2")
+    )
+
+    result = await UpdateEventTool(client).execute(
+        CallLink.new_top(), event_title="Standup", new_location="Room 2"
+    )
+
+    client.update_event.assert_awaited_once()
+    await_args = client.update_event.await_args
+    assert await_args is not None
+    assert await_args.kwargs["etag"] == 7
+    assert result.mutated is True
