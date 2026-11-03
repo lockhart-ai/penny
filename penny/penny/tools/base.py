@@ -47,6 +47,49 @@ FRAMEWORK_NARRATION_EXCEPTION = "You tried to use `{tool_name}` but it errored: 
 FRAMEWORK_NARRATION_INVALID_ARGS = "You tried to use `{tool_name}` but the arguments were wrong:"
 
 
+# The plan flag every mutating tool gets automatically (#2933) — a mutating
+# tool never declares this by hand on its own args_model or parameters;
+# ``Tool.__init_subclass__`` derives both from the tool's own declarations the
+# moment ``mutates = True`` is set.
+PLAN_ARG_DESCRIPTION = (
+    "Validate and describe what this call would do, without doing it — nothing "
+    "is written, sent, or changed."
+)
+
+# The plan result's headline, built ONCE here so every mutating tool composes
+# the SAME disclaimer rather than writing its own — a plan result must never
+# read as a done action (the #2915 class of claiming a change that never
+# happened).  ``as_plan_result`` wraps whatever a tool already determined the
+# real call would do, so the description a plan gives is never a separately
+# authored guess that could drift from what apply actually does.
+PLAN_MESSAGE_PREFIX = "PLAN — nothing was changed: this call would"
+
+
+def as_plan_result(result: ToolResult) -> ToolResult:
+    """Turn an ordinary mutating-tool result into its plan twin (#2933): the
+    fixed headline every mutating tool shares, in front of the SAME
+    description the tool built for what the call would do.  Always
+    ``mutated=False`` — nothing really changed, whatever the real call would
+    have done."""
+    return result.model_copy(
+        update={"message": f"{PLAN_MESSAGE_PREFIX} — {result.message}", "mutated": False}
+    )
+
+
+def _plan_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Derive ``parameters`` with the ``plan`` property merged in — a fresh
+    dict, so this never mutates a class-level default dict other tools share."""
+    properties = parameters.get("properties", {})
+    if "plan" in properties:
+        return parameters
+    merged = dict(parameters)
+    merged["properties"] = {
+        **properties,
+        "plan": {"type": "boolean", "description": PLAN_ARG_DESCRIPTION},
+    }
+    return merged
+
+
 def _tool_lead_sentence(description: str) -> str:
     """The lead clause of a tool's ``description`` — up to its first sentence break
     (``". "``) or, lacking one, its first line — so a did-you-mean hint (#2510) can
@@ -98,6 +141,14 @@ class Tool(ABC):
     # one whose destination is implicit (scoped to a single bound collection, with no
     # argument naming it at all).
     destination_param: str | None = None
+    # Whether a call to this tool changes durable state or has an outbound side
+    # effect — a write, a send, an external create/update/delete (#2933).  Set
+    # ``True`` on the tool's OWN class body (never inherited silently, the same
+    # way ``stores_entries`` is), and ``Tool.__init_subclass__`` reads it to add
+    # a ``plan`` argument to the tool's ``args_model`` and ``parameters``
+    # AUTOMATICALLY — nothing is hand-added per tool, so a future mutating tool
+    # gets `plan` just by declaring this mark.
+    mutates: bool = False
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -105,6 +156,25 @@ class Tool(ABC):
         super().__init_subclass__(**kwargs)
         if "name" in cls.__dict__:
             Tool._registry[cls.name] = cls
+        if cls.mutates:
+            # The ``parameters`` half (the model-facing schema) IS derived here,
+            # automatically — a plain dict carries no static type for a checker
+            # to lose.  The ``args_model`` half is a Pydantic class, and a class
+            # synthesised at import time (``pydantic.create_model``) is invisible
+            # to the type checker — every ``args.plan`` read below would be an
+            # ``unresolved-attribute`` error with no fix visible at the call
+            # site.  So each mutating tool's OWN ``args_model`` declares its
+            # literal ``plan: bool`` field (statically checkable), and this
+            # assertion is the structural guarantee that declaring ``mutates``
+            # without it is impossible to ship silently — a tool that sets
+            # ``mutates = True`` and forgets the field fails loudly, at import
+            # time, naming exactly what is missing.
+            if "plan" not in cls.args_model.model_fields:
+                raise TypeError(
+                    f"{cls.__name__} sets mutates=True but its args_model "
+                    f"({cls.args_model.__name__}) declares no 'plan: bool' field"
+                )
+            cls.parameters = _plan_parameters(cls.parameters)
 
     async def run(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Validate the call's arguments via ``args_model``, then ``execute``.

@@ -178,6 +178,7 @@ class Memory:
         run_id: str | None = None,
         *,
         decisions: list[EntryDecision],
+        plan: bool = False,
     ) -> list[WriteResult]:
         self._refuse_collection_op()
         return []
@@ -472,6 +473,7 @@ class Collection(Memory):
         run_id: str | None = None,
         *,
         decisions: list[EntryDecision],
+        plan: bool = False,
     ) -> list[WriteResult]:
         """Write entries through the change-gate, applying the identity ladder's
         decisions — one ``WriteResult`` per input.
@@ -491,6 +493,12 @@ class Collection(Memory):
         a whole-batch collision: two or more of THIS write's entries matched
         to the same existing one cannot all be that one entry under another
         name, so none of them merges into it (#2922).
+
+        ``plan`` (#2933) runs this EXACT same code — same decisions, same
+        change-gate classification, same ``WriteResult``s — then rolls the
+        transaction back instead of committing it and skips the change
+        notification, rather than a second, separately-written "describe what
+        this would do" path that could drift from what apply actually does.
         """
         if len(decisions) != len(entries):
             raise ValueError(
@@ -502,8 +510,11 @@ class Collection(Memory):
         with self._session() as session:
             for entry, decision in zip(entries, decisions, strict=True):
                 results.append(self._write_one(session, entry, author, decision, written, run_id))
-            session.commit()
-        if any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results):
+            if plan:
+                session.rollback()
+            else:
+                session.commit()
+        if not plan and any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results):
             self._notify()
         return results
 

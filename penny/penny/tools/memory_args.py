@@ -31,6 +31,7 @@ from penny.text_validity import (
     require_non_blank_log_content,
     require_non_degenerate_content,
 )
+from penny.tools.base import PLAN_ARG_DESCRIPTION
 from penny.tools.models import ToolArgs
 
 # Models occasionally substitute Unicode dashes (U+2010–U+2015) for ASCII
@@ -296,6 +297,10 @@ class CollectionArchiveArgs(ToolArgs):
 
     collection: MemoryName
     archived: bool
+    # The structural plan mark (#2933) — every ``mutates=True`` tool declares
+    # this literal field itself (``Tool.__init_subclass__`` asserts it's here,
+    # rather than synthesising it, so a type checker can see it on ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class CollectionSetArgs(ToolArgs):
@@ -518,6 +523,8 @@ class CollectionWriteArgs(ToolArgs):
 
     collection: MemoryName
     entries: Annotated[list[CollectionEntrySpec], AfterValidator(_require_write_entries)]
+    # The structural plan mark (#2933) — see ``CollectionArchiveArgs.plan``.
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class CollectionRemoveArgs(ToolArgs):
@@ -525,6 +532,8 @@ class CollectionRemoveArgs(ToolArgs):
 
     collection: MemoryName
     key: str
+    # The structural plan mark (#2933) — see ``CollectionArchiveArgs.plan``.
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────
@@ -535,6 +544,8 @@ class LogAppendArgs(ToolArgs):
 
     log: AppendableLogName
     content: NonBlankLogContent
+    # The structural plan mark (#2933) — see ``CollectionArchiveArgs.plan``.
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 # ── Introspection ───────────────────────────────────────────────────────────

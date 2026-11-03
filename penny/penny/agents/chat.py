@@ -17,6 +17,7 @@ from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, RunOutcome
+from penny.database.memory.identity import WriteDecisionCache
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
@@ -186,9 +187,12 @@ class ChatAgent(Agent):
         return super()._retry_note_for_condition(condition, response)
 
     def get_tools(
-        self, run_id: str | None = None, handles: HandleTable | None = None
+        self,
+        run_id: str | None = None,
+        handles: HandleTable | None = None,
+        decision_cache: WriteDecisionCache | None = None,
     ) -> list[Tool]:
-        tools = super().get_tools(run_id, handles)
+        tools = super().get_tools(run_id, handles, decision_cache)
         # Notification mute/unmute is a chat-driven action over the MuteState row
         # (the retired /mute + /unmute commands, then the retired mute/unmute tool
         # pair, #2812), so the tool lives on the chat surface — the model
