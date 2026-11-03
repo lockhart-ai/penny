@@ -61,7 +61,10 @@ _CASE_ID = "retry-note-user-role"
 
 # What the picture must show — the two concrete things the ORIGINAL ask put in it, a
 # real landmark and a real everyday object, unrelated to anything else the suite uses.
-SUBJECT = ("Niagara Falls", "a kite")
+# Bare nouns, no leading article: a generated description varies its own adjectives
+# ("a vibrant, colorful kite"), so "kite" alone is the containment check that survives
+# that variance — the same shape #2790's own case uses with "paper boat".
+SUBJECT = ("Niagara Falls", "kite")
 
 _PRIOR_ASK = "could you draw a kite flying over Niagara Falls?"
 _PRIOR_CALL_AS_TEXT_REPLY = (
