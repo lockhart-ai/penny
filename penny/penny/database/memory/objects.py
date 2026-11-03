@@ -60,6 +60,7 @@ from penny.database.memory.identity import (
     EntryDecision,
     EntryGiven,
     plan_entries,
+    resolve_sibling_collisions,
     rule_only_decisions,
 )
 from penny.database.memory.journal import CycleJournal
@@ -485,11 +486,17 @@ class Collection(Memory):
         change or a ladder merge — auto-refreshes the stored baseline in place
         through the same update path (#1633) — so it too advances
         ``last_written_by_run_id`` and counts as a change for the notify below.
+
+        Before any decision is applied, ``resolve_sibling_collisions`` catches
+        a whole-batch collision: two or more of THIS write's entries matched
+        to the same existing one cannot all be that one entry under another
+        name, so none of them merges into it (#2922).
         """
         if len(decisions) != len(entries):
             raise ValueError(
                 f"one identity decision per entry required: {len(decisions)} for {len(entries)}"
             )
+        decisions = resolve_sibling_collisions(decisions)
         results: list[WriteResult] = []
         written: list[EntryGiven] = []
         with self._session() as session:

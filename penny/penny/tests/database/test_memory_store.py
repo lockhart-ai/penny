@@ -599,6 +599,51 @@ class TestCollectionWrites:
         assert results[0].matched_key == "first key"
         assert len(db.memories.memory("likes").read_all()) == 1
 
+    def test_siblings_matching_one_entry_all_land_and_it_is_untouched(self, db):
+        """The #2922 regression: three leg entries in ONE write all matched the
+        same stored 'itinerary' digest entry — the ladder's identity question
+        has no way to say a stored entry is a bundle of several things, so
+        each leg reasonably read as 'yes' on its own.  The batch guard catches
+        the collision before any decision is applied: none of the three
+        merges, each lands under its own key, and 'itinerary' keeps its
+        original value instead of being overwritten by whichever leg the
+        sequential apply reaches last."""
+        db.memories.create_collection("newyear_2028", "trip plans")
+        collection = db.memories.memory("newyear_2028")
+        digest = (
+            "Wed 30 Dec: Ljubljana to Kraków. Sat 2 Jan: Kraków to Bratislava. "
+            "Tue 5 Jan: Bratislava to Ljubljana."
+        )
+        collection.write_rule_decided([EntryInput(key="itinerary", content=digest)], author="chat")
+        results = collection.write(
+            [
+                EntryInput(key="train_ljubljana_krakow", content="Ljubljana to Kraków, 30 Dec"),
+                EntryInput(key="train_krakow_bratislava", content="Kraków to Bratislava, 2 Jan"),
+                EntryInput(
+                    key="train_bratislava_ljubljana", content="Bratislava to Ljubljana, 5 Jan"
+                ),
+            ],
+            author="chat",
+            decisions=[
+                EntryDecision(
+                    key="train_ljubljana_krakow", action="unchanged", matched_key="itinerary"
+                ),
+                EntryDecision(
+                    key="train_krakow_bratislava", action="merge", matched_key="itinerary"
+                ),
+                EntryDecision(
+                    key="train_bratislava_ljubljana", action="merge", matched_key="itinerary"
+                ),
+            ],
+        )
+        assert [r.outcome for r in results] == [WriteGateOutcome.NEW_KEY] * 3
+        entries = collection.read_all()
+        keys = {row.key: row.content for row in entries}
+        assert keys["itinerary"] == digest
+        assert keys["train_ljubljana_krakow"] == "Ljubljana to Kraków, 30 Dec"
+        assert keys["train_krakow_bratislava"] == "Kraków to Bratislava, 2 Jan"
+        assert keys["train_bratislava_ljubljana"] == "Bratislava to Ljubljana, 5 Jan"
+
     def test_two_products_at_the_same_price_both_land(self, db):
         """The motivating loss the retired repeat rule caused: a collection
         holding ``analogue pocket: $219`` must not block a write of

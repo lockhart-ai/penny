@@ -50,7 +50,13 @@ from __future__ import annotations
 import pytest
 
 from penny.tests.eval.conftest import EVAL_MODELS
-from penny.tests.eval.drivers.identity import ENTRY_COUNT, IdentityArm, IdentityEval
+from penny.tests.eval.drivers.identity import (
+    ENTRY_COUNT,
+    IdentityArm,
+    IdentityEval,
+    SiblingArm,
+    SiblingEval,
+)
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import SpecCategory
 
@@ -339,6 +345,174 @@ async def test_look_alikes_stay_apart(identity_eval: IdentityEval, model: str) -
         "state: the stored entry, the filler and the new entry all remain, "
         "each carrying its own value",
         _holds_stored_filler_and_new,
+        SpecCategory.STORE,
+    )
+    cohort.measure(ENTRY_COUNT)
+
+
+# ── Case 3: a batch of siblings cannot all be one digest entry (#2922) ──────
+#
+# The regression: a stored entry that is a DIGEST — a summary bundling several legs of a
+# trip — sits beside a filler.  One write drives three new entries, each naming one leg
+# the digest already mentions.  Read pairwise, each leg's content genuinely overlaps part
+# of the digest's content, so the identity question can reasonably answer "yes" for every
+# one of them on its own (the #2922 diagnosis: the question has no way to say the stored
+# entry is a bundle).  What must not happen is any of the three MERGING into the digest —
+# each lands under its own key, and the digest keeps the value it started with.
+
+_BATCH_BEHAVIOUR = (
+    "In the collection write's entry-identity ladder, when one write's several new "
+    "entries each read as the same thing as a stored digest entry that bundles several "
+    "things, Penny writes every new entry under its own key and leaves the digest "
+    "entry's value unchanged."
+)
+
+_DIGEST = (
+    "itinerary",
+    "Wed 30 Dec: Ljubljana to Kraków via EuroCity. Sat 2 Jan: Kraków to Bratislava via "
+    "RegioJet. Tue 5 Jan: Bratislava to Ljubljana via EuroCity.",
+)
+_DIGEST_FILLER = ("flights", "Calgary to Ljubljana and back, via Lufthansa")
+_DIGEST_LEGS = (
+    ("train_ljubljana_krakow", "Train, Ljubljana to Kraków: 30 Dec via EuroCity, code 7Y3RFE"),
+    ("train_krakow_bratislava", "Train, Kraków to Bratislava: 2 Jan via RegioJet, code EAZ5YD"),
+    (
+        "train_bratislava_ljubljana",
+        "Train, Bratislava to Ljubljana: 5 Jan via EuroCity, code FYI6AG",
+    ),
+)
+
+_BATCH_ARM = SiblingArm(
+    text="three legs of one trip digest, written together",
+    collection="trip-itinerary",
+    description="A trip's booked flights, hotels and train legs",
+    stored=_DIGEST,
+    filler=_DIGEST_FILLER,
+    new=_DIGEST_LEGS,
+)
+
+
+def _digest_untouched(sample, world) -> tuple[bool, str | None]:
+    """The STORE claim every arm here shares: the digest entry still carries the exact
+    value it was seeded with — never overwritten by whichever leg a sequential apply
+    reached last."""
+    entry = next((row for row in sample.held if row.key == _DIGEST[0]), None)
+    if entry is None:
+        return False, f"'{_DIGEST[0]}' is missing; held {_held_keys(sample)}"
+    if entry.content != _DIGEST[1]:
+        return False, f"'{_DIGEST[0]}' no longer holds its original value: {entry.content!r}"
+    return True, None
+
+
+def _every_leg_landed_under_its_own_key(sample, world) -> tuple[bool, str | None]:
+    missing = [key for key, _ in _DIGEST_LEGS if not any(row.key == key for row in sample.held)]
+    if missing:
+        return False, f"missing new entries {missing}; held {_held_keys(sample)}"
+    return True, None
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_batch_siblings_of_one_digest_entry_all_land_separately(
+    sibling_eval: SiblingEval, model: str
+) -> None:
+    """Three leg entries driven in ONE write, each a candidate against the SAME stored
+    trip digest: none of them may merge into it, or into each other in sequence.
+
+    **The PROVENANCE category is empty by report, not by omission:** no model-authored
+    value enters the store on this path — the stored entry, the filler and the three new
+    entries are the case's own declared inputs, and the only model in the loop (the
+    decision model) writes nothing — so there is no value a provenance check could
+    fail."""
+    cohort = await sibling_eval(
+        case_id="identity-batch-siblings-of-a-digest-stay-apart",
+        behaviour=_BATCH_BEHAVIOUR,
+        area=Area.MEMORY,
+        model=model,
+        arms=(_BATCH_ARM,),
+        samples_per_phrasing=15,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # STORE — the collection's rows after the write, read whole
+    cohort.claim(
+        "state: the itinerary digest keeps the value it started with",
+        _digest_untouched,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: every leg entry exists under its own key",
+        _every_leg_landed_under_its_own_key,
+        SpecCategory.STORE,
+    )
+    cohort.measure(ENTRY_COUNT)
+
+
+# ── Case 4: one leg of a digest, written alone (#2922, point 2) ─────────────
+#
+# The same digest and the same one leg, but driven ALONE — a single new entry, so the
+# batch guard (which needs two or more colliding decisions to fire) cannot be what saves
+# it. This exercises the identity QUESTION itself: its instructions now say a stored
+# entry may be a summary that covers several things, and a new entry that is only one
+# of those things is not the same thing.
+
+_BUNDLED_PART_BEHAVIOUR = (
+    "In the collection write's entry-identity ladder, when a new entry names only one of "
+    "the several things a stored digest entry's content already covers, Penny keeps the "
+    "new entry apart from the digest instead of merging into it."
+)
+
+_BUNDLED_PART_ARM = IdentityArm(
+    text="one leg of a trip digest, written alone",
+    collection="trip-itinerary",
+    description="A trip's booked flights, hotels and train legs",
+    stored=_DIGEST,
+    filler=_DIGEST_FILLER,
+    new=_DIGEST_LEGS[2],
+    stored_anchor="via regiojet",
+    filler_anchor="lufthansa",
+    new_anchor="code fyi6ag",
+    survivor="new",
+    survivor_anchor="code fyi6ag",
+)
+
+
+def _the_leg_landed_under_its_own_key(sample, world) -> tuple[bool, str | None]:
+    key = _BUNDLED_PART_ARM.new[0]
+    if not any(row.key == key for row in sample.held):
+        return False, f"'{key}' is missing; held {_held_keys(sample)}"
+    return True, None
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_one_leg_of_a_digest_stays_apart_from_it(
+    identity_eval: IdentityEval, model: str
+) -> None:
+    """A single leg entry, written alone: no batch collision is possible, so staying
+    apart from the digest depends on the identity question's own wording.
+
+    **The PROVENANCE category is empty by report, not by omission:** no model-authored
+    value enters the store on this path — the stored entry, the filler and the new entry
+    are the case's own declared inputs, and the only model in the loop (the decision
+    model) writes nothing — so there is no value a provenance check could fail."""
+    cohort = await identity_eval(
+        case_id="identity-a-digests-own-part-stays-apart",
+        behaviour=_BUNDLED_PART_BEHAVIOUR,
+        area=Area.MEMORY,
+        model=model,
+        arms=(_BUNDLED_PART_ARM,),
+        samples_per_phrasing=15,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # STORE — the collection's rows after the write, read whole
+    cohort.claim(
+        "state: the itinerary digest keeps the value it started with",
+        _digest_untouched,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the leg entry exists under its own key",
+        _the_leg_landed_under_its_own_key,
         SpecCategory.STORE,
     )
     cohort.measure(ENTRY_COUNT)

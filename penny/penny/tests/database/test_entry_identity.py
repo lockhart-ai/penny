@@ -20,9 +20,11 @@ from penny.database.memory.identity import (
     CollectionCandidate,
     CollectionNameDecider,
     EntryDecider,
+    EntryDecision,
     EntryGiven,
     collection_name_rule,
     plan_entries,
+    resolve_sibling_collisions,
     rule_only_decisions,
 )
 from penny.database.memory.types import EntryInput
@@ -245,6 +247,60 @@ async def test_the_date_rule_never_reaches_the_decision_model() -> None:
     assert decisions[0].action == "new"
     assert decisions[0].unsure_candidate is None
     assert stub.states == []
+
+
+# ── The sibling-collision batch guard (#2922) ───────────────────────────────
+
+
+def test_resolve_sibling_collisions_overrides_every_match_to_the_shared_key() -> None:
+    """The exact shape of #2922: three leg entries in one write each matched
+    the SAME stored 'itinerary' entry (two by merge, one by unchanged) — a
+    stored entry is one specific thing, so they cannot all be it.  Every
+    decision that shares the collided key is overridden to ``new``; a
+    decision matching a DIFFERENT, uncontested key is left alone."""
+    decisions = [
+        EntryDecision(key="train_ljubljana_krakow", action="unchanged", matched_key="itinerary"),
+        EntryDecision(key="train_krakow_bratislava", action="merge", matched_key="itinerary"),
+        EntryDecision(key="train_bratislava_ljubljana", action="merge", matched_key="itinerary"),
+        EntryDecision(key="hotel_cubo", action="merge", matched_key="hotel_ljubljana"),
+    ]
+    resolved = resolve_sibling_collisions(decisions)
+    assert [d.action for d in resolved[:3]] == ["new", "new", "new"]
+    assert all(d.matched_key is None for d in resolved[:3])
+    assert resolved[3] == decisions[3]  # the uncontested match is untouched
+
+
+def test_resolve_sibling_collisions_leaves_a_single_match_alone() -> None:
+    """No collision, no override: one entry matching one stored key is an
+    ordinary merge."""
+    decisions = [EntryDecision(key="dark roast coffee", action="merge", matched_key="dark roast")]
+    assert resolve_sibling_collisions(decisions) == decisions
+
+
+@pytest.mark.asyncio
+async def test_siblings_against_a_bundling_digest_entry_all_write_as_new() -> None:
+    """End to end through the decider: a digest entry ('itinerary') bundles
+    several legs, so each leg's content overlaps part of it — the identity
+    question reasonably reads each as 'yes' on its own (#2922's diagnosis).
+    The batch guard, run on the whole decision list, is what keeps the digest
+    from being overwritten by whichever leg the sequential apply reaches
+    last."""
+    entries = [
+        _entry("train_ljubljana_krakow", "Train, Ljubljana to Kraków: 30 Dec via EuroCity"),
+        _entry("train_krakow_bratislava", "Train, Kraków to Bratislava: 2 Jan via RegioJet"),
+        _entry("train_bratislava_ljubljana", "Train, Bratislava to Ljubljana: 5 Jan via EuroCity"),
+    ]
+    itinerary = _given(
+        "itinerary",
+        "Wed 30 Dec: Ljubljana to Kraków. Sat 2 Jan: Kraków to Bratislava. "
+        "Tue 5 Jan: Bratislava to Ljubljana.",
+    )
+    stub = _StubDecisionClient("yes", "new_value", "yes", "new_value", "yes", "new_value")
+    decisions = await _decide(stub, entries, [itinerary])
+    assert [d.matched_key for d in decisions] == ["itinerary", "itinerary", "itinerary"]
+    resolved = resolve_sibling_collisions(decisions)
+    assert [d.action for d in resolved] == ["new", "new", "new"]
+    assert all(d.matched_key is None for d in resolved)
 
 
 # ── The collection-name ladder (#2724) ──────────────────────────────────────

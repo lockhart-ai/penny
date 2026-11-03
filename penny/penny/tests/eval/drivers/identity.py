@@ -595,3 +595,346 @@ def identity_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
     for pending in _cohorts.values():
         pending.finish()
     _cohorts.clear()
+
+
+# ── The sibling-collision ladder (#2922) ─────────────────────────────────────
+#
+# ``identity_eval`` drives ONE new entry per sample — the ladder's ordinary question,
+# one pair at a time. The #2922 regression needs a BATCH: several new entries driven in
+# the SAME ``collection_write`` call, each one a candidate against the SAME stored
+# digest entry (a summary that bundles several things). That batch is what can trigger
+# the sequential-apply collision the deterministic guard (``resolve_sibling_collisions``,
+# ``penny.database.memory.identity``) exists to catch — so this driver, unlike
+# ``identity_eval``, writes ``len(arm.new)`` entries in one call.
+
+SiblingEval = Callable[..., Awaitable["Cohort"]]
+
+
+class SiblingArm(NamedTuple):
+    """One arm of the sibling-collision cohort: a stored entry that is a DIGEST
+    bundling several things, a filler entry, and several new entries driven in ONE
+    write — each naming one of the things the digest bundles.  Every new entry's
+    content overlaps part of the digest's content, so the identity question can
+    reasonably read each as "yes" on its own (#2922's diagnosis) — several
+    differently-keyed new entries cannot all be the one digest entry under another
+    name, which is exactly what the batch guard settles structurally."""
+
+    text: str
+    collection: str
+    description: str
+    stored: tuple[str, str]
+    filler: tuple[str, str]
+    new: tuple[tuple[str, str], ...]
+
+    @property
+    def world(self) -> World:
+        """The seeded collection this arm is answered against: the digest entry and
+        the filler, declared the way the store holds them — the batch's new entries
+        are NOT seeded; they ride the driven write."""
+        return World(
+            name=self.collection,
+            pages=(),
+            stores=(
+                SynthCollection(
+                    self.collection,
+                    self.description,
+                    (_synth_entry(self.stored), _synth_entry(self.filler)),
+                ),
+            ),
+            keeps=(),
+            excludes=(),
+        )
+
+
+def _seeded_world_check_sibling(arm: SiblingArm, seeded: dict[str, str]) -> Check:
+    """The same loud seed probe as ``identity_eval``'s, against a ``SiblingArm``."""
+    expected = {arm.stored[0]: _synth_entry(arm.stored), arm.filler[0]: _synth_entry(arm.filler)}
+    ok = seeded == expected
+    return Check(
+        "seeded world held",
+        ok,
+        kind="guard",
+        rationale=None
+        if ok
+        else f"the seed laid down {sorted(seeded)}, expected {sorted(expected)}",
+    )
+
+
+def _sibling_events(
+    arm: SiblingArm,
+    seeded: dict[str, str],
+    asked: list[_RecordedAsk],
+    after: dict[str, str],
+    tool_message: str | None,
+) -> list[report.Event]:
+    """One sample's transcript: the batch's new entries render as one block, since
+    they are driven by a SINGLE ``collection_write`` call, not one-at-a-time."""
+    new_lines = "\n".join(f"{key}: {content}" for key, content in arm.new)
+    events = [
+        report.Event(
+            report.EventKind.USER,
+            f"Collection '{arm.collection}': {arm.description}\n"
+            f"Stored before the write:\n{_entry_lines(seeded)}",
+        ),
+        report.Event(
+            report.EventKind.MICRO_IN,
+            f"Batch write, {len(arm.new)} entries in one call:\n{new_lines}",
+            context=_DECISION_CONTEXT,
+        ),
+    ]
+    for one in asked:
+        options = "; ".join(f"{name} — {text}" for name, text in one.criteria.items())
+        events.append(
+            report.Event(
+                report.EventKind.MICRO_IN,
+                f"{one.state}\nquestion: {one.instructions}\noptions: {options}",
+                context=_DECISION_CONTEXT,
+            )
+        )
+        if one.error is not None:
+            answer = f"(no answer — the call failed: {one.error})"
+        else:
+            answer = one.choice or "(empty choice)"
+            if one.probabilities:
+                spread = "; ".join(
+                    f"{name} {value:.3f}" for name, value in one.probabilities.items()
+                )
+                answer = f"{answer} · probabilities: {spread}"
+        events.append(report.Event(report.EventKind.MICRO_OUT, answer, context=_DECISION_CONTEXT))
+    events.append(
+        report.Event(report.EventKind.RESULT, f"Stored after the write:\n{_entry_lines(after)}")
+    )
+    events.append(
+        report.Event(report.EventKind.REPLY, tool_message or "(no write result within timeout)")
+    )
+    return events
+
+
+def _write_sibling_report(
+    db: Database,
+    case_id: str,
+    sample_index: int,
+    *,
+    result: SampleResult,
+    arm: SiblingArm,
+    seeded: dict[str, str],
+    asked: list[_RecordedAsk],
+    after: dict[str, str],
+    tool_message: str | None,
+) -> None:
+    """The sibling cohort's transcript block, by the same pure report grammar
+    ``identity_eval`` writes through."""
+    report_dir = os.environ.get("EVAL_REPORT_DIR")
+    if not report_dir:
+        return
+    events = _sibling_events(arm, seeded, asked, after, tool_message)
+    checks = _check_views(result, anchor_index=0, case_id=case_id)
+    passed_checks, total = _scored_counts(result)
+    transcript = report.build_sample(
+        number=sample_number(sample_index),
+        banner=_UNSETTLED_BANNER,
+        events=events,
+        checks=checks,
+        run_close_score=f"{passed_checks}/{total}",
+    )
+    _record_sample_block(case_id, sample_index, transcript, result, live_prompt_perf(db))
+
+
+def _observe_sibling_write(
+    arm: SiblingArm,
+    *,
+    name: str,
+    phrasing: str,
+    arm_index: int,
+    seeded: dict[str, str],
+    asked: list[_RecordedAsk],
+    after: dict[str, str],
+    tool_message: str | None,
+) -> eval_cohort.SampleObservation:
+    """What ONE driven batch write left behind — the collection's entries as the
+    write found and left them, the same shape ``identity_eval`` observes."""
+    answered = sum(1 for one in asked if one.error is None)
+    return eval_cohort.SampleObservation(
+        name=name,
+        phrasing=phrasing,
+        arm=arm_index,
+        held=_rows(arm.collection, after),
+        held_before=_rows(arm.collection, seeded),
+        output=[
+            eval_cohort.OutputField(
+                name="collection", value=f"{arm.collection} — {arm.description}"
+            ),
+            eval_cohort.OutputField(name="the write", value=f"{len(arm.new)} entries in one batch"),
+            eval_cohort.OutputField(
+                name="decision questions", value=f"{len(asked)} asked, {answered} answered"
+            ),
+            eval_cohort.OutputField(name="stored after", value=", ".join(after.keys())),
+            eval_cohort.OutputField(
+                name="tool reply", value=tool_message or "(no write result within timeout)"
+            ),
+        ],
+    )
+
+
+@pytest.fixture
+def sibling_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[SiblingEval]:
+    """Drive the collection write's entry-identity ladder with a BATCH write (#2922):
+    several new entries in ONE ``collection_write`` call, each a candidate against the
+    SAME stored digest entry, and nothing else.
+
+    Everything else matches ``identity_eval``: one hermetic Penny/database per sample,
+    the collection seeded through the rules-only write path, embeddings backfilled, the
+    seeded world probed loudly, then ONE real ``collection_write`` call built through
+    ``build_memory_tools`` with the real decision client from config.  What differs is
+    the write itself: ``len(arm.new)`` new entries land in the SAME call, which is what
+    can trigger the sequential-apply collision the batch guard
+    (``resolve_sibling_collisions``) exists to catch.
+    """
+    _cohorts: dict[str, _PendingCase] = {}
+
+    async def _run(
+        *,
+        case_id: str,
+        behaviour: str = "",
+        area: Area | None = None,
+        arms: Sequence[SiblingArm] = (),
+        samples_per_phrasing: int = 0,
+        model: str = "",
+        samples: int = SAMPLES,
+        min_pass_rate: PassRate = UNSTATED,
+        family: str | None = None,
+        timeout: float = SINGLE_CALL_WAIT_SECONDS,
+    ) -> Cohort:
+        """Drive one batch write per arm and return the case's COHORT.
+
+        A case with no ``arms`` is refused by name, as every driver refuses its ask."""
+        _require_ask(case_id, "sibling_eval", "arms=[SiblingArm(...), …]", arms)
+        _require_report_only(case_id, min_pass_rate)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.MICRO_CONTEXT,
+            behaviour=behaviour,
+            area=area,
+            wording=arms[0].text,
+        )
+        if not os.environ.get("LLM_DECISION_MODEL"):
+            raise ValueError(
+                f"{case_id}: sibling_eval measures the entry-identity ladder's decision "
+                "step — set LLM_DECISION_MODEL for this run (the degraded no-decider mode "
+                "is a different behaviour, not this case)."
+            )
+        eval_artifacts.begin_case(case_id)
+        driving = _arms(
+            [arm.text for arm in arms],
+            [arm.world for arm in arms],
+            samples_per_phrasing,
+            samples,
+        )
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=catalogued.sentence,
+            ),
+        )
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            arm = arms[driving.index_of(sample_index)]
+            phrasing = driving.label(sample_index)
+            arm_index = driving.index_of(sample_index)
+            seed_user(penny.db)
+            seed_world_stores(penny.db, arm.world)
+            await _embed_seeds(penny)
+            seeded = collection_entries(penny.db, arm.collection)
+            seeded_check = _seeded_world_check_sibling(arm, seeded)
+            if not seeded_check.ok:
+                # A drifted seed is a harness defect, not a sample's behaviour — void it
+                # rather than grade a ladder decision made against a world nobody declared.
+                raise ValueError(
+                    f"{case_id} sample {sample_number(sample_index)}: {seeded_check.rationale}"
+                )
+            tool, recording = _collection_tool(penny)
+            try:
+                write_result = await asyncio.wait_for(
+                    tool.run(
+                        call_link=CallLink.new_top(),
+                        collection=arm.collection,
+                        entries=[{"key": key, "content": content} for key, content in arm.new],
+                    ),
+                    timeout=timeout,
+                )
+                tool_message: str | None = write_result.message
+            except TimeoutError:
+                tool_message = None
+                result = SampleResult.binary(["no write result within timeout"])
+                _stamp_cause(penny.db, result, timed_out=True)
+                _write_sibling_report(
+                    penny.db,
+                    case_id,
+                    sample_index,
+                    result=result,
+                    arm=arm,
+                    seeded=seeded,
+                    asked=recording.asked,
+                    after=collection_entries(penny.db, arm.collection),
+                    tool_message=tool_message,
+                )
+                result.observation = eval_cohort.SampleObservation(
+                    name=f"{case_id}-{sample_number(sample_index)} ({phrasing})",
+                    phrasing=phrasing,
+                    arm=arm_index,
+                    complete=False,
+                    exclusion=NO_DRAW,
+                )
+                _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+                return result
+            after = collection_entries(penny.db, arm.collection)
+            # The sample is graded from its cohort's CLAIMS, made once every sample has
+            # run, so it scores nothing at drive time and carries only its guard.
+            result = SampleResult.graded([seeded_check])
+            _stamp_cause(penny.db, result)
+            _write_sibling_report(
+                penny.db,
+                case_id,
+                sample_index,
+                result=result,
+                arm=arm,
+                seeded=seeded,
+                asked=recording.asked,
+                after=after,
+                tool_message=tool_message,
+            )
+            result.observation = _observe_sibling_write(
+                arm,
+                name=f"{case_id}-{sample_number(sample_index)} ({phrasing})",
+                phrasing=phrasing,
+                arm_index=arm_index,
+                seeded=seeded,
+                asked=recording.asked,
+                after=after,
+                tool_message=tool_message,
+            )
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf, voided = await _run_samples(
+            make_config,
+            tmp_path,
+            case_id=case_id,
+            samples=driving.driven,
+            drive=_drive,
+            model=model,
+        )
+        cohort = _driven_cohort(case_id, model, results, voided, driving.arms)
+        pending.add(cohort, results, perf, intended=driving.driven)
+        return cohort
+
+    yield _run
+    for pending in _cohorts.values():
+        pending.finish()
+    _cohorts.clear()
