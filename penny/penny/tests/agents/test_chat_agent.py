@@ -549,8 +549,20 @@ async def test_collection_configure_stamps_chat_provenance(
     mock_llm.set_response_handler(handler)
 
     async with running_penny(test_config) as penny:
+
+        def _provenance_stamped() -> bool:
+            row = penny.db.memories.get("indie-platformers")
+            return row is not None and row.source_message_id is not None
+
         await signal_server.push_message(sender=TEST_SENDER, content=ask)
-        await wait_until(lambda: penny.db.memories.get("indie-platformers") is not None)
+        # The row is created mid-turn (``collection_configure``), but its
+        # source message is stamped only once the turn finishes — the
+        # channel logs the incoming message AFTER ``handle`` returns, then
+        # links it by ``run_id`` (``link_source_message``, #1566). Waiting on
+        # row existence alone — not this, the full provenance contract — is
+        # exactly the race #2919 saw: the row can be read between those two
+        # steps, with ``source_message_id`` still unset.
+        await wait_until(_provenance_stamped)
 
         row = penny.db.memories.get("indie-platformers")
         # The creating run is recorded, and the source points back at the exact
