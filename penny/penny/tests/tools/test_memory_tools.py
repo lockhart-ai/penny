@@ -63,9 +63,8 @@ from penny.tools.memory_args import (
     _reject_blank_optional,
 )
 from penny.tools.memory_tools import (
-    _BLANK_PROMPT_ON_SCHEDULED_JOB,
     _INERT_JOB_ARGS_REFUSAL,
-    _PROMPT_CLEARED_MESSAGE,
+    _PLAIN_STORAGE_MESSAGE,
     _PROMPT_NEEDS_SCHEDULE_REFUSAL,
     _RULES_GUARD_REFUSAL,
     _SAME_JOB_REFUSAL,
@@ -1196,20 +1195,16 @@ class TestBlankOptionalArgsAreRefused:
     async def test_every_optional_string_names_its_own_form(self, db):
         """Uniform across the surface — each optional string refuses a blank with ITS
         accepted form, so the guard isn't special-cased to ``expires_at``.  A
-        whitespace-only value is the same miss as an empty one.  ``expires_at`` and
-        ``schedule`` each carry their own schema descriptor (#2250/#2222, each shared
-        across create/update/set), so their lines also name them; ``description`` is
-        still bare in this tool's schema.  ``prompt`` is EXCLUDED here (#2857): on the
-        update surface a blank is no longer a gate-level refusal for every field
-        alike — it's the tool's own clear-or-refuse decision, covered by its own
-        tests below."""
+        whitespace-only value is the same miss as an empty one.  ``expires_at``
+        carries its own schema descriptor (#2250, shared across create/update/set), so
+        its line also names it; ``description`` is still bare in this tool's schema.
+        ``prompt`` and ``schedule`` are EXCLUDED here (#2857/#2894): on the update
+        surface a blank on either is no longer a gate-level refusal — it's the tool's
+        own clear decision, covered by its own tests below."""
         tool = CollectionSetTool(db, cast(Any, MockLlmClient()))
-        descriptors = {
-            "expires_at": EXPIRES_AT_PARAM_DESCRIPTION,
-            "schedule": SCHEDULE_PARAM_DESCRIPTION,
-        }
+        descriptors = {"expires_at": EXPIRES_AT_PARAM_DESCRIPTION}
         for field, form in OPTIONAL_ARG_FORMS.items():
-            if field == "prompt":
+            if field in ("prompt", "schedule"):
                 continue
             result = await tool.run(CallLink.new_top(), collection="deals-watch", **{field: "   "})
             assert result.success is False
@@ -1244,16 +1239,36 @@ class TestBlankOptionalArgsAreRefused:
         assert db.memories.get("deals-watch") is None
 
     @pytest.mark.asyncio
-    async def test_blank_prompt_clears_an_unused_one(self, db):
-        """A blank ``prompt`` on a collection with no schedule clears the stored prompt
-        (#2857) — nothing was running it anyway — and says so plainly; the collection's
-        entries are untouched."""
+    async def test_blank_schedule_on_create_is_still_refused(self, db):
+        """CREATE has nothing to clear — a brand-new collection never carried a
+        schedule — so a blank ``schedule`` there stays the ordinary gate-level
+        teaching rejection (#1776); #2894's clear path is update-only."""
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
+            CallLink.new_top(),
+            name="deals-watch",
+            description="track the shoe deals",
+            schedule="   ",
+        )
+        assert result.success is False
+        assert result.message == (
+            f"schedule (string: {SCHEDULE_PARAM_DESCRIPTION}): an empty string sets "
+            "nothing — omit schedule entirely to leave it unset, or pass one RRULE "
+            'line, e.g. "FREQ=HOURLY" for hourly. Call collection_configure{<valid '
+            "arguments>} again."
+        )
+        assert db.memories.get("deals-watch") is None
+
+    @pytest.mark.asyncio
+    async def test_blank_prompt_clears_the_whole_job(self, db):
+        """A blank ``prompt`` clears both the prompt AND the schedule (#2894) — a
+        prompt with no schedule never runs and a schedule with no prompt has nothing
+        to run — landing plain storage; the collection's entries are untouched."""
         _seed_collection(
             db,
             name="rules-ish",
             description="a stand-in for the standing-rules shape",
             extraction_prompt="a stray prompt that merely lists the rules below",
-            schedule=None,
+            schedule="FREQ=HOURLY",
         )
         require_memory(db, "rules-ish").write_rule_decided(
             [EntryInput(key="no-shoes-inside", content="Take shoes off at the door.")],
@@ -1263,62 +1278,83 @@ class TestBlankOptionalArgsAreRefused:
             CallLink.new_top(), name="rules-ish", prompt=""
         )
         assert result.success
-        assert result.message == _PROMPT_CLEARED_MESSAGE.format(name="rules-ish")
+        assert result.message == _PLAIN_STORAGE_MESSAGE.format(name="rules-ish", count=1)
         row = db.memories.get("rules-ish")
         assert row.extraction_prompt is None
         assert row.schedule is None
         assert [e.key for e in require_memory(db, "rules-ish").read_all()] == ["no-shoes-inside"]
 
     @pytest.mark.asyncio
-    async def test_blank_prompt_on_scheduled_job_is_still_refused(self, db):
-        """A blank ``prompt`` on a SCHEDULED job is not a clear — it's the chronic
-        "I meant to omit this" (#1776) — so it's still refused, now by the tool with
-        the gate's own text rather than by the gate itself."""
-        _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            CallLink.new_top(), name="watch", prompt=""
+    async def test_blank_schedule_clears_the_whole_job(self, db):
+        """A blank ``schedule`` clears both the schedule AND the prompt (#2894) — the
+        mirror of the case above — landing plain storage with entries untouched."""
+        _seed_collection(
+            db,
+            name="rules-ish",
+            extraction_prompt="a stray prompt that merely lists the rules below",
+            schedule="FREQ=HOURLY",
         )
-        assert result.success is False
-        assert result.message == _BLANK_PROMPT_ON_SCHEDULED_JOB
-        row = db.memories.get("watch")
-        assert row.extraction_prompt == "test fixture extraction prompt"
+        require_memory(db, "rules-ish").write_rule_decided(
+            [EntryInput(key="no-shoes-inside", content="Take shoes off at the door.")],
+            author="chat",
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), name="rules-ish", schedule=""
+        )
+        assert result.success
+        assert result.message == _PLAIN_STORAGE_MESSAGE.format(name="rules-ish", count=1)
+        row = db.memories.get("rules-ish")
+        assert row.extraction_prompt is None
+        assert row.schedule is None
 
     @pytest.mark.asyncio
-    async def test_blank_prompt_is_refused_when_this_call_sets_a_schedule(self, db):
-        """A schedule-less collection whose SAME call also sets ``schedule`` is about
-        to become a scheduled job — a blank ``prompt`` there is refused too, not
-        cleared, since the effective schedule (not just the row's own) is what
-        decides."""
+    async def test_blank_prompt_on_schedule_less_collection_clears_the_prompt_alone(self, db):
+        """No schedule to cascade onto — the collection was already schedule-less, so
+        clearing the prompt leaves the (already-absent) schedule exactly as it was."""
+        _seed_collection(
+            db,
+            name="rules-ish",
+            extraction_prompt="a stray prompt that merely lists the rules below",
+            schedule=None,
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), name="rules-ish", prompt=""
+        )
+        assert result.success
+        assert result.message == _PLAIN_STORAGE_MESSAGE.format(name="rules-ish", count=0)
+        row = db.memories.get("rules-ish")
+        assert row.extraction_prompt is None
+        assert row.schedule is None
+
+    @pytest.mark.asyncio
+    async def test_blank_prompt_clears_the_schedule_this_same_call_tries_to_set(self, db):
+        """A blank ``prompt`` wins even when the SAME call also sets a new
+        ``schedule`` — a schedule with no prompt has nothing to run, so the new
+        schedule never lands and the collection ends up as plain storage."""
         _seed_collection(db, name="rules-ish", extraction_prompt="a stray prompt", schedule=None)
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), name="rules-ish", prompt="", schedule="FREQ=DAILY;BYHOUR=8"
         )
-        assert result.success is False
-        assert result.message == _BLANK_PROMPT_ON_SCHEDULED_JOB
+        assert result.success
+        assert result.message == _PLAIN_STORAGE_MESSAGE.format(name="rules-ish", count=0)
         row = db.memories.get("rules-ish")
-        assert row.extraction_prompt == "a stray prompt"
+        assert row.extraction_prompt is None
         assert row.schedule is None
 
     @pytest.mark.asyncio
-    async def test_blank_is_refused_identically_on_create_and_update(self, db):
-        """Both halves of the idempotent front door hold the same rule — the update path
-        (an existing collection) refuses a blank exactly as the create path does, so a
-        blank can never quietly leave an existing job's field alone either."""
+    async def test_blank_schedule_on_set_tool_clears_the_whole_job(self, db):
+        """The idempotent front door (``collection_configure``) dispatches an existing
+        collection's blank ``schedule`` onto the same clear path as the update tool —
+        no model-facing distinction between the two entry points."""
         _seed_collection(db, name="deals-watch", description="track the shoe deals")
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
             CallLink.new_top(), collection="deals-watch", schedule=""
         )
-        assert result.success is False
-        assert result.message == (
-            f"schedule (string: {SCHEDULE_PARAM_DESCRIPTION}): an empty string sets "
-            "nothing — omit schedule entirely to leave it unset, or pass one RRULE "
-            'line, e.g. "FREQ=HOURLY" for hourly. Call collection_configure{<valid '
-            "arguments>} again."
-        )
-        # The existing row is untouched — the refusal happens before execute.
+        assert result.success
+        assert result.message == _PLAIN_STORAGE_MESSAGE.format(name="deals-watch", count=0)
         row = db.memories.get("deals-watch")
-        assert row.schedule == "FREQ=HOURLY"
-        assert row.extraction_prompt == "test fixture extraction prompt"
+        assert row.schedule is None
+        assert row.extraction_prompt is None
 
     @pytest.mark.asyncio
     async def test_omitting_an_optional_arg_is_still_the_way_to_leave_it_alone(self, tmp_path):
