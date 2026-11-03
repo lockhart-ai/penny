@@ -700,7 +700,8 @@ class IosChannel(MessageChannel):
             name=memory.name,
             type=memory.type,
             description=memory.description,
-            published=memory.notify,  # wire field `published` ← the `notify` column (#1557)
+            # `MemoryRecord` also emits `published` — iOS compatibility until #2926.
+            notify=memory.notify,
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
             schedule=memory.schedule,
@@ -744,7 +745,7 @@ class IosChannel(MessageChannel):
                 extraction_prompt=req.extraction_prompt,
                 schedule=req.schedule,
                 description_embedding=description_embedding,
-                notify=req.published,  # wire field `published` → the `notify` column (#1557)
+                notify=req.notify,  # accepts `published` too — iOS compatibility until #2926
             )
         except MemoryAlreadyExistsError:
             logger.warning("memory_create with duplicate name: %s", req.name)
@@ -768,7 +769,7 @@ class IosChannel(MessageChannel):
                 extraction_prompt=req.extraction_prompt,
                 schedule=req.schedule,
                 description_embedding=description_embedding,
-                notify=req.published,  # wire field `published` → the `notify` column (#1557)
+                notify=req.notify,  # accepts `published` too — iOS compatibility until #2926
             )
         except (MemoryNotFoundError, MemoryTypeError) as exc:
             logger.warning("memory_update failed for %s: %s", req.name, exc)

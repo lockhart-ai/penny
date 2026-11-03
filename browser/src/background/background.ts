@@ -494,7 +494,7 @@ function triggerCollection(name: string): void {
 function sendMemoryCreate(message: {
   name: string;
   description: string;
-  published?: boolean;
+  notify?: boolean;
   extraction_prompt?: string | null;
   schedule?: string | null;
 }): void {
@@ -503,7 +503,7 @@ function sendMemoryCreate(message: {
     type: WsOutgoingType.MemoryCreate,
     name: message.name,
     description: message.description,
-    published: message.published ?? false,
+    notify: message.notify ?? false,
     extraction_prompt: message.extraction_prompt ?? null,
     schedule: message.schedule ?? null,
   }));
@@ -512,7 +512,7 @@ function sendMemoryCreate(message: {
 function sendMemoryUpdate(message: {
   name: string;
   description?: string | null;
-  published?: boolean | null;
+  notify?: boolean | null;
   extraction_prompt?: string | null;
   schedule?: string | null;
 }): void {
@@ -521,7 +521,7 @@ function sendMemoryUpdate(message: {
     type: WsOutgoingType.MemoryUpdate,
     name: message.name,
     description: message.description ?? null,
-    published: message.published ?? null,
+    notify: message.notify ?? null,
     extraction_prompt: message.extraction_prompt ?? null,
     schedule: message.schedule ?? null,
   }));
