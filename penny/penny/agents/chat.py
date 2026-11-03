@@ -399,11 +399,13 @@ class ChatAgent(Agent):
     async def handle_changelog_report(
         self, entries: list[ChangelogEntry], sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
-        """The startup delivery turn (#2846): write the message that tells the
-        user what this deploy's new changelog entries are.
+        """The startup delivery turn (#2846, #2890): write the message that tells
+        the user what this deploy's new changelog entries are — or, when there
+        are none, that she's just restarted and nothing changed.
 
         The input is the framework-rendered entries (``render_changelog_announcement``)
-        — each PR number and its text, never anything model-written. Everything else
+        — each PR number and its text, never anything model-written, or (with no
+        entries) the framework's own "nothing changed" render. Everything else
         the message needs is the turn's own ambient state: her persona and voice, the
         standing rules, and the full chat tool surface — so a change that names
         something she can look at stays reachable before she writes about it.

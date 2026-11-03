@@ -326,8 +326,9 @@ class SelfStateHeader:
         code span (#2425) — #1857's display == invocation contract stays true (the
         model still reads the copyable form it would write back), it just no longer
         stands alone as the text a reply would echo.  Empty when the collection has no
-        schedule yet, so the mechanism line drops the clause."""
-        return describe_schedule(row, user_timezone_name(self.db))
+        schedule yet, so the mechanism line drops the clause.  An occurrence already
+        due renders as due now rather than a stale past timestamp (#2895)."""
+        return describe_schedule(row, user_timezone_name(self.db), now=self.db.clock.now())
 
     def _end_condition(self, row: MemoryRow) -> str:
         """The mechanism's end condition — an expiry time, on the USER's own clock

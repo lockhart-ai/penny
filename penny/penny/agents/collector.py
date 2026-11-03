@@ -85,7 +85,6 @@ from penny.notification import (
     NotificationOutcome,
 )
 from penny.prompts import Prompt
-from penny.text_validity import check_extraction_prompt
 from penny.tools.collection_instantiation import next_occurrence
 from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import CursorReadTool, format_entries
@@ -303,8 +302,6 @@ class Collector(BackgroundAgent):
                 f"Collection '{collection_name}' has no extraction_prompt — "
                 f"set one with collection_configure before testing.",
             )
-        if error := check_extraction_prompt(collection.extraction_prompt):
-            return False, error
         # ``run_for`` bypasses readiness entirely, so there is no occurrence to name
         # (#2862) — the dispatch reason is unconditionally "the user asked to run it
         # now", whatever a retry count at the schedule's own occurrence would say.
@@ -1294,14 +1291,6 @@ class Collector(BackgroundAgent):
 
     def _is_ready(self, memory: MemoryRow, now: datetime) -> bool:
         if memory.archived or memory.extraction_prompt is None:
-            return False
-        if check_extraction_prompt(memory.extraction_prompt) is not None:
-            logger.warning(
-                "Skipping collection '%s': extraction_prompt too short (%d chars, minimum 25) "
-                "— update it via collection_configure to enable collection",
-                memory.name,
-                len(memory.extraction_prompt),
-            )
             return False
         schedule = memory.schedule
         if schedule is None:

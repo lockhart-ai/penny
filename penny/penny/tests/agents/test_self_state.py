@@ -42,6 +42,7 @@ from penny.database.models import (
 from penny.database.mutation_store import MutationDetail
 from penny.prompts import Prompt
 from penny.tests.conftest import DEFAULT_TEST_CONFIG
+from penny.tests.eval.utils.clock import PinnedClock
 
 USER = "+15550001111"
 
@@ -423,6 +424,11 @@ def _seed_kitchen_sink(db: Database) -> None:
 
 def test_self_state_kitchen_sink_render(db):
     _seed_kitchen_sink(db)
+    # A fixed clock (#2895), read right after the fixture's own latest activity
+    # (the 09:20 mutation) — never the real wall clock, so the due-now check reads
+    # news-digest's already-passed occurrence as due and price-watch's/reminder's
+    # later ones as still ahead, on every run, not on whenever the suite happens to run.
+    db.clock = PinnedClock(starts_at=_t(9, 21))
     actual = SelfStateHeader(db, USER).render()
     assert actual == _KITCHEN_SINK
 
@@ -457,6 +463,9 @@ def test_self_state_schedule_mechanism_render(db):
         )
         session.commit()
     _add_user(db)
+    # A fixed clock (#2895), at the fixtures' own creation moment — strictly before
+    # both rows' first occurrence, so neither reads as due yet.
+    db.clock = PinnedClock(starts_at=_t(6))
     assert SelfStateHeader(db, USER).render() == _SCHEDULE_MECH
 
 
@@ -575,6 +584,10 @@ def test_self_state_activity_overflow_render(db):
                 finished_at=_t(9, i),
             )
         session.commit()
+    # A fixed clock (#2895), read right after the last recorded run — a job with no
+    # ``last_collected_at`` is always due by the time anything renders it (its first
+    # occurrence is its own creation moment), on this clock or any other.
+    db.clock = PinnedClock(starts_at=_t(9, PennyConstants.SELF_STATE_ACTIVITY_LIMIT))
     actual = SelfStateHeader(db, None).render()
     assert actual == _OVERFLOW
 
@@ -605,6 +618,9 @@ def test_self_state_archived_heavy_render(db):
                 updated_at=_t(8, i),
             )
         session.commit()
+    # A fixed clock (#2895), after the last archive timestamp — ``live-watch`` has no
+    # ``last_collected_at``, so it is always due by the time anything renders it.
+    db.clock = PinnedClock(starts_at=_t(9))
     actual = SelfStateHeader(db, None).render()
     assert actual == _ARCHIVED_HEAVY
 
@@ -712,6 +728,10 @@ def test_self_state_job_instructions_line_shapes(db):
             updated_at=_t(6),
         )
         session.commit()
+    # A fixed clock (#2895), at the fixtures' own creation moment — none of the three
+    # scheduled jobs has a ``last_collected_at``, so all are always due by the time
+    # anything renders them.
+    db.clock = PinnedClock(starts_at=_t(6))
     actual = SelfStateHeader(db, None).render()
     assert actual == _INSTRUCTION_SHAPES
 
@@ -1177,6 +1197,10 @@ async def test_full_chat_system_prompt_composition(db, tmp_path):
     instructions rather than state.  The speculative recall / profile /
     inventory are gone."""
     _seed_kitchen_sink(db)
+    # A fixed clock (#2895) — same instant and same reasoning as
+    # ``test_self_state_kitchen_sink_render``, since this renders the identical
+    # fixture through the chat agent's own composition instead.
+    db.clock = PinnedClock(starts_at=_t(9, 21))
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent.config = Config(
@@ -1224,8 +1248,8 @@ _KITCHEN_SINK = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- news-digest — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July "
-    "11, 2026 at 05:00 AM EDT · notify: off · last run "
+    "- news-digest — active · every hour (rule: `FREQ=HOURLY`), next run due now — it "
+    "runs at the next idle window · notify: off · last run "
     "FAILED 2026-07-11 08:00 UTC\n"
     '  "1. read the feed"\n'
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
@@ -1280,8 +1304,8 @@ _KITCHEN_SINK = (
 _KITCHEN_SINK_STATIC = (
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- news-digest — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July "
-    "11, 2026 at 05:00 AM EDT · notify: off · last run "
+    "- news-digest — active · every hour (rule: `FREQ=HOURLY`), next run due now — it "
+    "runs at the next idle window · notify: off · last run "
     "FAILED 2026-07-11 08:00 UTC\n"
     '  "1. read the feed"\n'
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
@@ -1392,8 +1416,8 @@ _OVERFLOW = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- watcher — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
-    "2026 at 06:00 AM UTC · notify: off · last run WORKED "
+    "- watcher — active · every hour (rule: `FREQ=HOURLY`), next run due now — it runs "
+    "at the next idle window · notify: off · last run WORKED "
     "2026-07-11 09:08 UTC\n"
     '  "1. go"\n'
     "\n"
@@ -1425,8 +1449,8 @@ _ARCHIVED_HEAVY = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- live-watch — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
-    "2026 at 06:00 AM UTC · notify: off · no runs yet\n"
+    "- live-watch — active · every hour (rule: `FREQ=HOURLY`), next run due now — it runs "
+    "at the next idle window · notify: off · no runs yet\n"
     '  "1. go"\n'
     "- retired-0 — archived 2026-07-11 08:00 UTC · no runs yet\n"
     "- retired-1 — archived 2026-07-11 08:01 UTC · no runs yet\n"
@@ -1454,18 +1478,18 @@ _INSTRUCTION_SHAPES = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- feed-check — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
-    "2026 at 06:00 AM UTC · notify: off · no runs yet\n"
+    "- feed-check — active · every hour (rule: `FREQ=HOURLY`), next run due now — it runs "
+    "at the next idle window · notify: off · no runs yet\n"
     '  reads https://harborferries.example/feed — "1. read '
     'https://harborferries.example/feed each morning and write the headlines."\n'
-    "- harbour-watch — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July "
-    "11, 2026 at 06:00 AM UTC · notify: off · no runs "
+    "- harbour-watch — active · every hour (rule: `FREQ=HOURLY`), next run due now — it "
+    "runs at the next idle window · notify: off · no runs "
     "yet\n"
     '  reads https://harborferries.example/seasonal-sailings — "1. read the harbour notice '
     "board each morning before the first sailing. (2 more sentences cut — "
     "memory_get{'harbour-watch'} shows the whole prompt)\"\n"
-    "- plain-note — active · every hour (rule: `FREQ=HOURLY`), next run Saturday, July 11, "
-    "2026 at 06:00 AM UTC · notify: off · no runs yet\n"
+    "- plain-note — active · every hour (rule: `FREQ=HOURLY`), next run due now — it runs "
+    "at the next idle window · notify: off · no runs yet\n"
     '  "1. count the boats in the harbour."\n'
     "\n"
     "### Recent activity\n"

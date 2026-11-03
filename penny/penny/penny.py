@@ -661,7 +661,7 @@ class Penny:
         (#2846), and queue what it writes like any other autonomous send —
         summary method: who it's for (and whether it should run at all), then
         compose, then queue."""
-        sender = self._changelog_announcement_recipient(entries)
+        sender = self._changelog_announcement_recipient()
         if sender is None:
             return
         try:
@@ -673,15 +673,14 @@ class Penny:
         except Exception as e:
             logger.warning("Failed to send changelog announcement: %s", e)
 
-    def _changelog_announcement_recipient(self, entries: list[ChangelogEntry]) -> str | None:
+    def _changelog_announcement_recipient(self) -> str | None:
         """Who the changelog turn should write to, or ``None`` when it shouldn't
-        run at all: no new entries (harness-only, CI-only, or a restart on an
-        already-recorded commit), no profile, or the user has never chatted —
-        the same gates the retired restart announcement used, so a fresh
-        install or the watcher's rapid per-deploy restarts never spend a model
-        call on a user who has never chatted."""
-        if not entries:
-            return None
+        run at all: no profile, or the user has never chatted — the same gates
+        the retired restart announcement used, so a fresh install or the
+        watcher's rapid per-deploy restarts never spend a model call on a user
+        who has never chatted. Penny announces on every startup, whether or
+        not this deploy brought any new entries — that only decides what the
+        turn's rendered input says, never whether it runs."""
         sender = self.db.users.get_primary_sender()
         if not sender:
             logger.info("No user profile found for changelog announcement")
