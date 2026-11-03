@@ -121,12 +121,13 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             phrasing = arms.label(sample_index)
             arm = arms.index_of(sample_index)
             name = f"{case_id}-{sample_number(sample_index)} ({phrasing})"
-            return lambda db, reply, before, held_before: _observe_sample(
+            return lambda db, reply, final_reply, before, held_before: _observe_sample(
                 db,
                 name=name,
                 phrasing=phrasing,
                 arm=arm,
                 reply=reply,
+                final_reply=final_reply,
                 before=before,
                 held_before=held_before,
             )

@@ -197,14 +197,22 @@ def changelog_eval(
             held_before = _held_entries(penny.db)
             turns = [unrelated_turn, spoken[sample_index]]
             reply = ""
+            final_reply = ""
             try:
-                reply = await _drive_turns(
+                messages = await _drive_turns(
                     penny, server, turns, timeout=timeout, retryable=retryable
                 )
+                reply = "\n".join(messages)
+                final_reply = messages[-1] if messages else ""
                 result = SampleResult.graded([])
                 _stamp_cause(penny.db, result)
                 _write_sample_report(
-                    penny.db, case_id, sample_index, result=result, reply=reply, driven=turns
+                    penny.db,
+                    case_id,
+                    sample_index,
+                    result=result,
+                    reply=final_reply,
+                    driven=turns,
                 )
             except TimeoutError:
                 result = SampleResult.binary(["no reply within timeout"])
@@ -220,6 +228,7 @@ def changelog_eval(
                 phrasing=phrasing,
                 arm=arm,
                 reply=reply,
+                final_reply=final_reply,
                 before=before,
                 held_before=held_before,
             )

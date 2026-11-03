@@ -2534,10 +2534,11 @@ NEVER_FINISHED = "never finished"
 # knows: which rows are this sample's own.
 
 
-# How a chat case reads one sample: its live database, the reply it produced, the
-# collections that existed before it, and the entries the store held before it.
+# How a chat case reads one sample: its live database, every message the turn delivered
+# joined in order, the last of those messages alone, the collections that existed before
+# it, and the entries the store held before it (#2934).
 Observer = Callable[
-    [Database, str, set[str], list[eval_cohort.StoredEntry]],
+    [Database, str, str, set[str], list[eval_cohort.StoredEntry]],
     eval_cohort.SampleObservation,
 ]
 
@@ -2583,13 +2584,14 @@ def given_to_the_model(db: Database, handles: HandleTable | None = None) -> eval
     return read_given(_iter_prompt_messages(db, tables=_link_tables(db, handles)))
 
 
-def reply_embedding(db: Database, reply: str) -> list[float] | None:
-    """The vector of the reply this sample was scored on.
+def reply_embedding(db: Database, final_reply: str) -> list[float] | None:
+    """The vector of the sample's own final reply.
 
     Every conversational send is embedded at egress, so the cohort's reply spread costs no
-    model call — it is a read of a column production already fills.  Looked up by the reply's
-    own text rather than by a recency window, so it is the SCORED reply's vector."""
-    row = db.messages.find_outgoing_by_content(reply)
+    model call — it is a read of a column production already fills.  Looked up by the LAST
+    message's own text, which is one outgoing row an exact match can land on — a turn's full
+    delivered text joins several rows together and would match none of them (#2934)."""
+    row = db.messages.find_outgoing_by_content(final_reply)
     if row is None or row.embedding is None:
         return None
     return deserialize_embedding(row.embedding)
@@ -2845,12 +2847,18 @@ def _observe_sample(
     phrasing: str,
     arm: int,
     reply: str,
+    final_reply: str,
     before: set[str],
     held_before: list[eval_cohort.StoredEntry],
 ) -> eval_cohort.SampleObservation:
     """Read everything one CHAT sample left behind, while its database is still live.
 
     Gated for completeness FIRST, so a dead sample carries no facts to be pooled by accident.
+
+    ``reply`` is every message the turn delivered, joined in order, as the user saw it
+    (#2839/#2934) — what a claim means by "the reply" unless it means the last message
+    specifically, which is ``final_reply`` (the model-error identity check, the embedding
+    lookup).
 
     Every read below is a CHAT read — the machine's walk, the registry, the collections, the
     outgoing message the reply was embedded on, and a tool sequence filtered to the chat
@@ -2879,15 +2887,16 @@ def _observe_sample(
         tool_sequence=_chat_tool_sequence(db),
         collection_write_keys=_collection_write_keys(db),
         reply=reply,
-        reply_embedding=reply_embedding(db, reply),
-        aborted_on_model_error=_aborted_on_model_error(reply),
+        final_reply=final_reply,
+        reply_embedding=reply_embedding(db, final_reply),
+        aborted_on_model_error=_aborted_on_model_error(final_reply),
         given=given_to_the_model(db),
         container=_framed_container(db),
         scheduled=_scheduled_by_this_round(db, before),
     )
 
 
-def _aborted_on_model_error(reply: str) -> bool:
+def _aborted_on_model_error(final_reply: str) -> bool:
     """Whether the delivered reply IS the framework's own model-error apology (#2252) — read by
     IDENTITY against the constant the channel sends verbatim on an aborted chat turn
     (``PennyResponse.AGENT_MODEL_ERROR``), never a copied string or a substring match.  A chat
@@ -2895,8 +2904,12 @@ def _aborted_on_model_error(reply: str) -> bool:
     read only by the collector), so the delivered text is the one place left to read it: the
     channel does ``response.answer.strip()`` with nothing else, so the sent reply is byte-equal
     to the constant exactly when the turn ended there rather than on a reply the model composed.
-    A real reply that merely QUOTES the apology's words is a reply, not an abort."""
-    return reply == PennyResponse.AGENT_MODEL_ERROR
+    A real reply that merely QUOTES the apology's words is a reply, not an abort.
+
+    Read off the LAST message a turn sent, never a multi-message join (#2934): an interim
+    message ahead of the apology doesn't make the turn's actual end any less an abort, and a
+    joined string could never equal the constant anyway."""
+    return final_reply == PennyResponse.AGENT_MODEL_ERROR
 
 
 # The completeness gate is decided per FIXTURE, below.  ``measured_turn_ran`` is the half every
@@ -3498,28 +3511,37 @@ async def _drive_turns(
     *,
     timeout: float,
     retryable: bool,
-) -> str:
-    """Push each user turn, wait for its reply and for the turn to SETTLE, returning the
-    LAST reply.
+) -> list[str]:
+    """Push each user turn, wait for its reply and for the turn to SETTLE, returning EVERY
+    message the LAST turn produced, in order — an interim message (#2839) plus the final
+    reply, exactly as the user received them.
 
     The mock server holds a reply the moment its send ARRIVES, which is before Penny has
     heard back about it.  A sample that moved on from there tore its channel down under a
     send still in flight: the send failed, and Penny logged her delivery-failure apology
     into the sample's record as a message the user received (#2195).  So a turn is over
-    when Penny has finished handling it, not when its reply was seen.
+    when Penny has finished handling it, not when a reply was seen — and a turn that sends
+    an interim message ahead of its final reply is not over once the FIRST of the two
+    arrives.  ``wait_for_message`` only proves something arrived; reading the list back
+    from the server AFTER settling is what returns every message this turn actually sent,
+    rather than whichever one the wait happened to catch (#2934: a sample whose first send
+    was the interim message had its real final reply go unread).
 
-    A model-error reply raises :class:`_ModelCallError` while an attempt remains — that
-    reply is the transport failing, not Penny deciding anything, so the sample is
-    re-driven from a clean world rather than scored as behaviour."""
-    reply = ""
+    A model-error reply raises :class:`_ModelCallError` while an attempt remains — read off
+    the LAST message, since that is how the turn ended; an interim message ahead of it is
+    not itself the abort."""
+    messages: list[str] = []
     for turn in turns:
+        before_count = len(server.outgoing_messages)
         await server.push_message(sender=TEST_SENDER, content=turn)
-        response = await server.wait_for_message(timeout=timeout)
+        await server.wait_for_message(timeout=timeout)
         await wait_until(lambda: _turn_settled(penny), timeout=timeout)
-        reply = str(response.get("message", ""))
-        if reply == PennyResponse.AGENT_MODEL_ERROR and retryable:
+        messages = [
+            str(message.get("message", "")) for message in server.outgoing_messages[before_count:]
+        ]
+        if messages and messages[-1] == PennyResponse.AGENT_MODEL_ERROR and retryable:
             raise _ModelCallError
-    return reply
+    return messages
 
 
 async def _drive_sample(
@@ -3543,12 +3565,15 @@ async def _drive_sample(
     before = collection_names(penny.db)
     held_before = _held_entries(penny.db)
     reply = ""
+    final_reply = ""
     try:
-        reply = await _drive_turns(penny, server, [ask], timeout=timeout, retryable=retryable)
+        messages = await _drive_turns(penny, server, [ask], timeout=timeout, retryable=retryable)
+        reply = "\n".join(messages)
+        final_reply = messages[-1] if messages else ""
         result = SampleResult.graded([])
         _stamp_cause(penny.db, result)
         _write_sample_report(
-            penny.db, case_id, sample_index, result=result, reply=reply, driven=[ask]
+            penny.db, case_id, sample_index, result=result, reply=final_reply, driven=[ask]
         )
     except TimeoutError:
         result = SampleResult.binary(["no reply within timeout"])
@@ -3556,8 +3581,10 @@ async def _drive_sample(
         _write_sample_report(penny.db, case_id, sample_index, result=result)
     # The observation is read HERE, while this sample's own database is still open — the only
     # moment what the round left behind is available at all.  A timed-out sample reaches this
-    # line too, so it is EXCLUDED by name rather than silently absent from the pool.
-    result.observation = observe(penny.db, reply, before, held_before)
+    # line too, so it is EXCLUDED by name rather than silently absent from the pool.  ``reply``
+    # is every message this turn sent, joined in order, as the user saw it (#2934); a claim
+    # that means specifically the last one reads ``final_reply`` instead.
+    result.observation = observe(penny.db, reply, final_reply, before, held_before)
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 

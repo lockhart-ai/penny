@@ -674,6 +674,11 @@ def _reply_answers_the_ask(sample: SampleObservation, world: World) -> Answer:
     token-match definition so a no-break space, a curly dash or a hyphen inside the word cannot
     fail a correct answer.
 
+    Reads ``sample.reply`` — every message the turn delivered, joined in order (#2934) — so
+    an answer the model stated in an interim message (#2839) ahead of its final reply still
+    counts: it reached the user exactly as read here, and this claim means "the user got the
+    answer", never "the last thing Penny happened to type".
+
     A world naming no answer tokens makes no claim and is true — that is an ask with nothing
     to state, not a claim that went unasked."""
     missing = [token for token in world.answers if not token_stands_in(token, sample.reply)]
@@ -698,6 +703,11 @@ def _entry_lines(entry: StoredEntry) -> str:
 
 
 def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:
+    """Every specific value in the reply traces to something the model was GIVEN.
+
+    Reads ``sample.reply`` — every message the turn delivered, joined in order (#2934) — so
+    a value invented in an interim message (#2839) is caught exactly as a value invented in
+    the final one; both reached the user."""
     invented = unsourced_specifics(sample.reply, sample.given)
     return not invented, f"unsourced: {invented}"
 
