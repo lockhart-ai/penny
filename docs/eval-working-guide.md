@@ -101,6 +101,11 @@ the roster's first `EVAL_MODELS` entry may not be the suite's model. A replay an
 `EVAL_PYTEST_ARGS` both take the **container's** path, `penny/tests/eval/...`, never the host
 repo's `penny/penny/tests/eval/...` — the container's working directory is the `penny/` package
 root itself. Runs pinned to one provider take turns on that provider's lock (§9 "Running" below).
+An `OPENROUTER_API_KEY` is never exported to a shell or assumed to already be in the container's
+environment — only the primary checkout's `.env` is ever a real file (a worktree's own is a
+placeholder directory), so a manual replay reads it host-side, inline, the one invocation it
+authorises (§5 "Step 1, the verbatim replay" below), the same way `make eval-remote`'s own
+`from_env` helper does.
 
 ## 2 · What the suite is for
 
@@ -400,10 +405,18 @@ is the full reference for every mode and flag:
 ```
 docker compose run --rm --no-deps penny \
     env LLM_API_URL=https://openrouter.ai/api LLM_MODEL=google/gemma-4-26b-a4b-it \
-    LLM_API_KEY=$OPENROUTER_KEY LLM_PROVIDER=CoreWeave \
+    LLM_PROVIDER=CoreWeave \
+    LLM_API_KEY="$(sed -n 's/^OPENROUTER_API_KEY=//p' /Users/decker/Documents/penny/.env | tail -1)" \
     python -m penny.tests.eval.utils.replay --id <promptlog id> --samples 15 --mode plain \
-        --jsonl /tmp/replay-<promptlog id>.jsonl
+        --jsonl /penny/data/replay-<promptlog id>.jsonl
 ```
+
+The key is read host-side from the primary checkout's `.env` for this one invocation, the same
+`sed` read `make eval-remote`'s own `from_env` helper uses — never exported to a shell, and never
+assumed to already be in the container's environment, since only the primary checkout's `.env` is
+ever a real file (a worktree's own is a placeholder, §1 "Mechanics" above). The JSONL lands on the
+host at `data/replay-<promptlog id>.jsonl`, through the same `/penny/data` mount
+`docker-compose.yml` gives every service — not the container's own `/tmp`, which dies with it.
 
 (a non-collector prompt, including every chat turn, is replayed verbatim with `--mode plain`
 automatically; `--mode verbatim-request` sends the row's own stored request byte-for-byte
