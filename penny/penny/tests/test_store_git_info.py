@@ -61,21 +61,41 @@ def _init_repo(repo: pathlib.Path) -> None:
     _git(repo, "config", "user.name", "Test")
 
 
-def _commit(repo: pathlib.Path, message: str) -> str:
-    """One commit carrying ``message`` as its title; returns its hash."""
-    (repo / "file.txt").write_text(message)
+def _commit(repo: pathlib.Path, subject: str, body: str = "") -> str:
+    """One commit carrying ``subject`` as its title and, if given, ``body``
+    (which may itself be multi-line) as its message body; returns its hash."""
+    (repo / "file.txt").write_text(subject + body)
     _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", message)
+    args = ["commit", "-q", "-m", subject]
+    if body:
+        args += ["-m", body]
+    _git(repo, *args)
     return _git(repo, "rev-parse", "HEAD")
 
 
-def _titles(commits_file: pathlib.Path) -> list[str]:
-    """Each written line's subject half — the hash half is the script's own
-    concern, not this test's (``parse_commit_log`` is what reads it for real,
-    and has its own unit tests)."""
-    if not commits_file.read_text():
+def _records(commits_file: pathlib.Path) -> list[tuple[str, str]]:
+    """Each record's ``(subject, body)`` pair, read the same way
+    ``parse_commit_log`` splits them (``\x1e`` between records, ``\x1f``
+    between fields) — the hash itself isn't this test's concern
+    (``parse_commit_log`` reads it for real, with its own unit tests)."""
+    content = commits_file.read_text()
+    if not content:
         return []
-    return [line.split("\x1f")[1] for line in commits_file.read_text().splitlines()]
+    pairs: list[tuple[str, str]] = []
+    for record in content.split("\x1e"):
+        record = record.lstrip("\n")  # git's own between-commit separator only
+        if not record:
+            continue
+        fields = record.split("\x1f", 2)
+        subject = fields[1] if len(fields) > 1 else ""
+        body = fields[2] if len(fields) > 2 else ""
+        pairs.append((subject, body))
+    return pairs
+
+
+def _titles(commits_file: pathlib.Path) -> list[str]:
+    """Each record's subject half, in order."""
+    return [subject for subject, _body in _records(commits_file)]
 
 
 def _run_script(
@@ -164,3 +184,45 @@ def test_a_cursor_not_an_ancestor_falls_back_to_the_newest_n(tmp_path: pathlib.P
     _run_script(repo, "dev", cursor_file=cursor_file, commits_file=commits_file, fallback=1)
 
     assert _titles(commits_file) == ["fix(penny): second (#2)"]
+
+
+def test_multiline_bodies_are_captured_intact(tmp_path: pathlib.Path) -> None:
+    """A commit's BODY is captured too, not just its title (#2891, round 4):
+    the repo's squash setting makes a squashed commit's body the merged PR's
+    own description, which is routinely several lines. The record separator
+    is `\x1e`, not a newline, precisely so an embedded newline in a real
+    body survives — git's own trailing newline on `%b` is left as is; the
+    Python side (`first_body_sentence`) is what trims it."""
+    _require_git()
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    body = "First line of the real summary.\nSecond line continues the same paragraph."
+    _commit(repo, "fix(penny): second (#2)", body)
+    cursor_file = tmp_path / "cursor"
+    commits_file = tmp_path / "commits.txt"
+
+    _run_script(repo, "dev", cursor_file=cursor_file, commits_file=commits_file, fallback=5)
+
+    # git appends its own single trailing newline to a commit's stored body.
+    assert _records(commits_file) == [("fix(penny): second (#2)", body + "\n")]
+
+
+def test_multiple_commits_each_keep_their_own_multiline_body(tmp_path: pathlib.Path) -> None:
+    """Two commits, each with its own multi-line body, come back as two
+    separate records — one body never bleeds into the next."""
+    _require_git()
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    first_body = "Paragraph one of the first PR.\nStill paragraph one."
+    second_body = "Paragraph one of the second PR.\n\nA second paragraph, after a blank line."
+    _commit(repo, "feat(penny): first (#1)", first_body)
+    _commit(repo, "fix(penny): second (#2)", second_body)
+    cursor_file = tmp_path / "cursor"
+    commits_file = tmp_path / "commits.txt"
+
+    _run_script(repo, "dev", cursor_file=cursor_file, commits_file=commits_file, fallback=5)
+
+    assert _records(commits_file) == [
+        ("feat(penny): first (#1)", first_body + "\n"),
+        ("fix(penny): second (#2)", second_body + "\n"),
+    ]

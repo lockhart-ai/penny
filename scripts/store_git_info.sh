@@ -21,11 +21,21 @@ set -euo pipefail
 # 10, the code owner's own ruling) — scoping to the penny feat/fix/perf/
 # refactor types happens in Python at runtime, so this count is of raw
 # commits, not penny-scope ones.
+#
+# Each record carries the commit's BODY too (`%b`), not just its title: the
+# repo's squash setting (`squash_merge_commit_message: PR_BODY`) makes a
+# squash commit's body the merged PR's own description, whose first sentence
+# is — by the PR-body convention — a plain, cold-readable summary of the
+# whole change. A title alone can mislead (a `refactor(penny):` commit read
+# by its own real meaning, "same behaviour", even though #2820's refactor
+# DID change what Penny's tool calls carry). `%x1e` (record separator) joins
+# records instead of a newline, since a body is itself multi-line.
 
 mode="${1:?usage: $0 <advance|dev>}"
 cursor_file="${CHANGELOG_CURSOR_FILE:-data/penny/.changelog_cursor}"
 commits_file="${CHANGELOG_COMMITS_FILE:-penny/penny/changelog_commits.txt}"
 fallback_commits="${CHANGELOG_FALLBACK_COMMITS:-10}"
+pretty_format='format:%H%x1f%s%x1f%b%x1e'
 
 mkdir -p "$(dirname "$cursor_file")"
 
@@ -36,8 +46,8 @@ fi
 
 if [ -n "$cursor" ] && git merge-base --is-ancestor "$cursor" HEAD 2>/dev/null; then
   echo "store_git_info ($mode): penny-scope commits since $cursor" >&2
-  git log --no-merges --reverse --pretty='format:%H%x1f%s' "$cursor"..HEAD > "$commits_file"
+  git log --no-merges --reverse --pretty="$pretty_format" "$cursor"..HEAD > "$commits_file"
 else
   echo "store_git_info ($mode): no usable cursor — newest $fallback_commits raw commits" >&2
-  git log --no-merges -n "$fallback_commits" --reverse --pretty='format:%H%x1f%s' > "$commits_file"
+  git log --no-merges -n "$fallback_commits" --reverse --pretty="$pretty_format" > "$commits_file"
 fi

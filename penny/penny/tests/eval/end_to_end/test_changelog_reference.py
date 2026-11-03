@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from penny.changelog import ChangelogEntry
+from penny.changelog_commits import parse_commit_log
 from penny.tests.eval.conftest import EVAL_MODELS
 from penny.tests.eval.drivers.changelog_announcement import ChangelogEval
 from penny.tests.eval.utils.assertions import Answer
@@ -47,27 +47,49 @@ pytestmark = pytest.mark.eval
 
 _FAMILY = "changelog-reference"
 
-# Three real merged PRs' own commit titles (#2891 — the changelog's actual source
-# now), fixed here rather than read off the generated build artifact or the retired
-# yaml: this case seeds its own world's `changelog` log directly, so it never depends
-# on what a local build happens to have captured. PR #2820 is the one this case
-# measures; the other two are real too, just along for the ride as "a deploy usually
-# ships more than one change".
+# Three real merged PRs' own RAW commit records (hash, full conventional
+# title, and the merged PR's own real body — `git log`'s own
+# `%H%x1f%s%x1f%b%x1e` shape, `scripts/store_git_info.sh`'s own format) —
+# fixed here rather than read off the generated build artifact or the retired
+# yaml: this case seeds its own world's `changelog` log directly, so it never
+# depends on what a local build happens to have captured. Run through the
+# REAL `parse_commit_log` (#2891) rather than hand-built `ChangelogEntry`s, so
+# this case exercises the real body-first-sentence extraction that fixed PR
+# #2820's own planted fact reading as a no-op — a live sample read the bare
+# title `refactor(penny): ...` by `refactor`'s own meaning ("same behaviour")
+# and concluded nothing had changed for her; the body's own first sentence
+# (`gh pr view 2820 --json body`, taken verbatim) doesn't carry that
+# misleading word. PR #2820 is the one this case measures; the other two are
+# real too, just along for the ride as "a deploy usually ships more than one
+# change" — their bodies are their own real first sentences too, exactly
+# what the new mechanism produces for every PR merged from now on.
 _REASON_PR = 2820
-_ENTRIES = [
-    ChangelogEntry(pr=2820, text="refactor(penny): drop the per-tool reasoning argument"),
-    ChangelogEntry(
-        pr=2831,
-        text="feat(penny): render gemma's chat template ourselves and call raw completions",
-    ),
-    ChangelogEntry(
-        pr=2835,
-        text=(
-            "feat(penny): show a link's full address where it is the answer, "
-            "so the model hands it over"
-        ),
-    ),
-]
+_RAW_COMMIT_RECORDS = (
+    "75edd400788b3612932a0573557f61666fc57581"
+    "\x1frefactor(penny): drop the per-tool reasoning argument (#2820)"
+    "\x1fRemoves the per-tool `reasoning` schema field the framework used to "
+    "inject into every tool call, plus everything that stored, threaded, or "
+    "rendered it, since gemma thinks natively and the field cost tokens for "
+    "no reasoning the loop ever used.",
+    "0fb2e7ec343d392ed07a8d7097ffcfb2e13ac1a8"
+    "\x1ffeat(penny): render gemma's chat template ourselves and call raw completions (#2831)"
+    "\x1fPenny now renders gemma's own chat template herself and sends the result "
+    "as a raw completions prompt, so prod and every eval provider see "
+    "byte-identical input instead of each provider's own chat-template "
+    "application.",
+    "58963ee188c4cf9dd0a8b30b397529cc27d882af"
+    "\x1ffeat(penny): show a link's full address where it is the answer, "
+    "so the model hands it over (#2835)"
+    "\x1fPenny now shows a link's full address beside its number wherever that "
+    "link IS the answer — a stored entry's own `Source:` line, or a page "
+    "reader's answer that is nothing but a link — so she hands it to the user "
+    "instead of distrusting the number and searching for it all over again.",
+)
+_ENTRIES = parse_commit_log("\x1e".join(_RAW_COMMIT_RECORDS))
+assert {entry.pr for entry in _ENTRIES} == {2820, 2831, 2835}, (
+    "one of these three real commit lines no longer parses as penny-scope — "
+    "pick three others that do"
+)
 assert any(entry.pr == _REASON_PR for entry in _ENTRIES)
 
 # The planted fact: PR #2820's own real text names the retired `reasoning` argument.
