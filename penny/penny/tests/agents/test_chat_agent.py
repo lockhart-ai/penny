@@ -20,7 +20,7 @@ from sqlmodel import select
 
 from penny.agents.chat import ChatAgent
 from penny.agents.conversation_map import ConversationMap
-from penny.changelog import load_entries
+from penny.changelog import ChangelogEntry
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog, PromptLog
@@ -1524,12 +1524,16 @@ async def test_startup_backfill_fills_missing_key_vector(
 async def test_startup_records_changelog_entries_once(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """The real startup step (``Penny._record_changelog_entries``, #2845)
-    records every ``changelog.yaml`` entry into the `changelog` log on the
-    first startup, each stamped with that startup's own time — then adds
-    nothing on a second call, the idempotency a redeploy relies on."""
-    config = make_config()
-    entries = load_entries()
+    """The real startup step (``Penny._record_changelog_entries``, #2845/#2891)
+    records every commit its commit list carries (``Config.changelog_commits``
+    — a PARAMETER, #2891) into the `changelog` log on the first startup, each
+    stamped with that startup's own time — then adds nothing on a second
+    call, the idempotency a redeploy relies on."""
+    entries = [
+        ChangelogEntry(pr=9401, text="feat(penny): add a new way to save a note"),
+        ChangelogEntry(pr=9402, text="fix(penny): rename the lookup tool"),
+    ]
+    config = make_config(changelog_commits=list(entries))
     # Naive-or-aware tolerant: compare both sides with tzinfo stripped, within a
     # generous window, rather than assume which shape SQLite round-trips.
     now_naive = datetime.now(UTC).replace(tzinfo=None)

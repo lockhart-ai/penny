@@ -143,6 +143,16 @@ def changelog_eval(
         min_pass_rate: PassRate = UNSTATED,
         timeout: float = _CHANGELOG_TURN_REPLY_WAIT_SECONDS,
         family: str | None = None,
+        # This sample's own Penny construction (#2891): the real startup
+        # path (`Penny._record_changelog_entries`) runs for every sample
+        # regardless of `changelog_entries` above (which only drives the
+        # DIRECT `_deliver_changelog` call below) — `Config.changelog_commits`
+        # defaults to empty, so a case that never sets this never has its
+        # sample's `changelog` log touched by anything but `_deliver_changelog`
+        # itself. A case may pass its OWN list here (never the build's real
+        # file) to keep that log non-empty and consistent with what it
+        # delivers.
+        changelog_commits: Sequence[ChangelogEntry] = (),
     ) -> Cohort:
         """Drive one later question in its wordings, each sample preceded by the
         same real delivery turn and the same unrelated turn, and return the
@@ -220,8 +230,13 @@ def changelog_eval(
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
+        committed_commits = list(changelog_commits)
+
+        def _make_config_with_commits(**overrides: object) -> Config:
+            return make_config(changelog_commits=list(committed_commits), **overrides)
+
         results, perf, voided = await _run_samples(
-            make_config,
+            _make_config_with_commits,
             tmp_path,
             case_id=case_id,
             samples=arms.driven,

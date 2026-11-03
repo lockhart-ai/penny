@@ -1,9 +1,10 @@
 """Create the ``changelog`` log memory (#2845).
 
 Entries written FOR Penny about changes to her tools, prompts and behaviour
-— one per PR that changed what she does, authored in second person and
-recorded at startup from ``penny/penny/changelog.yaml``
-(``penny.changelog.record_new_entries``). A plain append-only log, same
+— one per PR that changed what she does, recorded at startup from
+``penny/penny/changelog.yaml`` at the time this migration shipped, now from
+a generated commit-title dump instead (#2891 —
+``penny.changelog.record_new_entries``). A plain append-only log, same
 shape as ``browse-results``/``user-messages`` — its rows ARE the stored
 content, so it needs no special facade class, unlike ``collector-runs``.
 

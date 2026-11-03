@@ -16,7 +16,7 @@ from penny.agents import (
     ChatAgent,
     Collector,
 )
-from penny.changelog import ChangelogEntry, load_entries, record_new_entries
+from penny.changelog import ChangelogEntry, record_new_entries
 from penny.channels import MessageChannel, create_channel_manager
 from penny.channels.browser import BrowserChannel
 from penny.channels.ios.channel import IosChannel
@@ -621,27 +621,35 @@ class Penny:
             logger.info("Startup embedding backfill complete: %d messages", total_messages)
 
     def _record_changelog_entries(self) -> list[ChangelogEntry]:
-        """Record any changelog entry (#2845) this deploy hasn't recorded yet, and
-        return exactly those — this deploy's own new ones, which the startup
-        changelog delivery turn (#2846) announces.
+        """Record this deploy's commit list (``self.config.changelog_commits``
+        — a PARAMETER, #2891: production's own value is loaded from the
+        host-captured file at ``Config.load()``, never read from disk here;
+        a test or an eval case supplies its own list, or none) into the
+        `changelog` log, and return exactly what got recorded — there is no
+        separate announce-selection step, so nothing is ever recorded that
+        isn't also announced. The host's own cursor
+        (``scripts/store_git_info.sh``) is what keeps that commit list a
+        small, fresh window in the first place; this method does no
+        position or backfill logic of its own.
 
-        Deterministic and idempotent: ``record_new_entries`` reads the
-        `changelog` log's own existing rows to decide what's missing, so a
-        PR already recorded on an earlier startup is never appended twice —
-        and a restart on the same deploy returns nothing new the second time.
-        Synchronous and DB-only — no model, no channel — so it runs right
-        after the embedding backfill, before anything the user can see.
+        Idempotent: ``record_new_entries`` never appends a PR already in
+        the log, so a bare restart on an unchanged commit list (no rebuild)
+        announces nothing new. Synchronous and DB-only — no model, no
+        channel — so it runs right after the embedding backfill, before
+        anything the user can see.
         """
         changelog = self.db.memory(PennyConstants.MEMORY_CHANGELOG_LOG)
         if changelog is None:
             logger.warning("No `changelog` memory row — migration 0132 didn't run?")
             return []
-        added = record_new_entries(changelog, load_entries())
-        if added:
+        recorded = record_new_entries(changelog, self.config.changelog_commits)
+        if recorded:
             logger.info(
-                "Recorded %d new changelog entr%s", len(added), "y" if len(added) == 1 else "ies"
+                "Recorded %d new changelog entr%s",
+                len(recorded),
+                "y" if len(recorded) == 1 else "ies",
             )
-        return added
+        return recorded
 
     async def _run_startup_notifications(self, new_changelog_entries: list[ChangelogEntry]) -> None:
         """Send startup notifications after the outgoing channel is ready."""

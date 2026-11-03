@@ -8,6 +8,11 @@ QUALITY-REVIEW.md
 # The eval catalogue is generated on demand (`make catalogue`), never committed (#2395)
 docs/eval-catalogue.md
 
+# The changelog's commit-title dump, written on the host by
+# `scripts/store_git_info.sh` before every build (#2891), never committed —
+# co-located with the module that reads it.
+penny/penny/changelog_commits.txt
+
 # Data directory (SQLite database)
 data/
 

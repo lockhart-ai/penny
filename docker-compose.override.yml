@@ -19,6 +19,9 @@ services:
       # The eval artifact prune `make eval-remote` runs before anything else is the same kind
       # of sourced shell file (#2851), tested the same way.
       - ./scripts/eval-prune.sh:/penny/scripts/eval-prune.sh:ro
+      # The changelog's commit-range script (`up`/`prod`/`prod-ios` call it on the HOST,
+      # #2891) is the same kind of shell file a test drives from inside the container.
+      - ./scripts/store_git_info.sh:/penny/scripts/store_git_info.sh:ro
       # The catalogue of supported behaviours is generated from the eval cases inside the
       # container: `make fix` writes docs/eval-catalogue.md and `make check` compares it.
       - ./docs:/docs

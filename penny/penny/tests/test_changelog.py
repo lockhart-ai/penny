@@ -1,37 +1,223 @@
-"""Tests for ``penny.changelog`` — the loader and the idempotent recorder
-behind #2845's startup step (``Penny._record_changelog_entries``)."""
+"""Tests for ``penny.changelog`` — the commit-log parser and the idempotent
+recorder behind #2845/#2891's startup step (``Penny._record_changelog_entries``).
+No position or dedupe logic lives here any more: the host's own cursor
+(``scripts/store_git_info.sh``) keeps the commit list a small, fresh window,
+and the whole list is recorded and announced as one set — see
+``test_changelog_announcement.py``/``test_chat_agent.py`` for the startup
+path with an empty and a non-empty commit list."""
 
 from __future__ import annotations
 
 from penny.changelog import (
-    CHANGELOG_PATH,
+    COMMITS_PATH,
     ChangelogEntry,
-    load_entries,
+    load_commits,
+    parse_commit_log,
     record_new_entries,
     render_changelog_announcement,
 )
+from penny.changelog_commits import first_body_sentence
 from penny.constants import PennyConstants
 from penny.tests.conftest import require_memory
 
 
-def test_changelog_yaml_parses():
-    """The shipped ``changelog.yaml`` parses into entries, each with a
-    positive PR number and non-blank text, every PR number unique."""
-    entries = load_entries()
-    assert entries
-    prs = [entry.pr for entry in entries]
-    assert len(prs) == len(set(prs)), "every changelog entry should name a distinct PR"
-    for entry in entries:
-        assert entry.pr > 0
-        assert entry.text
+def _record(commit_hash: str, subject: str, body: str = "") -> str:
+    """One ``<hash>\x1f<subject>\x1f<body>`` record, the shape
+    ``scripts/store_git_info.sh``'s own ``git log --pretty=format:
+    '%H%x1f%s%x1f%b%x1e'`` writes for a single commit."""
+    return f"{commit_hash}\x1f{subject}\x1f{body}"
 
 
-def test_changelog_path_points_at_the_shipped_file():
-    """Co-located with the module that loads it (#2845) — present in the repo
-    tree, and (by the same ``COPY penny/ ./penny/`` Dockerfile step that ships
-    every other module here) in the built image too."""
-    assert CHANGELOG_PATH.name == "changelog.yaml"
-    assert CHANGELOG_PATH.is_file()
+def _log(*records: str) -> str:
+    """The whole generated dump: records joined by ``\x1e``, exactly as git
+    writes it (a body is itself multi-line, so a plain newline can't
+    separate records)."""
+    return "\x1e".join(records)
+
+
+def test_parse_commit_log_keeps_feat_fix_perf_refactor_in_penny_scope():
+    """The four kept types, in the `penny` scope, each become an entry whose
+    PR number and text come straight off the commit title — never the hash,
+    and never the leading `type(scope):` prefix either (#2891) — when none
+    of them has a body to supply a first sentence instead."""
+    log = _log(
+        _record("aaa1111", "feat(penny): add a new way to save a note (#101)"),
+        _record("bbb2222", "fix(penny): stop dropping a tool result (#102)"),
+        _record("ccc3333", "perf(penny): batch the embedding backfill (#103)"),
+        _record("ddd4444", "refactor(penny): drop the per-tool reasoning argument (#104)"),
+    )
+    entries = parse_commit_log(log)
+    assert entries == [
+        ChangelogEntry(pr=101, text="add a new way to save a note"),
+        ChangelogEntry(pr=102, text="stop dropping a tool result"),
+        ChangelogEntry(pr=103, text="batch the embedding backfill"),
+        ChangelogEntry(pr=104, text="drop the per-tool reasoning argument"),
+    ]
+
+
+def test_parse_commit_log_prefers_the_bodys_first_sentence_over_the_title():
+    """The real case this fix is for (#2891, round 4): the repo's squash
+    setting makes a commit's body the merged PR's own description, whose
+    first sentence is a plain, cold-readable summary — a live sample read
+    the BARE TITLE `refactor(penny): drop the per-tool reasoning argument`
+    and, from `refactor`'s own real meaning ("same behaviour"), rationally
+    concluded nothing had changed for her. The body's own first sentence
+    doesn't carry that misleading word."""
+    log = _log(
+        _record(
+            "75edd400788b3612932a0573557f61666fc57581",
+            "refactor(penny): drop the per-tool reasoning argument (#2820)",
+            "Removes the per-tool `reasoning` schema field the framework used to "
+            "inject into every tool call. It cost tokens for no reasoning the loop "
+            "ever used.",
+        )
+    )
+    entries = parse_commit_log(log)
+    assert entries == [
+        ChangelogEntry(
+            pr=2820,
+            text="Removes the per-tool `reasoning` schema field the framework used "
+            "to inject into every tool call.",
+        )
+    ]
+    assert entries[0].render() == (
+        "PR #2820: Removes the per-tool `reasoning` schema field the framework "
+        "used to inject into every tool call."
+    )
+
+
+def test_parse_commit_log_falls_back_to_the_stripped_title_with_no_usable_body():
+    """An older commit (predating the squash-setting change) with no body at
+    all still gets an entry — the title alone, prefix and suffix stripped."""
+    log = _log(
+        _record(
+            "75edd400788b3612932a0573557f61666fc57581",
+            "refactor(penny): drop the per-tool reasoning argument (#2820)",
+        )
+    )
+    entries = parse_commit_log(log)
+    assert entries == [ChangelogEntry(pr=2820, text="drop the per-tool reasoning argument")]
+
+
+def test_parse_commit_log_drops_other_types_and_scopes():
+    """`test`/`chore`/`docs` and every non-`penny` scope are dropped, along
+    with a merge commit or any record with no `(#N)` suffix to key on."""
+    log = _log(
+        _record("aaa1111", "test(eval): port a chat case (#201)"),
+        _record("bbb2222", "chore(ci): bump a pinned action (#202)"),
+        _record("ccc3333", "docs(penny): note a design decision (#203)"),
+        _record("ddd4444", "fix(harness): resolve a bare RUN on eval-report (#204)"),
+        _record("eee5555", "fix(client): memory view crash (#205)"),
+        _record("fff6666", "Merge branch 'main' into feature"),
+        _record("ggg7777", "fix(penny): a commit with no PR suffix at all"),
+    )
+    assert parse_commit_log(log) == []
+
+
+def test_first_body_sentence_takes_the_first_sentence_of_a_normal_body():
+    """A real, unprefixed PR body: cut at the first `.`/`!`/`?` followed by
+    whitespace, and a wrapped line collapses to one."""
+    body = (
+        "Penny now renders gemma's own chat template herself and sends the\n"
+        "result as a raw completions prompt, so prod and every eval provider\n"
+        "see byte-identical input.\n"
+        "\n"
+        "#2828 found the eval suite's pinned provider never opens a new thought."
+    )
+    assert first_body_sentence(body) == (
+        "Penny now renders gemma's own chat template herself and sends the "
+        "result as a raw completions prompt, so prod and every eval provider "
+        "see byte-identical input."
+    )
+
+
+def test_first_body_sentence_skips_a_squashed_commit_bullet_echo():
+    """A leading `* type(scope): ...` line is GitHub's own old
+    squash-generated echo of one of the commits inside the PR (#2891's
+    squash setting predates this repo's current ``PR_BODY`` one) — not a
+    sentence Penny should read as the change's own summary."""
+    body = (
+        "* test(eval): add rule-effectiveness-from-run-facts case\n"
+        "\n"
+        "* fix(penny): let the model query per-run health facts\n"
+        "\n"
+        "The user asks whether a standing rule has helped a job. This is the "
+        "real summary."
+    )
+    assert first_body_sentence(body) == "The user asks whether a standing rule has helped a job."
+
+
+def test_first_body_sentence_skips_a_bare_because_label():
+    """A `Because:` line with nothing of its own worth reading is a LABEL
+    for the reason that follows on later lines, skipped whole — a `Because`
+    clause explains WHY the change was made, never WHAT changed."""
+    body = "Because:\n\nThe chat agent was dropping a reply whenever a tool call rode alongside it."
+    assert first_body_sentence(body) == (
+        "The chat agent was dropping a reply whenever a tool call rode alongside it."
+    )
+
+
+def test_first_body_sentence_skips_a_because_line_with_inline_content_too():
+    """A `Because:` line is skipped WHOLE even when it carries its reason
+    inline on the same line — still a cause, never the change's own
+    summary — moving on to the real sentence that follows it."""
+    body = (
+        "Because: production's turn searched five more times and drafted raw "
+        "URLs after a stored link was right in front of it.\n"
+        "\n"
+        "This commit makes the stored link's own address visible beside its number."
+    )
+    assert first_body_sentence(body) == (
+        "This commit makes the stored link's own address visible beside its number."
+    )
+
+
+def test_first_body_sentence_returns_none_for_an_empty_body():
+    """No body at all (an older, pre-squash-setting commit) — the caller
+    falls back to the stripped title."""
+    assert first_body_sentence("") is None
+    assert first_body_sentence("   \n\n  ") is None
+
+
+def test_first_body_sentence_returns_none_when_only_label_lines_remain():
+    """A body that's nothing but bullet echoes has no real sentence to
+    extract — the caller falls back to the stripped title, same as an
+    empty body."""
+    body = "* test(eval): add a case\n\n* fix(penny): the actual fix"
+    assert first_body_sentence(body) is None
+
+
+def test_first_body_sentence_clips_an_over_long_sentence_at_a_word_boundary():
+    """A sentence past the 300-character cap is clipped at the last word
+    boundary at or before the limit — never mid-word."""
+    long_sentence = (
+        "This fix changes the way Penny " + "really truly honestly " * 20 + "handles it."
+    )
+    body = long_sentence
+    result = first_body_sentence(body)
+    assert result is not None
+    assert len(result) <= 300
+    assert long_sentence.startswith(result)
+    assert not result.endswith(" ")
+    # Clipped mid-sentence, never mid-word: the next character after the cut
+    # (in the original) is a word boundary (space), not a continuation of
+    # the last word kept.
+    assert long_sentence[len(result)] == " "
+
+
+def test_load_commits_returns_empty_when_the_file_is_missing(tmp_path):
+    """A dev run via `LOCAL=1 make check`, a bare `pytest`, or a fresh
+    worktree that hasn't run `make up`/`prod`/`build` yet never generated
+    this file — that's not an error, it's nothing to announce."""
+    assert load_commits(tmp_path / "never-generated.txt") == []
+
+
+def test_load_commits_path_is_colocated_with_the_module():
+    """Co-located with the module that parses it (#2891) — the same
+    `COPY penny/ ./penny/` Dockerfile step that ships every other module
+    here ships this generated file too, with no Dockerfile change."""
+    assert COMMITS_PATH.name == "changelog_commits.txt"
+    assert COMMITS_PATH.parent.name == "penny"
 
 
 def test_record_new_entries_is_idempotent(db):

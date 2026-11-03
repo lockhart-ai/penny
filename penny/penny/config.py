@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
+from penny.changelog_commits import ChangelogEntry, load_commits
 from penny.clock import Clock
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 
@@ -358,6 +359,16 @@ class Config:
     # everything that asks what time it is reads it there (``penny/clock.py``).
     clock: Clock = field(default_factory=Clock)
 
+    # The commit list Penny's changelog is built from (#2891), oldest first — a
+    # PARAMETER, never an ambient global or a monkeypatched module function
+    # ("Pass parameters, don't swap state"). ``Config.load()`` (the real
+    # production path) sets this to ``load_commits()`` — the generated build
+    # artifact. Every other construction site (tests, the eval harness's
+    # ``make_config``) defaults to EMPTY, so no test or eval sample ever reads
+    # the real build's commit history by accident; a case that wants specific
+    # commits (e.g. ``test_changelog_reference.py``) passes its own list.
+    changelog_commits: list[ChangelogEntry] = field(default_factory=list)
+
     @classmethod
     def load(cls, db: Database | None = None) -> Config:
         """Load configuration from .env file."""
@@ -366,7 +377,11 @@ class Config:
         ios_enabled = os.getenv("IOS_ENABLED", "").lower() in ("1", "true", "yes")
         _validate_channel_config(channel_type, ios_enabled)
         _validate_embedding_config()
-        return cls(**_collect_env_vars(channel_type), runtime=_build_runtime_params(db))
+        return cls(
+            **_collect_env_vars(channel_type),
+            runtime=_build_runtime_params(db),
+            changelog_commits=load_commits(),
+        )
 
 
 def setup_logging(

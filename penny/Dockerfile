@@ -1,6 +1,12 @@
 # Use Python 3.14 slim image
 FROM python:3.14-slim
 
+# git — scripts/store_git_info.sh (#2891) shells out to it on the HOST before a
+# real build, but its own test (test_store_git_info.py) runs INSIDE this image
+# under `make check`, building a temp repo to exercise it against
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
