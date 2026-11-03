@@ -1,27 +1,38 @@
 """#2953 fix: ``synthesize``'s micro-context draw ran on the EMBEDDING client, never
 the chat model client — an embedding model rejects a chat request outright, so every
-real call failed with an HTTP 400 naming "does not support chat".
+real call failed with an HTTP 400 naming "does not support chat". Built from a prod
+replay.
 
-Built from a prod replay: a short, open "go ahead and try it" ask, naming no topic of
-its own, arriving against a store that already holds several real, unrelated
-collections across more than one area of the user's life. Every name, collection and
-entry below is invented for this case — the repo is public, and nothing from the real
-prod conversation appears here.
+**The world.** Penny has just told the user, in her own real startup changelog
+announcement, about two of her own new tools — ``synthesize`` and a preview/plan
+mode — using the real merged PRs' own first sentences (#2949, #2948; repo content,
+not private). One ordinary turn follows, mentioning a thing that is NOT anywhere in
+her store, the same shape the replayed prod turn carried: a topic salient from
+earlier in the conversation that a first reach for comes up empty. The user then
+asks her, in one short open line, to go ahead and try the tool she was just told
+about — naming no topic of its own, exactly as the replayed ask did not. The store
+holds ten real, unrelated collections on a different topic entirely — one small
+home-improvement project fed by three research collections, and six standing hobby
+collections — so a first draw against the mentioned-but-absent topic matches
+nothing (no draw runs), and a second draw against what the store map actually shows
+her matches and runs for real. Every name, collection and entry here is invented for
+this case — the repo is public, and nothing from the real prod conversation appears
+below.
 
-**The claims.** STORE (survival) — the ten collections the turn reads hold exactly
-what they were seeded with; an open "try it" ask names nothing to write. PROVENANCE —
-every specific value in the reply traces to something the turn was given, which is
-also the one claim a turn that ended on a model error fails outright, so it is the
-natural read of "a reply reached the user and nothing broke the turn".
+**The claims.** STORE (survival) — every one of the ten collections the turn reads
+holds exactly what it was seeded with; an open "try it" ask names nothing to write.
+STORE (mechanism) — no tool call this turn made escaped its own execution with an
+uncaught exception (#2953's own bug, on the unpatched wiring): `synthesize`'s own
+HONEST refusals — nothing matched, a draw that didn't come back clean — stay
+allowed; only a raw, uncaught exception counts, which is what the broken wiring
+raises every time the draw actually runs. PROVENANCE — every specific value in the
+reply traces to something the turn was given.
 
-**What is NOT claimed, and why.** The ask names no topic, so there is no single
-correct thing the reply must say — which tool answers it, and which collections it
-draws on, are both ROUTES, never claims (`docs/principles.md` §4.1): `synthesize` is
-the tool built for exactly this ask, but `find`/`collection_list` reading some of the
-same entries is an equally legitimate path. `TOOL_SEQUENCE` is measured instead. The
-bug this case guards against shows most reliably as degraded variance/cost (repeated
-failed `synthesize` retries, the model never settling) rather than a dropped claim —
-read all three measures, not the claims alone.
+**What is NOT claimed, and why.** Which tool answers the ask, and which collections
+it draws on, are both ROUTES, never claims (`docs/principles.md` §4.1): `synthesize`
+is the tool built for exactly this ask, but `find`/`collection_list` reading some of
+the same entries is an equally legitimate path, and nothing here forces a call.
+`TOOL_SEQUENCE` is measured instead.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceiling this run proposes is the code
 owner's to accept once the numbers have been read.
@@ -31,12 +42,9 @@ from __future__ import annotations
 
 import pytest
 
-from penny.constants import PennyConstants
-from penny.database import Database
-from penny.penny import Penny
-from penny.tests.conftest import TEST_SENDER, require_memory
+from penny.changelog_commits import parse_commit_log
 from penny.tests.eval.conftest import EVAL_MODELS
-from penny.tests.eval.drivers.chat import ChatEval
+from penny.tests.eval.drivers.changelog_announcement import ChangelogEval
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import REPLY_SPREAD, TOOL_SEQUENCE
@@ -49,13 +57,37 @@ _FAMILY = "memory-synthesis"
 
 _CASE_ID = "synthesize-open-ask-across-collections"
 
-_INCOMING = PennyConstants.MessageDirection.INCOMING
-_OUTGOING = PennyConstants.MessageDirection.OUTGOING
-_PENNY = PennyConstants.MessageAuthor.PENNY
+# Two real merged PRs' own RAW commit records — hash, full conventional title, and
+# the merged PR's own real body (`git log`'s own `%H%x1f%s%x1f%b` shape,
+# `scripts/store_git_info.sh`'s own format) — the two new tools the replayed prod
+# turn's own changelog announcement actually named. Run through the REAL
+# `parse_commit_log` (#2891), exactly as a real deploy's own generated commit dump
+# would be, rather than hand-built `ChangelogEntry`s.
+_RAW_COMMIT_RECORDS = (
+    "1f10e9f72f45c31052ffdba2d74b683697344d03"
+    "\x1ffeat(penny): synthesize summarises what her memory says about a query "
+    "through a micro-context (#2949)\x1fAdds a read-only `synthesize` tool that "
+    'answers "what does my memory say about X?" by reading several things of '
+    "Penny's own memory at once and writing what they add up to, instead of "
+    "leaving the model to assemble a pattern across several `find` calls itself.",
+    "4437dc34f41ac1c26853430bab859fa5348f7146"
+    "\x1ffeat(penny): a plan flag on state-changing tools previews the change "
+    "without making it (#2948)\x1fAdds a `plan=true` argument to every "
+    "state-changing memory tool that validates and describes what the call would "
+    "do, then stops before anything is written or sent.",
+)
+_ENTRIES = parse_commit_log("\x1e".join(_RAW_COMMIT_RECORDS))
+assert {entry.pr for entry in _ENTRIES} == {2949, 2948}, (
+    "one of these two real commit lines no longer parses as a penny-scope entry"
+)
 
-# One small umbrella project fed by three narrower research collections — the same
-# shape prod's own store held for the turn this case replays: one main collection plus
-# a handful of collections researching pieces of it.
+# Between the announcement and the ask — a thing mentioned in passing that is NOT
+# anywhere in this world's store, the replayed shape: a topic salient from earlier
+# in the conversation that a first reach for comes up empty.
+_UNRELATED_TURN = "oh, remind me — are you still keeping notes on my job search?"
+
+# One small umbrella project fed by three narrower research collections — one
+# cluster of this world's real store.
 _PROJECT = SynthCollection(
     "kitchen-remodel-2027",
     "Planning notes for the 2027 kitchen remodel.",
@@ -86,9 +118,9 @@ _LIGHTING = SynthCollection(
     entries=("pendant lights — three glass pendants spaced 12 inches apart over the island.",),
 )
 
-# A handful of unrelated hobby collections — the same shape prod's own store held
-# beside the project: several separate, standing interests with no relation to it or
-# to each other.
+# A handful of unrelated hobby collections — the other cluster of this world's real
+# store, with no relation to the project above or to the job-search topic mentioned
+# and never backed by any of it.
 _WOODWORKING = SynthCollection(
     "woodworking-projects",
     "Notes from woodworking projects in the garage.",
@@ -151,23 +183,9 @@ _COLLECTIONS = (
     _CALLIGRAPHY,
     _BONSAI,
 )
+assert not any("job search" in entry.lower() for synth in _COLLECTIONS for entry in synth.entries)
 
 _WORLD = World(name=_CASE_ID, pages=(), keeps=(), excludes=(), stores=_COLLECTIONS)
-
-# Nine short, generic prior exchanges — the same history-window SIZE a replayed prod
-# turn carried (the window grown to its upper bound, #2756) — ahead of the one real
-# ask, which names no topic of its own, exactly as the replayed turn's did not.
-_FILLER_EXCHANGES: tuple[tuple[str, str], ...] = (
-    ("morning!", "morning! hope you slept well"),
-    ("quick one — remind me what day it is", "it's thursday"),
-    ("thanks", "anytime"),
-    ("how's everything looking today", "all quiet, nothing new to report"),
-    ("cool", "yep"),
-    ("one more thing before i forget", "go ahead"),
-    ("never mind, it'll keep", "no worries, here whenever"),
-    ("appreciate you", "always"),
-    ("alright, talk in a bit", "sounds good"),
-)
 
 _ASK = "okay try your synthesize tool"
 _ALSO_PHRASED = (
@@ -178,44 +196,34 @@ _ALSO_PHRASED = (
 )
 
 _BEHAVIOUR = (
-    "In the chat agent, when the user asks Penny to try her synthesize tool, naming "
-    "no topic of its own, against a store holding several unrelated real "
-    "collections, the turn completes with a reply that invents nothing."
+    "In the chat agent, right after her own startup changelog announcement of the "
+    "synthesize tool, when the user asks her to try it — naming no topic of its "
+    "own, against a store holding several real, unrelated collections — the turn "
+    "completes without any tool call escaping with an uncaught exception."
 )
 
 
-def _seed_history(db: Database) -> None:
-    """The nine prior exchanges, logged as the newest turns before the real ask so
-    they land inside the grown history window (#2756)."""
-    for user_line, penny_line in _FILLER_EXCHANGES:
-        db.messages.log_message(_INCOMING, TEST_SENDER, user_line)
-        db.messages.log_message(_OUTGOING, _PENNY, penny_line, recipient=TEST_SENDER)
-
-
-def _assert_the_world(penny: Penny) -> None:
-    """The world this case is answered in, asserted out loud before the turn runs:
-    every one of the ten collections holds exactly its seeded entries."""
-    for synth in _COLLECTIONS:
-        held = sorted(entry.key or "" for entry in require_memory(penny.db, synth.name).read_all())
-        expected = sorted(key for key, _ in synth.keyed)
-        assert held == expected, f"{_CASE_ID}: {synth.name} must hold {expected}, it holds {held}"
-
-
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_an_open_synthesize_ask_completes_without_inventing_anything(
-    chat_eval: ChatEval, model: str
+async def test_an_open_synthesize_ask_runs_without_a_tool_call_raising(
+    changelog_eval: ChangelogEval, model: str
 ) -> None:
-    """Ten small, unrelated collections — one project fed by three research
-    collections, and six standing hobby collections — and a bare "try your
-    synthesize tool" with no topic of its own, exactly the open shape that leaves
-    `synthesize`'s own draw to pick what to read and what to say about it."""
-    cohort: Cohort = await chat_eval(
+    """Right after the real startup announcement of the ``synthesize`` tool, one
+    unrelated turn names a topic the store never backs, then a bare "try your
+    synthesize tool" — no topic of its own — against ten small, unrelated
+    collections across two areas of the user's life, the open shape that leaves
+    the draw to pick what to read and what to say about it."""
+    cohort: Cohort = await changelog_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
         area=Area.MEMORY,
         model=model,
-        seed=_seed_history,
-        prepare=_assert_the_world,
+        changelog_entries=_ENTRIES,
+        # This sample's own `changelog` log carries exactly these same two real
+        # commits (#2891: `Config.changelog_commits` is a PARAMETER, defaulting to
+        # empty for every other case) — consistent with what the delivery turn
+        # below actually tells her, never the real build's own commit history.
+        changelog_commits=_ENTRIES,
+        unrelated_turn=_UNRELATED_TURN,
         world=_WORLD,
         ask=_ASK,
         also_phrased=_ALSO_PHRASED,
@@ -224,11 +232,13 @@ async def test_an_open_synthesize_ask_completes_without_inventing_anything(
         family=_FAMILY,
         timeout=240.0,
     )
-    # STORE — the ask reads and tries a tool, it does not write.
+    # STORE (survival) — the ask reads and tries a tool, it does not write.
     cohort.assert_what_the_store_held_survives()
+    # STORE (mechanism) — the deterministic fact #2953's bug fails and the fix holds:
+    # no tool call this turn made escaped with an uncaught exception.
+    cohort.assert_no_tool_call_raised()
     # PROVENANCE — nothing in the reply is invented; also fails outright if the turn
-    # aborted on a model error, which is the natural read of "a reply reached the
-    # user and nothing broke the turn".
+    # aborted on a model error.
     cohort.assert_every_value_in_the_reply_is_sourced()
     # TOOL_SEQUENCE is measured and never asserted — `synthesize` is the tool built
     # for this ask, but reaching it is a route, not a claim.

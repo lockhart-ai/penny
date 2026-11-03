@@ -85,6 +85,7 @@ from penny.text_validity import (
     is_degenerate_run,
     is_degenerate_tool_name,
 )
+from penny.tools.base import FRAMEWORK_TOOL_EXCEPTION_MARKER
 from penny.tools.link_handles import HandleTable
 
 logger = logging.getLogger(__name__)
@@ -831,7 +832,7 @@ _RECOVERY_FRAMES = (
     "wasn't repeated",  # Prompt.DUPLICATE_CALL_NARRATION
     "there's no such tool",  # FRAMEWORK_NARRATION_NOT_FOUND
     "it timed out",  # FRAMEWORK_NARRATION_TIMEOUT
-    "it errored",  # FRAMEWORK_NARRATION_EXCEPTION
+    FRAMEWORK_TOOL_EXCEPTION_MARKER,  # FRAMEWORK_NARRATION_EXCEPTION
 )
 
 
@@ -867,6 +868,29 @@ def sample_is_fragile(db: Database) -> bool:
         ):
             return True
         if role == "user" and _is_nudge(content):
+            return True
+    return False
+
+
+def tool_call_raised_exception(db: Database) -> bool:
+    """Whether a tool call this sample's own turn made escaped its execution with an
+    UNCAUGHT exception — ``ToolExecutor``'s own generic catch-all (#2953), a code DEFECT,
+    never a tool's own honest refusal (a failed ``ToolResult`` that names why, which
+    ``sample_is_fragile`` above also reads as recovered-from — a healthy, allowed shape,
+    not this).
+
+    Keyed to the exception's own fixed narration marker alone (``FRAMEWORK_TOOL_EXCEPTION_
+    MARKER``), never to a tool name, so it holds for any tool — including one a plugin
+    contributes — the same way ``_chat_tool_sequence`` reads every tool name with no list
+    to miss one off.  A tool turn replayed from an earlier run's own history (#2915/#2888)
+    is excluded by its ``tool_call_id``, same as ``sample_is_fragile``: this sample's own
+    event, never an earlier turn's rendered into its history."""
+    for message in _iter_prompt_messages(db):
+        if (
+            message.get("role") == "tool"
+            and not is_history_replay_call_id(message.get("tool_call_id"))
+            and FRAMEWORK_TOOL_EXCEPTION_MARKER in (message.get("content") or "")
+        ):
             return True
     return False
 
@@ -2890,6 +2914,7 @@ def _observe_sample(
         final_reply=final_reply,
         reply_embedding=reply_embedding(db, final_reply),
         aborted_on_model_error=_aborted_on_model_error(final_reply),
+        tool_raised_exception=tool_call_raised_exception(db),
         given=given_to_the_model(db),
         container=_framed_container(db),
         scheduled=_scheduled_by_this_round(db, before),
