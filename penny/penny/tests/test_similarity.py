@@ -179,6 +179,12 @@ _DISTINCT_PAIRS = [
     ("aurora-bids-notified", "aurora-bids-unnotified"),  # opposite halves of a pair
     ("aurora-deck-2-price", "harbor-ferry-times"),  # unrelated
     ("aurora-deck-2-price", "monitor"),  # a bare role word names no job
+    # A name reduced to ONE token (#2893, the trailing year stripped away the rest) is too
+    # weak to anchor containment: a storage-only trip collection named for its season and
+    # year is not the same job as a new, longer name that merely keeps that one token and
+    # adds a real distinguishing one (the city).
+    ("spring-2027", "lisbon-spring-2027"),  # a city job is not the trip's storage collection
+    ("spring-2027", "porto-spring-2027"),
 ]
 
 # Labelled duplicates the containment tier does NOT catch: one side says ``auction``

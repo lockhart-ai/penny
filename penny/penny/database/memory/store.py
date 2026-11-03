@@ -1424,7 +1424,10 @@ class MemoryStore:
         Active rows are checked before archived ones (a tombstone), so a live "already
         watching this" wins over a retired one.  Nothing is excluded any more (#1911):
         with no pre-seeded collections left, every row in the registry is one the user
-        built, so there is no framework machinery to skip past.
+        built, so there is no framework machinery to skip past — except a collection with
+        no job (#2893): a JOB identity check can only ever match a row that already HAS a
+        job, so a plain storage collection (entries, no ``extraction_prompt``, no
+        ``schedule``) is never a candidate here, whatever its name contains.
         """
         candidate = JobSide(name=slug(name))
         active, archived = self._duplicate_candidates()
@@ -1435,15 +1438,24 @@ class MemoryStore:
 
     def _duplicate_candidates(self) -> tuple[list[MemoryRow], list[MemoryRow]]:
         """Collections eligible for the idempotency check, partitioned active
-        vs. archived — logs excluded, and nothing else (#1911: every collection is a
-        user collection now)."""
+        vs. archived — logs excluded, and (#2893) any collection with no job of its own
+        excluded too: a storage-only collection has no job to be the same as, so it can
+        never be the target a dispatch silently lands a new job on."""
         active: list[MemoryRow] = []
         archived: list[MemoryRow] = []
         for row in self.list_all():
-            if row.type != MemoryType.COLLECTION.value:
+            if row.type != MemoryType.COLLECTION.value or not self._has_a_job(row):
                 continue
             (archived if row.archived else active).append(row)
         return active, archived
+
+    @staticmethod
+    def _has_a_job(row: MemoryRow) -> bool:
+        """Whether this collection has a JOB — a ``prompt`` or a ``schedule`` of its own —
+        as opposed to being plain storage (#2893).  Either one alone is enough: a prompt
+        with no schedule still runs on demand, a schedule with no prompt is refused
+        elsewhere (``_INERT_JOB_ARGS_REFUSAL``) but is never written to a row this reads."""
+        return row.extraction_prompt is not None or row.schedule is not None
 
     @staticmethod
     def _collection_side(row: MemoryRow) -> JobSide:
