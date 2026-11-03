@@ -41,6 +41,7 @@ from similarity.embeddings import deserialize_embedding
 from sqlmodel import Session, col, select
 
 from penny.agents.collector import Collector
+from penny.agents.models import is_history_replay_call_id
 from penny.config import Config
 from penny.constants import ChannelType, MutationEntityType, PageReading, PennyConstants
 from penny.database import Database
@@ -850,11 +851,20 @@ def sample_is_fragile(db: Database) -> bool:
     The tool-turn leg filters on NO tool name — it asks "did the run recover from *anything*?"
     — so it is true of a failure whichever tool produced it: a memory-tool execute-time failure
     narrates ``… but it didn't work:`` with the TARGET backticked rather than the tool, and the
-    ``didn't work`` fragment catches it all the same (#1726)."""
+    ``didn't work`` fragment catches it all the same (#1726).
+
+    A tool turn replayed from an EARLIER run's own history (#2915/#2888) is excluded by its
+    ``tool_call_id`` — this sample's own fragility, not whatever an earlier turn needed to
+    recover from, rendered into its history exactly as #2646 named it (the act beside the
+    words), never read back as this sample's own event."""
     for message in _iter_prompt_messages(db):
         content = message.get("content") or ""
         role = message.get("role")
-        if role == "tool" and any(frame in content for frame in _RECOVERY_FRAMES):
+        if (
+            role == "tool"
+            and not is_history_replay_call_id(message.get("tool_call_id"))
+            and any(frame in content for frame in _RECOVERY_FRAMES)
+        ):
             return True
         if role == "user" and _is_nudge(content):
             return True
@@ -1352,13 +1362,21 @@ def _sample_turns(
     """(actor, content) for every turn of the sample, across ALL promptlog rows — so a
     multi-turn conversation shows EVERY turn's tool calls, not just the last turn's.
 
-    Each row's ``messages`` array accumulates the conversation up to that LLM call (a later
-    turn carries an earlier one only as text history, so an earlier turn's tool calls live
-    only in that turn's own rows), and its ``trailing_messages`` carries the tail no call
-    ever took (``_row_turns``).  Walking every row and de-duplicating by (actor, content)
-    yields each user turn, tool call, tool result, and intermediate reply exactly once, in
-    order.  The final reply (the last response's text, which is in no messages array) is
-    appended last.  System prompt omitted.
+    Each row's ``messages`` array accumulates the conversation up to that LLM call, and its
+    ``trailing_messages`` carries the tail no call ever took (``_row_turns``).  Walking every
+    row and de-duplicating by (actor, content) yields each user turn, tool call, tool result,
+    and intermediate reply exactly once, in order.  The final reply (the last response's text,
+    which is in no messages array) is appended last.  System prompt omitted.
+
+    Since chat history renders a PAST turn's own calls ahead of its reply (#2915/#2888), a
+    LATER turn's rows carry that turn's own tool calls/results AND whatever got replayed from
+    an earlier one's record — the earlier turn already opened its OWN step for them.  Every
+    replayed call and result is marked with a freshly-minted id
+    (``is_history_replay_call_id``), so this walk skips both halves of a replayed pair rather
+    than opening a second step for a turn that already has its own.
+
+    ``driven`` carries the SAME discipline for a talk-only replayed USER turn, below, the way
+    it always has.
 
     A COLLECTOR run is a CYCLE, not a turn of the conversation (#2375): where the walk crosses
     into a collector run_id it emits a cycle-boundary marker (``_ACTOR["cycle"]``) carrying
@@ -1418,9 +1436,13 @@ def _sample_turns(
                     continue  # seeded history, not a turn this sample drove
                 emit(_ACTOR["user"], content)
             elif role == "tool":
+                if is_history_replay_call_id(message.get("tool_call_id")):
+                    continue  # a PAST run's own call, rendered into this turn's history
                 emit(_ACTOR["tool"], content)
             elif role == "assistant":
                 for call in message.get("tool_calls") or []:
+                    if is_history_replay_call_id(call.get("id")):
+                        continue  # ditto — the call half of the same replayed pair
                     emit(_ACTOR["call"], _render_call(call.get("function", {})))
                 # A text turn is a DELIVERED reply only if the sample actually sent it.  With
                 # nothing delivered there is nothing it could be, so it renders as an aside

@@ -13,6 +13,7 @@ from penny.agents.chat import ChatAgent
 from penny.agents.models import (
     BUDGET_EXCEEDED,
     REROLL_EXHAUSTED,
+    HistoryTurn,
     MessageRole,
     ModelCallError,
     RunAbort,
@@ -2738,8 +2739,10 @@ class TestUrlValidationSourceContext:
 
         prior_url = "https://pubmed.ncbi.nlm.nih.gov/26118561/"
         history = [
-            ("user", "what's the data say"),
-            ("assistant", f"I dug into a study at {prior_url} that covers exactly that."),
+            HistoryTurn("user", "what's the data say"),
+            HistoryTurn(
+                "assistant", f"I dug into a study at {prior_url} that covers exactly that."
+            ),
         ]
         answer = f"Following up — the same paper {prior_url} also notes immune signalling."
 

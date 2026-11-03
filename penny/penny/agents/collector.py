@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from penny.agents.base import BackgroundAgent
-from penny.agents.models import ControllerResponse, MessageRole, ToolCallRecord
+from penny.agents.models import ControllerResponse, HistoryTurn, MessageRole, ToolCallRecord
 from penny.agents.self_state import standing_rules_section
 from penny.config import Config
 from penny.constants import (
@@ -1054,7 +1054,7 @@ class Collector(BackgroundAgent):
     def _build_messages(
         self,
         prompt: str,
-        history: list[tuple[str, str]] | None = None,
+        history: list[HistoryTurn] | None = None,
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,

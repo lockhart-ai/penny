@@ -13,7 +13,7 @@ from sqlalchemy import and_, bindparam, func, inspect, or_, text
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
-from penny.agents.models import MessageRole
+from penny.agents.models import HistoryTurn, MessageRole
 from penny.clock import Clock
 from penny.constants import PennyConstants, RunOutcome
 from penny.database.memory.objects import classify_run, render_run_record, run_delivered_text
@@ -793,21 +793,25 @@ class MessageStore:
 
     # --- Thread context ---
 
-    def get_thread_history(self, message_id: int) -> list[tuple[str, str]]:
-        """The thread a message ends, oldest-first, as ``(role, content)`` turns.
+    def get_thread_history(self, message_id: int) -> list[HistoryTurn]:
+        """The thread a message ends, oldest-first, as :class:`HistoryTurn`\\ s.
 
         The conversation history a quote-reply turn is shown: the quoted message
         (whose row already holds the reply as the model wrote it, #2722) and
-        everything behind it on the ``parent_id`` chain."""
+        everything behind it on the ``parent_id`` chain.  Each outgoing reply
+        carries its own ``run_id`` (#2915), the same way the standard window's
+        does — so a quote-reply thread renders a run's own tool calls exactly as
+        the standard window does, rather than only ever the talk-only shape."""
         thread = self._walk_thread(message_id)
-        history: list[tuple[str, str]] = [
-            (
+        history: list[HistoryTurn] = [
+            HistoryTurn(
                 str(
                     MessageRole.USER
                     if m.direction == PennyConstants.MessageDirection.INCOMING
                     else MessageRole.ASSISTANT
                 ),
                 m.content,
+                run_id=m.run_id,
             )
             for m in thread
         ]
@@ -2148,6 +2152,20 @@ class MessageStore:
             return list(
                 session.exec(
                     select(PromptLog).order_by(col(PromptLog.timestamp).desc()).limit(limit)
+                ).all()
+            )
+
+    def prompts_for_run(self, run_id: str) -> list[PromptLog]:
+        """Every promptlog row of ONE run, oldest first (#2915) — the fetch chat
+        history rendering reads a past reply's own calls off.  No limit: one run's
+        own rows are bounded by its own step cap (``MAX_STEPS``/``BACKGROUND_MAX_
+        STEPS``), never by an arbitrary recency window a long history could outgrow."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(PromptLog)
+                    .where(PromptLog.run_id == run_id)
+                    .order_by(col(PromptLog.timestamp), col(PromptLog.id))
                 ).all()
             )
 

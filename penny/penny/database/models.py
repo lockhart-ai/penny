@@ -24,7 +24,9 @@ class PromptLog(SQLModel, table=True):
     prompt_type: str | None = (
         None  # Which flow within the agent (user_message, free, daily_summary, etc.)
     )
-    run_id: str | None = None  # Groups all prompts from one agentic loop invocation
+    # Groups all prompts from one agentic loop invocation.  Indexed (#2915): chat
+    # history rendering looks up a past reply's own run by this id on every turn.
+    run_id: str | None = Field(default=None, index=True)
     # Run outcome is set on the last prompt of a collector cycle.  All three
     # are NULL for non-collector agents (chat, schedule executor).
     run_outcome: str | None = None  # RunOutcome: failed|no_work|worked|incomplete|cancelled

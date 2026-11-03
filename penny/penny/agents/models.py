@@ -1,10 +1,12 @@
 """Pydantic models and enums for agent loop."""
 
+import uuid
 from enum import StrEnum
+from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
-from penny.constants import WriteGateOutcome
+from penny.constants import PennyConstants, WriteGateOutcome
 from penny.responses import PennyResponse
 
 
@@ -15,6 +17,41 @@ class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+
+
+class HistoryTurn(NamedTuple):
+    """One turn of the chat history window, as ``Agent._build_conversation`` (and
+    ``ChatAgent.get_history``'s quote-reply path) reads it off ``MessageLog``: the
+    role, the text as it was said, and — for an outgoing reply only — the run id
+    the framework stamped on it (#2630).
+
+    ``run_id`` is what lets ``Agent._build_messages`` tell a talk-only reply from
+    one a real tool call backed (#2915/#2888): with no run id, or a run that made
+    no calls, a turn renders as the single plain message it always has; a run
+    that DID call tools expands into its own native call + tool-result turns
+    ahead of the reply text, so the act is visible beside the words rather than
+    only the words riding into the next turn's history.  ``None`` on a user turn
+    (which carries no run) and on an autonomous send (which has no run behind it
+    at all)."""
+
+    role: str
+    content: str
+    run_id: str | None = None
+
+
+def new_history_replay_call_id() -> str:
+    """Mint a fresh id for a tool call rendered into history from a PAST run —
+    never the id that call originally logged under, so a later run's own
+    ``messages`` snapshot structurally distinguishes "a call this run made" from
+    "a call replayed from an earlier run's own record"."""
+    return f"{PennyConstants.HISTORY_REPLAY_CALL_ID_PREFIX}{uuid.uuid4().hex}"
+
+
+def is_history_replay_call_id(call_id: str | None) -> bool:
+    """Whether ``call_id`` was minted by :func:`new_history_replay_call_id` — the
+    one check every reader of a logged run's tool turns applies before counting
+    one as a call THAT run made (see the constant's own docstring)."""
+    return call_id is not None and call_id.startswith(PennyConstants.HISTORY_REPLAY_CALL_ID_PREFIX)
 
 
 class ToolCallRecord(BaseModel):
