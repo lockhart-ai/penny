@@ -503,6 +503,16 @@ def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_trac
         "Casimir",
         "Oyelarans'",
     ]
+    # A different letter CASE is the model's own grammar too (#2911) — folded already, same
+    # as every other shape above.
+    assert unsourced_specifics("the Alpine III spokes", "alpine iii spokes are on the bike") == []
+    # A simple trailing PLURAL is the same: `alpine iii` becomes "those Alpine IIIs" and is not
+    # an invented `IIIs` (#2911) — MEASURED, this was the one rationale behind every miss on
+    # #2904's `announced-lookup-not-done`.
+    assert unsourced_specifics("those Alpine IIIs look great", "alpine iii spokes") == []
+    # A plural reading that is not what the world states is still an invention — the fold
+    # finds the singular the world HOLDS, never any singular at all.
+    assert unsourced_specifics("those Alpine IVs look great", "alpine iii spokes") == ["IVs"]
     oven = "Sheet-pan fajitas — peppers, onion, chicken, 25 min at 425F."
     assert unsourced_specifics("bake for 25 minutes at 425 °F", oven) == []
     assert unsourced_specifics("bake at 425°F, or 425 degrees", oven) == []
