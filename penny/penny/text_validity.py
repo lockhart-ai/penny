@@ -45,10 +45,6 @@ from penny.constants import PennyConstants
 
 _WORD_TOKEN_RE = re.compile(r"\w+")
 
-# A collection's extraction_prompt drives the collector each cycle; one too short
-# to carry a numbered recipe leaves the collector with nothing to do.
-EXTRACTION_PROMPT_MIN_CHARS = 25
-
 # Matches content that is a bare URL with no surrounding description.
 _BARE_URL_RE = re.compile(r"^https?://\S+$")
 
@@ -672,24 +668,6 @@ def half_formed_send_reason(content: str) -> str | None:
             "Finish the sentence and send the complete message."
         )
     return None
-
-
-def check_extraction_prompt(prompt: str | None) -> str | None:
-    """Return an error string if prompt is set but too short, else None.
-
-    The string-returning form, used where a prompt is read from a stored row and
-    its absence/shortness only *gates* an action (the collector's readiness
-    check) rather than rejecting a tool call.  There is no arg-validator twin: the
-    model surface takes no ``extraction_prompt`` argument (#1658 — a routine is only
-    ever a render of a demonstrated skill), so nothing validates one on the way in.
-    """
-    if prompt is None or len(prompt) >= EXTRACTION_PROMPT_MIN_CHARS:
-        return None
-    return (
-        f"extraction_prompt is too short ({len(prompt)} chars — minimum "
-        f"{EXTRACTION_PROMPT_MIN_CHARS}).  Provide a full numbered-step prompt "
-        f"(see the collection_configure description for the required shape)."
-    )
 
 
 def check_description(description: str) -> str | None:

@@ -162,17 +162,29 @@ async def test_changelog_announcement_dispatches_the_whole_literal_render(test_c
 
 
 @pytest.mark.asyncio
-async def test_changelog_announcement_sends_nothing_with_no_new_entries(test_config):
+async def test_changelog_announcement_still_sends_with_no_new_entries(test_config):
     """A deploy that recorded nothing new (harness-only, CI-only, or a restart
-    on an already-recorded commit) never spends a model call."""
-    penny = Penny(test_config, channel=MagicMock())
+    on an already-recorded commit) still runs the delivery turn — Penny
+    announces on every startup (#2890) — and what it writes is queued like
+    any other autonomous send."""
+    channel = MagicMock()
+    channel.send_response = AsyncMock(return_value=1)
+    penny = Penny(test_config, channel=channel)
     _seed_profile_and_history(penny)
-    penny.chat_agent.handle_changelog_report = AsyncMock()
+    penny.chat_agent.handle_changelog_report = AsyncMock(
+        return_value=ControllerResponse(answer=_REPLY)
+    )
 
     await penny._send_changelog_announcement([])
 
-    penny.chat_agent.handle_changelog_report.assert_not_awaited()
-    assert penny.db.send_queue.pending_items() == []
+    penny.chat_agent.handle_changelog_report.assert_awaited_once()
+    await_args = penny.chat_agent.handle_changelog_report.await_args
+    assert await_args is not None
+    assert await_args.args[0] == []
+
+    pending = penny.db.send_queue.pending_items()
+    assert len(pending) == 1
+    assert pending[0].content == _REPLY
 
 
 @pytest.mark.asyncio
@@ -240,6 +252,43 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
         delivered_row = penny.db.messages.find_outgoing_by_content(_REPLY)
         assert delivered_row is not None
         assert delivered_row.run_id == delivery_run_id
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await penny.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_changelog_announcement_startup_sends_with_no_new_entries(
+    make_config, mock_llm, monkeypatch
+):
+    """Penny announces on every startup (#2890): a deploy that brings no new
+    changelog entries still runs the real delivery turn end to end — recorded,
+    composed, queued, and delivered through the real drainer and channel —
+    with the "nothing changed" render as its input."""
+    monkeypatch.setattr("penny.penny.load_entries", lambda: [])
+    mock_llm.set_response_handler(
+        lambda request, _count: mock_llm._make_text_response(request, _REPLY)
+    )
+    config = make_config(idle_seconds=0.1, send_cooldown_seconds=0.0)
+    penny = Penny(config, channel=None)
+    channel = StartupReadyChannel(message_agent=penny.chat_agent, db=penny.db)
+    penny._init_channel(config, channel)
+    penny._connect_scheduler(config)
+    _seed_profile_and_history(penny)
+
+    task = asyncio.create_task(penny.run())
+    try:
+        await wait_until(channel.listen_started.is_set)
+        assert channel.sent == []
+
+        channel.ready.set()
+        await wait_until(lambda: len(channel.sent) == 1)
+        assert channel.sent[0] == (TEST_SENDER, _REPLY)
+
+        prompt = _find_request(mock_llm, "just restarted")
+        assert prompt == render_changelog_announcement([])
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

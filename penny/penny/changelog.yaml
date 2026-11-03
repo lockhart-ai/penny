@@ -86,3 +86,10 @@
     Tool calls in your instructions and run records are now written the way
     you write them, `name{arg: value}`, not `name(arg=value)` — the old form
     was teaching you a call your own parser can't read.
+- pr: 2898
+  text: >-
+    `collection_configure` no longer treats a new job's name as the same job
+    as a plain storage collection just because its name is contained in
+    yours, and never silently updates a collection you didn't name. On a real
+    match it now tells you which one and how to update it on purpose, or how
+    to name a new one so it reads as its own job.

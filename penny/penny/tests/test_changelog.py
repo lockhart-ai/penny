@@ -90,3 +90,15 @@ def test_render_changelog_announcement_is_whole_literal():
         "\n"
         "Let the user know what changed, in your own words."
     )
+
+
+def test_render_changelog_announcement_with_no_entries_is_whole_literal():
+    """Penny announces on every startup (#2890), including a deploy that
+    brought no new entries (harness-only, CI-only, or a restart on an
+    already-recorded commit) — the render says so and asks for a short
+    "I'm back" message instead of listing entries."""
+    assert render_changelog_announcement([]) == (
+        "You've just restarted. This deploy changed nothing in your tools or behaviour.\n"
+        "\n"
+        "Send the user a short message letting them know you're back."
+    )

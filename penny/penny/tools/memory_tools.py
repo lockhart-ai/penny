@@ -83,7 +83,6 @@ from penny.datetime_utils import (
 )
 from penny.llm.call_link import CallLink
 from penny.llm.similarity import embed_text
-from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
     SCHEDULE_EXAMPLES,
@@ -546,6 +545,7 @@ def _format_collection_echo(
     verb: str,
     timezone_name: str | None,
     priors: Mapping[str, str | None],
+    now: datetime,
 ) -> str:
     """Render a created or updated collection as a structured echo.
 
@@ -556,14 +556,15 @@ def _format_collection_echo(
     The schedule renders via ``describe_schedule_field`` — plain words with the exact
     rule in a code span (#2425) when the collection has one, else ``schedule: none`` for
     an inert/unscheduled one, so a plain update on an unscheduled collection never
-    echoes a blank clause (#1666).
+    echoes a blank clause (#1666).  ``now`` is the due-now clock (#2895) — an occurrence
+    already due renders as due now rather than a stale past timestamp.
     The end condition renders too (#2251 — this echo used to carry no expiry line at
     all, so a call that gave a job its first end had nothing confirming it landed),
     on the user's own clock (#2206) and as ``was … → now …`` when this call moved it.
     """
     return (
         f"{verb} collection '{memory.name}':\n"
-        f"  schedule: {describe_schedule_field(memory, timezone_name)}\n"
+        f"  schedule: {describe_schedule_field(memory, timezone_name, now=now)}\n"
         f"  notify: {memory.notify}\n"
         f"  expires: {render_expiry_update_line(memory, timezone_name, priors)}\n"
         f"  description: {memory.description}\n"
@@ -776,14 +777,14 @@ SCHEDULE_PARAM_DESCRIPTION = (
 # that declares the argument, the way ``schedule`` / ``expires_at`` do (#2250/#2222):
 # before this, ``collection_configure``'s schema carried a bare ``{"type": "string"}``
 # for it, so the omit-to-keep rule (#2719) lived only in the prose and the arg gate's
-# blank-refusal envelope rendered the field bare.
+# blank-refusal envelope rendered the field bare.  States the empty/omit rule plainly
+# and nothing else (#2894) — the cascade onto ``schedule`` is the tool description's
+# job, not every field's own line.
 PROMPT_PARAM_DESCRIPTION = (
     "The job's instructions, as free text, run on its schedule — never what the "
-    "collection holds; write an entry with `collection_write` for that. Leave "
-    "`prompt` OUT to change only schedule / expiry / notify — the stored prompt "
-    "stays exactly as it is. Supplying it REPLACES the whole instructions text. On a "
-    "collection with no schedule, an empty prompt clears a stored one that was never "
-    "going to run, instead of being refused."
+    "collection holds; write an entry with `collection_write` for that. Supplying it "
+    "REPLACES the whole instructions text. An empty string clears it; leaving it out "
+    "changes nothing."
 )
 
 
@@ -928,13 +929,13 @@ class CollectionCreateTool(MemoryTool):
 
     async def _create_with_prompt(self, args: CollectionCreateArgs, prompt: str) -> ToolResult:
         """Stand up a job from the model's own free-text prompt: parse the schedule,
-        validate the prompt's length, then create and echo."""
+        then create and echo.  No length floor (#2894) — any non-blank prompt is a
+        real one; a blank is refused at the arg gate (``OptionalText``) before this
+        runs at all."""
         parsed = self._parse_schedule(args)
         if isinstance(parsed, ToolResult):
             return parsed
         schedule, expires_at = parsed
-        if (too_short := check_extraction_prompt(prompt)) is not None:
-            return ToolResult(message=too_short, success=False)
         return await self._instantiate(args, prompt, schedule, expires_at)
 
     async def _create_inert(self, args: CollectionCreateArgs) -> ToolResult:
@@ -1007,7 +1008,7 @@ class CollectionCreateTool(MemoryTool):
             max_runs=schedule.max_runs,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
-        echo = render_creation_echo(memory, user_timezone_name(self._db))
+        echo = render_creation_echo(memory, user_timezone_name(self._db), now=self._db.clock.now())
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(message=f"{echo}{suffix}{expiry_note}", mutated=True)
 
@@ -1882,7 +1883,8 @@ def _no_schedule_refusal(
     """The refusal above when this call would land REAL prompt text on a collection
     with no schedule in effect — neither the row's own nor one this call is setting.
     ``None`` when a schedule is in effect either way, so the ordinary replace
-    proceeds.  The blank (clearing) case has its own check — see ``_clear_prompt``."""
+    proceeds.  The blank (clearing) case takes a different path entirely — see
+    ``CollectionUpdateTool._clears_the_job``."""
     if schedule is not None:
         return None
     if row is not None and has_schedule(row):
@@ -1890,23 +1892,14 @@ def _no_schedule_refusal(
     return ToolResult(message=_PROMPT_NEEDS_SCHEDULE_REFUSAL.format(name=name), success=False)
 
 
-# Reproduces the exact text the arg gate's blank-string teaching rejection (#1776) used
-# to produce for ``prompt`` before #2857 let a blank through for the gate's OWN good
-# reason (it can't see whether the collection has a schedule) — still the right refusal
-# on a SCHEDULED job, where a blank is not a clear, it's "I meant to omit this".
-_BLANK_PROMPT_ON_SCHEDULED_JOB = (
-    "prompt (string: " + PROMPT_PARAM_DESCRIPTION + "): an empty string sets nothing — "
-    "omit prompt entirely to leave it unset, or pass the instructions this job's "
-    "cycles follow, as free text. Call collection_configure{<valid arguments>} again."
-)
-
-# The clear (#2857): a blank `prompt` on a collection with no schedule in effect removes
-# a stored prompt that was never going to run anyway — the one way off a collection a
-# bad write (or an earlier version of this very tool) left one on, since no tool could
-# clear it before.
-_PROMPT_CLEARED_MESSAGE = (
-    "Removed the unused prompt from '{name}' — nothing was running it, since '{name}' "
-    "has no schedule. Its entries are unchanged."
+# The clear (#2857, cascaded by #2894): a blank ``prompt`` OR a blank ``schedule``
+# clears BOTH — a prompt with no schedule never runs, and a schedule with no prompt
+# has nothing to run, so leaving either one standing alone would land the collection
+# in a state that can never dispatch anyway.  The collection ends up as plain
+# storage; its entries are never touched by this.
+_PLAIN_STORAGE_MESSAGE = (
+    "'{name}' is now plain storage — no job, {count} entries kept. It has no prompt "
+    "and no schedule; write to it with `collection_write`."
 )
 
 
@@ -1958,18 +1951,19 @@ class CollectionSetTool(MemoryTool):
 
     Three cases, in order.  The name EXISTS → the update path (adopt / edit the
     prompt, atomic schedule replace).  The name is new but names a job we
-    ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → the same update
-    path, aimed at the collection we have, because ``collection_configure`` dispatching on
-    the name alone is exactly what lets an invented name become a second copy of one
-    job.  Otherwise → the create path.  Both inner paths keep their full validation —
-    this class is a dispatcher, not a re-implementation."""
+    ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → REFUSED (#2893):
+    ``collection_configure`` never acts on a collection the call didn't name, so the
+    near-match is named back along with how to reach it on purpose, and nothing
+    changes.  Otherwise → the create path.  Both inner paths keep their full
+    validation — this class is a dispatcher, not a re-implementation."""
 
     name = "collection_configure"
     # The creation echo points at the metadata read for what was configured; the
-    # same-job redirect (#1775, ``_SAME_JOB_UPDATED``) points at ``collection_list``
-    # for the collection the call actually landed on; the `prompt` description and
-    # the no-schedule refusal (#2857) point at `collection_write` for adding to what
-    # a collection holds.
+    # same-job refusal (#1775, tightened #2893, ``_SAME_JOB_REFUSAL``) points at
+    # ``collection_list`` for the near-match it names, so the model can read what that
+    # job already does before deciding whether to update it or name a new one; the
+    # `prompt` description and the no-schedule refusal (#2857) point at
+    # `collection_write` for adding to what a collection holds.
     advises = ("memory_get", "collection_list", "collection_write")
     description = (
         "Create or reconfigure a collection in ONE idempotent call. If "
@@ -1984,9 +1978,9 @@ class CollectionSetTool(MemoryTool):
         "collection holds; that's its entries, written with `collection_write`. "
         "Leave `prompt` out to change only `schedule`, `expires_at`, or `notify` "
         "— the job's instructions stay exactly as they are. Set `prompt` to "
-        "replace the instructions completely; on a collection with no schedule, "
-        "set `prompt` to an empty string to clear a stored one that was never "
-        "going to run, instead of replacing it.\n"
+        "replace the instructions completely. An empty `prompt` or an empty "
+        "`schedule` clears BOTH — a job needs both to run — leaving the collection "
+        "as plain storage, entries kept.\n"
         "\n"
         "`notify` is the switch for THIS collection's alerts only — true tells "
         "the user about new or changed entries, false keeps the job running "
@@ -2005,7 +1999,13 @@ class CollectionSetTool(MemoryTool):
                 "type": "string",
                 "description": PROMPT_PARAM_DESCRIPTION,
             },
-            "schedule": {"type": "string", "description": SCHEDULE_PARAM_DESCRIPTION},
+            "schedule": {
+                "type": "string",
+                "description": (
+                    f"{SCHEDULE_PARAM_DESCRIPTION} An empty string clears it; leaving "
+                    "it out changes nothing."
+                ),
+            },
             "expires_at": {"type": "string", "description": EXPIRES_AT_PARAM_DESCRIPTION},
             "notify": {"type": "boolean"},
         },
@@ -2081,19 +2081,21 @@ class CollectionSetTool(MemoryTool):
         return _with_configure_outcome(result, CollectionConfigureOutcome.UPDATED)
 
     async def _same_job(self, args: CollectionSetArgs, duplicate: MemoryRow) -> ToolResult:
-        """A new name for a job we already have (#1775).  An ARCHIVED match stays a
-        refusal — reviving a retired mechanism is the user's call, and the tombstone
-        confirm-shape asks for it (#1567).  An ACTIVE one is UPDATED in place rather
-        than refused: the refusal cost an entire observed turn (the model retried, the
-        second refusal was identical, and the all-failed abort ended the turn with no
-        reply), while the update is what the user asked for on the collection that
-        already serves it."""
+        """A new name for a job we already have (#1775) — REFUSED either way (#2893),
+        and nothing changes.  An ARCHIVED match is the #1567 tombstone refusal (reviving
+        a retired mechanism is the user's call).  An ACTIVE match used to be UPDATED in
+        place instead of refused, aimed at the collection the call never named — which
+        is how a storage-only collection a new job's name merely CONTAINED got its
+        settings silently overwritten by a different job, and then overwritten again by
+        the next one.  Never acting on a target the call didn't name is the ordinary
+        rule for every other tool on this surface; the refusal names the near-match and
+        both ways to proceed on purpose, same shape as the tombstone."""
         if duplicate.archived:
             return ToolResult(message=render_tombstone_duplicate(duplicate), success=False)
-        result = await self._apply_to(args, duplicate.name)
-        template = _SAME_JOB_UPDATED if result.success else _SAME_JOB_TARGETED
-        note = template.format(requested=args.collection, existing=duplicate.name)
-        return result.model_copy(update={"message": f"{note}{result.message}"})
+        return ToolResult(
+            message=_SAME_JOB_REFUSAL.format(requested=args.collection, existing=duplicate.name),
+            success=False,
+        )
 
 
 _SET_BIRTH_NEEDS_DESCRIPTION = (
@@ -2103,25 +2105,17 @@ _SET_BIRTH_NEEDS_DESCRIPTION = (
     "with description=<what it holds>."
 )
 
-# The same-job redirect (#1775): the requested name was a second name for a job that
-# already has a collection, so the call landed on THAT collection.  Named in the
-# result because everything downstream — reads, further edits, what Penny tells the
-# user — has to use the real name, not the one the call invented.
-_SAME_JOB_UPDATED = (
-    "'{requested}' is the same job as '{existing}', which already exists — so I "
-    "updated '{existing}' instead of creating a second collection for it. It's "
-    "'{existing}' from here on: read it with collection_list{{'{existing}'}} or "
-    "adjust it with collection_configure{{collection: '{existing}', ...}}. If this really is a "
-    "separate task, set it up again with a name that carries what makes it "
-    "different.\n"
-)
-
-# The same redirect when the update itself failed — the target is still named (the
-# error below is about '{existing}', not the requested name), but nothing changed.
-_SAME_JOB_TARGETED = (
-    "'{requested}' is the same job as the existing collection '{existing}', so this "
-    "was aimed at '{existing}' rather than creating a second collection — but it "
-    "didn't land:\n"
+# The same-job refusal (#1775, tightened #2893): the requested name reads as a second
+# name for a job that already has a collection, so nothing was created and nothing on
+# the existing collection changed.  Named in the result either way — to read what the
+# near-match already does, to update it on purpose, or to set up a genuinely separate
+# job under a name that carries what makes it different.
+_SAME_JOB_REFUSAL = (
+    "'{requested}' reads as the same job as the existing collection '{existing}' — so "
+    "nothing was created and '{existing}' is unchanged. Read it with "
+    "collection_list{{'{existing}'}}; to update it, call "
+    "collection_configure{{collection: '{existing}', ...}}. If '{requested}' is really a "
+    "separate job, set it up again with a name that carries what makes it different.\n"
 )
 
 
@@ -2144,7 +2138,8 @@ class CollectionUpdateTool(MemoryTool):
     prompt onto an inert collection for the first time).  All fields except ``name``
     are optional; only the ones supplied are applied.  Supplying ``prompt`` replaces
     the stored prompt verbatim (and records a mutation event); omitting it leaves
-    the prompt untouched.
+    the prompt untouched.  A blank ``prompt`` or a blank ``schedule`` clears BOTH
+    (#2894), landing the collection as plain storage — see ``_clears_the_job``.
     """
 
     name = "collection_configure"
@@ -2170,9 +2165,8 @@ class CollectionUpdateTool(MemoryTool):
         "does each cycle. Read the current body via `memory_get` first if you "
         "need to preserve any of it. On an inert (prompt-less) collection, "
         "setting this adopts a job for the first time — pair it with "
-        "`schedule` or it is refused, since nothing would run it. On a "
-        "collection with no schedule, an empty `prompt` instead CLEARS a "
-        "stored one that was never going to run.\n"
+        "`schedule` or it is refused, since nothing would run it. An empty "
+        "string clears it; leaving it out changes nothing.\n"
         "- `schedule` — when the job runs, as ONE recurrence rule (set it to change the "
         'schedule, else omit to leave it): "FREQ=HOURLY" (every hour), '
         '"FREQ=MINUTELY;INTERVAL=90" (every 90 minutes), "FREQ=DAILY;BYHOUR=8" (8am '
@@ -2181,7 +2175,10 @@ class CollectionUpdateTool(MemoryTool):
         "Add COUNT= to run a set number of times, and a leading DTSTART line to say "
         "when it starts; a DTSTART stamp ending in Z is an exact moment in UTC. "
         "Setting it REPLACES the whole schedule. This is how you give an "
-        "INERT collection its schedule when you adopt a prompt onto it.\n"
+        "INERT collection its schedule when you adopt a prompt onto it. An empty "
+        "string clears it; leaving it out changes nothing.\n"
+        "- A blank `prompt` or a blank `schedule` clears BOTH — a job needs both "
+        "to run — leaving the collection as plain storage, entries kept.\n"
         f"- `expires_at` — OPTIONAL. {EXPIRES_AT_PARAM_DESCRIPTION} The collection "
         "archives itself once it passes.\n"
         "\n"
@@ -2218,17 +2215,15 @@ class CollectionUpdateTool(MemoryTool):
                 "type": "string",
                 "description": (
                     "FULL replacement of the job's instructions, as free text, run on "
-                    "its schedule — never what the collection holds. Omit to leave the "
-                    "current prompt untouched. On a collection with no schedule, an "
-                    "empty string clears a stored prompt that was never going to run, "
-                    "instead of being refused."
+                    "its schedule — never what the collection holds. An empty string "
+                    "clears it; leaving it out changes nothing."
                 ),
             },
             "schedule": {
                 "type": "string",
                 "description": (
-                    f"{SCHEDULE_PARAM_DESCRIPTION} Setting it REPLACES the whole schedule; "
-                    "omit to leave it unchanged."
+                    f"{SCHEDULE_PARAM_DESCRIPTION} Setting it REPLACES the whole schedule. "
+                    "An empty string clears it; leaving it out changes nothing."
                 ),
             },
             "expires_at": {
@@ -2260,11 +2255,14 @@ class CollectionUpdateTool(MemoryTool):
         return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        """Parse the apply-time schedule (#1857), then branch on ``prompt``: unset
-        (a plain metadata edit), blank (clear an unused prompt, #2857 — schedule-less
-        collections only), or real text (a full replacement).  Reads as a table of
-        contents."""
+        """A blank ``prompt`` or a blank ``schedule`` clears the WHOLE job (#2894) —
+        checked first, before the schedule is even parsed (a blank wouldn't parse as
+        an RRULE anyway).  Otherwise this reads as it always did: parse the apply-time
+        schedule (#1857), then branch on ``prompt``: unset (a plain metadata edit) or
+        real text (a full replacement).  Reads as a table of contents."""
         args = CollectionUpdateArgs(**kwargs)
+        if self._clears_the_job(args):
+            return await self._clear_job(args, self._db.memories.get(args.name))
         parsed = self._parse_schedule(args)
         if isinstance(parsed, ToolResult):
             return parsed
@@ -2273,9 +2271,17 @@ class CollectionUpdateTool(MemoryTool):
         if prompt is None:
             return await self._edit_metadata(args, schedule, expires_at)
         row = self._db.memories.get(args.name)
-        if prompt.strip() == "":
-            return self._clear_prompt(args, row, schedule)
         return await self._replace_prompt(args, row, prompt, schedule, expires_at)
+
+    @staticmethod
+    def _clears_the_job(args: CollectionUpdateArgs) -> bool:
+        """A blank ``prompt`` or a blank ``schedule`` (#2894) — either clears the
+        WHOLE job, never just the field it named: a prompt with no schedule never
+        runs, and a schedule with no prompt has nothing to run, so one can never be
+        cleared alone.  ``None`` (omitted) is unaffected either way."""
+        blank_prompt = args.prompt is not None and args.prompt.strip() == ""
+        blank_schedule = args.schedule is not None and args.schedule.strip() == ""
+        return blank_prompt or blank_schedule
 
     def _parse_schedule(
         self, args: CollectionUpdateArgs
@@ -2313,7 +2319,11 @@ class CollectionUpdateTool(MemoryTool):
         suffix = _description_degraded_suffix(args.description, embedding)
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         echo = _format_collection_echo(
-            memory, "Updated", user_timezone_name(self._db), self._priors(args.name)
+            memory,
+            "Updated",
+            user_timezone_name(self._db),
+            self._priors(args.name),
+            self._db.clock.now(),
         )
         message = f"{echo}{suffix}{expiry_note}"
         return ToolResult(message=message, mutated=True)
@@ -2327,25 +2337,37 @@ class CollectionUpdateTool(MemoryTool):
             name, self._run_id, entity_type=MutationEntityType.COLLECTION
         )
 
-    def _clear_prompt(
-        self, args: CollectionUpdateArgs, row: MemoryRow | None, schedule: Schedule | None
-    ) -> ToolResult:
-        """A blank ``prompt`` (#2857): on a collection with a schedule in effect —
-        either the row's own, or one this call is setting — a blank is still refused
-        exactly as the arg gate always refused one (#1776), since it isn't a clear
-        there, it's "I meant to omit this".  Otherwise it CLEARS a stored prompt that
-        was never going to run — the one way off a collection a bad write (or an
-        earlier version of this very tool, #2857's own bug) left one on, since no
-        tool could remove it before.  The collection's entries are untouched either
-        way — this never touches them."""
-        if schedule is not None or (row is not None and has_schedule(row)):
-            return ToolResult(message=_BLANK_PROMPT_ON_SCHEDULED_JOB, success=False)
+    async def _clear_job(self, args: CollectionUpdateArgs, row: MemoryRow | None) -> ToolResult:
+        """A blank ``prompt`` or a blank ``schedule`` (#2894): whichever axis the call
+        blanked, the other can't be left standing — a prompt with no schedule never
+        runs, a schedule with no prompt has nothing to run — so this clears BOTH
+        unconditionally and lands the collection as plain storage.  ``description`` /
+        ``notify`` / ``expires_at`` still apply if this same call sets them (the same
+        PATCH semantics every other path on this tool follows).  The collection's
+        entries are never touched by this."""
+        try:
+            expires_at = self._expiry(None, args.expires_at)
+        except ScheduleError as exc:
+            return ToolResult(message=str(exc), success=False)
         name = row.name if row is not None else args.name
-        had_prompt = row is not None and row.extraction_prompt is not None
+        had_job = row is not None and (row.extraction_prompt is not None or has_schedule(row))
+        entry_count = self._db.memories.entry_counts().get(name, 0)
+        embedding = await self._description_embedding(args)
         self._db.memories.update_collection_metadata(
-            name, clear_extraction_prompt=True, run_id=self._run_id
+            name,
+            description=args.description,
+            description_embedding=embedding,
+            notify=args.notify,
+            clear_extraction_prompt=True,
+            schedule=None,
+            max_runs=None,
+            replace_schedule=True,
+            expires_at=expires_at,
+            clear_expiry=expiry_was_normalised(args.expires_at, expires_at),
+            run_id=self._run_id,
         )
-        return ToolResult(message=_PROMPT_CLEARED_MESSAGE.format(name=name), mutated=had_prompt)
+        message = _PLAIN_STORAGE_MESSAGE.format(name=name, count=entry_count)
+        return ToolResult(message=message, mutated=had_job)
 
     async def _replace_prompt(
         self,
@@ -2364,10 +2386,10 @@ class CollectionUpdateTool(MemoryTool):
         nor one this call is setting (#2857): the prompt could never run, so landing it
         would read back as a job that doesn't exist.  Otherwise the prompt the model
         wrote IS the prompt the collector runs; there is no rendering seam to validate
-        against, only the same length check authoring takes — plus the summary-line
-        refusal (#2685): a ``prompt`` that is this job's own current-state summary
-        line would replace the instructions with a rendering of them, so it's refused
-        and she retries."""
+        against — no length floor either (#2894) — plus the summary-line refusal
+        (#2685): a ``prompt`` that is this job's own current-state summary line would
+        replace the instructions with a rendering of them, so it's refused and she
+        retries."""
         if (no_schedule := _no_schedule_refusal(args.name, row, schedule)) is not None:
             return no_schedule
         prompt_before = row.extraction_prompt if row is not None else None
@@ -2375,12 +2397,12 @@ class CollectionUpdateTool(MemoryTool):
             summary_refusal = _summary_as_prompt_refusal(row, prompt)
             if summary_refusal is not None:
                 return ToolResult(message=summary_refusal, success=False)
-        if (too_short := check_extraction_prompt(prompt)) is not None:
-            return ToolResult(message=too_short, success=False)
         embedding = await self._description_embedding(args)
         memory = self._apply_update(args, prompt, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
-        echo = render_reinstantiation_echo(memory, user_timezone_name(self._db))
+        echo = render_reinstantiation_echo(
+            memory, user_timezone_name(self._db), now=self._db.clock.now()
+        )
         # A replacement of an EXISTING prompt carries the line diff (#2719): what the old
         # prompt had that the new one doesn't, verbatim, so a rebuild-from-the-summary sees
         # the lines it dropped.  Reported, never blocked — the model may rewrite a job.
@@ -2528,7 +2550,7 @@ class MemoryMetadataTool(MemoryTool):
             "",
             "Operational settings (cadence — secondary):",
             f"notify: {row.notify}",
-            self._schedule_line(row, user_timezone_name(self._db)),
+            self._schedule_line(row, user_timezone_name(self._db), self._db.clock.now()),
             *lifecycle,
             f"updated: {updated}",
             f"last collected: {last_collected}",
@@ -2605,12 +2627,13 @@ class MemoryMetadataTool(MemoryTool):
         ]
 
     @staticmethod
-    def _schedule_line(memory: Any, timezone_name: str | None) -> str:
+    def _schedule_line(memory: Any, timezone_name: str | None, now: datetime) -> str:
         """The schedule in plain words with the exact rule in a code span (#2425), or
         ``schedule: none`` for a log / an inert collection with no cadence yet — so the
         render never emits a half-formed clause (#1666, via the shared
-        ``describe_schedule_field``)."""
-        return f"schedule: {describe_schedule_field(memory, timezone_name)}"
+        ``describe_schedule_field``).  ``now`` is the due-now clock (#2895) — an
+        occurrence already due renders as due now rather than a stale past timestamp."""
+        return f"schedule: {describe_schedule_field(memory, timezone_name, now=now)}"
 
 
 class CollectionRemoveTool(MemoryTool):

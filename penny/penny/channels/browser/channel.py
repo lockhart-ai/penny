@@ -1033,8 +1033,12 @@ class BrowserChannel(MessageChannel):
             extraction_prompt=memory.extraction_prompt,
             schedule=memory.schedule,
             # The model's own plain-words reading (#2428), so the addon's schedule
-            # picker never re-derives it in TypeScript (#2442).
-            schedule_description=describe_schedule(memory, user_timezone_name(self._db)) or None,
+            # picker never re-derives it in TypeScript (#2442).  An occurrence already
+            # due renders as due now, not a stale past date (#2895).
+            schedule_description=describe_schedule(
+                memory, user_timezone_name(self._db), now=self._db.clock.now()
+            )
+            or None,
             last_collected_at=(
                 utc_isoformat(memory.last_collected_at) if memory.last_collected_at else None
             ),

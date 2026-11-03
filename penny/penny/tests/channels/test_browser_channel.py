@@ -22,6 +22,7 @@ from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
 from penny.llm.call_link import CallLink
 from penny.tests.conftest import require_memory, wait_until
+from penny.tests.eval.utils.clock import PinnedClock
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.base import Tool
@@ -2496,6 +2497,9 @@ class TestBrowserMemoryHandlers:
         """The list view receives every memory (collections + logs) with metadata
         and entry counts in one response."""
         channel, db = self._channel(tmp_path)
+        # A fixed clock (#2895) — the due-now comparison below reads the SAME clock
+        # the channel's own render does, so the two can never straddle real time.
+        db.clock = PinnedClock()
         self._seed_memories(db)
 
         ws = _MockWs()
@@ -2515,7 +2519,7 @@ class TestBrowserMemoryHandlers:
         board_games_row = db.memories.get("board-games")
         assert board_games_row is not None
         assert by_name["board-games"]["schedule_description"] == describe_schedule(
-            board_games_row, None
+            board_games_row, None, now=db.clock.now()
         )
         assert by_name["collector-runs"]["type"] == "log"
         assert by_name["collector-runs"]["entry_count"] == 1
