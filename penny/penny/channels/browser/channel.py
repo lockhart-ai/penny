@@ -1043,6 +1043,11 @@ class BrowserChannel(MessageChannel):
                 utc_isoformat(memory.last_collected_at) if memory.last_collected_at else None
             ),
             entry_count=entry_count,
+            # Read-only end conditions (#2929) — see MemoryRecord for why the addon
+            # has no standalone field to set these yet.
+            expires_at=utc_isoformat(memory.expires_at) if memory.expires_at else None,
+            max_runs=memory.max_runs,
+            created_at=utc_isoformat(memory.created_at),
         )
 
     @staticmethod

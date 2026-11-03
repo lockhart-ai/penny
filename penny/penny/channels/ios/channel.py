@@ -715,6 +715,11 @@ class IosChannel(MessageChannel):
                 memory.last_collected_at.isoformat() if memory.last_collected_at else None
             ),
             entry_count=entry_count,
+            # Read-only end conditions (#2929) — matches the browser channel's record;
+            # this model is shared between the two.
+            expires_at=memory.expires_at.isoformat() if memory.expires_at else None,
+            max_runs=memory.max_runs,
+            created_at=memory.created_at.isoformat(),
         )
 
     @staticmethod

@@ -389,6 +389,15 @@ export interface MemoryRecord {
   schedule_description: string | null;
   last_collected_at: string | null;
   entry_count: number;
+  /** The end condition the archive lifecycle retires this collection on
+   * (#1562/#1857) — read-only here; the addon has no standalone field to set
+   * it yet, only indirectly through the schedule's own UNTIL=. Null = no end
+   * condition. */
+  expires_at: string | null;
+  /** The run-quota end condition (a schedule's own COUNT=), read-only for the
+   * same reason as `expires_at`. */
+  max_runs: number | null;
+  created_at: string;
 }
 
 /** One read-cursor a collection holds over a log it reads. */
