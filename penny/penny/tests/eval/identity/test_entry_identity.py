@@ -59,6 +59,7 @@ from penny.tests.eval.drivers.identity import (
 )
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import SpecCategory
+from penny.tests.eval.utils.fixtures import SYNTH_KEY_SEPARATOR
 
 pytestmark = pytest.mark.eval
 
@@ -382,6 +383,13 @@ _DIGEST_LEGS = (
     ),
 )
 
+# The store's seeded shape (``SynthCollection.keyed``): a seeded entry's CONTENT is the
+# whole "key — content" line, not just the part after the key — the same line
+# ``_seeded_world_check``/``_seeded_world_check_sibling`` probe for right after the seed
+# lands. The digest's untouched claim reads the store, so it compares against this same
+# seeded form, not the bare ``_DIGEST[1]``.
+_DIGEST_SEEDED = f"{_DIGEST[0]}{SYNTH_KEY_SEPARATOR}{_DIGEST[1]}"
+
 _BATCH_ARM = SiblingArm(
     text="three legs of one trip digest, written together",
     collection="trip-itinerary",
@@ -399,7 +407,7 @@ def _digest_untouched(sample, world) -> tuple[bool, str | None]:
     entry = next((row for row in sample.held if row.key == _DIGEST[0]), None)
     if entry is None:
         return False, f"'{_DIGEST[0]}' is missing; held {_held_keys(sample)}"
-    if entry.content != _DIGEST[1]:
+    if entry.content != _DIGEST_SEEDED:
         return False, f"'{_DIGEST[0]}' no longer holds its original value: {entry.content!r}"
     return True, None
 
