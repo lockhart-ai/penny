@@ -171,10 +171,16 @@ SIGNAL_PROFILE := $(shell awk -F= '/^[[:space:]]*SIGNAL_NUMBER[[:space:]]*=/{v=$
 # reads/writes before every build. CHANGELOG_CURSOR_FILE (the hash of the last
 # commit a real deploy announced) lives under data/ — gitignored, a bind mount,
 # so it survives every image rebuild; only `prod`/`prod-ios` advance it, after a
-# successful run. CHANGELOG_COMMITS_FILE is the generated, gitignored
-# build-context file the image COPYs in. CHANGELOG_FALLBACK_COMMITS bounds the
-# unscoped (raw, not-yet-penny-filtered) fallback when the cursor is unset or
-# history has rewritten past it.
+# successful BUILD (not after the run exits): both run their image in the
+# FOREGROUND, blocking until Penny is stopped, so a cursor write placed after
+# `up`/`run` would never execute at all — Ctrl-C exits non-zero, and make
+# aborts the recipe before reaching it. Writing it right after the build
+# means a startup crash still advances the cursor; that's accepted — the
+# changes ARE built into the image that ran, and the startup announcement is
+# best-effort, never the thing the cursor tracks. CHANGELOG_COMMITS_FILE is
+# the generated, gitignored build-context file the image COPYs in.
+# CHANGELOG_FALLBACK_COMMITS bounds the unscoped (raw, not-yet-penny-filtered)
+# fallback when the cursor is unset or history has rewritten past it.
 CHANGELOG_CURSOR_FILE := data/penny/.changelog_cursor
 CHANGELOG_COMMITS_FILE := penny/penny/changelog_commits.txt
 CHANGELOG_FALLBACK_COMMITS := 10
@@ -192,15 +198,19 @@ prod: browser-build
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
-	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up --build
+	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) build
 	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
+	SNAPSHOT=1 \
+	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up
 
 prod-ios: browser-build
 	$(CHANGELOG_ENV) scripts/store_git_info.sh advance
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
-	docker compose -f docker-compose.yml run --rm --service-ports --no-deps --build -e CHANNEL_TYPE=ios penny
+	docker compose -f docker-compose.yml build penny
 	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
+	SNAPSHOT=1 \
+	docker compose -f docker-compose.yml run --rm --service-ports --no-deps -e CHANNEL_TYPE=ios penny
 
 # Tear down this compose project's containers and remove its locally-built
 # images (alias of clean-project-images, kept for its familiar name).
