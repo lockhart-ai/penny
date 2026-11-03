@@ -4,9 +4,11 @@ test — one real chat turn per model call, scored on the LAST turn's reply.
 
 Drives the SHIPPED code a real deploy runs: ``ChatAgent.handle_changelog_report``
 over the framework-rendered entries, the same content gates
-``Penny._send_changelog_announcement`` applies before queuing, and the real
-send-queue drainer — no re-implementation, so this case exercises exactly what
-production would have left in the conversation before the later turn runs.
+``Penny._send_changelog_announcement`` applies before delivery, and the real
+send-queue drainer's own ``deliver_composed`` (#2913 — no queue row, delivered
+straight through the channel) — no re-implementation, so this case exercises
+exactly what production would have left in the conversation before the later
+turn runs.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import pytest
 
 from penny.changelog import ChangelogEntry
 from penny.config import Config
-from penny.constants import CycleTrigger, PennyConstants
+from penny.constants import PennyConstants
 from penny.llm.call_link import CallLink
 from penny.notification import withheld_reason
 from penny.penny import Penny
@@ -76,9 +78,10 @@ async def _deliver_changelog(
 ) -> None:
     """Run the real startup delivery turn: a live chat-agent draw over the
     framework-rendered entries, the same content gates production applies
-    (``half_formed_send_reason`` / ``withheld_reason``), then drained through
-    the real queue/channel path — so the history a later turn in this sample
-    reads is exactly what a real deploy would have left behind.
+    (``half_formed_send_reason`` / ``withheld_reason``), then delivered straight
+    through the real channel path (#2913 — no queue row, no idle wait) — so the
+    history a later turn in this sample reads is exactly what a real deploy
+    would have left behind.
 
     ``Penny._send_changelog_announcement``'s own two gates — a profile exists,
     the user has chatted before — are skipped here on purpose: they guard a
@@ -99,17 +102,10 @@ async def _deliver_changelog(
     assert answer, "the changelog delivery turn produced no reply"
     assert half_formed_send_reason(answer) is None, "the changelog delivery reply was not whole"
     assert withheld_reason(penny.db, answer) is None, "the changelog delivery reply was withheld"
-    # The same shape ``store_composed`` leaves a job report in — content AND its
-    # own run id both set — so the drainer reads it as an ordinary row below
-    # while the delivered message still carries the run that wrote it.
-    penny.db.send_queue.enqueue_composed(
-        answer,
-        collection=PennyConstants.MEMORY_CHANGELOG_LOG,
-        origin=CycleTrigger.CADENCE,
-        report_run_id=run_id,
+    delivered = await penny.send_queue_drainer.deliver_composed(
+        answer, collection=PennyConstants.MEMORY_CHANGELOG_LOG, run_id=run_id
     )
-    delivered = await penny.send_queue_drainer.execute()
-    assert delivered, "the changelog announcement was queued but never delivered"
+    assert delivered, "the changelog announcement was composed but never delivered"
 
 
 @pytest.fixture

@@ -305,6 +305,45 @@ async def test_drain_no_channel_is_noop(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_deliver_composed_sends_without_queuing(tmp_path):
+    """``deliver_composed`` (#2913) is the no-queue, no-idle-wait path a caller
+    that already ran its own delivery turn uses — the startup changelog
+    announcement. It records a send exactly like a drained row does: the same
+    recipient resolution and the same messagelog stamp (mechanism, run id)."""
+    db = _make_db(tmp_path)
+    channel = _make_channel()
+    drainer = _make_drainer(db, channel)
+
+    delivered = await drainer.deliver_composed(
+        "the announcement", collection=_COLLECTION, run_id="run-123"
+    )
+
+    assert delivered is True
+    channel.send_response.assert_awaited_once()
+    kwargs = channel.send_response.await_args.kwargs
+    assert kwargs["content"] == "the announcement"
+    assert kwargs["recipient"] == _RECIPIENT
+    assert kwargs["mechanism"] == _COLLECTION
+    assert kwargs["run_id"] == "run-123"
+    # Nothing was ever written to the queue.
+    assert db.send_queue.pending_items() == []
+
+
+@pytest.mark.asyncio
+async def test_deliver_composed_no_channel_or_recipient_reports_false(tmp_path):
+    """No channel wired → ``deliver_composed`` reports failure rather than
+    crashing, the same honesty ``execute()`` gives a queued row."""
+    db = _make_db(tmp_path)
+    drainer = SendQueueDrainer(db=db, config=_make_config(), chat_agent=MagicMock())
+
+    delivered = await drainer.deliver_composed(
+        "the announcement", collection=_COLLECTION, run_id="run-123"
+    )
+
+    assert delivered is False
+
+
+@pytest.mark.asyncio
 async def test_archiving_collection_cancels_pending_sends(tmp_path):
     """Teardown means silence through the queue (#1634): a send queued while the
     collector was alive is cancelled when the collection is archived, so the

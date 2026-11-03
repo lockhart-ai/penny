@@ -117,8 +117,8 @@ def _seed_profile_and_history(penny: Penny) -> None:
 @pytest.mark.asyncio
 async def test_changelog_announcement_dispatches_the_whole_literal_render(test_config):
     """The delivery turn's input is the framework render, verbatim — and the
-    reply it writes is queued exactly like any other autonomous send (gated,
-    then drained through the ordinary channel path)."""
+    reply it writes is delivered straight through the channel's normal send
+    path (#2913): no queue row, no idle wait."""
     # No ``shutdown()`` here — it awaits ``self.channel.close()``, and a bare
     # ``MagicMock`` isn't awaitable; this test drives ``_send_changelog_announcement``
     # directly and never starts ``run()``, so there is nothing to tear down
@@ -142,31 +142,26 @@ async def test_changelog_announcement_dispatches_the_whole_literal_render(test_c
     # SAME ``CallLink`` production built, not re-derived here.
     delivery_run_id = await_args.kwargs["call_link"].run_id
 
-    pending = penny.db.send_queue.pending_items()
-    assert len(pending) == 1
-    assert pending[0].content == _REPLY
-    assert pending[0].collection == PennyConstants.MEMORY_CHANGELOG_LOG
-    assert pending[0].report_run_id == delivery_run_id
-
-    drained = await penny.send_queue_drainer.execute()
-    assert drained is True
     channel.send_response.assert_awaited_once()
     _, call_kwargs = channel.send_response.call_args
     assert call_kwargs["content"] == _REPLY
     assert call_kwargs["recipient"] == TEST_SENDER
+    assert call_kwargs["mechanism"] == PennyConstants.MEMORY_CHANGELOG_LOG
     # #2849's run-health facts read ``messagelog.run_id`` off the delivered row —
     # this is what keeps that read from landing on ``None`` (the channel here is
     # a bare mock, so the real messagelog write is asserted in the channel-ready
     # test below, which drives a real channel through ``send_response``).
     assert call_kwargs["run_id"] == delivery_run_id
+    # Nothing was ever queued — delivery happened directly.
+    assert penny.db.send_queue.pending_items() == []
 
 
 @pytest.mark.asyncio
 async def test_changelog_announcement_still_sends_with_no_new_entries(test_config):
     """A deploy that recorded nothing new (harness-only, CI-only, or a restart
     on an already-recorded commit) still runs the delivery turn — Penny
-    announces on every startup (#2890) — and what it writes is queued like
-    any other autonomous send."""
+    announces on every startup (#2890) — and what it writes is delivered
+    directly (#2913), with nothing left in the queue."""
     channel = MagicMock()
     channel.send_response = AsyncMock(return_value=1)
     penny = Penny(test_config, channel=channel)
@@ -182,9 +177,9 @@ async def test_changelog_announcement_still_sends_with_no_new_entries(test_confi
     assert await_args is not None
     assert await_args.args[0] == []
 
-    pending = penny.db.send_queue.pending_items()
-    assert len(pending) == 1
-    assert pending[0].content == _REPLY
+    channel.send_response.assert_awaited_once()
+    assert channel.send_response.call_args.kwargs["content"] == _REPLY
+    assert penny.db.send_queue.pending_items() == []
 
 
 @pytest.mark.asyncio
@@ -226,15 +221,10 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
     mock_llm.set_response_handler(
         lambda request, _count: mock_llm._make_text_response(request, _REPLY)
     )
-    # A tiny idle threshold (the default is 99999s, chosen to keep background
-    # schedules off): the announcement is now QUEUED and delivered by the real
-    # send-queue drainer, same as any other autonomous send, so the drainer
-    # schedule must actually get to run within the test's wait window.
-    config = make_config(
-        idle_seconds=0.1,
-        send_cooldown_seconds=0.0,
-        changelog_commits=[old_entry, new_entry],
-    )
+    # No idle/cooldown tuning needed (#2913): the announcement is delivered
+    # directly through the channel the moment the delivery turn composes it,
+    # never through the send-queue drainer's own idle-gated schedule.
+    config = make_config(changelog_commits=[old_entry, new_entry])
     penny = Penny(config, channel=None)
     channel = StartupReadyChannel(message_agent=penny.chat_agent, db=penny.db)
     penny._init_channel(config, channel)
@@ -283,35 +273,32 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
 async def test_changelog_announcement_startup_sends_with_no_new_entries(make_config, mock_llm):
     """Penny announces on every startup (#2890): a deploy that brings no new
     changelog entries still runs the real delivery turn end to end — recorded,
-    composed, queued, and delivered through the real drainer and channel —
-    with the "nothing changed" render as its input. ``changelog_commits``
-    defaults to empty (#2891), so no override is needed here."""
+    composed, and delivered straight through the channel (#2913) — with the
+    "nothing changed" render as its input. ``changelog_commits`` defaults to
+    empty (#2891), so no override is needed here.
+
+    Delivered directly, so this exercises only ``_run_startup_notifications``
+    and the channel — no scheduler, no drainer tick, no idle tuning (the
+    flake in #2910 was the drain schedule's first idle-tick on an empty queue
+    stamping its own eligibility before the row existed; a direct send never
+    goes near that schedule)."""
     mock_llm.set_response_handler(
         lambda request, _count: mock_llm._make_text_response(request, _REPLY)
     )
-    config = make_config(idle_seconds=0.1, send_cooldown_seconds=0.0)
+    config = make_config()
     penny = Penny(config, channel=None)
     channel = StartupReadyChannel(message_agent=penny.chat_agent, db=penny.db)
     penny._init_channel(config, channel)
-    penny._connect_scheduler(config)
     _seed_profile_and_history(penny)
+    channel.ready.set()
 
-    task = asyncio.create_task(penny.run())
-    try:
-        await wait_until(channel.listen_started.is_set)
-        assert channel.sent == []
+    await penny._run_startup_notifications([])
 
-        channel.ready.set()
-        await wait_until(lambda: len(channel.sent) == 1)
-        assert channel.sent[0] == (TEST_SENDER, _REPLY)
+    assert channel.sent == [(TEST_SENDER, _REPLY)]
+    prompt = _find_request(mock_llm, "just restarted")
+    assert prompt == render_changelog_announcement([])
 
-        prompt = _find_request(mock_llm, "just restarted")
-        assert prompt == render_changelog_announcement([])
-    finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        await penny.shutdown()
+    await penny.shutdown()
 
 
 @pytest.mark.asyncio
