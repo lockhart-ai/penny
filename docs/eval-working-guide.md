@@ -35,7 +35,16 @@ unexpected/undesired behaviour we should try our best to follow the sequence abo
 it."* The sequence: replay prod verbatim to measure the regression; swap proper nouns for
 synthetic ones and confirm it still reproduces; then apply the fix. Purely synthetic cases are too
 narrow and easy — scoring well on them misses behaviour expected in use. Existing synthetic cases
-stay as they are; this governs failures found from here on.
+stay as they are; this governs failures found from here on. It covers every real-use failure, not
+only ones that need a model fix — one whose fix is wholly deterministic (a tool argument, a
+refusal, a render) still needs its own replay-derived case, because a mock test in `make check`
+proves the mechanism but never closes a real-use failure (#2909).
+
+**Precondition.** A prod failure is only expected to reproduce on the suite's model and provider
+when prod's own model build behaves the same way — never a 4-bit build, which causes most of the
+spirals and refusal thrashes a replay would otherwise blame on the prompt
+([`docs/reference/model-builds.md`](reference/model-builds.md)). When a replay doesn't reproduce a
+prod failure, check prod's precision before doubting the case.
 
 The path, in order. Each step says who does it, what it produces, and where the detail lives:
 
@@ -64,15 +73,18 @@ The path, in order. Each step says who does it, what it produces, and where the 
    ([`docs/agent-task-workflow.md`](agent-task-workflow.md); §8 "Building the world and the five
    wordings" below).
 9. **Run it to show it reproduces** (a kitten), scoped, on the suite's model, at the case's commit
-   — the "before" — posted to the PR (§9 "Running", §10 "Reading a run" below). It reproduces the
-   failure when any of the three measures shows it: a claim fails, the spread is wide, or the
-   token cost is high — whether the sample times out or finishes is not the point. Only when all
-   three read healthy does the case not reproduce it: back to step 4.
+   — the "before" — posted to the PR (§9 "Running", §10 "Reading a run" below). When the fix has
+   already landed, this run reverts its files in place (plus any later file the old code needs to
+   import to run at all) and the PR says so (#2905, #2909). It reproduces the failure when any of
+   the three measures shows it: a claim fails, the spread is wide, or the token cost is high —
+   whether the sample times out or finishes is not the point. Only when all three read healthy
+   does the case not reproduce it: back to step 4.
 10. **Push the fix to the same PR** (a kitten), one lever per round — presentation before wording
     before code (§11 "Reasoning about a fix" below).
 11. **Run it again to show it resolves** (a kitten), at the new head, with the neighbours the
-    change could disturb — the "after" — posted to the same PR as a new comment, compared against
-    the "before" on all three measures. Further rounds repeat steps 10 and 11.
+    change could disturb — the "after" — posted to the same PR as a new comment, with
+    `BASELINE=<before-run-dir>` so the comparison against the "before" on all three measures rides
+    the same report (§9 "Running" below). Further rounds repeat steps 10 and 11.
 12. **Review and merge** (the coordinator, then the code owner). The PR adds an eval case, so the
     code owner reviews it; a batch of fixes still ends with one whole-suite run, asked of the code
     owner first. The reproducing case then stays in the suite as the regression guard
@@ -83,6 +95,12 @@ run it to show it reproduces the failure, then push the fix, run it again to sho
 then we have both runs on the pr."* The case and its fix live together; the two posted runs, each
 at the commit it measured, are the evidence. Each run's `EVAL_LEVER` says which it is — for example
 `reproduces: <the failure>` and `fix: <the lever>`.
+
+**Mechanics.** Always name the model explicitly — `LLM_MODEL=google/gemma-4-26b-a4b-it` — since
+the roster's first `EVAL_MODELS` entry may not be the suite's model. A replay and a scoped
+`EVAL_PYTEST_ARGS` both take the **container's** path, `penny/tests/eval/...`, never the host
+repo's `penny/penny/tests/eval/...` — the container's working directory is the `penny/` package
+root itself. Runs pinned to one provider take turns on that provider's lock (§9 "Running" below).
 
 ## 2 · What the suite is for
 
@@ -375,25 +393,61 @@ sample is, or changes the set of claims a case can make, it is a **new** case an
 is left exactly as it is; otherwise the existing case's world is wrong, and it is corrected in
 place.
 
-**Reproduce, then genericise.** Replay the recorded input on the suite's model to confirm the
-failure is not a one-off — `penny/penny/tests/eval/utils/replay.py` reads a promptlog row **by
-id** and replays its exact messages:
+**Step 1, the verbatim replay.** Confirm the failure is not a one-off by replaying the recorded
+promptlog row, by id, on CoreWeave — `penny/penny/tests/eval/utils/replay.py`'s module docstring
+is the full reference for every mode and flag:
 
 ```
-python -m penny.tests.eval.utils.replay --id <promptlog id> --samples 12
+docker compose run --rm --no-deps penny \
+    env LLM_API_URL=https://openrouter.ai/api LLM_MODEL=google/gemma-4-26b-a4b-it \
+    LLM_API_KEY=$OPENROUTER_KEY LLM_PROVIDER=CoreWeave \
+    python -m penny.tests.eval.utils.replay --id <promptlog id> --samples 15 --mode plain \
+        --jsonl /tmp/replay-<promptlog id>.jsonl
 ```
 
-(run inside the penny container; a non-collector prompt, including every chat turn, is replayed
-verbatim automatically). Once the full-context replay reproduces, genericise by swapping each real
-proper noun for another real one of the same kind (topics changed for privacy), one-to-one,
-inside that same full recorded context — never by rebuilding a simpler world. Before running the
-genericised version, compare its rendered world prompt's structure (the store map, the history
-turns, each section) against the promptlog row it came from; a world that drops or collapses a
-section is a different, easier input, not the one being reproduced. Confirm it still reproduces
-before it goes into a fixture — if the swap kills the repro, the trigger was in the specifics, and
-the case narrows back to what it actually was. A hand-built "minimal" world for a duplicate-job
-bug passed 15/15 on the pre-fix code; only a world mirroring the prod prompt one-to-one reproduced
-it (#2905) — the worked example this governs.
+(a non-collector prompt, including every chat turn, is replayed verbatim with `--mode plain`
+automatically; `--mode verbatim-request` sends the row's own stored request byte-for-byte
+instead, see the docstring). A replay draws **one step** and runs no tools — it re-sends the
+exact recorded messages and reads only what the model does next. That confirms an entry decision
+(a refusal, a wrong first call), but a failure that only unfolds over several steps — thrashing
+through refusals, redirecting after a tool reply — is seen only once the step actually runs,
+inside the mirrored world below; the replay just confirms the step that world will reproduce.
+
+**Step 2, the mirrored world.** Build a world that mirrors the prod prompt one-to-one, checked
+against the promptlog row before any run:
+
+- [ ] every collection in the store map and self-state — active or archived, job or plain
+  storage, its rough entry count;
+- [ ] every history turn in the window, in the same order;
+- [ ] the ask's own structure (a bulleted topic list, a cadence note, an aside — whatever shape
+  the real one had).
+
+Nouns are swapped one-to-one for other real ones of the same kind (topics changed for privacy). A
+background collection gets an unrelated topic, never a paraphrase of the user's own one. A
+hand-built "minimal" world for a duplicate-job bug passed 15/15 on the pre-fix code; only a world
+mirroring the prod prompt one-to-one reproduced it (#2905) — the worked example this governs.
+Confirm the genericised world still reproduces before it goes into a fixture — if the swap kills
+the repro, the trigger was in the specifics, and the case narrows back to what it actually was.
+Grep the diff for every original name, place, date, reference and collection topic or source
+before every commit and before any approval — this step is built from real prod text, which
+makes it the one most likely to leak it.
+
+**Step 3, the before run on pre-fix code.** When the fix has already landed, revert its files in
+place for this run only — plus any later file the old code needs to import to run at all — and
+say so in the PR (#2905, #2909). A case that passes on pre-fix code has not reproduced the
+failure: go back to step 2, never land it as evidence.
+
+**Claim sanity**, checked before trusting any count the before or after run reports:
+
+- [ ] the claim judges the outcome the user asked for, never a route or a fact nobody asked about;
+- [ ] the mechanism under test actually fired in the samples — read the sample DBs (a discard
+  count, for example), don't infer it from the reply alone;
+- [ ] a 0/N or an N/N is read as a possible checker defect first, not as the model's final word
+  (§3 "A measurement must be able to see the failure" above).
+
+Once the before run and the fix are both in hand, step 4 is the fix itself, pushed to the same
+PR; the after run at the new head posts with `BASELINE=<before-run-dir>` so the PR carries both
+(§1 step 11 above; §9 "Running" below).
 
 ## 6 · The case proposal
 

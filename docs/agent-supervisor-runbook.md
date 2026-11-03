@@ -24,13 +24,18 @@ Dependent PRs are linked as a GitHub stack (`gh stack link`) before review, so t
 **A problem with Penny's behaviour is worked case-first.** The issue is still filed and the kitten
 still briefed as above, but the path between steps 1 and 4 differs — [`docs/eval-working-guide.md`
 §1 "From a failure to a case to a fix"](eval-working-guide.md) is the whole of it. You (not a
-kitten) diagnose and distil the failure, check `docs/eval-catalogue.md` (`make catalogue`
-generates it — gitignored, not committed) for what already covers it, and put the finished
-case proposal to the code owner in one `ask` card
-([§6 "The case proposal"](eval-working-guide.md)). The kitten's one draft PR then carries the case
-together with its fix: the run that reproduces the failure, the fix, and the run that resolves it,
-each posted as a new comment. Because that PR adds an eval case, it goes to the code owner's
-review at step 9 like any other, not just an internals approval.
+kitten) diagnose and distil the failure, reading the failing samples' thinking yourself before
+designing the fix, check `docs/eval-catalogue.md` (`make catalogue` generates it — gitignored, not
+committed) for what already covers it, and put the finished case proposal to the code owner in one
+`ask` card ([§6 "The case proposal"](eval-working-guide.md)). The kitten's one draft PR then
+carries the case together with its fix: the run that reproduces the failure, the fix, and the run
+that resolves it, each posted as a new comment. Because that PR adds an eval case, it goes to the
+code owner's review at step 9 like any other, not just an internals approval.
+
+**The coordinator gate.** Never approve a fix to a real-use failure without its replay-derived
+case landing in the same PR — a fix with no reproducing case is unmeasured, whatever the code
+review shows. Meta #2907 is the live list of open real-use failures still owed a case; its own
+comments, not this doc, are where that list is kept current.
 
 ## 2. Keeping the code owner informed
 
