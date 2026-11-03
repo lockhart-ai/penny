@@ -210,8 +210,9 @@ def _collection_tool(penny: Penny) -> tuple[Tool, _RecordingDecisionClient]:
     )
     tools = build_memory_tools(
         penny.db,
-        penny.embedding_model_client,
-        penny.chat_agent.name,
+        embedding_client=penny.embedding_model_client,
+        model_client=penny.model_client,
+        agent_name=penny.chat_agent.name,
         decider=EntryDecider(recording),
         name_decider=CollectionNameDecider(recording),
         include_lifecycle=False,
