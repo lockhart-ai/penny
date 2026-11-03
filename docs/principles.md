@@ -243,6 +243,13 @@ Quotes are the code owner's own words.
 
 ## 4. How behaviour is verified
 
+Penny is code plus a model, so a change to her is reasoned about by measuring the whole system.
+The code owner: *"the entire point for setting up the eval suite is to be able to effectively
+measure penny's behaviour, so we can reason about changes. unit tests satisfy that for code, but
+since penny is code+model, we must reason about changes to that system as a whole."* A change is
+judged by a case that can fail on the baseline; one whose baseline and fix both pass was not
+measured ([`docs/eval-working-guide.md`](eval-working-guide.md) §1).
+
 The eval cases are where the code owner states what Penny should do. The contract is
 `docs/eval-case-design.md`.
 
