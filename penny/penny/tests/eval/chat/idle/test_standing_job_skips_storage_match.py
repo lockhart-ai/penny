@@ -33,9 +33,11 @@ different real one of the same kind.
   the trip's cities: one storage-only (no job ever configured on it), one still carrying
   its own old job (a prompt and a schedule) from before it was archived. Their names share
   the city but nothing else — no template to extend.
-- A long store map of the user's other, unrelated standing interests and jobs (news,
-  hobbies, media-watch collections), in rough proportion to the real one, so the live turn
-  answers against the same size and shape of self-state, not a two-collection stand-in.
+- A long store map of the user's other, unrelated standing interests and jobs — crafts,
+  games, collecting, outdoor hobbies — different topics from the real ones (never a
+  paraphrase of what any of them actually track), in rough proportion to the real one's
+  size and shape, so the live turn answers against a crowded self-state, not a
+  two-collection stand-in.
 - Nine conversation turns in the history window: four turns of unrelated small talk, then
   the trip being announced, a memory of the earlier visit to the history city, the dates
   that created the trip collection, the detailed booking breakdown, and a recap of the
@@ -191,66 +193,65 @@ class _BackgroundCollection(NamedTuple):
 
 _BACKGROUND_COLLECTIONS: tuple[_BackgroundCollection, ...] = (
     _BackgroundCollection(
-        "cohere_vancouver_ai_jobs", "Tracks AI-role postings on the careers site.", 8
+        "vintage_postcard_collection", "Vintage postcards, by era and region.", 8
     ),
-    _BackgroundCollection("dogs", "Dog facts, memes and cute pictures.", 20),
+    _BackgroundCollection("houseplant_care_notes", "Houseplant varieties and care tips.", 20),
     _BackgroundCollection(
-        "bbc_daily_headlines",
-        "Daily top 3 headlines from bbc.co.uk, reuters.com, apnews.com, and cbc.ca.",
+        "daily_trivia_facts",
+        "One surprising trivia fact a day, picked from a random category.",
         12,
-        prompt="Find the top 3 news headlines from bbc.co.uk, reuters.com, apnews.com, and cbc.ca.",
+        prompt=(
+            "Pick a trivia category at random (history, geography, food, or language) and "
+            "find one surprising fact. Save it with a descriptive key."
+        ),
         schedule="FREQ=DAILY;BYHOUR=9",
     ),
     _BackgroundCollection(
-        "noir_media",
-        "Scout for new noir media (movie, show, video game, or book) for a watchlist.",
+        "board_game_picks",
+        "Scout for a new board game (party, strategy, or cooperative) to try.",
         15,
-        prompt="Pick a media type at random: movie, show, video game, or book. Find a noir pick.",
+        prompt=(
+            "Pick a board game genre at random: party, strategy, or cooperative. Find one "
+            "highly-rated pick in that genre."
+        ),
         schedule="FREQ=DAILY;BYHOUR=21",
     ),
     _BackgroundCollection(
-        "daily_manga_picks",
-        "One manga recommendation a day, tailored to a random theme.",
+        "daily_word_puzzle",
+        "One word puzzle recommendation a day, tailored to a random difficulty.",
         1,
-        prompt="Pick a theme at random and recommend one manga tailored to it.",
+        prompt="Pick a difficulty at random and recommend one word puzzle tailored to it.",
         schedule="FREQ=DAILY;BYHOUR=19",
     ),
+    _BackgroundCollection("knitting_patterns", "Knitting patterns and techniques.", 20),
     _BackgroundCollection(
-        "retro_arcade_games", "Retro arcade-friendly games — one platform+genre per cycle.", 20
+        "vintage_typewriters", "Vintage typewriter models, repair tips, and history.", 20
     ),
-    _BackgroundCollection("synthesizers", "Synthesizer gear, patches, history, and news.", 20),
     _BackgroundCollection(
-        "drum_machine_rd",
-        "Research for a DIY drum machine prototype using a Raspberry Pi.",
+        "home_brewing_rd",
+        "Research for a home brewing setup.",
         20,
-        prompt="Research DIY drum machine builds using a Raspberry Pi and reference projects.",
+        prompt=(
+            "Research home brewing equipment and recipes, focusing on fermentation "
+            "temperature control and bottle conditioning."
+        ),
         schedule="FREQ=HOURLY;INTERVAL=12",
     ),
+    _BackgroundCollection("pottery_techniques", "Pottery and ceramics techniques.", 15),
     _BackgroundCollection(
-        "photography_technique_articles",
-        "Photography technique articles, random subtopic each cycle.",
-        15,
+        "penny_wonders_open", "Daily aggregator of odd facts and curiosities.", 10
+    ),
+    _BackgroundCollection("hiking_trail_notes", "Hiking trail notes and conditions.", 15),
+    _BackgroundCollection("chess_openings", "Chess openings, puzzles, and annotated games.", 12),
+    _BackgroundCollection("cheese_and_wine_pairings", "Cheese and wine pairing notes.", 15),
+    _BackgroundCollection("birdwatching_sightings", "Birdwatching sightings and field notes.", 15),
+    _BackgroundCollection(
+        "antique_furniture_finds", "Antique furniture styles, eras, and restoration notes.", 20
     ),
     _BackgroundCollection(
-        "penny_curiosities_open", "Daily aggregator of top media across broad topics.", 10
-    ),
-    _BackgroundCollection(
-        "history_news", "Latest archaeology, ancient history, and historiography news.", 15
-    ),
-    _BackgroundCollection(
-        "traveller_rpg", "Traveller RPG rule books, novels, lore and new releases.", 12
-    ),
-    _BackgroundCollection(
-        "skincare_routine", "Skincare products and routines the user tracks.", 15
-    ),
-    _BackgroundCollection(
-        "ocean_news", "Ocean news — marine biology, deep-sea exploration, reefs.", 15
-    ),
-    _BackgroundCollection(
-        "classic_cinema_films", "Classic films from specific decades and genres.", 20
-    ),
-    _BackgroundCollection(
-        "star_wars_lore", "Collects news and publications on Star Wars lore and history.", 20
+        "stand_up_comedy_specials",
+        "Stand-up comedy specials worth watching, by comedian and special.",
+        20,
     ),
     _BackgroundCollection(
         "penny_reflections", "A journal for Penny to record reflections on her own runs.", 7
@@ -263,10 +264,10 @@ _BACKGROUND_COLLECTIONS: tuple[_BackgroundCollection, ...] = (
 
 _ARCHIVED_UNRELATED: tuple[_BackgroundCollection, ...] = (
     _BackgroundCollection(
-        "estate_sale_auction_monitor", "Tracks a specific estate-sale auction listing.", 4
+        "neighborhood_book_club_notes", "Notes from a neighborhood book club that wrapped up.", 4
     ),
     _BackgroundCollection(
-        "loyalty_points_and_status_options", "Notes on airline/hotel loyalty tiers and points.", 3
+        "old_phone_upgrade_research", "Notes comparing phone upgrade options.", 3
     ),
 )
 
