@@ -807,6 +807,7 @@ class CollectionCreateTool(MemoryTool):
     """
 
     name = "collection_configure"
+    mutates = True
     # The creation / re-render echo points at the metadata read for what was configured.
     advises = ("memory_get",)
     description = (
@@ -849,7 +850,9 @@ class CollectionCreateTool(MemoryTool):
         "Returns a structured echo of what landed (description, prompt, schedule, "
         "notify, expiry). Confirm it back — don't invent fields it didn't return. "
         "Plain storage needs no call at all — collection_write creates storage "
-        "automatically; use collection_configure for jobs and config."
+        "automatically; use collection_configure for jobs and config.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters = {
         "type": "object",
@@ -925,11 +928,18 @@ class CollectionCreateTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         """A prompt-less create yields an INERT storage collection; a prompt create
-        stands up the job.  The two paths read as a table of contents."""
+        stands up the job.  The two paths read as a table of contents.
+
+        ``plan`` (#2946, following #2933) wraps whatever either path returns —
+        a refusal (``_reject_job_args`` / a bad schedule) reads as a refusal
+        preview, a real create reads as what would land — never a second,
+        separately-written description."""
         args = CollectionCreateArgs(**kwargs)
         if args.prompt is None:
-            return await self._create_inert(args)
-        return await self._create_with_prompt(args, args.prompt)
+            result = await self._create_inert(args)
+        else:
+            result = await self._create_with_prompt(args, args.prompt)
+        return as_plan_result(result) if args.plan else result
 
     async def _create_with_prompt(self, args: CollectionCreateArgs, prompt: str) -> ToolResult:
         """Stand up a job from the model's own free-text prompt: parse the schedule,
@@ -956,6 +966,7 @@ class CollectionCreateTool(MemoryTool):
             args.description,
             description_embedding=description_embedding,
             created_by_run_id=self._created_by_run_id,
+            plan=args.plan,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         return ToolResult(message=f"{render_inert_echo(memory)}{suffix}", mutated=True)
@@ -1010,6 +1021,7 @@ class CollectionCreateTool(MemoryTool):
             created_by_run_id=self._created_by_run_id,
             expires_at=expires_at,
             max_runs=schedule.max_runs,
+            plan=args.plan,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         echo = render_creation_echo(memory, user_timezone_name(self._db), now=self._db.clock.now())
@@ -2046,6 +2058,7 @@ class CollectionSetTool(MemoryTool):
     validation — this class is a dispatcher, not a re-implementation."""
 
     name = "collection_configure"
+    mutates = True
     # The creation echo points at the metadata read for what was configured; the
     # same-job refusal (#1775, tightened #2893, ``_SAME_JOB_REFUSAL``) points at
     # ``collection_list`` for the near-match it names, so the model can read what that
@@ -2076,7 +2089,11 @@ class CollectionSetTool(MemoryTool):
         "from the global notification mute.\n"
         "\n"
         "Plain storage needs no call here — collection_write creates storage "
-        "automatically. Use this tool only for jobs and settings."
+        "automatically. Use this tool only for jobs and settings.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it — "
+        "created, updated, cleared to plain storage, or refused, with nothing "
+        "actually changed."
     )
     parameters = {
         "type": "object",
@@ -2135,16 +2152,24 @@ class CollectionSetTool(MemoryTool):
 
     async def _dispatch(self, args: CollectionSetArgs) -> ToolResult:
         """Dispatch on IDENTITY, not on the name alone: the collection this call
-        names, else the one it duplicates, else a new one."""
+        names, else the one it duplicates, else a new one.
+
+        ``plan`` (#2946) threads to whichever path this picks — the dispatch
+        itself is unchanged.  The create/update delegates wrap their OWN result
+        (they get ``plan`` too), so this only wraps the refusals it raises
+        directly (the birth-needs-description / same-job / tombstone cases) —
+        wrapping a delegate's already-wrapped result again would double the
+        PLAN headline."""
         if self._db.memories.get(args.collection) is not None:
             return await self._apply_to(args, args.collection)
         duplicate = self._db.memories.find_duplicate_collection(args.collection)
         if duplicate is not None:
-            return await self._same_job(args, duplicate)
+            return self._same_job(args, duplicate)
         if args.description is None:
-            return ToolResult(
+            refusal = ToolResult(
                 message=_SET_BIRTH_NEEDS_DESCRIPTION.format(name=args.collection), success=False
             )
+            return as_plan_result(refusal) if args.plan else refusal
         result = await self._create._run(
             name=args.collection,
             description=args.description,
@@ -2152,6 +2177,7 @@ class CollectionSetTool(MemoryTool):
             schedule=args.schedule,
             expires_at=args.expires_at,
             notify=bool(args.notify),
+            plan=args.plan,
         )
         return _with_configure_outcome(result, CollectionConfigureOutcome.CREATED)
 
@@ -2165,10 +2191,11 @@ class CollectionSetTool(MemoryTool):
             prompt=args.prompt,
             schedule=args.schedule,
             expires_at=args.expires_at,
+            plan=args.plan,
         )
         return _with_configure_outcome(result, CollectionConfigureOutcome.UPDATED)
 
-    async def _same_job(self, args: CollectionSetArgs, duplicate: MemoryRow) -> ToolResult:
+    def _same_job(self, args: CollectionSetArgs, duplicate: MemoryRow) -> ToolResult:
         """A new name for a job we already have (#1775) — REFUSED either way (#2893),
         and nothing changes.  An ARCHIVED match is the #1567 tombstone refusal (reviving
         a retired mechanism is the user's call).  An ACTIVE match used to be UPDATED in
@@ -2177,13 +2204,21 @@ class CollectionSetTool(MemoryTool):
         settings silently overwritten by a different job, and then overwritten again by
         the next one.  Never acting on a target the call didn't name is the ordinary
         rule for every other tool on this surface; the refusal names the near-match and
-        both ways to proceed on purpose, same shape as the tombstone."""
+        both ways to proceed on purpose, same shape as the tombstone.
+
+        Never actually refused twice — ``plan`` (#2946) wraps the SAME refusal
+        this would otherwise return, so a planning call learns it would be
+        refused instead of silently reading as a would-be success."""
         if duplicate.archived:
-            return ToolResult(message=render_tombstone_duplicate(duplicate), success=False)
-        return ToolResult(
-            message=_SAME_JOB_REFUSAL.format(requested=args.collection, existing=duplicate.name),
-            success=False,
-        )
+            refusal = ToolResult(message=render_tombstone_duplicate(duplicate), success=False)
+        else:
+            refusal = ToolResult(
+                message=_SAME_JOB_REFUSAL.format(
+                    requested=args.collection, existing=duplicate.name
+                ),
+                success=False,
+            )
+        return as_plan_result(refusal) if args.plan else refusal
 
 
 _SET_BIRTH_NEEDS_DESCRIPTION = (
@@ -2231,6 +2266,7 @@ class CollectionUpdateTool(MemoryTool):
     """
 
     name = "collection_configure"
+    mutates = True
     # The creation / re-render echo points at the metadata read for what was configured.
     advises = ("memory_get",)
     description = (
@@ -2276,7 +2312,9 @@ class CollectionUpdateTool(MemoryTool):
         "\n"
         "IMPORTANT: `prompt` is a FULL replacement — the whole "
         "prompt body, never a diff or a fragment; read the current body via "
-        "`memory_get{<collection>}` first if you need to keep any of it."
+        "`memory_get{<collection>}` first if you need to keep any of it.\n"
+        "\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters = {
         "type": "object",
@@ -2343,12 +2381,19 @@ class CollectionUpdateTool(MemoryTool):
         return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
+        """Validate args, dispatch, then wrap for ``plan`` (#2946) — a single
+        wrap point so every path below (a refusal, a clear, an edit, a
+        replace) reads as a plan preview without each one writing its own."""
+        args = CollectionUpdateArgs(**kwargs)
+        result = await self._dispatch(args)
+        return as_plan_result(result) if args.plan else result
+
+    async def _dispatch(self, args: CollectionUpdateArgs) -> ToolResult:
         """A blank ``prompt`` or a blank ``schedule`` clears the WHOLE job (#2894) —
         checked first, before the schedule is even parsed (a blank wouldn't parse as
         an RRULE anyway).  Otherwise this reads as it always did: parse the apply-time
         schedule (#1857), then branch on ``prompt``: unset (a plain metadata edit) or
         real text (a full replacement).  Reads as a table of contents."""
-        args = CollectionUpdateArgs(**kwargs)
         if self._clears_the_job(args):
             return await self._clear_job(args, self._db.memories.get(args.name))
         parsed = self._parse_schedule(args)
@@ -2453,6 +2498,7 @@ class CollectionUpdateTool(MemoryTool):
             expires_at=expires_at,
             clear_expiry=expiry_was_normalised(args.expires_at, expires_at),
             run_id=self._run_id,
+            plan=args.plan,
         )
         message = _PLAIN_STORAGE_MESSAGE.format(name=name, count=entry_count)
         return ToolResult(message=message, mutated=had_job)
@@ -2552,6 +2598,7 @@ class CollectionUpdateTool(MemoryTool):
             clear_expiry=expiry_was_normalised(args.expires_at, expires_at),
             replace_schedule=schedule is not None,
             run_id=self._run_id,
+            plan=args.plan,
         )
 
 

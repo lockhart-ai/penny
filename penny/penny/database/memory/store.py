@@ -427,6 +427,7 @@ class MemoryStore:
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
         max_runs: int | None = None,
+        plan: bool = False,
     ) -> MemoryRow:
         return self._create_memory(
             name,
@@ -440,6 +441,7 @@ class MemoryStore:
             created_by_run_id=created_by_run_id,
             expires_at=expires_at,
             max_runs=max_runs,
+            plan=plan,
         )
 
     def create_log(
@@ -472,7 +474,16 @@ class MemoryStore:
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
         max_runs: int | None = None,
+        plan: bool = False,
     ) -> MemoryRow:
+        """``plan`` (#2946, following #2933's ``Collection.write``) runs this EXACT
+        same code — the same row, built the same way — then rolls the transaction
+        back instead of committing it and skips the mutation event + change
+        notification, rather than a second, separately-written "describe what
+        this would do" path.  Every field on ``memory`` is set in Python before
+        ``session.add`` (the primary key is the name itself, never
+        server-generated), so the returned row never needs ``session.refresh`` —
+        a rolled-back insert leaves nothing in the database to refresh FROM."""
         name = slug(name)
         if self.get(name) is not None:
             raise MemoryAlreadyExistsError(name)
@@ -500,9 +511,14 @@ class MemoryStore:
                 updated_at=now,
             )
             session.add(memory)
-            session.commit()
-            session.refresh(memory)
-            logger.debug("Created %s memory %s", type_.value, name)
+            if plan:
+                session.rollback()
+            else:
+                session.commit()
+                session.refresh(memory)
+            logger.debug("%s %s memory %s", "Planned" if plan else "Created", type_.value, name)
+        if plan:
+            return memory
         # A collection is a registry mechanism — its creation is a mutation event
         # (#1560).  Logs aren't mechanisms (the reference map's mutation stream is
         # collections/skills), so they don't get one; nor do seeded/migration
@@ -804,6 +820,7 @@ class MemoryStore:
         clear_extraction_prompt: bool = False,
         replace_schedule: bool = False,
         run_id: str | None = None,
+        plan: bool = False,
     ) -> MemoryRow:
         """Update fields on an existing collection.  Only set fields are applied.
 
@@ -821,6 +838,17 @@ class MemoryStore:
         caller clearing a stored prompt that can never run (no schedule) says so
         explicitly, since a bare ``extraction_prompt=None`` already means "not stated"
         here too.
+
+        ``plan`` (#2946, following #2933's ``Collection.write``) runs this EXACT
+        same code — the same field edits, the same row — then rolls the
+        transaction back instead of committing it and skips the mutation event
+        + change notification.  Unlike a fresh create, ``memory`` here already
+        has a persisted identity (loaded via ``session.get``), so rolling it
+        back EXPIRES it — reading its fields afterward would silently re-fetch
+        the pre-edit row from the database instead of the row's would-be state.
+        So the plan branch snapshots the edited row into a plain, session-free
+        ``MemoryRow`` (``model_dump`` → reconstruct) BEFORE the rollback, while
+        the edited values are still live Python attributes, and returns that.
         """
         name = slug(name)
         self._require_collection(name)
@@ -846,8 +874,15 @@ class MemoryStore:
             changed = fields.apply_to(memory)
             memory.updated_at = self._clock.now()
             session.add(memory)
-            session.commit()
-            session.refresh(memory)
+            if plan:
+                result = MemoryRow(**memory.model_dump())
+                session.rollback()
+            else:
+                session.commit()
+                session.refresh(memory)
+                result = memory
+        if plan:
+            return result
         # Record the config change as a durable event (#1560).  Only when a field
         # actually moved — a no-op update (every field None) isn't a mutation.
         # The new values live verbatim in the run's promptlog tool call; the event
@@ -864,7 +899,7 @@ class MemoryStore:
                 detail=MutationDetail(changed_fields=changed, priors=_priors_from(before, changed)),
             )
         self._notify_changed(name)
-        return memory
+        return result
 
     def link_source_message(self, run_id: str, source_message_id: int) -> None:
         """Stamp the spawning message on every mechanism a chat run created (#1566).

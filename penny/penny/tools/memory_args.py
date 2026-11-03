@@ -267,6 +267,11 @@ class CollectionCreateArgs(ToolArgs):
     # Notify-on-new (emission-as-property, #1557): true when the user asked to be
     # told / kept posted / alerted about new entries.  Defaults false (silent).
     notify: bool = False
+    # The structural plan mark (#2946, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class LogCreateArgs(ToolArgs):
@@ -338,6 +343,11 @@ class CollectionSetArgs(ToolArgs):
     schedule: ScheduleSetterText = None
     expires_at: OptionalText = None
     notify: bool | None = None
+    # The structural plan mark (#2946, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class CollectionUpdateArgs(ToolArgs):
@@ -382,6 +392,11 @@ class CollectionUpdateArgs(ToolArgs):
     # OptionalText: omitted leaves the end condition alone; a blank ``""`` is refused
     # (#1776), mirroring create.
     expires_at: OptionalText = None
+    # The structural plan mark (#2946, following #2933) — every ``mutates=True``
+    # tool declares this literal field itself (``Tool.__init_subclass__`` asserts
+    # it's here, rather than synthesising it, so a type checker can see it on
+    # ``args.plan``).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 # ── Collection reads ────────────────────────────────────────────────────────

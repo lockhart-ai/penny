@@ -246,6 +246,8 @@ class TestMinimalSurfaceCensus:
     field can't silently creep back onto the surface."""
 
     def test_create_accepts_exactly_the_minimal_fields(self):
+        # ``plan`` (#2946, following #2933) is the one structural addition every
+        # ``mutates=True`` tool's own args model carries — not a shrapnel field.
         assert set(CollectionCreateArgs.model_fields) == {
             "name",
             "description",
@@ -253,6 +255,7 @@ class TestMinimalSurfaceCensus:
             "schedule",
             "notify",
             "expires_at",
+            "plan",
         }
 
     def test_update_accepts_exactly_the_minimal_fields(self):
@@ -263,6 +266,7 @@ class TestMinimalSurfaceCensus:
             "schedule",
             "notify",
             "expires_at",
+            "plan",
         }
 
     def test_dropped_shrapnel_is_gone_from_both_surfaces(self):
@@ -5299,11 +5303,68 @@ def _plan_verify_log_append(db) -> None:
     assert entries[0].content == "something happened"
 
 
+def _plan_setup_configure_create(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
+    """A name that doesn't exist and isn't anyone's duplicate (#2946) — the
+    create path, dispatched by ``CollectionSetTool`` (the one true front door,
+    #2768) rather than driving ``CollectionCreateTool`` directly."""
+    tool = CollectionSetTool(db, _make_llm_client(mock_llm))
+    return tool, {
+        "collection": "plan-new-watch",
+        "description": "track the plan-new-watch listing",
+        "prompt": "Read the listing page and note the price.",
+        "schedule": "FREQ=HOURLY",
+    }
+
+
+def _plan_verify_configure_create(db) -> None:
+    row = db.memories.get("plan-new-watch")
+    assert row is not None
+    assert row.extraction_prompt == "Read the listing page and note the price."
+
+
+def _plan_setup_configure_update(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
+    """An EXISTING collection's description, no ``prompt`` — the plain metadata
+    edit path (``_edit_metadata``), dispatched the same way."""
+    _seed_collection(db, name="plan-update-me", description="old description")
+    tool = CollectionSetTool(db, _make_llm_client(mock_llm))
+    return tool, {"collection": "plan-update-me", "description": "new description"}
+
+
+def _plan_verify_configure_update(db) -> None:
+    row = db.memories.get("plan-update-me")
+    assert row is not None
+    assert row.description == "new description"
+
+
+def _plan_setup_configure_clear(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
+    """A blank ``prompt`` on a job collection clears the WHOLE job (#2894),
+    landing it as plain storage — entries untouched, nothing to run."""
+    _seed_collection(db, name="plan-clear-me", extraction_prompt="old job instructions")
+    tool = CollectionSetTool(db, _make_llm_client(mock_llm))
+    return tool, {"collection": "plan-clear-me", "prompt": ""}
+
+
+def _plan_verify_configure_clear(db) -> None:
+    row = db.memories.get("plan-clear-me")
+    assert row is not None
+    assert row.extraction_prompt is None
+    assert row.schedule is None
+
+
 _PLAN_CASES: dict[str, _PlanCase] = {
     "collection_write": _PlanCase(_plan_setup_write_merge, _plan_verify_write_merge),
     "collection_archive": _PlanCase(_plan_setup_archive, _plan_verify_archive),
     "collection_remove": _PlanCase(_plan_setup_remove, _plan_verify_remove),
     "log_append": _PlanCase(_plan_setup_log_append, _plan_verify_log_append),
+    "collection_configure_create": _PlanCase(
+        _plan_setup_configure_create, _plan_verify_configure_create
+    ),
+    "collection_configure_update": _PlanCase(
+        _plan_setup_configure_update, _plan_verify_configure_update
+    ),
+    "collection_configure_clear": _PlanCase(
+        _plan_setup_configure_clear, _plan_verify_configure_clear
+    ),
 }
 
 
@@ -5337,3 +5398,41 @@ class TestPlanMode:
         assert apply_result.mutated is True
         assert _dump_db(db) != before, "the real call should actually change something"
         case.verify_applied(db)
+
+
+class TestConfigurePlanRefusal:
+    """A refusal ``collection_configure`` raises on its own (#2946) — never a
+    store call, so there's nothing to roll back — previews DIFFERENTLY from a
+    would-land change: the real call refuses too, so plan and apply read the
+    same refusal, and the store stays untouched by either one.  The same-job
+    near-match (#1775/#2893) is the representative case; a bad-schedule
+    refusal shares the mechanism (``as_plan_result`` branches on
+    ``result.success``, not on which refusal it is)."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_job_plan_previews_the_refusal_and_apply_still_refuses(
+        self, db, mock_llm
+    ):
+        _seed_collection(db, name="deals", description="track the trail-runner shoe deals")
+        tool = CollectionSetTool(db, _make_llm_client(mock_llm))
+        before = _dump_db(db)
+        kwargs = {"collection": "deals-watch", "description": "a different description entirely"}
+
+        plan_result = await tool.execute(CallLink.new_top(), plan=True, **kwargs)
+        assert plan_result.success is False
+        assert plan_result.mutated is False
+        assert plan_result.message.startswith(
+            "PLAN — nothing was changed: this call would be refused —"
+        )
+        assert _SAME_JOB_REFUSAL.format(requested="deals-watch", existing="deals") in (
+            plan_result.message
+        )
+        assert _dump_db(db) == before, "a refusal preview must leave the store byte-identical"
+
+        apply_result = await tool.execute(CallLink.new_top(), **kwargs)
+        assert apply_result.success is False
+        assert apply_result.message == _SAME_JOB_REFUSAL.format(
+            requested="deals-watch", existing="deals"
+        )
+        assert db.memories.get("deals-watch") is None
+        assert _dump_db(db) == before, "the real call refuses too — nothing ever changes"
