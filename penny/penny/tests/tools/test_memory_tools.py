@@ -4158,7 +4158,8 @@ class TestFactory:
         to pass one name and refused for not passing another."""
         tools = build_memory_tools(
             db,
-            _make_llm_client(mock_llm),
+            embedding_client=_make_llm_client(mock_llm),
+            model_client=_make_llm_client(mock_llm),
             agent_name="chat",
             decider=_NO_MODEL,
             name_decider=_NO_NAME_MODEL,
@@ -4176,7 +4177,8 @@ class TestFactory:
         unrestricted, since edits are user-directed."""
         tools = build_memory_tools(
             db,
-            _make_llm_client(mock_llm),
+            embedding_client=_make_llm_client(mock_llm),
+            model_client=_make_llm_client(mock_llm),
             agent_name="chat",
             decider=_NO_MODEL,
             name_decider=_NO_NAME_MODEL,
@@ -4231,7 +4233,8 @@ class TestFactory:
         its entry mutations to X but does not strip lifecycle/other tools."""
         tools = build_memory_tools(
             db,
-            _make_llm_client(mock_llm),
+            embedding_client=_make_llm_client(mock_llm),
+            model_client=_make_llm_client(mock_llm),
             agent_name="collector",
             decider=_NO_MODEL,
             name_decider=_NO_NAME_MODEL,
@@ -5024,9 +5027,10 @@ class TestSynthesize:
 
     @pytest.mark.asyncio
     async def test_transient_embed_failure_is_actionable(self, db):
-        result = await SynthesizeTool(db, cast(Any, _FailingEmbedClient()), "test-agent").execute(
-            CallLink.new_top(), query="anything"
-        )
+        failing = cast(Any, _FailingEmbedClient())
+        result = await SynthesizeTool(
+            db, embedding_client=failing, model_client=failing, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="anything")
         assert result.success is False
         assert "Couldn't embed your query" in result.message
         assert "synthesize{query: " in result.message
@@ -5037,9 +5041,9 @@ class TestSynthesize:
         all — a draw over nothing would spend a model call on a result the
         retrieval step already decided."""
         client = _axis_client(mock_llm)
-        result = await SynthesizeTool(db, client, "test-agent").execute(
-            CallLink.new_top(), query="orbit nebula"
-        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="orbit nebula")
         assert result.success
         assert result.message == (
             'Nothing of yours matched "orbit nebula" — the state at the top of this '
@@ -5055,9 +5059,9 @@ class TestSynthesize:
         honest empty applies and no draw is made."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        result = await SynthesizeTool(db, client, "test-agent").execute(
-            CallLink.new_top(), query="aurora beacon cascade"
-        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade")
         assert result.success
         assert "Nothing of yours matched" in result.message
         assert mock_llm.requests == []
@@ -5081,9 +5085,9 @@ class TestSynthesize:
                 message=LlmMessage(role="assistant", content="They share the cascade theme.")
             )
         )
-        result = await SynthesizeTool(db, client, "test-agent").execute(
-            CallLink.new_top(), query="aurora beacon cascade"
-        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade")
         assert result.success
         assert result.message == (
             'Here\'s what your memory says about "aurora beacon cascade":\n\n'
@@ -5114,9 +5118,9 @@ class TestSynthesize:
                 message=LlmMessage(role="assistant", content="Not enough here to say.")
             )
         )
-        result = await SynthesizeTool(db, client, "test-agent").execute(
-            CallLink.new_top(), query="aurora beacon cascade"
-        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade")
         assert result.success
         assert result.message == (
             'Here\'s what your memory says about "aurora beacon cascade":\n\n'
@@ -5152,9 +5156,9 @@ class TestSynthesize:
                 message=LlmMessage(role="assistant", content="Just the one note.")
             )
         )
-        result = await SynthesizeTool(db, client, "test-agent").execute(
-            CallLink.new_top(), query="aurora beacon cascade", memories=["notes-one"]
-        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade", memories=["notes-one"])
         assert result.success
         assert "notes-one" in result.message
         assert "notes-two" not in result.message
@@ -5183,7 +5187,9 @@ class TestSynthesize:
             row.created_at = datetime(2020, 1, 1, tzinfo=UTC)
             session.add(row)
             session.commit()
-        result = await SynthesizeTool(db, client, "test-agent").execute(
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(
             CallLink.new_top(),
             query="aurora beacon cascade",
             since=datetime(2025, 1, 1, tzinfo=UTC),
@@ -5209,12 +5215,50 @@ class TestSynthesize:
         mock_llm.set_response_handler(
             lambda request, count: LlmResponse(message=LlmMessage(role="assistant", content=""))
         )
-        result = await SynthesizeTool(db, client, "test-agent").execute(
-            CallLink.new_top(), query="aurora beacon cascade"
-        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade")
         assert result.success is False
         assert "didn't come back clean" in result.message
         assert "synthesize{query: 'aurora beacon cascade'}" in result.message
+
+    @pytest.mark.asyncio
+    async def test_draw_runs_on_the_chat_model_client_not_the_embedding_client(self, db, mock_llm):
+        """#2953: the micro-context draw reasons over the retrieved hits — a CHAT
+        call — and must run on the chat model client, never the embedding client
+        the query vector was embedded with; an embedding model rejects a chat
+        request outright. Two distinct clients, sharing the same mock transport,
+        prove it through the model name each recorded call actually carries."""
+        embedding_client = _axis_client(mock_llm)
+        model_client = LlmClient(
+            api_url="http://localhost:11434",
+            model="chat-model",
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        await _create_collection(db, embedding_client, "notes", "aurora beacon cascade")
+        await CollectionWriteTool(
+            db, embedding_client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="notes",
+            entries=[{"key": "k1", "content": "aurora beacon cascade gamma"}],
+        )
+        mock_llm.set_response_handler(
+            lambda request, count: LlmResponse(
+                message=LlmMessage(role="assistant", content="They share the cascade theme.")
+            )
+        )
+        result = await SynthesizeTool(
+            db,
+            embedding_client=embedding_client,
+            model_client=model_client,
+            agent_name="test-agent",
+        ).execute(CallLink.new_top(), query="aurora beacon cascade")
+        assert result.success
+        assert len(mock_llm.requests) == 1
+        assert mock_llm.requests[0]["model"] == "chat-model"
+        assert all(req["model"] == "test-model" for req in mock_llm.embed_requests)
 
 
 # ── Plan mode (#2933) ────────────────────────────────────────────────────────

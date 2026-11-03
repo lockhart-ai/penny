@@ -43,7 +43,16 @@ RESULT_TAG = "({tool_name} result)"
 # is only the frame around it, never a replacement for the remedy.
 FRAMEWORK_NARRATION_NOT_FOUND = "You tried to use `{tool_name}` but there's no such tool."
 FRAMEWORK_NARRATION_TIMEOUT = "You tried to use `{tool_name}` but it timed out."
-FRAMEWORK_NARRATION_EXCEPTION = "You tried to use `{tool_name}` but it errored: {error}."
+# The fixed, tool-name-independent portion of the exception narration below — named
+# separately (#2953) so a reader of the promptlog (the eval harness's own
+# ``tool_call_raised_exception``) can detect "a tool call escaped with an uncaught
+# exception" by this marker alone, never by which tool it was, the same way
+# production never keys behaviour to one.  An honest ToolResult failure a tool
+# returns itself (a refusal naming why) never carries this text.
+FRAMEWORK_TOOL_EXCEPTION_MARKER = "but it errored:"
+FRAMEWORK_NARRATION_EXCEPTION = (
+    f"You tried to use `{{tool_name}}` {FRAMEWORK_TOOL_EXCEPTION_MARKER} {{error}}."
+)
 FRAMEWORK_NARRATION_INVALID_ARGS = "You tried to use `{tool_name}` but the arguments were wrong:"
 
 

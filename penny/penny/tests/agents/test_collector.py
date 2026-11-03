@@ -378,8 +378,9 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
         t.name
         for t in build_memory_tools(
             db,
-            _llm_client(),
-            "chat",
+            embedding_client=_llm_client(),
+            model_client=_llm_client(),
+            agent_name="chat",
             decider=EntryDecider(None),
             name_decider=CollectionNameDecider(None),
         )
@@ -388,8 +389,9 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
         t.name
         for t in build_memory_tools(
             db,
-            _llm_client(),
-            "collector",
+            embedding_client=_llm_client(),
+            model_client=_llm_client(),
+            agent_name="collector",
             decider=EntryDecider(None),
             name_decider=CollectionNameDecider(None),
             include_lifecycle=False,

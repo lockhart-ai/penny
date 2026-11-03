@@ -421,6 +421,13 @@ class SampleObservation(BaseModel):
     # collector cycle's own run record already names an abort by its reason, and nothing here
     # claims to read that.
     aborted_on_model_error: bool = False
+    # Whether a tool call this sample's turn made escaped its own execution with an
+    # UNCAUGHT exception — ``ToolExecutor``'s own generic catch-all, a code DEFECT (#2953),
+    # never a tool's own honest refusal (a failed ``ToolResult`` that names why).  Read off
+    # the promptlog's own exception-narration marker, never a tool name — see
+    # ``tool_call_raised_exception`` in conftest.py.  Every other driver leaves the default:
+    # nothing claims to read it there.
+    tool_raised_exception: bool = False
     # Everything the round was given, and which part of it was stated — see ``Given``.
     given: Given = Given()
     # The container the round was FRAMED on, read off the move that settled it — the same anchor

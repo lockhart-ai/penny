@@ -423,6 +423,22 @@ class Cohort:
             kind="reply",
         )
 
+    def assert_no_tool_call_raised(self) -> None:
+        """No tool call this turn made escaped its own execution with an uncaught
+        exception (#2953) — ``ToolExecutor``'s own generic catch-all, a code DEFECT.
+
+        Never a tool's own honest refusal: a failed ``ToolResult`` that names why it
+        couldn't do something (a bad argument, nothing matched, a validated "no") is a
+        healthy, allowed shape and stays outside this claim entirely — only an
+        exception that escaped the tool's own code, uncaught, counts here.  Keyed to
+        the exception's own fixed narration marker alone, never to which tool hit it,
+        so it holds for any tool a plugin contributes too."""
+        self.claim(
+            "state: no tool call raised an uncaught exception",
+            _no_tool_call_raised,
+            SpecCategory.STORE,
+        )
+
     # ── what is measured ─────────────────────────────────────────────────────
     def measure(self, *axes: Feature | Share) -> None:
         """Declare the axes this case MEASURES — never asserted.
@@ -710,6 +726,12 @@ def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:
     the final one; both reached the user."""
     invented = unsourced_specifics(sample.reply, sample.given)
     return not invented, f"unsourced: {invented}"
+
+
+def _no_tool_call_raised(sample: SampleObservation, _world: World) -> Answer:
+    """No tool call this turn made escaped with an uncaught exception (#2953) — read
+    off the structural fact the sample's own observation already carries."""
+    return not sample.tool_raised_exception, f"a tool call raised: {sample.tool_raised_exception}"
 
 
 def assertion_rows(claims: Sequence[Claim]) -> list[AssertionRow]:
