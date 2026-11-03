@@ -68,17 +68,19 @@ A remote provider (OpenRouter) additionally needs ``LLM_API_KEY`` and, per the
 project's always-pin-the-provider rule, ``LLM_PROVIDER`` — both optional env vars
 read the same way ``make eval-remote`` reads them, never hardcoded here. ``make
 replay ID=<promptlog id>`` (the Makefile target, #2917) wires this up end to end:
-it resolves the model and its pinned provider the same way ``make eval-remote``
+it resolves the named model's pinned provider the same way ``make eval-remote``
 does (the roster, over ``EVAL_MODELS``), reads the key host-side from the primary
 checkout's ``.env`` the same way too (``from_env``, never exported to a shell or
 assumed to already be in the container's environment, since only the primary
 checkout's ``.env`` is ever a real file — a worktree's own is a placeholder
 directory), and writes ``--jsonl`` to the primary checkout's
 ``data/reports/replay/<id>.jsonl`` so it survives the worktree that ran it being
-swept. This run draws 12 samples at once, concurrency 5, with the default
-``--mode plain``:
+swept. Name the model explicitly — the primary checkout's ``EVAL_MODELS`` may not
+list the suite's model first, so an unnamed ``make replay`` can resolve to
+whichever roster entry is first instead. This run draws 12 samples at once,
+concurrency 5, with the default ``--mode plain``:
 
-    make replay ID=138385 SAMPLES=12 CONCURRENCY=5
+    LLM_MODEL=google/gemma-4-26b-a4b-it make replay ID=138385 SAMPLES=12 CONCURRENCY=5
 """
 
 from __future__ import annotations

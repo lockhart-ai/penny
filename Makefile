@@ -494,9 +494,13 @@ eval-remote: $(if $(LOCAL),,build)
 # `sed` grab once left the quote characters in and broke the auth header; `from_env`
 # strips them (both its `"..."` and `'...'` forms).
 #
-#   make replay ID=<promptlog id>                              suite's model, mode=plain, 15 samples
-#   make replay ID=<id> MODE=verbatim-request SAMPLES=5         the row's own exact wire request
-#   LLM_MODEL=<a model EVAL_MODELS names> make replay ID=<id>   a different roster entry
+#   LLM_MODEL=google/gemma-4-26b-a4b-it make replay ID=<promptlog id>                       the suite's model, mode=plain, 15 samples
+#   LLM_MODEL=google/gemma-4-26b-a4b-it make replay ID=<id> MODE=verbatim-request SAMPLES=5  the row's own exact wire request
+#   LLM_MODEL=<a model EVAL_MODELS names> make replay ID=<id>                                 a different roster entry
+#
+# LLM_MODEL has no default here — the primary checkout's EVAL_MODELS may not list the
+# suite's model first (the code owner hasn't ruled on reordering it), so naming it
+# explicitly, every time, is the only way a replay is on the model you meant.
 #
 # Reads the PRIMARY checkout's prod DB and writes --jsonl under its data/reports/replay/
 # (REPLAY_RUN's nested binds, above) so both survive the worktree that ran this being

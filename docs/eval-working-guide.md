@@ -101,11 +101,12 @@ the roster's first `EVAL_MODELS` entry may not be the suite's model. A scoped `E
 takes the **container's** path, `penny/tests/eval/...`, never the host repo's
 `penny/penny/tests/eval/...` — the container's working directory is the `penny/` package root
 itself. Runs pinned to one provider take turns on that provider's lock (§9 "Running" below). A
-replay (§5 "Step 1, the verbatim replay" below) runs through `make replay ID=<promptlog id>`,
-which resolves the model and provider pin the same way `make eval-remote` does, and reads
-`OPENROUTER_API_KEY` host-side from the primary checkout's `.env` the same way — never exported
-to a shell or assumed to already be in the container's environment, since only the primary
-checkout's `.env` is ever a real file (a worktree's own is a placeholder directory).
+replay (§5 "Step 1, the verbatim replay" below) runs through `LLM_MODEL=google/gemma-4-26b-a4b-it
+make replay ID=<promptlog id>`, which resolves that name's provider pin the same way `make
+eval-remote` does, and reads `OPENROUTER_API_KEY` host-side from the primary checkout's `.env`
+the same way — never exported to a shell or assumed to already be in the container's
+environment, since only the primary checkout's `.env` is ever a real file (a worktree's own is a
+placeholder directory).
 
 ## 2 · What the suite is for
 
@@ -403,14 +404,16 @@ promptlog row, by id, on the suite's model and provider — `penny/penny/tests/e
 module docstring is the full reference for every mode and flag:
 
 ```
-make replay ID=<promptlog id> SAMPLES=15
+LLM_MODEL=google/gemma-4-26b-a4b-it make replay ID=<promptlog id> SAMPLES=15
 ```
 
-`make replay` resolves the model and its pinned provider the same way `make eval-remote` does
-(roster, over `EVAL_MODELS`), and reads the primary checkout's `.env` for the credential the same
-way too (`from_env`, never exported to a shell or assumed to already be in the container's
-environment — only the primary checkout's `.env` is ever a real file, a worktree's own is a
-placeholder, §1 "Mechanics" above). The JSONL lands on the primary checkout's host at
+Name the model explicitly, per §1 "Mechanics" above — the primary checkout's `EVAL_MODELS` may
+not list the suite's model first, so an unnamed `make replay` can resolve to whichever roster
+entry is first instead. `make replay` resolves that name's pinned provider the same way `make
+eval-remote` does (roster, over `EVAL_MODELS`), and reads the primary checkout's `.env` for the
+credential the same way too (`from_env`, never exported to a shell or assumed to already be in
+the container's environment — only the primary checkout's `.env` is ever a real file, a
+worktree's own is a placeholder). The JSONL lands on the primary checkout's host at
 `data/reports/replay/<promptlog id>.jsonl`, durable across the worktree that ran it being swept.
 
 (a non-collector prompt, including every chat turn, is replayed verbatim with the default
