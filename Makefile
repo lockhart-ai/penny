@@ -164,7 +164,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote eval-prune eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -297,6 +297,7 @@ ifdef LOCAL
 # Inside a container — run tools directly
 RUN = cd penny &&
 EVAL_RUN = cd penny &&
+REPLAY_RUN = cd penny &&
 else
 # On host — run tools inside Docker containers
 # --no-deps: dev tools don't need signal-api healthy (would block on first run)
@@ -305,6 +306,15 @@ RUN = docker compose run --rm --no-deps penny
 # dir (#1734) at $(EVAL_ARTIFACTS_MOUNT) — the only two targets that read/write
 # it — so their output survives the running worktree being swept.
 EVAL_RUN = docker compose run --rm --no-deps -v "$(EVAL_ARTIFACTS_HOST):$(EVAL_ARTIFACTS_MOUNT)" penny
+# `make replay` (#2917) nests two more binds from the PRIMARY checkout inside the
+# plain `./data:/penny/data` mount docker-compose.yml already gives every service —
+# a worktree's own `./data` is empty, so without this a replay would read no prod
+# DB and write its report nowhere durable. The prod DB nest is read-only; the report
+# dir isn't, since this is the one target that writes into it.
+REPLAY_RUN = docker compose run --rm --no-deps \
+	-v "$(EVAL_PRIMARY_CHECKOUT)/data/penny:/penny/data/penny:ro" \
+	-v "$(EVAL_PRIMARY_CHECKOUT)/data/reports/replay:/penny/data/reports/replay" \
+	penny
 endif
 
 fix: $(if $(LOCAL),,build)
@@ -475,6 +485,55 @@ eval-remote: $(if $(LOCAL),,build)
 		EVAL_COMMIT="$$commit" \
 		EVAL_DIRTY_DIFF="$$(git diff HEAD 2>/dev/null)" \
 		pytest $(EVAL_PYTEST_ARGS) $$( [ "$$workers" -gt 1 ] && echo "-n $$workers" )
+
+# Replay ONE recorded prod promptlog row, by id, on the suite's model and provider —
+# the "verbatim replay" step of the log → test → fix loop (docs/eval-working-guide.md
+# §1 and §5; penny.tests.eval.utils.replay's module docstring is the full reference
+# for every --mode). Reuses eval-remote's own model/provider resolution (roster) and
+# its `from_env` helper for the credential, so this needs no `sed` of its own — a raw
+# `sed` grab once left the quote characters in and broke the auth header; `from_env`
+# strips them (both its `"..."` and `'...'` forms).
+#
+#   make replay ID=<promptlog id>                              suite's model, mode=plain, 15 samples
+#   make replay ID=<id> MODE=verbatim-request SAMPLES=5         the row's own exact wire request
+#   LLM_MODEL=<a model EVAL_MODELS names> make replay ID=<id>   a different roster entry
+#
+# Reads the PRIMARY checkout's prod DB and writes --jsonl under its data/reports/replay/
+# (REPLAY_RUN's nested binds, above) so both survive the worktree that ran this being
+# swept, the same #1734 reasoning EVAL_ARTIFACTS_HOST applies to eval-remote's own reports.
+MODE ?= plain
+SAMPLES ?= 15
+CONCURRENCY ?= 5
+replay: $(if $(LOCAL),,build)
+	@if [ -z "$(ID)" ]; then \
+		echo "make replay: ID=<promptlog id> is required." >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(EVAL_PRIMARY_CHECKOUT)/data/penny" "$(EVAL_PRIMARY_CHECKOUT)/data/reports/replay"; \
+	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | sed -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"; }; \
+	model="$${LLM_MODEL}"; \
+	roster_log="$$(mktemp)"; \
+	if ( $(RUN) env EVAL_MODELS="$${EVAL_MODELS:-$$(from_env EVAL_MODELS)}" \
+		python -m penny.tests.eval.utils.roster $$model ) > "$$roster_log" 2>&1; then rostered=1; else rostered=0; fi; \
+	cat "$$roster_log"; \
+	model="$$(sed -n 's/^$(ROSTER_MODEL_LINE) //p' "$$roster_log" | tail -1)"; \
+	pinned="$$(sed -n 's/^$(ROSTER_PROVIDER_LINE) //p' "$$roster_log" | tail -1)"; \
+	rm -f "$$roster_log"; \
+	if [ "$$rostered" = 0 ]; then exit 1; fi; \
+	llm_url="$${LLM_API_URL:-$(EVAL_REMOTE_ENDPOINT)}"; \
+	llm_key="$${LLM_API_KEY}"; \
+	if [ -z "$$llm_key" ]; then llm_key="$$(from_env "$(EVAL_REMOTE_API_KEY_VAR)")"; fi; \
+	if [ -z "$$llm_key" ]; then \
+		echo "make replay: no credential — set $(EVAL_REMOTE_API_KEY_VAR) in $(EVAL_PRIMARY_ENV), or LLM_API_KEY in the shell." >&2; \
+		exit 1; \
+	fi; \
+	echo "replay: id=$(ID) mode=$(MODE) samples=$(SAMPLES) $$model at $$llm_url$${pinned:+ pinned to $$pinned}"; \
+	$(REPLAY_RUN) env \
+		LLM_API_URL="$$llm_url" LLM_API_KEY="$$llm_key" \
+		LLM_MODEL="$$model" LLM_PROVIDER="$$pinned" \
+		python -m penny.tests.eval.utils.replay --id "$(ID)" \
+			--samples "$(SAMPLES)" --mode "$(MODE)" --concurrency "$(CONCURRENCY)" \
+			--jsonl "/penny/data/reports/replay/$(ID).jsonl"
 
 # The same prune `make eval-remote` runs automatically (above), on demand — e.g. after
 # raising/lowering the window, or to reclaim space without starting a run.

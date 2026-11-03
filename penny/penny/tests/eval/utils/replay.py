@@ -66,23 +66,19 @@ Run inside the penny container (the prod DB is mounted at /penny/data):
 
 A remote provider (OpenRouter) additionally needs ``LLM_API_KEY`` and, per the
 project's always-pin-the-provider rule, ``LLM_PROVIDER`` — both optional env vars
-read the same way ``make eval-remote`` reads them, never hardcoded here. The key
-itself is read host-side from the primary checkout's ``.env`` for this one
-invocation (the same ``sed`` read the Makefile's own ``from_env`` helper uses) —
-never exported to a shell, and never assumed to already be in the container's
-environment, since only the primary checkout's ``.env`` is ever a real file (a
-worktree's own is a placeholder directory). This run also draws 5 samples at once
-and keeps each one's full record as it lands, writing it under the container's
-data mount (``/penny/data``, see ``docker-compose.yml``) so it survives on the
-host:
+read the same way ``make eval-remote`` reads them, never hardcoded here. ``make
+replay ID=<promptlog id>`` (the Makefile target, #2917) wires this up end to end:
+it resolves the model and its pinned provider the same way ``make eval-remote``
+does (the roster, over ``EVAL_MODELS``), reads the key host-side from the primary
+checkout's ``.env`` the same way too (``from_env``, never exported to a shell or
+assumed to already be in the container's environment, since only the primary
+checkout's ``.env`` is ever a real file — a worktree's own is a placeholder
+directory), and writes ``--jsonl`` to the primary checkout's
+``data/reports/replay/<id>.jsonl`` so it survives the worktree that ran it being
+swept. This run draws 12 samples at once, concurrency 5, with the default
+``--mode plain``:
 
-    docker compose run --rm --no-deps penny \
-        env LLM_API_URL=https://openrouter.ai/api LLM_MODEL=google/gemma-4-26b-a4b-it \
-        LLM_PROVIDER=CoreWeave \
-        LLM_API_KEY="$(sed -n 's/^OPENROUTER_API_KEY=//p' \
-            /Users/decker/Documents/penny/.env | tail -1)" \
-        python -m penny.tests.eval.utils.replay --id 138385 --samples 12 --mode plain \
-            --concurrency 5 --jsonl /penny/data/replay-138385.jsonl --dump-thinking
+    make replay ID=138385 SAMPLES=12 CONCURRENCY=5
 """
 
 from __future__ import annotations
