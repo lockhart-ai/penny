@@ -16,7 +16,13 @@ from penny.agents import (
     ChatAgent,
     Collector,
 )
-from penny.changelog import ChangelogEntry, load_entries, record_new_entries
+from penny.changelog import (
+    ChangelogEntry,
+    load_commits,
+    record_new_entries,
+    recorded_prs,
+    select_entries_to_announce,
+)
 from penny.channels import MessageChannel, create_channel_manager
 from penny.channels.browser import BrowserChannel
 from penny.channels.ios.channel import IosChannel
@@ -621,27 +627,36 @@ class Penny:
             logger.info("Startup embedding backfill complete: %d messages", total_messages)
 
     def _record_changelog_entries(self) -> list[ChangelogEntry]:
-        """Record any changelog entry (#2845) this deploy hasn't recorded yet, and
-        return exactly those — this deploy's own new ones, which the startup
-        changelog delivery turn (#2846) announces.
+        """Record every commit (#2891) this deploy hasn't recorded yet, and
+        return only those THIS deploy should announce — never the same set
+        (``select_entries_to_announce``, #2891): the first deploy after the
+        switch from the hand-written yaml can find a generated window full of
+        real PRs the yaml era never recorded, and announcing that whole
+        backlog in one message isn't the point. Those still get recorded —
+        silently — so `log_read('changelog')` and later idempotent startups
+        see them.
 
-        Deterministic and idempotent: ``record_new_entries`` reads the
-        `changelog` log's own existing rows to decide what's missing, so a
-        PR already recorded on an earlier startup is never appended twice —
-        and a restart on the same deploy returns nothing new the second time.
-        Synchronous and DB-only — no model, no channel — so it runs right
-        after the embedding backfill, before anything the user can see.
+        Deterministic and idempotent: both the selection and the recording
+        read the `changelog` log's own existing rows, so a PR already
+        recorded on an earlier startup is never appended or announced twice
+        — a restart on the same deploy announces nothing new. Synchronous
+        and DB-only — no model, no channel — so it runs right after the
+        embedding backfill, before anything the user can see.
         """
         changelog = self.db.memory(PennyConstants.MEMORY_CHANGELOG_LOG)
         if changelog is None:
             logger.warning("No `changelog` memory row — migration 0132 didn't run?")
             return []
-        added = record_new_entries(changelog, load_entries())
-        if added:
+        commits = load_commits()
+        to_announce = select_entries_to_announce(commits, recorded_prs(changelog))
+        recorded = record_new_entries(changelog, commits)
+        if recorded:
             logger.info(
-                "Recorded %d new changelog entr%s", len(added), "y" if len(added) == 1 else "ies"
+                "Recorded %d new changelog entr%s",
+                len(recorded),
+                "y" if len(recorded) == 1 else "ies",
             )
-        return added
+        return to_announce
 
     async def _run_startup_notifications(self, new_changelog_entries: list[ChangelogEntry]) -> None:
         """Send startup notifications after the outgoing channel is ready."""

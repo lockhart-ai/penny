@@ -157,7 +157,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote eval-prune eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build changelog-commits client-check client-services-check fix typecheck check pytest eval-remote eval-prune eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -167,19 +167,19 @@ SUBMAKE := $(MAKE)
 # start penny alone and never wait on a signal-api they don't use.
 SIGNAL_PROFILE := $(shell awk -F= '/^[[:space:]]*SIGNAL_NUMBER[[:space:]]*=/{v=$$2; gsub(/["'\'' ]/,"",v); if (v!="") print "--profile signal"}' .env 2>/dev/null)
 
-up: browser-build
+up: browser-build changelog-commits
 	docker compose $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose $(SIGNAL_PROFILE) up --build
 
-prod: browser-build
+prod: browser-build changelog-commits
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up --build
 
-prod-ios: browser-build
+prod-ios: browser-build changelog-commits
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml run --rm --service-ports --no-deps --build -e CHANNEL_TYPE=ios penny
@@ -213,12 +213,36 @@ docker-prune:
 	docker builder prune -f || true
 	docker volume prune -f || true
 
-build:
+build: changelog-commits
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	docker compose build penny
 
 browser-build:
 	cd browser && npm install && npm run build
+
+# Captures Penny's changelog source at build time (#2891): the FULL commit
+# history on this branch, oldest first, as plain `<hash><0x1f><subject>` lines
+# (no `-n` cap — at a few thousand lines this is small, and a cap is actively
+# wrong here: `penny.changelog.select_entries_to_announce` finds the LAST
+# already-recorded commit inside this window and announces only what comes
+# after it; if a cap pushed that commit out of the window, the "nothing of
+# this window is recorded" path would fire instead, silently recording the
+# whole visible slice with NOTHING announced — the fresh-install case is
+# meant only for a truly empty `changelog` log, never for a window that
+# merely doesn't reach back far enough). Written to a gitignored file
+# CO-LOCATED with the module that parses it at runtime (`penny.changelog`),
+# so it rides the existing `COPY penny/ ./penny/` Dockerfile step with no
+# Dockerfile change. Deliberately NOT `python -m penny.changelog`: the
+# host's own Python can't be trusted to have this package's deps (an agent
+# container's host Python can be 3.9 with no pydantic) — this writes the RAW
+# log only; `penny.changelog.load_commits`/`parse_commit_log` do the parsing,
+# at runtime, inside the container. On any git failure, write an empty file
+# rather than fail the build — a missing changelog source degrades to
+# "nothing to announce", never a broken deploy.
+changelog-commits:
+	git log --no-merges --reverse --pretty='format:%H%x1f%s' \
+		> penny/penny/changelog_commits.txt 2>/dev/null \
+		|| : > penny/penny/changelog_commits.txt
 
 # Build the iOS client and run PennyClientTests on a simulator (requires Xcode).
 # CI runs the same script on any PR touching penny-client/ (client-check.yml).

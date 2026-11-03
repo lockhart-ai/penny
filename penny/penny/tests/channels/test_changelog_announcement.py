@@ -14,13 +14,13 @@ import pytest
 from sqlmodel import col, select
 
 from penny.agents.models import ControllerResponse
-from penny.changelog import ChangelogEntry, render_changelog_announcement
+from penny.changelog import ChangelogEntry, record_new_entries, render_changelog_announcement
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.constants import ChannelType, PennyConstants
 from penny.database.models import PromptLog
 from penny.penny import Penny
 from penny.preflight import CheckStatus, PreflightCheck, PreflightError
-from penny.tests.conftest import TEST_SENDER, wait_until
+from penny.tests.conftest import TEST_SENDER, require_memory, wait_until
 
 
 def _find_request(mock_llm, needle: str) -> str:
@@ -90,7 +90,7 @@ class StartupReadyChannel(MessageChannel):
         self.closed.set()
 
 
-# Two contrived entries — standing in for ``changelog.yaml`` rows in every test
+# Two contrived entries — standing in for the generated commit-title list in every test
 # below; what they say never matters, only that they are the exact ones rendered.
 _ENTRIES = [
     ChangelogEntry(pr=9301, text="We added a new way to save a note."),
@@ -209,8 +209,18 @@ async def test_changelog_announcement_skipped_with_profile_but_no_messages(
 @pytest.mark.asyncio
 async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_llm, monkeypatch):
     """Startup sends must not block listener startup before the channel is ready,
-    and the delivery turn's prompt is the framework render, byte for byte."""
-    monkeypatch.setattr("penny.penny.load_entries", lambda: list(_ENTRIES))
+    and the delivery turn's prompt is the framework render, byte for byte.
+
+    The ``changelog`` log is pre-seeded with ONE already-recorded PR before
+    this boot — never a bare fresh log, which would announce nothing at all
+    (#2891's flood guard: a log with nothing recorded yet records its whole
+    commit window silently, see ``test_changelog.py``). This is the ordinary,
+    steady-state deploy shape: an old recorded PR stays out of the
+    announcement, and the genuinely new one after it goes out — both get
+    recorded either way."""
+    old_entry = ChangelogEntry(pr=9300, text="an already-recorded PR from an earlier deploy")
+    new_entry = ChangelogEntry(pr=9301, text="We added a new way to save a note.")
+    monkeypatch.setattr("penny.penny.load_commits", lambda: [old_entry, new_entry])
     # A plain always-answer handler, not ``set_default_flow``'s two-step
     # browse-then-answer counter: this is the delivery turn's own FIRST call on
     # a fresh mock, and the model should just write the announcement directly.
@@ -227,6 +237,7 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
     penny._init_channel(config, channel)
     penny._connect_scheduler(config)
     _seed_profile_and_history(penny)
+    record_new_entries(require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG), [old_entry])
 
     task = asyncio.create_task(penny.run())
     try:
@@ -238,7 +249,13 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
         assert channel.sent[0] == (TEST_SENDER, _REPLY)
 
         prompt = _find_request(mock_llm, "reached you with this deploy")
-        assert prompt == render_changelog_announcement(_ENTRIES)
+        assert prompt == render_changelog_announcement([new_entry])
+
+        changelog = require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG)
+        assert [row.content for row in changelog.read_all()] == [
+            old_entry.render(),
+            new_entry.render(),
+        ]
 
         # #2849's run-health facts read ``messagelog.run_id`` off the delivered
         # row — a real channel's own ``send_response`` wrote it here, so this is
@@ -267,7 +284,7 @@ async def test_changelog_announcement_startup_sends_with_no_new_entries(
     changelog entries still runs the real delivery turn end to end — recorded,
     composed, queued, and delivered through the real drainer and channel —
     with the "nothing changed" render as its input."""
-    monkeypatch.setattr("penny.penny.load_entries", lambda: [])
+    monkeypatch.setattr("penny.penny.load_commits", lambda: [])
     mock_llm.set_response_handler(
         lambda request, _count: mock_llm._make_text_response(request, _REPLY)
     )
@@ -341,7 +358,7 @@ async def test_changelog_announcement_multiple_devices(
     announcement is QUEUED, and the real send-queue drainer must actually run
     within the test's wait window to deliver it."""
     config = make_config(idle_seconds=0.1, send_cooldown_seconds=0.0)
-    monkeypatch.setattr("penny.penny.load_entries", lambda: list(_ENTRIES))
+    monkeypatch.setattr("penny.penny.load_commits", lambda: list(_ENTRIES))
     async with running_penny(config) as penny:
         penny.db.users.save_info(
             sender=TEST_SENDER,
@@ -356,7 +373,7 @@ async def test_changelog_announcement_multiple_devices(
 
     signal_server.outgoing_messages.clear()
     new_entry = ChangelogEntry(pr=9303, text="We added a weekly digest option.")
-    monkeypatch.setattr("penny.penny.load_entries", lambda: [*_ENTRIES, new_entry])
+    monkeypatch.setattr("penny.penny.load_commits", lambda: [*_ENTRIES, new_entry])
     mock_llm.set_default_flow(final_response=_REPLY)
 
     async with running_penny(config):

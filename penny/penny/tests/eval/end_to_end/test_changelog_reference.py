@@ -1,9 +1,12 @@
 """Changelog reference: a later turn answers from what the delivery turn told her (#2846).
 
-**The world.** Three REAL rows from the shipped ``changelog.yaml`` — this project's own
-true changelog, never invented tool changes — delivered through the real startup
-mechanism: ``ChatAgent.handle_changelog_report`` over the framework-rendered entries,
-the same content gates ``Penny._send_changelog_announcement`` applies, then the real
+**The world.** Three REAL merged-PR commit titles from this project's own true git
+history (#2891 retired ``changelog.yaml`` — the changelog's source is commit titles
+now, read from a generated build artifact this case never touches; these three are
+fixed here, by PR number and their own real title text, so the case neither reads
+that artifact nor the retired yaml) — delivered through the real startup mechanism:
+``ChatAgent.handle_changelog_report`` over the framework-rendered entries, the same
+content gates ``Penny._send_changelog_announcement`` applies, then the real
 send-queue drainer. One of the three, PR #2820, carries the one fact this case
 measures: the removed ``reasoning`` tool-call argument. That detail is not visible
 anywhere in her ordinary ambient state — it is a retired implementation detail she can
@@ -27,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from penny.changelog import load_entries
+from penny.changelog import ChangelogEntry
 from penny.tests.eval.conftest import EVAL_MODELS
 from penny.tests.eval.drivers.changelog_announcement import ChangelogEval
 from penny.tests.eval.utils.assertions import Answer
@@ -44,17 +47,27 @@ pytestmark = pytest.mark.eval
 
 _FAMILY = "changelog-reference"
 
-# Three real entries this deploy's changelog carries — PR #2820 is the one this case
+# Three real merged PRs' own commit titles (#2891 — the changelog's actual source
+# now), fixed here rather than read off the generated build artifact or the retired
+# yaml: this case seeds its own world's `changelog` log directly, so it never depends
+# on what a local build happens to have captured. PR #2820 is the one this case
 # measures; the other two are real too, just along for the ride as "a deploy usually
-# ships more than one change". Filtered off the SHIPPED file by PR number, never
-# hand-copied, so this case always measures the text that actually ships.
-_WANTED_PRS = (2820, 2831, 2835)
+# ships more than one change".
 _REASON_PR = 2820
-_ENTRIES = [entry for entry in load_entries() if entry.pr in _WANTED_PRS]
-assert {entry.pr for entry in _ENTRIES} == set(_WANTED_PRS), (
-    "changelog.yaml no longer carries one of this case's three real PRs — "
-    "pick three others that are still shipped"
-)
+_ENTRIES = [
+    ChangelogEntry(pr=2820, text="refactor(penny): drop the per-tool reasoning argument"),
+    ChangelogEntry(
+        pr=2831,
+        text="feat(penny): render gemma's chat template ourselves and call raw completions",
+    ),
+    ChangelogEntry(
+        pr=2835,
+        text=(
+            "feat(penny): show a link's full address where it is the answer, "
+            "so the model hands it over"
+        ),
+    ),
+]
 assert any(entry.pr == _REASON_PR for entry in _ENTRIES)
 
 # The planted fact: PR #2820's own real text names the retired `reasoning` argument.

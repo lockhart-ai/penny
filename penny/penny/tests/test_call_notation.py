@@ -11,13 +11,15 @@ The fix is the brace form, ``tool{args}`` — this test keeps the parens form
 from creeping back into the files that write what she reads.
 
 Scoped to the model-facing modules named in #2859 (prompts, tool descriptions
-and refusals, run renders, the self-state header, the conversation map, the
-behaviour-condition catalog, and the changelog), and keyed to the LIVE tool
-name list — every ``Tool`` subclass's own ``name`` attribute, read off the
-class rather than restated by hand, so a renamed or retired tool can't leave
-a stale entry behind. ``text_validity.py`` (the call-as-text detectors, which
-catch the notation rather than teach it) and the test suite itself are out of
-scope, per #2859.
+and refusals, run renders, the self-state header, the conversation map, and
+the behaviour-condition catalog), and keyed to the LIVE tool name list —
+every ``Tool`` subclass's own ``name`` attribute, read off the class rather
+than restated by hand, so a renamed or retired tool can't leave a stale entry
+behind. ``text_validity.py`` (the call-as-text detectors, which catch the
+notation rather than teach it) and the test suite itself are out of scope,
+per #2859. The changelog dropped out of scope with it (#2891): its entries
+are commit titles now, read at runtime from a generated file this static
+scan can't see at commit time.
 """
 
 from __future__ import annotations
@@ -35,9 +37,10 @@ from penny.tools.base import Tool
 _PENNY_ROOT = Path(__file__).resolve().parents[1]
 
 # Every model-facing module #2859 named: prompts, tool descriptions/refusals,
-# run renders, the self-state header, the conversation map's anchor, the
-# behaviour-condition catalog (rendered on a run record), and the changelog
-# entries written for Penny to read with ``log_read``.
+# run renders, the self-state header, the conversation map's anchor, and the
+# behaviour-condition catalog (rendered on a run record). The changelog's
+# entries were in scope here too until #2891 made them commit titles, read at
+# runtime from a generated file this static scan can't see at commit time.
 _MODEL_FACING_PY_FILES = (
     "prompts.py",
     "agents/self_state.py",
@@ -57,7 +60,6 @@ _MODEL_FACING_PY_FILES = (
     "tools/job_summary.py",
     "validation/conditions.py",
 )
-_MODEL_FACING_YAML_FILES = ("changelog.yaml",)
 
 
 def _all_tool_names() -> set[str]:
@@ -123,17 +125,6 @@ def _violations_in_py_file(path: Path, pattern: re.Pattern[str]) -> list[str]:
     return found
 
 
-def _violations_in_yaml_file(path: Path, pattern: re.Pattern[str]) -> list[str]:
-    found: list[str] = []
-    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
-        if line.strip().startswith("#"):
-            continue
-        match = pattern.search(line)
-        if match:
-            found.append(f"{path.name}:{lineno}: {match.group(0)}...")
-    return found
-
-
 def test_no_model_facing_string_writes_a_call_in_python_parens_notation() -> None:
     tool_names = _all_tool_names()
     assert len(tool_names) > 10, (
@@ -145,8 +136,6 @@ def test_no_model_facing_string_writes_a_call_in_python_parens_notation() -> Non
     violations: list[str] = []
     for rel in _MODEL_FACING_PY_FILES:
         violations += _violations_in_py_file(_PENNY_ROOT / rel, pattern)
-    for rel in _MODEL_FACING_YAML_FILES:
-        violations += _violations_in_yaml_file(_PENNY_ROOT / rel, pattern)
 
     assert not violations, (
         "Python call notation tool(args) found in model-facing text — gemma's "
