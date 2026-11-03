@@ -848,6 +848,47 @@ class TestDescribeSchedule:
             f"every day (rule: `{schedule}`), next run Thursday, July 02, 2026 at 09:00 AM UTC"
         )
 
+    def test_a_never_run_job_created_long_ago_is_due_now_not_a_past_date(self):
+        """A never-run job's first occurrence is anchored at its own ``created_at``
+        (#1857) — for a collection reconfigured, or just read back, long after it was
+        set up, that occurrence is months in the past.  Rendering that past timestamp
+        reads as a missed appointment; #2895 states the honest fact instead — the
+        collector dispatcher picks it up at its next idle window, same as a job due
+        this minute would."""
+        row = _row_with_schedule("FREQ=DAILY", created_at=_SCHEDULE_ROW_CREATED)
+        now = _SCHEDULE_ROW_CREATED + timedelta(weeks=3)
+        words = describe_schedule(row, now=now)
+        assert words == (
+            "every day (rule: `FREQ=DAILY`), next run due now — it runs at the next idle window"
+        )
+
+    def test_a_count_one_jobs_passed_moment_is_due_now_not_a_past_time(self):
+        """A ``COUNT=1`` job's one occurrence is its own ``created_at`` (no ``DTSTART``
+        of its own) — set up earlier the same day and not yet run, that moment has
+        already come round by the time this renders.  Same #2895 fix: due now, not a
+        same-day time that's already passed."""
+        created_at = datetime(2026, 7, 2, 7, 0, tzinfo=UTC)
+        row = _row_with_schedule("FREQ=DAILY;COUNT=1", created_at=created_at)
+        now = datetime(2026, 7, 2, 15, 0, tzinfo=UTC)
+        words = describe_schedule(row, now=now)
+        assert words == (
+            "once, then it retires (rule: `FREQ=DAILY;COUNT=1`), "
+            "next run due now — it runs at the next idle window"
+        )
+
+    def test_a_normal_future_next_run_is_unchanged_by_the_due_now_check(self):
+        """``now`` strictly before the computed occurrence leaves the rendered date
+        exactly as it always was (#2895 adds a check, not a rewrite) — the same shape
+        and literal ``test_taught_and_untaught_shapes_read_as_words`` already covers,
+        now with an explicit ``now`` passed alongside it."""
+        row = _row_with_schedule("FREQ=DAILY;BYHOUR=8", created_at=_SCHEDULE_ROW_CREATED)
+        now = _SCHEDULE_ROW_CREATED + timedelta(hours=1)
+        words = describe_schedule(row, now=now)
+        assert words == (
+            "every day at 08:00 AM (rule: `FREQ=DAILY;BYHOUR=8`), "
+            "next run Friday, July 03, 2026 at 08:00 AM UTC"
+        )
+
 
 class TestCreateAndList:
     @pytest.mark.asyncio
@@ -1512,7 +1553,7 @@ class TestCollectionUpdateScheduleAtApply:
         assert result.message == (
             "Updated collection 'watch':\n"
             "  schedule: every hour (rule: `FREQ=HOURLY`), "
-            "next run Thursday, July 02, 2026 at 09:00 AM UTC\n"
+            "next run due now — it runs at the next idle window\n"
             "  notify: False\n"
             "  expires: was 2099-12-31 00:00 UTC → now never\n"
             "  description: x\n"

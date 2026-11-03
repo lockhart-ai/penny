@@ -641,8 +641,20 @@ def _describe_rule_with_span(rule: str, clause: str, timezone_name: str | None) 
 # whose render said 7 PM while it actually fired at 7:59.
 _NEXT_RUN_CLAUSE = ", next run {when}"
 
+# The occurrence ``next_occurrence`` computed has already come round by the time this
+# renders — a never-run job created long ago, or a ``COUNT=1`` job whose one moment
+# passed before it got its first cycle (#2895).  A PAST timestamp there reads as a
+# missed appointment; this states the honest, forward-looking fact instead — the
+# collector dispatcher picks it up the next time it is idle, exactly as
+# ``Collector._schedule_due`` already would (it compares the same occurrence against
+# ``now`` the same way, #1932/#2862) — so the words never promise a moment sooner than
+# the mechanism itself is willing to go.
+_DUE_NOW_WHEN = "due now — it runs at the next idle window"
 
-def _next_run_clause(row: MemoryRow, schedule: str, timezone_name: str | None) -> str:
+
+def _next_run_clause(
+    row: MemoryRow, schedule: str, timezone_name: str | None, now: datetime | None = None
+) -> str:
     """The same occurrence the readiness gate (``Collector._schedule_due``) is waiting
     on, read on the user's clock and rendered as a trailing clause — empty when the rule
     has no occurrence left (a spent ``COUNT=``, a passed ``UNTIL=``), so a retired
@@ -653,7 +665,14 @@ def _next_run_clause(row: MemoryRow, schedule: str, timezone_name: str | None) -
     alone would compute — it was archived for reasons the rule knows nothing about
     (a manual archive, not only a spent quota).  ``schedule`` is the caller's own
     already-non-``None`` ``row.schedule`` — a required parameter rather than an assert
-    re-deriving what the caller already knows, so there is nothing to narrow twice."""
+    re-deriving what the caller already knows, so there is nothing to narrow twice.
+
+    ``now`` is the clock this render is read against (#2895) — an occurrence at or
+    before it has already come round, so it renders as ``_DUE_NOW_WHEN`` rather than a
+    stale past timestamp.  Optional, defaulting to ``None`` (no due-now check, the
+    occurrence renders exactly as computed) so a caller that predates #2895 — and every
+    pure render test that isn't exercising this — is unaffected; every production
+    surface passes its own ``db.clock.now()``."""
     if row.archived:
         return ""
     next_fire = next_occurrence(
@@ -661,29 +680,37 @@ def _next_run_clause(row: MemoryRow, schedule: str, timezone_name: str | None) -
     )
     if next_fire is None:
         return ""
+    if now is not None and next_fire <= now:
+        return _NEXT_RUN_CLAUSE.format(when=_DUE_NOW_WHEN)
     return _NEXT_RUN_CLAUSE.format(when=format_user_timestamp(next_fire, timezone_name))
 
 
-def describe_schedule(row: MemoryRow, timezone_name: str | None = None) -> str:
+def describe_schedule(
+    row: MemoryRow, timezone_name: str | None = None, now: datetime | None = None
+) -> str:
     """Plain words for the mechanism's schedule, with its exact rule alongside in a code
     span (#1857's display == invocation contract, #2425's plain-words-first fix), plus
     the engine's OWN computed next run (#2775, :func:`_next_run_clause`) — the model
     still reads the exact copyable form (``render_schedule_clause``) it would write back
     to change the schedule, it just no longer stands alone as the thing a reply would
-    naturally echo.  Empty for no schedule, like ``render_schedule_clause``."""
+    naturally echo.  Empty for no schedule, like ``render_schedule_clause``.  ``now`` is
+    :func:`_next_run_clause`'s own due-now clock (#2895) — ``None`` keeps a caller that
+    predates it byte-identical."""
     if row.schedule is None:
         return ""
     described = _describe_rule_with_span(row.schedule, render_schedule_clause(row), timezone_name)
-    return f"{described}{_next_run_clause(row, row.schedule, timezone_name)}"
+    return f"{described}{_next_run_clause(row, row.schedule, timezone_name, now)}"
 
 
-def describe_schedule_field(row: MemoryRow, timezone_name: str | None = None) -> str:
+def describe_schedule_field(
+    row: MemoryRow, timezone_name: str | None = None, now: datetime | None = None
+) -> str:
     """The labelled-field counterpart (#1666's ``none`` fallback) over
     ``describe_schedule`` — reads the fallback off ``render_schedule_field`` so that
     function keeps a production caller too."""
     if not has_schedule(row):
         return render_schedule_field(row)
-    return describe_schedule(row, timezone_name)
+    return describe_schedule(row, timezone_name, now)
 
 
 # ── The end condition: ISO first, then the user's own words (#1857) ──────────
@@ -821,10 +848,11 @@ def _parse_spoken_datetime(value: str, timezone_name: str | None, now: datetime)
 # ── Creation echo ─────────────────────────────────────────────────────────────
 
 
-def _schedule_line(row: MemoryRow, timezone_name: str | None) -> str:
+def _schedule_line(row: MemoryRow, timezone_name: str | None, now: datetime | None) -> str:
     """The echo's one-line schedule summary — plain words with the exact rule in a code
-    span (#2425), or ``schedule: none`` for an inert/unscheduled one (#1666)."""
-    return f"  schedule: {describe_schedule_field(row, timezone_name)}"
+    span (#2425), or ``schedule: none`` for an inert/unscheduled one (#1666).  ``now`` is
+    the due-now clock (#2895), threaded straight through to ``describe_schedule_field``."""
+    return f"  schedule: {describe_schedule_field(row, timezone_name, now)}"
 
 
 _NO_EXPIRY_CLAUSE = "never"
@@ -854,14 +882,16 @@ def _expires_line(row: MemoryRow, timezone_name: str | None) -> str:
 # detailed field-by-field echo stays below it.
 
 
-def _lead_cadence_phrase(row: MemoryRow, timezone_name: str | None) -> str:
+def _lead_cadence_phrase(row: MemoryRow, timezone_name: str | None, now: datetime | None) -> str:
     """The 'when it runs' clause, in plain words with the exact rule in a code span
     (#2425, ``describe_schedule``) — a bare 'I'll run' when the collection carries no
     schedule at all.  Any run quota is already stated in those words
-    (``_describe_rule``'s own COUNT handling), so it is not stated a second time here."""
+    (``_describe_rule``'s own COUNT handling), so it is not stated a second time here.
+    ``now`` is the due-now clock (#2895), threaded straight through to
+    ``describe_schedule``."""
     if not has_schedule(row):
         return "I'll run"
-    return f"On the schedule {describe_schedule(row, timezone_name)} I'll run"
+    return f"On the schedule {describe_schedule(row, timezone_name, now)} I'll run"
 
 
 def _lead_notify_tail(row: MemoryRow) -> str:
@@ -871,16 +901,18 @@ def _lead_notify_tail(row: MemoryRow) -> str:
     return "quietly store what it finds."
 
 
-def _lead_line(row: MemoryRow, timezone_name: str | None) -> str:
+def _lead_line(row: MemoryRow, timezone_name: str | None, now: datetime | None) -> str:
     """One deterministic English sentence: cadence + target + notify —
     e.g. "On the schedule every 15 minutes (rule: `FREQ=MINUTELY;INTERVAL=15`) I'll run
     against 'aurora-prices' and message you when something changes." /
     "…and quietly store what it finds."."""
-    cadence = _lead_cadence_phrase(row, timezone_name)
+    cadence = _lead_cadence_phrase(row, timezone_name, now)
     return f"{cadence} against '{row.name}' and {_lead_notify_tail(row)}"
 
 
-def _instantiation_echo(row: MemoryRow, headline: str, timezone_name: str | None) -> str:
+def _instantiation_echo(
+    row: MemoryRow, headline: str, timezone_name: str | None, now: datetime | None
+) -> str:
     """The shared instantiation confirm-shape — a plain-language LEAD line (what the
     collector will do) over a ``headline`` and description · schedule · notify ·
     expiry · the job's instructions verbatim.  Both the creation echo and the
@@ -888,10 +920,10 @@ def _instantiation_echo(row: MemoryRow, headline: str, timezone_name: str | None
     one confirm back the same fields."""
     prompt = (row.extraction_prompt or "").replace("\n", "\n    ")
     lines = [
-        _lead_line(row, timezone_name),
+        _lead_line(row, timezone_name, now),
         headline,
         f"  description: {row.description}",
-        _schedule_line(row, timezone_name),
+        _schedule_line(row, timezone_name, now),
         f"  notify: {row.notify}",
         _expires_line(row, timezone_name),
         "  prompt: |",
@@ -900,12 +932,15 @@ def _instantiation_echo(row: MemoryRow, headline: str, timezone_name: str | None
     return "\n".join(lines)
 
 
-def render_creation_echo(row: MemoryRow, timezone_name: str | None = None) -> str:
+def render_creation_echo(
+    row: MemoryRow, timezone_name: str | None = None, now: datetime | None = None
+) -> str:
     """The structured creation echo — description, schedule, notify, expiry, and
     the job's prompt verbatim — so the chat agent confirms back exactly what
     landed without confabulating a field.  ``timezone_name`` defaults to ``None``
-    (UTC) so a caller that predates #2206/#2251 renders byte-identically."""
-    return _instantiation_echo(row, f"Created collection '{row.name}':", timezone_name)
+    (UTC) so a caller that predates #2206/#2251 renders byte-identically; ``now`` is
+    the due-now clock (#2895), defaulting to ``None`` the same way."""
+    return _instantiation_echo(row, f"Created collection '{row.name}':", timezone_name, now)
 
 
 # The before→after form a configured field takes when THIS turn moved it (#1946), and
@@ -973,13 +1008,16 @@ def _schedule_configured_value(
     return after if before == after else _CHANGED_VALUE.format(before=before, after=after)
 
 
-def render_reinstantiation_echo(row: MemoryRow, timezone_name: str | None = None) -> str:
+def render_reinstantiation_echo(
+    row: MemoryRow, timezone_name: str | None = None, now: datetime | None = None
+) -> str:
     """The re-render confirm-shape — render-at-update mirrors render-at-creation, so
     a collection whose prompt/schedule/notify just changed confirms back its NEW
     configuration, in the same shape the creation echo uses.  ``timezone_name``
     defaults to ``None`` (UTC) so a caller that predates #2206/#2251 renders
-    byte-identically."""
-    return _instantiation_echo(row, f"Re-configured collection '{row.name}':", timezone_name)
+    byte-identically; ``now`` is the due-now clock (#2895), defaulting to ``None``
+    the same way."""
+    return _instantiation_echo(row, f"Re-configured collection '{row.name}':", timezone_name, now)
 
 
 # ── The prompt-replacement diff ───────────────────────────────────────────────
