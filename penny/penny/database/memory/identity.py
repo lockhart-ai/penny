@@ -159,10 +159,12 @@ def _pair_rule(entry: EntryInput, side: EntryGiven) -> KeyRule | None:
 # reads as "is this new information for the collection" and merges unrelated
 # entries; separating IDENTITY from VALUE keeps distinct items apart).
 _IDENTITY_INSTRUCTIONS = (
-    "Two entries from the same collection are shown.  Each entry in a collection "
-    "is its own item: a collection holds many separate things, side by side.  "
-    "Is the new entry the same specific thing as the stored entry, merely named "
-    "or worded differently?"
+    "Two entries from the same collection are shown, each by its key and its "
+    "content.  Each entry in a collection is its own item: a collection holds "
+    "many separate things, side by side.  The stored entry may be a summary "
+    "that covers several things; a new entry that is only one of the things it "
+    "covers is not the same thing.  Is the new entry the same specific thing as "
+    "the stored entry, merely named or worded differently?"
 )
 _IDENTITY_CRITERIA = {
     "yes": "the same specific thing, under another name or wording",
@@ -387,6 +389,35 @@ def rule_only_decisions(
         unsure = next((existing[index].key for index in plan.candidates), None)
         decisions.append(EntryDecision(key=entry.key, action="new", unsure_candidate=unsure))
     return decisions
+
+
+def resolve_sibling_collisions(decisions: list[EntryDecision]) -> list[EntryDecision]:
+    """The deterministic batch guard (#2922), applied to a whole write's
+    decisions before any of them is applied: a stored entry is one specific
+    thing, so two or more entries in the SAME write settling on it (merge or
+    unchanged) cannot all be that one thing under another name — they are
+    siblings the ladder shortlisted against a single stored entry, not
+    renames of it.  Every decision that shares a collided ``matched_key`` is
+    overridden to ``new``, so each lands under its own key instead of
+    overwriting the shared target, and each other, one after another.
+
+    This runs structurally, with no model in the loop, so it catches the
+    collision whichever rung produced it — the deterministic rules or the
+    decision model — and it runs even in the decision model's named degraded
+    mode, where every shortlisted candidate already comes back ``unsure``."""
+    counts: dict[str, int] = {}
+    for decision in decisions:
+        if decision.matched_key is not None:
+            counts[decision.matched_key] = counts.get(decision.matched_key, 0) + 1
+    collided = {key for key, count in counts.items() if count > 1}
+    if not collided:
+        return decisions
+    return [
+        EntryDecision(key=decision.key, action="new")
+        if decision.matched_key in collided
+        else decision
+        for decision in decisions
+    ]
 
 
 # ── Collection-name identity (#2724) ─────────────────────────────────────────
