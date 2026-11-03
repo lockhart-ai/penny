@@ -124,6 +124,12 @@ async def test_a_later_question_is_answered_from_the_changelog_she_was_told(
         area=Area.NOTIFICATIONS,
         model=model,
         changelog_entries=_ENTRIES,
+        # This sample's own `changelog` log carries exactly these same three
+        # real commits (#2891: `Config.changelog_commits` is a PARAMETER, and
+        # defaults to empty for every other case) — consistent with what the
+        # delivery turn below actually tells her, and never the real build's
+        # own commit history.
+        changelog_commits=_ENTRIES,
         unrelated_turn=_UNRELATED_TURN,
         world=_WORLD,
         ask=_ASK,

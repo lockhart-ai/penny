@@ -157,7 +157,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build changelog-commits client-check client-services-check fix typecheck check pytest eval-remote eval-prune eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote eval-prune eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -167,22 +167,40 @@ SUBMAKE := $(MAKE)
 # start penny alone and never wait on a signal-api they don't use.
 SIGNAL_PROFILE := $(shell awk -F= '/^[[:space:]]*SIGNAL_NUMBER[[:space:]]*=/{v=$$2; gsub(/["'\'' ]/,"",v); if (v!="") print "--profile signal"}' .env 2>/dev/null)
 
-up: browser-build changelog-commits
+# Penny's changelog source (#2891) — host-side state `scripts/store_git_info.sh`
+# reads/writes before every build. CHANGELOG_CURSOR_FILE (the hash of the last
+# commit a real deploy announced) lives under data/ — gitignored, a bind mount,
+# so it survives every image rebuild; only `prod`/`prod-ios` advance it, after a
+# successful run. CHANGELOG_COMMITS_FILE is the generated, gitignored
+# build-context file the image COPYs in. CHANGELOG_FALLBACK_COMMITS bounds the
+# unscoped (raw, not-yet-penny-filtered) fallback when the cursor is unset or
+# history has rewritten past it.
+CHANGELOG_CURSOR_FILE := data/penny/.changelog_cursor
+CHANGELOG_COMMITS_FILE := penny/penny/changelog_commits.txt
+CHANGELOG_FALLBACK_COMMITS := 10
+CHANGELOG_ENV := CHANGELOG_CURSOR_FILE=$(CHANGELOG_CURSOR_FILE) CHANGELOG_COMMITS_FILE=$(CHANGELOG_COMMITS_FILE) CHANGELOG_FALLBACK_COMMITS=$(CHANGELOG_FALLBACK_COMMITS)
+
+up: browser-build
+	$(CHANGELOG_ENV) scripts/store_git_info.sh dev
 	docker compose $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose $(SIGNAL_PROFILE) up --build
 
-prod: browser-build changelog-commits
+prod: browser-build
+	$(CHANGELOG_ENV) scripts/store_git_info.sh advance
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up --build
+	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
 
-prod-ios: browser-build changelog-commits
+prod-ios: browser-build
+	$(CHANGELOG_ENV) scripts/store_git_info.sh advance
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml run --rm --service-ports --no-deps --build -e CHANNEL_TYPE=ios penny
+	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
 
 # Tear down this compose project's containers and remove its locally-built
 # images (alias of clean-project-images, kept for its familiar name).
@@ -213,36 +231,12 @@ docker-prune:
 	docker builder prune -f || true
 	docker volume prune -f || true
 
-build: changelog-commits
+build:
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	docker compose build penny
 
 browser-build:
 	cd browser && npm install && npm run build
-
-# Captures Penny's changelog source at build time (#2891): the FULL commit
-# history on this branch, oldest first, as plain `<hash><0x1f><subject>` lines
-# (no `-n` cap — at a few thousand lines this is small, and a cap is actively
-# wrong here: `penny.changelog.select_entries_to_announce` finds the LAST
-# already-recorded commit inside this window and announces only what comes
-# after it; if a cap pushed that commit out of the window, the "nothing of
-# this window is recorded" path would fire instead, silently recording the
-# whole visible slice with NOTHING announced — the fresh-install case is
-# meant only for a truly empty `changelog` log, never for a window that
-# merely doesn't reach back far enough). Written to a gitignored file
-# CO-LOCATED with the module that parses it at runtime (`penny.changelog`),
-# so it rides the existing `COPY penny/ ./penny/` Dockerfile step with no
-# Dockerfile change. Deliberately NOT `python -m penny.changelog`: the
-# host's own Python can't be trusted to have this package's deps (an agent
-# container's host Python can be 3.9 with no pydantic) — this writes the RAW
-# log only; `penny.changelog.load_commits`/`parse_commit_log` do the parsing,
-# at runtime, inside the container. On any git failure, write an empty file
-# rather than fail the build — a missing changelog source degrades to
-# "nothing to announce", never a broken deploy.
-changelog-commits:
-	git log --no-merges --reverse --pretty='format:%H%x1f%s' \
-		> penny/penny/changelog_commits.txt 2>/dev/null \
-		|| : > penny/penny/changelog_commits.txt
 
 # Build the iOS client and run PennyClientTests on a simulator (requires Xcode).
 # CI runs the same script on any PR touching penny-client/ (client-check.yml).

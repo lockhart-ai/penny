@@ -1,6 +1,10 @@
-"""Tests for ``penny.changelog`` — the commit-log parser, the idempotent
-recorder, and the announce-selection rule behind #2845/#2891's startup step
-(``Penny._record_changelog_entries``)."""
+"""Tests for ``penny.changelog`` — the commit-log parser and the idempotent
+recorder behind #2845/#2891's startup step (``Penny._record_changelog_entries``).
+No position or dedupe logic lives here any more: the host's own cursor
+(``scripts/store_git_info.sh``) keeps the commit list a small, fresh window,
+and the whole list is recorded and announced as one set — see
+``test_changelog_announcement.py``/``test_chat_agent.py`` for the startup
+path with an empty and a non-empty commit list."""
 
 from __future__ import annotations
 
@@ -11,7 +15,6 @@ from penny.changelog import (
     parse_commit_log,
     record_new_entries,
     render_changelog_announcement,
-    select_entries_to_announce,
 )
 from penny.constants import PennyConstants
 from penny.tests.conftest import require_memory
@@ -63,49 +66,6 @@ def test_load_commits_path_is_colocated_with_the_module():
     here ships this generated file too, with no Dockerfile change."""
     assert COMMITS_PATH.name == "changelog_commits.txt"
     assert COMMITS_PATH.parent.name == "penny"
-
-
-def test_select_entries_to_announce_fresh_install_announces_nothing():
-    """Nothing in the list is recorded yet (a fresh install, or a window
-    that doesn't reach back far enough to overlap the log) — there is no
-    "newest recorded" position to anchor off, so the whole list is left for
-    the caller to record silently, and none of it is announced."""
-    entries = [
-        ChangelogEntry(pr=101, text="first change"),
-        ChangelogEntry(pr=102, text="second change"),
-    ]
-    assert select_entries_to_announce(entries, already=set()) == []
-
-
-def test_select_entries_to_announce_restart_with_nothing_new_announces_nothing():
-    """Every entry in the list is already recorded (an ordinary restart with
-    no new commits merged) — the last match is the list's own last entry, so
-    nothing follows it."""
-    entries = [
-        ChangelogEntry(pr=101, text="first change"),
-        ChangelogEntry(pr=102, text="second change"),
-    ]
-    assert select_entries_to_announce(entries, already={101, 102}) == []
-
-
-def test_select_entries_to_announce_only_the_tail_after_the_last_recorded_one():
-    """The real case this rule exists for (#2891): a generated window that
-    holds old PRs the yaml era recorded out of order, scattered gaps the
-    yaml era never recorded (never announced either), and a genuinely new
-    tail. Only the entries strictly after the LAST already-recorded one,
-    oldest first, are announced — not every entry this call newly records."""
-    entries = [
-        ChangelogEntry(pr=101, text="an old recorded PR"),
-        ChangelogEntry(pr=102, text="an old gap the yaml era never recorded"),
-        ChangelogEntry(pr=103, text="the newest already-recorded PR"),
-        ChangelogEntry(pr=104, text="a genuinely new PR"),
-        ChangelogEntry(pr=105, text="another genuinely new PR"),
-    ]
-    announced = select_entries_to_announce(entries, already={101, 103})
-    assert announced == [
-        ChangelogEntry(pr=104, text="a genuinely new PR"),
-        ChangelogEntry(pr=105, text="another genuinely new PR"),
-    ]
 
 
 def test_record_new_entries_is_idempotent(db):

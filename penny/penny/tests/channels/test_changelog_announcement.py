@@ -207,20 +207,19 @@ async def test_changelog_announcement_skipped_with_profile_but_no_messages(
 
 
 @pytest.mark.asyncio
-async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_llm, monkeypatch):
+async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_llm):
     """Startup sends must not block listener startup before the channel is ready,
     and the delivery turn's prompt is the framework render, byte for byte.
 
-    The ``changelog`` log is pre-seeded with ONE already-recorded PR before
-    this boot — never a bare fresh log, which would announce nothing at all
-    (#2891's flood guard: a log with nothing recorded yet records its whole
-    commit window silently, see ``test_changelog.py``). This is the ordinary,
-    steady-state deploy shape: an old recorded PR stays out of the
-    announcement, and the genuinely new one after it goes out — both get
-    recorded either way."""
+    The commit list rides ``Config.changelog_commits`` — a PARAMETER (#2891),
+    never a monkeypatched module function or a file read. The ``changelog``
+    log is pre-seeded with ONE already-recorded PR before this boot, so the
+    commit list carries both an old, already-announced PR and a genuinely
+    new one: ``record_new_entries``'s own idempotency (never a separate
+    selection step — #2891) skips the old one and records/announces only
+    the new one."""
     old_entry = ChangelogEntry(pr=9300, text="an already-recorded PR from an earlier deploy")
     new_entry = ChangelogEntry(pr=9301, text="We added a new way to save a note.")
-    monkeypatch.setattr("penny.penny.load_commits", lambda: [old_entry, new_entry])
     # A plain always-answer handler, not ``set_default_flow``'s two-step
     # browse-then-answer counter: this is the delivery turn's own FIRST call on
     # a fresh mock, and the model should just write the announcement directly.
@@ -231,7 +230,11 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
     # schedules off): the announcement is now QUEUED and delivered by the real
     # send-queue drainer, same as any other autonomous send, so the drainer
     # schedule must actually get to run within the test's wait window.
-    config = make_config(idle_seconds=0.1, send_cooldown_seconds=0.0)
+    config = make_config(
+        idle_seconds=0.1,
+        send_cooldown_seconds=0.0,
+        changelog_commits=[old_entry, new_entry],
+    )
     penny = Penny(config, channel=None)
     channel = StartupReadyChannel(message_agent=penny.chat_agent, db=penny.db)
     penny._init_channel(config, channel)
@@ -277,14 +280,12 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
 
 
 @pytest.mark.asyncio
-async def test_changelog_announcement_startup_sends_with_no_new_entries(
-    make_config, mock_llm, monkeypatch
-):
+async def test_changelog_announcement_startup_sends_with_no_new_entries(make_config, mock_llm):
     """Penny announces on every startup (#2890): a deploy that brings no new
     changelog entries still runs the real delivery turn end to end — recorded,
     composed, queued, and delivered through the real drainer and channel —
-    with the "nothing changed" render as its input."""
-    monkeypatch.setattr("penny.penny.load_commits", lambda: [])
+    with the "nothing changed" render as its input. ``changelog_commits``
+    defaults to empty (#2891), so no override is needed here."""
     mock_llm.set_response_handler(
         lambda request, _count: mock_llm._make_text_response(request, _REPLY)
     )
@@ -344,7 +345,7 @@ async def test_ios_operational_changelog_announcement_respects_history_gate(
 
 @pytest.mark.asyncio
 async def test_changelog_announcement_multiple_devices(
-    signal_server, make_config, mock_llm, running_penny, monkeypatch
+    signal_server, make_config, mock_llm, running_penny
 ):
     """Penny is single-user: a LATER deploy's new entry reaches the registered
     default device, on top of whatever an earlier deploy already recorded.
@@ -352,13 +353,13 @@ async def test_changelog_announcement_multiple_devices(
     Idempotency (#2845) means replaying the SAME entries on a restart announces
     nothing a second time — so this models two real deploys: the first ships
     ``_ENTRIES`` (recorded, but too early in that boot for any profile to exist
-    yet to announce to), the second ships one further entry beyond those.
-
-    A tiny idle threshold, same reason as the channel-ready test above: the
-    announcement is QUEUED, and the real send-queue drainer must actually run
-    within the test's wait window to deliver it."""
-    config = make_config(idle_seconds=0.1, send_cooldown_seconds=0.0)
-    monkeypatch.setattr("penny.penny.load_commits", lambda: list(_ENTRIES))
+    yet to announce to), the second ships one further entry beyond those. Each
+    boot gets its OWN ``Config`` (``changelog_commits`` is a parameter, #2891)
+    — both ``make_config`` calls share the same underlying db/signal-server
+    defaults, so the second boot resumes the first boot's own database."""
+    config = make_config(
+        idle_seconds=0.1, send_cooldown_seconds=0.0, changelog_commits=list(_ENTRIES)
+    )
     async with running_penny(config) as penny:
         penny.db.users.save_info(
             sender=TEST_SENDER,
@@ -373,10 +374,14 @@ async def test_changelog_announcement_multiple_devices(
 
     signal_server.outgoing_messages.clear()
     new_entry = ChangelogEntry(pr=9303, text="We added a weekly digest option.")
-    monkeypatch.setattr("penny.penny.load_commits", lambda: [*_ENTRIES, new_entry])
+    second_boot_config = make_config(
+        idle_seconds=0.1,
+        send_cooldown_seconds=0.0,
+        changelog_commits=[*_ENTRIES, new_entry],
+    )
     mock_llm.set_default_flow(final_response=_REPLY)
 
-    async with running_penny(config):
+    async with running_penny(second_boot_config):
 
         def recipient_notified():
             return any(

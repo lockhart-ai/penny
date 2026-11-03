@@ -1522,18 +1522,18 @@ async def test_startup_backfill_fills_missing_key_vector(
 
 @pytest.mark.asyncio
 async def test_startup_records_changelog_entries_once(
-    signal_server, mock_llm, make_config, test_user_info, running_penny, monkeypatch
+    signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
     """The real startup step (``Penny._record_changelog_entries``, #2845/#2891)
-    records every commit the generated window carries into the `changelog`
-    log on the first startup, each stamped with that startup's own time —
-    then adds nothing on a second call, the idempotency a redeploy relies on."""
+    records every commit its commit list carries (``Config.changelog_commits``
+    — a PARAMETER, #2891) into the `changelog` log on the first startup, each
+    stamped with that startup's own time — then adds nothing on a second
+    call, the idempotency a redeploy relies on."""
     entries = [
         ChangelogEntry(pr=9401, text="feat(penny): add a new way to save a note"),
         ChangelogEntry(pr=9402, text="fix(penny): rename the lookup tool"),
     ]
-    monkeypatch.setattr("penny.penny.load_commits", lambda: list(entries))
-    config = make_config()
+    config = make_config(changelog_commits=list(entries))
     # Naive-or-aware tolerant: compare both sides with tzinfo stripped, within a
     # generous window, rather than assume which shape SQLite round-trips.
     now_naive = datetime.now(UTC).replace(tzinfo=None)
