@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -401,13 +402,22 @@ async def test_admin_memories_request_returns_memory_records(db):
     db.memories.create_collection(
         "recipes",
         "Meal notes",
+        expires_at=datetime(2026, 12, 1, 9, 0, tzinfo=UTC),
+        max_runs=5,
     )
 
     response = await _ios_admin_request(channel, {"type": "memories_request"})
 
     assert response["type"] == "memories_response"
-    names = {memory["name"] for memory in response["memories"]}
-    assert "recipes" in names
+    by_name = {memory["name"]: memory for memory in response["memories"]}
+    assert "recipes" in by_name
+    # The end conditions + creation time (#2929) — same read-only fields the
+    # browser channel's MemoryRecord carries; this model is shared between the two.
+    recipes_row = db.memories.get("recipes")
+    assert recipes_row is not None
+    assert by_name["recipes"]["expires_at"] == recipes_row.expires_at.isoformat()
+    assert by_name["recipes"]["max_runs"] == 5
+    assert by_name["recipes"]["created_at"] == recipes_row.created_at.isoformat()
 
 
 @pytest.mark.asyncio

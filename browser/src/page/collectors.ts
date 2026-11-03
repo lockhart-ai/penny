@@ -486,8 +486,15 @@ function appendCollectionConfig(card: HTMLElement, memory: MemoryRecord): void {
   const readOnlyGrid = document.createElement("dl");
   readOnlyGrid.className = "collector-readonly-grid";
   appendDef(readOnlyGrid, "Entries", String(memory.entry_count));
+  appendDef(readOnlyGrid, "Created", formatDateTime(memory.created_at));
   if (memory.last_collected_at) {
     appendDef(readOnlyGrid, "Last collected", formatDateTime(memory.last_collected_at));
+  }
+  if (memory.expires_at) {
+    appendDef(readOnlyGrid, "Expires", formatDateTime(memory.expires_at));
+  }
+  if (memory.max_runs !== null) {
+    appendDef(readOnlyGrid, "Max runs", String(memory.max_runs));
   }
   card.appendChild(readOnlyGrid);
 

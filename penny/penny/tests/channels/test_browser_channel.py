@@ -20,6 +20,7 @@ from penny.constants import ChannelType, PageReading, PennyConstants, Permission
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
+from penny.datetime_utils import utc_isoformat
 from penny.llm.call_link import CallLink
 from penny.tests.conftest import require_memory, wait_until
 from penny.tests.eval.utils.clock import PinnedClock
@@ -2484,6 +2485,8 @@ class TestBrowserMemoryHandlers:
             "board games",
             extraction_prompt="extract games",
             schedule="FREQ=MINUTELY;INTERVAL=5",
+            expires_at=datetime(2026, 12, 1, 9, 0, tzinfo=UTC),
+            max_runs=5,
         )
         db.memory("board-games").write_rule_decided(
             [EntryInput(key="catan", content="Gateway strategy game")],
@@ -2524,6 +2527,14 @@ class TestBrowserMemoryHandlers:
         assert by_name["board-games"]["schedule_description"] == describe_schedule(
             board_games_row, None, now=db.clock.now()
         )
+        # The end conditions + creation time (#2929) — read-only on the wire, sent
+        # alongside the rest of the collection's metadata.
+        assert board_games_row.expires_at is not None
+        assert by_name["board-games"]["expires_at"] == utc_isoformat(board_games_row.expires_at)
+        assert by_name["board-games"]["max_runs"] == 5
+        assert by_name["board-games"]["created_at"] == utc_isoformat(board_games_row.created_at)
+        assert by_name["collector-runs"]["expires_at"] is None
+        assert by_name["collector-runs"]["max_runs"] is None
         assert by_name["collector-runs"]["type"] == "log"
         assert by_name["collector-runs"]["entry_count"] == 1
         assert by_name["collector-runs"]["extraction_prompt"] is None

@@ -289,6 +289,12 @@ class MemoryRecord(BaseModel):
     schedule_description: str | None
     last_collected_at: str | None
     entry_count: int
+    # The end conditions the archive lifecycle retires a collection on (#1562/#1857) —
+    # read-only here: the addon sets either one only indirectly, through the schedule's
+    # own ``UNTIL=``/``COUNT=`` (#2929).  ``None`` = no end condition.
+    expires_at: str | None
+    max_runs: int | None
+    created_at: str
 
     @computed_field  # type: ignore[prop-decorator]
     @property
