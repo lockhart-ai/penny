@@ -10,12 +10,14 @@ carries ``report_run_id`` and no content yet is a composing report — the notif
 cycle's hand-off.  For one of those the drainer builds the :class:`JobReport` from
 the cycle's written entries (FULL, never cut), runs ONE chat-agent turn on it, and
 the message the turn writes is what gets gated, stored on the row and delivered.
-Every ordinary row (content already set) goes out with no model call at all — and
-an ordinary row MAY still carry ``report_run_id`` (#2846's startup changelog
-announcement composes its own turn up front via ``enqueue_composed``, the same
-shape ``store_composed`` leaves a job report in once composed): the delivered
-message is stamped with that run id rather than ``None``, so the row's own run is
-never lost — whether it was composed here or handed in already composed.
+Every ordinary row (content already set) goes out with no model call at all.
+
+``deliver_composed`` (#2913) is the OTHER entry point: a caller that already ran
+its own delivery turn and gated what it wrote (the startup changelog announcement,
+#2846) sends it straight through the channel the same way a drained row is —
+recipient resolution, the messagelog stamp naming the collection and the run that
+wrote it — with no queue row and no idle wait in between.  It shares ``_deliver``
+with ``execute()`` so the two paths record a send identically.
 
 The cooldown logic is identical to the gate the retired ``send_message`` tool
 used to apply inline: bypassed when the user has spoken since Penny's last message (the queued
@@ -105,38 +107,69 @@ class SendQueueDrainer:
         else:
             # An ordinary row (content already set, no model call here) still
             # carries whatever run wrote it — ``None`` when there never was one
-            # (a plain ``enqueue``), or that run's own id when a caller composed
-            # it up front (``enqueue_composed``) or an EARLIER tick already
-            # composed and stored it (a report row whose first delivery attempt
-            # found no recipient: ``item.content`` is no longer empty, so this
-            # branch is taken without re-composing, and ``report_run_id`` is
+            # (a plain ``enqueue``), or an EARLIER tick's own id when that tick
+            # already composed and stored it (a report row whose first delivery
+            # attempt found no recipient: ``item.content`` is no longer empty, so
+            # this branch is taken without re-composing, and ``report_run_id`` is
             # still the turn that wrote it, not lost to a bare ``None``).
             content, composed_run_id = item.content, item.report_run_id
-        recipient = self._resolve_recipient()
+        recipient = await self._deliver(content, collection=item.collection, run_id=composed_run_id)
         if recipient is None:
             return False
-        await self._channel.send_response(
-            recipient=recipient,
-            content=content,
-            parent_id=None,
-            author=item.collection,
-            quote_message=None,
-            # Emission provenance (#1568): the queued row already names the
-            # mechanism (the collector that queued it) — carry it onto the
-            # delivered messagelog row so the send names its cause and "which
-            # mechanism sent this?" is a read, not a diagnosis.  For a composed
-            # report this is what keeps "what you last told the user" (#2385) a
-            # read: the newest outgoing row stamped with this collection.
-            mechanism=item.collection,
-            # The run whose reply this delivery carries (#2630) — the chat turn
-            # that wrote the message, whether composed here or handed in already
-            # composed.  ``None`` only for a row with no real run behind it at all.
-            run_id=composed_run_id,
-        )
         if item.id is not None:
             self._db.send_queue.mark_sent(item.id)
         logger.info("send_queue drained: %s → %s", item.collection, recipient)
         return True
+
+    async def deliver_composed(self, content: str, *, collection: str, run_id: str) -> bool:
+        """Deliver an already-composed, already-gated message straight through
+        the channel — no queue row, no idle/cooldown wait (#2913).
+
+        For a caller whose own turn wrote and gated ``content`` up front (the
+        startup changelog announcement, #2846) and just needs it to reach the
+        user the moment the channel is ready. Shares ``_deliver`` with
+        ``execute()`` so this is recorded exactly like a drained row would be:
+        the same recipient resolution, and the same messagelog stamp (mechanism
+        ``collection``, ``run_id`` the run that wrote it). Returns whether a
+        channel/recipient was available to deliver through.
+        """
+        recipient = await self._deliver(content, collection=collection, run_id=run_id)
+        return recipient is not None
+
+    async def _deliver(self, content: str, *, collection: str, run_id: str | None) -> str | None:
+        """Resolve the recipient and send one message through the channel,
+        stamped the way every autonomous send is (#1568/#2630).
+
+        Shared by ``execute()`` (a drained queue row) and ``deliver_composed()``
+        (a caller's own pre-composed, already-gated send, #2913) so both record
+        a delivered message identically. Returns the recipient reached, or
+        ``None`` when there is no channel or no recipient to reach.
+        """
+        if self._channel is None:
+            return None
+        recipient = self._resolve_recipient()
+        if recipient is None:
+            return None
+        await self._channel.send_response(
+            recipient=recipient,
+            content=content,
+            parent_id=None,
+            author=collection,
+            quote_message=None,
+            # Emission provenance (#1568): names the mechanism (the collector,
+            # or the startup changelog announcement) onto the delivered
+            # messagelog row so the send names its cause and "which mechanism
+            # sent this?" is a read, not a diagnosis.  For a composed report
+            # this is what keeps "what you last told the user" (#2385) a read:
+            # the newest outgoing row stamped with this collection.
+            mechanism=collection,
+            # The run whose reply this delivery carries (#2630) — the chat turn
+            # that wrote the message, whether composed by the drainer or handed
+            # in already composed.  ``None`` only for a row with no real run
+            # behind it at all.
+            run_id=run_id,
+        )
+        return recipient
 
     @staticmethod
     def _is_report(item: SendQueueItem) -> bool:

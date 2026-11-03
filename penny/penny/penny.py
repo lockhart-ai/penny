@@ -25,7 +25,7 @@ from penny.channels.permission_manager import PermissionManager
 from penny.channels.signal.channel import SignalChannel
 from penny.commands import create_command_registry
 from penny.config import Config, setup_logging
-from penny.constants import ChannelType, CycleTrigger, PennyConstants
+from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.migrate import migrate
 from penny.database.models import MemoryEntry
@@ -666,9 +666,12 @@ class Penny:
 
     async def _send_changelog_announcement(self, entries: list[ChangelogEntry]) -> None:
         """Dispatch the changelog delivery turn for this deploy's new entries
-        (#2846), and queue what it writes like any other autonomous send —
-        summary method: who it's for (and whether it should run at all), then
-        compose, then queue."""
+        (#2846), and deliver what it writes straight through the channel
+        (#2913) — the channel is already known ready
+        (``_run_startup_notifications`` awaited it), so there is no reason to
+        make the user wait out the idle/cooldown gate every other autonomous
+        send does. Summary method: who it's for (and whether it should run at
+        all), then compose, then deliver."""
         sender = self._changelog_announcement_recipient()
         if sender is None:
             return
@@ -677,7 +680,7 @@ class Penny:
             if composed is None:
                 return
             answer, run_id = composed
-            self._queue_changelog_announcement(answer, run_id)
+            await self._deliver_changelog_announcement(answer, run_id)
         except Exception as e:
             logger.warning("Failed to send changelog announcement: %s", e)
 
@@ -732,19 +735,18 @@ class Penny:
             return False
         return True
 
-    def _queue_changelog_announcement(self, answer: str, run_id: str) -> None:
-        """Queue the composed reply in the same shape ``store_composed`` leaves a
-        job report in — content AND its own run id both set — so the drainer
-        reads it as an ordinary row while the delivered message still carries
-        the run that wrote it (the run-health facts read ``messagelog.run_id``,
-        #2849)."""
-        logger.info("Queuing changelog announcement (run %s)", run_id)
-        self.db.send_queue.enqueue_composed(
-            answer,
-            collection=PennyConstants.MEMORY_CHANGELOG_LOG,
-            origin=CycleTrigger.CADENCE,
-            report_run_id=run_id,
+    async def _deliver_changelog_announcement(self, answer: str, run_id: str) -> None:
+        """Deliver the composed reply straight through the channel's normal
+        outgoing-send path (#2913) — no queue row, no idle wait. Reuses the
+        drainer's own delivery mechanics (recipient resolution, the
+        ``messagelog`` stamp naming this run, read by the run-health facts,
+        #2849) so a startup send is recorded exactly like a drained one
+        would be."""
+        delivered = await self.send_queue_drainer.deliver_composed(
+            answer, collection=PennyConstants.MEMORY_CHANGELOG_LOG, run_id=run_id
         )
+        if not delivered:
+            logger.warning("Changelog announcement composed but had no channel/recipient to reach")
 
     async def _send_ios_operational_announcement(self) -> bool:
         """Send a simple startup notification when iOS is the default channel."""
