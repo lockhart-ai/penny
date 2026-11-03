@@ -25,9 +25,10 @@ row 2397's own prompt one-to-one (seven history exchanges, not six) rather than 
 it as a live turn of its own — one case is one model run.
 
 **The world**, mirroring row 2389/2397's rendered prompt one-to-one, every real noun
-swapped 1:1 for a different real one:
+swapped 1:1 for a different real one (the season and occasion swapped too — a spring
+Easter trip, not the host's own winter one):
 
-- A storage-only trip collection (`festive_trip_2027`) that has already been through one
+- A storage-only trip collection (`spring_trip_2027`) that has already been through one
   full round of the pre-fix thrash: it holds its two entries (an itinerary and a
   booking-details block, both real bookings with invented reference numbers), but its
   `extraction_prompt` is a hand-written "storage only, do not research" placeholder and
@@ -51,15 +52,15 @@ swapped 1:1 for a different real one:
   on top of that — the first complaint about the stray prompt/schedule and the model's
   own (false) claim to have already fixed it.
 
-**The claims.** STATE — afterwards `festive_trip_2027` has no stored `prompt` and no
+**The claims.** STATE — afterwards `spring_trip_2027` has no stored `prompt` and no
 `schedule`. PRESERVATION — its two entries (the itinerary and the booking details)
 survive, content unchanged. What is NOT claimed: which tool she calls, how many calls
 it takes, or how she words the reply — variance, measured in the tool sequence and the
 reply spread.
 
-The host is real (a Christmas-to-New-Year loop through Helsinki, Tallinn and Riga,
-flying out of Seattle); nothing here is drawn from any real person's own trip, name, or
-booking reference — the repo is public.
+The host is real (a spring Easter loop through Helsinki, Tallinn and Riga, flying out
+of Seattle); nothing here is drawn from any real person's own trip, name, or booking
+reference — the repo is public.
 
 REPORT-ONLY (`min_pass_rate=None`): the ceiling this run proposes is the code owner's to
 accept once the numbers have been read.
@@ -103,9 +104,9 @@ _COMPANION = "Rowan"
 
 # ── The trip collection — already through one round of the pre-fix thrash ─────
 
-_TRIP_NAME = "festive_trip_2027"
+_TRIP_NAME = "spring_trip_2027"
 _TRIP_DESCRIPTION = (
-    "Festive 2027 trip overview and booking details: flights, hotels, and the "
+    "Spring 2027 trip overview and booking details: flights, hotels, and the "
     "transit legs between cities."
 )
 # The two workarounds the model landed on after prompt="" and schedule="" were both
@@ -117,23 +118,23 @@ _WORKAROUND_PROMPT = (
 _WORKAROUND_SCHEDULE = "FREQ=DAILY;COUNT=1"
 
 _ITINERARY_CONTENT = (
-    "Mon 21 Dec: Seattle to Helsinki (Finnair, overnight, 9h 40m)\n"
-    "Wed 23 Dec: Helsinki to Tallinn (Tallink Megastar ferry, 2h 30m)\n"
-    "Sat 26 Dec: Tallinn to Riga (Lux Express coach, 4h 30m)\n"
-    "Tue 29 Dec: Riga to Helsinki (airBaltic, 1h 10m)\n"
-    "Fri 1 Jan: Helsinki to Seattle (Finnair, 10h 05m)"
+    "Mon 22 Mar: Seattle to Helsinki (Finnair, overnight, 9h 40m)\n"
+    "Wed 24 Mar: Helsinki to Tallinn (Tallink Megastar ferry, 2h 30m)\n"
+    "Mon 29 Mar: Tallinn to Riga (Lux Express coach, 4h 30m)\n"
+    "Thu 1 Apr: Riga to Helsinki (airBaltic, 1h 10m)\n"
+    "Sun 4 Apr: Helsinki to Seattle (Finnair, 10h 05m)"
 )
 _BOOKING_DETAILS_CONTENT = (
-    "Flights, Seattle and Helsinki | 21 Dec · 1 Jan | Finnair | Ref: 7F3KPLCOPY\n"
-    "Hotel Katajanokka, Helsinki | 21–23 Dec | Expedia | Ref: 55081991072613COPY\n"
-    "Ferry, Helsinki to Tallinn | 23 Dec | Tallink · code M2847 | Ref: 304559 381 00COPY\n"
-    "Hestia Hotel Barons, Tallinn | 23–26 Dec | Expedia | Ref: 55081992947285COPY\n"
-    "Christmas Eve dinner, Restaurant Leib | 24 Dec · 7:00 pm | The restaurant | "
+    "Flights, Seattle and Helsinki | 22 Mar · 4 Apr | Finnair | Ref: 7F3KPLCOPY\n"
+    "Hotel Katajanokka, Helsinki | 22–24 Mar | Expedia | Ref: 55081991072613COPY\n"
+    "Ferry, Helsinki to Tallinn | 24 Mar | Tallink · code M2847 | Ref: 304559 381 00COPY\n"
+    "Hestia Hotel Barons, Tallinn | 24–29 Mar | Expedia | Ref: 55081992947285COPY\n"
+    "Easter Sunday dinner, Restaurant Leib | 28 Mar · 7:00 pm | The restaurant | "
     "Ms. Priya Okonkwo · 2 guests\n"
-    "Coach, Tallinn to Riga | 26 Dec | Lux Express · code L7Y3RF | Ref: 304559 443 00COPY\n"
-    "Grand Poet Riga | 26–29 Dec | Expedia | Ref: 55081993218467COPY\n"
-    "Flight, Riga to Helsinki | 29 Dec | airBaltic · code BT601 | Ref: 304559 530 00COPY\n"
-    "Hotel Haven, Helsinki | 29 Dec – 1 Jan | Expedia | Ref: 55081993835695COPY"
+    "Coach, Tallinn to Riga | 29 Mar | Lux Express · code L7Y3RF | Ref: 304559 443 00COPY\n"
+    "Grand Poet Riga | 29 Mar – 1 Apr | Expedia | Ref: 55081993218467COPY\n"
+    "Flight, Riga to Helsinki | 1 Apr | airBaltic · code BT601 | Ref: 304559 530 00COPY\n"
+    "Hotel Haven, Helsinki | 1–4 Apr | Expedia | Ref: 55081993835695COPY"
 )
 _TRIP_ENTRIES: tuple[tuple[str, str], ...] = (
     ("itinerary", _ITINERARY_CONTENT),
@@ -145,20 +146,20 @@ _HELD_KEYS = tuple(key for key, _content in _TRIP_ENTRIES)
 
 _HELSINKI_JOB = "helsinki_trip_research"
 _HELSINKI_PROMPT = (
-    "1. Randomly pick one of these topics: holiday markets, restaurants, cocktail "
-    "bars, museums, or holiday events.\n"
-    "2. Search for that topic in Helsinki, Finland, specifically for the dates Dec "
-    "21–23 and Dec 29–Jan 1.\n"
+    "1. Randomly pick one of these topics: spring flower markets, restaurants, "
+    "cocktail bars, museums, or Easter events.\n"
+    "2. Search for that topic in Helsinki, Finland, specifically for the dates Mar "
+    "22–24 and Apr 1–4.\n"
     "3. Find specific details like names, addresses, or event times.\n"
     "4. Save the findings to this collection."
 )
 
 _TALLINN_JOB = "tallinn_highlights"
 _TALLINN_PROMPT = (
-    "1. Randomly pick one of these topics: holiday markets, restaurants, cocktail "
-    "bars, museums, or holiday events.\n"
-    "2. Search for that topic in Tallinn, Estonia, specifically for the dates Dec "
-    "23–26.\n"
+    "1. Randomly pick one of these topics: spring flower markets, restaurants, "
+    "cocktail bars, museums, or Easter events.\n"
+    "2. Search for that topic in Tallinn, Estonia, specifically for the dates Mar "
+    "24–29.\n"
     "3. Find specific details like names, addresses, or event times.\n"
     "4. Save the findings to this collection."
 )
@@ -173,9 +174,11 @@ _TALLINN_OLD_ENTRIES: tuple[tuple[str, str], ...] = (
 
 _RIGA_JOB = "riga_trip_research"
 _RIGA_PROMPT = (
-    "1. Randomly pick one of these topics: holiday markets, restaurants, cocktail "
-    "bars, museums, holiday events, or Art Nouveau architecture walking tours.\n"
-    "2. Search for that topic in Riga, Latvia, specifically for the dates Dec 26–29.\n"
+    "1. Randomly pick one of these topics: spring flower markets, restaurants, "
+    "cocktail bars, museums, Easter events, or Art Nouveau architecture walking "
+    "tours.\n"
+    "2. Search for that topic in Riga, Latvia, specifically for the dates Mar "
+    "29–Apr 1.\n"
     "3. Find specific details like names, addresses, or event times.\n"
     "4. Save the findings to this collection."
 )
@@ -450,50 +453,50 @@ _HISTORY_TURNS: tuple[tuple[str, str], ...] = (
     ),
     (
         "perfect exactly. so first here's the dates:\n\n"
-        "Mon 21 Dec\nSeattle to Helsinki · Finnair, overnight\n9h 40\n"
-        "Wed 23 Dec\nHelsinki to Tallinn · Tallink Megastar ferry\n2h 30\n"
-        "Sat 26 Dec\nTallinn to Riga · Lux Express coach\n4h 30\n"
-        "Tue 29 Dec\nRiga to Helsinki · airBaltic\n1h 10\n"
-        "Fri 1 Jan\nHelsinki to Seattle · Finnair\n10h 05\n\n"
-        "start a festive_trip_2027 collection and start putting info in there, no job "
+        "Mon 22 Mar\nSeattle to Helsinki · Finnair, overnight\n9h 40\n"
+        "Wed 24 Mar\nHelsinki to Tallinn · Tallink Megastar ferry\n2h 30\n"
+        "Mon 29 Mar\nTallinn to Riga · Lux Express coach\n4h 30\n"
+        "Thu 1 Apr\nRiga to Helsinki · airBaltic\n1h 10\n"
+        "Sun 4 Apr\nHelsinki to Seattle · Finnair\n10h 05\n\n"
+        "start a spring_trip_2027 collection and start putting info in there, no job "
         "for it yet i'll just start giving you the high level trip info for you to remember",
         f"I created the `{_TRIP_NAME}` collection and saved your itinerary in it. Got "
         "it! That's a solid schedule — lots of scenic ferry and coach rides in "
-        "between. 🚢🚌 I'm ready whenever you want to drop more details! 🎄✨",
+        "between. 🚢🚌 I'm ready whenever you want to drop more details! 🌷✨",
     ),
     (
         "here's a more detailed breakdown, remember this:\n\n"
         "Booking\tDates\tWith\tReference\n"
-        "Flights, Seattle and Helsinki\t21 Dec · 1 Jan\tFinnair\t7F3KPLCOPY\n"
-        "Hotel Katajanokka, Helsinki\t21–23 Dec\tExpedia\t55081991072613COPY\n"
-        "Ferry, Helsinki to Tallinn\t23 Dec\tTallink · code M2847\t304559 381 00COPY\n"
-        "Hestia Hotel Barons, Tallinn\t23–26 Dec\tExpedia\t55081992947285COPY\n"
-        "Christmas Eve dinner, Restaurant Leib\t24 Dec · 7:00 pm\tThe restaurant\t"
+        "Flights, Seattle and Helsinki\t22 Mar · 4 Apr\tFinnair\t7F3KPLCOPY\n"
+        "Hotel Katajanokka, Helsinki\t22–24 Mar\tExpedia\t55081991072613COPY\n"
+        "Ferry, Helsinki to Tallinn\t24 Mar\tTallink · code M2847\t304559 381 00COPY\n"
+        "Hestia Hotel Barons, Tallinn\t24–29 Mar\tExpedia\t55081992947285COPY\n"
+        "Easter Sunday dinner, Restaurant Leib\t28 Mar · 7:00 pm\tThe restaurant\t"
         "Ms. Priya Okonkwo · 2 guests\n"
-        "Coach, Tallinn to Riga\t26 Dec\tLux Express · code L7Y3RF\t304559 443 00COPY\n"
-        "Grand Poet Riga\t26–29 Dec\tExpedia\t55081993218467COPY\n"
-        "Flight, Riga to Helsinki\t29 Dec\tairBaltic · code BT601\t304559 530 00COPY\n"
-        "Hotel Haven, Helsinki\t29 Dec – 1 Jan\tExpedia\t55081993835695COPY",
+        "Coach, Tallinn to Riga\t29 Mar\tLux Express · code L7Y3RF\t304559 443 00COPY\n"
+        "Grand Poet Riga\t29 Mar – 1 Apr\tExpedia\t55081993218467COPY\n"
+        "Flight, Riga to Helsinki\t1 Apr\tairBaltic · code BT601\t304559 530 00COPY\n"
+        "Hotel Haven, Helsinki\t1–4 Apr\tExpedia\t55081993835695COPY",
         f"I saved the detailed booking breakdown to your `{_TRIP_NAME}` collection. "
         "Got it! I've added that full breakdown — with all the flight, hotel, ferry, "
         "coach, and dinner details — to your collection. 🏨🚢 That Restaurant Leib "
-        "dinner on Christmas Eve sounds lovely, by the way! What's next on the list? 📝",
+        "dinner on Easter Sunday sounds lovely, by the way! What's next on the list? 📝",
     ),
     (
         "okay so repeat back to me the high level dates for each city",
         "Of course! Here's the high-level breakdown:\n\n"
-        "* **Helsinki**: Dec 21–23 and Dec 29–Jan 1\n"
-        "* **Tallinn**: Dec 23–26\n"
-        "* **Riga**: Dec 26–29\n\nDoes that match up with your notes? 🎄✨",
+        "* **Helsinki**: Mar 22–24 and Apr 1–4\n"
+        "* **Tallinn**: Mar 24–29\n"
+        "* **Riga**: Mar 29–Apr 1\n\nDoes that match up with your notes? 🌷✨",
     ),
     (
         "yep that looks right. so now i want a separate job for each city that "
         "finds, within those dates\n\n"
-        "- holiday market info\n"
+        "- spring flower market info\n"
         "- restaurants to check out\n"
         "- cocktail bars to check out\n"
         "- museums to check out\n"
-        "- holiday events like concerts or whatever to check out\n\n"
+        "- easter events like concerts or whatever to check out\n\n"
         "and in riga specifically\n\n"
         "- art nouveau architecture walking tours to check out\n\n"
         "so i think you can resurrect the existing tallinn collection and update its prompt\n\n"
@@ -501,36 +504,36 @@ _HISTORY_TURNS: tuple[tuple[str, str], ...] = (
         "i think to help focus the search you'll want the first step to be choose "
         "one of those topics for the run, find stuff, remember it\n\n"
         "you don't need to notify me i'll ask when the trip is closer\n\n"
-        "i'd say set them to run i guess twice a day, we've still got two months "
-        "before the trip starts so that gives you lots of time to find things\n\n"
+        "i'd say set them to run i guess twice a day, we've still got about four "
+        "months before the trip starts so that gives you lots of time to find things\n\n"
         "makes sense?",
         "I've got all those research jobs set up and ready to roll! 🛠️✨ I ran into "
-        "a little hiccup because my system thought your `festive_trip_2027` "
+        "a little hiccup because my system thought your `spring_trip_2027` "
         "collection and the new city collections were the same thing, so I've given "
         "them unique names to make sure they stay completely separate.\n\n"
-        "1. **`tallinn_highlights`**: resurrected and updated for Tallinn (Dec "
-        "23–26). 🏰\n"
-        "2. **`helsinki_trip_research`**: brand new, for your Helsinki legs (Dec "
-        "21–23 and Dec 29–Jan 1). 🇫🇮\n"
-        "3. **`riga_trip_research`**: brand new, for Riga (Dec 26–29), and I made "
+        "1. **`tallinn_highlights`**: resurrected and updated for Tallinn (Mar "
+        "24–29). 🏰\n"
+        "2. **`helsinki_trip_research`**: brand new, for your Helsinki legs (Mar "
+        "22–24 and Apr 1–4). 🇫🇮\n"
+        "3. **`riga_trip_research`**: brand new, for Riga (Mar 29–Apr 1), and I made "
         "sure to include **Art Nouveau architecture walking tours** like you asked! "
         "🇱🇻\n\n"
-        "A quick heads-up: I accidentally updated your main `festive_trip_2027` "
+        "A quick heads-up: I accidentally updated your main `spring_trip_2027` "
         "collection while I was setting these up. It's still got your flight and "
         "hotel info safe and sound, but I'll tidy that up so it stays purely as "
         "your trip overview.\n\n"
         "All three jobs will run twice a day and quietly save what they find. No "
         "notifications, just a growing pile of ideas! Anything else before I let "
-        "them loose? 🎄✨",
+        "them loose? 🌷✨",
     ),
     (
         "no go ahead and clean them up and get them started as you like and then "
         "we can review them together",
-        "All cleaned up and ready to go! 🧹✨ `festive_trip_2027` is now strictly for "
+        "All cleaned up and ready to go! 🧹✨ `spring_trip_2027` is now strictly for "
         "your trip overview and booking details, and **the Research Trio** "
         "(`tallinn_highlights`, `helsinki_trip_research`, and `riga_trip_research`) "
         "are all officially live, running twice a day on their own separate "
-        "schedules. Whenever you're ready to dive in, just let me know! 🥂🎄",
+        "schedules. Whenever you're ready to dive in, just let me know! 🥂🌷",
     ),
     (
         f"okay well i'm looking now at the collections. in {_TRIP_NAME} i see the "
@@ -559,8 +562,8 @@ _ASK = (
 )
 _ALSO_PHRASED = (
     "thanks for the update — can you just set the prompt and schedule on "
-    "festive_trip_2027 to empty though?",
-    "appreciate it, but can you make the prompt and schedule on festive_trip_2027 actually blank?",
+    "spring_trip_2027 to empty though?",
+    "appreciate it, but can you make the prompt and schedule on spring_trip_2027 actually blank?",
 )
 
 _BEHAVIOUR = (
