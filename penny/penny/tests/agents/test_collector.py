@@ -243,20 +243,19 @@ def test_dispatcher_skips_archived(test_config, tmp_path):
     assert collector._next_ready_collection() is None
 
 
-def test_dispatcher_skips_collection_with_too_short_extraction_prompt(test_config, tmp_path):
-    """A collection whose extraction_prompt is below the 25-char minimum is skipped.
-
-    Prevents the LLM from receiving a nonsensical (often function-call-shaped)
-    instruction body that causes tool-name hallucinations.
-    """
+def test_dispatcher_picks_collection_with_short_extraction_prompt(test_config, tmp_path):
+    """No length floor on extraction_prompt any more (#2894) — a short one is picked
+    up exactly like a long one, as long as it has a schedule."""
     collector, db = _make_collector(test_config, tmp_path)
-    # "test_extraction_prompt" is 22 chars — below the 25-char minimum.
     db.memories.create_collection(
         "test-col",
         "x",
-        extraction_prompt="test_extraction_prompt",
+        extraction_prompt="short",
+        schedule="FREQ=HOURLY",
     )
-    assert collector._next_ready_collection() is None
+    target = collector._next_ready_collection()
+    assert target is not None
+    assert target.name == "test-col"
 
 
 def test_dispatcher_skips_collections_before_their_next_occurrence(test_config, tmp_path):
@@ -3188,18 +3187,31 @@ async def test_run_for_no_extraction_prompt(test_config, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_for_rejects_too_short_extraction_prompt(test_config, tmp_path):
-    """run_for returns an error for a sub-minimum extraction_prompt instead of
-    running the cycle, preventing the same hallucination path as the dispatcher."""
+async def test_run_for_runs_a_short_extraction_prompt(test_config, tmp_path):
+    """No length floor on extraction_prompt any more (#2894) — run_for runs the
+    cycle for a short prompt instead of rejecting it before it starts."""
+    from penny.agents.base import CycleResult
+
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "short-col",
         "x",
-        extraction_prompt="test_extraction_prompt",
+        extraction_prompt="short",
     )
+
+    async def mock_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
+        return CycleResult(
+            success=True,
+            response=ControllerResponse(
+                answer="", tool_calls=[ToolCallRecord(tool=DoneTool.name, arguments={})]
+            ),
+        )
+
+    collector._run_cycle = mock_run_cycle  # ty: ignore[invalid-assignment]
+
     success, message = await collector.run_for("short-col")
-    assert success is False
-    assert "too short" in message
+    assert success is True
+    assert "too short" not in message
 
 
 @pytest.mark.asyncio
