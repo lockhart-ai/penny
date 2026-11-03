@@ -37,12 +37,16 @@ from penny.tests.eval.utils.artifacts import (
     render_manifest_header,
 )
 from penny.tests.eval.utils.assemble import (
+    COMMENTS_FLAG,
+    DETAIL_CASE_THRESHOLD,
+    DETAIL_MOVED_SAMPLES,
     USAGE,
     assemble_run_comment,
     load_manifest,
     main,
 )
 from penny.tests.eval.utils.assertions import Cohort
+from penny.tests.eval.utils.pr_comments import REPORT_MARKER
 from penny.tests.eval.utils.worlds import World
 
 _TIMINGS = CaseTimings(calls=19, duration_ms=148000, input_tokens=54200, output_tokens=5900)
@@ -625,8 +629,17 @@ def test_the_samples_the_comment_does_not_carry_are_accounted_for() -> None:
 
 
 # ── One comment per case, its index, and the run summary (#2020) ─────────────
-def _indexed_run(tmp_path: Path, name: str, model: str, cases: dict[str, tuple[int, int]]) -> Path:
-    """A run dir for ONE model holding ``cases`` — each id mapped to (passed, total) checks."""
+def _indexed_run(
+    tmp_path: Path,
+    name: str,
+    model: str,
+    cases: dict[str, tuple[int, int]],
+    *,
+    baseline: str | None = None,
+) -> Path:
+    """A run dir for ONE model holding ``cases`` — each id mapped to (passed, total) checks.
+    ``baseline`` records the manifest's durable ``EVAL_BASELINE`` reference (#2939's collapsed
+    comparison reads it the same way the single-run flips index does)."""
     manifest = build_manifest(
         commit="abba710a03ae3555148fea6a86712e9af020499a",
         dirty_diff="",
@@ -635,6 +648,7 @@ def _indexed_run(tmp_path: Path, name: str, model: str, cases: dict[str, tuple[i
         samples=15,
         lever="the index",
         now=datetime(2026, 9, 1, 3, 36, 27, tzinfo=UTC),
+        baseline=baseline,
     )
     artifacts = [
         CaseArtifact(
@@ -1327,3 +1341,122 @@ def test_the_run_summary_splits_a_coverage_table_too_big_for_one_comment(tmp_pat
     assert seen == Counter(dict.fromkeys(behaviours, 1)), (
         "every case's coverage row appears exactly once across the parts"
     )
+
+
+# ── The collapsed whole-suite comment above DETAIL_CASE_THRESHOLD cases (#2939) ──────
+#
+# A whole-suite run used to post one document per case — about 100 on #2918, each one a
+# notification. Above the threshold, `_write_comments` posts ONE document instead: the run
+# summary unchanged, the branch-vs-main comparison table folded in rather than a second
+# comment, and per-case detail only for the cases that moved against the baseline or carry a
+# failing claim — each under its own ``<details>``. At or under the threshold nothing changes.
+
+
+def _clean_cases(count: int, total: int = 14) -> dict[str, tuple[int, int]]:
+    """``count`` cases, each fully green — nothing a detail fold would add to any of them."""
+    return {f"case-{number:03d}": (total, total) for number in range(1, count + 1)}
+
+
+def test_a_run_at_the_threshold_posts_one_document_per_case_unchanged(tmp_path: Path) -> None:
+    """At DETAIL_CASE_THRESHOLD cases, #2939 does not fire at all — one document per case plus
+    the run summary, exactly as before."""
+    report_dir = _indexed_run(
+        tmp_path, "run", "openai/gpt-oss-20b", _clean_cases(DETAIL_CASE_THRESHOLD)
+    )
+    out_dir = tmp_path / "parts"
+    assert main([COMMENTS_FLAG, str(out_dir), str(report_dir)]) == 0
+    bodies = [path.read_text() for path in sorted(out_dir.glob("part-*.md"))]
+    assert len(bodies) == DETAIL_CASE_THRESHOLD + 1, "one part per case, plus the run summary"
+    assert sum("## Run summary" in body for body in bodies) == 1
+    assert all(REPORT_MARKER in body for body in bodies)
+    assert not (out_dir / assemble.COLLAPSED_MARKER_FILENAME).exists(), (
+        "the recipe's own signal to skip the standalone compare post must stay off here"
+    )
+
+
+def test_a_run_above_the_threshold_posts_one_comment_not_one_per_case(tmp_path: Path) -> None:
+    """Above the threshold, a run with nothing to flag — every case clean, no baseline — posts
+    exactly ONE comment: the run summary and nothing else, never the per-case-detail section
+    and never the ~N-comment storm #2939 found on a whole-suite run."""
+    report_dir = _indexed_run(
+        tmp_path, "run", "openai/gpt-oss-20b", _clean_cases(DETAIL_CASE_THRESHOLD + 1)
+    )
+    out_dir = tmp_path / "parts"
+    assert main([COMMENTS_FLAG, str(out_dir), str(report_dir)]) == 0
+    [body] = [path.read_text() for path in sorted(out_dir.glob("part-*.md"))]
+    assert "## Run summary" in body
+    assert "Per-case detail" not in body, "nothing earned a fold — every case is clean"
+    assert "Branch vs main" not in body, "no baseline was recorded"
+    assert REPORT_MARKER in body
+    assert (out_dir / assemble.COLLAPSED_MARKER_FILENAME).exists(), (
+        "the recipe reads this to skip a now-duplicate standalone compare post"
+    )
+
+
+def test_a_hundred_case_run_still_posts_one_comment(tmp_path: Path) -> None:
+    """The real #2918 shape, at scale: a 100-case clean run posts ONE comment, not ~100."""
+    report_dir = _indexed_run(tmp_path, "run", "openai/gpt-oss-20b", _clean_cases(100))
+    out_dir = tmp_path / "parts"
+    assert main([COMMENTS_FLAG, str(out_dir), str(report_dir)]) == 0
+    parts = sorted(out_dir.glob("part-*.md"))
+    assert len(parts) == 1, "a hundred cases, one comment — never one per case"
+    assert all(len(path.read_text()) <= comment_split.GITHUB_COMMENT_LIMIT for path in parts)
+
+
+def test_a_failing_case_earns_a_detail_fold_a_clean_one_does_not(tmp_path: Path) -> None:
+    """Above the threshold, only the case carrying a failing claim gets its own ``<details>``
+    — a clean case stays off the comment entirely; its row in the tables above already says
+    everything there is to say about it."""
+    cases = _clean_cases(DETAIL_CASE_THRESHOLD)
+    cases["case-broken"] = (11, 14)
+    report_dir = _indexed_run(tmp_path, "run", "openai/gpt-oss-20b", cases)
+    out_dir = tmp_path / "parts"
+    assert main([COMMENTS_FLAG, str(out_dir), str(report_dir)]) == 0
+    [body] = [path.read_text() for path in sorted(out_dir.glob("part-*.md"))]
+    detail = body.split("#### Per-case detail", 1)[1]
+    assert "`case-broken`" in detail
+    assert "`case-001`" not in detail, "a clean case earns no fold"
+
+
+def test_a_case_moved_against_the_baseline_earns_a_detail_fold_even_if_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A case that is fully green HERE but moved against the baseline by
+    ``DETAIL_MOVED_SAMPLES`` or more earns a fold too — the comparison table's own row states
+    the move, but not what changed, and the move itself is the reason to look. The comparison
+    table carries every case's count, as the issue asks, while the fold stays selective."""
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    baseline_dir = tmp_path / "baseline"
+    baseline_dir.mkdir()
+    prior = CaseArtifact(
+        run_id="run-prior",
+        case_id="case-moved",
+        family="chat-recovery",
+        mean=1.0,
+        all_pass_rate=1.0,
+        pathology_excluded_mean=1.0,
+        samples=15,
+        sample_scores=[1.0],
+        sample_causes=[None],
+        cause_counts=CauseCounts(),
+        checks=[CheckOutcome(label="state: landed", passed=12, total=14)],
+        timings=_TIMINGS,
+    )
+    (baseline_dir / "results.jsonl").write_text(prior.model_dump_json() + "\n")
+    cases = _clean_cases(DETAIL_CASE_THRESHOLD)
+    cases["case-moved"] = (14, 14)  # fully green here — only the MOVE makes it worth a look
+    report_dir = _indexed_run(
+        tmp_path, "run", "openai/gpt-oss-20b", cases, baseline=str(baseline_dir)
+    )
+    out_dir = tmp_path / "parts"
+    assert main([COMMENTS_FLAG, str(out_dir), str(report_dir)]) == 0
+    [body] = [path.read_text() for path in sorted(out_dir.glob("part-*.md"))]
+    assert "## Branch vs main" in body
+    assert "`case-moved`" in body.split("## Branch vs main", 1)[1].split("#### Per-case", 1)[0], (
+        "the comparison table carries every case, including the one that moved"
+    )
+    detail = body.split("#### Per-case detail", 1)[1]
+    assert "`case-moved`" in detail, (
+        f"moved by {abs(14 - 12)} ≥ {DETAIL_MOVED_SAMPLES} — a fold even though it is clean here"
+    )
+    assert "`case-001`" not in detail, "unmoved and clean — no fold"

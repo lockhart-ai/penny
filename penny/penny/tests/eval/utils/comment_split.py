@@ -511,6 +511,27 @@ def split_run_summary(document: str, budget: int = PART_BUDGET) -> list[str]:
     return render_parts(partition_on_table_rows(document, budget))
 
 
+def split_collapsed_summary(
+    document: str, budget: int = PART_BUDGET, artifact_file: str | None = None
+) -> list[str]:
+    """The collapsed whole-suite summary's postable parts (#2939): cut at whole top-level BLOCK
+    boundaries (:func:`block_segments`) rather than at a sample-fold boundary.
+
+    Unlike a per-case document, this one nests a case's own per-sample folds INSIDE its own
+    outer per-case ``<details>`` — the sample-fold cut :func:`split_run_comment` uses looks only
+    for the blank line before a ``sample N`` fold and does not know whether that fold sits
+    inside a still-open OUTER fold, so it could split a case's fold across two comments. The
+    block cut is depth-aware for ANY ``<details>``, not just a sample's, so a case's whole fold
+    is always one atomic block to it — exactly the cut :func:`split_run_comment`'s own rescue
+    already uses when a fold-cut segment comes back over cap, reused here as the PRIMARY cut
+    rather than a fallback. A single block still over budget is re-cut the same way that rescue
+    is: between a table's rows, or — last resort — a line cut naming the artifact that holds it
+    whole.
+
+    A document that fits is returned unchanged as a single unheaded part."""
+    return render_parts(_rescue_part(document, budget, artifact_file))
+
+
 # ── The guards (refuse loudly, never publish) ────────────────────────────────
 def build_noise_reason(document: str) -> str | None:
     """The actionable reason a document is refused for opening with build noise, or ``None`` when
