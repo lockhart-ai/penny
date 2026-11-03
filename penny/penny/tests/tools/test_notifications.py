@@ -131,3 +131,33 @@ async def test_tool_fails_loudly_with_no_registered_user(db):
         NotificationsTool.to_result_narration({"on": True}, unmute)
         == "You tried to turn notifications back on but it didn't work:"
     )
+
+
+@pytest.mark.asyncio
+async def test_plan_mutes_without_touching_state_then_apply_matches(db):
+    """Plan mode (#2933): ``plan=true`` describes the mute without doing it,
+    then the SAME call for real actually mutes — the mechanism `test_plan_mode`
+    pins for the other four mutating tools in ``test_memory_tools.py``."""
+    _register_user(db)
+
+    plan = await NotificationsTool(db).execute(CallLink.new_top(), on=False, plan=True)
+    assert plan.success is True
+    assert plan.message.startswith("PLAN — nothing was changed:")
+    assert plan.mutated is False
+    assert db.users.is_muted(_RECIPIENT) is False
+
+    applied = await NotificationsTool(db).execute(CallLink.new_top(), on=False)
+    assert applied.mutated is True
+    assert db.users.is_muted(_RECIPIENT) is True
+
+
+@pytest.mark.asyncio
+async def test_plan_on_an_already_muted_user_names_the_noop(db):
+    """Plan on an already-muted user reports the real no-op, not a fake mute."""
+    _register_user(db)
+    db.users.set_muted(_RECIPIENT)
+
+    plan = await NotificationsTool(db).execute(CallLink.new_top(), on=False, plan=True)
+    assert plan.success is True
+    assert "already muted" in plan.message.lower()
+    assert plan.mutated is False

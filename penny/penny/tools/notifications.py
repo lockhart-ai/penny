@@ -25,8 +25,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pydantic import Field
+
 from penny.llm.call_link import CallLink
-from penny.tools.base import Tool
+from penny.tools.base import PLAN_ARG_DESCRIPTION, Tool, as_plan_result
 from penny.tools.models import ToolArgs, ToolResult
 
 if TYPE_CHECKING:
@@ -38,6 +40,9 @@ class NotificationsArgs(ToolArgs):
     rather than a tool name to pick between (#2812)."""
 
     on: bool
+    # The structural plan mark (#2933) — every ``mutates=True`` tool declares
+    # this literal field itself (``Tool.__init_subclass__`` asserts it's here).
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
 class NotificationsTool(Tool):
@@ -49,6 +54,7 @@ class NotificationsTool(Tool):
     """
 
     name = "notifications_set"
+    mutates = True
     args_model = NotificationsArgs
 
     _NO_RECIPIENT_RESPONSE = (
@@ -85,7 +91,8 @@ class NotificationsTool(Tool):
         "now, is asking for exactly this, because proactive messages are the "
         "only thing that permission releases. A remark about how quiet or busy "
         "things have been is NOT that: it describes their day, grants nothing, "
-        "and leaves the switch exactly where it is."
+        "and leaves the switch exactly where it is.\n\n"
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters = {
         "type": "object",
@@ -108,9 +115,27 @@ class NotificationsTool(Tool):
         recipient = self._db.users.get_primary_sender()
         if recipient is None:
             return ToolResult(message=self._NO_RECIPIENT_RESPONSE, success=False)
+        if args.plan:
+            return self._plan(args, recipient)
         if args.on:
             return self._turn_on(recipient)
         return self._turn_off(recipient)
+
+    def _plan(self, args: NotificationsArgs, recipient: str) -> ToolResult:
+        """Describe the toggle without touching it (#2933): reads the current
+        mute state the same way ``_turn_on``/``_turn_off`` would act on it."""
+        muted = self._db.users.is_muted(recipient)
+        if args.on:
+            if not muted:
+                return as_plan_result(
+                    ToolResult(message="do nothing — notifications are already on.")
+                )
+            return as_plan_result(ToolResult(message="turn notifications back on."))
+        if muted:
+            return as_plan_result(
+                ToolResult(message="do nothing — notifications are already muted.")
+            )
+        return as_plan_result(ToolResult(message="mute notifications."))
 
     def _turn_on(self, recipient: str) -> ToolResult:
         if not self._db.users.is_muted(recipient):

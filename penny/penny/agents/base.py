@@ -28,7 +28,7 @@ from penny.config import Config
 from penny.config_params import token_budget_for
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory.identity import CollectionNameDecider, EntryDecider
+from penny.database.memory.identity import CollectionNameDecider, EntryDecider, WriteDecisionCache
 from penny.database.memory.objects import run_tool_history
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
@@ -1778,7 +1778,10 @@ class Agent:
         return None
 
     def get_tools(
-        self, run_id: str | None = None, handles: HandleTable | None = None
+        self,
+        run_id: str | None = None,
+        handles: HandleTable | None = None,
+        decision_cache: WriteDecisionCache | None = None,
     ) -> list[Tool]:
         """Tool surface — memory + browse, dispatched by ``_memory_scope``.
 
@@ -1792,8 +1795,14 @@ class Agent:
         records it as the new mechanism's creating run (#1566), and each registry
         mutation records it as the change's cause.  Passed as an explicit
         parameter, never ambient state.
+
+        ``decision_cache`` (#2933) is ``collection_write``'s plan-decision cache —
+        one per run, like ``handles``.  ``None`` builds a fresh one here; since
+        this method itself is called once per run, that is exactly one cache
+        per run either way.
         """
         table = handles if handles is not None else HandleTable()
+        decisions = decision_cache if decision_cache is not None else WriteDecisionCache()
         scope = self._memory_scope()
         # Key the memory tools (read cursors + entry author) on the bound
         # collection, not the constant agent identity.  The Collector drives
@@ -1812,6 +1821,7 @@ class Agent:
             name_decider=self._name_decider,
             include_lifecycle=self._include_lifecycle_tools(),
             handles=table,
+            decision_cache=decisions,
         )
         tools.append(self._build_browse_tool(author=self.name, handles=table))
         # ``choose`` — the fair random picker — is on every agent surface, like
@@ -2667,9 +2677,12 @@ class BackgroundAgent(Agent):
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
 
     def get_tools(
-        self, run_id: str | None = None, handles: HandleTable | None = None
+        self,
+        run_id: str | None = None,
+        handles: HandleTable | None = None,
+        decision_cache: WriteDecisionCache | None = None,
     ) -> list[Tool]:
         """The chat-style surface minus the lifecycle tier (a background cycle
         cannot create, reconfigure, or archive a mechanism, #1556) plus the
         terminator every background cycle closes with (#1916)."""
-        return [*super().get_tools(run_id, handles), DoneTool()]
+        return [*super().get_tools(run_id, handles, decision_cache), DoneTool()]

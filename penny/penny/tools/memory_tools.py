@@ -58,6 +58,7 @@ from penny.database.memory import (
     ResolvedMessage,
     RunHealthLog,
     RunLog,
+    WriteDecisionCache,
     WriteResult,
     plan_entries,
     render_key,
@@ -71,6 +72,7 @@ from penny.database.memory.identity import (
     CollectionCandidate,
     CollectionNameDecider,
     EntryDecider,
+    EntryDecision,
     collection_name_rule,
 )
 from penny.database.models import MemoryEntry, MemoryRow, PromptLog
@@ -83,7 +85,7 @@ from penny.datetime_utils import (
 )
 from penny.llm.call_link import CallLink
 from penny.llm.similarity import embed_text
-from penny.tools.base import Tool
+from penny.tools.base import Tool, as_plan_result
 from penny.tools.collection_instantiation import (
     SCHEDULE_EXAMPLES,
     Schedule,
@@ -1074,11 +1076,13 @@ class CollectionArchiveTool(MemoryTool):
     """
 
     name = "collection_archive"
+    mutates = True
     description = (
         "Archive or restore a collection. `archived=true` retires it — the data "
         "stays intact but its collector stops running and it drops out of the "
         "active memory list (it stays reachable by its exact name, as a "
-        "tombstone). `archived=false` restores a previously archived collection."
+        "tombstone). `archived=false` restores a previously archived collection. "
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters = {
         "type": "object",
@@ -1115,11 +1119,31 @@ class CollectionArchiveTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionArchiveArgs(**kwargs)
+        if args.plan:
+            return self._plan(args)
         if args.archived:
             self._db.memories.archive(args.collection, run_id=self._run_id)
             return ToolResult(message=f"Archived '{args.collection}'.", mutated=True)
         self._db.memories.unarchive(args.collection, run_id=self._run_id)
         return ToolResult(message=f"Unarchived '{args.collection}'.", mutated=True)
+
+    def _plan(self, args: CollectionArchiveArgs) -> ToolResult:
+        """Describe the archive/restore without touching it (#2933): reads the
+        row's CURRENT ``archived`` state — the same one ``archive``/
+        ``unarchive`` would act on — so the outcome named here is exactly what
+        apply would do.  A miss raises the same ``MemoryNotFoundError`` the
+        apply path would hit, so both read as the identical did-you-mean
+        refusal."""
+        row = self._db.memories.get(args.collection)
+        if row is None:
+            raise MemoryNotFoundError(args.collection)
+        if row.archived == args.archived:
+            state = "archived" if args.archived else "active"
+            return as_plan_result(
+                ToolResult(message=f"do nothing — '{args.collection}' is already {state}.")
+            )
+        verb = "archive" if args.archived else "restore"
+        return as_plan_result(ToolResult(message=f"{verb} '{args.collection}'."))
 
 
 # ── Collection reads ────────────────────────────────────────────────────────
@@ -1349,6 +1373,14 @@ _WRITE_AUTOCREATE_NOTE = (
     "Note: no collection named '{name}' existed and nothing close matched, so it was "
     "created (storage only, no job) and your entries went in.\n"
 )
+# The plan twin of the note above (#2933): no collection named '{name}' exists and
+# nothing close matched, so a real call would auto-create it — but plan never
+# creates one, so this names what WOULD happen and stops there.
+_WRITE_PLAN_AUTOCREATE_NOTE = (
+    "create '{name}' (storage only, no job, from the key '{key}') and write your "
+    "entries into it — plan doesn't create collections, so call collection_write "
+    "again without `plan` to do it for real."
+)
 _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '{key}'"
 # The auto-created collection's description is only the placeholder above, and the reply
 # says so (#2720).  The placeholder note itself renders from the ``collection_configure``
@@ -1502,10 +1534,12 @@ class CollectionWriteTool(MemoryTool):
     advises = ("collection_remove",)
     stores_entries = True
     destination_param = "collection"
+    mutates = True
     description = (
         "Write one or more entries to a collection. Each entry has a short "
         "`key` (topic/identifier) and a longer `content` body. Dedup runs "
-        "per entry — duplicates are reported but not treated as errors."
+        "per entry — duplicates are reported but not treated as errors. "
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters = {
         "type": "object",
@@ -1546,6 +1580,7 @@ class CollectionWriteTool(MemoryTool):
         scope: str | None = None,
         run_id: str | None = None,
         handles: HandleTable | None = None,
+        decision_cache: WriteDecisionCache | None = None,
     ) -> None:
         self._db = db
         self._llm = llm_client
@@ -1563,6 +1598,14 @@ class CollectionWriteTool(MemoryTool):
         # The run's link table (#2717) — handles are a rendering, so an entry is
         # expanded back to its URLs BEFORE the write: the store keeps real URLs.
         self._handles = handles if handles is not None else HandleTable()
+        # The run's plan-decision cache (#2933) — one per run, passed as a
+        # parameter like ``handles``: a plan call's identity-ladder decisions
+        # land here, and an apply with identical arguments in the SAME run
+        # reads them back instead of asking the (non-deterministic) decision
+        # model again, so a plan can never disagree with the apply it describes.
+        self._decision_cache = (
+            decision_cache if decision_cache is not None else WriteDecisionCache()
+        )
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         # This tool embeds, so a write to a mistyped collection gets the MEANING
@@ -1580,7 +1623,12 @@ class CollectionWriteTool(MemoryTool):
                 ),
                 success=False,
             )
-        target, note = await self._materialize_target(args)
+        target, note, would_create = await self._materialize_target(args)
+        if would_create:
+            # plan=True reached the point apply would auto-create a missing
+            # collection (#2933) — nothing is created under plan, so there is
+            # no target yet to resolve or write against; describe and stop.
+            return as_plan_result(ToolResult(message=note))
         collection = _resolve(self._db, target)
         writable, refused_note = self._split_dangling(args.entries)
         if refused_note is not None and not writable:
@@ -1589,10 +1637,43 @@ class CollectionWriteTool(MemoryTool):
         embed_failure = self._embed_failure(target, entries)
         if embed_failure is not None:
             return embed_failure
-        # The identity ladder, its three parts in order: read what the collection
-        # holds, settle it (rules + shortlist here, decision model on the async
-        # path that just embedded), then hand the decisions to the write —
-        # ``identity`` owns the decision, the store only applies it (#2715).
+        decisions = await self._decide(args, target, collection, entries)
+        results = collection.write(
+            entries,
+            author=self._author,
+            run_id=self._run_id,
+            decisions=decisions,
+            plan=args.plan,
+        )
+        result = self._format_results(target, results)
+        if refused_note is not None:
+            result = result.model_copy(update={"message": f"{refused_note}\n{result.message}"})
+        if note:
+            result = result.model_copy(update={"message": note + result.message})
+        return as_plan_result(result) if args.plan else result
+
+    async def _decide(
+        self,
+        args: CollectionWriteArgs,
+        target: str,
+        collection: Memory,
+        entries: list[EntryInput],
+    ) -> list[EntryDecision]:
+        """The identity ladder's decision for this write — its three parts in
+        order: read what the collection holds, settle it (rules + shortlist
+        here, decision model on the async path that just embedded), then hand
+        the decisions to the write (``identity`` owns the decision, the store
+        only applies it, #2715).
+
+        Cached per run, keyed on the resolved ``target`` and the call's OWN
+        ``(key, content)`` text (#2933): a plan and a later apply with the
+        SAME entries reuse the one decision rather than asking the
+        (non-deterministic) decision model twice, so a plan's description can
+        never disagree with what apply actually does."""
+        cache_entries = [(entry.key, entry.content) for entry in args.entries]
+        cached = self._decision_cache.get(self._run_id, target, cache_entries)
+        if cached is not None:
+            return cached
         givens = collection.identity_givens()
         plans = plan_entries(entries, givens)
         decisions = await self._decider.decide(
@@ -1602,17 +1683,10 @@ class CollectionWriteTool(MemoryTool):
             collection_name=collection.name,
             collection_description=collection.row.description,
         )
-        results = collection.write(
-            entries, author=self._author, run_id=self._run_id, decisions=decisions
-        )
-        result = self._format_results(target, results)
-        if refused_note is not None:
-            result = result.model_copy(update={"message": f"{refused_note}\n{result.message}"})
-        if note:
-            return result.model_copy(update={"message": note + result.message})
-        return result
+        self._decision_cache.put(self._run_id, target, cache_entries, decisions)
+        return decisions
 
-    async def _materialize_target(self, args: CollectionWriteArgs) -> tuple[str, str]:
+    async def _materialize_target(self, args: CollectionWriteArgs) -> tuple[str, str, bool]:
         """Resolve the write target, materializing on a miss (#1570): the name
         match runs the identity ladder (#2724) — the rules settle the names
         they are sure of, the shortlist ranks the rest by embedding, the
@@ -1620,30 +1694,42 @@ class CollectionWriteTool(MemoryTool):
         REDIRECTS to the existing collection.  Nothing close AUTO-CREATES it;
         what the ladder cannot settle re-raises into the did-you-mean refusal
         (chat surface only — a scoped write is pinned to a collection that
-        exists).  Both narrate.  Returns (actual target, note-or-empty)."""
+        exists).  Both narrate.  Returns (actual target, note-or-empty,
+        would_create) — ``would_create`` is True only for a plan call that
+        reached the auto-create branch: nothing is created under plan
+        (#2933), so the caller describes the would-be create and stops
+        rather than resolving a collection that doesn't exist yet."""
         if self._scope is not None or self._db.memories.get(args.collection) is not None:
-            return args.collection, ""
+            return args.collection, "", False
         rows = [
             row
             for row in self._db.memories.list_all()
             if row.type == MemoryType.COLLECTION.value and not row.archived
         ]
         if (settled := self._rules_match(args.collection, rows)) is not None:
-            return self._redirect(args.collection, settled)
+            target, note = self._redirect(args.collection, settled)
+            return target, note, False
         if self._rules_ambiguous(args.collection, rows):
             # Two-plus names the rules settle as the same collection is genuine
             # ambiguity — the did-you-mean refusal owns it.
-            return args.collection, ""
+            return args.collection, "", False
         candidates = await self._shortlist(
             args.collection, self._rules_eligible(args.collection, rows)
         )
         verdict = await self._name_decider.decide(asked=args.collection, candidates=candidates)
         if verdict.name is not None:
-            return self._redirect(args.collection, verdict.name)
+            target, note = self._redirect(args.collection, verdict.name)
+            return target, note, False
         if verdict.unsure:
             # The ladder could not settle the match — the did-you-mean refusal
             # (raised by _resolve on the original name) owns it.
-            return args.collection, ""
+            return args.collection, "", False
+        if args.plan:
+            return (
+                args.collection,
+                _WRITE_PLAN_AUTOCREATE_NOTE.format(name=args.collection, key=args.entries[0].key),
+                True,
+            )
         description = _AUTO_CREATED_DESCRIPTION.format(key=args.entries[0].key)
         self._db.memories.create_collection(
             args.collection,
@@ -1655,7 +1741,7 @@ class CollectionWriteTool(MemoryTool):
         note = _WRITE_AUTOCREATE_NOTE.format(name=args.collection) + (
             render_autocreate_placeholder_note(collection=args.collection, description=description)
         )
-        return args.collection, note
+        return args.collection, note, False
 
     @staticmethod
     def _rules_match(asked: str, rows: list[MemoryRow]) -> str | None:
@@ -2644,9 +2730,11 @@ class CollectionRemoveTool(MemoryTool):
     name = "collection_remove"
     # A key that does not exist sends the model to the list of keys that do.
     advises = ("collection_keys",)
+    mutates = True
     description = (
         "Remove the entry with the given key from a collection. Returns the "
-        "number of entries removed (zero if the key did not exist)."
+        "number of entries removed (zero if the key did not exist). "
+        "Pass `plan=true` to see what this call would do without doing it."
     )
     parameters = {
         "type": "object",
@@ -2684,6 +2772,8 @@ class CollectionRemoveTool(MemoryTool):
                 success=False,
             )
         collection = _resolve(self._db, args.collection)
+        if args.plan:
+            return self._plan(collection, args)
         removed = collection.delete(args.key)
         if removed == 0:
             rejection = _bracket_key_rejection(collection, args.collection, args.key)
@@ -2704,6 +2794,21 @@ class CollectionRemoveTool(MemoryTool):
                 f"List the current keys with collection_keys{{'{args.collection}'}} to find it."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.collection}'.", mutated=True)
+
+    @staticmethod
+    def _plan(collection: Memory, args: CollectionRemoveArgs) -> ToolResult:
+        """Describe the removal without touching it (#2933): checks whether the
+        key exists the same way ``delete`` would find it (``collection.get``),
+        so the outcome named here is exactly what apply would do."""
+        if not collection.get(args.key):
+            return as_plan_result(
+                ToolResult(
+                    message=f"do nothing — no entry with key '{args.key}' in '{args.collection}'."
+                )
+            )
+        return as_plan_result(
+            ToolResult(message=f"delete the entry with key '{args.key}' from '{args.collection}'.")
+        )
 
 
 # ── Log reads ───────────────────────────────────────────────────────────────
@@ -3242,7 +3347,11 @@ class LogAppendTool(MemoryTool):
     """Append a keyless entry to a log."""
 
     name = "log_append"
-    description = "Append one keyless entry to a log. No dedup runs; every append is stored."
+    mutates = True
+    description = (
+        "Append one keyless entry to a log. No dedup runs; every append is stored. "
+        "Pass `plan=true` to see what this call would do without doing it."
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -3276,6 +3385,11 @@ class LogAppendTool(MemoryTool):
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = LogAppendArgs(**kwargs)
         memory = _resolve(self._db, args.log)
+        if args.plan:
+            # No dedup, no identity ladder — every append is stored, so there
+            # is nothing to decide here; the embed call below is itself a real
+            # (if invisible) call, so plan skips it too (#2933).
+            return as_plan_result(ToolResult(message=f"append one entry to '{args.log}'."))
         vec = await embed_text(self._llm, args.content)
         if vec is None:
             logger.warning("log_append: embedding unavailable for an entry in %s", memory.name)
@@ -3952,6 +4066,7 @@ def build_memory_tools(
     run_id: str | None = None,
     include_lifecycle: bool = True,
     handles: HandleTable | None = None,
+    decision_cache: WriteDecisionCache | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -4001,6 +4116,14 @@ def build_memory_tools(
     NULL.  (The spawning ``source_message_id`` is linked afterward by the channel,
     since the message id isn't known until the run returns.)
 
+    ``decision_cache`` (#2933) is ``collection_write``'s plan-decision cache —
+    one per run, like ``handles``: a ``plan=true`` call's identity-ladder
+    decisions land there, and an apply with identical arguments in the SAME
+    run reuses them instead of asking the (non-deterministic) decision model
+    again, so a plan can never disagree with the apply it describes.
+    ``None`` builds a fresh one — every caller here builds this surface once
+    per run, so that is exactly one cache per run either way.
+
     ``include_lifecycle`` gates the registry-shape tier — ``collection_configure`` /
     ``collection_archive`` / ``log_create``.  Chat-style agents get it (the user
     evolves collections through them); a cadence-fired collector run passes
@@ -4048,6 +4171,7 @@ def build_memory_tools(
             scope=scope,
             run_id=run_id,
             handles=handles,
+            decision_cache=decision_cache,
         ),
         CollectionRemoveTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name, run_id=run_id),

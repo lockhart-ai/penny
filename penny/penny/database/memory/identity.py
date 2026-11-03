@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel
 from similarity.embeddings import singularize
@@ -364,6 +364,56 @@ class EntryDecider:
             )
             return ""
         return answer.choice.strip().lower()
+
+
+class WriteDecisionCache:
+    """Caches ``collection_write``'s identity-ladder decisions, keyed by the
+    run and the exact call (collection + entries) that produced them (#2933).
+
+    The ladder's decision-model rung (``EntryDecider.decide``) is
+    non-deterministic — asked twice, it can answer differently.  Without this,
+    a ``plan=true`` call and a later ``plan=false`` apply with the SAME
+    arguments could each decide independently and disagree, breaking "plan
+    describes what apply will do."  A plan call puts its decisions here; an
+    apply with identical arguments in the SAME run reads them back instead of
+    asking the decision model again, so the two can never diverge.
+
+    One per run, passed as an explicit parameter (``CollectionWriteTool``'s own
+    constructor, threaded the same way ``HandleTable`` is) — never ambient
+    state.  Keyed on the entries' ``key``/``content`` TEXT (plain
+    ``(key, content)`` pairs the caller extracts from its own call
+    arguments — the model's ``entries`` batch, before it is built into
+    anything embedding-bearing), not their embeddings: two calls with
+    byte-identical text always embed to the same vectors, so the text is the
+    call's real identity and this stays decoupled from whichever entry type
+    (the raw call spec, the embedded ``EntryInput``) a caller happens to hold.
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[Any, ...], list[EntryDecision]] = {}
+
+    @staticmethod
+    def _key(
+        run_id: str | None, collection: str, entries: list[tuple[str, str]]
+    ) -> tuple[Any, ...]:
+        return (run_id, collection, tuple(entries))
+
+    def get(
+        self, run_id: str | None, collection: str, entries: list[tuple[str, str]]
+    ) -> list[EntryDecision] | None:
+        """The cached decisions for an identical earlier call in this run, or
+        ``None`` on a miss (the caller runs the ladder and ``put``s the result).
+        ``entries`` is the call's own ``(key, content)`` pairs, in order."""
+        return self._cache.get(self._key(run_id, collection, entries))
+
+    def put(
+        self,
+        run_id: str | None,
+        collection: str,
+        entries: list[tuple[str, str]],
+        decisions: list[EntryDecision],
+    ) -> None:
+        self._cache[self._key(run_id, collection, entries)] = decisions
 
 
 def rule_only_decisions(

@@ -10,8 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import pytest
 from pydantic import BeforeValidator
@@ -5209,3 +5211,129 @@ class TestSynthesize:
         assert result.success is False
         assert "didn't come back clean" in result.message
         assert "synthesize{query: 'aurora beacon cascade'}" in result.message
+
+
+# ── Plan mode (#2933) ────────────────────────────────────────────────────────
+
+
+def _dump_db(db) -> str:
+    """A full, byte-comparable dump of the database file: every row, in
+    insertion order.  Used to assert a ``plan=true`` call touches nothing —
+    stronger than checking one table, since a plan that mutated some OTHER
+    row (a mutation-ledger entry, a send-queue cancel) would still show up."""
+    conn = sqlite3.connect(db.db_path)
+    try:
+        return "\n".join(conn.iterdump())
+    finally:
+        conn.close()
+
+
+class _PlanCase(NamedTuple):
+    """One mutating tool's plan-mode fixture: build the tool + the call
+    arguments to exercise, and confirm the DECISION plan named actually landed
+    once the SAME call runs for real."""
+
+    setup: Callable[[Any, Any], tuple[Tool, dict[str, Any]]]
+    verify_applied: Callable[[Any], None]
+
+
+def _plan_setup_write_merge(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
+    """An existing entry under the key the write reuses — the exact-key path
+    (``_exact_key_outcome``), so the outcome (``KEY_EXISTS_CHANGED``, a merge)
+    is deterministic regardless of the embedding/decision-model configuration."""
+    _seed_collection(db, name="plan-notes")
+    require_memory(db, "plan-notes").write_rule_decided(
+        [EntryInput(key="hours", content="Mon-Fri 9-5")], author="seed"
+    )
+    tool = CollectionWriteTool(
+        db,
+        _make_llm_client(mock_llm),
+        author="test",
+        decider=_NO_MODEL,
+        name_decider=_NO_NAME_MODEL,
+    )
+    return tool, {
+        "collection": "plan-notes",
+        "entries": [{"key": "hours", "content": "Mon-Sat 10-6"}],
+    }
+
+
+def _plan_verify_write_merge(db) -> None:
+    stored = require_memory(db, "plan-notes").get("hours")
+    assert len(stored) == 1
+    assert stored[0].content == "Mon-Sat 10-6"
+
+
+def _plan_setup_archive(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
+    _seed_collection(db, name="plan-archive-me")
+    return CollectionArchiveTool(db), {"collection": "plan-archive-me", "archived": True}
+
+
+def _plan_verify_archive(db) -> None:
+    row = db.memories.get("plan-archive-me")
+    assert row is not None
+    assert row.archived is True
+
+
+def _plan_setup_remove(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
+    _seed_collection(db, name="plan-remove-me")
+    require_memory(db, "plan-remove-me").write_rule_decided(
+        [EntryInput(key="k1", content="v1")], author="seed"
+    )
+    return CollectionRemoveTool(db), {"collection": "plan-remove-me", "key": "k1"}
+
+
+def _plan_verify_remove(db) -> None:
+    assert require_memory(db, "plan-remove-me").get("k1") == []
+
+
+def _plan_setup_log_append(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
+    db.memories.create_log("plan-log", "x", description_embedding=_single_hash_vec("x"))
+    tool = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+    return tool, {"log": "plan-log", "content": "something happened"}
+
+
+def _plan_verify_log_append(db) -> None:
+    entries = require_memory(db, "plan-log").read_all()
+    assert len(entries) == 1
+    assert entries[0].content == "something happened"
+
+
+_PLAN_CASES: dict[str, _PlanCase] = {
+    "collection_write": _PlanCase(_plan_setup_write_merge, _plan_verify_write_merge),
+    "collection_archive": _PlanCase(_plan_setup_archive, _plan_verify_archive),
+    "collection_remove": _PlanCase(_plan_setup_remove, _plan_verify_remove),
+    "log_append": _PlanCase(_plan_setup_log_append, _plan_verify_log_append),
+}
+
+
+class TestPlanMode:
+    """Plan mode (#2933): ``plan=true`` on a mutating tool validates and
+    describes the change without making it.  For every mutating tool here, a
+    plan call (1) leaves the store byte-identical and (2) describes exactly
+    what the very next apply call — the SAME tool instance, same arguments —
+    actually does; ``collection_write``'s plan-decision cache is what makes
+    that guaranteed rather than merely likely (its decision model, where one
+    is configured, is non-deterministic across two separate askings).
+
+    The notifications_set case lives in ``test_notifications.py`` (its own
+    fixture shape — a registered user, not a collection); same mechanism,
+    same two assertions."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case_name", sorted(_PLAN_CASES))
+    async def test_plan_matches_apply_and_changes_nothing(self, db, mock_llm, case_name):
+        case = _PLAN_CASES[case_name]
+        tool, kwargs = case.setup(db, mock_llm)
+        before = _dump_db(db)
+
+        plan_result = await tool.execute(CallLink.new_top(), plan=True, **kwargs)
+        assert plan_result.success is True
+        assert plan_result.message.startswith("PLAN — nothing was changed:")
+        assert plan_result.mutated is False
+        assert _dump_db(db) == before, "a plan call must leave the store byte-identical"
+
+        apply_result = await tool.execute(CallLink.new_top(), plan=False, **kwargs)
+        assert apply_result.mutated is True
+        assert _dump_db(db) != before, "the real call should actually change something"
+        case.verify_applied(db)
