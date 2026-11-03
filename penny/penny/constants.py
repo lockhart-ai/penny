@@ -821,6 +821,20 @@ class PennyConstants:
     # the ticket); the meaning leg reuses the dedup thresholds instead of a new
     # number.  0.6 is ``difflib``'s own documented default cutoff for close matches.
     DID_YOU_MEAN_STRING_CUTOFF = 0.6
+    # How many ``find``-style hits ``synthesize`` reads before handing them to its
+    # micro-context (#2932).  Wider than ``FIND_STORE_LIMIT``/``FIND_MESSAGE_LIMIT``
+    # (5 each): ``find`` is tuned to surface one best match, while a synthesis needs
+    # enough surface area across several collections and logs to see a pattern span
+    # them — 8 keeps the draw's content small while still covering more than one
+    # container.
+    SYNTHESIZE_HIT_LIMIT = 8
+    # The ledger identity of the synthesis micro-context (#2932) — a second
+    # customer of ``MicroContext``'s single-shot draw machinery alongside
+    # ``browse-extract``: a fresh single-shot call (the retrieved hits + the
+    # query, no tools) that reads only what ``synthesize`` found and writes a
+    # short synthesis, never inflating the parent run's context.
+    SYNTHESIZE_AGENT_NAME = "synthesize"
+    SYNTHESIZE_MICRO_CONTEXT_PROMPT_TYPE = "synthesize_micro_context"
     # Write-target REDIRECT gates (#1570 journey): a chat collection_write whose
     # target name doesn't exist is silently-but-NARRATEDLY redirected into an
     # existing collection when the miss is near-certainly a name variant of it.

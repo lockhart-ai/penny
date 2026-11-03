@@ -8,11 +8,18 @@ bulk page body never enters the parent run's context: only the extracted value
 content come back (the anchor discipline).  A micro-context is structurally
 incapable of confabulating a stored value it has never seen.
 
-**Browse-extract is the one customer** (#2615): reading a page is not a reasoning
-task, so its draw runs with thinking off and its plain text IS the value,
-verbatim — nothing parses it.  The tagged-line shape machinery that used to serve
-a second customer (the notify composer, retired with it in #2656) is gone with
-that customer; what remains is the poison screen every draw still rides.
+**Browse-extract was the one customer** (#2615) until ``synthesize`` (#2932)
+became the second: reading a page is not a reasoning task, so its draw runs
+with thinking off and its plain text IS the value, verbatim — nothing parses
+it. ``synthesize``'s own draw (:meth:`MicroContext.synthesize`) shares that
+same shape over a different input (a short numbered list of ``find``'s own
+hits, never a page) and writes a different thing (a synthesis, never an
+extraction) — each customer owns its own system prompt and ledger identity
+(``agent_name``/``prompt_type``), the ONE thing ``_draw_clean`` takes as a
+parameter rather than assuming.  The tagged-line shape machinery that used to
+serve a second customer (the notify composer, retired with it in #2656) is
+gone with that customer; what remains is the poison screen every draw still
+rides.
 
 Every draw is screened by the same degeneracy / leaked-Harmony-envelope /
 empty-draw detectors the agent-loop reroll guard uses (:mod:`penny.text_validity`):
@@ -139,6 +146,37 @@ _LINK_LIST_READING_NOTE = (
 
 _USER_TEMPLATE = "Instruction: {instruction}\n\n{reading_note}Content:\n{content}"
 
+# ``synthesize`` (#2932) is the SECOND customer of this module's draw/poison/reroll
+# machinery — never a reuse of the browse-extract prompt above, which is framed
+# around "web pages" and the retired tagged contract this customer never had.
+# The draw reads a short numbered list of things ``find``'s own lookups already
+# turned up (stored entries and conversation messages, rendered by the tool —
+# never a page) and writes a few sentences of synthesis, thinking off, plain
+# text, nothing parsed — the same retreat from parsed shapes #2615 made for
+# browse-extract.
+SYNTHESIZE_SYSTEM_PROMPT = (
+    "You are a synthesis step. You are given a short numbered list of things "
+    "found in someone's stored memory and conversation, and a question about "
+    "them. Write a few sentences that answer the question using only what the "
+    "list shows.\n"
+    "\n"
+    "Read the whole list before you write anything. Look for one thing the "
+    "items share — a repeated topic, a trend, a change over time, a "
+    "connection between them. State it plainly, in your own words. When you "
+    "name a pattern, point back to the numbered items it came from (for "
+    'example, "items 2 and 4 both...").\n'
+    "\n"
+    "If the items don't share a real pattern — they're just separate facts "
+    "with nothing connecting them — say plainly that there isn't enough here "
+    "to say, and name what you did see instead, in a sentence or two. Never "
+    "invent a connection the list doesn't support.\n"
+    "\n"
+    "Write only the synthesis — no restating the question, no preamble, and "
+    "no list of the items themselves (the numbers already name them)."
+)
+
+_SYNTHESIZE_USER_TEMPLATE = "Question: {query}\n\nFound:\n{items}"
+
 
 class MicroExtractOutcome(StrEnum):
     """The enumerated outcome of a micro-context extraction — a closed set the
@@ -224,12 +262,48 @@ class MicroContext:
         existed.
         """
         reading_note = _LINK_LIST_READING_NOTE if reading == PageReading.LINK_LIST else ""
+        messages = self._messages(content, instruction, reading_note)
         text = await self._draw_clean(
-            content,
-            instruction,
+            messages,
             run_target,
             call_link=call_link,
-            reading_note=reading_note,
+            agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+            prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+            thinking_enabled=False,
+        )
+        if text is None:
+            return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTION_FAILED)
+        return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=text.strip())
+
+    async def synthesize(
+        self,
+        items: str,
+        query: str,
+        *,
+        call_link: CallLink,
+        run_target: str | None = None,
+    ) -> MicroContextResult:
+        """Synthesize ``query`` from ``items`` in one scoped model call (#2932).
+
+        ``synthesize``'s second customer of this module's draw/poison/reroll
+        machinery.  ``items`` is a short numbered rendering of the hits
+        ``synthesize`` already retrieved (through ``find``'s own lookups) —
+        never a page, never built here.  The draw runs with thinking OFF and
+        its plain text IS the synthesis, verbatim — the same retreat from a
+        parsed shape #2615 made for browse-extract, and for the same reason:
+        whether a pattern holds, and how a shortfall is worded, are read as
+        variance, not a closed field a parser could violate.
+
+        ``call_link`` (#2458) is this draw's own linkage — REQUIRED, no
+        default — exactly as :meth:`extract` takes it.
+        """
+        messages = self._synthesis_messages(items, query)
+        text = await self._draw_clean(
+            messages,
+            run_target,
+            call_link=call_link,
+            agent_name=PennyConstants.SYNTHESIZE_AGENT_NAME,
+            prompt_type=PennyConstants.SYNTHESIZE_MICRO_CONTEXT_PROMPT_TYPE,
             thinking_enabled=False,
         )
         if text is None:
@@ -238,17 +312,27 @@ class MicroContext:
 
     async def _draw_clean(
         self,
-        content: str,
-        instruction: str,
+        messages: list[LlmMessage],
         run_target: str | None,
         *,
         call_link: CallLink,
-        reading_note: str = "",
+        agent_name: str,
+        prompt_type: str,
         thinking_enabled: bool = True,
     ) -> str | None:
-        """The raw extraction text, re-rolling on poison; ``None`` if every draw
+        """The raw draw text, re-rolling on poison; ``None`` if every draw
         is unusable.  Mirrors the agent-loop reroll guard — discard poison, never
         append it, re-draw on the same context, abort after the attempt budget.
+
+        ``messages`` is the whole scoped context, already built by the caller
+        (:meth:`extract`'s page + instruction, :meth:`synthesize`'s hits +
+        query, #2932) — this method knows nothing about either shape, only how
+        to draw one clean answer out of it.  ``agent_name``/``prompt_type``
+        name the calling customer's own ledger identity, read off its own
+        constants (``PennyConstants.BROWSE_EXTRACT_AGENT_NAME`` /
+        ``SYNTHESIZE_AGENT_NAME`` and their prompt-type siblings) rather than
+        fixed here, so a run trace attributes a draw to the customer that made
+        it.
 
         Derives its OWN draw link via ``call_link.child()`` (#2458) ONCE, before the
         reroll loop — the whole point being that a micro-context's call is its own
@@ -278,19 +362,18 @@ class MicroContext:
         ``not retried_cut and thinking_enabled``.  At most once per draw either
         way: a retry that is itself cut is used as-is, an honest escape rather
         than an unbounded loop."""
-        messages = self._messages(content, instruction, reading_note)
         draw_link = call_link.child()
         runtime = self._model_client.runtime
         token_budget = token_budget_for(
             runtime if runtime is not None else RuntimeParams(),
-            PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+            agent_name,
         )
         retried_cut = False
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
                 messages=messages,
-                agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-                prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+                agent_name=agent_name,
+                prompt_type=prompt_type,
                 call_link=draw_link,
                 run_target=run_target,
                 token_budget=token_budget,
@@ -304,15 +387,15 @@ class MicroContext:
                 retried_cut = True
                 logger.warning(
                     "%s draw was cut at its token budget — one more draw with thinking off",
-                    PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+                    agent_name,
                 )
                 # The cut draw's own row says why it was set aside (#2702);
                 # the thinking-off draw that takes its place follows unmarked.
                 self._mark_discarded(response, ConditionKey.BUDGET_CUT)
                 response = await self._model_client.chat(
                     messages=messages,
-                    agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-                    prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+                    agent_name=agent_name,
+                    prompt_type=prompt_type,
                     call_link=draw_link,
                     run_target=run_target,
                     token_budget=token_budget,
@@ -390,6 +473,19 @@ class MicroContext:
                 content=_USER_TEMPLATE.format(
                     instruction=instruction, content=content, reading_note=reading_note
                 ),
+            ),
+        ]
+
+    @staticmethod
+    def _synthesis_messages(items: str, query: str) -> list[LlmMessage]:
+        """The scoped two-message context for ``synthesize`` (#2932): the
+        synthesis contract framing, then the user turn pairing the question
+        with the numbered hits ``synthesize`` already retrieved."""
+        return [
+            LlmMessage(role="system", content=SYNTHESIZE_SYSTEM_PROMPT),
+            LlmMessage(
+                role="user",
+                content=_SYNTHESIZE_USER_TEMPLATE.format(query=query, items=items),
             ),
         ]
 

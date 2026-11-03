@@ -256,6 +256,10 @@ class ResolvedEntry(BaseModel):
     container_kind: ResolvedKind
     key: str | None
     content: str
+    # When the underlying row was written (#2932) — carried so a time-window
+    # filter (``synthesize``'s ``since``) reads it off the hit directly, rather
+    # than a second lookup back to the row.  Not rendered by ``find`` itself.
+    created_at: datetime
 
     @property
     def fusion_identity(self) -> tuple[str, int]:

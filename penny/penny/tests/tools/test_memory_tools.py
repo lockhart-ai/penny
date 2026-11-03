@@ -36,7 +36,7 @@ from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.decision_client import DecisionAnswer, DecisionClient
 from penny.llm.embeddings import serialize_embedding
-from penny.llm.models import LlmConnectionError
+from penny.llm.models import LlmConnectionError, LlmMessage, LlmResponse
 from penny.llm.similarity import embed_text
 from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient
@@ -87,6 +87,7 @@ from penny.tools.memory_tools import (
     LogReadTool,
     MemoryMetadataTool,
     ReadRunCallsTool,
+    SynthesizeTool,
     _format_unsure,
     _format_updated,
     _write_headline,
@@ -4134,6 +4135,7 @@ class TestFactory:
         "run_list",
         "run_get",
         "find",
+        "synthesize",
         # Lifecycle (shape)
         "collection_configure",
         "collection_archive",
@@ -5003,3 +5005,207 @@ class TestFind:
         )
         assert result.success is False
         assert "did you mean 'garage'?" in result.message
+
+
+class TestSynthesize:
+    """Reads exactly ``find``'s own two deterministic lookups (#2932), then
+    hands what they found to a fresh micro-context that writes a short
+    synthesis.  A bare collection/log hit (``ResolvedMatch``) carries no
+    content, so only stored entries and conversation messages ever reach the
+    draw; every one of those is listed under "Drew on:" in the rendered
+    result, through the SAME per-hit lines ``find`` renders its own hits
+    with."""
+
+    @pytest.mark.asyncio
+    async def test_transient_embed_failure_is_actionable(self, db):
+        result = await SynthesizeTool(db, cast(Any, _FailingEmbedClient()), "test-agent").execute(
+            CallLink.new_top(), query="anything"
+        )
+        assert result.success is False
+        assert "Couldn't embed your query" in result.message
+        assert "synthesize{query: " in result.message
+
+    @pytest.mark.asyncio
+    async def test_zero_matches_is_honest_empty_and_draws_nothing(self, db, mock_llm):
+        """Nothing matches → the honest empty, and no micro-context draw is made at
+        all — a draw over nothing would spend a model call on a result the
+        retrieval step already decided."""
+        client = _axis_client(mock_llm)
+        result = await SynthesizeTool(db, client, "test-agent").execute(
+            CallLink.new_top(), query="orbit nebula"
+        )
+        assert result.success
+        assert result.message == (
+            'Nothing of yours matched "orbit nebula" — the state at the top of this '
+            "prompt lists every collection and log you have (archived ones by name)."
+        )
+        assert mock_llm.requests == []  # only the query embed ran — no chat call
+
+    @pytest.mark.asyncio
+    async def test_bare_collection_hit_carries_no_content_and_is_excluded(self, db, mock_llm):
+        """A collection whose own DESCRIPTION matches the query, but that holds no
+        entries, is a ``ResolvedMatch`` — identity only, nothing to synthesize
+        over — so it never reaches the draw; with nothing else to match, the
+        honest empty applies and no draw is made."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
+        result = await SynthesizeTool(db, client, "test-agent").execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
+        assert result.success
+        assert "Nothing of yours matched" in result.message
+        assert mock_llm.requests == []
+
+    @pytest.mark.asyncio
+    async def test_entry_hit_renders_synthesis_and_its_own_anchor(self, db, mock_llm):
+        """A stored entry's hit renders under "Drew on:" through the SAME line
+        ``find`` uses for an entry — one ``collection_get`` away — and the
+        synthesis above it is the draw's own text, verbatim, never re-transcribed."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "knowledge-notes", "orbit nebula")
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="knowledge-notes",
+            entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
+        )
+        mock_llm.set_response_handler(
+            lambda request, count: LlmResponse(
+                message=LlmMessage(role="assistant", content="They share the cascade theme.")
+            )
+        )
+        result = await SynthesizeTool(db, client, "test-agent").execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
+        assert result.success
+        assert result.message == (
+            'Here\'s what your memory says about "aurora beacon cascade":\n\n'
+            "They share the cascade theme.\n\n"
+            "Drew on:\n"
+            "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
+            "   read it: collection_get{collection: 'knowledge-notes', key: 'aurora beacon'}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_hit_renders_with_date_anchor_and_no_addressing(self, db, mock_llm):
+        """A past-message hit renders the SAME per-hit line ``find`` uses for a
+        message — its log, when, and its content in full, with no addressing
+        line (the message IS the answer, mirroring ``find``)."""
+        client = _axis_client(mock_llm)
+        db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "user",
+            "aurora beacon cascade",
+            embedding=serialize_embedding(_axis_vec("aurora beacon cascade")),
+        )
+        stamp = format_log_timestamp(
+            db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG).read_all()[0].created_at
+        )
+        mock_llm.set_response_handler(
+            lambda request, count: LlmResponse(
+                message=LlmMessage(role="assistant", content="Not enough here to say.")
+            )
+        )
+        result = await SynthesizeTool(db, client, "test-agent").execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
+        assert result.success
+        assert result.message == (
+            'Here\'s what your memory says about "aurora beacon cascade":\n\n'
+            "Not enough here to say.\n\n"
+            "Drew on:\n"
+            f"1. user-messages [{stamp}]: aurora beacon cascade"
+        )
+
+    @pytest.mark.asyncio
+    async def test_memories_filter_narrows_to_the_named_collection(self, db, mock_llm):
+        """``memories`` drops a hit from any OTHER container before the draw ever
+        sees it, and before it renders under "Drew on:" — the filter is a plain
+        read of each hit's own ``memory_name``, no new search logic."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "notes-one", "aurora beacon cascade")
+        await _create_collection(db, client, "notes-two", "aurora beacon cascade")
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="notes-one",
+            entries=[{"key": "k1", "content": "aurora beacon cascade gamma"}],
+        )
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="notes-two",
+            entries=[{"key": "k2", "content": "aurora beacon cascade delta"}],
+        )
+        mock_llm.set_response_handler(
+            lambda request, count: LlmResponse(
+                message=LlmMessage(role="assistant", content="Just the one note.")
+            )
+        )
+        result = await SynthesizeTool(db, client, "test-agent").execute(
+            CallLink.new_top(), query="aurora beacon cascade", memories=["notes-one"]
+        )
+        assert result.success
+        assert "notes-one" in result.message
+        assert "notes-two" not in result.message
+        assert result.message.count("entry key=") == 1
+
+    @pytest.mark.asyncio
+    async def test_since_drops_an_older_entry(self, db, mock_llm):
+        """``since`` reads the hit's OWN ``created_at`` (#2932) — the row's real
+        write time, not a second lookup — so an entry from before it never
+        reaches the draw."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "notes", "aurora beacon cascade")
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="notes",
+            entries=[{"key": "old", "content": "aurora beacon cascade gamma"}],
+        )
+        with Session(db.engine) as session:
+            row = session.exec(
+                select(MemoryEntry).where(
+                    MemoryEntry.memory_name == "notes", MemoryEntry.key == "old"
+                )
+            ).one()
+            row.created_at = datetime(2020, 1, 1, tzinfo=UTC)
+            session.add(row)
+            session.commit()
+        result = await SynthesizeTool(db, client, "test-agent").execute(
+            CallLink.new_top(),
+            query="aurora beacon cascade",
+            since=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+        assert result.success
+        assert "Nothing of yours matched" in result.message
+        assert mock_llm.requests == []
+
+    @pytest.mark.asyncio
+    async def test_draw_failure_is_an_honest_escape(self, db, mock_llm):
+        """The micro-context's own reroll budget exhausted (every draw blank) is
+        an honest failure naming the retry, never a silent empty — the hits
+        WERE there; only the synthesis step didn't come back clean."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "notes", "aurora beacon cascade")
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="notes",
+            entries=[{"key": "k1", "content": "aurora beacon cascade gamma"}],
+        )
+        mock_llm.set_response_handler(
+            lambda request, count: LlmResponse(message=LlmMessage(role="assistant", content=""))
+        )
+        result = await SynthesizeTool(db, client, "test-agent").execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
+        assert result.success is False
+        assert "didn't come back clean" in result.message
+        assert "synthesize{query: 'aurora beacon cascade'}" in result.message

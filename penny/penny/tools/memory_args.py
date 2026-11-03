@@ -12,6 +12,7 @@ an explicit ``k`` is still honoured in full, however large.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -559,6 +560,57 @@ class FindArgs(ToolArgs):
 
     query: str
     memory: OptionalMemoryName = None
+
+
+# ``synthesize``'s own narrowing (#2932) differs from ``find``'s singular ``memory``:
+# synthesis is explicitly about a pattern spanning SEVERAL containers, so this takes a
+# list.  An empty list carries the same "search everything or search nothing?"
+# ambiguity ``_reject_blank_memory`` refuses on a blank string — refused the same way,
+# naming the fix, rather than silently read as either.
+_BLANK_SYNTHESIZE_MEMORIES_ARG = (
+    "an empty list sets nothing — omit memories entirely to search everything, or "
+    "pass the exact name of one or more collections or logs"
+)
+
+
+def _reject_empty_memories(value: object) -> object:
+    if isinstance(value, list) and len(value) == 0:
+        raise ValueError(_BLANK_SYNTHESIZE_MEMORIES_ARG)
+    return value
+
+
+def _normalize_memories_dashes(value: object) -> object:
+    if isinstance(value, list):
+        return [_normalize_dashes(item) for item in value]
+    return value
+
+
+OptionalMemoryNames = Annotated[
+    list[str] | None,
+    BeforeValidator(_reject_empty_memories),
+    BeforeValidator(_normalize_memories_dashes),
+]
+
+
+class SynthesizeArgs(ToolArgs):
+    """What ``synthesize`` (#2932) needs to answer "what does my memory say about X?"
+
+    ``query`` is the whole surface when ``memories``/``since`` are omitted: the same
+    paraphrase ``find`` takes, reused for the same two deterministic lookups
+    (``MemoryStore.resolve_objects``/``resolve_messages``) — no new search logic.
+
+    ``memories`` (optional) narrows to these named collections/logs instead of
+    everything — plural, since a synthesis is explicitly about a pattern that can span
+    more than one. An empty list is refused rather than read either way
+    (``_reject_empty_memories``).
+
+    ``since`` (optional) drops anything from before this point in time — an ISO 8601
+    timestamp, e.g. ``2026-10-01T00:00:00Z``.
+    """
+
+    query: str
+    memories: OptionalMemoryNames = None
+    since: datetime | None = None
 
 
 class DoneArgs(ToolArgs):

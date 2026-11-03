@@ -26,7 +26,7 @@ import difflib
 import logging
 import re
 from abc import abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -125,7 +125,9 @@ from penny.tools.memory_args import (
     MemoryNameArgs,
     ReadLogArgs,
     ReadRunCallsArgs,
+    SynthesizeArgs,
 )
+from penny.tools.micro_context import MicroContext, MicroExtractOutcome
 from penny.tools.models import ToolResult
 
 if TYPE_CHECKING:
@@ -3653,6 +3655,223 @@ class FindTool(MemoryTool):
         )
 
 
+# ── Synthesize ("what does my memory say about X?") ────────────────────────
+#
+# Retrieval is exactly ``find``'s own two deterministic lookups — see
+# ``SynthesizeTool._gather_items`` — so nothing here duplicates search logic; the
+# new work is handing what ``find`` already turns up to a fresh micro-context
+# (#2932) that reads it in one pass and writes a few sentences, instead of the
+# calling model assembling a pattern across several ``find`` calls itself.
+
+_SYNTHESIZE_EMBED_FAILURE = (
+    "Couldn't embed your query (a transient embedding error) — synthesizing "
+    "needs it. Retry synthesize{query: <what you want to know about>} in a moment."
+)
+
+# Zero matches is an honest empty, not an error — mirrors ``_FIND_EMPTY``.
+_SYNTHESIZE_EMPTY = (
+    'Nothing of yours matched "{query}" — the state at the top of this prompt '
+    "lists every collection and log you have (archived ones by name)."
+)
+
+_SYNTHESIZE_HEADLINE = 'Here\'s what your memory says about "{query}":'
+_SYNTHESIZE_DREW_ON_HEADING = "Drew on:"
+
+# The one failure left once there WAS something to read: the micro-context's own
+# reroll budget ran out (``MicroExtractOutcome.EXTRACTION_FAILED``) — an honest
+# escape, never a silent empty (mirrors ``browse``'s own failure render).
+_SYNTHESIZE_DRAW_FAILED = (
+    "Found things of yours that might answer this, but the synthesis step didn't "
+    "come back clean — try synthesize{{query: '{query}'}} again."
+)
+
+
+def _item_prose(item: ResolvedEntry | ResolvedMessage) -> str:
+    """One hit as the plain prose the SYNTHESIS DRAW reads (#2932) — never the
+    tool result's anchor/addressing lines (``_render_entry_hit``/
+    ``_render_message_hit`` below render those, for the model reading the
+    RESULT, not for the draw reading its input)."""
+    if isinstance(item, ResolvedEntry):
+        return f"In `{item.memory_name}`: {_entry_preview(item.content)}"
+    stamp = format_log_timestamp(item.created_at)
+    return f'Said on {stamp}: "{item.content}"'
+
+
+class SynthesizeTool(Tool):
+    """Answers "what does my memory say about X?"
+
+    Pass ``query``, a paraphrase of what you want to know. Reads matching
+    stored entries and past messages — ``find``'s own two deterministic
+    lookups (``MemoryStore.resolve_objects``/``resolve_messages``), capped at
+    ``PennyConstants.SYNTHESIZE_HIT_LIMIT`` — then hands them to a fresh
+    single-shot micro-context (``MicroContext.synthesize``, #2932) that reads
+    only those hits and writes a few sentences naming any pattern across
+    them. A bare collection/log/skill hit (``ResolvedMatch``) carries no
+    content to synthesize over, so only stored entries and conversation
+    messages reach the draw.
+
+    Every hit the draw was given is listed under "Drew on:" in the
+    result — not a model-chosen subset, so every claim in the synthesis is
+    one call away from the exact thing it could have come from (the n≤1
+    anchor discipline), rendered through the SAME per-hit lines ``find``
+    uses (``_render_entry_hit``/``_render_message_hit``).
+
+    The draw's output is never parsed — the plain text IS the synthesis,
+    honest about a pattern that isn't there exactly as it is about one that
+    is, the same retreat from a parsed shape #2615 made for browse-extract.
+
+    Read-only: it never writes anything.
+    """
+
+    name = "synthesize"
+    # Every hit's "Drew on:" line renders through ``_render_entry_hit``/
+    # ``_render_message_hit`` (the SAME module-level helpers ``find`` composes
+    # its own result from), so an entry hit's addressing names ``collection_get``
+    # and a log-entry hit's names ``log_get`` (#1911) — declared here so the
+    # coherence scanner's closure carries them onto every surface this tool sits
+    # on.  A message hit carries no addressing line (mirrors ``find``), so it
+    # adds no verb here.
+    advises = ("collection_get", "log_get")
+    description = (
+        'Answers "what does my memory say about X?" Pass `query`, what you '
+        "want to know about. Reads matching stored entries and past "
+        "messages, then writes a short synthesis naming any pattern across "
+        "them. Returns the synthesis plus every item it read, so each can "
+        "be read back in full. Pass `memories` to limit it to the exact "
+        "names of one or more collections or logs, or `since` to drop "
+        "anything from before a point in time. Says plainly when the items "
+        "don't show a pattern."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What you want to know about, in your own words.",
+            },
+            "memories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional. The exact names of one or more collections or "
+                    "logs to limit the search to. Leave it out to search everything."
+                ),
+            },
+            "since": {
+                "type": "string",
+                "description": (
+                    "Optional. An ISO 8601 timestamp, e.g. 2026-10-01T00:00:00Z. "
+                    "Drops anything from before this point in time."
+                ),
+            },
+        },
+        "required": ["query"],
+    }
+    args_model = SynthesizeArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        query = arguments.get("query")
+        label = f' about "{query}"' if query else ""
+        if not result.success:
+            return f"You asked what your memory says{label} but it didn't work:"
+        return f"You asked what your memory says{label}:"
+
+    def __init__(
+        self,
+        db: Database,
+        llm_client: LlmClient,
+        agent_name: str,
+        handles: HandleTable | None = None,
+    ) -> None:
+        self._db = db
+        self._llm = llm_client
+        # The run attribution the micro-context draw carries (#2458) — the agent
+        # whose tool surface this instance was built for, exactly as ``BrowseTool``
+        # carries its own ``author`` through to ``MicroContext.extract``.
+        self._agent_name = agent_name
+        self._handles = handles if handles is not None else HandleTable()
+
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
+        args = SynthesizeArgs(**kwargs)
+        vec = await embed_text(self._llm, args.query)
+        if vec is None:
+            logger.warning("synthesize: query embedding failed transiently")
+            return ToolResult(message=_SYNTHESIZE_EMBED_FAILURE, success=False)
+        items = self._gather_items(args, vec)
+        if not items:
+            return ToolResult(message=_SYNTHESIZE_EMPTY.format(query=args.query))
+        result = await MicroContext(self._llm, db=self._db).synthesize(
+            self._render_items_for_draw(items),
+            args.query,
+            call_link=call_link,
+            run_target=self._agent_name,
+        )
+        if result.outcome == MicroExtractOutcome.EXTRACTION_FAILED:
+            return ToolResult(
+                message=_SYNTHESIZE_DRAW_FAILED.format(query=args.query), success=False
+            )
+        return ToolResult(message=self._format(args.query, result.value, items))
+
+    def _gather_items(
+        self, args: SynthesizeArgs, vec: list[float]
+    ) -> list[ResolvedEntry | ResolvedMessage]:
+        """``find``'s own two lookups (#2932) — no new search logic — filtered to
+        the content-bearing arms (a bare ``ResolvedMatch`` carries no content
+        to synthesize over) and then to ``memories``/``since`` when given."""
+        hits = self._db.memories.resolve_objects(
+            vec, args.query, PennyConstants.SYNTHESIZE_HIT_LIMIT
+        )
+        messages = self._db.memories.resolve_messages(
+            vec, args.query, PennyConstants.SYNTHESIZE_HIT_LIMIT
+        )
+        entries: list[ResolvedEntry | ResolvedMessage] = [
+            hit for hit in hits if isinstance(hit, ResolvedEntry)
+        ]
+        items = entries + list(messages)
+        if args.memories is not None:
+            items = [item for item in items if item.memory_name in args.memories]
+        if args.since is not None:
+            # Every stored ``created_at`` comes back NAIVE (SQLite drops the
+            # offset on round-trip, both the ORM path and the raw-SQL keyword
+            # leg) — a UTC moment with no tzinfo attached, same as everywhere
+            # else in this file compares/orders by it. ``since`` is the one
+            # argument that can arrive tz-AWARE (an ISO 8601 string with a
+            # "Z"/offset parses that way), so it is normalised to match before
+            # the comparison, not the stored side.
+            since = args.since
+            if since.tzinfo is not None:
+                since = since.astimezone(UTC).replace(tzinfo=None)
+            items = [item for item in items if item.created_at >= since]
+        return items
+
+    @staticmethod
+    def _render_items_for_draw(items: Sequence[ResolvedEntry | ResolvedMessage]) -> str:
+        """The numbered list the micro-context reads (#2932) — plain prose
+        (``_item_prose``), never the tool result's own anchor/addressing lines.
+        ``Sequence`` rather than ``list`` (covariant, #2932): a case driving this
+        directly off a ``list[ResolvedEntry]`` fixture — no messages, by
+        construction — would otherwise fail on ``list``'s invariance even though
+        every element is a valid member of the wider union."""
+        return "\n".join(f"{i}. {_item_prose(item)}" for i, item in enumerate(items, start=1))
+
+    def _format(
+        self, query: str, synthesis: str, items: Sequence[ResolvedEntry | ResolvedMessage]
+    ) -> str:
+        """The rendered result: the headline, the draw's synthesis verbatim,
+        then EVERY hit it was given under "Drew on:" — never a model-chosen
+        subset, rendered through the SAME per-hit lines ``find`` uses, so each
+        is one call away (``_render_entry_hit``/``_render_message_hit``)."""
+        body = "\n".join(
+            _render_entry_hit(i, item, self._handles)
+            if isinstance(item, ResolvedEntry)
+            else _render_message_hit(i, item, self._handles)
+            for i, item in enumerate(items, start=1)
+        )
+        headline = _SYNTHESIZE_HEADLINE.format(query=query)
+        return f"{headline}\n\n{synthesis}\n\n{_SYNTHESIZE_DREW_ON_HEADING}\n{body}"
+
+
 # ── Introspection / lifecycle ───────────────────────────────────────────────
 
 
@@ -3812,6 +4031,7 @@ def build_memory_tools(
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
         FindTool(db, llm_client, handles),
+        SynthesizeTool(db, llm_client, agent_name, handles),
     ]
     lifecycle: list[Tool] = [
         CollectionSetTool(db, llm_client, run_id=run_id),
