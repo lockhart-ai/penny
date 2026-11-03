@@ -258,11 +258,42 @@ def _seed_other_jobs(db: Database) -> None:
         notify=True,
         created_by_run_id=seeded_run_id("seed-trail"),
     )
+    db.memories.create_collection(
+        "local_birdwatching_log",
+        "Local bird sightings and migration notes.",
+        extraction_prompt="Pick one local bird species at random and note recent sightings.",
+        schedule="FREQ=DAILY;BYHOUR=7",
+        notify=True,
+        created_by_run_id=seeded_run_id("seed-birdwatching"),
+    )
+    db.memories.create_collection(
+        "chess_opening_study",
+        "Chess opening theory, one line studied per cycle.",
+        extraction_prompt="Pick one chess opening line at random and summarize its theory.",
+        schedule="FREQ=DAILY;BYHOUR=23",
+        notify=True,
+        created_by_run_id=seeded_run_id("seed-chess"),
+    )
+
+
+def _write_many(db: Database, name: str, run_label: str, topic: str, count: int) -> None:
+    """``count`` cheap, topic-flavoured entries — for the collections whose real
+    counterpart holds dozens to hundreds, where the point is the STORE MAP's size
+    and shape, not any one entry's content."""
+    _write_entries(
+        db,
+        name,
+        run_label,
+        tuple((f"{name}_{i}", f"{topic} — note {i} of {count}.") for i in range(1, count + 1)),
+    )
 
 
 def _seed_other_collections(db: Database) -> None:
     """Plain storage collections unrelated to `rules`, some archived — the mix of
-    live/archived, job/plain-storage shapes the self-state store map actually shows."""
+    live/archived, job/plain-storage shapes the self-state store map actually shows,
+    at a comparable overall size (~28 collections, matching the replayed row's own
+    store map) and a comparable spread of entry counts (a few in the hundreds, most
+    in the tens, a couple of singletons)."""
     db.memories.create_collection(
         "vinyl_record_wishlist",
         "Vinyl records Marcus wants to pick up.",
@@ -329,6 +360,72 @@ def _seed_other_collections(db: Database) -> None:
         (("pets", "Fostering cats; currently has two, including Biscuit."),),
     )
     db.memories.create_collection(
+        "comic_book_longbox_catalog",
+        "Comic book issues catalogued from the longboxes in storage.",
+        created_by_run_id=seeded_run_id("seed-comics"),
+    )
+    _write_many(db, "comic_book_longbox_catalog", "seed-comics-entries", "A catalogued issue", 280)
+    db.memories.create_collection(
+        "podcast_episode_queue",
+        "Podcast episodes queued up to listen to.",
+        created_by_run_id=seeded_run_id("seed-podcasts"),
+    )
+    _write_many(db, "podcast_episode_queue", "seed-podcasts-entries", "A queued episode", 145)
+    db.memories.create_collection(
+        "classic_car_restoration_notes",
+        "Notes from restoring a classic car, parts and progress.",
+        created_by_run_id=seeded_run_id("seed-car"),
+    )
+    _write_many(db, "classic_car_restoration_notes", "seed-car-entries", "A restoration note", 110)
+    db.memories.create_collection(
+        "indie_game_dev_devlogs",
+        "Devlog entries from an indie game side project.",
+        created_by_run_id=seeded_run_id("seed-devlog"),
+    )
+    _write_many(db, "indie_game_dev_devlogs", "seed-devlog-entries", "A devlog entry", 93)
+    db.memories.create_collection(
+        "houseplant_care_notes",
+        "Care notes for a growing houseplant collection.",
+        created_by_run_id=seeded_run_id("seed-houseplants"),
+    )
+    _write_many(db, "houseplant_care_notes", "seed-houseplants-entries", "A care note", 63)
+    db.memories.create_collection(
+        "marathon_training_log",
+        "Training runs logged ahead of a marathon.",
+        created_by_run_id=seeded_run_id("seed-marathon"),
+    )
+    _write_many(db, "marathon_training_log", "seed-marathon-entries", "A logged run", 51)
+    db.memories.create_collection(
+        "coworking_space_reviews",
+        "Reviews of coworking spaces tried while working remotely.",
+        created_by_run_id=seeded_run_id("seed-coworking"),
+    )
+    _write_many(db, "coworking_space_reviews", "seed-coworking-entries", "A space review", 26)
+    db.memories.create_collection(
+        "language_learning_vocab_deck",
+        "Vocabulary cards from a language-learning habit.",
+        created_by_run_id=seeded_run_id("seed-vocab"),
+    )
+    _write_many(db, "language_learning_vocab_deck", "seed-vocab-entries", "A vocab card", 37)
+    db.memories.create_collection(
+        "local_trivia_night_questions",
+        "Trivia questions collected from weekly trivia nights.",
+        created_by_run_id=seeded_run_id("seed-trivia"),
+    )
+    _write_many(db, "local_trivia_night_questions", "seed-trivia-entries", "A trivia question", 30)
+    db.memories.create_collection(
+        "local_hiking_gear_wishlist",
+        "Hiking gear Marcus wants to pick up.",
+        created_by_run_id=seeded_run_id("seed-hiking-gear"),
+    )
+    _write_many(db, "local_hiking_gear_wishlist", "seed-hiking-gear-entries", "A wishlist item", 8)
+    db.memories.create_collection(
+        "neighborhood_lost_pet_alerts",
+        "Lost-pet alerts posted around the neighborhood.",
+        created_by_run_id=seeded_run_id("seed-lost-pets"),
+    )
+    _write_many(db, "neighborhood_lost_pet_alerts", "seed-lost-pets-entries", "An alert", 6)
+    db.memories.create_collection(
         "old_apartment_search",
         "Notes from an old apartment search, no longer active.",
         created_by_run_id=seeded_run_id("seed-apartment"),
@@ -340,6 +437,18 @@ def _seed_other_collections(db: Database) -> None:
         created_by_run_id=seeded_run_id("seed-holiday"),
     )
     db.memories.archive("holiday_travel_planning", run_id=seeded_run_id("archive-holiday"))
+    db.memories.create_collection(
+        "retired_book_club_notes",
+        "Notes from a book club that no longer meets.",
+        created_by_run_id=seeded_run_id("seed-bookclub"),
+    )
+    db.memories.archive("retired_book_club_notes", run_id=seeded_run_id("archive-bookclub"))
+    db.memories.create_collection(
+        "old_gym_membership_research",
+        "Research comparing gyms from a membership search that's since settled.",
+        created_by_run_id=seeded_run_id("seed-gym"),
+    )
+    db.memories.archive("old_gym_membership_research", run_id=seeded_run_id("archive-gym"))
 
 
 def _seed_history(db: Database) -> None:
