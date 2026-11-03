@@ -462,6 +462,34 @@ class RunManifest(BaseModel):
     preferred_provider: str | None = None
 
 
+# ── Loading a completed run's own artifacts off disk ─────────────────────────
+#
+# Both live HERE, not in ``assemble.py`` (which reads them to build a comment) or
+# ``compare.py`` (which reads them to build a branch-vs-main diff): two customers reading the
+# same two files is exactly the shape that must not be "whichever one happened to define them
+# first, imported by the other" — that put a module-level import cycle between them the moment
+# a THIRD function needed both a case's own render AND the comparison in one document (#2939).
+def load_manifest(report_dir: Path) -> RunManifest:
+    """Read the run's ``manifest.json``, or fail with an actionable message if it's absent."""
+    path = report_dir / MANIFEST_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No {MANIFEST_FILENAME} in {report_dir} — is this a completed eval run's report "
+            f"directory? Run `EVAL_REPORT_DIR={report_dir} … make eval-remote` first."
+        )
+    return RunManifest.model_validate_json(path.read_text())
+
+
+def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
+    """Read every case record in the run dir (one per non-blank line), in file order.
+
+    A run under xdist writes one results file per worker, so the whole run is the union of
+    them — reading only ``results.jsonl`` would silently report a fraction of the cases as
+    if it were all of them.  No files → no cases: a manifest can exist before any case has
+    recorded."""
+    return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
+
+
 # ── Pure builders (no env, no filesystem — the make check test drives these) ──
 def default_family(module: str) -> str:
     """Derive a family tag from a test module's name (``test_<x>`` → ``<x>``)."""

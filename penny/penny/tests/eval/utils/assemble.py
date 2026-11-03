@@ -40,14 +40,14 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from penny.tests.eval.utils import cohort, comment_split, report
+from penny.tests.eval.utils import cohort, comment_split, compare, report
 from penny.tests.eval.utils.artifacts import (
-    MANIFEST_FILENAME,
     CaseArtifact,
     CheckCell,
     RunManifest,
     VarianceReading,
-    load_results_lines,
+    load_case_artifacts,
+    load_manifest,
     render_manifest_header,
 )
 from penny.tests.eval.utils.baseline import Baseline, resolve_baseline
@@ -102,28 +102,6 @@ def assemble_run_comment(report_dir: Path) -> str:
     # An EMPTY section is dropped rather than joined: a single-case run emits no roll-up, and
     # separating nothing from the first case would open the comment on a blank band.
     return SECTION_SEPARATOR.join(part for part in sections if part) + "\n"
-
-
-# ── Artifact loading (the manifest is required; results/transcripts tolerate absence) ──
-def load_manifest(report_dir: Path) -> RunManifest:
-    """Read the run's ``manifest.json``, or fail with an actionable message if it's absent."""
-    path = report_dir / MANIFEST_FILENAME
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"No {MANIFEST_FILENAME} in {report_dir} — is this a completed eval run's report "
-            f"directory? Run `EVAL_REPORT_DIR={report_dir} … make eval-remote` first."
-        )
-    return RunManifest.model_validate_json(path.read_text())
-
-
-def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
-    """Read every case record in the run dir (one per non-blank line), in file order.
-
-    A run under xdist writes one results file per worker, so the whole run is the union of
-    them — reading only ``results.jsonl`` would silently report a fraction of the cases as
-    if it were all of them.  No files → no cases: a manifest can exist before any case has
-    recorded."""
-    return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
 
 
 # ── The run header (verdict · identity table · flips) ────────────────────────
@@ -1014,15 +992,9 @@ def _collapsed_detail(report_dirs: Sequence[Path], baseline: Baseline | None) ->
 def _collapsed_comparison(report_dir: Path, baseline: Baseline | None) -> str:
     """The branch-vs-main checks table, every case, folded into the collapsed summary rather
     than compare.py's standalone comment (#2939) — ``None``/no baseline renders nothing, the
-    same off-diff state the standalone posting takes.
-
-    Imports ``compare`` locally: ``compare.py`` imports ``load_case_artifacts``/``load_manifest``
-    from THIS module at its own top level, so a module-level import here would cycle — deferred
-    to call time, by when both modules have finished loading."""
+    same off-diff state the standalone posting takes."""
     if baseline is None:
         return ""
-    from penny.tests.eval.utils import compare
-
     comparisons = compare.build_case_comparisons(
         load_case_artifacts(report_dir), list(baseline.by_case.values())
     )
