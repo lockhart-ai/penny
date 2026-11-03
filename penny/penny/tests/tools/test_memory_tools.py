@@ -405,9 +405,9 @@ class TestScheduleGrammar:
         schedule = "FREQ=DAILY;UNTIL=20261019T000000Z"
         anchor = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
         assert next_occurrence(schedule, anchor, None) == datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
-        assert describe_schedule(_row_with_schedule(schedule)) == (
-            f"every day (rule: `{schedule}`), next run Thursday, July 02, 2026 at 09:00 AM UTC"
-        )
+        assert describe_schedule(
+            _row_with_schedule(schedule), now=_BEFORE_SCHEDULE_ROW_CREATED
+        ) == (f"every day (rule: `{schedule}`), next run Thursday, July 02, 2026 at 09:00 AM UTC")
 
     def test_the_taught_examples_say_whose_clock_each_time_is_on(self):
         """The grammar the model is taught, asserted WHOLE (#1932).
@@ -706,6 +706,14 @@ class TestScheduleRoundTrip:
 # matters to what a case is testing, only that it doesn't move with the wall clock.
 _SCHEDULE_ROW_CREATED = datetime(2026, 7, 2, 9, 0, tzinfo=UTC)
 
+# The due-now clock (#2895) these cases pass when they want the ordinary future-date
+# render, not the due-now one: strictly before every occurrence this file's fixtures
+# compute (the earliest of which is ``_SCHEDULE_ROW_CREATED`` itself, for a schedule
+# anchored with no ``DTSTART`` of its own), so none of them is ever "already due" —
+# a fixed instant, never the real wall clock, so these never depend on when the suite
+# happens to run.
+_BEFORE_SCHEDULE_ROW_CREATED = _SCHEDULE_ROW_CREATED - timedelta(minutes=1)
+
 
 def _row_with_schedule(
     schedule: str | None, created_at: datetime = _SCHEDULE_ROW_CREATED
@@ -773,14 +781,19 @@ class TestDescribeSchedule:
         ],
     )
     def test_taught_and_untaught_shapes_read_as_words(self, schedule, words):
-        assert describe_schedule(_row_with_schedule(schedule)) == words
+        assert (
+            describe_schedule(_row_with_schedule(schedule), now=_BEFORE_SCHEDULE_ROW_CREATED)
+            == words
+        )
 
     def test_an_explicit_utc_dtstart_converts_to_the_users_clock(self):
         """A model-invented ``DTSTART:…Z`` reads on the USER's clock, not UTC (#1932) —
         the same reading an occurrence gets — so the words say what the model actually
         set up rather than a UTC instant nobody but it would compute."""
         schedule = "DTSTART:20261014T210000Z\nFREQ=HOURLY"
-        words = describe_schedule(_row_with_schedule(schedule), "America/Los_Angeles")
+        words = describe_schedule(
+            _row_with_schedule(schedule), "America/Los_Angeles", now=_BEFORE_SCHEDULE_ROW_CREATED
+        )
         assert words == (
             "starting Wednesday, October 14, 2026 at 02:00 PM PDT, then every hour "
             "(rule: `DTSTART:20261014T210000Z FREQ=HOURLY`), "
@@ -791,7 +804,9 @@ class TestDescribeSchedule:
         """A ``DTSTART`` with no zone states no zone — RFC 5545 reads that as the user's
         own wall clock, never UTC — so it renders the stated hour, not a converted one."""
         schedule = "DTSTART:20261014T140000\nFREQ=HOURLY"
-        words = describe_schedule(_row_with_schedule(schedule), "America/Los_Angeles")
+        words = describe_schedule(
+            _row_with_schedule(schedule), "America/Los_Angeles", now=_BEFORE_SCHEDULE_ROW_CREATED
+        )
         assert words == (
             "starting Wednesday, October 14, 2026 at 02:00 PM PDT, then every hour "
             "(rule: `DTSTART:20261014T140000 FREQ=HOURLY`), "
@@ -802,7 +817,7 @@ class TestDescribeSchedule:
         """``COUNT=1`` reads as 'once … then it retires' — the cadence words
         (``every day``) would be misleading for a rule that never repeats."""
         schedule = "DTSTART:20261225T090000Z\nFREQ=DAILY;COUNT=1"
-        words = describe_schedule(_row_with_schedule(schedule))
+        words = describe_schedule(_row_with_schedule(schedule), now=_BEFORE_SCHEDULE_ROW_CREATED)
         assert words == (
             "once, at Friday, December 25, 2026 at 09:00 AM UTC, then it retires "
             "(rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`), "
@@ -811,8 +826,8 @@ class TestDescribeSchedule:
 
     def test_no_schedule_is_empty_for_the_clause_and_none_for_the_field(self):
         row = _row_with_schedule(None)
-        assert describe_schedule(row) == ""
-        assert describe_schedule_field(row) == "none"
+        assert describe_schedule(row, now=_BEFORE_SCHEDULE_ROW_CREATED) == ""
+        assert describe_schedule_field(row, now=_BEFORE_SCHEDULE_ROW_CREATED) == "none"
 
     def test_an_exhausted_schedule_states_no_next_run(self):
         """A spent ``COUNT=`` (the only shape a bare ``describe_schedule`` call can
@@ -823,7 +838,10 @@ class TestDescribeSchedule:
             "FREQ=DAILY;COUNT=1", created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
         )
         row.last_collected_at = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
-        assert describe_schedule(row) == "once, then it retires (rule: `FREQ=DAILY;COUNT=1`)"
+        assert (
+            describe_schedule(row, now=_BEFORE_SCHEDULE_ROW_CREATED)
+            == "once, then it retires (rule: `FREQ=DAILY;COUNT=1`)"
+        )
 
     def test_an_archived_rows_schedule_states_no_next_run(self):
         """``memory_get`` (``describe_schedule_field``) renders a schedule's clause on
@@ -834,7 +852,10 @@ class TestDescribeSchedule:
         clause stays honestly absent rather than showing a stale one."""
         row = _row_with_schedule("FREQ=HOURLY")
         row.archived = True
-        assert describe_schedule(row) == "every hour (rule: `FREQ=HOURLY`)"
+        assert (
+            describe_schedule(row, now=_BEFORE_SCHEDULE_ROW_CREATED)
+            == "every hour (rule: `FREQ=HOURLY`)"
+        )
 
     def test_the_end_condition_is_not_restated_inside_the_words(self):
         """``UNTIL=`` is already lifted onto ``expires_at`` and rendered on its own
@@ -843,7 +864,7 @@ class TestDescribeSchedule:
         write stating its own ``UNTIL=``; this covers a row that already carries one
         from before that refusal existed."""
         schedule = "FREQ=DAILY;UNTIL=20260901T000000Z"
-        words = describe_schedule(_row_with_schedule(schedule))
+        words = describe_schedule(_row_with_schedule(schedule), now=_BEFORE_SCHEDULE_ROW_CREATED)
         assert words == (
             f"every day (rule: `{schedule}`), next run Thursday, July 02, 2026 at 09:00 AM UTC"
         )

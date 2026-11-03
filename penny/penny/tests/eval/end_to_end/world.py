@@ -282,7 +282,7 @@ def seed_known_routine(
             tool_calls=[_wire_tool_call(configure_id, "collection_configure", configure_args)]
         ),
     )
-    echo = render_creation_echo(row, user_timezone_name(db))
+    echo = render_creation_echo(row, user_timezone_name(db), now=db.clock.now())
     configure_result = Tool.format_result(
         "collection_configure",
         configure_args,

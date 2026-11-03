@@ -564,7 +564,7 @@ def _format_collection_echo(
     """
     return (
         f"{verb} collection '{memory.name}':\n"
-        f"  schedule: {describe_schedule_field(memory, timezone_name, now)}\n"
+        f"  schedule: {describe_schedule_field(memory, timezone_name, now=now)}\n"
         f"  notify: {memory.notify}\n"
         f"  expires: {render_expiry_update_line(memory, timezone_name, priors)}\n"
         f"  description: {memory.description}\n"
@@ -1008,7 +1008,7 @@ class CollectionCreateTool(MemoryTool):
             max_runs=schedule.max_runs,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
-        echo = render_creation_echo(memory, user_timezone_name(self._db), self._db.clock.now())
+        echo = render_creation_echo(memory, user_timezone_name(self._db), now=self._db.clock.now())
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(message=f"{echo}{suffix}{expiry_note}", mutated=True)
 
@@ -2401,7 +2401,7 @@ class CollectionUpdateTool(MemoryTool):
         memory = self._apply_update(args, prompt, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
         echo = render_reinstantiation_echo(
-            memory, user_timezone_name(self._db), self._db.clock.now()
+            memory, user_timezone_name(self._db), now=self._db.clock.now()
         )
         # A replacement of an EXISTING prompt carries the line diff (#2719): what the old
         # prompt had that the new one doesn't, verbatim, so a rebuild-from-the-summary sees
@@ -2633,7 +2633,7 @@ class MemoryMetadataTool(MemoryTool):
         render never emits a half-formed clause (#1666, via the shared
         ``describe_schedule_field``).  ``now`` is the due-now clock (#2895) — an
         occurrence already due renders as due now rather than a stale past timestamp."""
-        return f"schedule: {describe_schedule_field(memory, timezone_name, now)}"
+        return f"schedule: {describe_schedule_field(memory, timezone_name, now=now)}"
 
 
 class CollectionRemoveTool(MemoryTool):
