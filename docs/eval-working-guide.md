@@ -30,6 +30,13 @@ is and files any gap it shows for later ([`docs/eval-case-design.md` §10](eval-
 failure-driven case carries its fix in the same issue and the same PR, proved by two runs — the one
 that reproduces the failure, the one that shows it resolved.
 
+**Every unexpected behaviour starts here.** The code owner: *"basically every time we hit an
+unexpected/undesired behaviour we should try our best to follow the sequence above and capture
+it."* The sequence: replay prod verbatim to measure the regression; swap proper nouns for
+synthetic ones and confirm it still reproduces; then apply the fix. Purely synthetic cases are too
+narrow and easy — scoring well on them misses behaviour expected in use. Existing synthetic cases
+stay as they are; this governs failures found from here on.
+
 The path, in order. Each step says who does it, what it produces, and where the detail lives:
 
 1. **Observe** (the code owner). He says what went wrong, at whatever level he likes.
@@ -41,10 +48,14 @@ The path, in order. Each step says who does it, what it produces, and where the 
    sensible decision on a wrong or missing input, or a deterministic defect below the model —
    because it decides what gets built. §5 below.
 4. **Distil** (the coordinator): the user's goal, the correct end state as facts, the entry
-   condition, the smallest input that still shows the failure. §5 below.
+   condition, and the input at its full recorded context. Shrink it only once that full-context
+   version reproduces, confirming each cut still reproduces before cutting further. §5 below.
 5. **Check what already covers it** (the coordinator), against `docs/eval-catalogue.md`. §5 below.
-6. **Reproduce, then genericise** (the coordinator), replaying the recorded input before swapping
-   in real proper nouns of the same kind. §5 below.
+6. **Reproduce, then genericise** (the coordinator): replay the recorded input verbatim, then
+   swap its proper nouns for real ones of the same kind one-to-one inside that same full context —
+   never by rebuilding a simpler world. Before running, compare the rendered world prompt's
+   structure (store map, history turns, sections) against the promptlog row it came from. §5
+   below.
 7. **Propose the case** (the coordinator) to the code owner, one `ask` card, using the form in §6
    "The case proposal" below — the behaviour sentence, the world, the wordings and the claims are
    his to rule on.
@@ -373,10 +384,16 @@ python -m penny.tests.eval.utils.replay --id <promptlog id> --samples 12
 ```
 
 (run inside the penny container; a non-collector prompt, including every chat turn, is replayed
-verbatim automatically). Once it reproduces, genericise: swap every real proper noun for another
-real one of the same kind (topics changed for privacy), and confirm it still reproduces before it
-goes into a fixture. If the swap kills the repro, the trigger was in the specifics — narrow back
-to what it actually was.
+verbatim automatically). Once the full-context replay reproduces, genericise by swapping each real
+proper noun for another real one of the same kind (topics changed for privacy), one-to-one,
+inside that same full recorded context — never by rebuilding a simpler world. Before running the
+genericised version, compare its rendered world prompt's structure (the store map, the history
+turns, each section) against the promptlog row it came from; a world that drops or collapses a
+section is a different, easier input, not the one being reproduced. Confirm it still reproduces
+before it goes into a fixture — if the swap kills the repro, the trigger was in the specifics, and
+the case narrows back to what it actually was. A hand-built "minimal" world for a duplicate-job
+bug passed 15/15 on the pre-fix code; only a world mirroring the prod prompt one-to-one reproduced
+it (#2905) — the worked example this governs.
 
 ## 6 · The case proposal
 
