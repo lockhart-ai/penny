@@ -2375,6 +2375,26 @@ def _without_told_moments(text: str, moments: Sequence[datetime]) -> str:
     return _CLOCK_SAID.sub(blank_if(_tells_the_time), text)
 
 
+# A reply plays a user's own value back plural (`alpine iii` becomes "those Alpine IIIs") as
+# often as it plays it back in another case — neither is an invention.  `es`/`s` only, and only
+# a trailing one: this is not a stemmer, so `status` and `analysis` are read whole, same as
+# every other word with no plural reading at all.
+_PLURAL_ES = "es"
+_PLURAL_S = "s"
+
+
+def _singulars(token: str) -> list[str]:
+    """``token`` read as a simple plural, every reading a trailing `es`/`s` makes — longest
+    suffix first, so `iiis` reads as `iii` and `classes` as `class`.  Stripping either suffix
+    down to nothing is not a reading: a bare `s` names no singular."""
+    readings = []
+    if token.endswith(_PLURAL_ES) and len(token) > len(_PLURAL_ES):
+        readings.append(token[: -len(_PLURAL_ES)])
+    if token.endswith(_PLURAL_S) and len(token) > len(_PLURAL_S):
+        readings.append(token[: -len(_PLURAL_S)])
+    return readings
+
+
 @dataclass(frozen=True)
 class _WorldValues:
     """Everything a round was given, read as the values it states."""
@@ -2400,13 +2420,25 @@ class _WorldValues:
         """A name phrase's words that are neither a whole word of the world nor part of a run
         of the phrase the world writes as one word."""
         keys = [_whole_tokens(fold_typography(word)) for word in words]
-        sourced = {index for index, key in enumerate(keys) if self._holds(key)}
+        sourced = {index for index, key in enumerate(keys) if self._holds_singular(key)}
         for first in range(len(keys)):
             for last in range(first + 1, len(keys)):
                 run_together = "".join(token for key in keys[first : last + 1] for token in key)
                 if self._holds([run_together]):
                     sourced.update(range(first, last + 1))
         return [word for index, word in enumerate(words) if index not in sourced]
+
+    def _holds_singular(self, tokens: Sequence[str]) -> bool:
+        """Whether ``tokens`` holds as given, or — when it is one reply word — as the world's
+        own singular of a simple trailing plural (`IIIs` sourced by a world that states `iii`,
+        `cases` by `case`).  Reusing a case the world states a different way is not an
+        invention; a joined multi-word run (``_holds``'s other caller) is never loosened this
+        way, only a single reply word."""
+        if self._holds(tokens):
+            return True
+        return len(tokens) == 1 and any(
+            self._holds([singular]) for singular in _singulars(tokens[0])
+        )
 
     def _holds(self, tokens: Sequence[str]) -> bool:
         return _side_by_side(tokens) in self.tokens
