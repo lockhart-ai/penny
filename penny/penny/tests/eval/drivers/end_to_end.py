@@ -135,13 +135,18 @@ async def _drive_end_to_end_script(
     Returns the LAST reply actually driven and how many turns were sent — the count becomes
     the ``TURNS_DRIVEN`` variance feature, since a Penny who stands the job up on turn one and
     a Penny who asks first and is walked through it are both measured on the same claims, and
-    only differ in how many turns it took."""
+    only differ in how many turns it took.
+
+    ``_drive_turns`` now returns every message its own last turn produced, in order
+    (#2934); only the LAST of those is this function's own "reply" — the full delivered
+    text is read separately, off ``outgoing_replies`` (see ``_observe_end_to_end``)."""
     reply = ""
     sent = 0
     for turn in turns:
         if sent and not _no_job_created_yet(penny.db, before):
             break
-        reply = await _drive_turns(penny, server, [turn], timeout=timeout, retryable=retryable)
+        messages = await _drive_turns(penny, server, [turn], timeout=timeout, retryable=retryable)
+        reply = messages[-1] if messages else ""
         sent += 1
     return reply, sent
 

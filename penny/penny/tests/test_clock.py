@@ -360,6 +360,7 @@ def _a_turn_that_stood_a_job_up(
         phrasing="the ask",
         arm=0,
         reply="done",
+        final_reply="done",
         before=set(),
         held_before=[],
     )

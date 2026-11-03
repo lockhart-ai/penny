@@ -394,7 +394,21 @@ class SampleObservation(BaseModel):
     # model typed is not a key the store holds under — a claim that needs "what she asked
     # for" cannot answer it from "what the store now has".
     collection_write_keys: list[str] = Field(default_factory=list)
+    # Every message the sample's measured turn delivered, joined in order, as the user saw
+    # it — an interim message (#2839) plus the final reply.  What a claim means by "the
+    # reply" unless it means the last message specifically (#2934): a chat turn's own
+    # ``_drive_turns`` now reads back every message a settled turn produced rather than
+    # whichever one a race-prone wait happened to catch first, and this is the full text that
+    # fix exists to deliver.  A collector sample sets the SAME field to its own joined sent
+    # notifications — one field because both answer "what did the user receive".
     reply: str = ""
+    # The LAST message alone, where ``reply``'s own join would answer the wrong question: the
+    # model-error identity check (an interim message ahead of the apology doesn't make the
+    # turn's actual end any less an abort) and the reply's own embedding lookup (an exact
+    # match against ONE outgoing row, which a multi-message join matches none of).  Empty for
+    # a shape that never populates it — the collector and the end-to-end driver's own
+    # ``combined_reply`` join ``reply`` directly and read no separate last-message field.
+    final_reply: str = ""
     reply_embedding: list[float] | None = None
     # Whether the measured CHAT turn ended on an aborted model call, rather than on a reply the
     # model composed — read by the CHAT observer alone, off the delivered reply's identity
@@ -471,16 +485,19 @@ class SampleObservation(BaseModel):
         The three driver shapes answer it three different ways, in priority order: a
         micro-context sample (classifier/framer/binder/labeller/extractor) answers with its
         structured OUTPUT, each field that holds a value as ``name: value`` — it has no reply at
-        all, and a field the draw left empty says nothing; a chat sample answers with its TEXT
-        reply; a collector
-        sample answers with what it told the user, read off the SAME ``reply`` field (joined
-        from its sent notifications), or the honest :data:`NO_NOTIFICATION_SENT` when its cycle
-        queued none — told apart from a chat sample by the record fields only a cycle stamps
-        (``run_outcome``/``run_reason``). A shape that left neither is :data:`NO_REPLY_RECORDED`
-        rather than a guess."""
+        all, and a field the draw left empty says nothing; a chat sample answers with its own
+        ``final_reply`` (#2934) — the last message alone, not the full ``reply`` text an
+        interim message would otherwise fold in here; a collector sample answers with what it
+        told the user, read off ``reply`` directly (joined from its sent notifications, with no
+        separate last-message field of its own), or the honest :data:`NO_NOTIFICATION_SENT`
+        when its cycle queued none — told apart from a chat sample by the record fields only a
+        cycle stamps (``run_outcome``/``run_reason``). A shape that left neither is
+        :data:`NO_REPLY_RECORDED` rather than a guess."""
         if self.output:
             stated = [f"{one.name}: {one.value}" for one in self.output if one.value.strip()]
             return _STATED_FIELD_GAP.join(stated) or NO_REPLY_RECORDED
+        if self.final_reply.strip():
+            return self.final_reply
         if self.reply.strip():
             return self.reply
         if self.run_outcome is not None or self.run_reason is not None:

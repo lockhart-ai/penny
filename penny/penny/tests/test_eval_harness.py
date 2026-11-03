@@ -46,6 +46,7 @@ from penny.datetime_utils import stored_as_utc
 from penny.llm.call_link import CallLink
 from penny.llm.models import (
     LlmMessage,
+    LlmResponse,
     LlmToolCall,
     LlmToolCallFunction,
     strip_harmony_control_tokens,
@@ -504,16 +505,71 @@ async def test_a_turn_is_not_over_until_its_reply_has_been_delivered(
             await wait_until(lambda: server.reply_seen)
             assert not drive.done(), "the turn ended while its reply's send was unanswered"
             server.answer_the_send()
-            reply = await drive
+            messages = await drive
     finally:
         server.answer_the_send()
         await server.stop()
 
     db = Database(config.db_path)
-    assert outgoing_replies(db) == [reply]
-    delivered = db.messages.find_outgoing_by_content(reply)
+    assert outgoing_replies(db) == messages == [_HELD_REPLY]
+    delivered = db.messages.find_outgoing_by_content(messages[-1])
     assert delivered is not None
     assert delivered.external_id == str(_HELD_SEND_EXTERNAL_ID)
+
+
+_INTERIM_TEXT = "Let me adjust that for you."
+_FINAL_TEXT = "Done, notifications are off."
+
+
+def _interim_then_final_handler(request: dict, count: int) -> LlmResponse:
+    """A turn that sends an interim message (#2839) ahead of its final reply: the first
+    step's own prose rides alongside a real tool call, the second step closes the turn with
+    plain text and nothing left to call."""
+    if count == 1:
+        return LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content=_INTERIM_TEXT,
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_0",
+                        function=LlmToolCallFunction(
+                            name="notifications_set", arguments={"on": False}
+                        ),
+                    )
+                ],
+            ),
+            model=request.get("model", "test-model"),
+        )
+    return LlmResponse(
+        message=LlmMessage(role="assistant", content=_FINAL_TEXT),
+        model=request.get("model", "test-model"),
+    )
+
+
+async def test_drive_turns_returns_every_message_the_turn_sent(
+    mock_llm, make_config, test_user_info
+) -> None:
+    """``_drive_turns`` reads back EVERY message a settled turn produced, in order — an
+    interim message plus the final reply — not only whichever one its own
+    ``wait_for_message`` happened to catch first (#2934).  That race is what left a sample's
+    SCORED reply missing content the user actually received: a turn whose first send was the
+    interim message had its real final reply go unread entirely."""
+    server = MockSignalServer()
+    await server.start()
+    try:
+        config = make_config(signal_api_url=f"http://localhost:{server.port}")
+        mock_llm.set_response_handler(_interim_then_final_handler)
+        async with eval_penny(config, server) as penny:
+            messages = await _drive_turns(
+                penny, server, ["please mute notifications"], timeout=10.0, retryable=False
+            )
+    finally:
+        await server.stop()
+
+    assert messages == [_INTERIM_TEXT, _FINAL_TEXT]
+    db = Database(config.db_path)
+    assert outgoing_replies(db) == messages
 
 
 def _sample_report_text(directory, case_id: str) -> str:
@@ -2439,11 +2495,16 @@ def _observed_chat_sample(
     *,
     chat_draws: Sequence[dict] = _ANSWERED,
     reply: str = "an answer",
+    final_reply: str | None = None,
 ) -> SampleObservation:
     """One chat sample read through the real chat observer, its promptlog in production's order:
     the chat agent's draws, one row per call that came back — none when the endpoint failed
     every call.  A naive chat turn (#2455) opens directly with the chat agent; there is no
-    state classifier ahead of it to draw first."""
+    state classifier ahead of it to draw first.
+
+    ``final_reply`` defaults to ``reply`` — the ordinary case, where a sample sent exactly
+    one message — so a caller testing something other than the multi-message capture itself
+    (#2934) does not have to name it twice."""
     db = migrated_db(str(tmp_path / f"{name}.db"))
     for draw in chat_draws:
         _log_prompt(db, response=draw, agent_name=PennyConstants.CHAT_AGENT_NAME)
@@ -2453,6 +2514,7 @@ def _observed_chat_sample(
         phrasing="the ask",
         arm=0,
         reply=reply,
+        final_reply=final_reply if final_reply is not None else reply,
         before=set(),
         held_before=[],
     )
@@ -2466,6 +2528,25 @@ def test_a_reply_that_merely_quotes_the_apology_is_not_read_as_an_abort(tmp_path
     sample = _observed_chat_sample(tmp_path, "s-quoting", reply=quoting)
     assert sample.aborted_on_model_error is False
     assert sample.reply == quoting
+
+
+def test_the_full_reply_and_the_final_message_are_read_separately(tmp_path) -> None:
+    """``reply`` is every message the turn sent, joined in order (#2839/#2934) — what a
+    claim means by "the reply" unless it means the last message specifically.  The
+    model-error identity check is one that does: an interim message ahead of the apology
+    doesn't make the turn's actual end any less an abort, and read off the full joined text
+    it could never match the constant at all."""
+    interim = "Let me check that for you."
+    joined = f"{interim}\n{PennyResponse.AGENT_MODEL_ERROR}"
+    sample = _observed_chat_sample(
+        tmp_path,
+        "s-interim-then-abort",
+        reply=joined,
+        final_reply=PennyResponse.AGENT_MODEL_ERROR,
+    )
+    assert sample.reply == joined
+    assert sample.final_reply == PennyResponse.AGENT_MODEL_ERROR
+    assert sample.aborted_on_model_error is True
 
 
 # ── A cohort sample's fragile flag and its banner state the SETTLED verdict (#2127) ──
