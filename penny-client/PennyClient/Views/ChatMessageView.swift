@@ -260,7 +260,27 @@ struct ChatMessageView: View {
     }
 }
 
-private struct ChatAttributedText: View {
+struct ChatAttributedText: View {
+    let attributedText: AttributedString
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                ChatAttributedTextLine(attributedText: line)
+            }
+        }
+    }
+
+    private var lines: [AttributedString] {
+        // A newline inside one Text view cannot move its sibling link/title views.
+        // Give each explicit line its own flow and keep empty lines at text height.
+        attributedText.characters.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line.isEmpty ? AttributedString(" ") : AttributedString(attributedText[line.startIndex..<line.endIndex])
+        }
+    }
+}
+
+private struct ChatAttributedTextLine: View {
     let attributedText: AttributedString
 
     var body: some View {
