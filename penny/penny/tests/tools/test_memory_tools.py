@@ -68,7 +68,7 @@ from penny.tools.memory_tools import (
     _PROMPT_CLEARED_MESSAGE,
     _PROMPT_NEEDS_SCHEDULE_REFUSAL,
     _RULES_GUARD_REFUSAL,
-    _SAME_JOB_UPDATED,
+    _SAME_JOB_REFUSAL,
     EXPIRES_AT_PARAM_DESCRIPTION,
     SCHEDULE_PARAM_DESCRIPTION,
     CollectionArchiveTool,
@@ -1066,11 +1066,11 @@ class TestInertCollections:
         assert db.memories.get("deals-watch") is None
 
     @pytest.mark.asyncio
-    async def test_inert_create_of_an_existing_job_updates_it(self, db):
-        """Idempotency-at-birth (#1567) still applies to a skill-less create, and since
-        #1775 it RESOLVES rather than refuses: 'deals-watch' normalises to the same token
-        as the existing 'deals' (the role word is dropped), so the call lands on that
-        collection — nothing new created, and the message names where it went."""
+    async def test_inert_create_of_an_existing_job_refuses_rather_than_redirecting(self, db):
+        """Idempotency-at-birth (#1567) still applies to a skill-less create: 'deals-watch'
+        normalises to the same token as the existing 'deals' (the role word is dropped),
+        so the call is the same job — but since #2893 that is REFUSED, not redirected onto
+        the collection the call never named. Nothing is created and 'deals' is untouched."""
         _seed_collection(
             db,
             name="deals",
@@ -1079,13 +1079,54 @@ class TestInertCollections:
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(),
             collection="deals-watch",
+            description="a different description entirely",
+        )
+        assert result.success is False and not result.mutated
+        assert db.memories.get("deals-watch") is None
+        assert result.message == _SAME_JOB_REFUSAL.format(requested="deals-watch", existing="deals")
+        assert db.memories.get("deals").description == "track the trail-runner shoe deals"
+
+    @pytest.mark.asyncio
+    async def test_a_storage_only_collection_is_never_a_duplicate_target(self, db):
+        """A plain storage collection (#2893) — entries only, no prompt, no schedule — is
+        never the same JOB as anything, however its name reads: 'deals-watch' contains the
+        token 'deals', but 'deals' here has no job to be the same as, so the call creates a
+        new job of its own rather than redirecting onto the storage collection."""
+        _seed_collection(db, name="deals", extraction_prompt=None, schedule=None)
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            collection="deals-watch",
             description="track the trail-runner shoe deals",
+            prompt="Read the trail-runner shoe deals page and note what's on sale.",
+            schedule="FREQ=HOURLY",
         )
         assert result.success and result.mutated
-        assert db.memories.get("deals-watch") is None
-        assert result.message.startswith(
-            _SAME_JOB_UPDATED.format(requested="deals-watch", existing="deals")
+        created = db.memories.get("deals-watch")
+        assert created is not None and created.extraction_prompt is not None
+        storage = db.memories.get("deals")
+        assert (
+            storage is not None and storage.extraction_prompt is None and storage.schedule is None
         )
+
+    @pytest.mark.asyncio
+    async def test_an_added_distinguishing_token_is_a_different_job(self, db):
+        """A name that ADDS a real token to an existing job's name — not a role word, not a
+        plural, not a dropped qualifier — names a DIFFERENT job (#2893), even though the
+        existing name's one token is wholly contained in the new one. 'deals' reduces to a
+        single token, so containment alone is too weak a signal; 'boston-deals' keeps that
+        token and adds a real one, and must create its own job rather than landing on
+        'deals'."""
+        _seed_collection(db, name="deals", description="track the trail-runner shoe deals")
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(),
+            collection="boston-deals",
+            description="track trail-runner shoe deals near Boston",
+            prompt="Read the Boston shoe outlet page and note what's on sale.",
+            schedule="FREQ=HOURLY",
+        )
+        assert result.success and result.mutated
+        created = db.memories.get("boston-deals")
+        assert created is not None and created.extraction_prompt is not None
         assert db.memories.get("deals").description == "track the trail-runner shoe deals"
 
 

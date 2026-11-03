@@ -224,9 +224,25 @@ def is_token_containment(name_a: str, name_b: str) -> bool:
     A name that normalises to nothing (a bare role word like ``monitor``) is
     contained in nothing: an empty set is a subset of everything, which would
     make it a duplicate of every collection.
+
+    A SINGLE remaining token is too weak a signal to anchor containment (#2893):
+    a job name often reduces to one token simply because the trailing year was
+    stripped (``spring_2027`` → ``{spring}``), and a one-token set is trivially a
+    subset of almost anything.  So when the SHORTER side has exactly one token,
+    the two names must match EXACTLY rather than merely contain it — otherwise an
+    unrelated new job that happens to add one more token (``lisbon_spring_2027``,
+    which keeps ``spring`` and adds ``lisbon``) would read as the same job as the
+    generic one it was never meant to redirect onto.  A shorter side with two or
+    more tokens keeps the plain containment relation: a real duplicate's dropped
+    qualifier (``aurora-deck-2-price`` / ``aurora-deck-2``) or catch-all scoping
+    (``aurora-prices`` / ``aurora-deck-2-price``) still matches, since neither of
+    those shorter sides is down to one token.
     """
     tokens_a = set(tokenize_job_name(name_a))
     tokens_b = set(tokenize_job_name(name_b))
     if not tokens_a or not tokens_b:
         return False
+    shorter = tokens_a if len(tokens_a) <= len(tokens_b) else tokens_b
+    if len(shorter) == 1:
+        return tokens_a == tokens_b
     return tokens_a <= tokens_b or tokens_b <= tokens_a

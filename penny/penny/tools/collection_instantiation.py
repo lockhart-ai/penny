@@ -8,9 +8,10 @@ prompt the model wrote IS the prompt the collector runs. This module holds the
 pure, DB-free pieces of that flow so they are whole-render tested in isolation:
 
 * the **idempotency-at-birth** tombstone result (#1567) — the archived-duplicate
-  confirm-shape, naming the retired row and the unarchive that revives it.  (Its
-  active-duplicate sibling is gone: an active duplicate is no longer refused, it
-  is UPDATED in place — see ``CollectionSetTool._same_job``, #1775);
+  confirm-shape, naming the retired row and the unarchive that revives it.  Its
+  active-duplicate sibling is the same shape (#2893): a job-identity match never
+  acts on the collection the call didn't name, whether that match is archived or
+  live — see ``CollectionSetTool._same_job``;
 * the **schedule** parse (one ``schedule`` arg, one grammar: an RRULE string,
   #1857) and the ``expires_at`` end condition (ISO or natural language), with
   ``render_schedule_clause`` rendering the stored rule back verbatim — it IS the

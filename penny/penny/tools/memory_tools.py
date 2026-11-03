@@ -1958,18 +1958,19 @@ class CollectionSetTool(MemoryTool):
 
     Three cases, in order.  The name EXISTS → the update path (adopt / edit the
     prompt, atomic schedule replace).  The name is new but names a job we
-    ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → the same update
-    path, aimed at the collection we have, because ``collection_configure`` dispatching on
-    the name alone is exactly what lets an invented name become a second copy of one
-    job.  Otherwise → the create path.  Both inner paths keep their full validation —
-    this class is a dispatcher, not a re-implementation."""
+    ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → REFUSED (#2893):
+    ``collection_configure`` never acts on a collection the call didn't name, so the
+    near-match is named back along with how to reach it on purpose, and nothing
+    changes.  Otherwise → the create path.  Both inner paths keep their full
+    validation — this class is a dispatcher, not a re-implementation."""
 
     name = "collection_configure"
     # The creation echo points at the metadata read for what was configured; the
-    # same-job redirect (#1775, ``_SAME_JOB_UPDATED``) points at ``collection_list``
-    # for the collection the call actually landed on; the `prompt` description and
-    # the no-schedule refusal (#2857) point at `collection_write` for adding to what
-    # a collection holds.
+    # same-job refusal (#1775, tightened #2893, ``_SAME_JOB_REFUSAL``) points at
+    # ``collection_list`` for the near-match it names, so the model can read what that
+    # job already does before deciding whether to update it or name a new one; the
+    # `prompt` description and the no-schedule refusal (#2857) point at
+    # `collection_write` for adding to what a collection holds.
     advises = ("memory_get", "collection_list", "collection_write")
     description = (
         "Create or reconfigure a collection in ONE idempotent call. If "
@@ -2081,19 +2082,21 @@ class CollectionSetTool(MemoryTool):
         return _with_configure_outcome(result, CollectionConfigureOutcome.UPDATED)
 
     async def _same_job(self, args: CollectionSetArgs, duplicate: MemoryRow) -> ToolResult:
-        """A new name for a job we already have (#1775).  An ARCHIVED match stays a
-        refusal — reviving a retired mechanism is the user's call, and the tombstone
-        confirm-shape asks for it (#1567).  An ACTIVE one is UPDATED in place rather
-        than refused: the refusal cost an entire observed turn (the model retried, the
-        second refusal was identical, and the all-failed abort ended the turn with no
-        reply), while the update is what the user asked for on the collection that
-        already serves it."""
+        """A new name for a job we already have (#1775) — REFUSED either way (#2893),
+        and nothing changes.  An ARCHIVED match is the #1567 tombstone refusal (reviving
+        a retired mechanism is the user's call).  An ACTIVE match used to be UPDATED in
+        place instead of refused, aimed at the collection the call never named — which
+        is how a storage-only collection a new job's name merely CONTAINED got its
+        settings silently overwritten by a different job, and then overwritten again by
+        the next one.  Never acting on a target the call didn't name is the ordinary
+        rule for every other tool on this surface; the refusal names the near-match and
+        both ways to proceed on purpose, same shape as the tombstone."""
         if duplicate.archived:
             return ToolResult(message=render_tombstone_duplicate(duplicate), success=False)
-        result = await self._apply_to(args, duplicate.name)
-        template = _SAME_JOB_UPDATED if result.success else _SAME_JOB_TARGETED
-        note = template.format(requested=args.collection, existing=duplicate.name)
-        return result.model_copy(update={"message": f"{note}{result.message}"})
+        return ToolResult(
+            message=_SAME_JOB_REFUSAL.format(requested=args.collection, existing=duplicate.name),
+            success=False,
+        )
 
 
 _SET_BIRTH_NEEDS_DESCRIPTION = (
@@ -2103,25 +2106,17 @@ _SET_BIRTH_NEEDS_DESCRIPTION = (
     "with description=<what it holds>."
 )
 
-# The same-job redirect (#1775): the requested name was a second name for a job that
-# already has a collection, so the call landed on THAT collection.  Named in the
-# result because everything downstream — reads, further edits, what Penny tells the
-# user — has to use the real name, not the one the call invented.
-_SAME_JOB_UPDATED = (
-    "'{requested}' is the same job as '{existing}', which already exists — so I "
-    "updated '{existing}' instead of creating a second collection for it. It's "
-    "'{existing}' from here on: read it with collection_list{{'{existing}'}} or "
-    "adjust it with collection_configure{{collection: '{existing}', ...}}. If this really is a "
-    "separate task, set it up again with a name that carries what makes it "
-    "different.\n"
-)
-
-# The same redirect when the update itself failed — the target is still named (the
-# error below is about '{existing}', not the requested name), but nothing changed.
-_SAME_JOB_TARGETED = (
-    "'{requested}' is the same job as the existing collection '{existing}', so this "
-    "was aimed at '{existing}' rather than creating a second collection — but it "
-    "didn't land:\n"
+# The same-job refusal (#1775, tightened #2893): the requested name reads as a second
+# name for a job that already has a collection, so nothing was created and nothing on
+# the existing collection changed.  Named in the result either way — to read what the
+# near-match already does, to update it on purpose, or to set up a genuinely separate
+# job under a name that carries what makes it different.
+_SAME_JOB_REFUSAL = (
+    "'{requested}' reads as the same job as the existing collection '{existing}' — so "
+    "nothing was created and '{existing}' is unchanged. Read it with "
+    "collection_list{{'{existing}'}}; to update it, call "
+    "collection_configure{{collection: '{existing}', ...}}. If '{requested}' is really a "
+    "separate job, set it up again with a name that carries what makes it different.\n"
 )
 
 
