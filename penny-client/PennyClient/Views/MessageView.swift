@@ -4,9 +4,10 @@ import PennyServices
 
 struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var viewModel = ViewModel()
-    @State private var isShowingActivity = false
+    @State private var viewModel: ViewModel
+    @State private var isShowingActivity: Bool
     @State private var presentedCardMessage: ChatMessage?
+    @State private var isShowingSearchStory: Bool
     @State private var activeMessageContext: MessageActionContext?
     @State private var messageFrames: [Int: CGRect] = [:]
     @State private var messageScrollFrames: [Int: CGRect] = [:]
@@ -23,6 +24,24 @@ struct MessageView: View {
     @State private var chatViewportFrame: CGRect = .zero
     @State private var browserDestination: BrowserDestination?
     @FocusState private var isComposerFocused: Bool
+
+    /// `isShowingActivity`, `presentedCardMessage`, and `isShowingSearchStory`
+    /// only exist so story mode (#2965) can open the activity sheet, the card
+    /// detail sheet, or the search screen already presented over the chat
+    /// story. They default to today's behaviour, so `MessageView()` is
+    /// unchanged, and `isShowingSearchStory` is a seam separate from the real
+    /// `NavigationLink` search entry point below — it never changes that path.
+    init(
+        viewModel: ViewModel? = nil,
+        isShowingActivity: Bool = false,
+        presentedCardMessage: ChatMessage? = nil,
+        isShowingSearchStory: Bool = false
+    ) {
+        _viewModel = State(initialValue: viewModel ?? ViewModel())
+        _isShowingActivity = State(initialValue: isShowingActivity)
+        _presentedCardMessage = State(initialValue: presentedCardMessage)
+        _isShowingSearchStory = State(initialValue: isShowingSearchStory)
+    }
 
     var body: some View {
         NavigationStack {
@@ -91,6 +110,13 @@ struct MessageView: View {
             }
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
+            }
+            .navigationDestination(isPresented: $isShowingSearchStory) {
+                MessageSearchView(client: viewModel.client) { message in
+                    withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
+                        viewModel.startReply(to: message)
+                    }
+                }
             }
             .coordinateSpace(name: messageRootCoordinateSpace)
             .onPreferenceChange(MessageFramePreferenceKey.self) { frames in

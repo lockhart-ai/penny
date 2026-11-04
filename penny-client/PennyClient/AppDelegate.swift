@@ -11,12 +11,32 @@ import PennyServices
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
+    #if DEBUG
+    /// The story named by a `-PennyStory <id>` launch argument (story mode,
+    /// #2965), or nil for ordinary launches. Debug builds only — release/
+    /// TestFlight builds carry no story code at all.
+    static var activeStoryID: StoryID? {
+        guard let flagIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "-PennyStory") else { return nil }
+        let valueIndex = flagIndex + 1
+        guard valueIndex < ProcessInfo.processInfo.arguments.count else { return nil }
+        return StoryID(rawValue: ProcessInfo.processInfo.arguments[valueIndex])
+    }
+    #endif
+
     var body: some Scene {
         WindowGroup {
             if Self.isRunningTests {
                 Color.clear
             } else {
+                #if DEBUG
+                if let storyID = Self.activeStoryID {
+                    StoryRootView(storyID: storyID)
+                } else {
+                    MessageView()
+                }
+                #else
                 MessageView()
+                #endif
             }
         }
     }
@@ -30,6 +50,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         guard !MyApp.isRunningTests else { return true }
+        #if DEBUG
+        guard MyApp.activeStoryID == nil else { return true }
+        #endif
 
         let notificationCenter = UNUserNotificationCenter.current()
         notificationCenter.delegate = self
