@@ -157,22 +157,26 @@ def _crash_stub(tmp_path: pathlib.Path, run_log: pathlib.Path) -> pathlib.Path:
 def _build_stub(
     tmp_path: pathlib.Path,
     build_log: pathlib.Path,
-    cursor_file: pathlib.Path,
+    built_file: pathlib.Path,
     fail_flag: pathlib.Path,
 ) -> pathlib.Path:
     """Mirrors `prod-build`'s own shape: a build step, then — only once it has
-    actually succeeded — a cursor write. `fail_flag`'s presence fails the build
-    step before the cursor line ever runs, exactly like a failing
-    `docker compose build` aborting the real recipe before its own cursor
-    write."""
+    actually succeeded — a write of the built commit to `built_file`, standing
+    in for the image's own `git_commit` LABEL the real build retags (#2973).
+    `fail_flag`'s presence fails the build step before that line ever runs,
+    exactly like a failing `docker compose build` aborting the real recipe
+    before its own retag."""
     stub = tmp_path / "build-stub.sh"
     _write_executable(
         stub,
         "set -e\n"
-        f'head="$(git rev-parse HEAD)"\n'
+        # The SHORT hash — the same form the GIT_COMMIT build arg (and so the
+        # image's git_commit label) carries in production, and the form the
+        # loop's startup check compares.
+        f'head="$(git rev-parse --short HEAD)"\n'
         f'echo "build $head" >> "{build_log}"\n'
         f'if [ -f "{fail_flag}" ]; then exit 1; fi\n'
-        f'echo "$head" > "{cursor_file}"\n'
+        f'echo "$head" > "{built_file}"\n'
         f'echo "built $head" >> "{build_log}"\n',
     )
     return stub
@@ -218,7 +222,7 @@ class _Deployment:
     run_log: pathlib.Path
     pid_file: pathlib.Path
     build_log: pathlib.Path
-    cursor_file: pathlib.Path
+    built_file: pathlib.Path
     fail_flag: pathlib.Path
     deploy_log: pathlib.Path
     deploy_run_log: pathlib.Path
@@ -234,23 +238,25 @@ def _start_deployment(
     (unless `run_cmd` names a different one, e.g. a crash stub), waits for the
     first child to report in, and hands back every path a test asserts on.
 
-    `cursor_file` doubles as DEPLOY_BUILD_CURSOR_FILE: the startup-build check
-    reads it, and a successful build stub writes it — the same file prod-build
-    and the loop agree on in production. Pre-written here with the clone's
-    CURRENT head when a test hasn't already seeded it with something else, so
-    an ordinary test sees no startup build; a test of that startup path writes
-    an OLDER commit into it before calling this, and that value survives."""
+    `built_file` stands in for the image's own `git_commit` LABEL (#2973):
+    the loop reads the built commit from it via the stubbed
+    DEPLOY_IMAGE_COMMIT_CMD, and a successful build stub writes it — the same
+    contract prod-build and the loop agree on in production. Pre-written here
+    with the clone's CURRENT head when a test hasn't already seeded it with
+    something else, so an ordinary test sees no startup build; a test of that
+    startup path writes an OLDER commit into it before calling this, and that
+    value survives."""
     run_log = tmp_path / "run.log"
     pid_file = tmp_path / "run.pid"
     build_log = tmp_path / "build.log"
-    cursor_file = tmp_path / "cursor"
+    built_file = tmp_path / "built"
     fail_flag = tmp_path / "fail-flag"
     deploy_log = tmp_path / "deploy.log"
     deploy_run_log = tmp_path / "deploy-run.log"
     run_stub = run_cmd or _run_stub(tmp_path, run_log, pid_file)
-    build_stub = _build_stub(tmp_path, build_log, cursor_file, fail_flag)
-    if not cursor_file.exists():
-        cursor_file.write_text(_git(clone_dir, "rev-parse", "HEAD"))
+    build_stub = _build_stub(tmp_path, build_log, built_file, fail_flag)
+    if not built_file.exists():
+        built_file.write_text(_git(clone_dir, "rev-parse", "--short", "HEAD"))
 
     proc = _start_loop(
         clone_dir,
@@ -259,12 +265,15 @@ def _start_deployment(
             "DEPLOY_BUILD_CMD": str(build_stub),
             "DEPLOY_LOG": str(deploy_log),
             "DEPLOY_RUN_LOG": str(deploy_run_log),
-            "DEPLOY_BUILD_CURSOR_FILE": str(cursor_file),
+            # No quotes around the path on purpose (see the variable's own
+            # comment in the script): the loop expands the command unquoted,
+            # where quote characters would arrive inside the word.
+            "DEPLOY_IMAGE_COMMIT_CMD": f"cat {built_file}",
         },
     )
     _wait_until(lambda: _read_or_empty(run_log).count("\n") >= 1)
     return _Deployment(
-        proc, run_log, pid_file, build_log, cursor_file, fail_flag, deploy_log, deploy_run_log
+        proc, run_log, pid_file, build_log, built_file, fail_flag, deploy_log, deploy_run_log
     )
 
 
@@ -287,11 +296,11 @@ def test_startup_builds_first_when_head_is_already_ahead_of_the_last_build(tmp_p
     commit that's already checked out unless the loop builds it itself before
     starting the child."""
     origin, clone_dir, first = repos
-    cursor_file = tmp_path / "cursor"
-    cursor_file.write_text(first)  # the last successful build was the FIRST commit...
-    second = _commit(
-        clone_dir, "chore: already checked out, never built", "B"
-    )  # ...HEAD moved past it
+    built_file = tmp_path / "built"
+    built_file.write_text(_git(clone_dir, "rev-parse", "--short", first))  # the last
+    # successful build was the FIRST commit...
+    _commit(clone_dir, "chore: already checked out, never built", "B")  # ...HEAD moved past it
+    second_short = _git(clone_dir, "rev-parse", "--short", "HEAD")
 
     dep = _start_deployment(tmp_path, clone_dir)
     try:
@@ -300,9 +309,9 @@ def test_startup_builds_first_when_head_is_already_ahead_of_the_last_build(tmp_p
         assert log_text.index("building before starting") < log_text.index("started child"), (
             "the build must run before the child starts"
         )
-        assert f"built {second}" in _read_or_empty(dep.build_log)
-        assert cursor_file.read_text().strip() == second, (
-            "the startup build's own success still advances the cursor"
+        assert f"built {second_short}" in _read_or_empty(dep.build_log)
+        assert built_file.read_text().strip() == second_short, (
+            "the startup build's own success still retags the image"
         )
     finally:
         _stop(dep.proc)
@@ -321,8 +330,9 @@ def test_ahead_clean_ff_able_rebuilds_and_restarts(tmp_path, repos):
 
         _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
         assert _git(clone_dir, "rev-parse", "HEAD") == second
-        assert dep.cursor_file.read_text().strip() == second
-        assert f"built {second}" in _read_or_empty(dep.build_log)
+        second_short = _git(clone_dir, "rev-parse", "--short", "HEAD")
+        assert dep.built_file.read_text().strip() == second_short
+        assert f"built {second_short}" in _read_or_empty(dep.build_log)
     finally:
         _stop(dep.proc)
 
@@ -404,11 +414,11 @@ def test_unreachable_origin_logs_the_reason_and_leaves_the_child_running(tmp_pat
         _stop(dep.proc)
 
 
-def test_failed_build_leaves_old_child_running_and_never_advances_the_cursor(tmp_path, repos):
+def test_failed_build_leaves_old_child_running_and_never_retags_the_image(tmp_path, repos):
     """A build failure is logged and the old Penny keeps running — and because
-    the build stub mirrors prod-build's own shape (build step, THEN a cursor
-    write), the changelog cursor is never written either: nothing a failed
-    build produced is baked into any image, so there is nothing for a
+    the build stub mirrors prod-build's own shape (build step, THEN a retag),
+    the image is never retagged to the failed commit: nothing a failed build
+    produced is baked into any image, so there is nothing for a
     crash-restarted old container to announce that never actually deployed.
     The ff-only merge still advances HEAD, which is also why the SAME commit's
     build is never retried on the next tick — only a genuinely new commit is."""
@@ -424,12 +434,12 @@ def test_failed_build_leaves_old_child_running_and_never_advances_the_cursor(tmp
         assert _git(clone_dir, "rev-parse", "HEAD") == second, (
             "still fast-forwards despite the failure"
         )
-        # The cursor already exists (pre-seeded with the startup build check's own
-        # commit, same as HEAD at the time) — what must NOT happen is it moving to
-        # the failed commit.
-        assert dep.cursor_file.read_text().strip() == first, (
-            "a failed build must never advance the changelog cursor"
-        )
+        # The built-commit record already exists (pre-seeded with the startup build
+        # check's own commit, same as HEAD at the time) — what must NOT happen is it
+        # moving to the failed commit.
+        assert dep.built_file.read_text().strip() == _git(
+            clone_dir, "rev-parse", "--short", first
+        ), "a failed build must never retag the image"
         assert _read_or_empty(dep.run_log).count("\n") == 1, "the old child was never touched"
         assert _read_or_empty(dep.build_log).count("build ") == 1
 

@@ -270,6 +270,60 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
 
 
 @pytest.mark.asyncio
+async def test_record_changelog_entries_cuts_at_the_log_not_the_build(make_config):
+    """The startup entry point (#2973): a snapshot whose newest PRs aren't in
+    the log is recorded in full even after an earlier build "already happened"
+    — there is no host cursor a built-but-never-started image could advance.
+    What's recorded is exactly what the delivery turn will announce, and a
+    re-boot on the same snapshot (no rebuild) records nothing."""
+    old_entry = ChangelogEntry(pr=9300, text="an already-recorded PR from an earlier deploy")
+    new_entries = [
+        ChangelogEntry(pr=9301, text="We added a new way to save a note."),
+        ChangelogEntry(pr=9302, text="We renamed the lookup tool."),
+    ]
+    config = make_config(changelog_commits=[old_entry, *new_entries])
+    channel = MagicMock()
+    channel.send_response = AsyncMock(return_value=1)
+    penny = Penny(config, channel=channel)
+    _seed_profile_and_history(penny)
+    record_new_entries(require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG), [old_entry])
+
+    recorded = penny._record_changelog_entries()
+    assert recorded == new_entries
+    changelog = require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG)
+    assert [row.content for row in changelog.read_all()] == [
+        old_entry.render(),
+        *[entry.render() for entry in new_entries],
+    ]
+    # Recorded == announced, by construction: the delivery turn's input is the
+    # same framework render over exactly this boot's recorded set.
+    assert render_changelog_announcement(recorded) == render_changelog_announcement(new_entries)
+
+    # A re-boot on the same snapshot — the cut lands on 9302, now recorded.
+    assert penny._record_changelog_entries() == []
+    assert len(require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG).read_all()) == 3
+
+
+@pytest.mark.asyncio
+async def test_record_changelog_entries_with_an_empty_log_records_the_newest_10(make_config):
+    """A fresh database — none of the snapshot's PRs recorded — records only
+    the newest 10 entries, the code owner's earlier ruling (#2973)."""
+    entries = [ChangelogEntry(pr=9400 + n, text=f"change {n}") for n in range(12)]
+    config = make_config(changelog_commits=entries)
+    channel = MagicMock()
+    channel.send_response = AsyncMock(return_value=1)
+    penny = Penny(config, channel=channel)
+    _seed_profile_and_history(penny)
+
+    recorded = penny._record_changelog_entries()
+    assert recorded == entries[2:]
+    changelog = require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG)
+    assert [row.content for row in changelog.read_all()] == [
+        entry.render() for entry in entries[2:]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_changelog_announcement_startup_sends_with_no_new_entries(make_config, mock_llm):
     """Penny announces on every startup (#2890): a deploy that brings no new
     changelog entries still runs the real delivery turn end to end — recorded,

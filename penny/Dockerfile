@@ -26,6 +26,11 @@ RUN uv pip install --system -r pyproject.toml --group dev
 # Accept build args for git info (after deps so changing them doesn't bust the cache)
 ARG GIT_COMMIT=unknown
 ENV GIT_COMMIT=${GIT_COMMIT}
+# The same commit as a LABEL (#2973): the deploy loop's startup check reads it
+# back with `docker image inspect` to learn which commit the image tagged
+# `penny` was actually built from — the replacement for the old host-side
+# `.changelog_cursor`, which a built-but-never-started image advanced for it.
+LABEL git_commit=${GIT_COMMIT}
 
 # Copy source
 COPY penny/ ./penny/

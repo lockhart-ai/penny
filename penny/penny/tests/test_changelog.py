@@ -1,10 +1,10 @@
 """Tests for ``penny.changelog`` — the commit-log parser and the idempotent
 recorder behind #2845/#2891's startup step (``Penny._record_changelog_entries``).
-No position or dedupe logic lives here any more: the host's own cursor
-(``scripts/store_git_info.sh``) keeps the commit list a small, fresh window,
-and the whole list is recorded and announced as one set — see
-``test_changelog_announcement.py``/``test_chat_agent.py`` for the startup
-path with an empty and a non-empty commit list."""
+The snapshot is a fixed bounded window with no cursor (#2973), so which of its
+entries are hers to record is decided by the log itself (``select_new_entries``
+— the log is the cursor), and the selected set is recorded and announced as
+one — see ``test_changelog_announcement.py``/``test_chat_agent.py`` for the
+startup path with an empty and a non-empty commit list."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from penny.changelog import (
     parse_commit_log,
     record_new_entries,
     render_changelog_announcement,
+    select_new_entries,
 )
 from penny.changelog_commits import first_body_sentence
 from penny.constants import PennyConstants
@@ -218,6 +219,48 @@ def test_load_commits_path_is_colocated_with_the_module():
     here ships this generated file too, with no Dockerfile change."""
     assert COMMITS_PATH.name == "changelog_commits.txt"
     assert COMMITS_PATH.parent.name == "penny"
+
+
+def test_select_new_entries_cuts_at_the_newest_recorded_pr():
+    """The log is the cursor (#2973): the newest snapshot entry whose PR is
+    already recorded marks where she last saw changes — everything after it,
+    oldest first, is hers to record. Earlier recorded PRs in the snapshot
+    don't matter; the NEWEST one is the cut."""
+    entries = [ChangelogEntry(pr=9300 + n, text=f"change {n}") for n in range(4)]
+    selected = select_new_entries(entries, recorded={9301})
+    assert selected == [entries[2], entries[3]]
+
+
+def test_select_new_entries_fresh_log_caps_at_the_newest_10():
+    """A snapshot none of whose PRs is recorded (a fresh database) records only
+    the newest 10 entries — the code owner's earlier ruling. Penny-scope
+    entries, not raw commits: the cap applies after the parse filter."""
+    entries = [ChangelogEntry(pr=9400 + n, text=f"change {n}") for n in range(12)]
+    selected = select_new_entries(entries, recorded=set())
+    assert selected == entries[2:]  # the newest 10 of the 12
+
+
+def test_select_new_entries_on_an_unchanged_snapshot_returns_nothing():
+    """A re-boot on the same snapshot: its newest PR is already recorded, so
+    the cut is at the very end and nothing is selected."""
+    entries = [ChangelogEntry(pr=9500 + n, text=f"change {n}") for n in range(3)]
+    assert select_new_entries(entries, recorded={9502}) == []
+
+
+def test_record_new_entries_fresh_log_records_only_the_newest_10(db):
+    """Through the recorder itself: a fresh ``changelog`` log and a 12-entry
+    snapshot appends only the newest 10 — the fresh-install cap (#2973) — and
+    a second call on the same snapshot (the re-boot) appends nothing."""
+    changelog = require_memory(db, PennyConstants.MEMORY_CHANGELOG_LOG)
+    entries = [ChangelogEntry(pr=9600 + n, text=f"change {n}") for n in range(12)]
+
+    added = record_new_entries(changelog, entries)
+    assert added == entries[2:]
+    assert [row.content for row in changelog.read_all()] == [e.render() for e in entries[2:]]
+
+    again = record_new_entries(changelog, entries)
+    assert again == []
+    assert len(changelog.read_all()) == 10
 
 
 def test_record_new_entries_is_idempotent(db):
