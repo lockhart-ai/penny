@@ -70,34 +70,58 @@ struct ChatMessageView: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
-    @ViewBuilder
     private var messageBubble: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !message.imageAttachments.isEmpty {
+                messageAttachments
+            }
+
+            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                messageText
+                    .padding(.horizontal, replyContent == nil ? 12 : 10)
+                    .padding(.vertical, 9)
+            }
+        }
+        .frame(
+            maxWidth: shouldFillMessageRowContent || !message.imageAttachments.isEmpty ? .infinity : nil,
+            alignment: .leading
+        )
+        .background(compactCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var messageAttachments: some View {
+        VStack(spacing: 2) {
+            ForEach(message.imageAttachments) { attachment in
+                // Keep the whole image visible while leaving room for long digests.
+                ChatAttachmentLayout(imageSize: attachment.image.size) {
+                    Image(uiImage: attachment.image)
+                        .resizable()
+                        .scaledToFit()
+                        .accessibilityLabel("Image attachment")
+                }
+                .background(Color(.tertiarySystemGroupedBackground))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var messageText: some View {
         if message.isOutgoing {
-            outgoingMessageBubble
+            outgoingMessageText
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(messageContentBlocks) { block in
                     messageContentBlock(block)
                 }
-
-                ForEach(message.imageAttachments) { attachment in
-                    Image(uiImage: attachment.image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 260)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
             }
             .foregroundStyle(.primary)
             .frame(maxWidth: shouldFillIncomingMessageRow ? .infinity : nil, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 
     @ViewBuilder
-    private var outgoingMessageBubble: some View {
+    private var outgoingMessageText: some View {
         if let replyContent {
             VStack(alignment: .leading, spacing: 8) {
                 replyPreviewBlock(replyContent)
@@ -108,17 +132,11 @@ struct ChatMessageView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         } else {
             Text(message.content)
                 .font(.body)
                 .foregroundStyle(.white)
                 .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 
@@ -260,6 +278,26 @@ struct ChatMessageView: View {
     }
 }
 
+private struct ChatAttachmentLayout: Layout {
+    let imageSize: CGSize
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = max(0, proposal.width ?? imageSize.width)
+        let aspectRatio = imageSize.width / max(imageSize.height, 1)
+        return CGSize(width: width, height: min(280, width / max(aspectRatio, 0.01)))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews {
+            subview.place(
+                at: CGPoint(x: bounds.midX, y: bounds.midY),
+                anchor: .center,
+                proposal: ProposedViewSize(bounds.size)
+            )
+        }
+    }
+}
+
 struct ChatAttributedText: View {
     let attributedText: AttributedString
 
@@ -289,6 +327,7 @@ private struct ChatAttributedTextLine: View {
                 switch fragment.kind {
                 case .text(let text):
                     Text(text)
+                        .fixedSize(horizontal: false, vertical: true)
                 case .compactLink(let title, let url):
                     Link(destination: url) {
                         HStack(alignment: .firstTextBaseline, spacing: 3) {

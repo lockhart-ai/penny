@@ -39,6 +39,19 @@ struct ChatAttributedTextTests {
         }
     }
 
+    @Test(arguments: [CGFloat(280), 360], [DynamicTypeSize.large, .accessibility3])
+    func longParagraphWrapsToItsFullHeight(width: CGFloat, textSize: DynamicTypeSize) {
+        let paragraph = Array(repeating: "A detailed collection update should wrap and remain fully readable.", count: 8).joined(separator: " ")
+        let nativeText = Text(paragraph)
+            .font(.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .environment(\.dynamicTypeSize, textSize)
+        let host = UIHostingController(rootView: nativeText)
+        let expectedHeight = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+
+        #expect(renderedHeight(paragraph, width: width, textSize: textSize) >= expectedHeight - 1)
+    }
+
     @Test func preservesEmptyLinesAroundCompactLinks() {
         let line = "https://store.example.com."
         let title = "**Extra Perks:** Bonus content."
