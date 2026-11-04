@@ -5,6 +5,18 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct DataBrowserClientTests {
+    @Test func linkedRunReadEncodesExactIDAndAnswersMissingRun() async throws {
+        let capture = ReadCapture()
+        let client = DataBrowserClient(send: capture.send)
+        let task = Task { try await client.read(.run(id: "fixture-run")) }
+        let request = try await capture.next(0)
+        #expect(request["type"] == .string("run_detail_request"))
+        #expect(request["run_id"] == .string("fixture-run"))
+        #expect(client.receive(try capture.response(to: request, type: "run_detail_response", fields: ["run": .null])))
+        guard case .run(let run) = try await task.value else { Issue.record("Wrong result"); return }
+        #expect(run == nil)
+    }
+
     @Test func currentMemoryContractAndCorrelatedReads() async throws {
         let capture = ReadCapture()
         let client = DataBrowserClient(send: capture.send)

@@ -1,10 +1,40 @@
 import Foundation
 import Testing
+import SQLite
 @testable import PennyServices
 
 @Suite(.serialized)
 @MainActor
 struct DatabaseServiceTests {
+    @Test func upgradesExistingDatabaseAndPersistsRunLinkage() throws {
+        let connection = try Connection()
+        try connection.execute("""
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, server_i_d INTEGER UNIQUE, created_at TEXT NOT NULL,
+                content TEXT NOT NULL, source_hint TEXT, channel_type TEXT, device_label TEXT,
+                device_identifier TEXT, parent_i_d INTEGER, image_attachment_data_urls TEXT NOT NULL DEFAULT '[]',
+                embedding BLOB, is_outgoing INTEGER NOT NULL
+            );
+            INSERT INTO messages (id, server_i_d, created_at, content, is_outgoing) VALUES (1, 1, '2026-01-01T00:00:00.000', 'Legacy message', 0);
+            PRAGMA user_version = 6;
+            """)
+        let database = DatabaseService()
+        database.setupForTesting(connection: connection)
+        #expect(connection.userVersion == 7)
+        #expect(database.loadMessages().first?.content == "Legacy message")
+        #expect(database.loadMessages().first?.runID == nil)
+        let message = ChatMessage(id: 2, serverID: 2, createdAt: .now, content: "Linked reply", sourceHint: "Chat",
+                                  runID: "fixture-run", imageAttachments: [], isOutgoing: false)
+        database.save(message: MessageModel(message: message))
+        let loaded = try #require(database.loadMessages().first { $0.id == 2 })
+        #expect(ChatMessage(model: loaded).runID == "fixture-run")
+        connection.userVersion = 6 // An interrupted migration may have already added the column.
+        database.setupForTesting(connection: connection)
+        #expect(connection.userVersion == 7)
+        #expect(database.loadMessages().count == 2)
+        #expect(database.loadMessages().last?.runID == "fixture-run")
+    }
+
     @Test func savesAndLoadsMessagesIncludingAttachments() {
         let database = DatabaseService()
         database.setupForTesting()

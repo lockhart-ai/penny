@@ -2,17 +2,22 @@ import Foundation
 import SwiftUI
 import Testing
 import UIKit
+import PennyServices
 @testable import PennyClient
 
 @Suite(.serialized)
 @MainActor
 struct DataBrowserPresentationTests {
     @Test func syntheticBrowserLayoutsRenderAtPhoneAndPopoverSizes() async throws {
+        let linked = DataBrowserViewModel(runID: "preview-worked", read: DataBrowserFixtures.read)
+        let missing = DataBrowserViewModel(runID: "missing-run", read: DataBrowserFixtures.read)
         let scenarios: [(String, CGSize, DataBrowserViewModel, ColorScheme, DynamicTypeSize)] = [
             ("phone-memories", CGSize(width: 393, height: 852), DataBrowserFixtures.model(), .light, .large),
             ("popover-activity", CGSize(width: 600, height: 720), DataBrowserFixtures.model(selection: "price-watch", panel: .activity), .dark, .large),
             ("phone-large-text", CGSize(width: 393, height: 852), DataBrowserFixtures.model(selection: "messages"), .light, .accessibility3),
-            ("popover-prompts", CGSize(width: 600, height: 720), DataBrowserFixtures.model(tab: .prompts), .light, .large)
+            ("popover-prompts", CGSize(width: 600, height: 720), DataBrowserFixtures.model(tab: .prompts), .light, .large),
+            ("phone-linked-run", CGSize(width: 393, height: 852), linked, .light, .large),
+            ("phone-missing-run", CGSize(width: 393, height: 852), missing, .dark, .accessibility3)
         ]
         for (name, size, model, scheme, textSize) in scenarios {
             model.updateConnection(true)

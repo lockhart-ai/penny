@@ -332,6 +332,58 @@ struct PennyWebSocketClientTests {
         #expect(hasNewMessages == false)
     }
 
+    @Test func historySyncBackfillsExistingRunLinksAndPreservesVisibleAttachments() async throws {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs(), webSocketClient: transport)
+        var liveMessages: [ChatMessage] = []
+        var hasNewMessages = false
+        client.bindLiveMessages(
+            Binding(get: { liveMessages }, set: { liveMessages = $0 }),
+            hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }), filter: .all
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+        transport.clearSentPayloads()
+        transport.emit("""
+        {"type":"messages","mode":"outbox","messages":[{
+            "id":42,"message_id":42,"created_at":"2026-01-01T00:00:00Z","content":"Synthetic reply",
+            "attachments":["data:image/png;base64,aGVsbG8="],"source_hint":"Chat"
+        }]}
+        """)
+        _ = await sentPayloads(transport, count: 1)
+        #expect(liveMessages.first?.runID == nil)
+        transport.clearSentPayloads()
+        client.isConnected = true
+        client.isRegistered = true
+        client.startHistorySync(channelTypes: ["ios"], includeAttachments: false)
+        _ = await sentPayloads(transport, count: 1)
+        transport.emit("""
+        {"type":"messages","mode":"history_count","total_count":1,"messages":[]}
+        """)
+        _ = await sentPayloads(transport, count: 2)
+        transport.emit("""
+        {"type":"messages","mode":"history","has_more":false,"attachments_included":false,"messages":[{
+            "id":42,"message_id":42,"created_at":"2026-01-01T00:00:00Z","content":"Synthetic reply",
+            "source_hint":"Chat","run_id":"fixture-run"
+        }]}
+        """)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while client.historySyncing {
+            guard ContinuousClock.now < deadline else { throw DataBrowserError.timedOut }
+            await Task.yield()
+        }
+        #expect(client.historyStatus == "Complete")
+        #expect(liveMessages.count == 1)
+        #expect(liveMessages.first?.runID == "fixture-run")
+        #expect(client.messages.first?.runID == "fixture-run")
+        #expect(liveMessages.first?.imageAttachmentDataURLs == ["data:image/png;base64,aGVsbG8="])
+        #expect(database.loadMessages().count == 1)
+        #expect(database.loadMessages().first?.runID == "fixture-run")
+        #expect(database.loadMessages().first?.imageAttachmentDataURLs == ["data:image/png;base64,aGVsbG8="])
+        #expect(!hasNewMessages)
+    }
+
     @Test func historyMarksUserSentMessagesAsOutgoing() async {
         let database = configuredDatabase()
         let transport = MessagePagingMockTransport()

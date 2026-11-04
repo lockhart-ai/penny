@@ -35,8 +35,8 @@ public final class DatabaseService: @unchecked Sendable {
         return try write()
     }
 
-    func setupForTesting() {
-        connectForTesting()
+    func setupForTesting(connection: Connection? = nil) {
+        if let connection { databaseConnection = connection } else { connectForTesting() }
         createTables()
         isSetup = true
     }
@@ -125,6 +125,13 @@ public final class DatabaseService: @unchecked Sendable {
         if currentVersion < 6 {
             try MessageModel.createEmbeddedRowsIndex(database: databaseConnection)
             databaseConnection.userVersion = 6
+        }
+
+        if currentVersion < 7 {
+            if try !MessageModel.columnExists(database: databaseConnection, name: "run_i_d") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.runIDExp))
+            }
+            databaseConnection.userVersion = 7
         }
     }
 }
@@ -356,6 +363,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
         deviceLabel = message.deviceLabel
         deviceIdentifier = message.deviceIdentifier
         parentID = message.parentID
+        runID = message.runID
         imageAttachmentDataURLs = message.imageAttachmentDataURLs
         embedding = message.embedding
         isOutgoing = message.isOutgoing
@@ -371,6 +379,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
         deviceLabel: String? = nil,
         deviceIdentifier: String? = nil,
         parentID: Int? = nil,
+        runID: String? = nil,
         imageAttachmentDataURLs: [String],
         isOutgoing: Bool,
         embedding: Data? = nil
@@ -384,6 +393,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
         self.deviceLabel = deviceLabel
         self.deviceIdentifier = deviceIdentifier
         self.parentID = parentID
+        self.runID = runID
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
         self.embedding = embedding
         self.isOutgoing = isOutgoing
@@ -407,6 +417,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
     var deviceIdentifier: String?
     @SqlProperty
     var parentID: Int?
+    @SqlProperty
+    var runID: String?
     var imageAttachmentDataURLs: [String]
     fileprivate static var imageAttachmentDataURLsExp: SQLite.Expression<String> {
         Expression<String>("image_attachment_data_urls")
@@ -463,6 +475,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
                 MessageModel.deviceLabelExp <- deviceLabel,
                 MessageModel.deviceIdentifierExp <- deviceIdentifier,
                 MessageModel.parentIDExp <- parentID,
+                MessageModel.runIDExp <- runID,
                 MessageModel.imageAttachmentDataURLsExp <- MessageModel.encodedImageAttachmentDataURLs(imageAttachmentDataURLs),
                 MessageModel.embeddingExp <- embedding,
                 MessageModel.isOutgoingExp <- isOutgoing
@@ -599,6 +612,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
             deviceLabel: entry[deviceLabelExp],
             deviceIdentifier: entry[deviceIdentifierExp],
             parentID: entry[parentIDExp],
+            runID: entry[runIDExp],
             imageAttachmentDataURLs: decodedImageAttachmentDataURLs(entry[imageAttachmentDataURLsExp]),
             isOutgoing: entry[isOutgoingExp],
             embedding: entry[embeddingExp]

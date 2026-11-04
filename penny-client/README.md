@@ -35,3 +35,13 @@ support before this client: memory list/detail/page and prompt-log reads use opt
 clients without IDs remain supported. Browser requests time out after 30 seconds;
 filter changes, dismissal, and reconnect discard obsolete results. No memory data is
 persisted on the client, and this browser provides no mutation controls.
+
+Received messages retain their generating `run_id` through delivery, history, and
+local SQLite storage. Long-press a linked message and choose **View prompts** to
+open the existing prompt browser at that exact run, expanded, for chat replies or
+composed collection reports. Missing runs show an empty state; **Browse all prompts**
+returns to the regular browser. Unlinked messages keep Reply and Copy only.
+The server must expose `run_id` on iOS message records and support correlated
+`run_detail_request` / `run_detail_response` reads. Existing cached messages gain
+linkage when refreshed from server history, including already-visible message menus;
+no text or timestamp matching is used.

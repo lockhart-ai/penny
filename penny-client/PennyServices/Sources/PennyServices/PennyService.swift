@@ -769,6 +769,7 @@ extension PennyService {
             decodedMessages.map(MessageModel.init(message:)),
             preserveAttachments: payload.mode == "history" && !payload.attachmentsIncluded
         )
+        updateRunLinks(decodedMessages)
 
         if !newMessages.isEmpty {
             messages.append(contentsOf: newMessages)

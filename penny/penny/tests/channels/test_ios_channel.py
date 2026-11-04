@@ -1081,7 +1081,8 @@ async def test_pull_and_ack_messages(db):
 
 
 @pytest.mark.asyncio
-async def test_sent_message_embedding_reaches_pull_and_history_wire_records(db):
+@pytest.mark.parametrize("author", ["chat", "fixture-collection"])
+async def test_sent_message_embedding_and_run_reach_pull_and_history_wire_records(db, author):
     channel = _make_channel(db)
     channel._embedding_model_client = MagicMock()
     channel._embedding_model_client.embed = AsyncMock(return_value=[[1.0, 0.5, -1.0]])
@@ -1097,11 +1098,19 @@ async def test_sent_message_embedding_reaches_pull_and_history_wire_records(db):
         },
     )
 
-    await channel.send_message("ios-keychain-id", "embedded outgoing message")
+    await channel.send_response(
+        "ios-keychain-id",
+        "embedded outgoing message",
+        parent_id=None,
+        author=author,
+        run_id="fixture-run",
+        mechanism=author if author != "chat" else None,
+    )
 
     await channel._handle_pull(server_ws, {"type": IOS_MSG_TYPE_PULL}, "ios-keychain-id")
     pull_record = ws.sent[-1]["messages"][0]
     assert pull_record["embedding"] == "AACAPwAAAD8AAIC/"
+    assert pull_record["run_id"] == "fixture-run"
 
     await channel._handle_history(
         server_ws,
@@ -1110,6 +1119,7 @@ async def test_sent_message_embedding_reaches_pull_and_history_wire_records(db):
     )
     history_record = ws.sent[-1]["messages"][0]
     assert history_record["embedding"] == "AACAPwAAAD8AAIC/"
+    assert history_record["run_id"] == "fixture-run"
 
 
 @pytest.mark.asyncio
@@ -1232,6 +1242,7 @@ async def test_ios_image_policy_only_changes_new_automatic_deliveries(db, test_c
         {"type": "memory_page_request", "name": "browser-fixture", "section": "entries"},
         {"type": "memory_page_request", "name": "browser-fixture", "section": "collector_runs"},
         {"type": "prompt_logs_request", "query": "fixture", "offset": 0},
+        {"type": "run_detail_request", "run_id": "missing-run"},
     ],
 )
 async def test_data_browser_read_ids_are_optional_and_echoed(db, read_request):
@@ -1272,6 +1283,8 @@ async def test_data_browser_missing_memory_returns_correlated_error(db, read_req
     "read_request",
     [
         {"type": "prompt_logs_request", "offset": -1},
+        {"type": "run_detail_request", "run_id": ""},
+        {"type": "run_detail_request", "run_id": []},
         {"type": "memories_request", "query": []},
     ],
 )
@@ -1283,4 +1296,36 @@ async def test_data_browser_invalid_filters_return_correlated_error(db, read_req
         "type": "data_read_error",
         "request_id": "invalid-1",
         "error": "Invalid data browser request.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_message_run_detail_returns_complete_run_by_identity(db):
+    channel = _make_channel(db)
+    for index in range(2):
+        db.messages.log_prompt(
+            model="test-model",
+            messages=[{"role": "user", "content": "Synthetic question"}],
+            response={"role": "assistant", "content": f"Synthetic step {index}"},
+            agent_name="chat",
+            run_id="fixture-run",
+        )
+    response = await _ios_admin_request(
+        channel, {"type": "run_detail_request", "run_id": "fixture-run", "request_id": "lookup-1"}
+    )
+    assert response == {
+        "type": "run_detail_response",
+        "request_id": "lookup-1",
+        "run_id": "fixture-run",
+        "run": db.messages.get_run("fixture-run"),
+    }
+    assert response["run"]["prompt_count"] == 2
+    missing = await _ios_admin_request(
+        channel, {"type": "run_detail_request", "run_id": "missing-run", "request_id": "lookup-2"}
+    )
+    assert missing == {
+        "type": "run_detail_response",
+        "request_id": "lookup-2",
+        "run_id": "missing-run",
+        "run": None,
     }

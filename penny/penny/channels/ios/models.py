@@ -97,6 +97,7 @@ class IosOutboxRecord(BaseModel):
 
     id: int
     message_id: int | None = None
+    run_id: str | None = None
     outbox_id: int | None = None
     created_at: str
     content: str

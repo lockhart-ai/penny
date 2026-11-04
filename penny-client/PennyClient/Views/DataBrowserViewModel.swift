@@ -17,6 +17,7 @@ final class DataBrowserViewModel {
     var memoryQuery = ""
     var detailQuery = ""
     var promptQuery = ""
+    var linkedRunID: String?
     var agent = ""
     var flaggedOnly = false
     var expanded: Set<String> = []
@@ -46,13 +47,14 @@ final class DataBrowserViewModel {
         let memoryQuery: String
         let detailQuery: String
         let promptQuery: String
+        let linkedRunID: String?
         let agent: String
         let flagged: Bool
     }
 
     var context: Context {
         Context(tab: tab, group: group, selection: selection, memoryQuery: memoryQuery,
-                detailQuery: detailQuery, promptQuery: promptQuery, agent: agent, flagged: flaggedOnly)
+                detailQuery: detailQuery, promptQuery: promptQuery, linkedRunID: linkedRunID, agent: agent, flagged: flaggedOnly)
     }
 
     var visibleMemories: [MemoryRecord] {
@@ -67,8 +69,13 @@ final class DataBrowserViewModel {
 
     var visibleSlot: Slot { tab == .prompts ? .prompts : selection == nil ? .memories : .detail }
 
-    init(read: @escaping @MainActor (DataBrowserRequest) async throws -> DataBrowserResult) {
+    init(runID: String? = nil, read: @escaping @MainActor (DataBrowserRequest) async throws -> DataBrowserResult) {
         self.read = read
+        linkedRunID = runID
+        if let runID {
+            tab = .prompts
+            expanded = ["run:\(runID)"]
+        }
     }
 
     func select(_ memory: MemoryRecord) {
@@ -95,7 +102,7 @@ final class DataBrowserViewModel {
         cancelRequests()
         if previous?.memoryQuery != memoryQuery { memories = [] }
         if previous?.selection != selection || previous?.detailQuery != detailQuery { detail = nil }
-        if previous?.promptQuery != promptQuery || previous?.agent != agent || previous?.flagged != flaggedOnly {
+        if previous?.promptQuery != promptQuery || previous?.agent != agent || previous?.flagged != flaggedOnly || previous?.linkedRunID != linkedRunID {
             runs = []
             promptsHasMore = false
         }
@@ -178,6 +185,15 @@ final class DataBrowserViewModel {
     }
 
     private func loadPrompts(append: Bool) {
+        if let linkedRunID {
+            start(.prompts, request: .run(id: linkedRunID)) { model, result in
+                guard case .run(let run) = result else { throw DataBrowserError.invalidResponse }
+                guard run == nil || run?.runID == model.linkedRunID else { throw DataBrowserError.invalidResponse }
+                model.runs = run.map { [$0] } ?? []
+                model.promptsHasMore = false
+            }
+            return
+        }
         start(.prompts, request: .prompts(agent: trimmed(agent), query: trimmed(promptQuery), flagged: flaggedOnly, offset: append ? promptOffset : 0)) { model, result in
             guard case .prompts(let runs, let hasMore) = result else { throw DataBrowserError.invalidResponse }
             model.promptOffset = (append ? model.promptOffset : 0) + runs.count
