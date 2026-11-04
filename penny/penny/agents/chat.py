@@ -23,7 +23,7 @@ from penny.agents.models import (
 from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
-from penny.constants import ChatPromptType, RunOutcome
+from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.database.memory.identity import WriteDecisionCache
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
@@ -50,6 +50,16 @@ if TYPE_CHECKING:
     from penny.llm.image_client import MfluxImageClient
 
 logger = logging.getLogger(__name__)
+
+
+def _system_notification_trigger(facts: str) -> str:
+    """The trigger a system-originated delivery turn is given (#2974): the
+    framework's own facts, prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``
+    so the live turn reads as a notification, never as the user's words or an
+    instruction to send anything.  The ONE place the prefix is set — the same
+    message ``Agent._run_trigger_message`` later locates in the run's own
+    promptlog by that prefix, byte-identical."""
+    return f"{PennyConstants.SYSTEM_NOTIFICATION_PREFIX}{facts}"
 
 
 class ChatAgent(Agent):
@@ -403,8 +413,9 @@ class ChatAgent(Agent):
         The input is the framework-rendered report (``render_job_report``) — the
         job's name, what it is for, why it ran, and the FULL content of every entry
         the cycle wrote — never anything model-written.  It rides as the live turn's
-        own trailing SYSTEM message (#2974 — ``trailing_role``), stating only what
-        happened; she decides for herself whether, how, and how many times to
+        own USER message prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``
+        (#2974) — a notification stating only what happened, never words from the
+        user; she decides for herself whether, how, and how many times to
         reply, exactly as on any ordinary turn, over the same ambient state: her
         persona and voice, the standing rules, the conversation history (a past
         report is there to be read, and a formatting ask in it holds here as
@@ -421,7 +432,7 @@ class ChatAgent(Agent):
         # same table the turn is dispatched with, so a number the model cites
         # back expands to its URL at send time.
         handles = HandleTable()
-        prompt = render_job_report(report, handles)
+        prompt = _system_notification_trigger(render_job_report(report, handles))
         logger.info("Handling job report for %s (delivery turn)", report.collection)
         return await self._dispatch_turn(
             prompt,
@@ -431,7 +442,6 @@ class ChatAgent(Agent):
             progress_scope="background",
             inbox=NO_INBOX,
             handles=handles,
-            trailing_role=MessageRole.SYSTEM,
         )
 
     async def handle_sandbox_report(
@@ -443,9 +453,10 @@ class ChatAgent(Agent):
         The input is the framework-rendered report (``render_sandbox_report``) — the
         job's name, what it is for, and the previewed cycle's own tool-call trace
         (never written entries — nothing it did was real) — never anything
-        model-written.  It rides as the live turn's own trailing SYSTEM message
-        (#2974), stating only what the preview showed; everything else the turn
-        needs is the same ambient state any delivery turn gets.
+        model-written.  It rides as the live turn's own USER message prefixed with
+        ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` (#2974), stating only what
+        the preview showed; everything else the turn needs is the same ambient
+        state any delivery turn gets.
 
         ``sender``/``call_link`` are exactly as ``handle_job_report``'s.  Whatever
         she sends is NOT delivered here — the caller (the send-queue drainer) gates
@@ -453,7 +464,7 @@ class ChatAgent(Agent):
         send.  No link table: ``render_sandbox_report``'s trace carries no handle
         conversion of its own (the same shape ``run_get``/``run_list`` already
         render their own trace in)."""
-        prompt = render_sandbox_report(report)
+        prompt = _system_notification_trigger(render_sandbox_report(report))
         logger.info("Handling sandbox report for %s (delivery turn)", report.collection)
         return await self._dispatch_turn(
             prompt,
@@ -462,7 +473,6 @@ class ChatAgent(Agent):
             prompt_type=ChatPromptType.SANDBOX_REPORT,
             progress_scope="background",
             inbox=NO_INBOX,
-            trailing_role=MessageRole.SYSTEM,
         )
 
     async def handle_changelog_report(
@@ -476,9 +486,10 @@ class ChatAgent(Agent):
         The input is the framework-rendered entries (``render_changelog_announcement``)
         — each PR number and its text, never anything model-written, or (with no
         entries) the framework's own "nothing changed" render.  It rides as the live
-        turn's own trailing SYSTEM message (#2974), stating only what happened —
-        never an instruction to send anything — so she decides for herself whether,
-        how, and how many times to reply, over the same ambient state any chat turn
+        turn's own USER message prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``
+        (#2974), stating only what happened — never an instruction to send anything —
+        so she decides for herself whether, how, and how many times to reply, over
+        the same ambient state any chat turn
         gets: her persona and voice, the standing rules, and the full chat tool
         surface — so a change that names something she can look at stays reachable
         before she writes about it.
@@ -489,7 +500,7 @@ class ChatAgent(Agent):
         so it is logged and delivered exactly like any other autonomous send.  No
         link table: changelog entries are authored, reviewed prose about Penny's own
         tools — never user-sourced content carrying real URLs."""
-        prompt = render_changelog_announcement(entries)
+        prompt = _system_notification_trigger(render_changelog_announcement(entries))
         logger.info("Handling changelog announcement (%d entries)", len(entries))
         return await self._dispatch_turn(
             prompt,
@@ -498,7 +509,6 @@ class ChatAgent(Agent):
             prompt_type=ChatPromptType.CHANGELOG,
             progress_scope="background",
             inbox=NO_INBOX,
-            trailing_role=MessageRole.SYSTEM,
         )
 
     async def _dispatch_turn(
@@ -517,7 +527,6 @@ class ChatAgent(Agent):
         on_interim_message: Callable[[str], Awaitable[None]] | None = None,
         handles: HandleTable | None = None,
         inbox: TurnInbox,
-        trailing_role: MessageRole = MessageRole.USER,
     ) -> ControllerResponse:
         """The one turn both entry points ride — the template method under
         ``handle`` and ``handle_job_report``: per-turn state held for the span of
@@ -527,12 +536,13 @@ class ChatAgent(Agent):
 
         The two entry points differ only in what they hand in: a user turn carries
         its attachments, its page context and its progress plumbing, runs in the
-        foreground scope, and trails on a USER message; a delivery turn carries
-        none of that, runs in the background scope, and trails on a SYSTEM message
-        instead (#2974 — ``trailing_role``) stating only what happened.  Beyond
-        that one role, it is the SAME turn — same history, same self-state, same
-        full tool surface, same freedom to call tools, send nothing, or send
-        several messages. There is no second state to pick an instruction for."""
+        foreground scope, and its ``prompt`` is the user's own words; a delivery
+        turn carries none of that, runs in the background scope, and its
+        ``prompt`` is a system notification (``_system_notification_trigger``,
+        #2974) stating only what happened.  Beyond that one text, it is the SAME
+        turn — same history, same self-state, same full tool surface, same freedom
+        to call tools, send nothing, or send several messages. There is no second
+        state to pick an instruction for."""
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
@@ -572,7 +582,6 @@ class ChatAgent(Agent):
                 prompt_type=prompt_type,
                 handles=table,
                 inbox=inbox,
-                trailing_role=trailing_role,
             )
             # Send-time expansion (#2717): every handle the reply cites becomes
             # its URL, so the conversation record and the wire carry real links.
@@ -604,24 +613,21 @@ class ChatAgent(Agent):
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,
-        trailing_role: MessageRole = MessageRole.USER,
     ) -> list[LlmMessage]:
         """Build messages, injecting page context as a synthetic tools result.
 
         ``super()`` ends the array ``[…history, state, live]`` (#2756 — the
-        state system message right BEFORE the live turn's own message, #2974
-        — ``USER`` for an ordinary ask, ``SYSTEM`` for a delivery turn's
-        trigger).  The synthetic page-context assistant-call + tool-result
+        state system message right BEFORE the live turn's own USER message —
+        the ordinary ask's own words, or a delivery turn's prefixed trigger,
+        #2974).  The synthetic page-context assistant-call + tool-result
         appended below land AFTER that, so the full shape is
         ``[…state][live][assistant][tool]`` — state between the history's
         last entry and the live turn, the one mid-conversation placement
         gemma's own raw-template transport renders in place regardless of
         the role either side of it (see ``Agent._build_messages``'s
-        docstring).  Page context only ever rides a USER turn in practice —
-        a delivery turn never carries one."""
-        messages = super()._build_messages(
-            prompt, history, system_prompt, images=images, trailing_role=trailing_role
-        )
+        docstring).  Page context only ever rides an ordinary turn in
+        practice — a delivery turn never carries one."""
+        messages = super()._build_messages(prompt, history, system_prompt, images=images)
         if self._pending_page_context:
             self._inject_page_context(
                 messages,

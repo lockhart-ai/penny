@@ -122,8 +122,9 @@ def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[Chang
 # ── The startup delivery turn's own render (#2846, trigger reworked #2974) ───
 #
 # The framework renders this deploy's new entries verbatim — never model-written
-# — as the live turn's own trailing SYSTEM message (``ChatAgent.handle_changelog_report``):
-# her persona, standing rules, history and full tool surface, over a fixed list
+# — as the live turn's own USER message prefixed with ``PennyConstants.
+# SYSTEM_NOTIFICATION_PREFIX`` (``ChatAgent.handle_changelog_report``): her
+# persona, standing rules, history and full tool surface, over a fixed list
 # of facts, with no instruction attached — she decides for herself whether, how,
 # and how many times to reply, the same as on any chat turn.  The PR-number
 # prefix each entry already carries (``render()``) is kept here too: it is the

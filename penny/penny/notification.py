@@ -139,7 +139,8 @@ def render_job_report(report: JobReport, handles: HandleTable | None = None) -> 
     READS always arrives as a handle, and the message it writes cites numbers the
     send path expands.  ``None`` renders the entries verbatim (the test shape).
 
-    This is the ONE render used both live (as the turn's own trailing SYSTEM message,
+    This is the ONE render used both live (prefixed with ``PennyConstants.
+    SYSTEM_NOTIFICATION_PREFIX`` as the delivery turn's own USER message,
     ``ChatAgent.handle_job_report``) and, byte-identical, in every later turn's history
     (``Agent._run_trigger_message`` reads it back off this run's own promptlog row —
     never stored a second time)."""

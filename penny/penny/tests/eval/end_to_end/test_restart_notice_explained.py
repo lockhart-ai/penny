@@ -6,20 +6,26 @@ the real startup delivery turn (``ChatAgent.handle_changelog_report`` with no
 new entries), through the same content gates production applies, then the
 real send-queue drainer — lands immediately after two ordinary exchanges on a
 topic that has nothing to do with deploys, restarts, tools, or behaviour (a
-weekend trail-conditions chat). There is no turn between the restart notice
-and the question: the complaint follows it directly, mirroring the real
-failure this case is drawn from, where an autonomous send with nothing
-incoming before it melted into the tail of whatever she'd just said.
+garage sort and a board-game night: a CLOSED, opinion-only exchange with no
+factual question in it, so the later ask can never be read as that
+exchange's own open thread). There is no turn between the restart notice and
+the question: the complaint follows it directly, mirroring the real failure
+this case is drawn from, where an autonomous send with nothing incoming
+before it melted into the tail of whatever she'd just said.
 
-**What is claimed.** The user's later question never names what she thinks
-was missed; it just questions the "nothing changed" line. A reply that
-actually read the restart notice can name what it was ABOUT — her tools or
-behaviour — words that appear nowhere else in this world (not in the trail
-chat, not in the question). A reply that is still guessing, as every one of
-15 verbatim replays of the real failing turn did, recasts the "restart" as
-being about something else entirely (her own settings, memory, or the trail
-chat) and never uses either word. Report-only: this case's whole point is
-measuring the rate, before and after the fix, not gating on it.
+**What is claimed.** Provenance and store survival only: every specific value
+the reply carries traces to something the turn was given, and what the store
+held before the turn survives it. Nothing about the reply's WORDING is
+claimed — whether a reply actually connects the user's question to the
+restart notice is a reading of her words, and §2/§9 keep that out of every
+check (a phrase list would fail a differently-worded correct reply and pass a
+lucky echo).
+
+**What is measured, never claimed.** The rate at which the reply's own words
+touch the notice's fact — the restart itself, or that nothing changed —
+reported as a distribution with every reply quoted, which is the number the
+before/after comparison reads and the material a reader of ONE sample needs;
+the connection itself stays the reader's call.
 """
 
 from __future__ import annotations
@@ -31,9 +37,8 @@ from penny.database import Database
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import EVAL_MODELS
 from penny.tests.eval.drivers.changelog_announcement import ChangelogEval
-from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
-from penny.tests.eval.utils.cohort import SampleObservation, SpecCategory
+from penny.tests.eval.utils.cohort import SampleObservation, Share, ShareReading
 from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
@@ -45,27 +50,28 @@ _OUTGOING = PennyConstants.MessageDirection.OUTGOING
 _PENNY_AUTHOR = PennyConstants.MessageAuthor.PENNY
 
 # Two ordinary exchanges, oldest first — a topic with no overlap with a
-# deploy, a restart, a tool, or a behaviour change, so neither planted word
-# below can be satisfied by anything other than a reply that actually read
-# the restart notice.
+# deploy, a restart, a tool, or a behaviour change.  The exchange is CLOSED
+# and opinion-only: a settled plan and two takes on it, no factual question
+# anywhere, so the later ask below can never be read as that exchange's own
+# open thread.
 _PRIOR_TURNS: tuple[tuple[str, str], ...] = (
     (
-        "the ridgeline loop trail — is it worth doing this weekend?",
-        "Should be a great pick! The forecast's clear and it's a steady climb with "
-        "a payoff view at the top — bring more water than you think you'll need "
-        "though, the exposed stretch near the summit gets hot fast.",
+        "spent the morning clearing out the garage — it's actually sortable now",
+        "That's the hardest part done! A sortable garage wants every pile to get a "
+        "shelf of its own before the weekend undoes it — label them while you're "
+        "still feeling heroic.",
     ),
     (
-        "good call, we'll pack extra. any river crossings on that one?",
-        "Just the one, about two-thirds in — usually ankle-deep this time of year, "
-        "but it's worth checking a recent trip report the morning you go since a "
-        "storm upstream can raise it overnight.",
+        "true. and once it's liveable in there we should do a board game night",
+        "A garage game night is a great call — the table's already in there, and "
+        "there's no better test of a cleanup than a night of people actually "
+        "living in it.",
     ),
 )
-
-# The planted facts: the real restart notice's own words, naming what the
-# deploy did NOT change — appears nowhere else in this world.
-_PLANTED_WORDS = ("tools", "behaviour", "behavior")
+for _ask_text, _reply_text in _PRIOR_TURNS:
+    assert "?" not in _ask_text + _reply_text, (
+        "the seeded exchange must be closed and opinion-only — no factual question"
+    )
 
 _ASK = "Everything looks exactly the same? You didn't get notified about all the latest changes?"
 _ALSO_PHRASED = (
@@ -74,14 +80,6 @@ _ALSO_PHRASED = (
     "really, not one update? you'd think something would've come through by now",
     "so you're telling me literally nothing is different? seems off",
 )
-for _wording in (_ASK, *_ALSO_PHRASED):
-    assert not any(word in _wording.casefold() for word in _PLANTED_WORDS), (
-        f"a wording must not pre-empt the planted words: {_wording!r}"
-    )
-for _ask_text, _reply_text in _PRIOR_TURNS:
-    assert not any(word in (_ask_text + _reply_text).casefold() for word in _PLANTED_WORDS), (
-        "the seeded trail chat must not pre-empt the planted words"
-    )
 
 _WORLD = World(name="restart-notice-explained", pages=(), keeps=(), excludes=())
 
@@ -98,13 +96,32 @@ def _seed_prior_exchange(db: Database) -> None:
         db.messages.log_message(_OUTGOING, _PENNY_AUTHOR, reply, recipient=TEST_SENDER)
 
 
-def _reply_names_what_the_deploy_touched(sample: SampleObservation, _world: World) -> Answer:
-    """The reply names what the restart notice actually said nothing changed
-    in — her tools or behaviour — the one fact that is only ever visible by
-    having read that notice's own text, never by guessing from the trail
-    chat or from the question itself."""
-    hit = any(word in sample.reply.casefold() for word in _PLANTED_WORDS)
-    return hit, f"the reply names tools/behaviour (the restart notice's own words): {hit}"
+# The notice's own two facts, as her reply's words could touch them — the
+# restart itself, or that nothing changed.  A SURFACE reading for a measured
+# share, never an assertion: a differently-worded reply that connects just as
+# well but misses every one of these strings reads as a miss here, and the
+# quoted evidence is what the reader actually judges.
+_NOTICE_WORDS = (
+    "restart",
+    "restarted",
+    "reboot",
+    "rebooted",
+    "nothing changed",
+    "no changes",
+    "nothing new",
+    "no updates",
+    "unchanged",
+)
+
+
+def _reply_touches_the_notice(sample: SampleObservation) -> ShareReading:
+    """Whether the reply's own words touch the restart notice's fact — the
+    restart itself, or that nothing changed.  Measured, never claimed (§9):
+    whether the reply actually CONNECTS the user's question to the notice is
+    the reader's call on the quoted evidence, never a check."""
+    hit = any(word in sample.reply.casefold() for word in _NOTICE_WORDS)
+    evidence = [sample.reply] if sample.reply.strip() else []
+    return ShareReading(value=1.0 if hit else 0.0, evidence=evidence)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -137,9 +154,17 @@ async def test_a_later_question_is_answered_from_the_restart_notice_she_was_told
         timeout=240.0,
     )
     cohort.assert_what_the_store_held_survives()
-    cohort.claim(
-        "reply: it names what the restart notice said didn't change",
-        _reply_names_what_the_deploy_touched,
-        SpecCategory.PROVENANCE,
-        kind="reply",
+    cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.measure(
+        Share(
+            "reply touches the restart notice",
+            _reply_touches_the_notice,
+            open_above=0.0,
+            says=(
+                "of all samples, the share where the reply's own words touch the "
+                "notice's fact (the restart, or that nothing changed) — a surface "
+                "reading with every reply quoted; the connection itself is the "
+                "reader's call, never a check"
+            ),
+        )
     )

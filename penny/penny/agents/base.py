@@ -536,7 +536,6 @@ class Agent:
         progress_scope: str = "foreground",
         handles: HandleTable | None = None,
         inbox: TurnInbox,
-        trailing_role: MessageRole = MessageRole.USER,
     ) -> ControllerResponse:
         """Run the agentic loop — prompt in, response out.
 
@@ -562,9 +561,12 @@ class Agent:
         chat turn passes its own; every background caller states ``NO_INBOX``
         explicitly — the null object that drains nothing.
 
-        ``trailing_role`` (#2974) — see ``_build_messages`` — is ``USER`` for an
-        ordinary turn; a system-originated delivery turn passes ``SYSTEM`` so its
-        trigger reads as a fact of her situation, not an instruction.
+        A system-originated delivery turn (a changelog announcement, a job's
+        report, a sandbox preview) is the SAME loop over the SAME shape — its
+        caller prefixes its trigger with ``PennyConstants.
+        SYSTEM_NOTIFICATION_PREFIX`` (#2974) before passing it as ``prompt``, so
+        what she is given rides the live turn's own USER message as a
+        notification, never an instruction or words from "the user".
         """
         run_id = call_link.run_id
         self._tool_result_text = []
@@ -574,12 +576,7 @@ class Agent:
         # one, the same table their tools were built with.
         table = handles if handles is not None else HandleTable()
         messages = self._build_messages(
-            prompt,
-            history,
-            system_prompt,
-            images=images,
-            handles=table,
-            trailing_role=trailing_role,
+            prompt, history, system_prompt, images=images, handles=table
         )
         tools = self._tool_registry.get_ollama_tools()
         return await self._run_agentic_loop(
@@ -2361,7 +2358,6 @@ class Agent:
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,
-        trailing_role: MessageRole = MessageRole.USER,
     ) -> list[LlmMessage]:
         """Build message list for Ollama chat API.
 
@@ -2404,15 +2400,14 @@ class Agent:
         message varies by provider and is NOT guaranteed to render in place
         — a pre-existing risk this method does not add to.
 
-        ``trailing_role`` (#2974) is the role the live turn's own message
-        carries — ``USER`` for an ordinary chat ask (the default); a
-        system-originated delivery turn (a changelog announcement, a job's
-        report, a sandbox preview) passes ``SYSTEM`` instead, so the trigger
-        she's given reads as a fact of her situation, never an instruction
-        from "the user".  Whichever role it is, it is also what makes that
-        turn's run reconstructible in later history: ``_expand_history_turn``
-        reads it back off this same run's own first ``promptlog`` row
-        (``_run_trigger_message``) rather than storing it a second time.
+        The live turn is ALWAYS a ``user`` message (#2974) — the ordinary ask's
+        own text, or a system-originated delivery turn's trigger prefixed with
+        ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` by its ``handle_*_report``
+        caller.  That prefix is what makes a delivery turn's run reconstructible
+        in later history: ``_expand_history_turn`` reads the same message back
+        off the run's own ``promptlog`` rows (``_run_trigger_message``) rather
+        than storing it a second time, gated on the run's messagelog row being
+        autonomous (non-null ``mechanism``), never on the prefix itself.
 
         The per-turn content stays in a SYSTEM-role turn — never folded into
         the user turn: the #1296/#1304 revert measured that recalled context
@@ -2420,9 +2415,8 @@ class Agent:
 
         ``images`` ride the current turn's own message (#2635) — data URIs,
         translated to ``image_url`` content parts on the wire.  History never
-        carries them: a past turn reads only its text.  (Only ``trailing_role
-        == USER`` callers pass images — a delivery turn never carries an
-        attachment of its own.)
+        carries them: a past turn reads only its text.  (Only ordinary turns
+        pass images — a delivery turn never carries an attachment of its own.)
         """
         effective = system_prompt or self.system_prompt
 
@@ -2435,7 +2429,7 @@ class Agent:
         if dynamic:
             messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
 
-        messages.append(LlmMessage(role=trailing_role, content=prompt, images=images or None))
+        messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
         return messages
 
     def _expand_history_turn(self, turn: HistoryTurn) -> list[LlmMessage]:
@@ -2453,13 +2447,16 @@ class Agent:
 
         **The trigger** (#2974): an autonomous delivery turn (a changelog
         announcement, a job's report, a sandbox preview — any future one
-        built the same way) is given its trigger as the LIVE turn's own
-        trailing SYSTEM message (``_build_messages``'s ``trailing_role``);
-        this renders that exact text again, immediately before her reply,
+        built the same way) is given its trigger as the LIVE turn's own USER
+        message, prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``;
+        this renders that exact message again, immediately before her reply,
         every later turn — read back off the run's OWN promptlog rows
-        (``_run_trigger_message``), never stored a second time.  An ordinary
-        chat reply's run always ends in a USER turn instead, so this never
-        fires for one.
+        (``_run_trigger_message``), never stored a second time.  Whether the
+        run had a trigger at all is decided STRUCTURALLY, off the outgoing
+        messagelog row's own non-null ``mechanism`` (``HistoryTurn.mechanism``)
+        — never off the text and never a mechanism-name list: an ordinary
+        reply's run also ends in a user turn, and a user who literally types
+        the trigger prefix into chat must never have it rendered back as one.
 
         A message that JOINED the run mid-turn (#2985) renders in its true
         position: after the tool step the run record stamps it behind
@@ -2479,7 +2476,7 @@ class Agent:
         if turn.role != MessageRole.ASSISTANT or turn.run_id is None:
             return [LlmMessage(role=MessageRole(turn.role), content=turn.content)]
         prompts = self.db.messages.prompts_for_run(turn.run_id)
-        trigger = self._run_trigger_message(prompts)
+        trigger = self._run_trigger_message(prompts) if turn.mechanism is not None else None
         lead = [trigger] if trigger is not None else []
         history = run_tool_history(prompts)
         joined = self.db.messages.injected_messages_for_run(turn.run_id)
@@ -2525,29 +2522,38 @@ class Agent:
 
     @staticmethod
     def _run_trigger_message(prompts: list[PromptLog]) -> LlmMessage | None:
-        """The SYSTEM-role trigger an autonomous run was given, read back off
-        its OWN promptlog rows (#2974) — never stored a second time.
+        """The USER-role trigger an autonomous run was given, read back off its
+        OWN promptlog rows (#2974) — never stored a second time.
 
         A run's first call is built fresh by ``_build_messages``, whose last
-        message is the live turn's own trailing message; every LATER call in
-        the SAME run (a tool-call round-trip, a nudged reroll) only ever
-        APPENDS to that same list, never re-adds a fresh trailing turn — so
-        the first row (oldest first, ``prompts_for_run``) whose own stored
-        ``messages`` ends in a ``system`` turn is that original trailing
-        message, whether or not that particular draw was later discarded or
-        rerolled.  Walking forward rather than trusting ``prompts[0]``
-        outright also covers a row pruned out from under it: if the true
-        first call's row is gone, the next surviving row whose trailing
-        message is still ``system`` (a blind reroll resends the identical
-        messages) is read instead, and if none qualifies — every row pruned,
-        or only a nudged-retry row survives (its own trailing message is the
-        nudge, a ``user`` turn, not the trigger) — this returns ``None`` and
-        the caller renders the reply plainly, never guessing at lost text.
+        message is the live turn's own trailing message — for a delivery turn,
+        the trigger prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``;
+        every LATER call in the SAME run (a tool-call round-trip, a nudged
+        reroll) only ever APPENDS to that same list, never re-adds a fresh
+        trailing turn.  So the first row (oldest first, ``prompts_for_run``)
+        whose own stored ``messages`` ends in a user turn carrying that prefix
+        is the original trigger, whether or not that particular draw was later
+        discarded (a discarded draw's ``messages`` column is written at send
+        time and still carries it; the caller only reaches this method for a
+        run whose messagelog row was autonomous).  Walking forward rather than
+        trusting ``prompts[0]`` outright also covers a row pruned out from
+        under it: if the true first call's row is gone, the next surviving row
+        whose trailing message still carries the prefix (a blind reroll resends
+        the identical messages) is read instead.  Rows that do not qualify are
+        skipped in order: a round-trip's trailing message is a tool result; a
+        nudge-appended retry's is the retry note, a user turn WITHOUT the
+        prefix — the prefix, set once at the ``handle_*_report`` call sites, is
+        the one mark that tells the trigger from a note, since both ride the
+        user role here.  If nothing qualifies — every row pruned, or only a
+        nudged-retry row survives — this returns ``None`` and the caller
+        renders the reply plainly, never guessing at lost text.
 
-        An ordinary chat turn's run always ends its first call in a ``user``
-        turn (the user's own ask), so this is ``None`` for every one of
-        those — the signal is structural, never a ``prompt_type`` or
-        mechanism name check."""
+        The prefix here never DECIDES anything: autonomy is the messagelog
+        row's non-null ``mechanism``, checked by the caller (an ordinary reply
+        is never even looked at, and a user who literally types the prefix into
+        chat gets no trigger rendered on her behalf).  Within a run already
+        known autonomous, the prefix only LOCATES the row that carries the
+        trigger text — the same text the live turn was given, byte-identical."""
         for row in prompts:
             try:
                 messages = json.loads(row.messages)
@@ -2556,10 +2562,13 @@ class Agent:
             if not messages:
                 continue
             last = messages[-1]
-            if isinstance(last, dict) and last.get("role") == str(MessageRole.SYSTEM):
-                content = last.get("content")
-                if isinstance(content, str) and content:
-                    return LlmMessage(role=MessageRole.SYSTEM, content=content)
+            if not isinstance(last, dict) or last.get("role") != str(MessageRole.USER):
+                continue
+            content = last.get("content")
+            if isinstance(content, str) and content.startswith(
+                PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+            ):
+                return LlmMessage(role=MessageRole.USER, content=content)
         return None
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
@@ -2735,13 +2744,14 @@ class Agent:
                     else MessageRole.ASSISTANT
                 )
                 run_id = msg.run_id if role == MessageRole.ASSISTANT else None
+                mechanism = msg.mechanism if role == MessageRole.ASSISTANT else None
                 prev = conversation[-1] if conversation else None
                 if prev is not None and prev.role == role == MessageRole.USER:
                     conversation[-1] = HistoryTurn(
                         prev.role, f"{prev.content}\n{msg.content}", None
                     )
                 else:
-                    conversation.append(HistoryTurn(role, msg.content, run_id))
+                    conversation.append(HistoryTurn(role, msg.content, run_id, mechanism))
             total_user_turns = self.db.messages.count_user_turns(sender)
             conversation = self._trim_history_window(conversation, total_user_turns)
             if conversation:
