@@ -554,15 +554,27 @@ class SelfStateHeader:
             lines.append(archived)
         return "\n".join(lines)
 
+    # The store map's suffix naming the retrieval exclusion mark (#2956) — so she
+    # can see the memory exists AND that naming it is how to search it (n≤1):
+    # ``find(memory=<name>)`` / ``synthesize(memories=[<name>])`` both already
+    # reach it regardless of the mark, so no new tool text is needed, only this
+    # visible reason to reach for one of them.
+    SEARCH_ONLY_WHEN_NAMED_SUFFIX = " — searched only when named"
+
     @staticmethod
     def _memory_map_line(row: MemoryRow, counts: dict[str, int]) -> str:
         """One store-map row: ``- <name> (<type>, <n> entries) — <description>``,
         or ``- <name> (<type>) — <description>`` for a system-log facade
         (``PennyConstants.SYSTEM_LOGS``), whose live count would otherwise rebuild
-        the static prefix on every ordinary turn (see ``_memory_map_section``)."""
+        the static prefix on every ordinary turn (see ``_memory_map_section``).
+        A ``search_only_when_named`` row (#2956) carries the suffix naming it."""
+        mark = SelfStateHeader.SEARCH_ONLY_WHEN_NAMED_SUFFIX if row.search_only_when_named else ""
         if row.name in PennyConstants.SYSTEM_LOGS:
-            return f"- {row.name} ({row.type}) — {row.description}"
-        return f"- {row.name} ({row.type}, {counts.get(row.name, 0)} entries) — {row.description}"
+            return f"- {row.name} ({row.type}) — {row.description}{mark}"
+        return (
+            f"- {row.name} ({row.type}, {counts.get(row.name, 0)} entries) — "
+            f"{row.description}{mark}"
+        )
 
     def _archived_line(self, rows: list[MemoryRow]) -> str:
         """One compact line naming every archived collection and log, by name

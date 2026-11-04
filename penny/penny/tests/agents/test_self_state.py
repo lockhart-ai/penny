@@ -84,7 +84,13 @@ def _add_collection(
 
 
 def _add_log(
-    session: Session, name: str, description: str, *, when: datetime, archived: bool = False
+    session: Session,
+    name: str,
+    description: str,
+    *,
+    when: datetime,
+    archived: bool = False,
+    search_only_when_named: bool = False,
 ) -> None:
     session.add(
         MemoryRow(
@@ -92,6 +98,7 @@ def _add_log(
             type="log",
             description=description,
             archived=archived,
+            search_only_when_named=search_only_when_named,
             created_at=when,
             updated_at=when,
         )
@@ -780,6 +787,19 @@ def test_self_state_store_map_renders_past_the_old_twenty_row_cap(db):
     rows = [line for line in store_map.splitlines() if line.startswith("- ")]
     assert len(rows) == 25
     assert "more" not in store_map
+
+
+def test_self_state_store_map_names_search_only_when_named(db):
+    """A ``search_only_when_named`` memory's store-map line carries the suffix
+    (#2956) — she can see the memory exists AND that naming it is how to search
+    it (n≤1); an ordinary log alongside it carries no suffix at all."""
+    with Session(db.engine) as session:
+        _add_log(session, "raw-feed", "raw fetched pages", when=_t(6), search_only_when_named=True)
+        _add_log(session, "plain-feed", "plain notes", when=_t(6))
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert "- raw-feed (log, 0 entries) — raw fetched pages — searched only when named" in actual
+    assert "- plain-feed (log, 0 entries) — plain notes\n" in actual
 
 
 def test_self_state_archived_line_names_a_collection_and_a_log(db):

@@ -1843,7 +1843,7 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "(no jobs yet)\n"
     "\n"
     "### Your memory\n"
-    "- browse-results (log) — Every browse-tool fetch result\n"
+    "- browse-results (log) — Every browse-tool fetch result — searched only when named\n"
     "- changelog (log) — Changes made to your tools, prompts and behaviour, "
     "recorded at each deploy\n"
     "- collector-runs (log) — One entry per Collector cycle: the target + its "

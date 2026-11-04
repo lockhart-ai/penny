@@ -848,6 +848,19 @@ class PennyConstants:
     # them — 8 keeps the draw's content small while still covering more than one
     # container.
     SYNTHESIZE_HIT_LIMIT = 8
+    # The shared retrieval's spread (#2956): of the best-first fused store hits
+    # (``MemoryStore.resolve_objects``, both ``find`` and ``synthesize``), at most
+    # this many come from any ONE memory, and at most this many DISTINCT
+    # memories contribute at all — ranked by each memory's own best hit (its
+    # first appearance walking the list top-down). Without this, a single
+    # memory that ranks best on every hit (a raw page dump embedding close to
+    # the query) can fill the whole result, crowding out a curated collection
+    # that ranks second-best but holds the more useful fact. Shared by both
+    # tools; each tool's own existing limit (``FIND_STORE_LIMIT``,
+    # ``SYNTHESIZE_HIT_LIMIT``) still bounds the final count — 2 per memory
+    # across 4 memories caps at 8, lining up with ``SYNTHESIZE_HIT_LIMIT``.
+    RESOLVE_SPREAD_PER_MEMORY = 2
+    RESOLVE_SPREAD_MEMORY_CAP = 4
     # The ledger identity of the synthesis micro-context (#2932) — a second
     # customer of ``MicroContext``'s single-shot draw machinery alongside
     # ``browse-extract``: a fresh single-shot call (the retrieved hits + the

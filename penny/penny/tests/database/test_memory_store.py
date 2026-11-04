@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -30,6 +31,7 @@ from penny.database.memory import (
     MemoryNotFoundError,
     MemoryTypeError,
     ResolvedEntry,
+    ResolvedHit,
     ResolvedKind,
     ResolvedMatch,
     WrongShapeError,
@@ -1692,6 +1694,20 @@ def _norm(raw: list[float]) -> list[float]:
     return [value / magnitude for value in raw] if magnitude else raw
 
 
+def _mark_search_only_when_named(db: Database, name: str) -> None:
+    """Set the retrieval exclusion mark (#2956) on an existing memory row — no
+    tool or store setter writes this column (it is never set from a chat turn,
+    only by migration 0136 on the seeded ``browse-results`` row), so a test
+    needing a marked memory sets it directly, the same way other tests reach
+    past the store's own surface for a row shape nothing else constructs."""
+    with Session(db.engine) as session:
+        row = session.get(MemoryRow, name)
+        assert row is not None, f"{name}: no such memory to mark"
+        row.search_only_when_named = True
+        session.add(row)
+        session.commit()
+
+
 class TestResolveObjects:
     """``resolve_objects`` — the plain-cosine resolve-by-meaning search over the
     whole registry (collections + logs, archived included) plus taught skills
@@ -1916,3 +1932,224 @@ class TestHybridFind:
         scored = [("best", 1.0), ("close", 0.6), ("weak", 0.1)]
         kept = MemoryStore._apply_relative_floor(scored, limit=5)
         assert kept == ["best", "close"]
+
+
+class TestSearchOnlyWhenNamed:
+    """The retrieval exclusion mark (#2956): a memory with
+    ``search_only_when_named`` set contributes NOTHING to ``resolve_objects``'s
+    default (unnamed) search — neither its own object hit nor any of its
+    entries — but is reached exactly as before once its name is passed in
+    ``named``. Nothing here is keyed to ``browse-results`` specifically; the
+    mark is set directly (``_mark_search_only_when_named``), proving the
+    exclusion is read structurally off the column, not off a name."""
+
+    def test_marked_memory_excluded_by_default(self, db):
+        db.memories.create_log("raw-feed", "d", description_embedding=_unit_vec(0))
+        require_memory(db, "raw-feed").append(
+            [LogEntryInput(content="c", content_embedding=_unit_vec(0))], author="test"
+        )
+        _mark_search_only_when_named(db, "raw-feed")
+        assert db.memories.resolve_objects(_unit_vec(0), "", 10) == []
+
+    def test_marked_memory_searched_when_named(self, db):
+        db.memories.create_log("raw-feed", "d", description_embedding=_unit_vec(0))
+        require_memory(db, "raw-feed").append(
+            [LogEntryInput(content="c", content_embedding=_unit_vec(0))], author="test"
+        )
+        _mark_search_only_when_named(db, "raw-feed")
+        hits = db.memories.resolve_objects(_unit_vec(0), "", 10, named=frozenset({"raw-feed"}))
+        assert any(isinstance(hit, ResolvedMatch) and hit.name == "raw-feed" for hit in hits)
+        assert any(isinstance(hit, ResolvedEntry) and hit.memory_name == "raw-feed" for hit in hits)
+
+    def test_an_unmarked_memory_is_unaffected_by_named(self, db):
+        """``named`` only EXEMPTS a marked memory from exclusion — it adds no
+        exclusion of its own, so an ordinary memory keeps surfacing whether or
+        not it happens to be named."""
+        db.memories.create_log("ordinary", "d", description_embedding=_unit_vec(0))
+        require_memory(db, "ordinary").append(
+            [LogEntryInput(content="c", content_embedding=_unit_vec(0))], author="test"
+        )
+        unnamed = db.memories.resolve_objects(_unit_vec(0), "", 10)
+        named = db.memories.resolve_objects(_unit_vec(0), "", 10, named=frozenset({"someone-else"}))
+        assert len(unnamed) == len(named) == 2  # the log object + its one entry
+
+
+class TestSpreadByMemory:
+    """``_spread_by_memory`` (#2956): the final cut of ``resolve_objects``'s
+    best-first fused list — at most ``per_memory`` hits from any one memory,
+    across at most ``memory_cap`` distinct memories, stopping at ``limit``.
+    Pure function, fabricated hits, tested directly — the end-to-end spread
+    through ``resolve_objects`` itself is ``TestResolveObjectsSpread`` below."""
+
+    @staticmethod
+    def _match(name: str) -> ResolvedMatch:
+        return ResolvedMatch(name=name, kind=ResolvedKind.COLLECTION, archived=False, label="")
+
+    @staticmethod
+    def _names(hits: Sequence[ResolvedHit]) -> list[str]:
+        """Every fabricated hit's own memory identity — ``memory_identity`` is
+        defined on both ``ResolvedHit`` arms (#2956), so this reads uniformly
+        with no ``isinstance`` branch; every fixture in this class happens to
+        be a ``ResolvedMatch``, whose ``memory_identity`` is its own name."""
+        return [hit.memory_identity for hit in hits]
+
+    def test_caps_hits_per_memory(self):
+        """A memory contributing more than ``per_memory`` hits to the best-first
+        list has the overflow dropped, keeping its best-ranked ones."""
+        ranked = [self._match("dominant") for _ in range(5)]
+        kept = MemoryStore._spread_by_memory(ranked, limit=10, per_memory=2, memory_cap=4)
+        assert len(kept) == 2
+
+    def test_caps_distinct_memories(self):
+        """More distinct memories than ``memory_cap`` — even with room left under
+        ``limit`` and under each one's own ``per_memory`` share — stop
+        contributing once the cap's worth have been admitted, ranked by each
+        memory's own best (first) appearance."""
+        ranked = [self._match(name) for name in ("a", "b", "c", "d", "e")]
+        kept = MemoryStore._spread_by_memory(ranked, limit=10, per_memory=2, memory_cap=3)
+        assert self._names(kept) == ["a", "b", "c"]
+
+    def test_stops_at_the_overall_limit(self):
+        """``limit`` still bounds the total even when neither the per-memory nor
+        the memory-cap share has been exhausted."""
+        ranked = [self._match("a"), self._match("a"), self._match("b"), self._match("b")]
+        kept = MemoryStore._spread_by_memory(ranked, limit=3, per_memory=2, memory_cap=4)
+        assert len(kept) == 3
+
+    def test_one_memory_cannot_fill_every_slot(self):
+        """The motivating shape (#2956): one memory ranking best on every hit no
+        longer takes the whole result — a second memory's single hit still gets
+        a slot instead of being crowded out entirely."""
+        ranked = [self._match("dominant") for _ in range(6)] + [self._match("minor")]
+        kept = MemoryStore._spread_by_memory(ranked, limit=5, per_memory=2, memory_cap=4)
+        names = self._names(kept)
+        assert "minor" in names
+        assert names.count("dominant") == 2
+
+
+class TestResolveObjectsSpread:
+    """The spread (#2956) end to end, through ``resolve_objects`` itself: a
+    memory whose entries rank best on every hit is capped at
+    ``RESOLVE_SPREAD_PER_MEMORY``, leaving room for another memory's own,
+    lower-ranked hit — the shape the prod issue measured (one memory took 7 of
+    8 slots)."""
+
+    def test_a_dominant_memory_does_not_crowd_out_a_weaker_one(self, db):
+        db.memories.create_log("dominant", "d", description_embedding=_unit_vec(5))
+        require_memory(db, "dominant").append(
+            [
+                LogEntryInput(content=f"dominant entry {i}", content_embedding=_unit_vec(0))
+                for i in range(PennyConstants.RESOLVE_SPREAD_PER_MEMORY + 3)
+            ],
+            author="test",
+        )
+        db.memories.create_collection("minor", "d", description_embedding=_unit_vec(5))
+        db.memories.memory("minor").write_rule_decided(
+            [
+                EntryInput(
+                    key="minor entry",
+                    content="minor entry",
+                    content_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                )
+            ],
+            author="test",
+        )
+        hits = db.memories.resolve_objects(_unit_vec(0), "", 10)
+        entries = [hit for hit in hits if isinstance(hit, ResolvedEntry)]
+        dominant_hits = [entry for entry in entries if entry.memory_name == "dominant"]
+        minor_hits = [entry for entry in entries if entry.memory_name == "minor"]
+        assert len(dominant_hits) == PennyConstants.RESOLVE_SPREAD_PER_MEMORY
+        assert len(minor_hits) == 1
+
+
+class TestResolveObjectsRestrictTo:
+    """``restrict_to`` (#2956 round 2): a scoped ``synthesize(memories=[...])``
+    call restricts the CANDIDATE pool to exactly the named memories before
+    ranking/limiting, never a post-filter applied to an already-cut result —
+    the old shape, which starved a scoped call whenever the wider store's own
+    higher-ranked hits filled every one of ``limit``'s slots before any
+    ``memories`` filter ever ran."""
+
+    def test_a_scoped_call_is_not_starved_by_higher_ranked_noise(self, db):
+        # A dozen entries in a memory that is NOT named, ranked best (closest
+        # to the query vector) — on the old post-filter-only code, these alone
+        # would already fill the one slot `limit` allows before any filter runs.
+        db.memories.create_log("noise", "d", description_embedding=_unit_vec(5))
+        require_memory(db, "noise").append(
+            [
+                LogEntryInput(content=f"noise entry {i}", content_embedding=_unit_vec(0))
+                for i in range(12)
+            ],
+            author="test",
+        )
+        # The named (restricted-to) memory's own entry, ranked WORSE than every
+        # noise entry above.
+        db.memories.create_collection("target", "d", description_embedding=_unit_vec(5))
+        db.memories.memory("target").write_rule_decided(
+            [
+                EntryInput(
+                    key="target entry",
+                    content="target entry",
+                    content_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                )
+            ],
+            author="test",
+        )
+        hits = db.memories.resolve_objects(_unit_vec(0), "", 1, restrict_to=frozenset({"target"}))
+        entries = [hit for hit in hits if isinstance(hit, ResolvedEntry)]
+        assert any(entry.memory_name == "target" for entry in entries)
+        assert not any(entry.memory_name == "noise" for entry in entries)
+
+    def test_restrict_to_divides_the_limit_across_named_memories(self, db):
+        """The scoped share is ``ceil(limit / len(restrict_to))`` (#2956 round
+        3), not the fixed unscoped ``RESOLVE_SPREAD_PER_MEMORY`` — a memory
+        with more entries than its fair share still gets capped, but by that
+        share, not by the smaller unscoped constant that starved it before
+        this round's fix."""
+        db.memories.create_log("dominant", "d", description_embedding=_unit_vec(5))
+        require_memory(db, "dominant").append(
+            [
+                LogEntryInput(content=f"dominant entry {i}", content_embedding=_unit_vec(0))
+                for i in range(8)
+            ],
+            author="test",
+        )
+        db.memories.create_collection("minor", "d", description_embedding=_unit_vec(5))
+        db.memories.memory("minor").write_rule_decided(
+            [
+                EntryInput(
+                    key="minor entry",
+                    content="minor entry",
+                    content_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                )
+            ],
+            author="test",
+        )
+        hits = db.memories.resolve_objects(
+            _unit_vec(0), "", 10, restrict_to=frozenset({"dominant", "minor"})
+        )
+        entries = [hit for hit in hits if isinstance(hit, ResolvedEntry)]
+        dominant_hits = [entry for entry in entries if entry.memory_name == "dominant"]
+        minor_hits = [entry for entry in entries if entry.memory_name == "minor"]
+        # ceil(10 / 2) == 5 — bigger than the unscoped RESOLVE_SPREAD_PER_MEMORY
+        # (2), and dominant's own 8 entries still exceed even that share.
+        assert len(dominant_hits) == 5
+        assert len(minor_hits) == 1
+
+    def test_restrict_to_one_memory_can_fill_every_slot(self, db):
+        """#2956 round 3: naming exactly ONE memory with more matching entries
+        than the unscoped ``RESOLVE_SPREAD_PER_MEMORY`` still returns all of
+        them, up to ``limit`` — the unscoped spread's per-memory cap exists to
+        diversify an open-ended search, and starves the one memory a scoped
+        call asked for by name if applied unchanged."""
+        db.memories.create_log("target", "d", description_embedding=_unit_vec(5))
+        require_memory(db, "target").append(
+            [
+                LogEntryInput(content=f"target entry {i}", content_embedding=_unit_vec(0))
+                for i in range(6)
+            ],
+            author="test",
+        )
+        hits = db.memories.resolve_objects(_unit_vec(0), "", 10, restrict_to=frozenset({"target"}))
+        entries = [hit for hit in hits if isinstance(hit, ResolvedEntry)]
+        assert len(entries) == 6
