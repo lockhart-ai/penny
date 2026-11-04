@@ -81,6 +81,7 @@ from penny.database.mutation_store import render_mutation
 from penny.datetime_utils import (
     format_log_timestamp,
     format_user_timestamp,
+    stored_as_utc,
     user_timezone_name,
     zone_or_utc,
 )
@@ -2853,9 +2854,10 @@ _LOG_READ_CURSOR_DESCRIPTION = (
 )
 _LOG_READ_WINDOW_DESCRIPTION = (
     "Return recent entries from this log (a short look-back window), oldest "
-    "first.  Use for 'what just happened' questions.  Give day='YYYY-MM-DD' to "
-    "read one whole day instead — for anything older than the recent window, "
-    "like a line in the conversation map."
+    "first.  Use for 'what just happened' questions.  When earlier entries "
+    "exist, the result names how many and the exact next call — before=<id> "
+    "to page backward from an entry shown here, or day='YYYY-MM-DD' to read "
+    "one whole day, like a line in the conversation map."
 )
 
 
@@ -2921,6 +2923,13 @@ class LogReadTool(CursorReadTool):
         "properties": {
             "log": {"type": "string"},
             "day": {"type": "string", "description": "Optional: read one day, 'YYYY-MM-DD'"},
+            "before": {
+                "type": "integer",
+                "description": (
+                    "Optional: page backward — the entries before this id, "
+                    "oldest first. Use an id a log_read result shows beside an entry."
+                ),
+            },
         },
         "required": ["log"],
     }
@@ -2948,18 +2957,28 @@ class LogReadTool(CursorReadTool):
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadLogArgs(**kwargs)
         memory = _resolve(self._db, args.log)
+        if args.before is not None:
+            return self._read_before(memory, args.log, args.before)
         if args.day is not None:
             return self._read_day(memory, args.log, args.day)
         entries = self._read_cursor(memory) if self._cursor_mode else self._read_window(memory)
-        return ToolResult(
-            message=format_entries(
-                entries,
-                source=args.log,
-                ordering="oldest first",
-                show_ids=self._shows_ids(memory),
-                handles=self._handles,
-            )
+        message = format_entries(
+            entries,
+            source=args.log,
+            ordering="oldest first",
+            show_ids=self._shows_ids(memory),
+            handles=self._handles,
         )
+        if not self._cursor_mode:
+            # The cursor-mode batch already advances forward only — a collector
+            # works through its own backlog in order, so "entries before this"
+            # is never a gap it silently lost (#2961's disclosure is about the
+            # stateless window read looking sparse, not the cursor).
+            window_start = self._db.clock.now() - timedelta(
+                seconds=PennyConstants.LOG_READ_WINDOW_SECONDS
+            )
+            message = self._with_older_disclosure(message, memory, args.log, entries, window_start)
+        return ToolResult(message=message)
 
     def _read_day(self, memory: Memory, log: str, day: str) -> ToolResult:
         """One local day of a log, oldest first (#2752) — the read the
@@ -2980,17 +2999,110 @@ class LogReadTool(CursorReadTool):
         zone = zone_or_utc(user_timezone_name(self._db))
         start_local = datetime.combine(parsed, datetime.min.time(), tzinfo=zone)
         end_local = start_local + timedelta(days=1)
+        day_start = _naive_utc(start_local)
         entries = memory.read_range(
-            _naive_utc(start_local), _naive_utc(end_local), cap=PennyConstants.LOG_READ_DAY_LIMIT
+            day_start, _naive_utc(end_local), cap=PennyConstants.LOG_READ_DAY_LIMIT
         )
-        return ToolResult(
-            message=format_entries(
-                entries,
-                source=log,
-                ordering="oldest first",
-                show_ids=self._shows_ids(memory),
-                handles=self._handles,
+        message = format_entries(
+            entries,
+            source=log,
+            ordering="oldest first",
+            show_ids=self._shows_ids(memory),
+            handles=self._handles,
+        )
+        message = self._with_older_disclosure(message, memory, log, entries, day_start)
+        return ToolResult(message=message)
+
+    def _read_before(self, memory: Memory, log: str, before_id: int) -> ToolResult:
+        """Page backward from an id a prior read showed beside an entry (#2961)
+        — the newest ``LOG_READ_PAGE`` entries older than it, oldest first.
+        Only a real stored log shows ids (``_shows_ids``); a collection or a
+        facade without ids is refused honestly, the same shape ``LogGetTool``
+        already refuses its own id-taking read with — paging by an id the
+        model was never shown is a guessed argument, never offered here."""
+        if isinstance(memory, Collection):
+            return ToolResult(message=self._collection_before_refusal(log), success=False)
+        if isinstance(memory, MessageLogMemory):
+            return ToolResult(message=self._message_log_before_refusal(log), success=False)
+        if isinstance(memory, (RunLog, RunHealthLog)):
+            return ToolResult(message=self._run_log_before_refusal(log), success=False)
+        anchor = memory.entry_by_id(before_id)
+        if anchor is None:
+            return ToolResult(
+                message=(
+                    f"No entry {before_id} in `{log}` to page before. Read it with "
+                    f"log_read{{'{log}'}} to see its entries and their ids."
+                ),
+                success=False,
             )
+        older = memory.entries_before(anchor.created_at)
+        page = older[-PennyConstants.LOG_READ_PAGE :]
+        message = format_entries(
+            page, source=log, ordering="oldest first", show_ids=True, handles=self._handles
+        )
+        message = self._with_older_disclosure(message, memory, log, page, anchor.created_at)
+        return ToolResult(message=message)
+
+    @staticmethod
+    def _collection_before_refusal(name: str) -> str:
+        return f"'{name}' is a collection, not a log: it has no `before` order to page by."
+
+    @staticmethod
+    def _message_log_before_refusal(name: str) -> str:
+        return (
+            f"'{name}' holds messages, and a message isn't paged by `before`. "
+            f"Read it with log_read{{'{name}'}} or day='YYYY-MM-DD'."
+        )
+
+    @staticmethod
+    def _run_log_before_refusal(name: str) -> str:
+        return (
+            f"'{name}' holds run records, read by the `run <id>` shown beside each — "
+            f"not by `before`. Read it with log_read{{'{name}'}} or day='YYYY-MM-DD'."
+        )
+
+    def _with_older_disclosure(
+        self,
+        message: str,
+        memory: Memory,
+        log: str,
+        shown: list[MemoryEntry],
+        boundary: datetime,
+    ) -> str:
+        disclosure = self._older_entries_disclosure(memory, log, shown, boundary)
+        return f"{message}\n{disclosure}" if disclosure else message
+
+    def _older_entries_disclosure(
+        self,
+        memory: Memory,
+        log: str,
+        shown: list[MemoryEntry],
+        boundary: datetime,
+    ) -> str:
+        """When entries sit before the oldest one just shown (or before
+        ``boundary``, when nothing was shown to anchor on) that this read did
+        not return, name how many and the one-call path to the next page
+        (#2961): ``before=<id>`` off the oldest entry just shown, when this
+        log shows ids to page from; else the calendar day of the newest entry
+        still hidden — the nearest a ``day=`` read can reach, for a log whose
+        ids never render.  Keyed only on the count, never on which log this
+        is — so a read that leaves nothing out says nothing here."""
+        cutoff = shown[0].created_at if shown else boundary
+        older = memory.entries_before(cutoff)
+        if not older:
+            return ""
+        noun = "entry" if len(older) == 1 else "entries"
+        if shown and self._shows_ids(memory):
+            page = min(len(older), PennyConstants.LOG_READ_PAGE)
+            return (
+                f"{len(older)} earlier {noun} in `{log}` — "
+                f"log_read{{log: '{log}', before: {shown[0].id}}} reads the {page} before these."
+            )
+        zone = zone_or_utc(user_timezone_name(self._db))
+        newest_hidden_day = stored_as_utc(older[-1].created_at).astimezone(zone).date().isoformat()
+        return (
+            f"{len(older)} earlier {noun} in `{log}`, not shown here — "
+            f"log_read{{log: '{log}', day: '{newest_hidden_day}'}} reads that day."
         )
 
     @staticmethod
