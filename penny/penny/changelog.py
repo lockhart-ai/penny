@@ -119,22 +119,24 @@ def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[Chang
     return missing
 
 
-# ── The startup delivery turn's own render (#2846) ───────────────────────────
+# ── The startup delivery turn's own render (#2846, trigger reworked #2974) ───
 #
 # The framework renders this deploy's new entries verbatim — never model-written
-# — as the input of ONE chat-agent turn (``ChatAgent.handle_changelog_report``):
-# her persona, standing rules, history and full tool surface, over a fixed list
-# of facts.  The PR-number prefix each entry already carries (``render()``) is
-# kept here too: it is the same anchor a later ``log_read('changelog')`` shows,
-# so a reply that cites a change and a reader checking the log against it are
-# looking at the same text.
+# — as the live turn's own USER message prefixed with ``PennyConstants.
+# SYSTEM_NOTIFICATION_PREFIX`` (``ChatAgent.handle_changelog_report``): her
+# persona, standing rules, history and full tool surface, over a fixed list
+# of facts, with no instruction attached — she decides for herself whether, how,
+# and how many times to reply, the same as on any chat turn.  The PR-number
+# prefix each entry already carries (``render()``) is kept here too: it is the
+# same anchor a later ``log_read('changelog')`` shows, so a reply that cites a
+# change and a reader checking the log against it are looking at the same text.
+# This is the ONE render used both live and, byte-identical, in every later
+# turn's history (``Agent._run_trigger_message`` reads it back off the run's
+# own promptlog row — never stored a second time).
 
+_CHANGELOG_RESTART_LEAD = "You've just restarted."
 _CHANGELOG_LEAD = "These changes to your tools and behaviour reached you with this deploy:"
-_CHANGELOG_ASK = "Let the user know what changed, in your own words."
-_CHANGELOG_NONE_LEAD = (
-    "You've just restarted. This deploy changed nothing in your tools or behaviour."
-)
-_CHANGELOG_NONE_ASK = "Send the user a short message letting them know you're back."
+_CHANGELOG_NONE_LEAD = "This deploy changed nothing in your tools or behaviour."
 
 
 def render_changelog_announcement(entries: list[ChangelogEntry]) -> str:
@@ -142,13 +144,14 @@ def render_changelog_announcement(entries: list[ChangelogEntry]) -> str:
     alone — pure and deterministic, so the exact text the chat agent reads is
     pinned by a whole-render test rather than by whatever a live run produced.
 
-    ``entries`` may be empty — a restart, or a deploy that brought only
-    harness/CI/doc changes, still runs this turn (Penny announces on every
-    startup); the render just states that nothing changed and asks for a
-    short "I'm back" message instead of listing entries."""
+    Both forms open on the same restart fact (#2974 — so a later turn reading
+    this back off history always sees a restart happened, whether or not
+    anything changed with it).  ``entries`` may be empty — a restart, or a
+    deploy that brought only harness/CI/doc changes, still runs this turn
+    (Penny announces on every startup); the render then just states that
+    nothing changed, with nothing else to list."""
     if not entries:
-        return "\n".join([_CHANGELOG_NONE_LEAD, "", _CHANGELOG_NONE_ASK])
-    lines = [_CHANGELOG_LEAD, ""]
+        return " ".join([_CHANGELOG_RESTART_LEAD, _CHANGELOG_NONE_LEAD])
+    lines = [f"{_CHANGELOG_RESTART_LEAD} {_CHANGELOG_LEAD}", ""]
     lines.extend(f"- {entry.render()}" for entry in entries)
-    lines.extend(["", _CHANGELOG_ASK])
     return "\n".join(lines)
