@@ -25,7 +25,11 @@ services:
       context: ./penny
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
-    image: penny
+    # The dev/shared tag is `penny` (make up, make check, the eval recipes all
+    # build and run it). Production sets PENNY_IMAGE=penny:prod (the Makefile's
+    # prod-* targets) so a worktree's `make check` can never retag the image
+    # production runs (#2977).
+    image: ${PENNY_IMAGE:-penny}
     restart: unless-stopped
     # `required: false` makes the signal-api gate optional: when the `signal`
     # profile is off (Discord/iOS), signal-api isn't in the project and penny
