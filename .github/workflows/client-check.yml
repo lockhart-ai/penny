@@ -1,10 +1,12 @@
 name: client-check
 
 # merge_group does not support paths filters, so the merge-queue path detects
-# penny-client changes itself: a detect step diffs the merge group against its
-# base, and the build steps no-op when penny-client is untouched. The job still
-# runs and reports `client-check` green, so the required check never stalls in
-# "Expected". The client-check-noop twin stays PR/push-only.
+# penny-client changes itself: a small detect job on ubuntu-latest diffs the
+# merge group against its base, and the macOS build job runs only when
+# penny-client is touched. Detection runs on Linux BEFORE the macOS runner is
+# requested, so a scarce macOS runner is never held for a PR with no client
+# changes — a skipped required job counts as passed, so the queue proceeds.
+# The client-check-noop twin stays PR/push-only.
 on:
   push:
     branches: [main]
@@ -15,16 +17,23 @@ on:
   merge_group:
 
 jobs:
-  client-check:
-    runs-on: macos-26
-    timeout-minutes: 30
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      client-changed: ${{ steps.detect.outputs.client-changed }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the merge group's base_sha is present to diff against
+          fetch-depth: 0
 
-      - name: Detect penny-client changes (merge queue only)
+      - name: Detect penny-client changes
         id: detect
-        if: github.event_name == 'merge_group'
         run: |
+          if [ "${GITHUB_EVENT_NAME}" != "merge_group" ]; then
+            echo "client-changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git fetch --depth=1 origin "${{ github.event.merge_group.base_sha }}"
           if git diff --name-only "${{ github.event.merge_group.base_sha }}" HEAD -- penny-client/ | grep -q .; then
             echo "client-changed=true" >> "$GITHUB_OUTPUT"
@@ -32,8 +41,15 @@ jobs:
             echo "client-changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+  client-check:
+    needs: detect
+    if: needs.detect.outputs.client-changed == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Select newest Xcode 26
-        if: github.event_name != 'merge_group' || steps.detect.outputs.client-changed == 'true'
         run: |
           if ls -d /Applications/Xcode_26*.app >/dev/null 2>&1; then
             sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)"
@@ -41,4 +57,3 @@ jobs:
           xcodebuild -version
 
       - run: make client-check
-        if: github.event_name != 'merge_group' || steps.detect.outputs.client-changed == 'true'
