@@ -26,7 +26,7 @@ import logging
 from sqlmodel import Session, col, select
 
 from penny.clock import Clock
-from penny.constants import CycleTrigger
+from penny.constants import CycleTrigger, QueueItemKind
 from penny.database.models import SendQueueItem
 
 logger = logging.getLogger(__name__)
@@ -66,13 +66,25 @@ class SendQueueStore:
             logger.info("Queued message %d from %s (%d chars)", row.id, collection, len(content))
             return row.id
 
-    def enqueue_report(self, collection: str, origin: CycleTrigger, report_run_id: str) -> int:
+    def enqueue_report(
+        self,
+        collection: str,
+        origin: CycleTrigger,
+        report_run_id: str | None,
+        *,
+        kind: QueueItemKind,
+    ) -> int:
         """Queue a composing report and return its assigned id.
 
-        The notifying cycle's hand-off (#2656): the row carries WHAT SET THE CYCLE
-        RUNNING (``origin``, the delivery lane) and WHERE THE MESSAGE COMES FROM
-        (``report_run_id``, the cycle's run id), and no content yet — the message
-        is written later, by the delivery chat turn the drainer runs.  A cycle
+        The notifying cycle's hand-off (#2656), widened to the autonomous events
+        (#2975): the row carries WHAT SET THE CYCLE RUNNING (``origin``, the
+        delivery lane), WHERE THE MESSAGE COMES FROM (``report_run_id``, the
+        cycle's run id — the failed run for a ``job_failed`` event, the retiring
+        run for a ``job_retired`` one, ``None`` for a while-down expiry that has
+        no run to attribute), and WHICH
+        FACT SET TO BUILD (``kind``, a required parameter — the drainer's
+        structural mark, never a guess) — and no content yet: the message is
+        written later, by the delivery chat turn the drainer runs.  A cycle
         whose notification could not be enqueued because the user is muted or
         nobody is registered never reaches here: the decline is decided before
         the row exists."""
@@ -82,6 +94,7 @@ class SendQueueStore:
                 collection=collection,
                 origin=origin,
                 report_run_id=report_run_id,
+                kind=kind,
                 created_at=self._clock.now(),
             )
             session.add(row)
@@ -90,7 +103,11 @@ class SendQueueStore:
             if row.id is None:
                 raise RuntimeError("send_queue row was inserted but has no id")
             logger.info(
-                "Queued report %d from %s (cycle run %s)", row.id, collection, report_run_id
+                "Queued %s report %d from %s (cycle run %s)",
+                kind.value,
+                row.id,
+                collection,
+                report_run_id,
             )
             return row.id
 

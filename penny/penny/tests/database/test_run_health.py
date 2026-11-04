@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 import pytest
 
 from penny.agents.models import ModelCallError, RunAbort
-from penny.constants import CycleTrigger, DispatchReason, PennyConstants
+from penny.constants import CycleTrigger, DispatchReason, PennyConstants, QueueItemKind
 from penny.database.memory import (
     LoggedToolCall,
     RunHealthLog,
@@ -1294,7 +1294,9 @@ def test_run_delivered_text_reads_a_delivered_collector_report(db):
     (``report_run_id``, #2656) — the DELIVERED row's own stored content, read
     only once ``sent_at`` is stamped; an undelivered (never-sent) compose
     names nothing, never a guess at what it would have said."""
-    item_id = db.send_queue.enqueue_report("games", CycleTrigger.CADENCE, "coll-run-1")
+    item_id = db.send_queue.enqueue_report(
+        "games", CycleTrigger.CADENCE, "coll-run-1", kind=QueueItemKind.REPORT
+    )
     db.send_queue.store_composed(item_id, "a new deal dropped")
     # Not yet delivered — composed but no ``sent_at`` stamp.
     assert db.messages.delivered_text_for_run("coll-run-1") is None

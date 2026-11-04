@@ -307,12 +307,13 @@ def test_render_changelog_announcement_is_whole_literal():
     """The startup delivery turn's trigger (#2846, reworked #2974) is
     framework-rendered verbatim — never model-written, and carrying no
     instruction — so the exact text the chat agent reads is pinned here
-    rather than left to whatever a live run happens to produce."""
+    rather than left to whatever a live run happens to produce.  No degraded
+    capabilities: the render is byte-identical to the pre-#2975 shape."""
     entries = [
         ChangelogEntry(pr=9101, text="We added a new way to save a note."),
         ChangelogEntry(pr=9102, text="We renamed the lookup tool."),
     ]
-    assert render_changelog_announcement(entries) == (
+    assert render_changelog_announcement(entries, []) == (
         "You've just restarted. These changes to your tools and behaviour reached "
         "you with this deploy:\n"
         "\n"
@@ -327,6 +328,36 @@ def test_render_changelog_announcement_with_no_entries_is_whole_literal():
     already-recorded commit) — the render states that fact alone, opening on
     the same restart fact as the with-entries form (#2974), with no
     instruction attached."""
-    assert render_changelog_announcement([]) == (
+    assert render_changelog_announcement([], []) == (
         "You've just restarted. This deploy changed nothing in your tools or behaviour."
+    )
+
+
+def test_render_changelog_announcement_carries_the_degraded_capabilities():
+    """A degraded startup is never silent (#2975): whatever the startup
+    preflight soft-warned about rides the notice's facts — each line the
+    check's own render, carried verbatim, appended after the deploy's entries
+    (or, alone, after the nothing-changed lead).  A hard failure never
+    reaches here: it aborts startup."""
+    entries = [ChangelogEntry(pr=9101, text="We added a new way to save a note.")]
+    assert render_changelog_announcement(
+        entries,
+        ["⚠ decision-model: not configured — entry matching falls back to asking"],
+    ) == (
+        "You've just restarted. These changes to your tools and behaviour reached "
+        "you with this deploy:\n"
+        "\n"
+        "- PR #9101: We added a new way to save a note.\n"
+        "\n"
+        "Some capabilities started degraded:\n"
+        "- ⚠ decision-model: not configured — entry matching falls back to asking"
+    )
+    assert render_changelog_announcement(
+        [],
+        ["✗ browser-addon: no browser connection"],
+    ) == (
+        "You've just restarted. This deploy changed nothing in your tools or behaviour.\n"
+        "\n"
+        "Some capabilities started degraded:\n"
+        "- ✗ browser-addon: no browser connection"
     )

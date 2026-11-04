@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 137
+        assert count == 138
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 137
+        assert count1 == 138
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -163,7 +163,7 @@ class TestMigrate:
 
         count = migrate(db_path)
         # 0001 is skipped; the rest run = 136 migrations
-        assert count == 136
+        assert count == 137
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 137  # all migrations applied
+        assert count == 138  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -308,6 +308,47 @@ class TestMigrate:
         mod.up(conn)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(promptlog)").fetchall()}
         assert "injected_messages" in columns
+        conn.close()
+
+    def test_0138_adds_send_queue_kind(self, tmp_path):
+        """Migration 0138 adds NOT NULL ``send_queue.kind`` defaulting to
+        ``report`` (#2975) — which fact set a composing row's message is built
+        from — with every pre-existing row a report and no row targeted by key.
+        A new row without a kind defaults the same way."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE send_queue (id INTEGER PRIMARY KEY, content TEXT)")
+        conn.execute("INSERT INTO send_queue (content) VALUES ('a queued message')")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0138_send_queue_kind.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0138", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(send_queue)").fetchall()}
+        assert "kind" in columns
+        row = conn.execute("SELECT kind FROM send_queue WHERE id = 1").fetchone()
+        assert row is not None and row[0] == "report"
+        # A row inserted afterwards defaults the same way — the column is NOT NULL.
+        conn.execute("INSERT INTO send_queue (content) VALUES ('another')")
+        row = conn.execute("SELECT kind FROM send_queue WHERE id = 2").fetchone()
+        assert row is not None and row[0] == "report"
+        # Idempotent: a second pass over the same DB changes nothing.
+        mod.up(conn)
+        kinds = conn.execute("SELECT kind FROM send_queue").fetchall()
+        assert kinds == [("report",), ("report",)]
         conn.close()
 
     def test_0136_marks_browse_results_search_only_when_named(self, tmp_path):

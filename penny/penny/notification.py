@@ -36,8 +36,15 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from penny.constants import CycleEnd, CycleTrigger
+from penny.constants import (
+    CycleEnd,
+    CycleTrigger,
+    MutationAction,
+    MutationActor,
+    MutationEntityType,
+)
 from penny.database.memory import render_run_calls
+from penny.database.mutation_store import mutation_detail
 from penny.datetime_utils import user_timezone_name
 from penny.llm.refusal import is_refusal
 from penny.tools.link_handles import CITATION_LINE, HandleTable
@@ -288,6 +295,147 @@ def build_sandbox_report(db: Database, collection: str, run_id: str) -> SandboxR
     )
     return SandboxReport(
         collection=collection, description=row.description, run_id=run_id, trace=trace
+    )
+
+
+# ── The autonomous job events (#2975) ────────────────────────────────────────
+#
+# Two facts Penny is told as system messages, through the SAME queue/drainer/
+# delivery-turn hand-off a notifying cycle's report rides: the system archive of
+# a retired job, and a cadence run that failed for good (its occurrence-retry
+# budget spent out).  Each fact set is assembled from the chokepoints that
+# already record the event — the mutation ledger's system-actor archive note,
+# the failed run's own promptlog outcome stamp — never re-derived and never a
+# job's name deciding anything.
+
+
+class JobRetiredReport(BaseModel):
+    """Everything the delivery chat turn is given about a job the system archived
+    (#2975): ``why`` is the ledger's own note on the collection's system-actor
+    ARCHIVED event (the run limit spent out, or the expiry that passed) — the
+    record the archive path already wrote, read back verbatim."""
+
+    collection: str
+    description: str
+    why: str
+
+
+_RETIRED_REPORT_LEAD = 'Your job "{collection}" was archived: {why}.'
+
+
+def render_job_retired_report(report: JobRetiredReport) -> str:
+    """The whole retirement delivery turn's input, rendered from
+    framework-assembled facts alone — the sibling of ``render_job_report``
+    (#2975).  Pure and deterministic, same as every render here, so the exact
+    text the chat agent reads is pinned by a whole-render test.  No link table:
+    the facts carry no URLs."""
+    return "\n".join(
+        [
+            _RETIRED_REPORT_LEAD.format(collection=report.collection, why=report.why),
+            _REPORT_ABOUT.format(description=report.description),
+        ]
+    )
+
+
+def build_job_retired_report(db: Database, collection: str) -> JobRetiredReport | None:
+    """Assemble the retirement fact set for one queued row (#2975): the
+    collection row's own words, and the archive event's own note off the
+    mutation ledger — the latest ARCHIVED event with actor SYSTEM, which is
+    exactly the event that fired this report (a chat-side archive carries
+    ``USER_RUN`` and never queues one).
+
+    ``None`` when the collection has vanished or the ledger carries no system
+    archive for it — the honest failure ``build_job_report`` names, logged and
+    recorded on the row rather than composed from a guess."""
+    row = db.memories.get(collection)
+    if row is None:
+        logger.error(
+            "Retirement event for '%s' cannot be built — the collection no longer exists",
+            collection,
+        )
+        return None
+    events = db.mutations.history(collection, 1, entity_type=MutationEntityType.COLLECTION)
+    event = next((e for e in events if e.action == MutationAction.ARCHIVED.value), None)
+    detail = mutation_detail(event) if event is not None else None
+    why = detail.note if detail is not None else None
+    if event is None or event.actor != MutationActor.SYSTEM.value or why is None:
+        logger.error(
+            "Retirement event for '%s' cannot be built — the ledger carries no "
+            "system-actor archive note to read the cause from",
+            collection,
+        )
+        return None
+    return JobRetiredReport(collection=collection, description=row.description, why=why)
+
+
+class JobFailedReport(BaseModel):
+    """Everything the delivery chat turn is given about a job run that failed for
+    good (#2975): a CADENCE cycle whose occurrence-retry budget spent out.
+    ``reason`` is the failed run's own recorded outcome stamp — the terminal
+    cause an aborted run names (#1909), or the unhealthy-end line — read off
+    the run's promptlog rows at compose time, never re-derived."""
+
+    collection: str
+    description: str
+    run_id: str
+    reason: str
+
+
+_FAILED_REPORT_LEAD = 'Your job "{collection}"\'s run failed: {reason}.'
+
+
+def render_job_failed_report(report: JobFailedReport) -> str:
+    """The whole failure delivery turn's input, rendered from
+    framework-assembled facts alone — the sibling of ``render_job_report``
+    (#2975).  Pure and deterministic, same as every render here.  No link
+    table: the facts carry no URLs."""
+    return "\n".join(
+        [
+            _FAILED_REPORT_LEAD.format(collection=report.collection, reason=report.reason),
+            _REPORT_ABOUT.format(description=report.description),
+        ]
+    )
+
+
+def build_job_failed_report(db: Database, collection: str, run_id: str) -> JobFailedReport | None:
+    """Assemble the failure fact set for one queued row (#2975): the collection
+    row's own words, and the failed run's own outcome stamp.  The stamp is read
+    at COMPOSE time — the row is enqueued in the cycle's settlement, before
+    ``_tag_promptlog_run`` writes it — and it is the same read
+    ``recent_run_outcomes`` serves: the run's ``run_reason`` when it carries
+    one (an abort's terminal cause, a stop reason), else the ``run_outcome``
+    enum.
+
+    ``None`` when the collection has vanished or the run's stamp is unreadable
+    (rows pruned) — logged, and the row is failed outright by the caller
+    rather than composed from a guess."""
+    row = db.memories.get(collection)
+    if row is None:
+        logger.error(
+            "Failure event for '%s' (run %s) cannot be built — the collection no longer exists",
+            collection,
+            run_id,
+        )
+        return None
+    stamped = [
+        prompt
+        for prompt in reversed(db.messages.get_run_prompts(run_id))
+        if prompt.run_outcome is not None
+    ]
+    if not stamped:
+        logger.error(
+            "Failure event for '%s' (run %s) cannot be built — the run carries no "
+            "outcome stamp to read the failure from",
+            collection,
+            run_id,
+        )
+        return None
+    prompt = stamped[0]
+    outcome = prompt.run_outcome
+    assert outcome is not None  # the list comprehension above filtered for it
+    reason = prompt.run_reason or outcome
+    return JobFailedReport(
+        collection=collection, description=row.description, run_id=run_id, reason=reason
     )
 
 

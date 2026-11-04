@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Index, text
 from sqlmodel import Field, SQLModel
 
-from penny.constants import CycleTrigger
+from penny.constants import CycleTrigger, QueueItemKind
 
 
 class PromptLog(SQLModel, table=True):
@@ -536,6 +536,14 @@ class SendQueueItem(SQLModel, table=True):
     # JobReport from the cycle's entries, runs the delivery chat turn, and
     # stores what it wrote before delivering.
     report_run_id: str | None = Field(default=None, index=True)
+    # Which fact set a composing row's message is built from (#2975): ``report``
+    # (the notifying cycle's JobReport/SandboxReport — every row that predates
+    # the column, via the migration's default), ``job_retired`` (the system
+    # archive of a run-limit or expired job), or ``job_failed`` (a CADENCE run
+    # whose retry budget spent out).  The drainer reads it to pick the fact set
+    # and the delivery turn — a structural mark, never a guess from the run's
+    # content.  NOT NULL: a kindless row is not a state the queue holds.
+    kind: str = Field(default=QueueItemKind.REPORT)
     # How many times composing this row's report has failed, so the retry is
     # bounded and the bounded end is visible (#2656).
     attempts: int = Field(default=0)

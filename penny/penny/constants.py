@@ -82,6 +82,27 @@ class CycleTrigger(StrEnum):
     SANDBOX = "sandbox"
 
 
+class QueueItemKind(StrEnum):
+    """Which fact set a composing send-queue row's message is built from (#2975).
+
+    ``report`` — the cycle's own report (a notifying cycle's JobReport, or a
+    SANDBOX preview's SandboxReport): every row that predates the kind column,
+    via the migration's default.  ``job_retired`` — the system archive of a
+    job whose run limit spent out or whose expiry passed.  ``job_failed`` — a
+    CADENCE run whose occurrence-retry budget spent out, so the run failed for
+    good.
+
+    The drainer reads it to pick the fact set and the delivery turn — a
+    structural mark set once at enqueue, never guessed from a row's content:
+    a run-limit one-shot's last run looks exactly like an ordinary report's
+    run, so no read off the run record alone can tell them apart.
+    """
+
+    REPORT = "report"
+    JOB_RETIRED = "job_retired"
+    JOB_FAILED = "job_failed"
+
+
 class DispatchReason(StrEnum):
     """Why a collector cycle started when it did (#2862) — a closed set, decided
     at dispatch by the same code that already decides whether a collection is
@@ -425,6 +446,12 @@ class ChatPromptType(StrEnum):
     # nothing survived) and the chat agent writes the message from it. Its own type
     # for the same reason JOB_REPORT has one.
     SANDBOX_REPORT = "sandbox_report"
+    # The delivery turn for the autonomous job events (#2975): a job the system
+    # archived (run limit spent or expiry passed), and a cadence run that failed
+    # for good.  The framework renders the event's facts from the chokepoints
+    # that recorded it and the chat agent writes the message from them — one
+    # turn for both events, stamped apart from an ordinary user turn.
+    JOB_EVENT = "job_event"
 
 
 class PennyConstants:

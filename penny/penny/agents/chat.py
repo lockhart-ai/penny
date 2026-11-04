@@ -28,7 +28,16 @@ from penny.database.memory.identity import WriteDecisionCache
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
-from penny.notification import JobReport, SandboxReport, render_job_report, render_sandbox_report
+from penny.notification import (
+    JobFailedReport,
+    JobReport,
+    JobRetiredReport,
+    SandboxReport,
+    render_job_failed_report,
+    render_job_report,
+    render_job_retired_report,
+    render_sandbox_report,
+)
 from penny.prompts import Prompt
 from penny.text_validity import (
     call_as_text_tool_name,
@@ -475,8 +484,55 @@ class ChatAgent(Agent):
             inbox=NO_INBOX,
         )
 
+    async def handle_job_event_report(
+        self,
+        report: JobRetiredReport | JobFailedReport,
+        sender: str,
+        *,
+        call_link: CallLink,
+    ) -> ControllerResponse:
+        """The system-originated delivery turn for the autonomous job events
+        (#2975) — the sibling of ``handle_job_report``: a job the system archived
+        (a ``JobRetiredReport`` — the run limit spent out or the expiry passed),
+        or a cadence run that failed for good (a ``JobFailedReport`` — the
+        occurrence-retry budget spent out).
+
+        The input is the framework-rendered fact set (``render_job_retired_report``
+        / ``render_job_failed_report``) — assembled from the chokepoints that
+        already recorded the event (the mutation ledger's system-actor archive
+        note, the failed run's own outcome stamp), never anything model-written.
+        It rides as the live turn's own USER message prefixed with
+        ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` (#2974), stating only what
+        happened; everything else the turn needs is the same ambient state any
+        delivery turn gets.  Dispatched on the report's own type — one turn, two
+        fact sets, the same freedom to send nothing or several messages.
+
+        ``sender``/``call_link`` are exactly as ``handle_job_report``'s.  Whatever
+        she sends is NOT delivered here — the caller (the send-queue drainer) gates
+        it and queues it, logged and delivered exactly like any other autonomous
+        send.  No link table: the facts carry no URLs."""
+        if isinstance(report, JobRetiredReport):
+            facts = render_job_retired_report(report)
+        else:
+            facts = render_job_failed_report(report)
+        prompt = _system_notification_trigger(facts)
+        logger.info("Handling job event for %s (delivery turn)", report.collection)
+        return await self._dispatch_turn(
+            prompt,
+            sender,
+            call_link=call_link,
+            prompt_type=ChatPromptType.JOB_EVENT,
+            progress_scope="background",
+            inbox=NO_INBOX,
+        )
+
     async def handle_changelog_report(
-        self, entries: list[ChangelogEntry], sender: str, *, call_link: CallLink
+        self,
+        entries: list[ChangelogEntry],
+        degraded: list[str],
+        sender: str,
+        *,
+        call_link: CallLink,
     ) -> ControllerResponse:
         """The startup delivery turn (#2846, #2890, trigger reworked #2974): a turn
         exactly like any other chat turn, given this deploy's own changelog entries
@@ -494,13 +550,18 @@ class ChatAgent(Agent):
         surface — so a change that names something she can look at stays reachable
         before she writes about it.
 
+        ``degraded`` (#2975) is REQUIRED — the capabilities the startup preflight
+        soft-warned about, each already the check's own rendered line, and an
+        empty list when nothing is degraded.  A degraded startup is never silent:
+        whatever the preflight named rides this notice's facts.
+
         ``sender`` is the user the message is written for; ``call_link`` (#2458) is
         REQUIRED, as on every run starter.  Whatever she sends is NOT delivered here
         — the caller (``Penny._send_changelog_announcement``) gates and enqueues it,
         so it is logged and delivered exactly like any other autonomous send.  No
         link table: changelog entries are authored, reviewed prose about Penny's own
         tools — never user-sourced content carrying real URLs."""
-        prompt = _system_notification_trigger(render_changelog_announcement(entries))
+        prompt = _system_notification_trigger(render_changelog_announcement(entries, degraded))
         logger.info("Handling changelog announcement (%d entries)", len(entries))
         return await self._dispatch_turn(
             prompt,

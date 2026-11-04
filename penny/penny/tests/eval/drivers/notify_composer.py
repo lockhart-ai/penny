@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Iterator, Sequence
 import pytest
 
 from penny.config import Config
-from penny.constants import CycleTrigger
+from penny.constants import CycleTrigger, QueueItemKind
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.penny import Penny
@@ -180,7 +180,9 @@ def job_report_eval(
             # cycle's run.
             await _seed_sample(penny, world=None, seed=None, browse=[], prepare=None)
             run_id = _seed_job(penny.db, collection, spoken[sample_index], tuple(entries))
-            penny.db.send_queue.enqueue_report(collection, CycleTrigger.CADENCE, run_id)
+            penny.db.send_queue.enqueue_report(
+                collection, CycleTrigger.CADENCE, run_id, kind=QueueItemKind.REPORT
+            )
             message: str | None = None
             try:
                 await asyncio.wait_for(deliver_pending_reports(penny), timeout=timeout)

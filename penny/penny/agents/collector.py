@@ -64,6 +64,7 @@ from penny.constants import (
     DispatchReason,
     MutationActor,
     PennyConstants,
+    QueueItemKind,
     RunOutcome,
     WriteGateOutcome,
 )
@@ -545,7 +546,7 @@ class Collector(BackgroundAgent):
             return self._settle_sandbox_cycle(collection, run_id, reads, response)
         landed = self._settle_writes(collection.name, end)
         self.settle_reads(reads, landed)
-        deferred = self._settle_occurrence(collection.name, trigger, end, response)
+        deferred = self._settle_occurrence(collection.name, trigger, end, response, run_id)
         self._track_occurrence(collection.name, trigger, dispatch, end, deferred)
         if cancelled:
             self._tag_promptlog_run_cancelled(run_id)
@@ -584,7 +585,9 @@ class Collector(BackgroundAgent):
         ``_notify_if_due``, which skips a SANDBOX trigger entirely so the two
         paths can't both enqueue."""
         self.settle_reads(reads, consumed=False)
-        self.db.send_queue.enqueue_report(collection.name, CycleTrigger.SANDBOX, run_id)
+        self.db.send_queue.enqueue_report(
+            collection.name, CycleTrigger.SANDBOX, run_id, kind=QueueItemKind.REPORT
+        )
         self._tag_promptlog_run(run_id, RunOutcome.SANDBOX, "", self._tool_failures(response))
         return RunOutcome.SANDBOX, ""
 
@@ -691,7 +694,9 @@ class Collector(BackgroundAgent):
         if self.db.users.is_muted(recipient):
             logger.info("Notification for '%s' withheld — the user is muted", collection.name)
             return NotificationOutcome.NOT_DELIVERABLE
-        self.db.send_queue.enqueue_report(collection.name, trigger, run_id)
+        self.db.send_queue.enqueue_report(
+            collection.name, trigger, run_id, kind=QueueItemKind.REPORT
+        )
         logger.info("Report queued (%s): %s → %s", trigger.value, collection.name, recipient)
         return NotificationOutcome.QUEUED
 
@@ -732,6 +737,21 @@ class Collector(BackgroundAgent):
         """
         if not self._archive_if_run_limit_reached(collection, run_id):
             self._archive_if_expired(collection, run_id)
+
+    def _queue_job_event(self, name: str, run_id: str | None, kind: QueueItemKind) -> None:
+        """Queue one autonomous job event row (#2975) — the hand-off that gets
+        Penny told about a job retiring or a run failing for good.  The row is
+        the composing kind (no content yet): the send-queue drainer builds the
+        event's fact set from the chokepoints that recorded it and runs ONE
+        delivery chat turn, exactly like a notifying cycle's report.  CADENCE
+        origin — the conservative lane that waits the autonomous-send cooldown,
+        which is what bounds a burst of events.
+
+        MUST run AFTER the archive that fired a retirement event: the archive
+        chokepoint cancels the collection's still-pending rows (#1634), so a row
+        enqueued before would cancel itself.  The failure event never follows an
+        archive, so the order only matters to the retire paths."""
+        self.db.send_queue.enqueue_report(name, CycleTrigger.CADENCE, run_id, kind=kind)
 
     # ── How the cycle ended, and what follows from it (#1936) ─────────────
 
@@ -796,6 +816,7 @@ class Collector(BackgroundAgent):
         trigger: CycleTrigger,
         end: CycleEnd,
         response: ControllerResponse | None,
+        run_id: str,
     ) -> bool:
         """Consume this cycle's schedule occurrence, or leave it DUE for a retry.
 
@@ -814,6 +835,14 @@ class Collector(BackgroundAgent):
         the collection's own program, so it is retried unconditionally and never spends
         an attempt — measured live, four preemptions in one conversation burned the
         day's occurrence under the old shared bound, and that day's job never ran.
+
+        A CADENCE occurrence consumed with an unhealthy end is the run failed FOR
+        GOOD (#2975): the budget is spent, so no retry is coming, and a
+        ``job_failed`` event is queued so Penny is told — carrying ``run_id``,
+        whose own outcome stamp the event's fact set reads back at compose time.
+        An ON_DEMAND failure queues none: the user pressed "run this now" and
+        ``run_for`` already returned the failure to them synchronously; queuing an
+        autonomous send at someone sitting in the conversation would be noise.
 
         Returns whether the occurrence was KEPT, which the post-cycle retirement reads:
         a cycle that did not spend its fire must not spend a run of a bounded schedule
@@ -843,6 +872,11 @@ class Collector(BackgroundAgent):
             # died leaves the addon's panel showing nothing at all.
             self.db.memories.notify_changed(name)
             return True
+        if reason is not None and trigger is CycleTrigger.CADENCE:
+            # The budget spent on an unhealthy end (#2975): the run failed for
+            # good, so Penny is told — the fact set reads the failed run's own
+            # outcome stamp at compose time, never a guess made here.
+            self._queue_job_event(name, run_id, QueueItemKind.JOB_FAILED)
         self._release_retries(name)
         self.db.memories.mark_collected(name)
         return False
@@ -1065,6 +1099,9 @@ class Collector(BackgroundAgent):
         self.db.memories.archive(
             collection.name, actor=MutationActor.SYSTEM, run_id=run_id, note=note
         )
+        # Penny is told (#2975) — AFTER the archive, whose chokepoint cancels the
+        # collection's still-pending rows and must not cancel this one.
+        self._queue_job_event(collection.name, run_id, QueueItemKind.JOB_RETIRED)
         return True
 
     def _archive_if_expired(self, collection: MemoryRow, run_id: str | None) -> bool:
@@ -1092,6 +1129,10 @@ class Collector(BackgroundAgent):
         self.db.memories.archive(
             collection.name, actor=MutationActor.SYSTEM, run_id=run_id, note=note
         )
+        # Penny is told (#2975) — AFTER the archive, whose chokepoint cancels the
+        # collection's still-pending rows and must not cancel this one.  The
+        # while-down sweep passes run_id=None: no run to attribute.
+        self._queue_job_event(collection.name, run_id, QueueItemKind.JOB_RETIRED)
         return True
 
     # ── Per-cycle audit (on the promptlog run itself) ─────────────────────

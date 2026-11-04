@@ -5,12 +5,15 @@ dropped when the autonomous-send cooldown hasn't elapsed.  This task is the othe
 half: each tick it pops the oldest pending message and delivers it, but only once
 the flat-interval cooldown has cleared — so no message is lost, just delayed.
 
-It's a plain ``ScheduledTask`` with ONE model-shaped step (#2656): a row that
-carries ``report_run_id`` and no content yet is a composing report — the notifying
-cycle's hand-off.  For one of those the drainer builds the :class:`JobReport` from
-the cycle's written entries (FULL, never cut), runs ONE chat-agent turn on it, and
-the message the turn writes is what gets gated, stored on the row and delivered.
-Every ordinary row (content already set) goes out with no model call at all.
+It's a plain ``ScheduledTask`` with ONE model-shaped step (#2656): a row with no
+content yet is a composing report — the hand-off a notifying cycle queued, or an
+autonomous job event did (#2975).  For one of those the drainer builds the fact
+set the row's own ``kind`` names — a :class:`JobReport` from the cycle's written
+entries (FULL, never cut), a :class:`SandboxReport` from the previewed trace
+(#2964), or a retirement/failure fact set (#2975) — runs ONE chat-agent turn on
+it, and the message the turn writes is what gets gated, stored on the row and
+delivered.  Every ordinary row (content already set) goes out with no model call
+at all.
 
 ``deliver_composed`` (#2913) is the OTHER entry point: a caller that already ran
 its own delivery turn and gated what it wrote (the startup changelog announcement,
@@ -56,11 +59,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from penny.constants import CycleTrigger, PennyConstants
+from penny.constants import CycleTrigger, PennyConstants, QueueItemKind
 from penny.llm.call_link import CallLink
 from penny.notification import (
+    JobFailedReport,
+    JobRetiredReport,
     SandboxReport,
+    build_job_failed_report,
     build_job_report,
+    build_job_retired_report,
     build_sandbox_report,
     withheld_reason,
 )
@@ -184,34 +191,61 @@ class SendQueueDrainer:
 
     @staticmethod
     def _is_report(item: SendQueueItem) -> bool:
-        """A composing report: the hand-off row a notifying cycle queued (#2656) —
-        the cycle's run id and no content yet.  The structural mark, read once:
-        ``content`` being empty on an ORDINARY row is not a state the queue holds
-        (the enqueue chokepoints refuse it), so the pair is unambiguous."""
-        return bool(item.report_run_id) and not item.content
+        """A composing row (#2656, widened #2975): the hand-off row a notifying
+        cycle or an autonomous job event queued — no content yet, the message
+        written later by the delivery chat turn.  The structural mark, read
+        once: ``content`` being empty on an ORDINARY row is not a state the
+        queue holds (the enqueue chokepoints refuse it), so it is unambiguous.
+        WHAT to build is the row's own ``kind`` (#2975), read in
+        ``_build_report``."""
+        return not item.content
+
+    def _build_report(
+        self, item: SendQueueItem
+    ) -> JobReport | SandboxReport | JobRetiredReport | JobFailedReport | None:
+        """The fact set one composing row's message is built from, by the row's
+        own ``kind`` (#2975) — the structural mark set once at enqueue, never a
+        guess from the row's content (a run-limit one-shot's last run looks
+        exactly like an ordinary report's run, so no read off the run record
+        alone could tell them apart).
+
+        ``report`` — the notifying cycle's :class:`JobReport` off the cycle's
+        written entries, or a SANDBOX origin's :class:`SandboxReport` off the
+        previewed cycle's own tool-call trace (#2964).  ``job_retired`` — the
+        :class:`JobRetiredReport` off the mutation ledger's system-actor
+        archive note (``report_run_id`` may be ``None``: a while-down expiry
+        has no run to attribute).  ``job_failed`` — the
+        :class:`JobFailedReport` off the failed run's own outcome stamp, keyed
+        on ``report_run_id``, which that kind always carries.
+
+        ``None`` when the fact set cannot be assembled — the collection gone,
+        or the recorded cause unreadable; the builders log which."""
+        kind = QueueItemKind(item.kind)
+        if kind is QueueItemKind.REPORT:
+            assert item.report_run_id is not None
+            if CycleTrigger(item.origin) is CycleTrigger.SANDBOX:
+                return build_sandbox_report(self._db, item.collection, item.report_run_id)
+            return build_job_report(
+                self._db, item.collection, item.report_run_id, trigger=CycleTrigger(item.origin)
+            )
+        if kind is QueueItemKind.JOB_RETIRED:
+            return build_job_retired_report(self._db, item.collection)
+        assert item.report_run_id is not None
+        return build_job_failed_report(self._db, item.collection, item.report_run_id)
 
     async def _compose(self, item: SendQueueItem) -> tuple[str, str] | None:
         """Write the message for one composing report, and account for it either way.
 
-        Builds the report and runs the one delivery turn it rides — a
-        :class:`JobReport` off the cycle's own written entries for every ordinary
-        origin, or a :class:`SandboxReport` off the previewed cycle's own
-        tool-call trace for a SANDBOX origin (#2964, never written entries, since
-        nothing it did was real) — then runs what the turn wrote through the same
-        send gate either way.  Returns ``(content, run_id)`` — the message and the
-        turn that wrote it — or ``None`` when this tick delivered nothing and the
-        row was dealt with: a DECLINE was stamped cancelled, a failure was counted
-        against the row's bounded budget, and a cancellation left the row exactly
-        as it was."""
-        assert item.report_run_id is not None
-        if CycleTrigger(item.origin) is CycleTrigger.SANDBOX:
-            report = build_sandbox_report(self._db, item.collection, item.report_run_id)
-        else:
-            report = build_job_report(
-                self._db, item.collection, item.report_run_id, trigger=CycleTrigger(item.origin)
-            )
+        Builds the report off the row's own kind (``_build_report``, #2975) and
+        runs the one delivery turn it rides — then runs what the turn wrote
+        through the same send gate either way.  Returns ``(content, run_id)`` —
+        the message and the turn that wrote it — or ``None`` when this tick
+        delivered nothing and the row was dealt with: a DECLINE was stamped
+        cancelled, a failure was counted against the row's bounded budget, and
+        a cancellation left the row exactly as it was."""
+        report = self._build_report(item)
         if report is None:
-            self._fail(item, "the collection no longer exists")
+            self._fail(item, "the fact set could not be built")
             return None
         sender = self._db.users.get_primary_sender()
         if sender is None:
@@ -247,16 +281,24 @@ class SendQueueDrainer:
         return answer, run_id
 
     async def _dispatch_report_turn(
-        self, report: JobReport | SandboxReport, sender: str, run_id: str
+        self,
+        report: JobReport | SandboxReport | JobRetiredReport | JobFailedReport,
+        sender: str,
+        run_id: str,
     ) -> ControllerResponse:
         """The one delivery turn this report rides — ``handle_job_report`` for a
         :class:`JobReport`, ``handle_sandbox_report`` for a :class:`SandboxReport`
-        (#2964).  Dispatched on the report's OWN type, never the queue row's
+        (#2964), ``handle_job_event_report`` for either autonomous job event
+        (#2975).  Dispatched on the report's OWN type, never the queue row's
         origin a second time, so this can never disagree with which report
         ``_compose`` actually built."""
         call_link = CallLink.top(run_id)
         if isinstance(report, SandboxReport):
             return await self._chat_agent.handle_sandbox_report(report, sender, call_link=call_link)
+        if isinstance(report, (JobRetiredReport, JobFailedReport)):
+            return await self._chat_agent.handle_job_event_report(
+                report, sender, call_link=call_link
+            )
         return await self._chat_agent.handle_job_report(report, sender, call_link=call_link)
 
     def _record_failure(self, item: SendQueueItem, reason: str) -> None:
