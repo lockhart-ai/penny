@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the auto-deploy loop's launchd agent (#2955). Rendered with this
+  checkout's absolute paths by `make deploy-loop-plist` — see the Makefile target
+  and scripts/deploy-loop.sh. Not installed automatically: review the rendered
+  output, then copy it to ~/Library/LaunchAgents/com.penny.deployloop.plist and
+  `launchctl load` it yourself.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.penny.deployloop</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__DEPLOY_LOOP_SCRIPT__</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__PROJECT_DIR__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- launchd agents start with a minimal PATH that has neither git, make,
+		     nor docker on it (all of which the loop shells out to) — Homebrew's
+		     two install locations plus the usual system dirs cover both Intel
+		     and Apple Silicon. Override this key in the rendered copy if yours
+		     live somewhere else. -->
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/deploy-loop.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/deploy-loop.err.log</string>
+</dict>
+</plist>
