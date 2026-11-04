@@ -22,6 +22,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import pathlib
+import re
 import shutil
 import signal
 import subprocess
@@ -618,3 +619,73 @@ def test_prod_targets_build_and_run_their_own_penny_prod_tag():
     assert (
         "docker image inspect penny:prod --format {{.Config.Labels.git_commit}}" in script_text
     ), "the deploy loop's startup check inspects the production tag, not the shared one"
+
+
+# A `*_KEY=`/`*_TOKEN=` value as an argument of `env` — the in-container command
+# `env` is docker's argv too — or of a valued `-e/--env` flag, puts the secret on
+# a command line any local process can read through `ps`. A chain of earlier
+# ordinary `NAME=value` assignments may sit between `env` and the key (the eval
+# recipes' argument lists), so the match spans them.
+_CREDENTIAL_ON_ENV_ARGV = re.compile(
+    r"\benv\s+(?:[A-Z][A-Z0-9_]*=\S+\s+)*[A-Z][A-Z0-9_]*(?:KEY|TOKEN)="
+)
+_CREDENTIAL_ON_RUN_FLAG = re.compile(r"(?:^|\s)(?:--env|-e)\s+[A-Z][A-Z0-9_]*(?:KEY|TOKEN)=")
+
+
+def _makefile_targets(makefile_text: str) -> list[str]:
+    """Every target name defined in the Makefile: column-0 lines with a colon
+    that are not variable definitions (the text right after the colon starts
+    with `=` for `:=`/`+=`/`?=`)."""
+    names = []
+    for line in makefile_text.splitlines():
+        if line.startswith(("\t", " ", "#")) or ":" not in line:
+            continue
+        head, _, tail = line.partition(":")
+        if tail.startswith("=") or "=" in head:
+            continue
+        names.extend(head.split())
+    return names
+
+
+def _recipe_logical_lines(recipe: str) -> list[str]:
+    """A recipe's logical shell lines: physical tab-indented lines joined on
+    trailing backslashes, since that is how the shell receives a recipe —
+    `env NAME=... \\` split across physical lines is one argv, not two."""
+    logical: list[str] = []
+    pending = ""
+    for raw in recipe.splitlines():
+        chunk = raw.strip()
+        pending = f"{pending} {chunk}" if pending else chunk
+        if pending.endswith("\\"):
+            pending = pending[:-1]
+        else:
+            logical.append(pending)
+            pending = ""
+    if pending:
+        logical.append(pending)
+    return logical
+
+
+def test_no_recipe_passes_a_credential_on_a_command_line():
+    """Eval secrets reach the model through the environment, never argv (#2986):
+    `make eval-remote` and `make replay` used to pass `LLM_API_KEY="..."` as an
+    argument of the `docker compose run` command line, where any local process
+    could read it through `ps`. The recipes export the key in their own shell and
+    hand docker a bare `-e NAME` passthrough instead. This is a static read of
+    the Makefile (no docker is invoked): no recipe line may carry a
+    `*_KEY=`/`*_TOKEN=` value as an argument of `env` or of a valued `-e/--env`
+    flag. Shell-side assignments and `export NAME=...` statements are the
+    mechanism, not the violation — a lowercase name never matches, and an
+    `export`-ed name is not an argument of anything."""
+    makefile_text = pathlib.Path(_repo_file(_MAKEFILE)).read_text()
+    offenders = []
+    for target in _makefile_targets(makefile_text):
+        recipe = _makefile_target_recipe(makefile_text, target)
+        for line in _recipe_logical_lines(recipe):
+            for pattern in (_CREDENTIAL_ON_ENV_ARGV, _CREDENTIAL_ON_RUN_FLAG):
+                if pattern.search(line):
+                    offenders.append(f"{target}: {line.strip()}")
+    assert not offenders, (
+        "these recipes put a credential on a command line — export it in the "
+        "recipe's shell and pass docker a bare `-e NAME` instead:\n" + "\n".join(offenders)
+    )
