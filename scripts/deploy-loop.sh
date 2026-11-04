@@ -24,12 +24,14 @@ DEPLOY_LOG="${DEPLOY_LOG:-data/penny/logs/deploy-loop.log}"
 DEPLOY_RUN_LOG="${DEPLOY_RUN_LOG:-data/penny/logs/deploy-run.log}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 DEPLOY_CRASH_BACKOFF="${DEPLOY_CRASH_BACKOFF:-30}"
-# Which commit the image tagged `penny` was built from (#2973): the image's own
+# Which commit the image tagged `penny:prod` was built from (#2973): the image's own
 # `git_commit` LABEL, set from the GIT_COMMIT build arg inside the Dockerfile on
-# every build path. A successful prod-build retags the image; a failed one leaves
+# every build path. A successful prod-build retags that tag; a failed one leaves
 # the old image standing — so this replaces the old host-side `.changelog_cursor`
 # (which a built-but-never-started image advanced for it) as the "last successful
-# build" record the startup check compares HEAD against. Overridable so a test can
+# build" record the startup check compares HEAD against. Production runs its own
+# `penny:prod` tag (#2977), which no worktree's `make check` ever retags — that is
+# the tag whose build record this reads. Overridable so a test can
 # stub it (`cat <file>` in front of a file the build stub writes) and so the script
 # runs against a scratch image name; empty output (no image, no label) means "not
 # built", exactly what a missing cursor used to mean. Two shell traps shape how
@@ -43,7 +45,7 @@ DEPLOY_CRASH_BACKOFF="${DEPLOY_CRASH_BACKOFF:-30}"
 # quote-free value.
 DEPLOY_IMAGE_COMMIT_CMD="${DEPLOY_IMAGE_COMMIT_CMD:-}"
 if [ -z "$DEPLOY_IMAGE_COMMIT_CMD" ]; then
-    DEPLOY_IMAGE_COMMIT_CMD='docker image inspect penny --format {{.Config.Labels.git_commit}}'
+    DEPLOY_IMAGE_COMMIT_CMD='docker image inspect penny:prod --format {{.Config.Labels.git_commit}}'
 fi
 
 mkdir -p "$(dirname "$DEPLOY_LOG")" "$(dirname "$DEPLOY_RUN_LOG")"
@@ -168,7 +170,7 @@ interruptible_sleep() {
 # restarted later. Neither looks "new" to fetch_and_maybe_deploy, which only ever
 # compares HEAD against origin: once they're equal, nothing will ever trigger a
 # build for a commit that's already checked out. So build once here if the commit
-# the image tagged `penny` was built from (its own `git_commit` LABEL, #2973)
+# the image tagged `penny:prod` was built from (its own `git_commit` LABEL, #2973)
 # doesn't match HEAD, or the label can't be read at all. Short hashes on both
 # sides: GIT_COMMIT rides every build path as `git rev-parse --short HEAD`, and
 # the loop compares the same form. A failure is logged and the child still starts

@@ -30,14 +30,24 @@ import time
 import pytest
 
 _SCRIPT = pathlib.Path("scripts") / "deploy-loop.sh"
+_MAKEFILE = pathlib.Path("Makefile")
+_COMPOSE_FILE = pathlib.Path("docker-compose.yml")
+
+
+def _repo_file(relpath: pathlib.Path) -> str:
+    """A repo-root file's absolute path, found by walking up — the same walk
+    `_script_path` does, so the tests stay runnable from any working directory
+    and from inside the gate's container, where the repo-root files a test needs
+    are mounted read-only one by one (see docker-compose.override.yml)."""
+    for parent in pathlib.Path(__file__).resolve().parents:
+        candidate = parent / relpath
+        if candidate.is_file():
+            return str(candidate)
+    raise AssertionError(f"no {relpath} above this test")
 
 
 def _script_path() -> str:
-    for parent in pathlib.Path(__file__).resolve().parents:
-        candidate = parent / _SCRIPT
-        if candidate.is_file():
-            return str(candidate)
-    raise AssertionError(f"no {_SCRIPT} above this test")
+    return _repo_file(_SCRIPT)
 
 
 def _require_git() -> None:
@@ -558,3 +568,53 @@ def test_stopped_child_is_still_stopped_by_the_loop(tmp_path, repos):
         _wait_until(_child_gone)
     finally:
         _stop(dep.proc)
+
+
+def _makefile_target_recipe(makefile_text: str, target: str) -> str:
+    """A Makefile target's recipe body: every line between `<target>:` and the
+    next line starting at column 0 (a new target, variable or section). Recipe
+    lines are tab-indented, so the column-0 line ends the body."""
+    lines = makefile_text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"{target}:"))
+    body = []
+    for line in lines[start + 1 :]:
+        if line and not line.startswith("\t"):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def test_prod_targets_build_and_run_their_own_penny_prod_tag():
+    """Production must build and run its own image tag (#2977): every worktree's
+    `make check`/`make up` rebuilds and retags the shared `penny` tag, so when
+    prod ran that tag too, a crash-restart (`prod-run` alone, no rebuild) could
+    bring up a kitten's dev build in production. The prod path (`prod-build`,
+    `prod-run`, `prod-ios`) sets PENNY_IMAGE=penny:prod, which docker-compose.yml
+    reads for the penny service's `image:`; the shared paths (`up`, and the eval
+    recipes' `docker compose run`) set nothing and keep the shared tag. The
+    deploy loop's startup build check inspects that same production tag.
+
+    This is a static read of the three files (no docker is invoked): there is no
+    existing harness that executes a Makefile or compose recipe, and running one
+    would build images and touch containers — the loop's own subprocess tests
+    above cover the script's behaviour with the command stubbed."""
+    makefile_text = pathlib.Path(_repo_file(_MAKEFILE)).read_text()
+    compose_text = pathlib.Path(_repo_file(_COMPOSE_FILE)).read_text()
+    script_text = pathlib.Path(_script_path()).read_text()
+
+    assert "image: ${PENNY_IMAGE:-penny}" in compose_text, (
+        "docker-compose.yml reads the overridable image, defaulting to the shared tag"
+    )
+
+    for target in ("prod-build", "prod-run", "prod-ios"):
+        recipe = _makefile_target_recipe(makefile_text, target)
+        assert "PENNY_IMAGE=penny:prod" in recipe, f"{target} must set PENNY_IMAGE=penny:prod"
+
+    up_recipe = _makefile_target_recipe(makefile_text, "up")
+    assert "PENNY_IMAGE" not in up_recipe, (
+        "`make up` keeps the shared `penny` tag — only the prod path is pinned"
+    )
+
+    assert (
+        "docker image inspect penny:prod --format {{.Config.Labels.git_commit}}" in script_text
+    ), "the deploy loop's startup check inspects the production tag, not the shared one"

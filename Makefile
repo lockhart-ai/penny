@@ -199,22 +199,29 @@ up: browser-build
 # current container still serves, and only tears it down (prod-run, below) once the
 # build has actually succeeded. The image's own `git_commit` LABEL (set from the
 # GIT_COMMIT build arg inside the Dockerfile) is what tells the loop — and any
-# operator — which commit the image tagged `penny` was actually built from; a
+# operator — which commit the image tagged `penny:prod` was actually built from; a
 # successful build retags it, a failed one leaves the old image standing.
+# PENNY_IMAGE pins production to its own `penny:prod` tag (#2977) — `make check`/
+# `make up` from any worktree keep building and retagging the shared `penny` tag,
+# which can never touch what production runs.
 prod-build: browser-build
 	$(CHANGELOG_ENV) scripts/store_git_info.sh
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
+	PENNY_IMAGE=penny:prod \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) build
 
 # Stops whatever is running and starts the (already-built) image. Split out of `prod`
 # so `down` happens right before `up`, not before the build (#2955) — a plain
 # `make prod` still ends up down-then-up, it just builds first; the auto-deploy loop
 # calls this only after prod-build has succeeded, and it also mops up any container
-# the loop's own stopped child left behind.
+# the loop's own stopped child left behind. Runs the `penny:prod` tag prod-build
+# tagged — a crash-restart here can never bring up a worktree's shared `penny`
+# image (#2977).
 prod-run:
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 	SNAPSHOT=1 \
+	PENNY_IMAGE=penny:prod \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up
 
 prod: prod-build prod-run
@@ -223,8 +230,10 @@ prod-ios: browser-build
 	$(CHANGELOG_ENV) scripts/store_git_info.sh
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
+	PENNY_IMAGE=penny:prod \
 	docker compose -f docker-compose.yml build penny
 	SNAPSHOT=1 \
+	PENNY_IMAGE=penny:prod \
 	docker compose -f docker-compose.yml run --rm --service-ports --no-deps -e CHANNEL_TYPE=ios penny
 
 # --- Auto-deploy loop (#2955) ---------------------------------------------------
@@ -268,10 +277,12 @@ kill: clean-project-images
 
 # Remove THIS compose project's containers, locally-built images and anonymous
 # volumes without touching other projects or the shared build cache. The penny
-# service is pinned to the fixed `penny` tag, so `make check` from any worktree
+# service defaults to the fixed `penny` tag, so `make check` from any worktree
 # overwrites one shared image rather than leaving a project-scoped one behind;
 # `--rmi local` drops that tag (rebuilt on the next `up`, and skipped here while a
-# container holds it, e.g. production). Run this at §9 teardown. Safe to run with
+# container holds it, e.g. production). Production's own `penny:prod` (#2977)
+# carries a custom tag, which `--rmi local` leaves alone — a worktree's `kill`
+# never deletes the image production runs. Run this at §9 teardown. Safe to run with
 # no containers up — `down` is a no-op and `--rmi local` still drops the images.
 # `--volumes` only clears this project's anonymous volumes; penny's persistent
 # data lives in bind mounts (./data), which it never touches.

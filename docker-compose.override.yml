@@ -13,6 +13,10 @@ services:
       # guard that reimplemented that helper would drift back into the bug it catches — so
       # the test reads the real Makefile, which has to be visible from inside the container.
       - ./Makefile:/penny/Makefile:ro
+      # The prod image-tag test (#2977) asserts on the penny service's `image:` line, which
+      # is what the prod targets override with PENNY_IMAGE — same pattern as the Makefile
+      # mount above: read the real file, never a guard's copy of it.
+      - ./docker-compose.yml:/penny/docker-compose.yml:ro
       # The provider lock `make eval-remote` takes is a shell file the recipe sources, and its
       # test drives that real file from several shells at once — for the same reason.
       - ./scripts/eval-provider-lock.sh:/penny/scripts/eval-provider-lock.sh:ro
