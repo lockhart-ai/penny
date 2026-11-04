@@ -114,18 +114,24 @@ class JobReport(BaseModel):
 _CADENCE_LINE = "It ran on its own schedule."
 _ON_DEMAND_LINE = "It ran just now because the user asked it to run."
 _WROTE_HEAD = "## What the job wrote this run"
-_WROTE_LEAD = "These entries are what the job kept for the user this run."
+_WROTE_LEAD = (
+    "These entries are what the job kept for the user this run — the message "
+    "tells them about every one."
+)
 _WROTE_NONE = "It wrote nothing down this run."
 _WRITE_LINE = "- into `{memory}`, under `{key}`: {content}"
 _WRITE_LINE_NO_KEY = "- into `{memory}`: {content}"
+_ASK = (
+    "Write the one message to send the user about this run, from what the job "
+    "wrote. It can be as long as it takes to cover every entry — a job's report "
+    "isn't a quick text."
+)
 _REPORT_LEAD = 'Your job "{collection}" just finished a run and asked to tell the user.'
 _REPORT_ABOUT = "What the job is for: {description}"
 
 
 def render_job_report(report: JobReport, handles: HandleTable | None = None) -> str:
-    """The whole delivery turn's input, rendered from framework-assembled facts alone
-    (#2656, the trigger reworked #2974 — facts only, no instruction: she decides for
-    herself whether, how, and how many times to reply, the same as on any chat turn).
+    """The whole delivery turn's input, rendered from framework-assembled facts alone.
 
     Pure and deterministic — no database, no model — so the exact text the chat agent
     reads is pinned by a whole-render test rather than by whatever a live run happened
@@ -137,12 +143,7 @@ def render_job_report(report: JobReport, handles: HandleTable | None = None) -> 
     ``handles`` is the delivery turn's own link table (#2717): a stored entry keeps
     real URLs, so the render converts them to that turn's handles — a URL the model
     READS always arrives as a handle, and the message it writes cites numbers the
-    send path expands.  ``None`` renders the entries verbatim (the test shape).
-
-    This is the ONE render used both live (as the turn's own trailing SYSTEM message,
-    ``ChatAgent.handle_job_report``) and, byte-identical, in every later turn's history
-    (``Agent._run_trigger_message`` reads it back off this run's own promptlog row —
-    never stored a second time)."""
+    send path expands.  ``None`` renders the entries verbatim (the test shape)."""
     lines = [
         _REPORT_LEAD.format(collection=report.collection),
         _REPORT_ABOUT.format(description=report.description),
@@ -158,6 +159,7 @@ def render_job_report(report: JobReport, handles: HandleTable | None = None) -> 
         lines.extend(_written_report_line(entry, handles) for entry in report.entries)
         if handles is not None and len(handles) > size_before:
             lines.append(CITATION_LINE)
+    lines.extend(["", _ASK])
     return "\n".join(lines)
 
 
@@ -228,24 +230,28 @@ class SandboxReport(BaseModel):
 
 
 _SANDBOX_REPORT_LEAD = 'Your sandbox preview of "{collection}" just finished — nothing was saved.'
+_SANDBOX_ASK = (
+    "Tell the user what this preview showed — what the job WOULD have done, never "
+    "that it happened. Cover every change the trace below describes."
+)
 
 
 def render_sandbox_report(report: SandboxReport) -> str:
     """The whole sandbox delivery turn's input, rendered from framework-assembled
-    facts alone — the sibling of ``render_job_report`` (trigger reworked #2974).
+    facts alone — the sibling of ``render_job_report``.
 
     Pure and deterministic, same as ``render_job_report``.  ``report.trace`` is
     already the full tool-call sequence (``render_run_calls``), so there is
-    nothing here to condense or cap.  ``_SANDBOX_REPORT_LEAD`` is the one fact
-    that keeps the model from mistaking a preview for a thing that happened —
-    nothing here instructs her to say so; she decides for herself whether, how,
-    and how many times to reply, the same as on any chat turn."""
+    nothing here to condense or cap — only the sandbox framing around it, so the
+    model never mistakes a preview for a thing that happened."""
     return "\n".join(
         [
             _SANDBOX_REPORT_LEAD.format(collection=report.collection),
             _REPORT_ABOUT.format(description=report.description),
             "",
             report.trace,
+            "",
+            _SANDBOX_ASK,
         ]
     )
 
