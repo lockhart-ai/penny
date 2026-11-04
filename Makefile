@@ -84,7 +84,9 @@ EVAL_ARTIFACTS_MOUNT := /penny/eval-artifacts
 # from the primary `.env`, never LLM_API_KEY (which is the chat endpoint's key). A shell
 # LLM_API_KEY still overrides, for one-off runs. Other variables are read from the shell
 # first and from the PRIMARY checkout's `.env` second.  Values are forwarded into the
-# container's env and never echoed.
+# container's env and never echoed. Credentials are exported in the recipe's shell and
+# handed to docker with a bare `-e NAME` passthrough — never as an argument on the
+# `docker compose` command line, where `ps` would expose them (#2986).
 EVAL_PRIMARY_ENV := $(EVAL_PRIMARY_CHECKOUT)/.env
 # Where the embedding model lives, from inside the eval container: it stays local in
 # every run, so pointing the chat model at a remote provider never silently moves the
@@ -361,16 +363,23 @@ else
 # On host — run tools inside Docker containers
 # --no-deps: dev tools don't need signal-api healthy (would block on first run)
 RUN = docker compose run --rm --no-deps penny
+# Credentials ride the environment into the container, never docker's argv (#2986):
+# the recipe exports the key in its own shell, and a bare `-e NAME` (before the
+# service name — everything after it is the command) copies that value through
+# without it ever appearing on the `docker compose` command line, where any local
+# process could read it via `ps`. Under LOCAL there is no docker in between, so the
+# exported shell env reaches the tools directly.
 # eval-remote/assemble additionally bind-mount the primary checkout's durable artifact
 # dir (#1734) at $(EVAL_ARTIFACTS_MOUNT) — the only two targets that read/write
 # it — so their output survives the running worktree being swept.
-EVAL_RUN = docker compose run --rm --no-deps -v "$(EVAL_ARTIFACTS_HOST):$(EVAL_ARTIFACTS_MOUNT)" penny
+EVAL_RUN = docker compose run --rm --no-deps -e LLM_API_KEY -e LLM_EMBEDDING_API_KEY \
+	-v "$(EVAL_ARTIFACTS_HOST):$(EVAL_ARTIFACTS_MOUNT)" penny
 # `make replay` (#2917) nests two more binds from the PRIMARY checkout inside the
 # plain `./data:/penny/data` mount docker-compose.yml already gives every service —
 # a worktree's own `./data` is empty, so without this a replay would read no prod
 # DB and write its report nowhere durable. The prod DB nest is read-only; the report
 # dir isn't, since this is the one target that writes into it.
-REPLAY_RUN = docker compose run --rm --no-deps \
+REPLAY_RUN = docker compose run --rm --no-deps -e LLM_API_KEY \
 	-v "$(EVAL_PRIMARY_CHECKOUT)/data/penny:/penny/data/penny:ro" \
 	-v "$(EVAL_PRIMARY_CHECKOUT)/data/reports/replay:/penny/data/reports/replay" \
 	penny
@@ -485,6 +494,7 @@ eval-remote: $(if $(LOCAL),,build)
 	if [ -z "$$llm_key" ]; then llm_key="$$(from_env "$(EVAL_REMOTE_API_KEY_VAR)")"; fi; \
 	embed_url="$${LLM_EMBEDDING_API_URL:-$(LLM_LOCAL_ENDPOINT)}"; \
 	embed_key="$${LLM_EMBEDDING_API_KEY:-$$(from_env LLM_EMBEDDING_API_KEY)}"; \
+	export LLM_API_KEY="$$llm_key" LLM_EMBEDDING_API_KEY="$$embed_key"; \
 	echo "eval: embeddings stay local at $$embed_url"; \
 	if [ -z "$$llm_key" ]; then \
 		echo "eval: no credential — set $(EVAL_REMOTE_API_KEY_VAR) in $(EVAL_PRIMARY_ENV), or LLM_API_KEY in the shell." >&2; \
@@ -492,9 +502,9 @@ eval-remote: $(if $(LOCAL),,build)
 	fi; \
 	echo "eval: $$model at $$llm_url$${pinned:+ pinned to $$pinned} · $$workers worker(s) x $$concurrency sample(s) in flight"; \
 	smoke_log="$$(mktemp)"; \
-	if ( $(EVAL_RUN) env LLM_API_URL="$$llm_url" LLM_API_KEY="$$llm_key" \
+	if ( $(EVAL_RUN) env LLM_API_URL="$$llm_url" \
 		LLM_MODEL="$$model" LLM_PROVIDER="$$pinned" \
-		LLM_EMBEDDING_API_URL="$$embed_url" LLM_EMBEDDING_API_KEY="$$embed_key" \
+		LLM_EMBEDDING_API_URL="$$embed_url" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		python -m penny.tests.eval.utils.endpoint_smoke ) > "$$smoke_log" 2>&1; then smoked=1; else smoked=0; fi; \
 	cat "$$smoke_log"; \
@@ -522,10 +532,8 @@ eval-remote: $(if $(LOCAL),,build)
 	health_dir="$${report_dir:-$(EVAL_EPHEMERAL_HEALTH_DIR)/$$run_key}"; \
 	$(EVAL_RUN) env \
 		LLM_API_URL="$$llm_url" \
-		LLM_API_KEY="$$llm_key" \
 		LLM_MODEL="$$model" \
 		LLM_EMBEDDING_API_URL="$$embed_url" \
-		LLM_EMBEDDING_API_KEY="$$embed_key" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		LLM_DECISION_MODEL="$${LLM_DECISION_MODEL:-$$(from_env LLM_DECISION_MODEL)}" \
 		LLM_DECISION_API_URL="$${LLM_DECISION_API_URL:-$$(from_env LLM_DECISION_API_URL)}" \
@@ -590,9 +598,10 @@ replay: $(if $(LOCAL),,build)
 		echo "make replay: no credential — set $(EVAL_REMOTE_API_KEY_VAR) in $(EVAL_PRIMARY_ENV), or LLM_API_KEY in the shell." >&2; \
 		exit 1; \
 	fi; \
+	export LLM_API_KEY="$$llm_key"; \
 	echo "replay: id=$(ID) mode=$(MODE) samples=$(SAMPLES) $$model at $$llm_url$${pinned:+ pinned to $$pinned}"; \
 	$(REPLAY_RUN) env \
-		LLM_API_URL="$$llm_url" LLM_API_KEY="$$llm_key" \
+		LLM_API_URL="$$llm_url" \
 		LLM_MODEL="$$model" LLM_PROVIDER="$$pinned" \
 		python -m penny.tests.eval.utils.replay --id "$(ID)" \
 			--samples "$(SAMPLES)" --mode "$(MODE)" --concurrency "$(CONCURRENCY)" \
