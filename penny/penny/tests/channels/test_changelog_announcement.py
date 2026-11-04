@@ -16,6 +16,7 @@ from sqlmodel import col, select
 from penny.agents.models import ControllerResponse
 from penny.changelog import ChangelogEntry, record_new_entries, render_changelog_announcement
 from penny.channels.base import IncomingMessage, MessageChannel
+from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType, PennyConstants
 from penny.database.models import PromptLog
 from penny.penny import Penny
@@ -51,7 +52,7 @@ class StartupReadyChannel(MessageChannel):
     """Fake channel whose sends are blocked on listener readiness."""
 
     def __init__(self, message_agent, db):
-        super().__init__(message_agent=message_agent, db=db)
+        super().__init__(message_agent=message_agent, db=db, turn_registry=TurnRegistry())
         self.listen_started = asyncio.Event()
         self.ready = asyncio.Event()
         self.closed = asyncio.Event()

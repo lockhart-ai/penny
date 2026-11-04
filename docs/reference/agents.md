@@ -69,6 +69,8 @@ Each agent overrides `_build_system_prompt(user)` to compose its prompt from reu
 
 The chat turns array (alternating user/assistant messages passed via `history=`) is reconstructed from the last N messages in `db.messages` — independent of any memory metadata.
 
+**Mid-run message joins (#2985)**: `Agent.run` takes a REQUIRED `inbox` (`channels/turns.py` — `NO_INBOX` for every background caller, stated at each site). The loop's one drain point sits after a tool step's results are absorbed (and after `after_tool_step`'s writes record), BEFORE the next model call: each queued message becomes a plain `user` turn with its images riding the message (#2635), exactly the shape an ordinary user message renders in. What the drain joined is stamped on the run's last prompt row (`promptlog.injected_messages` — content in its record form + `after_tool_call_id`, the ORIGINAL id of the step's last tool call) beside `trailing_messages`/`link_handles`. History renders it at that position: `_expand_history_turn` walks the run's own (call, result) pairs — `run_tool_history` now carries each call's original id — and renders each stamped message as a `user` turn right after its anchor call (an anchor that matches no logged call renders after the last pair — degraded, never lost), so a later turn reads tool call, tool result, the user's words, then what followed, with the message never merged into the triggering exchange and never duplicated. `_build_conversation` and `count_user_turns` both skip incoming rows stamped with a run id — the one mark, read in both places, so the window anchor and the rendered shape can never drift.
+
 
 ### Shared LLM Client Instances
 

@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 
 from penny.channels.base import IncomingMessage
 from penny.channels.browser.channel import BrowserChannel, ConnectionInfo, PendingToolRequest
+from penny.channels.turns import TurnRegistry
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
 from penny.database import Database
@@ -49,7 +50,13 @@ class TestBrowserChannelExtract:
     """extract_message produces IncomingMessage with correct fields."""
 
     def test_extracts_message_with_channel_type(self, db):
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         raw = {"browser_sender": "firefox-macbook", "content": "hello penny"}
         msg = channel.extract_message(raw)
 
@@ -60,7 +67,13 @@ class TestBrowserChannelExtract:
         assert msg.device_identifier == "firefox-macbook"
 
     def test_extracts_default_sender(self, db):
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         raw = {"content": "hello"}
         msg = channel.extract_message(raw)
 
@@ -69,7 +82,13 @@ class TestBrowserChannelExtract:
         assert msg.device_identifier == "browser-user"
 
     def test_returns_none_for_empty_content(self, db):
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         assert channel.extract_message({"content": ""}) is None
         assert channel.extract_message({"content": "   "}) is None
 
@@ -78,7 +97,13 @@ class TestBrowserAutoRegistration:
     """_auto_register_device creates device entries in the database."""
 
     def test_registers_new_device(self, db):
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         channel._auto_register_device("firefox-macbook-16")
 
         device = db.devices.get_by_identifier("firefox-macbook-16")
@@ -87,7 +112,13 @@ class TestBrowserAutoRegistration:
         assert device.label == "firefox-macbook-16"
 
     def test_register_is_idempotent(self, db):
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         channel._auto_register_device("firefox-macbook-16")
         channel._auto_register_device("firefox-macbook-16")
 
@@ -101,7 +132,13 @@ class TestBrowserPrepareOutgoing:
 
     def _channel(self, tmp_path):
         db = migrated_db(str(tmp_path / "test.db"))
-        return BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        return BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
     def test_bold(self, tmp_path):
         result = self._channel(tmp_path).prepare_outgoing("**hello**")
@@ -732,7 +769,13 @@ class TestBrowserConfigHandlers:
 
     def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
         db = migrated_db(str(tmp_path / "test.db"))
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         # Give channel a real RuntimeParams so DB lookups work after updates
         config = MagicMock()
         config.runtime = RuntimeParams(db=db)
@@ -870,7 +913,13 @@ class TestBrowserHeartbeat:
         but must NOT reset the idle timer — a ~15s ping that counted as activity
         would keep the system perpetually busy and starve the idle-gated
         collectors."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         scheduler = MagicMock()
         channel.set_scheduler(scheduler)
 
@@ -891,7 +940,13 @@ class TestBrowserHeartbeat:
     @pytest.mark.asyncio
     async def test_heartbeat_without_scheduler_is_noop(self, db):
         """No scheduler set — heartbeat is silently ignored."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         ws = _MockWs()
         # Should not raise
@@ -904,7 +959,13 @@ class TestBrowserRegister:
     @pytest.mark.asyncio
     async def test_register_populates_connections(self, db):
         """After register, _connections has the device."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         assert len(channel._connections) == 0
 
         ws = _MockWs()
@@ -923,7 +984,13 @@ class TestBrowserRegister:
         """A reconnect rewrites the registry to the new socket; the old socket's
         delayed cleanup must not evict that live replacement (the flapping-
         reconnect race that left the addon 'connected but unreachable')."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         ws_old = _MockWs()
         await channel._process_raw_message(
@@ -952,7 +1019,13 @@ class TestBrowserRegister:
     @pytest.mark.asyncio
     async def test_register_creates_device_in_db(self, db):
         """Register auto-registers the device in the database."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         ws = _MockWs()
         await channel._process_raw_message(
@@ -968,7 +1041,13 @@ class TestBrowserRegister:
     @pytest.mark.asyncio
     async def test_tool_request_works_after_register_without_chat(self, db):
         """Tool requests succeed after register + capabilities even if no chat message was sent."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         ws = _MockWs()
         await channel._process_raw_message(
@@ -1005,7 +1084,13 @@ class TestBrowserRegister:
         """The extension's own reading mark (#2388) rides the real ``tool_response``
         message through ``_handle_tool_response`` into ``send_tool_request``'s
         result — never guessed by the server from the text's shape."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         ws = _MockWs()
         await channel._process_raw_message(
             ws,  # ty: ignore[invalid-argument-type]
@@ -1047,7 +1132,13 @@ class TestBrowserRegister:
         """An older extension's ``tool_response`` carries no ``reading`` key at all —
         the channel resolves it to ARTICLE (never guessing link-list from the text)
         and LOGS the degradation, rather than failing silently (#2388)."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         ws = _MockWs()
         await channel._process_raw_message(
             ws,  # ty: ignore[invalid-argument-type]
@@ -1110,7 +1201,13 @@ class TestCapabilitiesAndToolRouting:
     @pytest.mark.asyncio
     async def test_capabilities_update_sets_tool_use(self, db):
         """capabilities_update toggles tool_use_enabled on the connection."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         ws = await self._register(channel, "firefox-1")
         assert not channel._connections["firefox-1"].tool_use_enabled
@@ -1124,7 +1221,13 @@ class TestCapabilitiesAndToolRouting:
     @pytest.mark.asyncio
     async def test_has_browser_connection_tracks_any_connection(self, db):
         """has_browser_connection is True once any addon connects, tool-use or not."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         assert not channel.has_browser_connection
 
@@ -1134,7 +1237,13 @@ class TestCapabilitiesAndToolRouting:
     @pytest.mark.asyncio
     async def test_send_tool_request_explains_connected_but_tool_use_disabled(self, db):
         """A connected browser without tool-use reports the actionable cause."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         await self._register(channel, "firefox-1")
 
@@ -1144,7 +1253,13 @@ class TestCapabilitiesAndToolRouting:
     @pytest.mark.asyncio
     async def test_get_tool_connection_picks_enabled_addon(self, db):
         """Smart routing picks the tool-enabled connection, not the first one."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         await self._register(channel, "firefox-personal")
         ws_penny = await self._register(channel, "firefox-penny")
@@ -1158,7 +1273,13 @@ class TestCapabilitiesAndToolRouting:
     @pytest.mark.asyncio
     async def test_get_tool_connection_none_when_all_disabled(self, db):
         """Returns None when no connections have tool_use enabled."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         await self._register(channel, "firefox-1")
         await self._register(channel, "firefox-2")
@@ -1171,7 +1292,13 @@ class TestCapabilitiesAndToolRouting:
         an older addon without the keepalive rather than a dead one, so staleness
         only *deprioritizes* a socket when a fresher alternative exists; it never
         declares the sole browser offline."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         ws = await self._register(channel, "firefox-1")
         await self._set_capabilities(channel, "firefox-1", ws, True)
@@ -1186,7 +1313,13 @@ class TestCapabilitiesAndToolRouting:
     async def test_get_tool_connection_prefers_live_over_stale(self, db):
         """With one stale and one live tool connection, routing picks the live
         one rather than the stale (most-recent-heartbeat) socket."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
         ws_stale = await self._register(channel, "firefox-stale")
         await self._set_capabilities(channel, "firefox-stale", ws_stale, True)
@@ -1209,7 +1342,13 @@ class TestCapabilitiesAndToolRouting:
         unregistered one is the more recently seen — so recency alone picked exactly
         the socket that cannot answer.
         """
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         channel.handle_message = AsyncMock()
 
         ws_background = await self._register(channel, "firefox-background")
@@ -1244,7 +1383,13 @@ class TestCapabilitiesAndToolRouting:
     async def test_a_new_socket_on_a_known_label_is_unregistered_until_it_says_so(self, db):
         """A different socket taking over a label does not inherit the previous
         socket's claim to service tool calls — it has to register on its own."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         channel.handle_message = AsyncMock()
 
         ws_first = await self._register(channel, "firefox-1")
@@ -1273,7 +1418,13 @@ class TestBrowserSocketLiveness:
     """
 
     def _channel(self, db, port: int = 9999) -> BrowserChannel:
-        return BrowserChannel(host="localhost", port=port, message_agent=MagicMock(), db=db)
+        return BrowserChannel(
+            host="localhost",
+            port=port,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
 
     def _connect(self, channel, label, ws, *, fresh: bool, tool_use: bool = True) -> None:
         """Put a registered, tool-enabled connection in the registry, live or quiet."""
@@ -1429,7 +1580,9 @@ class TestBrowserPushBroadcasts:
     def _channel(self, db) -> BrowserChannel:
         agent = MagicMock()
         agent.embed_description = AsyncMock(return_value=None)
-        return BrowserChannel(host="localhost", port=9999, message_agent=agent, db=db)
+        return BrowserChannel(
+            host="localhost", port=9999, message_agent=agent, db=db, turn_registry=TurnRegistry()
+        )
 
     def _connect(self, channel: BrowserChannel, label: str, ws) -> None:
         channel._connections[label] = ConnectionInfo(ws=cast(Any, ws), registered=True)
@@ -1551,7 +1704,13 @@ class TestBrowserPermissionDelegation:
     async def _setup_channel(self, tmp_path):
         """Create a channel with a registered, tool-enabled connection and permission manager."""
         db = migrated_db(str(tmp_path / "test.db"))
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         ws = _MockWs()
         await channel._process_raw_message(
             ws,  # ty: ignore[invalid-argument-type]
@@ -1671,7 +1830,13 @@ class TestMakeHandleKwargs:
     @pytest.mark.asyncio
     async def test_returns_on_tool_start_key(self, db):
         """_make_handle_kwargs always returns a dict with an on_tool_start callable."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         message = IncomingMessage(sender="browser-user", content="hello")
         kwargs = channel._make_handle_kwargs(message)
 
@@ -1681,7 +1846,13 @@ class TestMakeHandleKwargs:
     @pytest.mark.asyncio
     async def test_callback_sends_tool_status(self, db):
         """Callback calls _send_tool_status with the sender and formatted text."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         channel._send_tool_status = AsyncMock()  # ty: ignore[invalid-assignment]
 
         message = IncomingMessage(sender="firefox-macbook", content="hello")
@@ -1698,7 +1869,13 @@ class TestMakeHandleKwargs:
     @pytest.mark.asyncio
     async def test_send_tool_status_sends_typing_with_content(self, db):
         """_send_tool_status sends a typing message with the status text as content."""
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         ws = _MockWs()
         cast(dict, channel._connections)["browser-user"] = ConnectionInfo(ws=ws)  # ty: ignore[invalid-argument-type]
 
@@ -1716,7 +1893,13 @@ class TestBrowserPromptLogHandlers:
 
     def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
         db = migrated_db(str(tmp_path / "test.db"))
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         return channel, db
 
     def _log_prompt(
@@ -2476,7 +2659,9 @@ class TestBrowserMemoryHandlers:
         # no embedding model in tests → an awaitable that returns None.
         agent = MagicMock()
         agent.embed_description = AsyncMock(return_value=None)
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=agent, db=db)
+        channel = BrowserChannel(
+            host="localhost", port=9999, message_agent=agent, db=db, turn_registry=TurnRegistry()
+        )
         return channel, db
 
     def _seed_memories(self, db) -> None:
@@ -3299,7 +3484,13 @@ class TestBrowserRunDetailHandlers:
 
     def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
         db = migrated_db(str(tmp_path / "test.db"))
-        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
         return channel, db
 
     def _log_prompt(

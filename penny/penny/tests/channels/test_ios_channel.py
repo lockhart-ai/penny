@@ -32,6 +32,7 @@ from penny.channels.ios.models import (
     IOS_RESP_TYPE_OUTBOX_CHANGED,
     IOS_RESP_TYPE_REGISTERED,
 )
+from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 
@@ -77,6 +78,7 @@ def _make_channel(db: Database, apns=None, is_primary: bool = True) -> IosChanne
         pairing_token="pair-me",
         apns_client=apns,
         is_primary_channel=is_primary,
+        turn_registry=TurnRegistry(),
     )
 
 
@@ -224,7 +226,9 @@ async def test_embedding_request_without_model_returns_actionable_error(db):
 
 @pytest.mark.asyncio
 async def test_listen_returns_after_close(db):
-    channel = IosChannel(host="localhost", port=0, message_agent=MagicMock(), db=db)
+    channel = IosChannel(
+        host="localhost", port=0, message_agent=MagicMock(), db=db, turn_registry=TurnRegistry()
+    )
     task = asyncio.create_task(channel.listen())
     try:
         await asyncio.wait_for(_wait_for_server(channel), timeout=2.0)

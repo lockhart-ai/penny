@@ -242,6 +242,13 @@ class Prompt:
     # correcting it, and the reply that followed used to answer the correction ("You're
     # totally right…") instead of the user — which is also what used to force a whole
     # second draw, discarding whatever the first one said.  Delivered this early, there is
+    # Prepended to a message that JOINED a running turn mid-run (#2985) when the
+    # message quoted an earlier one: a plain, deterministic statement of what it
+    # replies to — the stand-in for the thread history an ordinary quote-reply
+    # turn gets built for it, which a mid-run join cannot rebuild.  States the
+    # fact; carries no instruction.
+    QUOTED_MESSAGE_FRAME = '(In reply to "{quoted}")\n\n{content}'
+
     # no draft to discard: the record is part of what the one reply is written from, in
     # the place Penny reads her own situation.  The closing lines give PERMISSION to report
     # a shortfall, because the reply this replaces was not lying — it was counting from the

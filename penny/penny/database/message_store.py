@@ -915,6 +915,11 @@ class MessageStore:
         stop advancing (and silently reindex, since the pool's oldest member
         keeps changing) the moment a conversation outgrows
         ``MESSAGE_CONTEXT_LIMIT`` — this query never does.
+
+        A message that JOINED a run mid-turn (#2985 — an incoming row stamped
+        with the run id) is excluded: it renders inside the run's own history
+        expansion, never as a user turn of its own, so the anchor counts what
+        the rendered history shows and the two can never drift.
         """
         with self._session() as session:
             return session.exec(
@@ -922,6 +927,7 @@ class MessageStore:
                     MessageLog.sender == sender,
                     MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     MessageLog.is_reaction == False,  # noqa: E712
+                    col(MessageLog.run_id).is_(None),
                 )
             ).one()
 
@@ -1362,6 +1368,47 @@ class MessageStore:
                     session.commit()
         except Exception as e:
             logger.error("Failed to persist trailing messages for %s: %s", run_id, e)
+
+    def set_run_injected_messages(self, run_id: str, entries: list[dict]) -> None:
+        """Stamp the user turns this run JOINED mid-run (#2985) onto the run's last
+        prompt row, beside ``trailing_messages``/``link_handles``.
+
+        A message arriving while a chat turn is in its tool loop is drained off the
+        turn's inbox after a tool step and appended to the conversation as a user
+        turn — the next model call carries it, so the run's own snapshots hold it
+        positionally. But nothing in a snapshot distinguishes the user's mid-run
+        messages from the framework's own user turns (the narrate-facts turn, a
+        validator nudge), and history rendering needs both the distinction and the
+        position. Each entry carries the record form of what the user said (the
+        same shape the message's messagelog row logs, image-history marker
+        included) and ``after_tool_call_id`` — the ORIGINAL id of the tool call
+        whose results preceded the injection, the anchor the interleaving renders
+        it at. Best-effort like ``log_prompt``: a failed record write must never
+        fail the run it records."""
+        if not entries:
+            return
+        try:
+            with self._session() as session:
+                last_prompt = self._last_run_prompt(session, run_id)
+                if last_prompt:
+                    last_prompt.injected_messages = json.dumps(entries)
+                    session.add(last_prompt)
+                    session.commit()
+        except Exception as e:
+            logger.error("Failed to stamp injected messages for run %s: %s", run_id, e)
+
+    def injected_messages_for_run(self, run_id: str) -> list[dict]:
+        """The user turns the run JOINED mid-run (#2985), in drain order — empty
+        when the run joined nothing (the column is NULL on every pre-#2985 row)."""
+        try:
+            with self._session() as session:
+                last_prompt = self._last_run_prompt(session, run_id)
+                if not last_prompt or not last_prompt.injected_messages:
+                    return []
+                return json.loads(last_prompt.injected_messages)
+        except Exception as e:
+            logger.error("Failed to read injected messages for run %s: %s", run_id, e)
+            return []
 
     @staticmethod
     def _last_run_prompt(session: Session, run_id: str) -> PromptLog | None:

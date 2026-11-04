@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 136
+        assert count == 137
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 136
+        assert count1 == 137
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 135 migrations
-        assert count == 135
+        # 0001 is skipped; the rest run = 136 migrations
+        assert count == 136
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 136  # all migrations applied
+        assert count == 137  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -271,6 +271,43 @@ class TestMigrate:
         assert "notify" in columns
         by_name = dict(conn.execute("SELECT name, notify FROM memory").fetchall())
         assert by_name == {"watched": 1, "silent": 0}
+        conn.close()
+
+    def test_0137_adds_promptlog_injected_messages(self, tmp_path):
+        """Migration 0137 adds nullable ``promptlog.injected_messages`` (#2985) —
+        the user turns a chat run JOINED mid-run, each entry the record form of
+        what the user said plus the tool-call id its render sits behind — with
+        every pre-existing row left NULL (nothing joined anything then)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE promptlog (id INTEGER PRIMARY KEY, messages TEXT)")
+        conn.execute("INSERT INTO promptlog (messages) VALUES ('[]')")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0137_add_promptlog_injected_messages.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0137", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(promptlog)").fetchall()}
+        assert "injected_messages" in columns
+        row = conn.execute("SELECT injected_messages FROM promptlog WHERE id = 1").fetchone()
+        assert row is not None and row[0] is None
+        # Idempotent: a second pass over the same DB changes nothing.
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(promptlog)").fetchall()}
+        assert "injected_messages" in columns
         conn.close()
 
     def test_0136_marks_browse_results_search_only_when_named(self, tmp_path):

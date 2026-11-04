@@ -5,6 +5,7 @@ from typing import Any, cast
 import pytest
 
 from penny.agents.base import Agent
+from penny.agents.models import NO_INBOX
 from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
@@ -100,7 +101,9 @@ class TestToolNotFound:
         mock_llm.set_response_handler(handler)
 
         # Agent should not crash - it should handle the error gracefully
-        response = await agent.run("test prompt", max_steps=3, call_link=CallLink.new_top())
+        response = await agent.run(
+            "test prompt", max_steps=3, call_link=CallLink.new_top(), inbox=NO_INBOX
+        )
 
         # Verify that we got a response (not a crash)
         assert response.answer is not None
@@ -172,7 +175,7 @@ class TestToolNotFound:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test prompt", max_steps=3, call_link=CallLink.new_top())
+        await agent.run("test prompt", max_steps=3, call_link=CallLink.new_top(), inbox=NO_INBOX)
 
         # The tool result fed back must be the successful search output, not a
         # 'not found' error — i.e. the Harmony-suffixed name dispatched cleanly.
@@ -566,7 +569,7 @@ class TestMissingRequiredParameters:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test", max_steps=3, call_link=CallLink.new_top())
+        await agent.run("test", max_steps=3, call_link=CallLink.new_top(), inbox=NO_INBOX)
 
         # The error fed back to the model must include type hints
         second_call_messages = messages_sent[1]
@@ -631,7 +634,7 @@ class TestMissingRequiredParameters:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test", max_steps=3, call_link=CallLink.new_top())
+        await agent.run("test", max_steps=3, call_link=CallLink.new_top(), inbox=NO_INBOX)
 
         # The tool result fed back is the stub's success — not a forbid-extra rejection.
         tool_messages = [m for m in messages_sent[1] if m.get("role") == "tool"]

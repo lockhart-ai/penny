@@ -12,6 +12,7 @@ from penny.channels.discord.channel import (
     DISCORD_PRIVILEGED_INTENTS_ERROR,
     DiscordChannel,
 )
+from penny.channels.turns import TurnRegistry
 
 
 def _make_channel() -> DiscordChannel:
@@ -21,6 +22,7 @@ def _make_channel() -> DiscordChannel:
         channel_id="123456789",
         message_agent=Mock(),
         db=Mock(),
+        turn_registry=TurnRegistry(),
     )
 
 

@@ -1,13 +1,129 @@
 """Pydantic models and enums for agent loop."""
 
+import asyncio
+import logging
 import uuid
+from collections import deque
 from enum import StrEnum
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel, Field
 
 from penny.constants import PennyConstants, WriteGateOutcome
 from penny.responses import PennyResponse
+
+if TYPE_CHECKING:
+    from penny.channels.base import QueuedTurnMessage
+
+logger = logging.getLogger(__name__)
+
+
+class TurnInbox:
+    """The active chat turn's queue of messages waiting to join it (#2985).
+
+    Lives on the agent side (the loop drains it) but carries no channel
+    dependency, so both the loop and the channels import it freely.  Two drain
+    points, with deliberately different accounting:
+
+    - ``drain_ready()`` is the agent loop's mid-run drain (after a tool step,
+      before the next model call).  Everything it pops JOINS the run — recorded
+      in ``_drained`` so the channel logs each one's ``messagelog`` row under
+      the run it joined when the turn ends.
+    - ``take_next()`` is the series loop's tail pick (the turn ended with
+      messages still queued).  What it pops becomes its OWN turn's triggering
+      message, logged by that turn's ``_finish_turn`` — so it is deliberately
+      NOT recorded as drained.
+
+    ``finished`` is set exactly once when the whole turn series ends, success
+    or failure; a joining channel's typing indicator waits on it.
+    """
+
+    def __init__(self, owner_sender: str) -> None:
+        self._owner_sender = owner_sender
+        self._pending: deque[QueuedTurnMessage] = deque()
+        self._drained: list[QueuedTurnMessage] = []
+        self._finished = asyncio.Event()
+        self._closed = False
+
+    @classmethod
+    def closed(cls) -> TurnInbox:
+        """The null inbox background callers pass — drains nothing, accepts nothing."""
+        return _CLOSED_INBOX
+
+    @property
+    def owner_sender(self) -> str:
+        """The platform sender of the message that started this turn."""
+        return self._owner_sender
+
+    @property
+    def finished(self) -> asyncio.Event:
+        """Set once when the whole turn series ends (success or failure)."""
+        return self._finished
+
+    def put(self, message: QueuedTurnMessage) -> None:
+        """Queue a message to join the active turn."""
+        if self._closed:
+            raise RuntimeError("Cannot join a message to a closed turn inbox")
+        self._pending.append(message)
+
+    def pending(self) -> bool:
+        """Whether any message is still waiting to join."""
+        return bool(self._pending)
+
+    def drain_ready(self) -> list[QueuedTurnMessage]:
+        """The mid-run drain: pop everything queued, in arrival order, recording
+        each as joined to this run.  A closed inbox (no live user) drains nothing."""
+        if self._closed:
+            return []
+        ready = list(self._pending)
+        self._pending.clear()
+        self._drained.extend(ready)
+        return ready
+
+    def take_next(self) -> QueuedTurnMessage | None:
+        """The series tail pick: the oldest still-queued message, NOT recorded as
+        drained — it becomes the next turn's own triggering message."""
+        if self._closed:
+            return None
+        return self._pending.popleft() if self._pending else None
+
+    def take_drained(self) -> list[QueuedTurnMessage]:
+        """Everything drained into the run so far, in drain order — consumed by
+        the channel once, when it logs the joined rows at turn end."""
+        drained = self._drained
+        self._drained = []
+        return drained
+
+    def drain_all(self) -> list[QueuedTurnMessage]:
+        """Pop everything still queued WITHOUT recording it as drained — the
+        abandon path: these messages never joined a run, so no row of theirs is
+        logged under one; the caller answers them itself."""
+        if self._closed:
+            return []
+        pending = list(self._pending)
+        self._pending.clear()
+        return pending
+
+    async def release(self, queued: QueuedTurnMessage) -> None:
+        """Remove the waiting mark the joining channel left on this message
+        (#2985) — the moment it leaves the pending queue, however it leaves:
+        injected into the running turn, picked up by a follow-up turn, or
+        abandoned.  Best-effort by contract: a failed release is logged and
+        never fails the turn."""
+        try:
+            await queued.clear_queued(queued.message)
+        except Exception:
+            logger.exception("Failed to clear the waiting mark on a queued message")
+
+    def finish(self) -> None:
+        """Release everything waiting on the series' end."""
+        self._finished.set()
+
+
+_CLOSED_INBOX = TurnInbox("")
+_CLOSED_INBOX._closed = True
+
+NO_INBOX = TurnInbox.closed()
 
 
 class MessageRole(StrEnum):

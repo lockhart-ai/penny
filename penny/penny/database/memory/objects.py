@@ -1445,23 +1445,26 @@ def _run_tool_turns(prompts: list[PromptLog]) -> list[dict]:
     ]
 
 
-def run_tool_history(prompts: list[PromptLog]) -> list[tuple[LoggedToolCall, str]]:
-    """Every call THIS run made, paired with its own result's content, in call order
-    (#2915) — the primitive chat history rendering reads a past run's own steps off,
-    so a later turn sees the act beside the words rather than the words alone.
+def run_tool_history(prompts: list[PromptLog]) -> list[tuple[str | None, LoggedToolCall, str]]:
+    """Every call THIS run made, paired with its original call id and its own
+    result's content, in call order (#2915) — the primitive chat history rendering
+    reads a past run's own steps off, so a later turn sees the act beside the words
+    rather than the words alone.
 
     Calls come from ``_run_logged_steps`` (reads each row's own ``response``, so a
     call is never one this run didn't itself make); results come from the (now
-    run-scoped) ``_run_tool_turns``, matched by ``tool_call_id``.  A call with no
-    logged result — a run that ended mid-step — pairs with the empty string: the
-    caller decides what an empty result renders as, never guesses one that was
-    never recorded."""
+    run-scoped) ``_run_tool_turns``, matched by ``tool_call_id``.  The id travels
+    with the pair so a reader can anchor a position to a SPECIFIC call (#2985 —
+    the injected-message render sits after the call whose id the run record
+    stamps), never to a recount.  A call with no logged result — a run that ended
+    mid-step — pairs with the empty string: the caller decides what an empty
+    result renders as, never guesses one that was never recorded."""
     results = {
         message.get("tool_call_id"): message.get("content") or ""
         for message in _run_tool_turns(prompts)
     }
     return [
-        (logged, results.get(call_id, ""))
+        (call_id, logged, results.get(call_id, ""))
         for call_id, logged, _thinking in _run_logged_steps(prompts)
     ]
 

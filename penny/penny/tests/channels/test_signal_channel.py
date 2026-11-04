@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from penny.channels.signal import SignalChannel
+from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType
 from penny.database import Database
 from penny.llm import LlmClient
@@ -43,6 +44,7 @@ async def test_validate_connectivity_success(signal_server, test_config, mock_ll
         phone_number=test_config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
 
     # Should not raise
@@ -96,6 +98,7 @@ async def test_validate_connectivity_dns_failure(test_db, mock_llm):
         phone_number=config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
 
     with pytest.raises(ConnectionError) as exc_info:
@@ -155,6 +158,7 @@ async def test_validate_connectivity_connection_refused(test_db, mock_llm):
         phone_number=config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
 
     with pytest.raises(ConnectionError) as exc_info:
@@ -206,6 +210,7 @@ async def test_validate_connectivity_retries_then_succeeds(
         phone_number=test_config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
 
     real_probe = channel._probe_signal_api
@@ -279,6 +284,7 @@ async def test_validate_connectivity_exhausts_attempts_then_logs_and_raises(
         phone_number=config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
 
     with (
@@ -327,6 +333,7 @@ async def test_send_message_rejects_empty_without_attachments(signal_server, tes
         phone_number=test_config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
 
     with pytest.raises(ValueError, match="Cannot send empty"):
@@ -368,6 +375,7 @@ async def test_send_message_allows_empty_text_with_attachments(
         phone_number=test_config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
 
     # Should not raise — empty text is fine when attachments are present
@@ -413,6 +421,7 @@ async def test_send_message_retries_on_socket_exception_400(signal_server, test_
         db=db,
         max_retries=2,
         retry_delay=0.01,
+        turn_registry=TurnRegistry(),
     )
 
     # Queue one transient SocketException 400 then let the retry succeed
@@ -467,6 +476,7 @@ async def test_send_message_no_retry_on_non_transient_400(signal_server, test_co
         db=db,
         max_retries=2,
         retry_delay=0.01,
+        turn_registry=TurnRegistry(),
     )
 
     # Queue a non-transient 400 (bad recipient format — should not retry)
@@ -519,6 +529,7 @@ async def test_send_message_gives_up_after_max_retries(signal_server, test_confi
         db=db,
         max_retries=2,
         retry_delay=0.01,
+        turn_registry=TurnRegistry(),
     )
 
     # Queue 3 transient errors (initial attempt + 2 retries = 3 total)
@@ -547,6 +558,7 @@ def test_extract_message_sets_channel_type_and_device_identifier():
         phone_number="+15551234567",
         message_agent=MagicMock(),
         db=MagicMock(),
+        turn_registry=TurnRegistry(),
     )
 
     raw = {
@@ -585,6 +597,7 @@ def test_extract_reaction_sets_channel_type():
         phone_number="+15551234567",
         message_agent=MagicMock(),
         db=MagicMock(),
+        turn_registry=TurnRegistry(),
     )
 
     raw = {
@@ -630,6 +643,7 @@ def test_reaction_callback_fires_and_consumes_reaction():
         phone_number="+15551234567",
         message_agent=MagicMock(),
         db=MagicMock(),
+        turn_registry=TurnRegistry(),
     )
 
     captured = []
@@ -677,6 +691,7 @@ def test_reaction_without_callback_returns_normal_message():
         phone_number="+15551234567",
         message_agent=MagicMock(),
         db=MagicMock(),
+        turn_registry=TurnRegistry(),
     )
 
     # Register callback for a DIFFERENT timestamp
@@ -751,6 +766,7 @@ async def test_send_response_stamps_emission_provenance(signal_server, test_conf
         phone_number=test_config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
     channel._embedding_model_client = cast(Any, MockLlmClient())
 
@@ -814,6 +830,7 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
         phone_number=test_config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
     # The default mock embeds deterministically per text, so storing the media
     # embedding as the vector of the outgoing text guarantees the nearest match.
@@ -903,6 +920,7 @@ def _build_signal_world(test_config, db):
         phone_number=test_config.signal_number or "+15551234567",
         message_agent=message_agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
     return channel, message_agent
 

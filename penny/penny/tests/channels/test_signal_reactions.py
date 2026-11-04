@@ -13,6 +13,7 @@ from penny.agents import ChatAgent
 from penny.channels.manager import ChannelManager
 from penny.channels.permission_manager import PermissionManager
 from penny.channels.signal import SignalChannel
+from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType, PennyConstants, PermissionResolution
 from penny.database import Database
 from penny.database.models import MessageLog
@@ -263,8 +264,9 @@ def _signal_permission_world(config, db: Database) -> tuple[SignalChannel, Permi
         phone_number=config.signal_number,
         message_agent=agent,
         db=db,
+        turn_registry=TurnRegistry(),
     )
-    manager = ChannelManager(message_agent=agent, db=db)
+    manager = ChannelManager(message_agent=agent, db=db, turn_registry=TurnRegistry())
     manager.register_channel(ChannelType.SIGNAL, channel)
     permissions = PermissionManager(db=db, channel_manager=manager, config=config)
     channel.set_permission_manager(permissions)
