@@ -33,7 +33,7 @@ from penny.database.memory import EntryInput
 from penny.database.models import PromptLog, SendQueueItem
 from penny.llm.client import LlmClient
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
-from penny.tests.conftest import require_memory
+from penny.tests.conftest import NULL_SANDBOX_RUNNER, require_memory
 from penny.tools.link_handles import CITATION_LINE
 
 
@@ -64,6 +64,7 @@ def _make_delivery(db, test_config) -> tuple[SendQueueDrainer, _StubChannel]:
         db=db,
         config=test_config,
         embedding_model_client=_llm(None),
+        collector=NULL_SANDBOX_RUNNER,
     )
     drainer = SendQueueDrainer(db=db, config=test_config, chat_agent=chat)
     channel = _StubChannel()
@@ -346,3 +347,67 @@ async def test_a_report_for_a_vanished_collection_never_reaches_the_model(
         assert row.cancelled_at is not None
         assert row.failed_at is None
         assert row.attempts == 0
+
+
+_SANDBOX_PROMPT_HEAD = 'Your sandbox preview of "indie-metroidvanias" just finished'
+
+
+def _sandbox_reply_handler(mock_llm, reply: str):
+    """Answer ONLY the sandbox delivery turn — anything else is a test bug made
+    loud (the sibling of ``_reply_handler`` for a SANDBOX report, #2964)."""
+
+    def handler(request: dict, count: int):
+        user_turns = [m.get("content", "") for m in request["messages"] if m.get("role") == "user"]
+        assert any(str(c).startswith(_SANDBOX_PROMPT_HEAD) for c in user_turns), (
+            f"the mock was asked something other than the sandbox delivery turn: {user_turns!r}"
+        )
+        return mock_llm._make_text_response(request, reply)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_report_rides_its_own_lane_and_delivery_turn(db, test_config, mock_llm):
+    """A SANDBOX-origin row (#2964) composes a :class:`SandboxReport` from the
+    previewed run's own tool-call trace — never written entries, since a sandbox
+    cycle commits none — and rides ``handle_sandbox_report`` under its own
+    ``sandbox_report`` prompt type, never ``handle_job_report``.  The cooldown-skip
+    itself (the SANDBOX lane reads ahead of a held cadence row, exactly as
+    ON_DEMAND's already does) is
+    ``test_send_queue_drainer.test_a_user_triggered_runs_message_skips_the_cooldown_a_cadence_one_waits``'s;
+    this test's DB starts with no prior send, so the cooldown is vacuously
+    elapsed and the FIFO head itself already delivers."""
+    _register_user(db)
+    db.memories.create_collection("indie-metroidvanias", "Indie metroidvania releases")
+    run_id = "preview-run-1"
+    row_id = db.send_queue.enqueue_report("indie-metroidvanias", CycleTrigger.SANDBOX, run_id)
+    mock_llm.set_response_handler(
+        _sandbox_reply_handler(mock_llm, "Here's what that preview would have done.")
+    )
+    drainer, channel = _make_delivery(db, test_config)
+
+    assert await drainer.execute() is True
+    assert len(channel.sent) == 1
+    assert channel.sent[0]["content"] == "Here's what that preview would have done."
+    assert channel.sent[0]["mechanism"] == "indie-metroidvanias"
+
+    with Session(db.engine) as session:
+        row = session.get(SendQueueItem, row_id)
+        assert row is not None
+        assert row.sent_at is not None
+        sandbox_rows = list(
+            session.exec(
+                select(PromptLog).where(
+                    col(PromptLog.prompt_type) == ChatPromptType.SANDBOX_REPORT.value
+                )
+            ).all()
+        )
+        job_rows = list(
+            session.exec(
+                select(PromptLog).where(
+                    col(PromptLog.prompt_type) == ChatPromptType.JOB_REPORT.value
+                )
+            ).all()
+        )
+    assert sandbox_rows, "the sandbox delivery turn logged under its own prompt type"
+    assert job_rows == [], "a sandbox report must never ride the job-report delivery turn"

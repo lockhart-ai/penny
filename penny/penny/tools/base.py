@@ -520,9 +520,18 @@ class ToolRegistry:
 class ToolExecutor:
     """Executes tools with timeout and error handling."""
 
-    def __init__(self, registry: ToolRegistry, timeout: float = 30.0):
+    def __init__(self, registry: ToolRegistry, timeout: float = 30.0, *, forced_plan: bool):
         self.registry = registry
         self.timeout = timeout
+        # Whether every ``mutates`` tool call this executor dispatches is forced
+        # onto its plan path regardless of what the model passed (#2964's sandbox
+        # runs) — a REQUIRED parameter, no default: every construction site states
+        # it explicitly (ordinary chat/collector runs say ``False``; a sandboxed
+        # collector cycle says ``True``), so a future call site can't forget to
+        # wire it the way an optional flag quietly could.  Keyed on the tool's own
+        # ``mutates`` mark in ``execute`` below — never on a tool's name — so a
+        # future mutating tool is covered with no change here.
+        self.forced_plan = forced_plan
 
     async def execute(self, tool_call: ToolCall, call_link: CallLink) -> ToolResult:
         """Run a tool call: resolve the tool, then drive it through ``tool.run``
@@ -539,7 +548,23 @@ class ToolExecutor:
         tool = self.registry.get(tool_call.tool)
         if tool is None:
             return self._tool_not_found_result(tool_call)
+        tool_call = self._force_plan(tool, tool_call)
         return await self._execute_with_timeout(tool, tool_call, call_link)
+
+    def _force_plan(self, tool: Tool, tool_call: ToolCall) -> ToolCall:
+        """Overwrite ``plan`` to ``True`` on a mutating call, when this executor is
+        forcing it (#2964) — whatever the model passed, or omitted.
+
+        A sandbox run never lets a mutating tool actually change anything, so the
+        model's own ``plan`` argument (if any) is not consulted, only overwritten:
+        a model that passed ``plan=false`` must still get a preview, never a real
+        write.  A fresh ``ToolCall`` (never mutating the caller's own dict) keyed on
+        ``tool.mutates`` — the structural mark every state-changing tool declares on
+        itself (#2933) — so this never names a tool and covers one nobody has
+        written yet."""
+        if not (self.forced_plan and tool.mutates):
+            return tool_call
+        return tool_call.model_copy(update={"arguments": {**tool_call.arguments, "plan": True}})
 
     def _tool_not_found_result(self, tool_call: ToolCall) -> ToolResult:
         """Build a failed result when the requested tool doesn't exist.

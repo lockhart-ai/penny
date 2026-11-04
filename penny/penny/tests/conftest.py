@@ -49,6 +49,25 @@ pytest_plugins = (
 # Standard test sender phone number
 TEST_SENDER = "+15559876543"
 
+
+class NullSandboxRunner:
+    """A ``SandboxRunner`` double (#2964) for a test that constructs ``ChatAgent``
+    directly and never exercises job-sandboxing.  ``ChatAgent``'s ``collector``
+    parameter is REQUIRED — no default, no ``None`` that would quietly mean "not
+    wired" (CLAUDE.md, "Pass parameters, don't swap state") — so every such test
+    states this explicitly rather than a real ``Collector`` just to satisfy the
+    constructor.  Raises if ever actually called: a test that reaches this is
+    exercising sandboxing and should wire a real fake for that assertion
+    instead."""
+
+    async def run_sandbox(self, collection_name: str) -> tuple[bool, str]:
+        raise NotImplementedError("NullSandboxRunner: this test never previews a job")
+
+
+# One shared instance — stateless, so every ``ChatAgent(collector=...)`` call that
+# doesn't care about sandboxing can pass the same object.
+NULL_SANDBOX_RUNNER = NullSandboxRunner()
+
 # What a backend that fails to parse the Harmony envelope leaks onto a tool-call NAME
 # (#2013).  The live object strips it at the read-off boundary, so the call DISPATCHES
 # and its work lands; the raw name reaches the ledger alone, which is where every

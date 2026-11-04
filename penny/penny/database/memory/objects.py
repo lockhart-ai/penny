@@ -1267,14 +1267,15 @@ def _run_dispatch(prompts: list[PromptLog]) -> tuple[datetime | None, str | None
     return None, None, None
 
 
-# ``ON_TIME``/``ON_DEMAND`` are dead branches from ``dispatch_line``'s own call
-# (both return early above it) — live only for the self-state jobs-list tail
-# (``dispatch_reason_clause`` called directly, #2862), which has no header to
-# short-circuit into.
+# ``ON_TIME``/``ON_DEMAND``/``SANDBOX`` are dead branches from ``dispatch_line``'s
+# own call (all three return early above it) — live only for the self-state
+# jobs-list tail (``dispatch_reason_clause`` called directly, #2862), which has
+# no header to short-circuit into.
 _DISPATCH_TAILS: dict[DispatchReason, str] = {
     DispatchReason.ON_TIME: "on time",
     DispatchReason.CATCH_UP: "catching up a missed run",
     DispatchReason.ON_DEMAND: "on demand",
+    DispatchReason.SANDBOX: "as a sandbox preview",
 }
 
 
@@ -1295,8 +1296,9 @@ def dispatch_reason_clause(reason: DispatchReason, due: str, attempt: int | None
 def dispatch_line(prompts: list[PromptLog], timezone_name: str | None, schedule_words: str) -> str:
     """The run's own dispatch-reason line (#2862): ``started <time> for the
     <cadence> <due time> run · <why>`` — or, for an on-demand run, just
-    ``started <time> on demand``.  Empty for a chat run and for a row logged
-    before this stamp existed.
+    ``started <time> on demand`` (a sandbox preview, #2964, reads the same way:
+    ``started <time> as a sandbox preview``).  Empty for a chat run and for a row
+    logged before this stamp existed.
 
     ``schedule_words`` is the collection's CURRENT cadence in plain words (e.g.
     "daily"), fetched by the caller off its live ``schedule`` — empty when the
@@ -1311,7 +1313,9 @@ def dispatch_line(prompts: list[PromptLog], timezone_name: str | None, schedule_
     started = format_user_clock_time(prompts[0].timestamp, timezone_name)
     if reason is DispatchReason.ON_DEMAND:
         return f"started {started} on demand"
-    assert due_at is not None  # every non-on-demand reason stamps its occurrence
+    if reason is DispatchReason.SANDBOX:
+        return f"started {started} as a sandbox preview"
+    assert due_at is not None  # every non-on-demand, non-sandbox reason stamps its occurrence
     due = format_user_clock_time(due_at, timezone_name)
     words = f"{schedule_words} " if schedule_words else ""
     header = f"started {started} for the {words}{due} run"

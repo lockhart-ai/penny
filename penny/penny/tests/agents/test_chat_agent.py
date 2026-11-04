@@ -1298,6 +1298,10 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "done" not in names
         assert "send_message" not in names
 
+        # Previewing a job's own cycle (#2964) — chat-only, wired to the real
+        # Collector running_penny built.
+        assert "collection_sandbox_run" in names
+
 
 @pytest.mark.asyncio
 async def test_generate_image_registered_only_when_image_client_configured(
@@ -1339,6 +1343,65 @@ async def test_email_tools_registered_only_when_mailbox_configured(
         names = {tool.name for tool in penny.chat_agent.get_tools()}
         assert "search_emails" in names
         assert "read_emails" in names
+
+
+@pytest.mark.asyncio
+async def test_collection_sandbox_run_dispatches_to_the_wired_collector(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """``collection_sandbox_run`` (#2964) reaches whatever previews a job's cycle —
+    the one chat-tool test that swaps ``ChatAgent._collector`` for a recording
+    fake, exactly as ``_image_client``/``_email_tools_builder`` are swapped above;
+    the production wiring (a real ``Collector``, ``penny.py``) is proven by
+    ``test_run_sandbox_*`` in ``tests/agents/test_collector.py``."""
+
+    class _RecordingRunner:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def run_sandbox(self, collection_name: str) -> tuple[bool, str]:
+            self.calls.append(collection_name)
+            return True, f"Started a sandbox preview of '{collection_name}'."
+
+    ask = "can you test my indie-metroidvanias job before I rely on it?"
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(message.get("content", "")) for message in messages)
+        if ask not in blob:
+            return LlmResponse(
+                message=LlmMessage(role="assistant", content="nothing to do"), model="test-model"
+            )
+        if any(message.get("role") == "tool" for message in messages):
+            return LlmResponse(
+                message=LlmMessage(role="assistant", content="On it — I'll let you know."),
+                model="test-model",
+            )
+        return LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_0",
+                        function=LlmToolCallFunction(
+                            name="collection_sandbox_run",
+                            arguments={"collection": "indie-metroidvanias"},
+                        ),
+                    )
+                ],
+            ),
+            model="test-model",
+        )
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        runner = _RecordingRunner()
+        penny.chat_agent._collector = runner
+
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        await wait_until(lambda: runner.calls == ["indie-metroidvanias"])
 
 
 @pytest.mark.asyncio

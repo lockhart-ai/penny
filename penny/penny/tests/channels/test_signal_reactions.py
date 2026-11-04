@@ -18,7 +18,7 @@ from penny.database import Database
 from penny.database.models import MessageLog
 from penny.llm import LlmClient
 from penny.prompts import Prompt
-from penny.tests.conftest import TEST_SENDER, wait_until
+from penny.tests.conftest import NULL_SANDBOX_RUNNER, TEST_SENDER, wait_until
 
 
 async def _wait_for_outgoing_ids(penny, contains: str) -> tuple[int, str]:
@@ -255,6 +255,7 @@ def _signal_permission_world(config, db: Database) -> tuple[SignalChannel, Permi
         tools=[],
         db=db,
         config=config,
+        collector=NULL_SANDBOX_RUNNER,
     )
     assert config.signal_number, "the Signal number is what a reaction targets — it must be set"
     channel = SignalChannel(

@@ -74,7 +74,7 @@ class TestToolTimeout:
         registry.register(slow_tool)
 
         # Set timeout to 0.1 seconds (tool takes 1s, well past the timeout)
-        executor = ToolExecutor(registry, timeout=0.1)
+        executor = ToolExecutor(registry, timeout=0.1, forced_plan=False)
 
         tool_call = ToolCall(tool="slow_tool", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
@@ -100,7 +100,7 @@ class TestToolTimeout:
         tool = ReportingTool()
         registry.register(tool)
 
-        executor = ToolExecutor(registry, timeout=0.05)
+        executor = ToolExecutor(registry, timeout=0.05, forced_plan=False)
 
         tool_call = ToolCall(tool="reporting_tool", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
@@ -116,7 +116,7 @@ class TestToolTimeout:
         registry.register(fast_tool)
 
         # Set timeout to 2 seconds
-        executor = ToolExecutor(registry, timeout=2.0)
+        executor = ToolExecutor(registry, timeout=2.0, forced_plan=False)
 
         tool_call = ToolCall(tool="slow_tool", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
@@ -173,7 +173,7 @@ class TestToolTimeout:
         registry.register(tool)
 
         # Global timeout is much shorter than the tool's own timeout.
-        executor = ToolExecutor(registry, timeout=0.01)
+        executor = ToolExecutor(registry, timeout=0.01, forced_plan=False)
 
         tool_call = ToolCall(tool="long_timeout_tool", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
@@ -189,7 +189,7 @@ class TestToolTimeout:
         slow.timeout = 0.05  # type: ignore[assignment]
         registry.register(slow)
 
-        executor = ToolExecutor(registry, timeout=60.0)
+        executor = ToolExecutor(registry, timeout=60.0, forced_plan=False)
 
         tool_call = ToolCall(tool="slow_tool", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
@@ -222,7 +222,7 @@ class TestCrashEnvelope:
     async def test_crash_envelope_names_no_close_to_make(self):
         registry = ToolRegistry()
         registry.register(CrashingTool())
-        executor = ToolExecutor(registry, timeout=1.0)
+        executor = ToolExecutor(registry, timeout=1.0, forced_plan=False)
 
         result = await executor.execute(
             ToolCall(tool="crashing_tool", arguments={}), CallLink.new_top()

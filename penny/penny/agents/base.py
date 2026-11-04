@@ -311,7 +311,9 @@ class Agent:
         if tools is not None:
             for tool in tools:
                 self._tool_registry.register(tool)
-        self._tool_executor = ToolExecutor(self._tool_registry, timeout=config.tool_timeout)
+        self._tool_executor = ToolExecutor(
+            self._tool_registry, timeout=config.tool_timeout, forced_plan=False
+        )
         # Background subagents can exit early via the terminator tool (`done`) — they
         # keep tools available on the final step so the model can call it. Chat
         # overrides to False because its terminator is final text output, not a tool
@@ -362,7 +364,13 @@ class Agent:
         if self._progress_factory is not None:
             progress, cleanup = self._progress_factory()
         try:
-            result = await self._run_cycle(run_id, call_link, on_progress=progress)
+            # Never sandboxed: a plain background agent with no override is never
+            # the target of a sandbox preview (#2964) — only ``Collector`` ever
+            # forces plan, and it mints its own link via ``_execute_cycle`` instead
+            # of reaching this generic path.
+            result = await self._run_cycle(
+                run_id, call_link, on_progress=progress, forced_plan=False
+            )
             self.settle_reads(result.reads, self._consumed_input(result.success, result.response))
             return result.success
         finally:
@@ -370,7 +378,12 @@ class Agent:
                 await cleanup()
 
     async def _run_cycle(
-        self, run_id: str, call_link: CallLink, on_progress: ProgressCallback | None = None
+        self,
+        run_id: str,
+        call_link: CallLink,
+        on_progress: ProgressCallback | None = None,
+        *,
+        forced_plan: bool,
     ) -> CycleResult:
         """Generic agentic shell: install tools, run the loop, hand the reads back.
 
@@ -392,13 +405,17 @@ class Agent:
         (#2458) is ``CallLink.top(run_id)`` — the same identity, for the model
         calls this cycle makes.  Returning the response alongside ``success``
         keeps the call chain explicit; no per-cycle state lives on ``self``.
+
+        ``forced_plan`` (#2964) is required, no default — threaded straight onto
+        ``_install_tools``, which threads it onto the fresh ``ToolExecutor``. Only
+        ``Collector``'s sandboxed cycle ever passes ``True``.
         """
         # One numbered link table per cycle (#2717) — created here, beside the
         # run identity, and passed to the tool surface and the loop alike.
         handles = HandleTable()
         tools = self.get_tools(run_id=run_id, handles=handles)
         cursor_tools = tuple(t for t in tools if isinstance(t, CursorReadTool))
-        self._install_tools(tools)
+        self._install_tools(tools, forced_plan=forced_plan)
 
         primary_user = self.db.users.get_primary_sender()
         system_prompt = await self._build_system_prompt(primary_user, handles=handles)
@@ -1878,12 +1895,19 @@ class Agent:
         self._browse_tool = tool
         return tool
 
-    def _install_tools(self, tools: list[Tool]) -> None:
-        """Replace the agent's tool registry and executor."""
+    def _install_tools(self, tools: list[Tool], *, forced_plan: bool) -> None:
+        """Replace the agent's tool registry and executor.
+
+        ``forced_plan`` (#2964) is required, no default: every caller states
+        whether this turn/cycle forces every mutating call onto its plan path
+        (a sandboxed collector cycle) or not (every other turn/cycle) — threaded
+        straight onto the fresh ``ToolExecutor``, never read from ambient state."""
         self._tool_registry = ToolRegistry()
         for tool in tools:
             self._tool_registry.register(tool)
-        self._tool_executor = ToolExecutor(self._tool_registry, timeout=self.config.tool_timeout)
+        self._tool_executor = ToolExecutor(
+            self._tool_registry, timeout=self.config.tool_timeout, forced_plan=forced_plan
+        )
         logger.debug(
             "Installed %d tool(s) for %s: %s",
             len(tools),

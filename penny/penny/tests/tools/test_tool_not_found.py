@@ -14,7 +14,7 @@ from penny.tools.base import Tool, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
 from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import CollectionSetTool, DoneTool
-from penny.tools.models import ToolArgs, ToolCall
+from penny.tools.models import ToolArgs, ToolCall, ToolResult
 
 
 class _StubSearchArgs(ToolArgs):
@@ -271,7 +271,7 @@ class TestToolNotFoundSuggestion:
         that actually exists rather than one the table remembers."""
         registry = ToolRegistry()
         registry.register(StubReadLatestTool())
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         tool_call = ToolCall(tool="read_last", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
@@ -297,7 +297,7 @@ class TestToolNotFoundSuggestion:
         registry = ToolRegistry()
         registry.register(StubMemoryGetTool())
         registry.register(_real_collection_configure_tool(db))
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         result = await executor.execute(
             ToolCall(tool="collection_metadata", arguments={}), CallLink.new_top()
@@ -323,7 +323,7 @@ class TestToolNotFoundSuggestion:
         the tool that replaced it."""
         registry = ToolRegistry()
         registry.register(StubSkillGetTool())
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         result = await executor.execute(
             ToolCall(tool="skill_read", arguments={}), CallLink.new_top()
@@ -342,7 +342,7 @@ class TestToolNotFoundSuggestion:
         an ordinary typo — still gets the nearest spelling (#1944)."""
         registry = ToolRegistry()
         registry.register(StubMemoryGetTool())
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         result = await executor.execute(
             ToolCall(tool="memory_gt", arguments={}), CallLink.new_top()
@@ -361,7 +361,7 @@ class TestToolNotFoundSuggestion:
         """No suggestion is added when no close match exists."""
         registry = ToolRegistry()
         registry.register(StubReadLatestTool())
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         tool_call = ToolCall(tool="completely_unknown_xyz", arguments={})
         result = await executor.execute(tool_call, CallLink.new_top())
@@ -377,7 +377,7 @@ class TestToolNotFoundSuggestion:
         REJECTED (principles.md §2 item 7): nothing here runs ``done``."""
         registry = ToolRegistry()
         registry.register(DoneTool())
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         result = await executor.execute(
             ToolCall(tool="functions.done", arguments={}), CallLink.new_top()
@@ -398,7 +398,7 @@ class TestToolNotFoundSuggestion:
         containment leg (#2510)."""
         registry = ToolRegistry()
         registry.register(_stub_browse_tool(db))
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         result = await executor.execute(
             ToolCall(tool="browse(extract: the price", arguments={}), CallLink.new_top()
@@ -416,7 +416,7 @@ class TestToolNotFoundSuggestion:
         registry = ToolRegistry()
         registry.register(DoneTool())
         registry.register(_stub_browse_tool(db))
-        executor = ToolExecutor(registry, timeout=30.0)
+        executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         result = await executor.execute(
             ToolCall(tool="functions.browse.done", arguments={}), CallLink.new_top()
@@ -642,3 +642,71 @@ class TestMissingRequiredParameters:
         assert "invalid arguments" not in result_content
 
         await agent.close()
+
+
+class _StubMutatingArgs(ToolArgs):
+    """Every mutating tool's args model declares a literal ``plan: bool`` field
+    (``Tool.__init_subclass__`` asserts it) — this stub is no different."""
+
+    plan: bool = False
+
+
+class StubMutatingTool(Tool):
+    """A minimal, nothing-to-do-with-collections mutating tool (#2964) — proof
+    that ``ToolExecutor``'s forced-plan mechanism is keyed on the structural
+    ``mutates`` mark alone, never on a tool's name.  ``execute`` just echoes
+    back whatever ``plan`` it actually received, so the test can tell a forced
+    override from the model's own argument."""
+
+    name = "stub_mutate"
+    description = "A stub mutating tool."
+    parameters = {"type": "object", "properties": {}}
+    args_model = _StubMutatingArgs
+    mutates = True
+
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
+        args = _StubMutatingArgs(**kwargs)
+        return ToolResult(message=f"plan={args.plan}", success=True, mutated=not args.plan)
+
+
+class TestForcedPlan:
+    """``ToolExecutor(forced_plan=True)`` overrides ``plan`` to ``True`` on every
+    ``mutates`` tool call, whatever the model passed or omitted (#2964's sandbox
+    runs) — a generic mechanism proved against a stub tool nobody has heard of
+    before, never against a named production tool (CLAUDE.md: "never key logic
+    to the example in front of you")."""
+
+    @staticmethod
+    def _registry() -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(StubMutatingTool())
+        return registry
+
+    @pytest.mark.asyncio
+    async def test_forced_plan_overrides_an_omitted_argument(self):
+        executor = ToolExecutor(self._registry(), forced_plan=True)
+        result = await executor.execute(
+            ToolCall(tool="stub_mutate", arguments={}, id="1"), CallLink.new_top()
+        )
+        assert result.message == "plan=True"
+        assert result.mutated is False
+
+    @pytest.mark.asyncio
+    async def test_forced_plan_overrides_an_explicit_false(self):
+        """A model that explicitly asked NOT to preview still gets one — the
+        force is unconditional, never a default-fill."""
+        executor = ToolExecutor(self._registry(), forced_plan=True)
+        result = await executor.execute(
+            ToolCall(tool="stub_mutate", arguments={"plan": False}, id="1"), CallLink.new_top()
+        )
+        assert result.message == "plan=True"
+        assert result.mutated is False
+
+    @pytest.mark.asyncio
+    async def test_unforced_executor_leaves_plan_as_the_model_sent_it(self):
+        executor = ToolExecutor(self._registry(), forced_plan=False)
+        result = await executor.execute(
+            ToolCall(tool="stub_mutate", arguments={}, id="1"), CallLink.new_top()
+        )
+        assert result.message == "plan=False"
+        assert result.mutated is True

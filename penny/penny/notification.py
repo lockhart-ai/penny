@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from penny.constants import CycleEnd, CycleTrigger
+from penny.database.memory import render_run_calls
+from penny.datetime_utils import user_timezone_name
 from penny.llm.refusal import is_refusal
 from penny.tools.link_handles import CITATION_LINE, HandleTable
 
@@ -210,6 +212,87 @@ def build_job_report(
             WrittenEntry(memory=entry.memory_name, key=entry.key, content=entry.content)
             for entry in written
         ),
+    )
+
+
+class SandboxReport(BaseModel):
+    """Everything the delivery chat turn is given about a finished SANDBOX preview
+    (#2964) — the sibling of :class:`JobReport` for a cycle that wrote nothing
+    real.  ``trace`` is the previewed cycle's own tool-call sequence (each
+    mutating call's result already reads "PLAN — nothing was changed: this call
+    would …", #2933) — never the written entries ``JobReport`` carries, because
+    nothing here ever committed."""
+
+    collection: str
+    description: str
+    run_id: str
+    trace: str
+
+
+_SANDBOX_REPORT_LEAD = 'Your sandbox preview of "{collection}" just finished — nothing was saved.'
+_SANDBOX_ASK = (
+    "Tell the user what this preview showed — what the job WOULD have done, never "
+    "that it happened. Cover every change the trace below describes."
+)
+
+
+def render_sandbox_report(report: SandboxReport) -> str:
+    """The whole sandbox delivery turn's input, rendered from framework-assembled
+    facts alone — the sibling of ``render_job_report``.
+
+    Pure and deterministic, same as ``render_job_report``.  ``report.trace`` is
+    already the full tool-call sequence (``render_run_calls``), so there is
+    nothing here to condense or cap — only the sandbox framing around it, so the
+    model never mistakes a preview for a thing that happened."""
+    return "\n".join(
+        [
+            _SANDBOX_REPORT_LEAD.format(collection=report.collection),
+            _REPORT_ABOUT.format(description=report.description),
+            "",
+            report.trace,
+            "",
+            _SANDBOX_ASK,
+        ]
+    )
+
+
+def build_sandbox_report(db: Database, collection: str, run_id: str) -> SandboxReport | None:
+    """Assemble the report for one queued SANDBOX row: the collection row's own
+    words, and the previewed cycle's own tool-call trace — never written
+    entries, since a sandbox cycle commits none (every mutating call went
+    through its plan path, #2933).
+
+    The trace is ``render_run_calls`` — the same renderer ``run_get``/``run_list``
+    use to show a run's own tool-call sequence, call syntax plus each call's
+    compact result — so a mutating call's result already reads "PLAN — nothing
+    was changed: this call would …" with no second description to drift from it.
+    ``with_thinking=False``: the user-facing report needs what each step did, not
+    why the model chose it.  ``schedule_words=""``: a sandbox preview names no
+    cadence (``dispatch_line``'s own SANDBOX branch renders "as a sandbox
+    preview" regardless of this argument).
+
+    ``None`` when the collection has vanished between the enqueue and the
+    compose — the same honest failure ``build_job_report`` names for the real
+    path."""
+    row = db.memories.get(collection)
+    if row is None:
+        logger.error(
+            "Sandbox report for '%s' (run %s) cannot be built — the collection no longer exists",
+            collection,
+            run_id,
+        )
+        return None
+    prompts = db.messages.get_run_prompts(run_id)
+    trace = render_run_calls(
+        prompts,
+        db.messages.get_child_draws(run_id),
+        with_thinking=False,
+        delivered_text=db.messages.delivered_text_for_run(run_id),
+        timezone_name=user_timezone_name(db),
+        schedule_words="",
+    )
+    return SandboxReport(
+        collection=collection, description=row.description, run_id=run_id, trace=trace
     )
 
 

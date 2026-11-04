@@ -25,14 +25,18 @@ send is then conversational, not autonomous), otherwise the message waits
 ``SEND_COOLDOWN_SECONDS`` since Penny's previous outgoing message of any kind
 (chat reply included — the cooldown is per-Penny, not per-collection).
 
-There are TWO delivery lanes, read off the queued row's own ``origin`` (#1939).  The
+There are delivery lanes, read off the queued row's own ``origin`` (#1939).  The
 cooldown is anti-spam for messages nobody asked for; a message from a cycle the USER
 pressed "run this now" on is one they are sitting in front of waiting for, so it is
 conversational in exactly the sense the user-spoke-since bypass already means, and it
 goes out on the next tick.  Observed live: a user's on-demand run finished and its
 notification then waited ~10.5 minutes, because an unrelated chat reply seconds earlier
 had started the cooldown.  Which lane a row is in is a READ of what set its cycle
-running, never a re-decision here.
+running, never a re-decision here.  A sandbox preview's own origin (#2964) shares
+``ON_DEMAND``'s cooldown-skipping lane for the same reason — someone is sitting in the
+very conversation that asked for the preview — but composes a different report (the
+previewed cycle's own tool-call trace, never written entries, since nothing it did
+was real).
 
 Compose failures are bounded and visible (#2656): a turn that produced nothing
 sendable bumps the row's ``attempts`` and leaves it pending for the next idle tick,
@@ -54,15 +58,22 @@ from typing import TYPE_CHECKING
 
 from penny.constants import CycleTrigger, PennyConstants
 from penny.llm.call_link import CallLink
-from penny.notification import build_job_report, withheld_reason
+from penny.notification import (
+    SandboxReport,
+    build_job_report,
+    build_sandbox_report,
+    withheld_reason,
+)
 from penny.text_validity import half_formed_send_reason
 
 if TYPE_CHECKING:
     from penny.agents.chat import ChatAgent
+    from penny.agents.models import ControllerResponse
     from penny.channels.base import MessageChannel
     from penny.config import Config
     from penny.database import Database
     from penny.database.models import SendQueueItem
+    from penny.notification import JobReport
 
 logger = logging.getLogger(__name__)
 
@@ -182,19 +193,23 @@ class SendQueueDrainer:
     async def _compose(self, item: SendQueueItem) -> tuple[str, str] | None:
         """Write the message for one composing report, and account for it either way.
 
-        Builds the :class:`JobReport` from the cycle's own written entries, runs the
-        delivery chat turn, and runs what it wrote through the send gate.  Returns
-        ``(content, run_id)`` — the message and the turn that wrote it — or ``None``
-        when this tick delivered nothing and the row was dealt with: a DECLINE was
-        stamped cancelled, a failure was counted against the row's bounded budget,
-        and a cancellation left the row exactly as it was."""
+        Builds the report and runs the one delivery turn it rides — a
+        :class:`JobReport` off the cycle's own written entries for every ordinary
+        origin, or a :class:`SandboxReport` off the previewed cycle's own
+        tool-call trace for a SANDBOX origin (#2964, never written entries, since
+        nothing it did was real) — then runs what the turn wrote through the same
+        send gate either way.  Returns ``(content, run_id)`` — the message and the
+        turn that wrote it — or ``None`` when this tick delivered nothing and the
+        row was dealt with: a DECLINE was stamped cancelled, a failure was counted
+        against the row's bounded budget, and a cancellation left the row exactly
+        as it was."""
         assert item.report_run_id is not None
-        report = build_job_report(
-            self._db,
-            item.collection,
-            item.report_run_id,
-            trigger=CycleTrigger(item.origin),
-        )
+        if CycleTrigger(item.origin) is CycleTrigger.SANDBOX:
+            report = build_sandbox_report(self._db, item.collection, item.report_run_id)
+        else:
+            report = build_job_report(
+                self._db, item.collection, item.report_run_id, trigger=CycleTrigger(item.origin)
+            )
         if report is None:
             self._fail(item, "the collection no longer exists")
             return None
@@ -204,16 +219,14 @@ class SendQueueDrainer:
             return None
         run_id = uuid.uuid4().hex
         try:
-            response = await self._chat_agent.handle_job_report(
-                report, sender, call_link=CallLink.top(run_id)
-            )
+            response = await self._dispatch_report_turn(report, sender, run_id)
         except asyncio.CancelledError:
             # Foreground priority — the row stays pending, untouched, and the next
             # idle window composes it.  Nothing about the attempt is recorded: the
             # attempt did not fail, it was interrupted.
             raise
         except Exception:
-            logger.exception("Job-report turn for '%s' (row %s) died", item.collection, item.id)
+            logger.exception("Report turn for '%s' (row %s) died", item.collection, item.id)
             self._record_failure(item, "the delivery turn died")
             return None
         answer = (response.answer or "").strip() if response is not None else ""
@@ -232,6 +245,19 @@ class SendQueueDrainer:
             self._decline(item, reason)
             return None
         return answer, run_id
+
+    async def _dispatch_report_turn(
+        self, report: JobReport | SandboxReport, sender: str, run_id: str
+    ) -> ControllerResponse:
+        """The one delivery turn this report rides — ``handle_job_report`` for a
+        :class:`JobReport`, ``handle_sandbox_report`` for a :class:`SandboxReport`
+        (#2964).  Dispatched on the report's OWN type, never the queue row's
+        origin a second time, so this can never disagree with which report
+        ``_compose`` actually built."""
+        call_link = CallLink.top(run_id)
+        if isinstance(report, SandboxReport):
+            return await self._chat_agent.handle_sandbox_report(report, sender, call_link=call_link)
+        return await self._chat_agent.handle_job_report(report, sender, call_link=call_link)
 
     def _record_failure(self, item: SendQueueItem, reason: str) -> None:
         """One failed compose against the row's bounded budget (#2656).
@@ -286,11 +312,17 @@ class SendQueueDrainer:
         cleared, the head goes; still running, the only messages that may go out are
         the ones the user is waiting on, and they are asked for BY LANE rather than
         read off the head, because an older cadence message sitting out its cooldown
-        would otherwise hold them behind it for the rest of the window."""
+        would otherwise hold them behind it for the rest of the window.  A sandbox
+        preview's report (#2964) is asked for the same way ``on_demand`` is — the
+        user is sitting in the very conversation that asked for it — tried second
+        only because ``on_demand`` already existed first; neither lane's head
+        blocks the other's."""
         item = self._db.send_queue.next_pending()
         if item is None or self._cooldown_elapsed():
             return item
-        return self._db.send_queue.next_pending(origin=CycleTrigger.ON_DEMAND)
+        return self._db.send_queue.next_pending(
+            origin=CycleTrigger.ON_DEMAND
+        ) or self._db.send_queue.next_pending(origin=CycleTrigger.SANDBOX)
 
     def _resolve_recipient(self) -> str | None:
         """Where a drained message is delivered — the default device's own

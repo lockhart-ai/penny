@@ -44,6 +44,7 @@ from penny.responses import PennyResponse
 # The eval harness's loop-health probe, asserted against a REAL re-roll here: its whole premise
 # is that a discarded draw leaves two promptlog rows on the same context, and a probe pinned
 # only against hand-seeded rows would keep passing if the loop stopped leaving them (#1841).
+from penny.tests.conftest import NULL_SANDBOX_RUNNER
 from penny.tests.eval.conftest import draw_rerolled
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.text_validity import (
@@ -130,14 +131,20 @@ def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None, agent
         max_retries=1,
         retry_delay=0.1,
     )
-    agent = agent_cls(
-        system_prompt="test",
-        model_client=client,
-        embedding_model_client=client,
-        tools=[stub_tool],
-        db=db,
-        config=config,
-    )
+    kwargs: dict[str, Any] = {
+        "system_prompt": "test",
+        "model_client": client,
+        "embedding_model_client": client,
+        "tools": [stub_tool],
+        "db": db,
+        "config": config,
+    }
+    # ChatAgent's own ``collector`` (#2964) is required, no default — only a
+    # ChatAgent-polarity ``agent_cls`` (the base ``Agent`` has no such param)
+    # needs it wired, and this test suite never exercises job-sandboxing.
+    if issubclass(agent_cls, ChatAgent):
+        kwargs["collector"] = NULL_SANDBOX_RUNNER
+    agent = agent_cls(**kwargs)
     # These tests exercise the "strip tools on final step → force text"
     # path that powers chat agent's final-answer reply mechanism.
     # Subagents (notify, thinking, etc.) keep tools on the final step

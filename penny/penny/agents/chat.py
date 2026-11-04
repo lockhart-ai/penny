@@ -21,7 +21,7 @@ from penny.database.memory.identity import WriteDecisionCache
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
-from penny.notification import JobReport, render_job_report
+from penny.notification import JobReport, SandboxReport, render_job_report, render_sandbox_report
 from penny.prompts import Prompt
 from penny.text_validity import (
     call_as_text_tool_name,
@@ -32,6 +32,7 @@ from penny.text_validity import (
 )
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
+from penny.tools.collection_sandbox_run import CollectionSandboxRunTool, SandboxRunner
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.link_handles import PAGE_CITATION_LINE, HandleTable
 from penny.tools.memory_tools import render_nothing_landed, render_writes_landed
@@ -116,9 +117,20 @@ class ChatAgent(Agent):
         image_client: MfluxImageClient | None = None,
         email_tools_builder: Callable[[str, str], list[Tool]] | None = None,
         plugin_tools: list[Tool] | None = None,
+        *,
+        collector: SandboxRunner,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        # The capability behind ``collection_sandbox_run`` (#2964) — REQUIRED, no
+        # default and no ``None`` that would quietly mean "not wired" (CLAUDE.md,
+        # "Pass parameters, don't swap state"): every caller, production or test,
+        # states explicitly what previews a job's cycle.  Typed against the
+        # ``SandboxRunner`` protocol, never the concrete ``Collector``, so this
+        # module never imports it (``penny.agents.collector`` already imports
+        # from ``penny.tools.memory_tools``, and importing ``Collector`` back
+        # from a tools-adjacent module would close that cycle).
+        self._collector: SandboxRunner = collector
         self._pending_page_context: PageContext | None = None
         # The current user message, held for the span of one turn so the
         # per-turn tool builders (email read summarisation) can see what the
@@ -198,6 +210,10 @@ class ChatAgent(Agent):
         # pair, #2812), so the tool lives on the chat surface — the model
         # dispatches to it from natural language.
         tools.append(NotificationsTool(self.db))
+        # Previewing a job's own cycle (#2964) is chat-only, like notifications —
+        # a collector cycle never gets this tool (it would let a preview preview
+        # itself), and it is never reachable without an actual collector wired.
+        tools.append(CollectionSandboxRunTool(self._collector))
         if self._image_client is not None:
             tools.append(
                 GenerateImageTool(self._image_client, self.db, self._embedding_model_client)
@@ -400,6 +416,35 @@ class ChatAgent(Agent):
             handles=handles,
         )
 
+    async def handle_sandbox_report(
+        self, report: SandboxReport, sender: str, *, call_link: CallLink
+    ) -> ControllerResponse:
+        """The system-originated delivery turn for a SANDBOX preview (#2964): write
+        the message that tells the user what a previewed job's cycle would have
+        done.
+
+        The sibling of ``handle_job_report``.  The input is the framework-rendered
+        report (``render_sandbox_report``) — the job's name, what it is for, and
+        the previewed cycle's own tool-call trace (never written entries — nothing
+        it did was real) — never anything model-written.  Everything else the
+        message needs is the turn's own ambient state, same as any delivery turn.
+
+        ``sender``/``call_link`` are exactly as ``handle_job_report``'s.  The reply
+        is NOT delivered here — the caller (the send-queue drainer) gates it and
+        queues it, logged and delivered exactly like any other autonomous send.
+        No link table: ``render_sandbox_report``'s trace carries no handle
+        conversion of its own (the same shape ``run_get``/``run_list`` already
+        render their own trace in)."""
+        prompt = render_sandbox_report(report)
+        logger.info("Handling sandbox report for %s (delivery turn)", report.collection)
+        return await self._dispatch_turn(
+            prompt,
+            sender,
+            call_link=call_link,
+            prompt_type=ChatPromptType.SANDBOX_REPORT,
+            progress_scope="background",
+        )
+
     async def handle_changelog_report(
         self, entries: list[ChangelogEntry], sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
@@ -478,7 +523,8 @@ class ChatAgent(Agent):
                     )
                     for turn in history
                 ]
-            self._install_tools(self.get_tools(run_id=run_id, handles=table))
+            # A chat turn is never sandboxed (#2964) — only a collector cycle can be.
+            self._install_tools(self.get_tools(run_id=run_id, handles=table), forced_plan=False)
             system_prompt = await self._build_system_prompt(sender)
             response = await self.run(
                 prompt=prompt,

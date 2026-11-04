@@ -1682,7 +1682,9 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
 
     registry = ToolRegistry()
     registry.register(tool)
-    executor = ToolExecutor(registry, timeout=60.0)  # unused: the tool's own timeout wins
+    executor = ToolExecutor(
+        registry, timeout=60.0, forced_plan=False
+    )  # unused: the tool's own timeout wins
 
     result = await executor.execute(
         ToolCall(

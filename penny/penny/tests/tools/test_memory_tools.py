@@ -40,7 +40,7 @@ from penny.llm.decision_client import DecisionAnswer, DecisionClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError, LlmMessage, LlmResponse
 from penny.llm.similarity import embed_text
-from penny.tests.conftest import require_memory
+from penny.tests.conftest import NULL_SANDBOX_RUNNER, require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import Tool
@@ -4204,6 +4204,7 @@ class TestFactory:
             tools=[],
             db=db,
             config=test_config,
+            collector=NULL_SANDBOX_RUNNER,
         )
         before = {
             tool.name: json.dumps(tool.to_ollama_tool(), sort_keys=True)
