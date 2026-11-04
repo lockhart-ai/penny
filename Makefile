@@ -253,6 +253,7 @@ prod-watch:
 	DEPLOY_BUILD_CMD="$(DEPLOY_BUILD_CMD)" \
 	DEPLOY_RUN_CMD="$(DEPLOY_RUN_CMD)" \
 	DEPLOY_LOG="$(DEPLOY_LOG)" \
+	DEPLOY_BUILD_CURSOR_FILE="$(CHANGELOG_CURSOR_FILE)" \
 	./scripts/deploy-loop.sh
 
 # Renders the launchd plist template with this checkout's absolute paths filled in

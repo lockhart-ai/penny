@@ -210,7 +210,14 @@ def _start_deployment(
 ) -> _Deployment:
     """Starts the loop against `clone_dir` with the standard build/run stubs
     (unless `run_cmd` names a different one, e.g. a crash stub), waits for the
-    first child to report in, and hands back every path a test asserts on."""
+    first child to report in, and hands back every path a test asserts on.
+
+    `cursor_file` doubles as DEPLOY_BUILD_CURSOR_FILE: the startup-build check
+    reads it, and a successful build stub writes it — the same file prod-build
+    and the loop agree on in production. Pre-written here with the clone's
+    CURRENT head when a test hasn't already seeded it with something else, so
+    an ordinary test sees no startup build; a test of that startup path writes
+    an OLDER commit into it before calling this, and that value survives."""
     run_log = tmp_path / "run.log"
     pid_file = tmp_path / "run.pid"
     build_log = tmp_path / "build.log"
@@ -219,6 +226,8 @@ def _start_deployment(
     deploy_log = tmp_path / "deploy.log"
     run_stub = run_cmd or _run_stub(tmp_path, run_log, pid_file)
     build_stub = _build_stub(tmp_path, build_log, cursor_file, fail_flag)
+    if not cursor_file.exists():
+        cursor_file.write_text(_git(clone_dir, "rev-parse", "HEAD"))
 
     proc = _start_loop(
         clone_dir,
@@ -226,6 +235,7 @@ def _start_deployment(
             "DEPLOY_RUN_CMD": str(run_stub),
             "DEPLOY_BUILD_CMD": str(build_stub),
             "DEPLOY_LOG": str(deploy_log),
+            "DEPLOY_BUILD_CURSOR_FILE": str(cursor_file),
         },
     )
     _wait_until(lambda: _read_or_empty(run_log).count("\n") >= 1)
@@ -241,6 +251,35 @@ def repos(tmp_path: pathlib.Path):
     clone_dir = tmp_path / "clone"
     _clone(origin, clone_dir)
     return origin, clone_dir, first
+
+
+def test_startup_builds_first_when_head_is_already_ahead_of_the_last_build(tmp_path, repos):
+    """HEAD can already be ahead of the recorded build at STARTUP — the owner ran
+    `git pull` by hand before `make prod-watch`, or a build failed and the loop
+    was restarted later. Neither looks "new" to the fetch/ahead check (HEAD
+    already equals origin/main), so nothing would ever trigger a build for a
+    commit that's already checked out unless the loop builds it itself before
+    starting the child."""
+    origin, clone_dir, first = repos
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text(first)  # the last successful build was the FIRST commit...
+    second = _commit(
+        clone_dir, "chore: already checked out, never built", "B"
+    )  # ...HEAD moved past it
+
+    dep = _start_deployment(tmp_path, clone_dir)
+    try:
+        log_text = _read_or_empty(dep.deploy_log)
+        assert "building before starting" in log_text
+        assert log_text.index("building before starting") < log_text.index("started child"), (
+            "the build must run before the child starts"
+        )
+        assert f"built {second}" in _read_or_empty(dep.build_log)
+        assert cursor_file.read_text().strip() == second, (
+            "the startup build's own success still advances the cursor"
+        )
+    finally:
+        _stop(dep.proc)
 
 
 def test_ahead_clean_ff_able_rebuilds_and_restarts(tmp_path, repos):
@@ -347,7 +386,7 @@ def test_failed_build_leaves_old_child_running_and_never_advances_the_cursor(tmp
     crash-restarted old container to announce that never actually deployed.
     The ff-only merge still advances HEAD, which is also why the SAME commit's
     build is never retried on the next tick — only a genuinely new commit is."""
-    origin, clone_dir, _first = repos
+    origin, clone_dir, first = repos
     dep = _start_deployment(tmp_path, clone_dir)
     dep.fail_flag.write_text("fail this build")
     try:
@@ -359,7 +398,10 @@ def test_failed_build_leaves_old_child_running_and_never_advances_the_cursor(tmp
         assert _git(clone_dir, "rev-parse", "HEAD") == second, (
             "still fast-forwards despite the failure"
         )
-        assert not dep.cursor_file.exists(), (
+        # The cursor already exists (pre-seeded with the startup build check's own
+        # commit, same as HEAD at the time) — what must NOT happen is it moving to
+        # the failed commit.
+        assert dep.cursor_file.read_text().strip() == first, (
             "a failed build must never advance the changelog cursor"
         )
         assert _read_or_empty(dep.run_log).count("\n") == 1, "the old child was never touched"

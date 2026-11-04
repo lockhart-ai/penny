@@ -18,6 +18,11 @@ DEPLOY_RUN_CMD="${DEPLOY_RUN_CMD:-make prod-run}"
 DEPLOY_LOG="${DEPLOY_LOG:-data/penny/logs/deploy-loop.log}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 DEPLOY_CRASH_BACKOFF="${DEPLOY_CRASH_BACKOFF:-30}"
+# Where `prod-build` records the commit its last successful build actually shipped —
+# the same file the Makefile's CHANGELOG_CURSOR_FILE writes to (`make prod-watch`
+# forwards that value here; this default only matters when the script is run some
+# other way, and a test overrides it to its own scratch path).
+DEPLOY_BUILD_CURSOR_FILE="${DEPLOY_BUILD_CURSOR_FILE:-data/penny/.changelog_cursor}"
 
 mkdir -p "$(dirname "$DEPLOY_LOG")"
 
@@ -128,6 +133,31 @@ interruptible_sleep() {
     wait $! 2>/dev/null
 }
 
+# HEAD can already be ahead of the last successful build at STARTUP — the owner ran
+# `git pull` by hand before `make prod-watch`, or a build failed and the loop was
+# restarted later. Neither looks "new" to fetch_and_maybe_deploy, which only ever
+# compares HEAD against origin: once they're equal, nothing will ever trigger a
+# build for a commit that's already checked out. So build once here if the commit
+# recorded in DEPLOY_BUILD_CURSOR_FILE (prod-build's own cursor write) doesn't match
+# HEAD, or the file doesn't exist yet. A failure is logged and the child still starts
+# on whatever image already exists — never silently stuck with no Penny at all.
+startup_build_if_needed() {
+    startup_head="$(git rev-parse HEAD)"
+    startup_built=""
+    if [ -f "$DEPLOY_BUILD_CURSOR_FILE" ]; then
+        startup_built="$(cat "$DEPLOY_BUILD_CURSOR_FILE")"
+    fi
+    if [ "$startup_head" = "$startup_built" ]; then
+        return
+    fi
+
+    log "HEAD ($startup_head) is ahead of the last successful build (${startup_built:-none}) — building before starting"
+    if ! $DEPLOY_BUILD_CMD >>"$DEPLOY_LOG" 2>&1; then
+        log "startup build FAILED at $startup_head — starting on the existing image anyway"
+    fi
+}
+
+startup_build_if_needed
 start_child
 last_check="$(date +%s)"
 while [ -z "$stopping" ]; do
