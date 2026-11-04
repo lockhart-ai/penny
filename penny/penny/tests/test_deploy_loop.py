@@ -193,7 +193,9 @@ def _build_stub(
     return stub
 
 
-def _start_loop(clone_dir: pathlib.Path, env_overrides: dict[str, str]) -> subprocess.Popen:
+def _start_loop(
+    clone_dir: pathlib.Path, env_overrides: dict[str, str], stdout: int | None = None
+) -> subprocess.Popen:
     env = {
         **os.environ,
         "DEPLOY_INTERVAL": "3600",  # never fires on its own during a test
@@ -204,7 +206,7 @@ def _start_loop(clone_dir: pathlib.Path, env_overrides: dict[str, str]) -> subpr
         ["bash", _script_path()],
         cwd=clone_dir,
         env=env,
-        stdout=subprocess.DEVNULL,
+        stdout=stdout if stdout is not None else subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
@@ -227,7 +229,9 @@ def _stop(proc: subprocess.Popen) -> None:
 @dataclasses.dataclass
 class _Deployment:
     """Everything a test needs to drive and inspect one loop run — the paths
-    its stub build/run commands write to, and the started process."""
+    its stub build/run commands write to, and the started process. `loop_stdout`
+    is what the loop itself wrote to its stdout — what a terminal (or the
+    launchd plist's StandardOutPath) would have shown (#2980)."""
 
     proc: subprocess.Popen
     run_log: pathlib.Path
@@ -237,6 +241,7 @@ class _Deployment:
     fail_flag: pathlib.Path
     deploy_log: pathlib.Path
     deploy_run_log: pathlib.Path
+    loop_stdout: pathlib.Path
 
 
 def _start_deployment(
@@ -264,27 +269,38 @@ def _start_deployment(
     fail_flag = tmp_path / "fail-flag"
     deploy_log = tmp_path / "deploy.log"
     deploy_run_log = tmp_path / "deploy-run.log"
+    loop_stdout = tmp_path / "loop-stdout.log"
     run_stub = run_cmd or _run_stub(tmp_path, run_log, pid_file)
     build_stub = _build_stub(tmp_path, build_log, built_file, fail_flag)
     if not built_file.exists():
         built_file.write_text(_git(clone_dir, "rev-parse", "--short", "HEAD"))
 
-    proc = _start_loop(
-        clone_dir,
-        {
-            "DEPLOY_RUN_CMD": str(run_stub),
-            "DEPLOY_BUILD_CMD": str(build_stub),
-            "DEPLOY_LOG": str(deploy_log),
-            "DEPLOY_RUN_LOG": str(deploy_run_log),
-            # No quotes around the path on purpose (see the variable's own
-            # comment in the script): the loop expands the command unquoted,
-            # where quote characters would arrive inside the word.
-            "DEPLOY_IMAGE_COMMIT_CMD": f"cat {built_file}",
-        },
-    )
+    with loop_stdout.open("w") as stdout_file:
+        proc = _start_loop(
+            clone_dir,
+            {
+                "DEPLOY_RUN_CMD": str(run_stub),
+                "DEPLOY_BUILD_CMD": str(build_stub),
+                "DEPLOY_LOG": str(deploy_log),
+                "DEPLOY_RUN_LOG": str(deploy_run_log),
+                # No quotes around the path on purpose (see the variable's own
+                # comment in the script): the loop expands the command unquoted,
+                # where quote characters would arrive inside the word.
+                "DEPLOY_IMAGE_COMMIT_CMD": f"cat {built_file}",
+            },
+            stdout=stdout_file.fileno(),
+        )
     _wait_until(lambda: _read_or_empty(run_log).count("\n") >= 1)
     return _Deployment(
-        proc, run_log, pid_file, build_log, built_file, fail_flag, deploy_log, deploy_run_log
+        proc,
+        run_log,
+        pid_file,
+        build_log,
+        built_file,
+        fail_flag,
+        deploy_log,
+        deploy_run_log,
+        loop_stdout,
     )
 
 
@@ -509,9 +525,12 @@ def test_child_runs_detached_from_the_terminal(tmp_path, repos):
     """Under `set -m` a background child that touches the controlling tty is
     stopped by the kernel (SIGTTOU/SIGTTIN) and never resumes (#2971) — so the
     child must read no terminal (stdin from /dev/null) and write to none
-    (stdout and stderr appended to DEPLOY_RUN_LOG). The stub records whether
-    its own stdin is a terminal and emits on both streams; the old stubs never
-    touched a terminal, which is exactly why this went unseen."""
+    (stdout and stderr through a pipe into DEPLOY_RUN_LOG). Its output still
+    reaches the loop's stdout (#2980) — tee'd, so a working deploy is visible
+    in the terminal that ran `make prod-watch` — but that is a pipe, never the
+    tty itself. The stub records whether its own stdin and stdout are
+    terminals and emits on both streams; the old stubs never touched a
+    terminal, which is exactly why this went unseen."""
     _origin, clone_dir, _first = repos
     run_log = tmp_path / "run.log"
     pid_file = tmp_path / "run.pid"
@@ -520,7 +539,10 @@ def test_child_runs_detached_from_the_terminal(tmp_path, repos):
     _write_executable(
         stub,
         f'echo "run $$" >> "{run_log}"\n'
-        f'if [ -t 0 ]; then echo "tty" >> "{tty_marker}"; else echo "notty" >> "{tty_marker}"; fi\n'
+        "for fd in 0 1; do\n"
+        '  if [ -t "$fd" ]; then state=tty; else state=notty; fi\n'
+        f'  echo "fd$fd-$state" >> "{tty_marker}"\n'
+        "done\n"
         'echo "child stdout line"\n'
         'echo "child stderr line" >&2\n'
         f'echo "$$" > "{pid_file}"\n'
@@ -528,8 +550,15 @@ def test_child_runs_detached_from_the_terminal(tmp_path, repos):
     )
     dep = _start_deployment(tmp_path, clone_dir, run_cmd=stub)
     try:
-        _wait_until(lambda: "notty" in _read_or_empty(tty_marker))
-        assert _read_or_empty(tty_marker).strip() == "notty", "stdin is not a terminal"
+        _wait_until(lambda: "fd0-notty" in _read_or_empty(tty_marker))
+        marker_text = _read_or_empty(tty_marker)
+        assert "fd0-notty" in marker_text, "the child's stdin is not a terminal"
+        assert "fd1-notty" in marker_text, (
+            "the child's stdout is not a terminal either — it is a pipe"
+        )
+        assert "tty" not in marker_text.replace("-notty", ""), (
+            "no stream of the child's is a terminal"
+        )
 
         def _run_log_has_both_streams() -> bool:
             text = _read_or_empty(dep.deploy_run_log)
@@ -539,6 +568,42 @@ def test_child_runs_detached_from_the_terminal(tmp_path, repos):
         run_log_text = _read_or_empty(dep.deploy_run_log)
         assert "child stdout line" in run_log_text
         assert "child stderr line" in run_log_text, "stderr lands in the run log too"
+
+        def _loop_stdout_has_both_streams() -> bool:
+            text = _read_or_empty(dep.loop_stdout)
+            return "child stdout line" in text and "child stderr line" in text
+
+        _wait_until(_loop_stdout_has_both_streams)
+        stdout_text = _read_or_empty(dep.loop_stdout)
+        assert "child stdout line" in stdout_text
+        assert "child stderr line" in stdout_text, (
+            "the child's output streams to the loop's stdout too (#2980)"
+        )
+    finally:
+        _stop(dep.proc)
+
+
+def test_loop_lines_appear_on_stdout(tmp_path, repos):
+    """The loop's own log lines stream to its stdout as well as the log file
+    (#2980) — the terminal that ran `make prod-watch` shows the loop working
+    instead of looking hung; under launchd that stdout is the plist's
+    StandardOutPath, so nothing changes there."""
+    _origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    try:
+        _wait_until(lambda: "started child" in _read_or_empty(dep.loop_stdout))
+        stdout_text = _read_or_empty(dep.loop_stdout)
+        assert stdout_text.startswith("[deploy-loop "), (
+            "the loop's own lines carry their log prefix on stdout too"
+        )
+        assert "started child" in _read_or_empty(dep.deploy_log), (
+            "the line still lands in the log file as well"
+        )
+
+        # A later cycle's line reaches stdout too — force a fetch-check with
+        # USR1 rather than waiting out DEPLOY_INTERVAL.
+        _tick(dep.proc)
+        _wait_until(lambda: "up to date" in _read_or_empty(dep.loop_stdout))
     finally:
         _stop(dep.proc)
 

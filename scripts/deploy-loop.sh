@@ -16,11 +16,12 @@ DEPLOY_INTERVAL="${DEPLOY_INTERVAL:-300}"
 DEPLOY_BUILD_CMD="${DEPLOY_BUILD_CMD:-make prod-build}"
 DEPLOY_RUN_CMD="${DEPLOY_RUN_CMD:-make prod-run}"
 DEPLOY_LOG="${DEPLOY_LOG:-data/penny/logs/deploy-loop.log}"
-# Where the child's own stdout/stderr goes (#2971): appended, next to the loop's
-# log. The child must never hold the terminal — an attached `docker compose up`
-# has the kernel SIGTTOU/SIGTTIN the whole background group dead the moment it
-# touches the controlling tty — so its output is redirected here and its stdin
-# comes from /dev/null instead.
+# Where the child's own stdout/stderr is appended (#2971). The child must never
+# hold the terminal — an attached `docker compose up` has the kernel
+# SIGTTOU/SIGTTIN the whole background group dead the moment it touches the
+# controlling tty — so its output never goes to the tty directly: it reaches the
+# loop's stdout through a pipe (tee, #2980) and its stdin comes from /dev/null
+# instead.
 DEPLOY_RUN_LOG="${DEPLOY_RUN_LOG:-data/penny/logs/deploy-run.log}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 DEPLOY_CRASH_BACKOFF="${DEPLOY_CRASH_BACKOFF:-30}"
@@ -50,23 +51,44 @@ fi
 
 mkdir -p "$(dirname "$DEPLOY_LOG")" "$(dirname "$DEPLOY_RUN_LOG")"
 
+# One line into $DEPLOY_LOG AND onto the loop's own stdout (#2980) — in a
+# terminal that's the tty `make prod-watch` was started in, under launchd it's
+# the plist's StandardOutPath — so a working deploy is visible where the loop
+# was started instead of looking like a hang.
 log() {
-    printf '[deploy-loop %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$DEPLOY_LOG"
+    printf '[deploy-loop %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$DEPLOY_LOG"
 }
 
 child_pid=""
 stopping=""
 immediate=""
 
-# Starts $DEPLOY_RUN_CMD in a subshell that `exec`s into it, so $child_pid names the
-# real command (no extra bash layer in between) while still getting its own process
-# group from `set -m` + `&`. Detached from the terminal (#2971): stdin from /dev/null,
-# stdout and stderr appended to $DEPLOY_RUN_LOG — under `set -m` a background child
-# that touches the controlling tty is stopped by the kernel (SIGTTOU/SIGTTIN) and
-# never resumes, so the child reads no tty and writes to none either. Penny's own
-# logs still go to penny.log inside the container.
+# Starts $DEPLOY_RUN_CMD in a subshell wrapping a pipeline: the child execs with
+# stdin from /dev/null and both streams fed to `tee`, which appends them to
+# $DEPLOY_RUN_LOG AND streams them to the loop's stdout (#2980) — so Penny's
+# output is visible in the terminal `make prod-watch` runs in (the plist's
+# StandardOutPath under launchd), while the child itself never touches the tty:
+# its stdout is a pipe, not the terminal, so the kernel never stops the group
+# with SIGTTOU/SIGTTIN (#2971). Penny's own logs still go to penny.log inside
+# the container.
+#
+# The whole pipeline sits inside one explicit subshell, so $! — and thus
+# $child_pid — names that subshell, not `tee`: the subshell is the process
+# whose exit means "the child crashed" (when the child dies, its pipe closes,
+# tee sees EOF and exits, and the subshell exits with the pipeline's
+# pipefail'd status). `set -m` gives the backgrounded subshell its own process
+# group and the pipeline's two members are forked inside it, so stop_child's
+# group kill still takes down the child and tee together.
+#
+# `trap : TERM` keeps that shutdown clean: bash defers a trapped signal until
+# the command it is waiting on completes, so when the group TERM lands the
+# subshell stays alive while its two members die, collects both their
+# statuses as the pipeline ends, and only then exits — neither is ever left
+# an unreaped orphan. The trap must be a handler (:), never '' — an ignored
+# signal is inherited across exec, and tee and the child would then ignore
+# TERM too, hanging the shutdown.
 start_child() {
-    (exec $DEPLOY_RUN_CMD < /dev/null >> "$DEPLOY_RUN_LOG" 2>&1) &
+    (trap : TERM; exec $DEPLOY_RUN_CMD < /dev/null 2>&1 | tee -a "$DEPLOY_RUN_LOG") &
     child_pid=$!
     log "started child (pid $child_pid): $DEPLOY_RUN_CMD"
 }
