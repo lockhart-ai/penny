@@ -25,6 +25,7 @@ swap state", root `CLAUDE.md`).
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from penny.changelog_commits import (
     COMMITS_PATH,
@@ -63,12 +64,25 @@ def recorded_prs(log: Memory) -> set[int]:
     return recorded
 
 
-def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[ChangelogEntry]:
+def record_new_entries(
+    log: Memory, entries: list[ChangelogEntry], created_at: datetime
+) -> list[ChangelogEntry]:
     """Append every entry in ``entries`` not already recorded in ``log``,
-    each stamped with the log's own clock (the deploy time). Returns the
-    entries that were actually appended — which is exactly what this
-    deploy announces too (#2891): there is no separate selection step, so
-    nothing is ever recorded that isn't announced.
+    every one of them stamped with ``created_at``. Returns the entries that
+    were actually appended — which is exactly what this deploy announces
+    too (#2891): there is no separate selection step, so nothing is ever
+    recorded that isn't announced.
+
+    ``created_at`` is required, with no default that would silently mean
+    "now" (#2962): the live startup path (``Penny._record_changelog_entries``)
+    passes its own clock's "now" explicitly — these entries really did just
+    reach her, so the deploy time IS when they happened. A backfill recording
+    a historical PR long after the fact passes that PR's own merge time
+    instead, so the row reads in its true place rather than as the newest
+    thing in the log. One call still stamps its whole batch with one given
+    time — the live deploy path's "a deploy's entries share one moment" stays
+    true; a backfill wanting several distinct stamps calls this once per
+    stamp (``penny.changelog_backfill``).
 
     Idempotent: an entry recorded on one call is never appended again on a
     later one — the only guard against a container restart (no rebuild, so
@@ -81,9 +95,10 @@ def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[Chang
     missing = [entry for entry in entries if entry.pr not in already]
     if not missing:
         return []
-    log.append(
+    log.append_at(
         [LogEntryInput(content=entry.render()) for entry in missing],
         author=PennyConstants.CHANGELOG_LOG_AUTHOR,
+        created_at=created_at,
     )
     return missing
 

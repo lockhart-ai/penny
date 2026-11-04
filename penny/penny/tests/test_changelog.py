@@ -8,6 +8,8 @@ path with an empty and a non-empty commit list."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from penny.changelog import (
     COMMITS_PATH,
     ChangelogEntry,
@@ -230,11 +232,11 @@ def test_record_new_entries_is_idempotent(db):
         ChangelogEntry(pr=9102, text="We renamed the lookup tool."),
     ]
 
-    added = record_new_entries(changelog, entries)
+    added = record_new_entries(changelog, entries, created_at=db.clock.now())
     assert added == entries
     assert [row.content for row in changelog.read_all()] == [e.render() for e in entries]
 
-    again = record_new_entries(changelog, entries)
+    again = record_new_entries(changelog, entries, created_at=db.clock.now())
     assert again == []
     assert len(changelog.read_all()) == 2
 
@@ -244,7 +246,9 @@ def test_record_new_entries_only_appends_the_missing_ones(db):
     recorded appends only the new one — no duplicate, no re-ordering of the
     old rows."""
     changelog = require_memory(db, PennyConstants.MEMORY_CHANGELOG_LOG)
-    record_new_entries(changelog, [ChangelogEntry(pr=9201, text="first change")])
+    record_new_entries(
+        changelog, [ChangelogEntry(pr=9201, text="first change")], created_at=db.clock.now()
+    )
 
     added = record_new_entries(
         changelog,
@@ -252,11 +256,32 @@ def test_record_new_entries_only_appends_the_missing_ones(db):
             ChangelogEntry(pr=9201, text="first change"),
             ChangelogEntry(pr=9202, text="second change"),
         ],
+        created_at=db.clock.now(),
     )
     assert added == [ChangelogEntry(pr=9202, text="second change")]
     assert [row.content for row in changelog.read_all()] == [
         "PR #9201: first change",
         "PR #9202: second change",
+    ]
+
+
+def test_record_new_entries_stamps_the_given_created_at_not_now(db):
+    """A backfilled entry's timestamp is the time it's told to carry — its
+    PR's own merge time (#2962) — not whenever this call happens to run.
+    Recording a "live" entry first and an older, backfilled one second still
+    leaves the backfilled one reading BEFORE the live one: entries are read
+    in ``created_at`` order, so an out-of-order write would otherwise make an
+    October PR look newer than a November one."""
+    changelog = require_memory(db, PennyConstants.MEMORY_CHANGELOG_LOG)
+    live_entry = ChangelogEntry(pr=9401, text="a live deploy's own entry")
+    backfilled_entry = ChangelogEntry(pr=9301, text="an older PR, recorded after the fact")
+
+    record_new_entries(changelog, [live_entry], created_at=datetime(2026, 11, 1, tzinfo=UTC))
+    record_new_entries(changelog, [backfilled_entry], created_at=datetime(2026, 10, 20, tzinfo=UTC))
+
+    assert [row.content for row in changelog.read_all()] == [
+        backfilled_entry.render(),
+        live_entry.render(),
     ]
 
 

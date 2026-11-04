@@ -1240,6 +1240,28 @@ class TestLogAppend:
         with pytest.raises(MemoryTypeError):
             db.memories.memory("likes").append([LogEntryInput(content="nope")], author="user")
 
+    def test_append_at_stamps_the_given_created_at(self, db):
+        """``append_at`` (#2962, the backfill path) stamps every row with the
+        ``created_at`` it's given, never the log's own clock — the opposite of
+        ``append``, which always uses "now"."""
+        db.memories.create_log("chatter", "inbound")
+        stamp = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+        db.memories.memory("chatter").append_at(
+            [LogEntryInput(content="hello")], author="user", created_at=stamp
+        )
+
+        entry = db.memories.memory("chatter").read_all()[0]
+        assert entry.created_at.replace(tzinfo=UTC) == stamp
+
+    def test_append_at_to_collection_raises(self, db):
+        db.memories.create_collection("likes", "x")
+        with pytest.raises(MemoryTypeError):
+            db.memories.memory("likes").append_at(
+                [LogEntryInput(content="nope")],
+                author="user",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+
     def test_write_to_log_raises(self, db):
         db.memories.create_log("events", "x")
         with pytest.raises(MemoryTypeError):

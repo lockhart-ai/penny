@@ -642,7 +642,9 @@ class Penny:
         if changelog is None:
             logger.warning("No `changelog` memory row — migration 0132 didn't run?")
             return []
-        recorded = record_new_entries(changelog, self.config.changelog_commits)
+        recorded = record_new_entries(
+            changelog, self.config.changelog_commits, created_at=self.db.clock.now()
+        )
         if recorded:
             logger.info(
                 "Recorded %d new changelog entr%s",

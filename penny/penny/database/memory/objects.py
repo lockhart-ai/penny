@@ -217,6 +217,16 @@ class Memory:
         self._refuse_log_op()
         return []
 
+    def append_at(
+        self,
+        entries: list[LogEntryInput],
+        author: str,
+        created_at: datetime,
+        run_id: str | None = None,
+    ) -> list[MemoryEntry]:
+        self._refuse_log_op()
+        return []
+
     def read_batch(self, cursor: datetime | None, limit: int) -> list[MemoryEntry]:
         self._refuse_log_op()
         return []
@@ -859,6 +869,32 @@ class Log(Memory):
     def append(
         self, entries: list[LogEntryInput], author: str, run_id: str | None = None
     ) -> list[MemoryEntry]:
+        return self._append_rows(entries, author, self._clock.now(), run_id)
+
+    def append_at(
+        self,
+        entries: list[LogEntryInput],
+        author: str,
+        created_at: datetime,
+        run_id: str | None = None,
+    ) -> list[MemoryEntry]:
+        """Like ``append``, but every row is stamped with ``created_at``
+        instead of this log's own clock — for backfilling a historical entry
+        whose recorded time must be when it actually happened, not when this
+        call runs (``penny.changelog_backfill``, #2962: entries read in order
+        by this column, so a PR merged weeks ago has to sort before one
+        recorded for real last night). ``created_at`` is required, with no
+        default that would silently mean "now" — ``append`` stays the
+        ordinary now-stamped path every other writer uses unchanged."""
+        return self._append_rows(entries, author, created_at, run_id)
+
+    def _append_rows(
+        self,
+        entries: list[LogEntryInput],
+        author: str,
+        created_at: datetime,
+        run_id: str | None,
+    ) -> list[MemoryEntry]:
         created: list[MemoryEntry] = []
         with self._session() as session:
             for entry in entries:
@@ -869,7 +905,7 @@ class Log(Memory):
                     author=author,
                     key_embedding=None,
                     content_embedding=sim.maybe_serialize(entry.content_embedding),
-                    created_at=self._clock.now(),
+                    created_at=created_at,
                     # Log entries are immutable (append-only), so the creating run
                     # is also the last writer (#1560).
                     created_by_run_id=run_id,
@@ -945,6 +981,15 @@ class MessageLogMemory(Log):
             f"'{self.name}' is a read view over the conversation log — messages "
             "are recorded by the channel, not appended here."
         )
+
+    def append_at(
+        self,
+        entries: list[LogEntryInput],
+        author: str,
+        created_at: datetime,
+        run_id: str | None = None,
+    ) -> list[MemoryEntry]:
+        return self.append(entries, author, run_id)
 
     def _to_entry(self, row: MessageLog) -> MemoryEntry:
         return MemoryEntry(
@@ -2231,6 +2276,15 @@ class RunLog(Log):
             "runs are recorded by the dispatcher, not appended here."
         )
 
+    def append_at(
+        self,
+        entries: list[LogEntryInput],
+        author: str,
+        created_at: datetime,
+        run_id: str | None = None,
+    ) -> list[MemoryEntry]:
+        return self.append(entries, author, run_id)
+
     def read_window(self, window_seconds: int, limit: int | None = None) -> list[MemoryEntry]:
         # Runs are bounded per read like the cursored batch — a chat "what ran
         # recently" shouldn't dump an unbounded window of run records.
@@ -2359,6 +2413,15 @@ class RunHealthLog(Log):
             f"'{self.name}' is a read view over run history (promptlog) — "
             "runs are recorded by the framework, not appended here."
         )
+
+    def append_at(
+        self,
+        entries: list[LogEntryInput],
+        author: str,
+        created_at: datetime,
+        run_id: str | None = None,
+    ) -> list[MemoryEntry]:
+        return self.append(entries, author, run_id)
 
     def read_window(self, window_seconds: int, limit: int | None = None) -> list[MemoryEntry]:
         # Bounded per read like the cursored batch, same as ``RunLog``.

@@ -230,7 +230,11 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
     penny._init_channel(config, channel)
     penny._connect_scheduler(config)
     _seed_profile_and_history(penny)
-    record_new_entries(require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG), [old_entry])
+    record_new_entries(
+        require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG),
+        [old_entry],
+        created_at=penny.db.clock.now(),
+    )
 
     task = asyncio.create_task(penny.run())
     try:

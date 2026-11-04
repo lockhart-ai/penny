@@ -3988,6 +3988,7 @@ class TestLogTools:
                 ChangelogEntry(pr=9001, text="We added a new way to save a note."),
                 ChangelogEntry(pr=9002, text="We renamed the lookup tool."),
             ],
+            created_at=db.clock.now(),
         )
         assert len(added) == 2
         entries = changelog.read_all()
@@ -4001,7 +4002,12 @@ class TestLogTools:
             f"2. [{format_log_timestamp(entries[1].created_at)}] id={entries[1].id} "
             "PR #9002: We renamed the lookup tool."
         )
-        assert record_new_entries(changelog, [ChangelogEntry(pr=9001, text="x")]) == []
+        assert (
+            record_new_entries(
+                changelog, [ChangelogEntry(pr=9001, text="x")], created_at=db.clock.now()
+            )
+            == []
+        )
 
 
 class TestEmissionProvenanceRender:
