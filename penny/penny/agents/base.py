@@ -1784,13 +1784,14 @@ class Agent:
         self._channel = channel
 
     def _memory_scope(self) -> str | None:
-        """Bind this agent's entry-mutation tools to a single collection.
+        """Key this agent's read cursors and entry author to one collection.
 
         Default: no scope — chat-style agents see the full chat surface
         (lifecycle + reads, no entry mutations).  ``Collector`` overrides
         to return its current target's name, so ``build_memory_tools``
-        returns the collector surface (entry mutations pinned to that
-        target + log_append + reads).
+        returns the collector surface (reads + log_append + entry
+        mutations keyed to that target — writes to ANY collection are
+        allowed, #2963; the author and read cursors stay bound to it).
         """
         return None
 

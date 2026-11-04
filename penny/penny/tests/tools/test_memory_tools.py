@@ -4245,15 +4245,17 @@ class TestFactory:
 
 
 class TestScopedFactory:
-    """Scope binds a collector to one collection.  Writes to other collections
-    get a clean refusal at the tool layer, so a confused or jailbroken
-    collector can't trash unrelated memories.
+    """Scope keys a collector's read cursors and entry author to one collection.
+    The old write pin is lifted (#2963): a job may write to ANY collection — a
+    reflection job files findings into a separate tracker — with the entry's
+    author still keyed to its bound collection.  The one wall left is the
+    standing-rules guard on `rules`.
     """
 
     @pytest.mark.asyncio
-    async def test_scoped_write_rejects_other_collection(self, db, mock_llm):
-        """A scoped collector that tries to write to a different collection
-        gets a clean refusal rather than silently corrupting unrelated data."""
+    async def test_scoped_write_lands_in_other_collection(self, db, mock_llm):
+        """A scoped collector's write to a different collection lands, with the
+        entry's author keyed to the bound collection (#2963)."""
         _seed_collection(
             db,
             name="likes",
@@ -4281,11 +4283,12 @@ class TestScopedFactory:
             CallLink.new_top(), collection="dislikes", entries=[{"key": "k", "content": "v"}]
         )
 
-        assert (
-            result.message == "Refused: this collector can only write to 'likes', not 'dislikes'."
-        )
-        # And nothing was actually written
-        assert db.memory("dislikes").get("k") == []
+        assert "Wrote 1 entry" in result.message
+        # The entry landed in the OTHER collection, authored by the bound scope.
+        stored = db.memory("dislikes").get("k")
+        assert stored != []
+        assert stored[0].content == "v"
+        assert stored[0].author == "collector:likes"
 
     @pytest.mark.asyncio
     async def test_scoped_write_allows_target_collection(self, db, mock_llm):
@@ -4313,10 +4316,29 @@ class TestScopedFactory:
         assert db.memory("likes").get("k")[0].content == "v"
 
     @pytest.mark.asyncio
-    async def test_scoped_delete_rejects_other_collection(self, db):
+    async def test_scoped_delete_lands_in_other_collection(self, db):
+        """A scoped collector's remove from a different collection works (#2963)."""
+        _seed_collection(
+            db,
+            name="dislikes",
+            description="x",
+            extraction_prompt=None,
+            schedule=None,
+        )
+        seed = CollectionWriteTool(
+            db,
+            cast(Any, MockLlmClient()),
+            author="chat",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await seed.execute(
+            CallLink.new_top(), collection="dislikes", entries=[{"key": "k", "content": "v"}]
+        )
         delete = CollectionRemoveTool(db, scope="likes")
         result = await delete.execute(CallLink.new_top(), collection="dislikes", key="k")
-        assert "Refused" in result.message
+        assert result.message == "Deleted 'k' from 'dislikes'."
+        assert db.memory("dislikes").get("k") == []
 
     @pytest.mark.asyncio
     async def test_scoped_write_to_rules_is_refused(self, db, mock_llm):

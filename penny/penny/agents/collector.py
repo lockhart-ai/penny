@@ -1373,7 +1373,8 @@ class Collector(BackgroundAgent):
     # since a free-text prompt has no calls to parse.
 
     def _memory_scope(self) -> str:
-        """Pin entry mutations to the bound target collection."""
+        """Key read cursors and the entry author to the bound target collection
+        (writes to any collection are allowed, #2963)."""
         return self._require_target().name
 
     def _include_lifecycle_tools(self) -> bool:
