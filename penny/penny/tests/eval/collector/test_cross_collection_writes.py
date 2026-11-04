@@ -103,8 +103,7 @@ _FINDING_TOKEN = "thermometer"
 # nothing the finding claim could match, so a seeded row cannot pass for a filing.
 _SEED_TRACKER_KEY = "seed-tray-jam"
 _SEED_TRACKER_CONTENT = (
-    "Status: UNRESOLVED. Issue: The seed tray jams on the second shelf slider. "
-    "Found: 2026-10-19."
+    "Status: UNRESOLVED. Issue: The seed tray jams on the second shelf slider. Found: 2026-10-19."
 )
 
 
