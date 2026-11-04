@@ -83,6 +83,7 @@ from penny.validation.response_validators import (
 
 if TYPE_CHECKING:
     from penny.channels.base import MessageChannel, PageContext
+    from penny.database.models import PromptLog
 
 logger = logging.getLogger(__name__)
 
@@ -535,6 +536,7 @@ class Agent:
         progress_scope: str = "foreground",
         handles: HandleTable | None = None,
         inbox: TurnInbox,
+        trailing_role: MessageRole = MessageRole.USER,
     ) -> ControllerResponse:
         """Run the agentic loop — prompt in, response out.
 
@@ -555,10 +557,14 @@ class Agent:
         one to, and the prose simply stays on the step's own message, exactly as
         today.
 
-``inbox`` (#2985) is REQUIRED, no default: the turn's queue of messages
+        ``inbox`` (#2985) is REQUIRED, no default: the turn's queue of messages
         waiting to join it mid-run, drained after each tool step.  A foreground
         chat turn passes its own; every background caller states ``NO_INBOX``
         explicitly — the null object that drains nothing.
+
+        ``trailing_role`` (#2974) — see ``_build_messages`` — is ``USER`` for an
+        ordinary turn; a system-originated delivery turn passes ``SYSTEM`` so its
+        trigger reads as a fact of her situation, not an instruction.
         """
         run_id = call_link.run_id
         self._tool_result_text = []
@@ -568,7 +574,12 @@ class Agent:
         # one, the same table their tools were built with.
         table = handles if handles is not None else HandleTable()
         messages = self._build_messages(
-            prompt, history, system_prompt, images=images, handles=table
+            prompt,
+            history,
+            system_prompt,
+            images=images,
+            handles=table,
+            trailing_role=trailing_role,
         )
         tools = self._tool_registry.get_ollama_tools()
         return await self._run_agentic_loop(
@@ -2350,20 +2361,21 @@ class Agent:
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,
+        trailing_role: MessageRole = MessageRole.USER,
     ) -> list[LlmMessage]:
         """Build message list for Ollama chat API.
 
         Static system, then history, then the per-turn state as its own
-        SYSTEM message, then the user (#2756): the static system prompt
+        SYSTEM message, then the live turn (#2756): the static system prompt
         (identity, instructions — everything that never changes per turn)
         rides the ONE leading system message; the growing, append-only
         history (#2756) follows it untouched — this prefix (the static text,
         the tool schemas gemma4's renderer puts right after it, and the
         history) is what a server-side prefix cache reuses turn to turn.
         Each agent's per-turn section (the clock; chat's page hint and
-        self-state) rides a SYSTEM message placed right BEFORE the live user
-        turn, so only that message and the user's own text are re-read every
-        time.
+        self-state) rides a SYSTEM message placed right BEFORE the live
+        turn, so only that message and the live turn's own text are re-read
+        every time.
 
         ``Collector`` overrides this method entirely (#2778): a collector
         cycle has no history, so this shape would put its dynamic section
@@ -2376,24 +2388,41 @@ class Agent:
         reused prefix.
 
         This placement is a MID-CONVERSATION system message — between the
-        history's last entry (ordinarily an ``assistant`` turn) and
-        ``user`` — which prod's runner (oMLX) does not render in place out
-        of the box: unpatched, it downgrades a non-leading system message
-        into the following user turn's own text
-        (``_downgrade_mid_system_to_user_notes``), which would silently fold
-        the state into the user's message instead of keeping it a separate
-        turn. Prod carries a local oMLX patch that keeps a mid-conversation
-        system message in place, so this is the shape prod actually runs;
-        OpenRouter (eval) renders it natively with no patch needed, so eval
-        and prod read the same prompt.
+        history's last entry (ordinarily an ``assistant`` turn) and the live
+        turn.  For gemma (prod and eval alike, #2974), the live wire is
+        whatever ``raw_template.render_prompt`` produces from this exact
+        message list (#2829 — Penny renders gemma's own chat template
+        herself and sends a raw completions request, so every runner serving
+        the model sees byte-identical bytes): its vendored template
+        (``llm/templates/gemma4_chat_template.jinja``) renders a ``system``
+        message as its own turn wherever it sits in the array, with no
+        restriction on the role before or after it — confirmed by reading
+        the template directly, not assumed. Only a model with no vendored
+        template, or a run where the raw-template faithfulness check has
+        disabled that transport, falls back to a provider's own
+        chat-completions templating, whose handling of a non-leading system
+        message varies by provider and is NOT guaranteed to render in place
+        — a pre-existing risk this method does not add to.
+
+        ``trailing_role`` (#2974) is the role the live turn's own message
+        carries — ``USER`` for an ordinary chat ask (the default); a
+        system-originated delivery turn (a changelog announcement, a job's
+        report, a sandbox preview) passes ``SYSTEM`` instead, so the trigger
+        she's given reads as a fact of her situation, never an instruction
+        from "the user".  Whichever role it is, it is also what makes that
+        turn's run reconstructible in later history: ``_expand_history_turn``
+        reads it back off this same run's own first ``promptlog`` row
+        (``_run_trigger_message``) rather than storing it a second time.
 
         The per-turn content stays in a SYSTEM-role turn — never folded into
         the user turn: the #1296/#1304 revert measured that recalled context
         riding beside the live message reads as the live ask.
 
-        ``images`` ride the current turn's user message (#2635) — data URIs,
+        ``images`` ride the current turn's own message (#2635) — data URIs,
         translated to ``image_url`` content parts on the wire.  History never
-        carries them: a past turn reads only its text.
+        carries them: a past turn reads only its text.  (Only ``trailing_role
+        == USER`` callers pass images — a delivery turn never carries an
+        attachment of its own.)
         """
         effective = system_prompt or self.system_prompt
 
@@ -2406,19 +2435,31 @@ class Agent:
         if dynamic:
             messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
 
-        messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
+        messages.append(LlmMessage(role=trailing_role, content=prompt, images=images or None))
         return messages
 
     def _expand_history_turn(self, turn: HistoryTurn) -> list[LlmMessage]:
-        """One history turn, as the model reads it (#2915/#2888).
+        """One history turn, as the model reads it (#2915/#2888, the trigger
+        prepend #2974).
 
-        A user turn, or an assistant turn with no run (an autonomous send) or
-        whose run made no calls, renders exactly as it always has: one plain
-        message, the talk-only shape #2646 restored.  A reply a run DID call
-        tools for renders that run's own calls and results first — native
-        ``tool_calls`` on the assistant role, a ``tool`` message per result —
-        then the reply text, so the act is visible beside the words rather
-        than only in the words a later turn might otherwise copy.
+        A user turn renders exactly as it always has: one plain message.  An
+        assistant turn with no run, or whose run's own rows are gone, renders
+        the same way.  Otherwise, two things ride ahead of the reply, in
+        order: the run's own TRIGGER, when it had one (below), then — a reply
+        a run DID call tools for — that run's own calls and results, native
+        ``tool_calls`` on the assistant role and a ``tool`` message per
+        result, so the act is visible beside the words rather than only in
+        the words a later turn might otherwise copy.
+
+        **The trigger** (#2974): an autonomous delivery turn (a changelog
+        announcement, a job's report, a sandbox preview — any future one
+        built the same way) is given its trigger as the LIVE turn's own
+        trailing SYSTEM message (``_build_messages``'s ``trailing_role``);
+        this renders that exact text again, immediately before her reply,
+        every later turn — read back off the run's OWN promptlog rows
+        (``_run_trigger_message``), never stored a second time.  An ordinary
+        chat reply's run always ends in a USER turn instead, so this never
+        fires for one.
 
         A message that JOINED the run mid-turn (#2985) renders in its true
         position: after the tool step the run record stamps it behind
@@ -2437,11 +2478,14 @@ class Agent:
         tool turns mistakes a replayed one for a call that run made itself."""
         if turn.role != MessageRole.ASSISTANT or turn.run_id is None:
             return [LlmMessage(role=MessageRole(turn.role), content=turn.content)]
-        history = run_tool_history(self.db.messages.prompts_for_run(turn.run_id))
+        prompts = self.db.messages.prompts_for_run(turn.run_id)
+        trigger = self._run_trigger_message(prompts)
+        lead = [trigger] if trigger is not None else []
+        history = run_tool_history(prompts)
         joined = self.db.messages.injected_messages_for_run(turn.run_id)
         if not history and not joined:
-            return [LlmMessage(role=MessageRole.ASSISTANT, content=turn.content)]
-        messages: list[LlmMessage] = []
+            return [*lead, LlmMessage(role=MessageRole.ASSISTANT, content=turn.content)]
+        messages: list[LlmMessage] = list(lead)
         for call_id, logged_call, result in history:
             call_id_replay = new_history_replay_call_id()
             messages.append(
@@ -2478,6 +2522,45 @@ class Agent:
                 messages.append(LlmMessage(role=MessageRole.USER, content=entry.get("content", "")))
         messages.append(LlmMessage(role=MessageRole.ASSISTANT, content=turn.content))
         return messages
+
+    @staticmethod
+    def _run_trigger_message(prompts: list[PromptLog]) -> LlmMessage | None:
+        """The SYSTEM-role trigger an autonomous run was given, read back off
+        its OWN promptlog rows (#2974) — never stored a second time.
+
+        A run's first call is built fresh by ``_build_messages``, whose last
+        message is the live turn's own trailing message; every LATER call in
+        the SAME run (a tool-call round-trip, a nudged reroll) only ever
+        APPENDS to that same list, never re-adds a fresh trailing turn — so
+        the first row (oldest first, ``prompts_for_run``) whose own stored
+        ``messages`` ends in a ``system`` turn is that original trailing
+        message, whether or not that particular draw was later discarded or
+        rerolled.  Walking forward rather than trusting ``prompts[0]``
+        outright also covers a row pruned out from under it: if the true
+        first call's row is gone, the next surviving row whose trailing
+        message is still ``system`` (a blind reroll resends the identical
+        messages) is read instead, and if none qualifies — every row pruned,
+        or only a nudged-retry row survives (its own trailing message is the
+        nudge, a ``user`` turn, not the trigger) — this returns ``None`` and
+        the caller renders the reply plainly, never guessing at lost text.
+
+        An ordinary chat turn's run always ends its first call in a ``user``
+        turn (the user's own ask), so this is ``None`` for every one of
+        those — the signal is structural, never a ``prompt_type`` or
+        mechanism name check."""
+        for row in prompts:
+            try:
+                messages = json.loads(row.messages)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not messages:
+                continue
+            last = messages[-1]
+            if isinstance(last, dict) and last.get("role") == str(MessageRole.SYSTEM):
+                content = last.get("content")
+                if isinstance(content, str) and content:
+                    return LlmMessage(role=MessageRole.SYSTEM, content=content)
+        return None
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
         """The per-turn section — the system message placed right BEFORE the
@@ -2589,10 +2672,25 @@ class Agent:
         """Build conversation history as strict user/assistant alternation.
 
         Fetches a raw pool of recent messages (``MESSAGE_CONTEXT_LIMIT``, no
-        time boundary), merges consecutive same-role messages with newlines
-        into turns, then trims to the history window — ``CHAT_HISTORY_TURNS``
+        time boundary), merges consecutive INCOMING messages with newlines
+        into one turn (two rapid-fire human texts with no reply between
+        them), then trims to the history window — ``CHAT_HISTORY_TURNS``
         user turns growing to twice that minus one before cutting back
         (#2756; previously a flat last-N, #2746).
+
+        Consecutive OUTGOING rows are never merged (#2974 — previously
+        text-concatenated the same way, which is what let an autonomous
+        send's trigger-bearing turn melt into whatever unrelated reply
+        preceded it with no seam at all).  Each becomes its own
+        ``HistoryTurn``, keeping its OWN ``run_id`` — a cold one (an
+        autonomous send, or a second one right after it with nothing
+        incoming between) gets its trigger prepended by
+        ``_expand_history_turn`` off that same run_id, never by text glued
+        onto a neighbour's.  The raw template's own turn-continuation rule
+        (gemma4's ``continue_same_model_turn``) still reads two adjoining
+        plain assistant turns as one continuous voice when nothing — no
+        trigger — separates them, so an ordinary multi-part reply looks the
+        same as it always has.
 
         ``total_user_turns`` is read separately from the capped raw pool
         (``MessageStore.count_user_turns``, #2756) — the anchor the
@@ -2637,15 +2735,10 @@ class Agent:
                     else MessageRole.ASSISTANT
                 )
                 run_id = msg.run_id if role == MessageRole.ASSISTANT else None
-                if conversation and conversation[-1].role == role:
-                    prev = conversation[-1]
-                    # Two consecutive outgoing rows with no incoming message between
-                    # them (an autonomous send, then a direct reply) merge into one
-                    # text turn, as always; only the LAST one's run gets its calls
-                    # rendered — the merge already collapses them to one voice, and
-                    # the end of that voice is the reply the run actually backs.
+                prev = conversation[-1] if conversation else None
+                if prev is not None and prev.role == role == MessageRole.USER:
                     conversation[-1] = HistoryTurn(
-                        prev.role, f"{prev.content}\n{msg.content}", run_id or prev.run_id
+                        prev.role, f"{prev.content}\n{msg.content}", None
                     )
                 else:
                     conversation.append(HistoryTurn(role, msg.content, run_id))

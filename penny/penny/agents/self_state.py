@@ -427,12 +427,20 @@ class SelfStateHeader:
 
     @staticmethod
     def _emission_line(emission: EmissionActivity) -> str:
-        """``sent · <when> · <mechanism> — "<snippet>"`` — a delivered autonomous
-        send (#1568). The mechanism is the ``memory_get`` anchor (its #1566
-        block names the creating request); the snippet is what Penny autonomously
-        said, at rollup altitude."""
+        """``sent · run <id> · <when> · <mechanism> — "<snippet>"`` — a delivered
+        autonomous send (#1568). The mechanism is the ``memory_get`` anchor (its
+        #1566 block names the creating request); the snippet is what Penny
+        autonomously said, at rollup altitude.
+
+        The ``run <id>`` anchor (#2974) is the SAME one ``_run_line``/
+        ``_chat_failure_line`` already render — ``run_get`` on it is the one-hop
+        reachability path to this send's own trigger once the exchange ages out
+        of the history window that renders the trigger in place.  Omitted only
+        when the row genuinely carries no run (``run_id`` is ``None``), never
+        guessed."""
+        anchor = f"{PennyConstants.RUN_EVENT_PREFIX}{emission.run_id} · " if emission.run_id else ""
         return (
-            f"sent · {format_log_timestamp(emission.sent_at)} · "
+            f"sent · {anchor}{format_log_timestamp(emission.sent_at)} · "
             f'{emission.mechanism} — "{emission.snippet}"'
         )
 
