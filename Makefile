@@ -247,12 +247,16 @@ DEPLOY_INTERVAL ?= 300
 DEPLOY_BUILD_CMD ?= make prod-build
 DEPLOY_RUN_CMD ?= make prod-run
 DEPLOY_LOG ?= $(CURDIR)/data/penny/logs/deploy-loop.log
+# The child's own stdout/stderr (detached from the terminal, #2971) — appended,
+# next to the loop's own log above.
+DEPLOY_RUN_LOG ?= $(CURDIR)/data/penny/logs/deploy-run.log
 
 prod-watch:
 	DEPLOY_INTERVAL="$(DEPLOY_INTERVAL)" \
 	DEPLOY_BUILD_CMD="$(DEPLOY_BUILD_CMD)" \
 	DEPLOY_RUN_CMD="$(DEPLOY_RUN_CMD)" \
 	DEPLOY_LOG="$(DEPLOY_LOG)" \
+	DEPLOY_RUN_LOG="$(DEPLOY_RUN_LOG)" \
 	DEPLOY_BUILD_CURSOR_FILE="$(CHANGELOG_CURSOR_FILE)" \
 	./scripts/deploy-loop.sh
 

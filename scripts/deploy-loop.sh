@@ -16,6 +16,12 @@ DEPLOY_INTERVAL="${DEPLOY_INTERVAL:-300}"
 DEPLOY_BUILD_CMD="${DEPLOY_BUILD_CMD:-make prod-build}"
 DEPLOY_RUN_CMD="${DEPLOY_RUN_CMD:-make prod-run}"
 DEPLOY_LOG="${DEPLOY_LOG:-data/penny/logs/deploy-loop.log}"
+# Where the child's own stdout/stderr goes (#2971): appended, next to the loop's
+# log. The child must never hold the terminal — an attached `docker compose up`
+# has the kernel SIGTTOU/SIGTTIN the whole background group dead the moment it
+# touches the controlling tty — so its output is redirected here and its stdin
+# comes from /dev/null instead.
+DEPLOY_RUN_LOG="${DEPLOY_RUN_LOG:-data/penny/logs/deploy-run.log}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 DEPLOY_CRASH_BACKOFF="${DEPLOY_CRASH_BACKOFF:-30}"
 # Where `prod-build` records the commit its last successful build actually shipped —
@@ -24,7 +30,7 @@ DEPLOY_CRASH_BACKOFF="${DEPLOY_CRASH_BACKOFF:-30}"
 # other way, and a test overrides it to its own scratch path).
 DEPLOY_BUILD_CURSOR_FILE="${DEPLOY_BUILD_CURSOR_FILE:-data/penny/.changelog_cursor}"
 
-mkdir -p "$(dirname "$DEPLOY_LOG")"
+mkdir -p "$(dirname "$DEPLOY_LOG")" "$(dirname "$DEPLOY_RUN_LOG")"
 
 log() {
     printf '[deploy-loop %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$DEPLOY_LOG"
@@ -36,9 +42,13 @@ immediate=""
 
 # Starts $DEPLOY_RUN_CMD in a subshell that `exec`s into it, so $child_pid names the
 # real command (no extra bash layer in between) while still getting its own process
-# group from `set -m` + `&`.
+# group from `set -m` + `&`. Detached from the terminal (#2971): stdin from /dev/null,
+# stdout and stderr appended to $DEPLOY_RUN_LOG — under `set -m` a background child
+# that touches the controlling tty is stopped by the kernel (SIGTTOU/SIGTTIN) and
+# never resumes, so the child reads no tty and writes to none either. Penny's own
+# logs still go to penny.log inside the container.
 start_child() {
-    (exec $DEPLOY_RUN_CMD) &
+    (exec $DEPLOY_RUN_CMD < /dev/null >> "$DEPLOY_RUN_LOG" 2>&1) &
     child_pid=$!
     log "started child (pid $child_pid): $DEPLOY_RUN_CMD"
 }
@@ -48,6 +58,10 @@ start_child() {
 # processes, not the git state (#2955).
 stop_child() {
     [ -n "$child_pid" ] || return 0
+    # SIGCONT along with the TERM (#2971): a stopped child can't act on TERM until
+    # it's continued, so the shutdown would hang on it — continue the group first,
+    # then take it down.
+    kill -CONT "-$child_pid" 2>/dev/null || kill -CONT "$child_pid" 2>/dev/null
     kill -TERM "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null
     wait "$child_pid" 2>/dev/null
     child_pid=""
