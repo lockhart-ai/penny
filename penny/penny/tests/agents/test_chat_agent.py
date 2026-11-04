@@ -21,7 +21,7 @@ from sqlmodel import select
 
 from penny.agents.chat import ChatAgent
 from penny.agents.conversation_map import ConversationMap
-from penny.agents.models import HistoryTurn
+from penny.agents.models import HistoryTurn, MessageRole
 from penny.changelog import ChangelogEntry
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
@@ -464,6 +464,202 @@ def test_a_run_that_called_tools_renders_them_natively_into_a_later_turns_histor
     # The reply text itself, last, unchanged.
     assert expanded[-1].content == "Checked and saved — sunny, 18C!"
     assert expanded[-1].tool_calls is None
+
+
+def test_an_autonomous_turns_trigger_renders_ahead_of_the_reply(db):
+    """An autonomous delivery turn's trigger (#2974) — the live turn's own USER
+    message, prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` —
+    renders again, byte-identical, immediately before her reply in later
+    history: read back off the run's own promptlog row, never stored a second
+    time.  The turn is looked at at all only because its messagelog row was
+    autonomous (``HistoryTurn.mechanism`` non-null here) — an ordinary chat
+    turn's run, whose ``mechanism`` is ``None``, is never consulted even
+    though its run also ends in a user turn (pinned by the tool-call test
+    above, whose run ends in ``user`` and renders no trigger)."""
+    run_id = "job-report-run-1"
+    trigger_text = (
+        PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+        + 'Your job "trail-conditions" finished a run and asked to tell the user.\n'
+        "What the job is for: Tracks trail-closure notices.\n"
+        "It ran on its own schedule."
+    )
+    messages = [
+        {"role": "system", "content": "## Identity\nYou are Penny."},
+        {"role": "user", "content": trigger_text},
+    ]
+    response = {
+        "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
+    }
+    db.messages.log_prompt(model="m", messages=messages, response=response, run_id=run_id)
+
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    turn = HistoryTurn(
+        "assistant", "Trail's closed this week.", run_id=run_id, mechanism="trail-conditions"
+    )
+    expanded = agent._expand_history_turn(turn)
+
+    assert [m.role for m in expanded] == ["user", "assistant"]
+    assert expanded[0].content == trigger_text
+    assert expanded[1].content == "Trail's closed this week."
+
+
+def test_the_trigger_is_found_past_a_discarded_or_rerolled_first_draw(db):
+    """The run's chronologically FIRST row is never assumed clean (#2974): a
+    draw rejected and rerolled still gets its own row, discard-stamped, but
+    its ``messages`` column — written at send time — still carries the real
+    trigger, and that row answers.  A second row from the reroll (here, a
+    nudge-appended retry trailing on a USER note, which rides the same role
+    the trigger does in this shape) exists and is passed over — its trailing
+    message carries no notification prefix, so the walk reads the trigger
+    and never mistakes a retry note for one."""
+    run_id = "job-report-run-reroll"
+    trigger_text = (
+        PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+        + 'Your job "trail-conditions" finished a run and asked to tell the user.'
+    )
+    first_messages = [{"role": "user", "content": trigger_text}]
+    first_response = {"choices": [{"message": {"role": "assistant", "content": "GARBLE???"}}]}
+    first_id = db.messages.log_prompt(
+        model="m", messages=first_messages, response=first_response, run_id=run_id
+    )
+    assert first_id is not None
+    db.messages.mark_prompt_discarded(first_id, "degenerate_output")
+
+    reroll_messages = [
+        *first_messages,
+        first_response["choices"][0]["message"],
+        {"role": "user", "content": "That reply was garbled — try again, plainly."},
+    ]
+    reroll_response = {
+        "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
+    }
+    db.messages.log_prompt(
+        model="m", messages=reroll_messages, response=reroll_response, run_id=run_id
+    )
+
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    turn = HistoryTurn(
+        "assistant", "Trail's closed this week.", run_id=run_id, mechanism="trail-conditions"
+    )
+    expanded = agent._expand_history_turn(turn)
+
+    assert [m.role for m in expanded] == ["user", "assistant"]
+    assert expanded[0].content == trigger_text
+
+
+def test_no_trigger_renders_when_the_runs_rows_are_pruned(db):
+    """A run whose promptlog rows are gone entirely (retention pruning, or any
+    other cause) renders her reply plainly (#2974) rather than failing or
+    guessing at lost text — the same shape a talk-only reply with no run at
+    all already gets."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    turn = HistoryTurn("assistant", "Trail's closed this week.", run_id="pruned-run")
+    expanded = agent._expand_history_turn(turn)
+
+    assert expanded == [LlmMessage(role=MessageRole.ASSISTANT, content="Trail's closed this week.")]
+
+
+def test_no_trigger_renders_for_a_direct_reply_whose_run_carries_a_prefixed_ask(db):
+    """The gate is the messagelog row's own mechanism, never the text (#2974): a
+    DIRECT reply's run also ends in a user turn — and a user who literally types
+    the notification prefix into chat makes that ask LOOK like a trigger — but
+    with no mechanism on her reply's row, the run is never consulted at all and
+    the message renders as the plain reply it is."""
+    run_id = "direct-reply-run-1"
+    messages = [
+        {"role": "system", "content": "## Identity\nYou are Penny."},
+        {
+            "role": "user",
+            "content": PennyConstants.SYSTEM_NOTIFICATION_PREFIX + "you there?",
+        },
+    ]
+    response = {
+        "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
+    }
+    db.messages.log_prompt(model="m", messages=messages, response=response, run_id=run_id)
+
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    turn = HistoryTurn("assistant", "Trail's closed this week.", run_id=run_id)
+    expanded = agent._expand_history_turn(turn)
+
+    assert expanded == [LlmMessage(role=MessageRole.ASSISTANT, content="Trail's closed this week.")]
+
+
+def test_a_trigger_precedes_a_run_that_also_joined_mid_run_messages(db):
+    """A run can carry BOTH #2974's trigger and #2985's joined messages: the
+    trigger renders first, immediately before the run's calls; each joined
+    message renders after the tool step it followed (its own anchor); a joined
+    message whose anchor matches no logged call renders after the last pair;
+    the reply is last.  Trigger and joins keep their own seams — the join is
+    never merged into the trigger's user turn."""
+    run_id = "delivery-run-with-joins"
+    trigger_text = (
+        PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+        + 'Your job "trail-conditions" finished a run and asked to tell the user.'
+    )
+    first_messages = [{"role": "user", "content": trigger_text}]
+    first_response = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [_wire_call("call_1", "browse", {"url": "https://example.com"})],
+                }
+            }
+        ]
+    }
+    second_messages = [
+        *first_messages,
+        first_response["choices"][0]["message"],
+        {"role": "tool", "tool_call_id": "call_1", "content": "Trail closed — 30cm fresh snow."},
+    ]
+    second_response = {
+        "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
+    }
+    db.messages.log_prompt(
+        model="m", messages=first_messages, response=first_response, run_id=run_id
+    )
+    db.messages.log_prompt(
+        model="m", messages=second_messages, response=second_response, run_id=run_id
+    )
+    # One join anchored to the tool step it followed, one whose anchor no
+    # longer matches any logged call.
+    db.messages.set_run_injected_messages(
+        run_id,
+        [
+            {"content": "did it close?", "after_tool_call_id": "call_1"},
+            {"content": "any webcams?", "after_tool_call_id": "call_gone"},
+        ],
+    )
+
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    turn = HistoryTurn(
+        "assistant", "Trail's closed this week.", run_id=run_id, mechanism="trail-conditions"
+    )
+    expanded = agent._expand_history_turn(turn)
+
+    assert [m.role for m in expanded] == [
+        "user",  # the trigger, first
+        "assistant",  # the run's call
+        "tool",  # the call's result
+        "user",  # the join that followed that step
+        "user",  # the unanchored join, after the last pair
+        "assistant",  # the reply, last
+    ]
+    assert expanded[0].content == trigger_text
+    assert expanded[1].tool_calls is not None and expanded[1].tool_calls[0].id != "call_1"
+    assert expanded[2].tool_call_id == expanded[1].tool_calls[0].id
+    assert expanded[2].content == "Trail closed — 30cm fresh snow."
+    assert expanded[3].content == "did it close?"
+    assert expanded[4].content == "any webcams?"
+    assert expanded[5].content == "Trail's closed this week."
+    assert expanded[5].tool_calls is None
 
 
 @pytest.mark.asyncio

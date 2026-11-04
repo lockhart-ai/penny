@@ -476,6 +476,20 @@ class PennyConstants:
     # are the one place it is minted and read.
     HISTORY_REPLAY_CALL_ID_PREFIX = "hist_call_"
 
+    # The structural mark that opens a system-originated delivery turn's trigger
+    # (#2974) — the framework prefixes every one of them (a startup changelog
+    # notice, a job's report, a sandbox preview) with this exact text and sends
+    # the result as the live turn's own USER message, so what she is given reads
+    # as a notification, never as words from the user.  It is SET once, at the
+    # three ``handle_*_report`` call sites, and READ in exactly one other place —
+    # ``Agent._run_trigger_message``, which locates the trigger row inside a run
+    # ALREADY known autonomous (the outgoing messagelog row's non-null
+    # ``mechanism`` is what decides autonomy; the prefix never does).  A user who
+    # literally types this text into chat does not become a trigger: her run's
+    # messagelog row carries no mechanism, so no history turn ever consults the
+    # prefix on her behalf.
+    SYSTEM_NOTIFICATION_PREFIX = "System notification (not from the user): "
+
     # Browse tool constants
     URL_BLOCKLIST_DOMAINS = (
         "play.google.com",

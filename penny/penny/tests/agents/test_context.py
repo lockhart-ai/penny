@@ -91,16 +91,16 @@ async def test_conversation_builds_user_assistant_turns(
 
 
 @pytest.mark.asyncio
-async def test_conversation_merges_consecutive_same_role(
+async def test_conversation_merges_consecutive_user_turns_only(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """Consecutive messages from the same role are merged with newlines.
+    """Consecutive INCOMING messages are merged with newlines, as always.
 
-    Both threaded replies (parent_id set) and autonomous outgoing sends
-    (parent_id=None — what ``send_message`` from collector cycles
-    produces) flow into the chat-turns array so Penny still sees the
-    prior turn when the user replies to a notification.
-    """
+    Consecutive OUTGOING rows are NOT merged (#2974 — a threaded reply then an
+    autonomous send with no incoming message between them used to melt into
+    one voice with no seam, which is what let an autonomous send's own
+    trigger-bearing turn disappear into whatever unrelated reply preceded it;
+    each now keeps its own turn and its own run id)."""
     config = make_config()
 
     async with running_penny(config) as penny:
@@ -122,8 +122,8 @@ async def test_conversation_merges_consecutive_same_role(
             parent_id=2,
             recipient=TEST_SENDER,
         )
-        # Autonomous notification (no parent_id) — also part of the
-        # conversation now.
+        # Autonomous notification (no parent_id) — its own turn now, not
+        # merged onto "response".
         penny.db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
             penny.config.signal_number,
@@ -132,14 +132,13 @@ async def test_conversation_merges_consecutive_same_role(
         )
 
         conversation = penny.chat_agent._build_conversation(TEST_SENDER)
-        contents = " ".join(turn.content for turn in conversation)
-        # Two user messages merged into one turn, then the two outgoing
-        # messages merged into the next turn.
-        assert len(conversation) == 2
+        # One merged user turn, then "response" and "proactive thought" as
+        # two SEPARATE assistant turns.
+        assert len(conversation) == 3
         assert "first message" in conversation[0][1]
         assert "second message" in conversation[0][1]
-        assert "response" in contents
-        assert "proactive thought" in contents
+        assert conversation[1].content == "response"
+        assert conversation[2].content == "proactive thought"
 
 
 @pytest.mark.asyncio
@@ -210,7 +209,11 @@ async def test_conversation_carries_the_replies_and_their_run_ids(
             # to append (#2648): the reply carries the read page's URL.  No tool
             # line after any reply (#2646): the history carries the replies alone.
             "here's what i found!\n\nhttps://weather.example.com/today",
-            "glad that helped!\na proactive note",
+            # The direct reply and the autonomous send right after it are TWO
+            # separate turns (#2974), not merged into one voice — each keeps
+            # its own run id.
+            "glad that helped!",
+            "a proactive note",
         ]
 
 
