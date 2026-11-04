@@ -87,11 +87,6 @@ from penny.validation.conditions import ConditionKey, run_flag_conditions
 
 logger = logging.getLogger(__name__)
 
-# Earlier than any real ``created_at`` — the lower bound ``entries_before`` hands
-# ``_rows_since`` so every row before its own ``until`` cutoff counts, without a
-# second query shape per log backing (#2961).
-_EARLIEST_POSSIBLE = datetime.min
-
 
 class Memory:
     """Base memory: ``memory_entry`` row access + shape-independent reads.
@@ -263,14 +258,6 @@ class Memory:
     def read_recent(self, window_seconds: int, cap: int | None = None) -> list[MemoryEntry]:
         cutoff = self._clock.now() - timedelta(seconds=window_seconds)
         return self._rows_since(cutoff, cap)
-
-    def entries_before(self, before: datetime) -> list[MemoryEntry]:
-        """Every entry held strictly before ``before``, oldest first — the
-        complement of a windowed, day-scoped or paged log read, so a
-        disclosure can say how many earlier entries exist and a page can be
-        sliced off the newest of them (#2961).  Reuses each backing's own
-        ``_rows_since`` override, so no new query is needed per log shape."""
-        return self._rows_since(_EARLIEST_POSSIBLE, cap=None, until=before)
 
     def read_similar(
         self, anchor: list[float], k: int | None = None, floor: float = 0.0

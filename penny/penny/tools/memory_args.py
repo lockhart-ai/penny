@@ -442,17 +442,10 @@ class ReadLogArgs(ToolArgs):
     ``day`` is optional (#2752): the conversation map's lines are older than
     chat's recent window, so its anchor reads name the DAY to read — that local
     day's entries, oldest first, capped.  A map line's own date names the day
-    its full text is read at.
-
-    ``before`` is optional (#2961): pages backward from an id a prior read
-    rendered beside an entry — the newest bounded batch older than that entry,
-    oldest first.  A disclosure line names this call, with the id, whenever a
-    read left earlier entries unshown — so a log that looks sparse because
-    nothing fell in the recent window is never a dead end."""
+    its full text is read at."""
 
     log: MemoryName
     day: str | None = None
-    before: int | None = None
 
 
 class LogGetArgs(ToolArgs):
