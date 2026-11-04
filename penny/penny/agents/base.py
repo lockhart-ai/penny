@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, assert_never
 
 from penny.agents.models import (
     BUDGET_EXCEEDED,
+    NO_INBOX,
     REROLL_EXHAUSTED,
     ControllerResponse,
     HistoryTurn,
@@ -21,6 +22,7 @@ from penny.agents.models import (
     ModelCallError,
     RunAbort,
     ToolCallRecord,
+    TurnInbox,
     account_of,
     new_history_replay_call_id,
 )
@@ -80,7 +82,7 @@ from penny.validation.response_validators import (
 )
 
 if TYPE_CHECKING:
-    from penny.channels.base import MessageChannel
+    from penny.channels.base import MessageChannel, PageContext
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +431,7 @@ class Agent:
             on_progress=on_progress,
             handles=handles,
             progress_scope="background",
+            inbox=NO_INBOX,
         )
         return CycleResult(
             success=self._closed_cleanly(response), response=response, reads=cursor_tools
@@ -531,6 +534,7 @@ class Agent:
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
         handles: HandleTable | None = None,
+        inbox: TurnInbox,
     ) -> ControllerResponse:
         """Run the agentic loop — prompt in, response out.
 
@@ -550,6 +554,11 @@ class Agent:
         and every background/collector caller) means the turn has no user to send
         one to, and the prose simply stays on the step's own message, exactly as
         today.
+
+        ``inbox`` (#2985) is REQUIRED, no default: the turn's queue of messages
+        waiting to join it mid-run, drained after each tool step.  A foreground
+        chat turn passes its own; every background caller states ``NO_INBOX``
+        explicitly — the null object that drains nothing.
         """
         run_id = call_link.run_id
         self._tool_result_text = []
@@ -574,6 +583,7 @@ class Agent:
             progress_scope,
             table,
             on_interim_message,
+            inbox=inbox,
         )
 
     # ── Agentic loop internals ───────────────────────────────────────────
@@ -591,11 +601,20 @@ class Agent:
         progress_scope: str,
         handles: HandleTable,
         on_interim_message: Callable[[str], Awaitable[None]] | None = None,
+        *,
+        inbox: TurnInbox,
     ) -> ControllerResponse:
         """Run the loop while guaranteeing a terminal progress event and a complete
-        run record (the trailing turns no model call carried, #1778)."""
+        run record (the trailing turns no model call carried, #1778).
+
+        ``inbox`` (#2985) is REQUIRED here too, no default — the loop internals are
+        not a place a caller can quietly skip stating what the run drains."""
         outcome = "error"
         logged = _LoggedBoundary()
+        # The user turns this run JOINED mid-run (#2985), collected by the loop's
+        # drain and stamped onto the record below — a mutable out-collector so the
+        # stamp survives even a run that dies mid-body, exactly like ``logged``.
+        injected: list[dict] = []
         await self._notify_progress(
             on_progress, AgentProgressEvent("run_started", run_id, self.name, progress_scope)
         )
@@ -613,6 +632,8 @@ class Agent:
                 logged,
                 handles,
                 on_interim_message,
+                inbox=inbox,
+                injected=injected,
             )
             outcome = self._run_outcome(response)
             return response
@@ -632,6 +653,9 @@ class Agent:
             # artefacts built from the run carry the expanded URLs, and the
             # provenance reads need the one fact joining them.
             self.db.messages.set_run_link_handles(run_id, handles.mapping())
+            # The turns this run JOINED mid-run (#2985) — stamped so later history
+            # can render each at its true position, after the tool step it followed.
+            self.db.messages.set_run_injected_messages(run_id, injected)
             await self._notify_progress(
                 on_progress,
                 AgentProgressEvent(
@@ -756,12 +780,20 @@ class Agent:
         logged: _LoggedBoundary | None = None,
         handles: HandleTable | None = None,
         on_interim_message: Callable[[str], Awaitable[None]] | None = None,
+        *,
+        inbox: TurnInbox,
+        injected: list[dict],
     ) -> ControllerResponse:
         """Execute the step loop: call model, process tool calls, or return final answer.
 
         ``logged`` is the caller's boundary box (#1778) — advanced past everything a
         model call has just carried, so whatever sits beyond it when the loop leaves
-        (by return OR by exception) is the tail the caller stamps onto the record."""
+        (by return OR by exception) is the tail the caller stamps onto the record.
+
+        ``inbox`` (#2985) is the turn's join queue, drained after each tool step;
+        ``injected`` is the caller's out-collector for what the drain joined to this
+        run, stamped onto the record by ``_run_agentic_loop``'s finally.  Both REQUIRED,
+        no default — every caller states which it passes."""
         logged = logged if logged is not None else _LoggedBoundary()
         # The run's link table (#2717) — the validator's dangling-citation check
         # reads it; defaulted here only because this method is also the direct
@@ -829,6 +861,9 @@ class Agent:
                 self._absorb_tool_step_result(result, messages, tool_call_records, source_urls)
                 await self.after_step(result.records, result.messages, messages)
                 await self.after_tool_step(result.records, tool_call_records, messages, run_id)
+                await self._drain_turn_inbox(
+                    inbox, messages, result.messages, tool_call_records, injected, table
+                )
                 if self.should_stop_loop(tool_call_records):
                     logger.info("Loop stop requested after step %d/%d", step + 1, steps)
                     return ControllerResponse(answer="", tool_calls=tool_call_records)
@@ -861,6 +896,68 @@ class Agent:
             reason="the step limit was reached before an answer was written",
         )
         return result.model_copy(update={"ran_out_of_steps": True})
+
+    async def _drain_turn_inbox(
+        self,
+        inbox: TurnInbox,
+        messages: list[LlmMessage],
+        step_messages: list[LlmMessage],
+        tool_call_records: list[ToolCallRecord],
+        injected: list[dict],
+        handles: HandleTable,
+    ) -> None:
+        """Drain the turn's join queue into the conversation (#2985) — the one drain
+        point: after a tool step's results are absorbed (and ChatAgent's writes
+        record rides the step's own result), BEFORE the next model call.  Each
+        queued message, in arrival order, becomes a plain ``user`` turn with its
+        images riding the message (#2635) — exactly the shape an ordinary user
+        message renders in — so the next call sees it beside the tool result it
+        followed.
+
+        Each drained message is recorded for the run record: the content in its
+        record form and the ORIGINAL id of the step's last tool call — the anchor
+        later history rendering interleaves the message at.  The releases (a
+        channel's waiting-mark removal, best-effort) happen here too, the moment
+        the message joins.  A ``NO_INBOX`` run (every background caller) drains
+        nothing and costs one emptiness check."""
+        if not inbox.pending():
+            return
+        anchor = next(
+            (
+                message.tool_call_id
+                for message in reversed(step_messages)
+                if message.role == MessageRole.TOOL and message.tool_call_id
+            ),
+            None,
+        )
+        for queued in inbox.drain_ready():
+            logger.info("Joining a message to the running turn: %.80s", queued.message.content)
+            await inbox.release(queued)
+            messages.append(
+                LlmMessage(
+                    role=MessageRole.USER,
+                    content=queued.rendered_content,
+                    images=queued.message.images or None,
+                )
+            )
+            # The page the user was viewing when they sent it (#2985) — rendered
+            # the way an ordinary turn's opening state does, so the join loses
+            # nothing an ordinary user message carries.
+            if queued.message.page_context:
+                await self._inject_joined_page_context(
+                    messages, queued.message.page_context, handles
+                )
+            injected.append({"content": queued.logged_content, "after_tool_call_id": anchor})
+
+    async def _inject_joined_page_context(
+        self, messages: list[LlmMessage], page_context: PageContext, handles: HandleTable
+    ) -> None:
+        """Template hook: render the page a JOINED message was sent from (#2985).
+
+        A base-level no-op — the page-context synthetic pair is chat's own
+        opening-state shape; ChatAgent renders it with the same builder it uses
+        for the triggering message."""
+        return
 
     def _tools_for_step(self, tools: list[dict], is_final_step: bool) -> list[dict]:
         """Strip tools on the final step unless the agent keeps them available."""
@@ -2323,6 +2420,14 @@ class Agent:
         then the reply text, so the act is visible beside the words rather
         than only in the words a later turn might otherwise copy.
 
+        A message that JOINED the run mid-turn (#2985) renders in its true
+        position: after the tool step the run record stamps it behind
+        (``after_tool_call_id``), as the ``user`` turn it was — never merged
+        into the triggering exchange ahead of the run's calls, and never
+        duplicated.  An entry whose anchor no longer matches any call
+        (a run that died between the drain and the next call's logging)
+        renders after the last pair — degraded position, never lost.
+
         Each call's result is ONLY its headline (the first line), never the
         full body — history is a reminder of what happened, not a second copy
         of what it found; an empty headline falls back to the tool's own name
@@ -2333,18 +2438,19 @@ class Agent:
         if turn.role != MessageRole.ASSISTANT or turn.run_id is None:
             return [LlmMessage(role=MessageRole(turn.role), content=turn.content)]
         history = run_tool_history(self.db.messages.prompts_for_run(turn.run_id))
-        if not history:
+        joined = self.db.messages.injected_messages_for_run(turn.run_id)
+        if not history and not joined:
             return [LlmMessage(role=MessageRole.ASSISTANT, content=turn.content)]
         messages: list[LlmMessage] = []
-        for logged_call, result in history:
-            call_id = new_history_replay_call_id()
+        for call_id, logged_call, result in history:
+            call_id_replay = new_history_replay_call_id()
             messages.append(
                 LlmMessage(
                     role=MessageRole.ASSISTANT,
                     content="",
                     tool_calls=[
                         LlmToolCall(
-                            id=call_id,
+                            id=call_id_replay,
                             function=LlmToolCallFunction(
                                 name=logged_call.tool, arguments=logged_call.arguments
                             ),
@@ -2356,9 +2462,20 @@ class Agent:
             headline = first_line or f"{logged_call.tool} (result)"
             messages.append(
                 LlmMessage(
-                    role=MessageRole.TOOL, tool_call_id=call_id, content=headline, tool_success=True
+                    role=MessageRole.TOOL,
+                    tool_call_id=call_id_replay,
+                    content=headline,
+                    tool_success=True,
                 )
             )
+            for entry in [e for e in joined if e.get("after_tool_call_id") == call_id]:
+                messages.append(LlmMessage(role=MessageRole.USER, content=entry.get("content", "")))
+        # Joined messages whose anchor matched no logged call render after the
+        # last pair, in stamp order — degraded position, never lost.
+        logged_ids = {call_id for call_id, _, _ in history}
+        for entry in joined:
+            if entry.get("after_tool_call_id") not in logged_ids:
+                messages.append(LlmMessage(role=MessageRole.USER, content=entry.get("content", "")))
         messages.append(LlmMessage(role=MessageRole.ASSISTANT, content=turn.content))
         return messages
 
@@ -2505,6 +2622,15 @@ class Agent:
             limit = int(self.config.runtime.MESSAGE_CONTEXT_LIMIT)
             messages = self.db.messages.get_messages_since(sender, since=datetime.min, limit=limit)
             for msg in messages:
+                # A message that JOINED a run mid-turn (#2985 — an incoming row
+                # stamped with the run id) renders inside that run's own history
+                # expansion (``_expand_history_turn``), in its true position after
+                # the tool step it followed — never as a user turn here, where it
+                # would merge into the triggering exchange ahead of the run's
+                # calls.  ``count_user_turns`` excludes the same rows, so the
+                # window anchor and the rendered shape can never drift.
+                if msg.direction == PennyConstants.MessageDirection.INCOMING and msg.run_id:
+                    continue
                 role = (
                     MessageRole.USER
                     if msg.direction == PennyConstants.MessageDirection.INCOMING

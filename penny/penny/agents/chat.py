@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Any
 
 from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.conversation_map import ConversationMap
-from penny.agents.models import ControllerResponse, HistoryTurn, MessageRole, ToolCallRecord
+from penny.agents.models import (
+    NO_INBOX,
+    ControllerResponse,
+    HistoryTurn,
+    MessageRole,
+    ToolCallRecord,
+    TurnInbox,
+)
 from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
@@ -333,6 +340,7 @@ class ChatAgent(Agent):
         sender: str,
         *,
         call_link: CallLink,
+        inbox: TurnInbox,
         images: list[str] | None = None,
         page_context: PageContext | None = None,
         thread_parent_id: int | None = None,
@@ -350,6 +358,10 @@ class ChatAgent(Agent):
         dispatched, with no ambient state and no fallback.  ``run_id`` (for DB/
         mutation purposes — stamped on every promptlog row, recorded on any
         collection the turn creates via ``created_by_run_id``, #1566) is read off it.
+
+        ``inbox`` (#2985) is REQUIRED, no default — the turn's join queue, drained
+        by the loop after each tool step.  A foreground chat turn passes its own;
+        ``NO_INBOX`` for a caller with no live user to drain for.
 
         ``thread_parent_id`` is the quote-reply's resolved parent row id — resolved
         by the channel from the quote's own anchor, never re-guessed here — and
@@ -372,6 +384,7 @@ class ChatAgent(Agent):
             call_link=call_link,
             prompt_type=ChatPromptType.USER_MESSAGE,
             progress_scope="foreground",
+            inbox=inbox,
             images=images,
             page_context=page_context,
             thread_parent_id=thread_parent_id,
@@ -413,6 +426,7 @@ class ChatAgent(Agent):
             call_link=call_link,
             prompt_type=ChatPromptType.JOB_REPORT,
             progress_scope="background",
+            inbox=NO_INBOX,
             handles=handles,
         )
 
@@ -443,6 +457,7 @@ class ChatAgent(Agent):
             call_link=call_link,
             prompt_type=ChatPromptType.SANDBOX_REPORT,
             progress_scope="background",
+            inbox=NO_INBOX,
         )
 
     async def handle_changelog_report(
@@ -473,6 +488,7 @@ class ChatAgent(Agent):
             call_link=call_link,
             prompt_type=ChatPromptType.CHANGELOG,
             progress_scope="background",
+            inbox=NO_INBOX,
         )
 
     async def _dispatch_turn(
@@ -490,6 +506,7 @@ class ChatAgent(Agent):
         on_progress: ProgressCallback | None = None,
         on_interim_message: Callable[[str], Awaitable[None]] | None = None,
         handles: HandleTable | None = None,
+        inbox: TurnInbox,
     ) -> ControllerResponse:
         """The one turn both entry points ride — the template method under
         ``handle`` and ``handle_job_report``: per-turn state held for the span of
@@ -539,6 +556,7 @@ class ChatAgent(Agent):
                 progress_scope=progress_scope,
                 prompt_type=prompt_type,
                 handles=table,
+                inbox=inbox,
             )
             # Send-time expansion (#2717): every handle the reply cites becomes
             # its URL, so the conversation record and the wire carry real links.
@@ -650,6 +668,15 @@ class ChatAgent(Agent):
                 tool_call_id=ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
             )
         )
+
+    async def _inject_joined_page_context(
+        self, messages: list[LlmMessage], page_context: PageContext, handles: HandleTable
+    ) -> None:
+        """The page a JOINED message was sent from (#2985), rendered by the same
+        synthetic browse-pair builder the triggering message's own context uses —
+        the join loses nothing an ordinary user message carries."""
+        if page_context:
+            self._inject_page_context(messages, page_context, handles)
 
     # ── System prompt ──────────────────────────────────────────────────────
 

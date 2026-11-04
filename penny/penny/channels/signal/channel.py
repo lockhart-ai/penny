@@ -27,6 +27,7 @@ from penny.channels.signal.models import (
     SignalEnvelope,
     TypingIndicatorRequest,
 )
+from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType, PennyConstants, PermissionResolution, ProgressEmoji
 from penny.tools.base import Tool
 
@@ -57,6 +58,8 @@ class SignalChannel(MessageChannel):
         command_registry: CommandRegistry | None = None,
         max_retries: int = 3,
         retry_delay: float = 0.5,
+        *,
+        turn_registry: TurnRegistry,
     ):
         """
         Initialize Signal channel.
@@ -70,7 +73,12 @@ class SignalChannel(MessageChannel):
             max_retries: Number of retry attempts for transient send failures (default: 3)
             retry_delay: Base delay in seconds between retries, doubled each attempt (default: 0.5)
         """
-        super().__init__(message_agent=message_agent, db=db, command_registry=command_registry)
+        super().__init__(
+            message_agent=message_agent,
+            db=db,
+            command_registry=command_registry,
+            turn_registry=turn_registry,
+        )
         self.api_url = api_url.rstrip("/")
         self.phone_number = phone_number
         self._running = True
@@ -968,6 +976,34 @@ class SignalChannel(MessageChannel):
         logger.info("Signal channel closed")
 
     # --- In-flight progress indicator (emoji reactions on the user's msg) ---
+
+    async def mark_queued(self, message: IncomingMessage) -> None:
+        """Mark a message waiting to join the active turn (#2985): a ⏳ reaction on
+        the message itself, through the same reaction send/remove path the progress
+        tracker uses — one reaction per author per message, so it replaces nothing
+        of the turn's own (the turn's 💭 rides the triggering message).  Best-effort
+        like every reaction here: ``_post_reaction`` logs a failure and returns."""
+        if message.signal_timestamp is None:
+            return
+        await self.send_reaction(
+            message.sender,
+            ProgressEmoji.QUEUED,
+            target_author=message.sender,
+            target_timestamp=message.signal_timestamp,
+        )
+
+    async def clear_queued(self, message: IncomingMessage) -> None:
+        """Remove the ⏳ waiting mark (#2985) — the moment the message leaves the
+        turn's inbox, however it leaves.  Best-effort: ``_post_reaction`` logs a
+        failure and returns; it never fails the turn."""
+        if message.signal_timestamp is None:
+            return
+        await self.remove_reaction(
+            message.sender,
+            ProgressEmoji.QUEUED,
+            target_author=message.sender,
+            target_timestamp=message.signal_timestamp,
+        )
 
     async def _begin_progress(self, message: IncomingMessage) -> ProgressTracker | None:
         """Start an emoji-reaction progress indicator on the user's message.

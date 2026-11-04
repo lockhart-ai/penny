@@ -47,6 +47,17 @@ class PromptLog(SQLModel, table=True):
     # NULL for a run that ended on a text reply (every result already
     # round-tripped) and for every row that isn't its run's last.
     trailing_messages: str | None = None
+    # The user messages a chat turn JOINED mid-run (#2985) — each drained off the
+    # turn's inbox after a tool step and appended to the conversation as a user
+    # turn, so the next model call carried it.  A JSON list of
+    # ``{"content": ..., "after_tool_call_id": ...}`` in drain order: the record
+    # form of what the user said (the image-history marker applied, exactly what
+    # the message's messagelog row logs) and the ORIGINAL id of the tool call
+    # whose results preceded it — the position history rendering interleaves the
+    # message at.  Stamped on the run's last prompt by
+    # `set_run_injected_messages`; NULL for a run that joined nothing (and for
+    # every row that isn't its run's last).
+    injected_messages: str | None = None
     # How this CALL ended (#2355 part A) — "completed" | "cancelled" | "timed_out" |
     # "raised" (see ``penny.llm.models.CallOutcome``).  NULL on every row logged before
     # this column existed, which is read as "completed" by convention (the old code

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from penny.channels.base import IncomingMessage, MessageChannel
+from penny.channels.turns import TurnRegistry
 from penny.config import Config
 from penny.constants import PermissionResolution
 
@@ -38,8 +39,15 @@ class ChannelManager(MessageChannel):
         message_agent: ChatAgent,
         db: Database,
         command_registry: CommandRegistry | None = None,
+        *,
+        turn_registry: TurnRegistry,
     ):
-        super().__init__(message_agent=message_agent, db=db, command_registry=command_registry)
+        super().__init__(
+            message_agent=message_agent,
+            db=db,
+            command_registry=command_registry,
+            turn_registry=turn_registry,
+        )
         self._channels: dict[str, MessageChannel] = {}
         self._default_channel_type: str | None = None
 

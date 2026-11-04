@@ -9,6 +9,7 @@ from penny.channels.discord import DiscordChannel
 from penny.channels.ios import ApnsClient, ApnsConfig, IosChannel
 from penny.channels.manager import ChannelManager
 from penny.channels.signal import SignalChannel
+from penny.channels.turns import TurnRegistry
 from penny.config import Config
 from penny.constants import ChannelType
 
@@ -24,20 +25,30 @@ def create_channel_manager(
     db: Database,
     command_registry: CommandRegistry | None = None,
 ) -> ChannelManager:
-    """Create a ChannelManager with all configured channels registered."""
+    """Create a ChannelManager with all configured channels registered.
+
+    One ``TurnRegistry`` for the whole deployment (#2985) — Penny is single-user,
+    so the single active chat turn spans every channel: created here, the
+    composition root, and handed to the manager and every concrete channel it
+    registers, so a message from any device joins the turn any other started.
+    """
+    turn_registry = TurnRegistry()
     manager = ChannelManager(
         message_agent=message_agent,
         db=db,
         command_registry=command_registry,
+        turn_registry=turn_registry,
     )
 
-    _register_primary_channel(config, message_agent, db, command_registry, manager)
+    _register_primary_channel(config, message_agent, db, command_registry, manager, turn_registry)
 
     if config.ios_enabled and config.channel_type != ChannelType.IOS:
-        _register_ios_channel(config, message_agent, db, command_registry, manager)
+        _register_ios_channel(config, message_agent, db, command_registry, manager, turn_registry)
 
     if config.browser_enabled:
-        _register_browser_channel(config, message_agent, db, command_registry, manager)
+        _register_browser_channel(
+            config, message_agent, db, command_registry, manager, turn_registry
+        )
 
     return manager
 
@@ -48,6 +59,7 @@ def _register_primary_channel(
     db: Database,
     command_registry: CommandRegistry | None,
     manager: ChannelManager,
+    turn_registry: TurnRegistry,
 ) -> None:
     """Create and register the primary channel (Signal or Discord)."""
     if config.channel_type == ChannelType.DISCORD:
@@ -59,6 +71,7 @@ def _register_primary_channel(
             message_agent=message_agent,
             db=db,
             command_registry=command_registry,
+            turn_registry=turn_registry,
         )
         manager.register_channel(ChannelType.DISCORD, channel)
         # Seed a default device for the primary channel (mirrors Signal), so
@@ -80,10 +93,11 @@ def _register_primary_channel(
             db,
             command_registry,
             manager,
+            turn_registry,
             is_default_device=True,
         )
     elif config.channel_type == ChannelType.IOS:
-        _register_ios_channel(config, message_agent, db, command_registry, manager)
+        _register_ios_channel(config, message_agent, db, command_registry, manager, turn_registry)
     else:
         raise ValueError(f"Unknown channel type: {config.channel_type}")
 
@@ -94,6 +108,7 @@ def _register_signal_channel(
     db: Database,
     command_registry: CommandRegistry | None,
     manager: ChannelManager,
+    turn_registry: TurnRegistry,
     *,
     is_default_device: bool,
 ) -> None:
@@ -116,6 +131,7 @@ def _register_signal_channel(
         command_registry=command_registry,
         max_retries=config.llm_max_retries,
         retry_delay=config.llm_retry_delay,
+        turn_registry=turn_registry,
     )
     manager.register_channel(ChannelType.SIGNAL, channel)
     _reclaim_signal_default_device(db, config.signal_number, is_default_device)
@@ -152,6 +168,7 @@ def _register_ios_channel(
     db: Database,
     command_registry: CommandRegistry | None,
     manager: ChannelManager,
+    turn_registry: TurnRegistry,
 ) -> None:
     """Create and register the iOS channel."""
     apns_client = _build_apns_client(config)
@@ -164,6 +181,7 @@ def _register_ios_channel(
         pairing_token=config.ios_pairing_token,
         apns_client=apns_client,
         is_primary_channel=config.channel_type == ChannelType.IOS,
+        turn_registry=turn_registry,
     )
     manager.register_channel(ChannelType.IOS, channel)
 
@@ -198,6 +216,7 @@ def _register_browser_channel(
     db: Database,
     command_registry: CommandRegistry | None,
     manager: ChannelManager,
+    turn_registry: TurnRegistry,
 ) -> None:
     """Create and register the browser channel if enabled."""
     from penny.channels.browser import BrowserChannel
@@ -208,6 +227,7 @@ def _register_browser_channel(
         message_agent=message_agent,
         db=db,
         command_registry=command_registry,
+        turn_registry=turn_registry,
     )
     manager.register_channel(ChannelType.BROWSER, channel)
 
@@ -225,6 +245,7 @@ def create_channel(
 
 __all__ = [
     "MessageChannel",
+    "TurnRegistry",
     "IncomingMessage",
     "SignalChannel",
     "DiscordChannel",

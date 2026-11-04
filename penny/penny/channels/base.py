@@ -25,10 +25,13 @@ from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
+from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
+    from penny.agents.models import TurnInbox
+    from penny.channels.turns import TurnRegistry
     from penny.commands import Command, CommandRegistry
     from penny.database import Database
     from penny.scheduler import BackgroundScheduler
@@ -67,6 +70,46 @@ class IncomingMessage(BaseModel):
     page_context: PageContext | None = None  # Current page the user is viewing (browser only)
 
 
+class QueuedTurnMessage(BaseModel):
+    """A message queued to join the active turn (#2985).
+
+    Carries everything the joined turn needs to render it, log it, and — when
+    the turn ends before it was drained — run it as its own follow-up turn:
+    the (attachment-fetched, image-normalized) incoming message, the resolved
+    device/sender identity, the quote parent row id, the arrival timestamp,
+    and the two content forms the message renders in — the model-facing one
+    (a deterministic quote frame prepended when a quoted parent resolved) and
+    the record form (the image-history marker applied, the same shape
+    ``_finish_turn`` logs the triggering message in).
+
+    ``clear_queued`` is the joining channel's own waiting-mark remover (Signal:
+    the ⏳ reaction) — carried on the message, not on the inbox, because the
+    channel that MARKED a queued message may be a different channel from the
+    one whose turn it joined, and the mark comes off through the same hands
+    that put it on.
+    """
+
+    message: IncomingMessage
+    user_sender: str
+    device_id: int | None
+    parent_row_id: int | None
+    received_at: datetime
+    rendered_content: str
+    logged_content: str
+    clear_queued: Callable[[IncomingMessage], Awaitable[None]]
+
+
+def _logged_incoming_content(message: IncomingMessage) -> str:
+    """The conversation-record form of an incoming message's text (#2635): a short
+    deterministic marker where an image attachment was — the attachment itself rides
+    only the live message and history never resends it.  The one rule every
+    incoming row is logged in, triggering or joined."""
+    content = message.content
+    if message.images:
+        content = f"{content} {PennyConstants.IMAGE_HISTORY_MARKER}".strip()
+    return content
+
+
 class ProgressTracker(ABC):
     """Lightweight in-flight progress indicator for an in-progress agent run.
 
@@ -99,6 +142,8 @@ class MessageChannel(ABC):
         message_agent: ChatAgent,
         db: Database,
         command_registry: CommandRegistry | None = None,
+        *,
+        turn_registry: TurnRegistry,
     ):
         """
         Initialize channel with dependencies.
@@ -107,10 +152,15 @@ class MessageChannel(ABC):
             message_agent: Agent for processing incoming messages
             db: Database for logging messages
             command_registry: Optional command registry for handling commands
+            turn_registry: The one slot for the active foreground chat turn (#2985)
+                — created once at startup and shared by every channel, so a message
+                from any device joins the turn any other device started. REQUIRED:
+                every constructor states which registry it dispatches through.
         """
         self._message_agent = message_agent
         self._db = db
         self._command_registry = command_registry
+        self._turn_registry = turn_registry
         self._scheduler: BackgroundScheduler | None = None
         self._config: Config | None = None
         self._embedding_model_client: LlmClient | None = None
@@ -733,7 +783,16 @@ class MessageChannel(ABC):
         return None
 
     async def _dispatch_to_agent(self, message: IncomingMessage) -> None:
-        """Run the message through the agent loop with typing indicators."""
+        """Run the message through the agent loop — alone, or joined to the active
+        turn (#2985).
+
+        One foreground chat turn runs at a time across every channel (Penny is
+        single-user; the shared ``TurnRegistry`` is the one slot).  A message
+        arriving while that turn is in its tool loop JOINS it: queued on the turn's
+        inbox, marked as waiting (``mark_queued``), drained by the loop after the
+        turn's next tool step — never a second, concurrent turn.  The channel that
+        claims the slot owns the whole series: its turn, then every turn the
+        inbox's leftovers demand, and only then does the slot free up."""
         device_id = self._resolve_device_id(message)
         user_sender = self._resolve_user_sender(message.sender)
 
@@ -741,20 +800,204 @@ class MessageChannel(ABC):
             await self._handle_profile_required(message, user_sender, device_id)
             return
 
+        inbox, joined = self._turn_registry.enter(message.sender)
+        if joined:
+            await self._join_active_turn(message, user_sender, device_id, inbox)
+            return
+
         typing_task = asyncio.create_task(self._typing_loop(message.sender))
-        progress: ProgressTracker | None = None
         try:
             if self._scheduler:
                 self._scheduler.notify_foreground_start()
-            progress = await self._begin_progress(message)
-            await self._run_message_through_agent(message, user_sender, device_id, progress)
+            await self._run_turn_series(message, user_sender, device_id, inbox)
         finally:
-            if progress is not None:
-                await progress.clear()
             typing_task.cancel()
             await self.send_typing(message.sender, False)
             if self._scheduler:
                 self._scheduler.notify_foreground_end()
+            # The series is over — release the waiters, then account for anything
+            # still queued.  Unreachable on the clean path (the series ends only
+            # when the inbox is empty); the backstop for a series that died
+            # mid-turn: each queued message gets its own row in the record and
+            # its own honest failure notice, never silence.
+            inbox.finish()
+            for pending in self._turn_registry.abandon(inbox):
+                await inbox.release(pending)
+                await self._log_abandoned_message(pending)
+                await self._report_turn_failure(
+                    pending.message.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, None
+                )
+
+    async def _run_turn_series(
+        self,
+        message: IncomingMessage,
+        user_sender: str,
+        device_id: int | None,
+        inbox: TurnInbox,
+    ) -> None:
+        """Run the claimed turn, then every turn the inbox's leftovers demand (#2985).
+
+        The tail case lives here: messages queued while the turn's final model call
+        ran were never drained, so the oldest becomes the next turn's own triggering
+        message — started at once, with the finished turn already in its history —
+        and the rest stay queued for that turn's mid-run drain or its own tail.  The
+        slot frees only when the loop leaves with nothing queued.
+
+        Each turn gets its own progress tracker on its own triggering message; a
+        turn that raises reports the honest failure for ITS message and the series
+        carries on — no queued message is ever dropped."""
+        current = message
+        current_sender = user_sender
+        current_device_id = device_id
+        received_at = self._db.clock.now()
+        while True:
+            progress: ProgressTracker | None = None
+            try:
+                progress = await self._begin_progress(current)
+                await self._run_message_through_agent(
+                    current,
+                    current_sender,
+                    current_device_id,
+                    progress,
+                    inbox,
+                    received_at,
+                )
+            except Exception:
+                logger.exception("Turn failed for %s", current.sender)
+                await self._report_turn_failure(
+                    current.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, None
+                )
+            finally:
+                if progress is not None:
+                    await progress.clear()
+            next_queued = self._turn_registry.take_next_or_end(inbox)
+            if next_queued is None:
+                return
+            await inbox.release(next_queued)
+            current = next_queued.message
+            current_sender = next_queued.user_sender
+            current_device_id = next_queued.device_id
+            received_at = next_queued.received_at
+
+    async def _join_active_turn(
+        self,
+        message: IncomingMessage,
+        user_sender: str,
+        device_id: int | None,
+        inbox: TurnInbox,
+    ) -> None:
+        """Queue the message onto the active turn's inbox (#2985) — no new turn: the
+        active turn's typing and progress cover it, the scheduler's foreground flag
+        already spans it, and its loop drains the message after its next tool step
+        (or its tail picks it up).  Returns at once; nothing here waits for the
+        turn."""
+        queued = self._build_queued_message(message, user_sender, device_id)
+        inbox.put(queued)
+        await self.mark_queued(message)
+        # A second device gets its own typing indicator while its message waits
+        # (the owner's typing covers only its own sender); same-device joins are
+        # covered by the owner's loop.  Detached: ends when the series ends.
+        if message.sender != inbox.owner_sender:
+            asyncio.create_task(self._type_until_turn_ends(inbox, message.sender))
+
+    def _build_queued_message(
+        self, message: IncomingMessage, user_sender: str, device_id: int | None
+    ) -> QueuedTurnMessage:
+        """Resolve, at join time, everything the joined turn needs about the message
+        (#2985): images normalized to the stored-image size rules (#2780), the quote
+        parent row, the arrival timestamp, the two content forms — model-facing
+        (a deterministic quote frame when a parent resolved; an ordinary quote-reply
+        turn gets its thread history built for it, which a mid-run join cannot
+        rebuild) and record (the image-history marker, the same shape
+        ``_finish_turn`` logs the triggering message in) — and the joining channel's
+        own waiting-mark remover, so the mark comes off through the hands that put
+        it on whatever channel owns the turn."""
+        normalized = (
+            message.model_copy(
+                update={"images": [normalize_data_uri(uri) for uri in message.images]}
+            )
+            if message.images
+            else message
+        )
+        parent = self._resolve_quoted_parent_row(normalized)
+        return QueuedTurnMessage(
+            message=normalized,
+            user_sender=user_sender,
+            device_id=device_id,
+            parent_row_id=parent.id if parent else None,
+            received_at=self._db.clock.now(),
+            rendered_content=(
+                Prompt.QUOTED_MESSAGE_FRAME.format(
+                    quoted=parent.content, content=normalized.content
+                )
+                if parent
+                else normalized.content
+            ),
+            logged_content=_logged_incoming_content(normalized),
+            clear_queued=self.clear_queued,
+        )
+
+    async def _type_until_turn_ends(self, inbox: TurnInbox, sender: str) -> None:
+        """A second device's typing indicator for the span its message waits (#2985),
+        through to the reply — the whole series, not just the join.  Detached task;
+        every failure is logged, never raised into anything."""
+        typing_task = asyncio.create_task(self._typing_loop(sender))
+        try:
+            await inbox.finished.wait()
+        except Exception:
+            logger.exception("Queued-message typing indicator failed for %s", sender)
+        finally:
+            typing_task.cancel()
+            await self.send_typing(sender, False)
+
+    async def mark_queued(self, message: IncomingMessage) -> None:
+        """Mark a message waiting to join the active turn (#2985) — its sender is
+        watching for a reply.  No-op default; a channel with a waiting indicator
+        (Signal: a ⏳ reaction on the message) overrides.  Best-effort by contract:
+        a failed mark delays the indicator, never blocks the join."""
+        return
+
+    async def clear_queued(self, message: IncomingMessage) -> None:
+        """Remove the waiting mark (#2985) — the moment the message leaves the
+        turn's inbox, however it leaves: injected into the running turn, picked up
+        by a follow-up turn, or abandoned.  No-op default; best-effort: a failed
+        clear is logged by the releaser, never fails the turn."""
+        return
+
+    async def _log_joined_messages(self, joined: list[QueuedTurnMessage], run_id: str) -> None:
+        """Log each message the run JOINED mid-turn (#2985), stamped with the run id
+        that answered for it — at the message's own arrival time, so the record
+        keeps the true order: the triggering message ahead, the joined message
+        between the turn's start and its sends.  Deferred to after the run, exactly
+        like the triggering message's own row, so it never doubles into the turn's
+        own recall."""
+        for queued in joined:
+            embedding = await self._embed_message(queued.logged_content)
+            self._db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                queued.user_sender,
+                queued.logged_content,
+                parent_id=queued.parent_row_id,
+                device_id=queued.device_id,
+                embedding=serialize_embedding(embedding) if embedding is not None else None,
+                run_id=run_id,
+                timestamp=queued.received_at,
+            )
+
+    async def _log_abandoned_message(self, queued: QueuedTurnMessage) -> None:
+        """Log a queued message the dying series never reached a turn with (#2985) —
+        the record keeps every incoming message, whatever happened to it.  No run
+        stamp: nothing answered for it."""
+        embedding = await self._embed_message(queued.logged_content)
+        self._db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            queued.user_sender,
+            queued.logged_content,
+            parent_id=queued.parent_row_id,
+            device_id=queued.device_id,
+            embedding=serialize_embedding(embedding) if embedding is not None else None,
+            timestamp=queued.received_at,
+        )
 
     async def _handle_profile_required(
         self, message: IncomingMessage, user_sender: str, device_id: int | None
@@ -771,8 +1014,8 @@ class MessageChannel(ABC):
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
-    def _resolve_quoted_parent(self, message: IncomingMessage) -> int | None:
-        """The parent a quote-reply continues, most-authoritative first.
+    def _resolve_quoted_parent_row(self, message: IncomingMessage) -> MessageLog | None:
+        """The quoted parent ROW a quote-reply continues, most-authoritative first.
 
         When the channel carries the quoted message's own id (Signal's
         ``Quote.id`` — the timestamp stamped as our outgoing row's
@@ -781,17 +1024,18 @@ class MessageChannel(ABC):
         the channel-converted form, while the conversation record keeps the
         reply as the model wrote it (#2722), so matching is reliable only for
         quotes on messages the channel never reformats — the user's own.
-        The resolved id is what the thread link and the turn's history both
-        read; the quote's text is never re-matched downstream.
+        The resolved row is what the thread link, the turn's history and a
+        mid-turn join's quote frame (#2985) all read; the quote's text is never
+        re-matched downstream.
         """
         if message.quoted_external_id:
             parent = self._db.messages.find_by_external_id(message.quoted_external_id)
             if parent is not None and parent.id is not None:
-                return parent.id
+                return parent
         if message.quoted_text:
             parent = self._db.messages.find_outgoing_by_content(message.quoted_text)
             if parent is not None and parent.id is not None:
-                return parent.id
+                return parent
         return None
 
     async def _run_message_through_agent(
@@ -800,6 +1044,8 @@ class MessageChannel(ABC):
         user_sender: str,
         device_id: int | None,
         progress: ProgressTracker | None,
+        inbox: TurnInbox,
+        received_at: datetime,
     ) -> None:
         """Invoke the agent, log the incoming message, and deliver the response.
 
@@ -811,6 +1057,12 @@ class MessageChannel(ABC):
         The true top-level run starter for a chat turn (#2458): mints the top
         ``CallLink`` before the turn's own loop even draws, passed explicitly down
         the call chain with no ambient state anywhere.
+
+        ``inbox`` (#2985) is the turn's join queue — the loop drains it after each
+        tool step.  ``received_at`` is the triggering message's own arrival time,
+        captured by the caller (the series loop) and passed in, so a follow-up
+        turn over a queued message still stamps its row with when the user
+        actually sent it, not when its turn happened to start.
         """
         logger.info("Dispatching to message agent for %s", message.sender)
         # Normalize every image attachment to the stored-image size rules (#2780)
@@ -829,23 +1081,26 @@ class MessageChannel(ABC):
         # linked structurally to the run by ``link_source_message``.
         # ``user-messages`` is a read facade over ``messagelog`` — no separate append.
         run_id = uuid.uuid4().hex
-        # Captured HERE, before the run's own interim sends (#2837) can log their
-        # own outgoing rows, and threaded through to the incoming row's own
-        # ``timestamp`` in ``_finish_turn`` — so the incoming row (logged only once
-        # the whole turn finishes) still sorts AHEAD of anything the turn sends,
-        # rather than carrying a write-time stamp from after the turn.
-        received_at = self._db.clock.now()
         call_link = CallLink.top(run_id)
-        parent_id = self._resolve_quoted_parent(message)
-        response = await self._message_agent.handle(
-            content=message.content,
-            sender=user_sender,
-            call_link=call_link,
-            images=message.images or None,
-            page_context=message.page_context,
-            thread_parent_id=parent_id,
-            **self._make_handle_kwargs(message, progress, run_id),
-        )
+        parent = self._resolve_quoted_parent_row(message)
+        parent_id = parent.id if parent else None
+        try:
+            response = await self._message_agent.handle(
+                content=message.content,
+                sender=user_sender,
+                call_link=call_link,
+                inbox=inbox,
+                images=message.images or None,
+                page_context=message.page_context,
+                thread_parent_id=parent_id,
+                **self._make_handle_kwargs(message, progress, run_id),
+            )
+        finally:
+            # Whatever the run's fate, the messages it JOINED mid-turn (#2985)
+            # get their rows now — stamped with this run id, at their own
+            # arrival times, deferred like the triggering message's row so
+            # they never double into the run's own recall.
+            await self._log_joined_messages(inbox.take_drained(), run_id)
         try:
             await self._finish_turn(
                 message, user_sender, device_id, response, run_id, parent_id, progress, received_at
@@ -872,12 +1127,9 @@ class MessageChannel(ABC):
         already (#2371: split out so a failure here can be reported with the
         run's own ``response.tool_calls``, which ``_run_message_through_agent``
         doesn't have once control returns to it)."""
-        # The conversation record keeps a short deterministic marker where the image was
-        # (#2635) — the attachment itself rides only the turn's own user message and
-        # is never resent into history, so a later turn reads this line instead.
-        logged_content = message.content
-        if message.images:
-            logged_content = f"{logged_content} {PennyConstants.IMAGE_HISTORY_MARKER}".strip()
+        # The record form of the message's text (#2635) — the shared rule
+        # ``_logged_incoming_content`` also logs a joined message's row in.
+        logged_content = _logged_incoming_content(message)
         incoming_embedding = await self._embed_message(logged_content)
         incoming_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from penny.channels.signal import SignalChannel
+from penny.channels.turns import TurnRegistry
 
 
 @pytest.fixture
@@ -17,6 +18,7 @@ def channel():
         phone_number="+15551234567",
         message_agent=MagicMock(),
         db=MagicMock(),
+        turn_registry=TurnRegistry(),
     )
 
 

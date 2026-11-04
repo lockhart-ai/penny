@@ -344,6 +344,7 @@ class ProgressEmoji(StrEnum):
     SEARCHING = "\U0001f50d"  # 🔍 — running a text search
     READING = "\U0001f4d6"  # 📖 — reading a specific URL
     ROLLING = "\U0001f3b2"  # 🎲 — making a fair random choice
+    QUEUED = "⏳"  # ⏳ — waiting to join the active turn (#2985)
     WORKING = "\u2699\ufe0f"  # ⚙️ — generic fallback for other tools
 
 

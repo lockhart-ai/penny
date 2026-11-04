@@ -112,6 +112,7 @@ penny/
   channels/
     __init__.py       — create_channel() factory, channel type constants
     base.py           — MessageChannel ABC, IncomingMessage, shared message handling
+    turns.py          — TurnRegistry/TurnInbox/QueuedTurnMessage: the one active chat turn and the inbox messages join it through (#2985)
     signal/
       channel.py      — SignalChannel: httpx for REST, websockets for receive
       models.py       — Signal WebSocket envelope Pydantic models
@@ -202,7 +203,7 @@ iOS database-update broadcasts use `_push` / `_deliver_push` with the shared
 `_deliver_text` send guard: closed sockets are reported at INFO, other devices still
 receive their updates, and unexpected detached-task failures are logged locally.
 
-Signal, Discord and the browser extension share the `MessageChannel` ABC — `extract_message()` in, `send_response()`/`send_message()` out, both funnelling through one logging chokepoint (`_log_and_send()` → `_send_raw()`) so nothing Penny sends bypasses the conversation record. Read `docs/reference/channels.md` before changing a channel or the outgoing-send path.
+Signal, Discord and the browser extension share the `MessageChannel` ABC — `extract_message()` in, `send_response()`/`send_message()` out, both funnelling through one logging chokepoint (`_log_and_send()` → `_send_raw()`) so nothing Penny sends bypasses the conversation record. **One foreground chat turn runs at a time across every channel (#2985)**: a message arriving mid-turn joins the active turn's inbox (`channels/turns.py`) and is injected after the turn's current tool step, instead of starting a second, concurrent turn. Read `docs/reference/channels.md` before changing a channel or the outgoing-send path.
 
 ## Command System
 

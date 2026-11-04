@@ -102,6 +102,7 @@ from penny.channels.ios.models import (
     IosTyping,
 )
 from penny.channels.permission_manager import PermissionManager
+from penny.channels.turns import TurnRegistry
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
 from penny.constants import ChannelType, PennyConstants, PermissionResolution
 from penny.database.media_store import ImageSelectionPolicy
@@ -171,8 +172,15 @@ class IosChannel(MessageChannel):
         pairing_token: str | None = None,
         apns_client: ApnsClient | None = None,
         is_primary_channel: bool = False,
+        *,
+        turn_registry: TurnRegistry,
     ) -> None:
-        super().__init__(message_agent=message_agent, db=db, command_registry=command_registry)
+        super().__init__(
+            message_agent=message_agent,
+            db=db,
+            command_registry=command_registry,
+            turn_registry=turn_registry,
+        )
         self._host = host
         self._port = port
         self._pairing_token = pairing_token
