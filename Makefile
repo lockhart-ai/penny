@@ -174,27 +174,21 @@ SUBMAKE := $(MAKE)
 # start penny alone and never wait on a signal-api they don't use.
 SIGNAL_PROFILE := $(shell awk -F= '/^[[:space:]]*SIGNAL_NUMBER[[:space:]]*=/{v=$$2; gsub(/["'\'' ]/,"",v); if (v!="") print "--profile signal"}' .env 2>/dev/null)
 
-# Penny's changelog source (#2891) — host-side state `scripts/store_git_info.sh`
-# reads/writes before every build. CHANGELOG_CURSOR_FILE (the hash of the last
-# commit a real deploy announced) lives under data/ — gitignored, a bind mount,
-# so it survives every image rebuild; only `prod`/`prod-ios` advance it, after a
-# successful BUILD (not after the run exits): both run their image in the
-# FOREGROUND, blocking until Penny is stopped, so a cursor write placed after
-# `up`/`run` would never execute at all — Ctrl-C exits non-zero, and make
-# aborts the recipe before reaching it. Writing it right after the build
-# means a startup crash still advances the cursor; that's accepted — the
-# changes ARE built into the image that ran, and the startup announcement is
-# best-effort, never the thing the cursor tracks. CHANGELOG_COMMITS_FILE is
-# the generated, gitignored build-context file the image COPYs in.
-# CHANGELOG_FALLBACK_COMMITS bounds the unscoped (raw, not-yet-penny-filtered)
-# fallback when the cursor is unset or history has rewritten past it.
-CHANGELOG_CURSOR_FILE := data/penny/.changelog_cursor
+# Penny's changelog source (#2891, reworked by #2973) — `scripts/store_git_info.sh`
+# writes it before every build. There is no cursor any more: the script snapshots
+# the newest CHANGELOG_SNAPSHOT_COMMITS raw commits (a fixed bounded window —
+# ~2–3 weeks at this repo's merge rate) and WHICH of them are hers to record is
+# decided by Penny herself at startup, reading the `changelog` log — the log is
+# the cursor, so a built-but-never-started image can't swallow entries.
+# CHANGELOG_COMMITS_FILE is the generated, gitignored build-context file the
+# image COPYs in. CHANGELOG_SNAPSHOT_COMMITS bounds the unscoped (raw,
+# not-yet-penny-filtered) window.
 CHANGELOG_COMMITS_FILE := penny/penny/changelog_commits.txt
-CHANGELOG_FALLBACK_COMMITS := 10
-CHANGELOG_ENV := CHANGELOG_CURSOR_FILE=$(CHANGELOG_CURSOR_FILE) CHANGELOG_COMMITS_FILE=$(CHANGELOG_COMMITS_FILE) CHANGELOG_FALLBACK_COMMITS=$(CHANGELOG_FALLBACK_COMMITS)
+CHANGELOG_SNAPSHOT_COMMITS := 200
+CHANGELOG_ENV := CHANGELOG_COMMITS_FILE=$(CHANGELOG_COMMITS_FILE) CHANGELOG_SNAPSHOT_COMMITS=$(CHANGELOG_SNAPSHOT_COMMITS)
 
 up: browser-build
-	$(CHANGELOG_ENV) scripts/store_git_info.sh dev
+	$(CHANGELOG_ENV) scripts/store_git_info.sh
 	docker compose $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
@@ -203,17 +197,15 @@ up: browser-build
 # Builds the new image only — the OLD Penny is left running throughout (#2955): the
 # auto-deploy loop (scripts/deploy-loop.sh, `make prod-watch`) runs this while the
 # current container still serves, and only tears it down (prod-run, below) once the
-# build has actually succeeded. The changelog cursor is written right after the build
-# succeeds, as before (see CHANGELOG_CURSOR_FILE's own comment above) — never read by
-# the running container (it's pure host-side bookkeeping store_git_info.sh reads back
-# on the NEXT build), so writing it here commits to nothing the build didn't already
-# bake into the image that produced it.
+# build has actually succeeded. The image's own `git_commit` LABEL (set from the
+# GIT_COMMIT build arg inside the Dockerfile) is what tells the loop — and any
+# operator — which commit the image tagged `penny` was actually built from; a
+# successful build retags it, a failed one leaves the old image standing.
 prod-build: browser-build
-	$(CHANGELOG_ENV) scripts/store_git_info.sh advance
+	$(CHANGELOG_ENV) scripts/store_git_info.sh
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) build
-	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
 
 # Stops whatever is running and starts the (already-built) image. Split out of `prod`
 # so `down` happens right before `up`, not before the build (#2955) — a plain
@@ -228,11 +220,10 @@ prod-run:
 prod: prod-build prod-run
 
 prod-ios: browser-build
-	$(CHANGELOG_ENV) scripts/store_git_info.sh advance
+	$(CHANGELOG_ENV) scripts/store_git_info.sh
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml build penny
-	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml run --rm --service-ports --no-deps -e CHANNEL_TYPE=ios penny
 
@@ -257,7 +248,6 @@ prod-watch:
 	DEPLOY_RUN_CMD="$(DEPLOY_RUN_CMD)" \
 	DEPLOY_LOG="$(DEPLOY_LOG)" \
 	DEPLOY_RUN_LOG="$(DEPLOY_RUN_LOG)" \
-	DEPLOY_BUILD_CURSOR_FILE="$(CHANGELOG_CURSOR_FILE)" \
 	./scripts/deploy-loop.sh
 
 # Renders the launchd plist template with this checkout's absolute paths filled in

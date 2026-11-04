@@ -632,10 +632,11 @@ class Penny:
         a test or an eval case supplies its own list, or none) into the
         `changelog` log, and return exactly what got recorded — there is no
         separate announce-selection step, so nothing is ever recorded that
-        isn't also announced. The host's own cursor
-        (``scripts/store_git_info.sh``) is what keeps that commit list a
-        small, fresh window in the first place; this method does no
-        position or backfill logic of its own.
+        isn't also announced. The snapshot itself is a fixed bounded window
+        of recent commits (#2973) — the log is the cursor, so which of its
+        entries are hers to record is decided inside ``record_new_entries``
+        by what the log already carries; this method does no position or
+        backfill logic of its own.
 
         Idempotent: ``record_new_entries`` never appends a PR already in
         the log, so a bare restart on an unchanged commit list (no rebuild)

@@ -10,8 +10,9 @@ cycle back through `penny.database`/`penny.validation`/`penny.agents`
 names are re-exported here too, so every existing `from penny.changelog
 import ChangelogEntry, ...` call site keeps working unchanged.
 
-At startup (`Penny._record_changelog_entries`), every commit this call's
-list carries that isn't already recorded is appended to the `changelog`
+At startup (`Penny._record_changelog_entries`), the entries this call's
+list carries that the `changelog` log itself says are new (``record_new_entries`` —
+the log is the cursor, #2973) are appended to the `changelog`
 system log (``PennyConstants.MEMORY_CHANGELOG_LOG`` — a plain append-only
 ``Log``, read like any other log via ``log_read``), stamped with that
 deploy's own time rather than the commit's merge time: the date that
@@ -41,9 +42,15 @@ __all__ = [
     "load_commits",
     "parse_commit_log",
     "recorded_prs",
+    "select_new_entries",
     "record_new_entries",
     "render_changelog_announcement",
 ]
+
+# The fresh-log cap (#2973): a snapshot whose PRs are ALL unrecorded — a fresh
+# database — records only this many of its newest entries, the code owner's
+# earlier ruling for a fresh install.
+_FRESH_LOG_CAP = 10
 
 # The leading token every recorded row's content carries (``ChangelogEntry.render``).
 # A plain ``Log`` has no second column to key idempotency on, so "already
@@ -63,22 +70,46 @@ def recorded_prs(log: Memory) -> set[int]:
     return recorded
 
 
-def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[ChangelogEntry]:
-    """Append every entry in ``entries`` not already recorded in ``log``,
-    each stamped with the log's own clock (the deploy time). Returns the
-    entries that were actually appended — which is exactly what this
-    deploy announces too (#2891): there is no separate selection step, so
-    nothing is ever recorded that isn't announced.
+def select_new_entries(
+    entries: list[ChangelogEntry], recorded: set[int], fresh_cap: int = _FRESH_LOG_CAP
+) -> list[ChangelogEntry]:
+    """Which of a deploy snapshot's entries are hers to record, decided by the
+    log itself (#2973): the snapshot (``scripts/store_git_info.sh``) is a fixed
+    bounded window of recent commits — it carries no cursor — so this finds the
+    NEWEST entry whose PR is already recorded in the ``changelog`` log and
+    returns every entry after it, oldest first. Everything the log says she has
+    seen stops at, everything it doesn't say she has seen is recorded.
 
-    Idempotent: an entry recorded on one call is never appended again on a
-    later one — the only guard against a container restart (no rebuild, so
-    the same commit list persists) re-announcing what a previous boot
-    already told the user. There is no OTHER position or dedupe logic here
-    — the host's own cursor (``scripts/store_git_info.sh``) is what keeps
-    ``entries`` itself a small, fresh window; this function just never
-    double-writes a row within that window."""
+    If NONE of the snapshot's PRs is in the log (a fresh database, or one so
+    long unbooted that its last recorded PR has fallen out of the snapshot
+    window), the newest ``fresh_cap`` entries are returned — the code owner's
+    earlier ruling for a fresh install. That cap is also the one honest bound
+    of this scheme: a gap of more than one snapshot window (~2–3 weeks of
+    commits at this repo's rate) between boots loses the middle commits,
+    the same trade the fresh-install cap always accepted.
+
+    Pure — no DB, no file, no clock — so the rule is unit-testable on its own;
+    ``record_new_entries`` is its only runtime caller."""
+    for index in range(len(entries) - 1, -1, -1):
+        if entries[index].pr in recorded:
+            return entries[index + 1 :]
+    return entries[-fresh_cap:]
+
+
+def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[ChangelogEntry]:
+    """Select (``select_new_entries``) and append the entries of this deploy's
+    snapshot that the log itself says are new, each stamped with the log's own
+    clock (the deploy time). Returns the entries that were actually appended —
+    which is exactly what this deploy announces too (#2891): there is no
+    separate announce-selection step, so nothing is ever recorded that isn't
+    announced.
+
+    Idempotent: the selection cuts at the newest PR already recorded, so a
+    bare restart on an unchanged snapshot appends nothing — the only guard
+    against a container restart (no rebuild, so the same snapshot persists)
+    re-announcing what a previous boot already told the user."""
     already = recorded_prs(log)
-    missing = [entry for entry in entries if entry.pr not in already]
+    missing = select_new_entries(entries, already)
     if not missing:
         return []
     log.append(

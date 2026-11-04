@@ -19,15 +19,12 @@ installed) — so the host writes the RAW log only, with plain shell tools,
 and this module does the parsing entirely at RUNTIME, over whatever that
 file holds.
 
-The script reads a cursor dotfile the host keeps under `data/` (gitignored,
-a bind mount — survives every image rebuild): the hash of the last commit a
-real deploy announced. It writes the range since that cursor, or — unset,
-or history-rewritten past it — the newest few raw commits. `prod`/`prod-ios`
-advance the cursor themselves, after a successful run; `up` (dev) never
-does. No position or dedupe logic lives in Python: whatever survives
-``parse_commit_log``'s scope filter on that file IS this deploy's new
-changes — ``penny.changelog.record_new_entries`` records and announces it
-as one set, by construction.
+The script writes a fixed bounded window — the newest few hundred raw
+commits, no cursor (#2973). No position or dedupe logic lives in Python
+here: whatever survives ``parse_commit_log``'s scope filter on that file IS
+this deploy's candidate set — ``penny.changelog.record_new_entries`` decides
+by the ``changelog`` log itself (the log is the cursor) which of those to
+record, and records and announces that set as one, by construction.
 
 Each dumped record carries the commit's BODY too, not just its title
 (#2891, round 4): the repo's squash setting

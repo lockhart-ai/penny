@@ -1,14 +1,18 @@
-"""Tests for `scripts/store_git_info.sh` (#2891): the host-side script
-`up`/`prod`/`prod-ios` call before building, which writes Penny's changelog
-commit range into the build-context file. Run the same way the Makefile
-recipes run it — against a real, throwaway git repo — not a description of
-it (the same approach `test_prune.py`/`test_provider_lock.py` take for
-their own shell helpers).
+"""Tests for `scripts/store_git_info.sh` (#2891, reworked by #2973): the
+host-side script `up`/`prod`/`prod-ios` call before building, which snapshots
+Penny's changelog commit window into the build-context file. Run the same way
+the Makefile recipes run it — against a real, throwaway git repo — not a
+description of it (the same approach `test_prune.py`/`test_provider_lock.py`
+take for their own shell helpers).
 
-Needs `git` on PATH to build that temp repo and exercise the real `git log`/
-`git merge-base` calls the script makes — the Dockerfile installs it for
-exactly this. A missing `git` is a hard, reported FAILURE here, never a
-silent skip: a skipped test never verified the script that ran."""
+There is no cursor any more (#2973): the script always writes the newest N raw
+commits, oldest first, and WHICH of those are hers to record is decided by
+Penny herself at startup (`select_new_entries` — the log is the cursor).
+
+Needs `git` on PATH to build that temp repo and exercise the real `git log`
+call the script makes — the Dockerfile installs it for exactly this. A missing
+`git` is a hard, reported FAILURE here, never a silent skip: a skipped test
+never verified the script that ran."""
 
 from __future__ import annotations
 
@@ -21,10 +25,10 @@ import pytest
 
 _SCRIPT = pathlib.Path("scripts") / "store_git_info.sh"
 
-# The script's own default (#2891, the code owner's ruling) — exercised at a
-# smaller override here so a test repo needs only a handful of commits, never
-# restated as a hidden assumption the script could drift away from unnoticed.
-_DEFAULT_FALLBACK = 10
+# Exercised at a smaller override here so a test repo needs only a handful of
+# commits, never restated as a hidden assumption the script could drift away
+# from unnoticed.
+_DEFAULT_SNAPSHOT = 200
 
 
 def _script_path() -> str:
@@ -100,20 +104,17 @@ def _titles(commits_file: pathlib.Path) -> list[str]:
 
 def _run_script(
     repo: pathlib.Path,
-    mode: str,
     *,
-    cursor_file: pathlib.Path,
     commits_file: pathlib.Path,
-    fallback: int = _DEFAULT_FALLBACK,
+    snapshot: int = _DEFAULT_SNAPSHOT,
 ) -> None:
     env = {
         **os.environ,
-        "CHANGELOG_CURSOR_FILE": str(cursor_file),
         "CHANGELOG_COMMITS_FILE": str(commits_file),
-        "CHANGELOG_FALLBACK_COMMITS": str(fallback),
+        "CHANGELOG_SNAPSHOT_COMMITS": str(snapshot),
     }
     result = subprocess.run(
-        ["bash", _script_path(), mode],
+        ["bash", _script_path()],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -123,67 +124,44 @@ def _run_script(
     assert result.returncode == 0, result.stderr
 
 
-def test_no_cursor_falls_back_to_the_newest_n_commits(tmp_path: pathlib.Path) -> None:
-    """An unset cursor (a fresh install, or dev with no prior deploy) falls
-    back to the newest N raw commits, oldest first — never the whole repo
-    history."""
+def test_snapshot_is_the_newest_n_commits_oldest_first(tmp_path: pathlib.Path) -> None:
+    """The window is always the newest N raw commits, oldest first — never the
+    whole repo history. There is no cursor and no mode: every build gets the
+    same fixed window, and Penny's own startup selection cuts it against the
+    log."""
     _require_git()
     repo = tmp_path / "repo"
     _init_repo(repo)
     _commit(repo, "feat(penny): first (#1)")
     _commit(repo, "docs: not penny-scope, still counted as one raw commit (#2)")
     _commit(repo, "fix(penny): second (#3)")
-    cursor_file = tmp_path / "cursor"
     commits_file = tmp_path / "commits.txt"
 
-    _run_script(repo, "dev", cursor_file=cursor_file, commits_file=commits_file, fallback=2)
+    _run_script(repo, commits_file=commits_file, snapshot=2)
 
-    assert not cursor_file.exists(), "dev mode never writes a cursor it didn't read"
     assert _titles(commits_file) == [
         "docs: not penny-scope, still counted as one raw commit (#2)",
         "fix(penny): second (#3)",
     ]
 
 
-def test_a_valid_cursor_returns_only_the_commits_after_it(tmp_path: pathlib.Path) -> None:
-    """A cursor that IS an ancestor of HEAD gets the range since it — not the
-    fallback window — and `advance` mode still never writes the cursor
-    itself (the Makefile does that, after a successful run)."""
+def test_no_flag_bounds_the_window_when_the_repo_is_bigger(tmp_path: pathlib.Path) -> None:
+    """A repo with more commits than the window keeps only the newest ones —
+    the window is a BOUND, not a guarantee to include everything."""
     _require_git()
     repo = tmp_path / "repo"
     _init_repo(repo)
-    first = _commit(repo, "feat(penny): first (#1)")
-    _commit(repo, "fix(penny): second (#2)")
-    _commit(repo, "fix(penny): third (#3)")
-    cursor_file = tmp_path / "cursor"
-    cursor_file.write_text(first)
+    for number in range(1, 6):
+        _commit(repo, f"fix(penny): change {number} (#{number})")
     commits_file = tmp_path / "commits.txt"
 
-    _run_script(repo, "advance", cursor_file=cursor_file, commits_file=commits_file)
+    _run_script(repo, commits_file=commits_file, snapshot=3)
 
     assert _titles(commits_file) == [
-        "fix(penny): second (#2)",
-        "fix(penny): third (#3)",
+        "fix(penny): change 3 (#3)",
+        "fix(penny): change 4 (#4)",
+        "fix(penny): change 5 (#5)",
     ]
-    assert cursor_file.read_text() == first, "the script only READS the cursor"
-
-
-def test_a_cursor_not_an_ancestor_falls_back_to_the_newest_n(tmp_path: pathlib.Path) -> None:
-    """A cursor history has rewritten past (not an ancestor of HEAD) is
-    treated exactly like an unset one: the newest N raw commits, never an
-    error and never the whole history."""
-    _require_git()
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _commit(repo, "feat(penny): first (#1)")
-    _commit(repo, "fix(penny): second (#2)")
-    cursor_file = tmp_path / "cursor"
-    cursor_file.write_text("deadbeef" * 5)  # well-formed, but not an object in this repo
-    commits_file = tmp_path / "commits.txt"
-
-    _run_script(repo, "dev", cursor_file=cursor_file, commits_file=commits_file, fallback=1)
-
-    assert _titles(commits_file) == ["fix(penny): second (#2)"]
 
 
 def test_multiline_bodies_are_captured_intact(tmp_path: pathlib.Path) -> None:
@@ -198,10 +176,9 @@ def test_multiline_bodies_are_captured_intact(tmp_path: pathlib.Path) -> None:
     _init_repo(repo)
     body = "First line of the real summary.\nSecond line continues the same paragraph."
     _commit(repo, "fix(penny): second (#2)", body)
-    cursor_file = tmp_path / "cursor"
     commits_file = tmp_path / "commits.txt"
 
-    _run_script(repo, "dev", cursor_file=cursor_file, commits_file=commits_file, fallback=5)
+    _run_script(repo, commits_file=commits_file)
 
     # git appends its own single trailing newline to a commit's stored body.
     assert _records(commits_file) == [("fix(penny): second (#2)", body + "\n")]
@@ -217,10 +194,9 @@ def test_multiple_commits_each_keep_their_own_multiline_body(tmp_path: pathlib.P
     second_body = "Paragraph one of the second PR.\n\nA second paragraph, after a blank line."
     _commit(repo, "feat(penny): first (#1)", first_body)
     _commit(repo, "fix(penny): second (#2)", second_body)
-    cursor_file = tmp_path / "cursor"
     commits_file = tmp_path / "commits.txt"
 
-    _run_script(repo, "dev", cursor_file=cursor_file, commits_file=commits_file, fallback=5)
+    _run_script(repo, commits_file=commits_file, snapshot=5)
 
     assert _records(commits_file) == [
         ("feat(penny): first (#1)", first_body + "\n"),
