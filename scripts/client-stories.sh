@@ -37,11 +37,12 @@ fi
 
 echo "client-stories: using simulator $UDID"
 mkdir -p "$OUTPUT_DIR"
-xcrun simctl shutdown all >/dev/null 2>&1 || true
-xcrun simctl boot "$UDID"
+# Only this device: never shut down other simulators (other agents may be using them).
+xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 xcrun simctl ui "$UDID" appearance light
-trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true; if [ -n "${DERIVED_DATA:-}" ]; then rm -rf "$DERIVED_DATA"; fi' EXIT
+xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
+trap 'xcrun simctl status_bar "$UDID" clear >/dev/null 2>&1 || true; xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true; if [ -n "${DERIVED_DATA:-}" ]; then rm -rf "$DERIVED_DATA"; fi' EXIT
 
 DERIVED_DATA="$(mktemp -d)"
 xcodebuild build \
