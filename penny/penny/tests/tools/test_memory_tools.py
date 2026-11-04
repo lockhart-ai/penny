@@ -3419,6 +3419,170 @@ class TestLogTools:
         assert "blank" in blank.message
 
     @pytest.mark.asyncio
+    async def test_log_read_window_discloses_older_entries(self, db, mock_llm):
+        """#2961: entries sitting before the recent window are never silently
+        dropped — the window read's result says how many and names the exact
+        `before=<id>` call, anchored on the entry it just showed, that pages
+        to them."""
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
+        base = datetime.now(UTC) - timedelta(hours=2)
+        with Session(db.engine) as session:
+            for index in range(3):
+                session.add(
+                    MemoryEntry(
+                        memory_name="events",
+                        key=None,
+                        content=f"old entry {index}",
+                        author="test",
+                        created_at=base + timedelta(seconds=index),
+                    )
+                )
+            session.commit()
+        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        await append.execute(CallLink.new_top(), log="events", content="recent entry")
+        recent = db.memory("events").read_all()[-1]
+        rendered = await LogReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), log="events"
+        )
+        assert rendered.message == (
+            f"1 entry from `events` (oldest first):\n"
+            f"1. [{format_log_timestamp(recent.created_at)}] id={recent.id} recent entry\n"
+            f"3 earlier entries in `events` — "
+            f"log_read{{log: 'events', before: {recent.id}}} reads the 3 before these."
+        )
+        older = db.memory("events").read_all()[:3]
+        paged = await LogReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), log="events", before=recent.id
+        )
+        body = "\n".join(
+            f"{position}. [{format_log_timestamp(entry.created_at)}] id={entry.id} {entry.content}"
+            for position, entry in enumerate(older, start=1)
+        )
+        assert paged.message == f"3 entries from `events` (oldest first):\n{body}"
+
+    @pytest.mark.asyncio
+    async def test_log_read_window_empty_discloses_older_entries_by_day(self, db):
+        """#2961: the window itself holds nothing, but the log isn't empty — the
+        disclosure has no id to page from (nothing was shown), so it anchors on
+        `day=`, naming the calendar day the newest hidden entry falls on (UTC,
+        the default with no profile set) rather than claiming the log is
+        empty."""
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
+        with Session(db.engine) as session:
+            session.add(
+                MemoryEntry(
+                    memory_name="events",
+                    key=None,
+                    content="first",
+                    author="test",
+                    created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
+                )
+            )
+            session.add(
+                MemoryEntry(
+                    memory_name="events",
+                    key=None,
+                    content="second",
+                    author="test",
+                    created_at=datetime(2026, 1, 5, 10, 0, tzinfo=UTC),
+                )
+            )
+            session.commit()
+        rendered = await LogReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), log="events"
+        )
+        assert rendered.message == (
+            "No entries in `events` — it's empty or nothing matched (not an error).\n"
+            "2 earlier entries in `events`, not shown here — "
+            "log_read{log: 'events', day: '2026-01-05'} reads that day."
+        )
+
+    @pytest.mark.asyncio
+    async def test_log_read_before_chains_across_pages(self, db):
+        """#2961: a `before=<id>` page that still has earlier history names its
+        own next `before=<id>` the same way the first page did — a log pages
+        all the way back, never a dead end after the first hop."""
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            CallLink.new_top(), log="events", description="x"
+        )
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        with Session(db.engine) as session:
+            for index in range(25):
+                session.add(
+                    MemoryEntry(
+                        memory_name="events",
+                        key=None,
+                        content=f"entry {index:02d}",
+                        author="test",
+                        created_at=base + timedelta(minutes=index),
+                    )
+                )
+            session.commit()
+        entries = db.memory("events").read_all()
+        anchor = entries[-1]
+        page_one = entries[-21:-1]
+        tool = LogReadTool(db, "chat", scope=None)
+        first = await tool.execute(CallLink.new_top(), log="events", before=anchor.id)
+        body_one = "\n".join(
+            f"{position}. [{format_log_timestamp(entry.created_at)}] id={entry.id} {entry.content}"
+            for position, entry in enumerate(page_one, start=1)
+        )
+        assert first.message == (
+            f"20 entries from `events` (oldest first):\n{body_one}\n"
+            f"4 earlier entries in `events` — "
+            f"log_read{{log: 'events', before: {page_one[0].id}}} reads the 4 before these."
+        )
+        page_two = entries[:4]
+        second = await tool.execute(CallLink.new_top(), log="events", before=page_one[0].id)
+        body_two = "\n".join(
+            f"{position}. [{format_log_timestamp(entry.created_at)}] id={entry.id} {entry.content}"
+            for position, entry in enumerate(page_two, start=1)
+        )
+        assert second.message == f"4 entries from `events` (oldest first):\n{body_two}"
+
+    @pytest.mark.asyncio
+    async def test_log_read_before_refuses_non_id_addressable_stores(self, db):
+        """#2961: `before` only works where ids render beside entries — a
+        collection and the id-less log facades refuse it by name, the same
+        shape `log_get` already refuses those stores with, rather than accept
+        an id nothing ever showed the model."""
+        _seed_collection(db, name="notes", description="x")
+        db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
+        db.memories.create_log(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG, "audit")
+        db.memories.create_log(PennyConstants.MEMORY_RUN_HEALTH_LOG, "health")
+        tool = LogReadTool(db, "chat", scope=None)
+        collection = await tool.execute(CallLink.new_top(), log="notes", before=1)
+        assert collection.success is False
+        assert collection.message == (
+            "'notes' is a collection, not a log: it has no `before` order to page by."
+        )
+        user_log = PennyConstants.MEMORY_USER_MESSAGES_LOG
+        messages = await tool.execute(CallLink.new_top(), log=user_log, before=1)
+        assert messages.success is False
+        assert messages.message == (
+            f"'{user_log}' holds messages, and a message isn't paged by `before`. "
+            f"Read it with log_read{{'{user_log}'}} or day='YYYY-MM-DD'."
+        )
+        run_log = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
+        runs = await tool.execute(CallLink.new_top(), log=run_log, before=1)
+        assert runs.success is False
+        assert runs.message == (
+            f"'{run_log}' holds run records, read by the `run <id>` shown beside each — "
+            f"not by `before`. Read it with log_read{{'{run_log}'}} or day='YYYY-MM-DD'."
+        )
+        health_log = PennyConstants.MEMORY_RUN_HEALTH_LOG
+        health = await tool.execute(CallLink.new_top(), log=health_log, before=1)
+        assert health.success is False
+        assert health.message == (
+            f"'{health_log}' holds run records, read by the `run <id>` shown beside each — "
+            f"not by `before`. Read it with log_read{{'{health_log}'}} or day='YYYY-MM-DD'."
+        )
+
+    @pytest.mark.asyncio
     async def test_collector_runs_log_renders_runs_from_promptlog(self, db):
         """collector-runs is a read facade over promptlog: log_read renders each
         worked run as a record (``[target] summary`` + its tool trace) — no

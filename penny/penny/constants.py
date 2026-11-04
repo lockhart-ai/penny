@@ -794,6 +794,12 @@ class PennyConstants:
     # cap has to hold — the 10-entry cursor batch would cut a day's exchange
     # in half.
     LOG_READ_DAY_LIMIT = 60
+    # ``log_read``'s backward-paging bound (#2961) — the optional ``before``
+    # argument pages the newest entries older than a given entry id, oldest
+    # first.  The disclosure this same page carries, if there is still more
+    # before it, is what lets a log that looks sparse because nothing fell in
+    # the recent window stay reachable: page by page, never a dead end.
+    LOG_READ_PAGE = 20
     # How many recent registry-change events ``memory_get`` renders in its
     # "Recent changes" block (``db.mutations.history``) — bounded like every other
     # history read so a config-change trail stays readable without flooding.
