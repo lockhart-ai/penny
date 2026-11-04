@@ -213,6 +213,9 @@ make up
 make up               # Build and start Penny (foreground, with dev source mounts)
 make prod             # Deploy penny only (no dev override)
 make prod-ios         # Run Penny as the iOS channel without starting signal-api
+make prod-watch       # Auto-deploy loop: watches origin/main and redeploys through
+                      # prod-build/prod-run whenever it can fast-forward to a new commit
+make deploy-loop-plist # Render the loop's launchd agent plist (not installed automatically)
 make kill             # Tear down containers and remove local images
 make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes
 make build            # Build the penny Docker image

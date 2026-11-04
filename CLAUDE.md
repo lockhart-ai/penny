@@ -167,6 +167,13 @@ docker-compose.override.yml     — Dev source volume overrides
 scripts/
   client-check.sh               — iOS client build + simulator test run (make client-check)
   eval-provider-lock.sh         — sourced by `make eval-remote`: one run at a time per pinned provider
+  deploy-loop.sh                — auto-deploy loop (#2955, `make prod-watch`): watches origin/main,
+                                  fast-forwards and redeploys through `prod-build`/`prod-run` when it
+                                  can, never resetting or checking out the tree; a failed build is
+                                  remembered by HEAD's own advance (never retried, only the next new
+                                  commit); logs to data/penny/logs/deploy-loop.log
+  com.penny.deployloop.plist.template — launchd agent template for the loop; rendered by
+                                  `make deploy-loop-plist`, never installed automatically
 .github/
   workflows/
     check.yml                   — CI: runs make check on push/PR to main
@@ -195,6 +202,8 @@ The project runs inside Docker Compose. A top-level Makefile wraps all commands:
 ```bash
 make up               # Start Penny with Docker Compose (dev source mounts)
 make prod             # Deploy penny (no dev override)
+make prod-watch       # Auto-deploy loop (#2955): watches origin/main, fast-forwards and
+                      # redeploys through prod-build/prod-run as new commits land
 make kill             # Tear down containers and remove local images
 make clean-project-images # Remove this compose project's built images + anon volumes (alias target of kill)
 make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes

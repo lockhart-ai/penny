@@ -22,6 +22,9 @@ services:
       # The changelog's commit-range script (`up`/`prod`/`prod-ios` call it on the HOST,
       # #2891) is the same kind of shell file a test drives from inside the container.
       - ./scripts/store_git_info.sh:/penny/scripts/store_git_info.sh:ro
+      # The auto-deploy loop (#2955, `make prod-watch`) is the same kind of shell file its
+      # own test drives from inside the container.
+      - ./scripts/deploy-loop.sh:/penny/scripts/deploy-loop.sh:ro
       # The catalogue of supported behaviours is generated from the eval cases inside the
       # container: `make fix` writes docs/eval-catalogue.md and `make check` compares it.
       - ./docs:/docs

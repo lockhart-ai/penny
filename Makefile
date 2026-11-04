@@ -164,7 +164,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-build prod-run prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
 
 # --- Docker Compose ---
 
@@ -200,15 +200,32 @@ up: browser-build
 	SNAPSHOT=1 \
 	docker compose $(SIGNAL_PROFILE) up --build
 
-prod: browser-build
+# Builds the new image only — the OLD Penny is left running throughout (#2955): the
+# auto-deploy loop (scripts/deploy-loop.sh, `make prod-watch`) runs this while the
+# current container still serves, and only tears it down (prod-run, below) once the
+# build has actually succeeded. The changelog cursor is written right after the build
+# succeeds, as before (see CHANGELOG_CURSOR_FILE's own comment above) — never read by
+# the running container (it's pure host-side bookkeeping store_git_info.sh reads back
+# on the NEXT build), so writing it here commits to nothing the build didn't already
+# bake into the image that produced it.
+prod-build: browser-build
 	$(CHANGELOG_ENV) scripts/store_git_info.sh advance
-	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) build
 	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
+
+# Stops whatever is running and starts the (already-built) image. Split out of `prod`
+# so `down` happens right before `up`, not before the build (#2955) — a plain
+# `make prod` still ends up down-then-up, it just builds first; the auto-deploy loop
+# calls this only after prod-build has succeeded, and it also mops up any container
+# the loop's own stopped child left behind.
+prod-run:
+	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up
+
+prod: prod-build prod-run
 
 prod-ios: browser-build
 	$(CHANGELOG_ENV) scripts/store_git_info.sh advance
@@ -218,6 +235,37 @@ prod-ios: browser-build
 	git rev-parse HEAD > $(CHANGELOG_CURSOR_FILE)
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml run --rm --service-ports --no-deps -e CHANNEL_TYPE=ios penny
+
+# --- Auto-deploy loop (#2955) ---------------------------------------------------
+# Watches origin/main and redeploys through prod-build/prod-run whenever it fast-
+# forwards, so a merged fix goes live with nobody at the machine. Drives the
+# Makefile's own targets (never a second build path) — see scripts/deploy-loop.sh
+# for the full mechanics (what it checks before acting, how a failed build is
+# remembered, how a crashed child is restarted). Commands are overridable so the
+# script can be driven against a scratch repo with stub commands in tests.
+DEPLOY_INTERVAL ?= 300
+DEPLOY_BUILD_CMD ?= make prod-build
+DEPLOY_RUN_CMD ?= make prod-run
+DEPLOY_LOG ?= $(CURDIR)/data/penny/logs/deploy-loop.log
+
+prod-watch:
+	DEPLOY_INTERVAL="$(DEPLOY_INTERVAL)" \
+	DEPLOY_BUILD_CMD="$(DEPLOY_BUILD_CMD)" \
+	DEPLOY_RUN_CMD="$(DEPLOY_RUN_CMD)" \
+	DEPLOY_LOG="$(DEPLOY_LOG)" \
+	./scripts/deploy-loop.sh
+
+# Renders the launchd plist template with this checkout's absolute paths filled in
+# and prints it — same shape as image-server-plist, and likewise does NOT install
+# or load the agent. Review the rendered plist, then (as a one-time, manual step):
+#   cp <rendered file> ~/Library/LaunchAgents/com.penny.deployloop.plist
+#   launchctl load ~/Library/LaunchAgents/com.penny.deployloop.plist
+deploy-loop-plist:
+	@sed \
+		-e 's#__DEPLOY_LOOP_SCRIPT__#$(CURDIR)/scripts/deploy-loop.sh#g' \
+		-e 's#__PROJECT_DIR__#$(CURDIR)#g' \
+		-e 's#__LOG_DIR__#$(CURDIR)/data/penny/logs#g' \
+		scripts/com.penny.deployloop.plist.template
 
 # Tear down this compose project's containers and remove its locally-built
 # images (alias of clean-project-images, kept for its familiar name).
