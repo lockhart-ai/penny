@@ -28,7 +28,13 @@ from sqlmodel import Session, col, select
 
 from penny.agents.chat import ChatAgent
 from penny.channels.base import MessageChannel
-from penny.constants import ChatPromptType, CycleTrigger, PennyConstants
+from penny.constants import (
+    ChatPromptType,
+    CycleTrigger,
+    MutationActor,
+    PennyConstants,
+    QueueItemKind,
+)
 from penny.database.memory import EntryInput
 from penny.database.models import PromptLog, SendQueueItem
 from penny.llm.client import LlmClient
@@ -101,7 +107,9 @@ def _seed_cycle_writes(db, run_id: str) -> None:
 
 
 def _enqueue(db, run_id: str, *, trigger: CycleTrigger = CycleTrigger.ON_DEMAND):
-    return db.send_queue.enqueue_report("indie-metroidvanias", trigger, run_id)
+    return db.send_queue.enqueue_report(
+        "indie-metroidvanias", trigger, run_id, kind=QueueItemKind.REPORT
+    )
 
 
 _REPORT_PROMPT_HEAD = 'Your job "indie-metroidvanias" just finished a run'
@@ -340,7 +348,9 @@ async def test_a_report_for_a_vanished_collection_never_reaches_the_model(
     half-assembled report."""
     _register_user(db)
     db.memories.create_collection("gone-job", "a job that will not exist at compose time")
-    row_id = db.send_queue.enqueue_report("gone-job", CycleTrigger.CADENCE, uuid.uuid4().hex)
+    row_id = db.send_queue.enqueue_report(
+        "gone-job", CycleTrigger.CADENCE, uuid.uuid4().hex, kind=QueueItemKind.REPORT
+    )
     db.memories.archive("gone-job")
 
     mock_llm.set_response_handler(
@@ -396,7 +406,9 @@ async def test_a_sandbox_report_rides_its_own_lane_and_delivery_turn(db, test_co
     _register_user(db)
     db.memories.create_collection("indie-metroidvanias", "Indie metroidvania releases")
     run_id = "preview-run-1"
-    row_id = db.send_queue.enqueue_report("indie-metroidvanias", CycleTrigger.SANDBOX, run_id)
+    row_id = db.send_queue.enqueue_report(
+        "indie-metroidvanias", CycleTrigger.SANDBOX, run_id, kind=QueueItemKind.REPORT
+    )
     mock_llm.set_response_handler(
         _sandbox_reply_handler(mock_llm, "Here's what that preview would have done.")
     )
@@ -427,3 +439,215 @@ async def test_a_sandbox_report_rides_its_own_lane_and_delivery_turn(db, test_co
         )
     assert sandbox_rows, "the sandbox delivery turn logged under its own prompt type"
     assert job_rows == [], "a sandbox report must never ride the job-report delivery turn"
+
+
+# ── The autonomous job events (#2975) ────────────────────────────────────────
+
+
+_RETIRED_PROMPT_HEAD = 'Your job "indie-metroidvanias" was archived'
+_FAILED_PROMPT_HEAD = 'Your job "indie-metroidvanias"\'s run failed'
+
+
+def _event_reply_handler(mock_llm, reply: str, prompt_head: str):
+    """Answer ONLY the job-event delivery turn — anything else is a test bug
+    made loud (the sibling of ``_reply_handler`` for #2975's retirement and
+    failure events).  The event rides as the live turn's own USER message,
+    prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``, not a system
+    turn."""
+
+    def handler(request: dict, count: int):
+        notification_turns = [
+            m.get("content", "")
+            for m in request["messages"]
+            if m.get("role") == "user"
+            and str(m.get("content", "")).startswith(PennyConstants.SYSTEM_NOTIFICATION_PREFIX)
+        ]
+        assert any(prompt_head in str(c) for c in notification_turns), (
+            f"the mock was asked something other than the job-event delivery turn: "
+            f"{notification_turns!r}"
+        )
+        return mock_llm._make_text_response(request, reply)
+
+    return handler
+
+
+def _seed_archived_job(db) -> None:
+    """A job plus the system-actor archive event whose note the retirement fact
+    set reads back — the chokepoint that recorded the retire (#2975)."""
+    _register_user(db)
+    db.memories.create_collection("indie-metroidvanias", "Indie metroidvania releases")
+    db.memories.archive(
+        "indie-metroidvanias",
+        actor=MutationActor.SYSTEM,
+        run_id="cycle-run-1",
+        note="reached run limit (1 of 1 completed runs)",
+    )
+
+
+def _seed_failed_run(db) -> None:
+    """A job plus a run whose own outcome stamp carries the recorded failure —
+    what the failure fact set reads at compose time (#2975)."""
+    _register_user(db)
+    db.memories.create_collection("indie-metroidvanias", "Indie metroidvania releases")
+    db.messages.log_prompt(
+        model="test-model",
+        messages=[{"role": "user", "content": "cycle"}],
+        response={"choices": [{"message": {"role": "assistant", "content": ""}}]},
+        run_id="failed-run-1",
+        run_target="indie-metroidvanias",
+    )
+    db.messages.set_run_outcome(
+        "failed-run-1", "failed", "model call failed at step 2: LlmConnectionError: refused", 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_retirement_event_composes_through_one_chat_turn_and_delivers_once(
+    db, test_config, mock_llm
+):
+    """A job retiring (#2975) reaches her the same way a notifying cycle's
+    report does: the drainer builds the retirement fact set from the ledger's
+    own archive note, ONE chat turn writes the message from it, and the send
+    is attributed to the job that retired."""
+    _seed_archived_job(db)
+    row_id = db.send_queue.enqueue_report(
+        "indie-metroidvanias", CycleTrigger.CADENCE, "cycle-run-1", kind=QueueItemKind.JOB_RETIRED
+    )
+    mock_llm.set_response_handler(
+        _event_reply_handler(
+            mock_llm, "Heads up — that metroidvania watch wrapped up.", _RETIRED_PROMPT_HEAD
+        )
+    )
+    drainer, channel = _make_delivery(db, test_config)
+
+    assert await drainer.execute() is True
+    assert len(channel.sent) == 1
+    sent = channel.sent[0]
+    assert sent["content"] == "Heads up — that metroidvania watch wrapped up."
+    assert sent["mechanism"] == "indie-metroidvanias"
+    assert sent["run_id"] is not None and len(str(sent["run_id"])) == 32
+
+    with Session(db.engine) as session:
+        row = session.get(SendQueueItem, row_id)
+        assert row is not None
+        assert row.content == "Heads up — that metroidvania watch wrapped up."
+        assert row.sent_at is not None
+        event_rows = list(
+            session.exec(
+                select(PromptLog).where(
+                    col(PromptLog.prompt_type) == ChatPromptType.JOB_EVENT.value
+                )
+            ).all()
+        )
+    assert event_rows, "the job-event delivery turn logged under its own prompt type"
+    assert all(row.agent_name == "chat" for row in event_rows)
+
+
+@pytest.mark.asyncio
+async def test_the_retirement_turn_reads_the_ledgers_own_note_whole(db, test_config, mock_llm):
+    """What the chat agent was shown is the deterministic fact set, whole — the
+    cause read back verbatim off the mutation ledger's system-actor archive
+    note, never re-derived (#2975) — prefixed with the notification prefix as
+    the live turn's own USER message."""
+    _seed_archived_job(db)
+    db.send_queue.enqueue_report(
+        "indie-metroidvanias", CycleTrigger.CADENCE, "cycle-run-1", kind=QueueItemKind.JOB_RETIRED
+    )
+    mock_llm.set_response_handler(
+        _event_reply_handler(mock_llm, "That watch wrapped up.", _RETIRED_PROMPT_HEAD)
+    )
+    drainer, _channel = _make_delivery(db, test_config)
+
+    await drainer.execute()
+
+    with Session(db.engine) as session:
+        rows = list(
+            session.exec(
+                select(PromptLog).where(
+                    col(PromptLog.prompt_type) == ChatPromptType.JOB_EVENT.value
+                )
+            ).all()
+        )
+    assert rows, "the delivery turn logged its prompt"
+    notification_turn = next(
+        message["content"]
+        for row in rows
+        for message in json.loads(row.messages)[-1:]
+        if message.get("role") == "user"
+    )
+    assert notification_turn == (
+        PennyConstants.SYSTEM_NOTIFICATION_PREFIX + 'Your job "indie-metroidvanias" was archived: '
+        "reached run limit (1 of 1 completed runs).\n"
+        "What the job is for: Indie metroidvania releases"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_failure_turn_reads_the_runs_own_recorded_failure_whole(
+    db, test_config, mock_llm
+):
+    """What the chat agent was shown for a failed run (#2975) is the run's own
+    recorded failure — the outcome stamp the settlement wrote, read back
+    verbatim at compose time, never a guess — prefixed with the notification
+    prefix as the live turn's own USER message."""
+    _seed_failed_run(db)
+    db.send_queue.enqueue_report(
+        "indie-metroidvanias", CycleTrigger.CADENCE, "failed-run-1", kind=QueueItemKind.JOB_FAILED
+    )
+    mock_llm.set_response_handler(
+        _event_reply_handler(
+            mock_llm, "That run kept dying — I'll keep an eye.", _FAILED_PROMPT_HEAD
+        )
+    )
+    drainer, _channel = _make_delivery(db, test_config)
+
+    await drainer.execute()
+
+    with Session(db.engine) as session:
+        rows = list(
+            session.exec(
+                select(PromptLog).where(
+                    col(PromptLog.prompt_type) == ChatPromptType.JOB_EVENT.value
+                )
+            ).all()
+        )
+    assert rows, "the delivery turn logged its prompt"
+    notification_turn = next(
+        message["content"]
+        for row in rows
+        for message in json.loads(row.messages)[-1:]
+        if message.get("role") == "user"
+    )
+    assert notification_turn == (
+        PennyConstants.SYSTEM_NOTIFICATION_PREFIX + 'Your job "indie-metroidvanias"\'s run failed: '
+        "model call failed at step 2: LlmConnectionError: refused.\n"
+        "What the job is for: Indie metroidvania releases"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failure_event_with_no_readable_stamp_fails_the_row_visibly(
+    db, test_config, mock_llm
+):
+    """A failure event whose failed run carries no outcome stamp (rows pruned
+    under it) cannot be composed from a guess (#2975): the row fails outright —
+    kept, never delivered, logged loudly — the same honest end a vanished
+    collection's report row gets."""
+    _register_user(db)
+    db.memories.create_collection("indie-metroidvanias", "Indie metroidvania releases")
+    row_id = db.send_queue.enqueue_report(
+        "indie-metroidvanias",
+        CycleTrigger.CADENCE,
+        "run-with-no-stamp",
+        kind=QueueItemKind.JOB_FAILED,
+    )
+    mock_llm.set_response_handler(_event_reply_handler(mock_llm, "anything", _FAILED_PROMPT_HEAD))
+    drainer, channel = _make_delivery(db, test_config)
+
+    assert await drainer.execute() is False
+    assert channel.sent == []
+    with Session(db.engine) as session:
+        row = session.get(SendQueueItem, row_id)
+        assert row is not None
+        assert row.failed_at is not None
+        assert row.content == ""

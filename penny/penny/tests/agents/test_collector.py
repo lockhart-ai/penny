@@ -42,6 +42,7 @@ from penny.constants import (
     MutationAction,
     MutationActor,
     PennyConstants,
+    QueueItemKind,
     RunOutcome,
     WriteGateOutcome,
 )
@@ -732,6 +733,14 @@ def test_max_runs_archives_after_quota(test_config, tmp_path):
     assert archive_events[0].actor == MutationActor.SYSTEM.value
     assert archive_events[0].run_id == "r2"
     assert "run limit" in (archive_events[0].detail or "")
+    # Penny is told (#2975): the retirement event rides the send queue as a
+    # composing row — the drainer's delivery turn writes the message from the
+    # ledger's own note.
+    pending = db.send_queue.next_pending()
+    assert pending is not None
+    assert pending.kind == QueueItemKind.JOB_RETIRED.value
+    assert pending.collection == "one-shot"
+    assert pending.report_run_id == "r2"
 
 
 def test_unlimited_collection_never_auto_archives(test_config, tmp_path):
@@ -798,6 +807,14 @@ async def test_dispatcher_skips_and_retires_expired_collection(test_config, tmp_
     assert archive_events[0].actor == MutationActor.SYSTEM.value
     assert archive_events[0].run_id is None
     assert "reached expiry" in (archive_events[0].detail or "")
+    # Penny is told (#2975) even for a while-down retire with no run to
+    # attribute: the composing row carries no run id, and the compose reads the
+    # cause off the ledger's own note.
+    pending = db.send_queue.next_pending()
+    assert pending is not None
+    assert pending.kind == QueueItemKind.JOB_RETIRED.value
+    assert pending.collection == "fortnight-watch"
+    assert pending.report_run_id is None
 
 
 @pytest.mark.asyncio
@@ -841,6 +858,14 @@ async def test_expiry_passing_mid_cycle_archives_post_cycle(mock_llm, test_confi
     assert archive_events[0].actor == MutationActor.SYSTEM.value
     assert archive_events[0].run_id is not None
     assert "reached expiry" in (archive_events[0].detail or "")
+    # Penny is told (#2975): the retirement event rides the send queue,
+    # attributed to the cycle whose post-cycle check noticed the expiry —
+    # whichever trigger ran it (this one was the user's "run this now").
+    pending = db.send_queue.next_pending()
+    assert pending is not None
+    assert pending.kind == QueueItemKind.JOB_RETIRED.value
+    assert pending.collection == "expiring-watch"
+    assert pending.report_run_id == archive_events[0].run_id
 
 
 @pytest.mark.asyncio
@@ -3075,6 +3100,54 @@ async def test_repeated_preemption_never_consumes_the_occurrence(mock_llm, test_
     assert _get(db, "morning-briefing").last_collected_at is not None
     assert collector._next_ready_collection() is None
     assert collector._retry_attempts == {}
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_cadence_failure_queues_the_failure_event(
+    mock_llm, test_config, tmp_path
+):
+    """A cadence run that fails FOR GOOD (#2975): the occurrence-retry budget
+    spent out on an unhealthy end, so no retry is coming and Penny is told —
+    a composing ``job_failed`` row rides the send queue, carrying the failed
+    run's own id, whose outcome stamp the event's fact set reads back at
+    compose time.  Every intermediate failure (budget remaining, the
+    occurrence still due) queues nothing — she is told once, when the failure
+    is final."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        # Every attempt aborts the same way: step 1 lands (and logs its row,
+        # so the run carries an outcome stamp to read), step 2 dies on the
+        # transport — the aborted-cycle shape the retry bound exists for.
+        if count % 2 == 1:
+            return mock_llm._make_tool_call_response(
+                request, "collection_list", {"collection": "morning-briefing"}
+            )
+        raise LlmConnectionError("Connection refused")
+
+    mock_llm.set_response_handler(handler)
+
+    for attempt in range(PennyConstants.COLLECTOR_RETRY_ATTEMPTS):
+        assert await collector.execute() is False, attempt
+        # Nothing is queued while the budget holds — the retry may still land.
+        assert db.send_queue.next_pending() is None, attempt
+        assert _get(db, "morning-briefing").last_collected_at is None, attempt
+
+    # One attempt past the budget: the occurrence is consumed and the run
+    # failed for good — now the event is queued, keyed to THAT run.
+    assert await collector.execute() is False
+    assert _get(db, "morning-briefing").last_collected_at is not None
+    pending = db.send_queue.next_pending()
+    assert pending is not None
+    assert pending.kind == QueueItemKind.JOB_FAILED.value
+    assert pending.collection == "morning-briefing"
+    failed_run_id = pending.report_run_id
+    assert failed_run_id is not None
+    runs = db.messages.get_prompt_log_runs()
+    stamped = next(run for run in runs if run["run_id"] == failed_run_id)
+    assert stamped["run_outcome"] == RunOutcome.FAILED.value
+    assert "model call failed" in stamped["run_reason"]
 
 
 @pytest.mark.asyncio

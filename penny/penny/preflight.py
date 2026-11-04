@@ -136,6 +136,15 @@ class PreflightReport(BaseModel):
         """Newline-joined render of the hard failures (for the raised error)."""
         return "\n".join(result.render() for result in self.failures)
 
+    def degraded(self) -> list[str]:
+        """The soft-warned capabilities, each its own rendered line (#2975) — the
+        degraded modes this startup started with, which the changelog notice's
+        facts carry so Penny is never told a degraded startup silently.  Empty
+        when every check passed: the quiet, byte-identical case.  The hard
+        failures are NOT here — a failed prerequisite aborts startup, so a
+        running Penny has none."""
+        return [result.render() for result in self.results if result.status is CheckStatus.WARN]
+
 
 class Preflight:
     """Runs the startup setup-health checks and returns a ``PreflightReport``.

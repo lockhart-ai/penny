@@ -23,18 +23,24 @@ from __future__ import annotations
 import pytest
 from sqlmodel import Session
 
-from penny.constants import CycleEnd, CycleTrigger, PennyConstants
+from penny.constants import CycleEnd, CycleTrigger, MutationActor, PennyConstants, QueueItemKind
 from penny.database.memory import LogEntryInput
 from penny.database.memory.objects import EntryInput
 from penny.database.models import SendQueueItem
 from penny.notification import (
     NOTIFICATION_NOTES,
     NOTIFIED_CYCLE_ENDS,
+    JobFailedReport,
     JobReport,
+    JobRetiredReport,
     NotificationOutcome,
     WrittenEntry,
+    build_job_failed_report,
     build_job_report,
+    build_job_retired_report,
+    render_job_failed_report,
     render_job_report,
+    render_job_retired_report,
     withheld_reason,
 )
 from penny.tests.conftest import require_memory
@@ -207,6 +213,109 @@ def test_a_report_for_a_vanished_collection_is_a_named_failure(db):
     assert build_job_report(db, "no-such-job", "run-x", trigger=CycleTrigger.CADENCE) is None
 
 
+# ── The autonomous job events (#2975) ────────────────────────────────────────
+
+
+def test_a_job_retired_report_renders_whole():
+    """The retirement delivery turn's whole input, char-for-char (#2975): the
+    job's name, the ledger's own archive note (the cause the archive path
+    recorded — read back verbatim, never re-derived), and what the job is for.
+    No instruction attached — she decides for herself whether to reply."""
+    report = JobRetiredReport(
+        collection="trail-conditions",
+        description="Tracks trail-closure notices.",
+        why="reached run limit (1 of 1 completed runs)",
+    )
+    assert render_job_retired_report(report) == (
+        'Your job "trail-conditions" was archived: '
+        "reached run limit (1 of 1 completed runs).\n"
+        "What the job is for: Tracks trail-closure notices."
+    )
+
+
+def test_a_job_failed_report_renders_whole():
+    """The failure delivery turn's whole input, char-for-char (#2975): the
+    job's name, the run's own recorded failure (the terminal cause the run
+    record stamped — read back verbatim), and what the job is for."""
+    report = JobFailedReport(
+        collection="trail-conditions",
+        description="Tracks trail-closure notices.",
+        run_id="failed-run-1",
+        reason="the run aborted — the model returned an unusable tool call 3 times in a row",
+    )
+    assert render_job_failed_report(report) == (
+        'Your job "trail-conditions"\'s run failed: '
+        "the run aborted — the model returned an unusable tool call 3 times in a row.\n"
+        "What the job is for: Tracks trail-closure notices."
+    )
+
+
+def test_a_built_retirement_report_reads_the_ledgers_own_archive_note(db):
+    """The retirement fact set's cause is the mutation ledger's own note on the
+    collection's system-actor ARCHIVED event — the record the archive path
+    already wrote, read back verbatim (#2975).  A user-run archive (a chat
+    turn's) is not a system retirement and builds nothing."""
+    db.memories.create_collection("trail-conditions", "Tracks trail-closure notices.")
+    db.memories.archive(
+        "trail-conditions",
+        actor=MutationActor.SYSTEM,
+        run_id="cycle-run-1",
+        note="reached expiry (2026-11-01T09:00:00+00:00)",
+    )
+    built = build_job_retired_report(db, "trail-conditions")
+    assert built is not None
+    assert built.collection == "trail-conditions"
+    assert built.description == "Tracks trail-closure notices."
+    assert built.why == "reached expiry (2026-11-01T09:00:00+00:00)"
+
+
+def test_a_built_retirement_report_refuses_a_user_run_archive(db):
+    """A chat turn's archive (``USER_RUN``) is the user's own act, visible in
+    the conversation — it is never a system retirement and builds no fact set
+    (#2975)."""
+    db.memories.create_collection("trail-conditions", "Tracks trail-closure notices.")
+    db.memories.archive("trail-conditions", note="the user asked")
+    assert build_job_retired_report(db, "trail-conditions") is None
+
+
+def test_a_built_failure_report_reads_the_runs_own_outcome_stamp(db):
+    """The failure fact set's reason is the failed run's own outcome stamp —
+    the ``run_reason`` the settlement wrote (an abort's terminal cause, or the
+    unhealthy-end line), never re-derived (#2975)."""
+    db.memories.create_collection("trail-conditions", "Tracks trail-closure notices.")
+    db.messages.log_prompt(
+        model="m",
+        messages=[{"role": "user", "content": "cycle"}],
+        response={"choices": [{"message": {"role": "assistant", "content": ""}}]},
+        run_id="failed-run-1",
+        run_target="trail-conditions",
+    )
+    db.messages.set_run_outcome(
+        "failed-run-1", "failed", "the run aborted — no close was reached", 0
+    )
+    built = build_job_failed_report(db, "trail-conditions", "failed-run-1")
+    assert built is not None
+    assert built.reason == "the run aborted — no close was reached"
+
+
+def test_a_built_failure_report_falls_back_to_the_outcome_enum(db):
+    """A stamp with no reason (a clean-but-unhealthy close) renders the outcome
+    enum — the same fallback ``recent_run_outcomes`` serves, still the run's
+    own recorded verdict, never a guess (#2975)."""
+    db.memories.create_collection("trail-conditions", "Tracks trail-closure notices.")
+    db.messages.log_prompt(
+        model="m",
+        messages=[{"role": "user", "content": "cycle"}],
+        response={"choices": [{"message": {"role": "assistant", "content": ""}}]},
+        run_id="failed-run-2",
+        run_target="trail-conditions",
+    )
+    db.messages.set_run_outcome("failed-run-2", "failed", "", 0)
+    built = build_job_failed_report(db, "trail-conditions", "failed-run-2")
+    assert built is not None
+    assert built.reason == "failed"
+
+
 # ── The send gate (#1911, as a reason) ────────────────────────────────────────
 
 
@@ -269,7 +378,9 @@ def test_a_report_row_is_queued_without_content(db):
     """The hand-off: the cycle's row carries the collection, the lane and the run id,
     and NO content yet — the message is written later, by the delivery turn the
     drainer runs.  It is reachable as the pending head either lane-blind or by lane."""
-    row_id = db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.CADENCE, "cycle-run-1")
+    row_id = db.send_queue.enqueue_report(
+        _MECHANISM, CycleTrigger.CADENCE, "cycle-run-1", kind=QueueItemKind.REPORT
+    )
 
     pending = db.send_queue.next_pending()
     assert pending is not None and pending.id == row_id
@@ -285,7 +396,9 @@ def test_a_composed_report_is_stored_then_delivered_and_marked_sent(db):
     """The compose-and-deliver round trip on the row: the turn's message is stored on
     the row (so the audit trail says what went out), delivery marks it sent, and the
     pending tail empties."""
-    db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.ON_DEMAND, "cycle-run-1")
+    db.send_queue.enqueue_report(
+        _MECHANISM, CycleTrigger.ON_DEMAND, "cycle-run-1", kind=QueueItemKind.REPORT
+    )
     row = db.send_queue.next_pending()
     assert row is not None
 
@@ -303,7 +416,9 @@ def test_compose_failures_are_counted_then_failed_visibly(db):
     pending, until the budget is spent and the row is stamped ``failed_at`` — kept as
     the audit trail, excluded from the pending queries structurally, never counted
     as a message the user received."""
-    db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.CADENCE, "cycle-run-1")
+    db.send_queue.enqueue_report(
+        _MECHANISM, CycleTrigger.CADENCE, "cycle-run-1", kind=QueueItemKind.REPORT
+    )
     row = db.send_queue.next_pending()
     assert row is not None
 
@@ -327,7 +442,9 @@ def test_a_declined_report_is_cancelled_not_failed(db):
     """A withhold on purpose is a DECISION, not a failure: the row is stamped
     ``cancelled_at`` — the same audit-trail state an archived collector's queued
     sends get (#1634) — and stays distinct from a failed compose."""
-    db.send_queue.enqueue_report(_MECHANISM, CycleTrigger.CADENCE, "cycle-run-1")
+    db.send_queue.enqueue_report(
+        _MECHANISM, CycleTrigger.CADENCE, "cycle-run-1", kind=QueueItemKind.REPORT
+    )
     row = db.send_queue.next_pending()
     assert row is not None
 

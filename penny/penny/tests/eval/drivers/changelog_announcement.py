@@ -94,7 +94,7 @@ async def _deliver_changelog(
     the turn's transport failing, not Penny deciding anything."""
     run_id = uuid.uuid4().hex
     response = await penny.chat_agent.handle_changelog_report(
-        list(entries), TEST_SENDER, call_link=CallLink.top(run_id)
+        list(entries), [], TEST_SENDER, call_link=CallLink.top(run_id)
     )
     answer = (response.answer or "").strip() if response is not None else ""
     if answer == PennyResponse.AGENT_MODEL_ERROR and retryable:
@@ -120,7 +120,7 @@ async def _deliver_changelog_unforced(
     can read apart, never collapsed into one "it failed" case."""
     run_id = uuid.uuid4().hex
     response = await penny.chat_agent.handle_changelog_report(
-        list(entries), TEST_SENDER, call_link=CallLink.top(run_id)
+        list(entries), [], TEST_SENDER, call_link=CallLink.top(run_id)
     )
     answer = (response.answer or "").strip() if response is not None else ""
     if answer == PennyResponse.AGENT_MODEL_ERROR and retryable:

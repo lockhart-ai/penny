@@ -132,13 +132,14 @@ async def test_changelog_announcement_dispatches_the_whole_literal_render(test_c
         return_value=ControllerResponse(answer=_REPLY)
     )
 
-    await penny._send_changelog_announcement(_ENTRIES)
+    await penny._send_changelog_announcement(_ENTRIES, [])
 
     penny.chat_agent.handle_changelog_report.assert_awaited_once()
     await_args = penny.chat_agent.handle_changelog_report.await_args
     assert await_args is not None
     assert await_args.args[0] == _ENTRIES
-    assert await_args.args[1] == TEST_SENDER
+    assert await_args.args[1] == []
+    assert await_args.args[2] == TEST_SENDER
     # The real run id the delivery turn was dispatched with — read off the
     # SAME ``CallLink`` production built, not re-derived here.
     delivery_run_id = await_args.kwargs["call_link"].run_id
@@ -171,7 +172,7 @@ async def test_changelog_announcement_still_sends_with_no_new_entries(test_confi
         return_value=ControllerResponse(answer=_REPLY)
     )
 
-    await penny._send_changelog_announcement([])
+    await penny._send_changelog_announcement([], [])
 
     penny.chat_agent.handle_changelog_report.assert_awaited_once()
     await_args = penny.chat_agent.handle_changelog_report.await_args
@@ -243,8 +244,15 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
         assert channel.sent[0] == (TEST_SENDER, _REPLY)
 
         prompt = _find_request(mock_llm, "reached you with this deploy")
+        # The degraded facts the announcement carried are exactly the startup
+        # preflight's own soft warns (#2975) — recomputed here off the same
+        # deterministic mocks, so the assert is byte-identical when nothing
+        # warns (the tests' own run is what pins the threading, whatever the
+        # environment warns about).
+        report = await penny._build_preflight().run()
         assert prompt == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement([new_entry])
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+            + render_changelog_announcement([new_entry], report.degraded())
         )
 
         changelog = require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG)
@@ -300,7 +308,9 @@ async def test_record_changelog_entries_cuts_at_the_log_not_the_build(make_confi
     ]
     # Recorded == announced, by construction: the delivery turn's input is the
     # same framework render over exactly this boot's recorded set.
-    assert render_changelog_announcement(recorded) == render_changelog_announcement(new_entries)
+    assert render_changelog_announcement(recorded, []) == render_changelog_announcement(
+        new_entries, []
+    )
 
     # A re-boot on the same snapshot — the cut lands on 9302, now recorded.
     assert penny._record_changelog_entries() == []
@@ -349,11 +359,13 @@ async def test_changelog_announcement_startup_sends_with_no_new_entries(make_con
     _seed_profile_and_history(penny)
     channel.ready.set()
 
-    await penny._run_startup_notifications([])
+    await penny._run_startup_notifications([], [])
 
     assert channel.sent == [(TEST_SENDER, _REPLY)]
     prompt = _find_request(mock_llm, "just restarted")
-    assert prompt == PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement([])
+    assert prompt == PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement(
+        [], []
+    )
 
     await penny.shutdown()
 
@@ -374,7 +386,7 @@ async def test_ios_operational_changelog_announcement_respects_history_gate(
     penny.chat_agent.handle_changelog_report = AsyncMock()
 
     # No message history yet — the push is suppressed, not spammed per deploy.
-    await penny._send_changelog_announcement(_ENTRIES)
+    await penny._send_changelog_announcement(_ENTRIES, [])
     channel.send_message.assert_not_awaited()
 
     # Once the user has chatted, the operational push fires — and the real
@@ -382,7 +394,7 @@ async def test_ios_operational_changelog_announcement_respects_history_gate(
     penny.db.messages.log_message(
         direction=PennyConstants.MessageDirection.INCOMING, sender=TEST_SENDER, content="hey penny"
     )
-    await penny._send_changelog_announcement(_ENTRIES)
+    await penny._send_changelog_announcement(_ENTRIES, [])
     channel.send_message.assert_awaited_once_with("ios-device-id", "Penny is operational.")
     penny.chat_agent.handle_changelog_report.assert_not_awaited()
 
