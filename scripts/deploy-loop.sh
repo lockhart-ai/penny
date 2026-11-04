@@ -55,8 +55,20 @@ mkdir -p "$(dirname "$DEPLOY_LOG")" "$(dirname "$DEPLOY_RUN_LOG")"
 # terminal that's the tty `make prod-watch` was started in, under launchd it's
 # the plist's StandardOutPath — so a working deploy is visible where the loop
 # was started instead of looking like a hang.
+#
+# Built once, written twice, NO pipeline (#2991): under `set -m` bash puts
+# every pipeline in its own process group, and the old `printf | tee -a`
+# pipeline's printf could exit before the shell's setpgid call for it landed,
+# printing `child setpgid (…): Operation not permitted` on every log line.
+# Plain redirections are not jobs — they never get a process group, so there
+# is nothing for bash to setpgid. (The child's own `| tee` pipeline stays: it
+# runs once per child start inside the backgrounded subshell and is what
+# streams Penny's output.)
 log() {
-    printf '[deploy-loop %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$DEPLOY_LOG"
+    local line
+    line="$(printf '[deploy-loop %s] %s' "$(date '+%Y-%m-%d %H:%M:%S')" "$1")"
+    printf '%s\n' "$line" >>"$DEPLOY_LOG"
+    printf '%s\n' "$line"
 }
 
 child_pid=""

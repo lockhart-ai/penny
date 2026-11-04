@@ -194,7 +194,10 @@ def _build_stub(
 
 
 def _start_loop(
-    clone_dir: pathlib.Path, env_overrides: dict[str, str], stdout: int | None = None
+    clone_dir: pathlib.Path,
+    env_overrides: dict[str, str],
+    stdout: int | None = None,
+    stderr: int | None = None,
 ) -> subprocess.Popen:
     env = {
         **os.environ,
@@ -207,7 +210,7 @@ def _start_loop(
         cwd=clone_dir,
         env=env,
         stdout=stdout if stdout is not None else subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr if stderr is not None else subprocess.DEVNULL,
     )
 
 
@@ -231,7 +234,8 @@ class _Deployment:
     """Everything a test needs to drive and inspect one loop run — the paths
     its stub build/run commands write to, and the started process. `loop_stdout`
     is what the loop itself wrote to its stdout — what a terminal (or the
-    launchd plist's StandardOutPath) would have shown (#2980)."""
+    launchd plist's StandardOutPath) would have shown (#2980); `loop_stderr` is
+    what the loop wrote to its stderr (#2991)."""
 
     proc: subprocess.Popen
     run_log: pathlib.Path
@@ -242,6 +246,7 @@ class _Deployment:
     deploy_log: pathlib.Path
     deploy_run_log: pathlib.Path
     loop_stdout: pathlib.Path
+    loop_stderr: pathlib.Path
 
 
 def _start_deployment(
@@ -270,12 +275,13 @@ def _start_deployment(
     deploy_log = tmp_path / "deploy.log"
     deploy_run_log = tmp_path / "deploy-run.log"
     loop_stdout = tmp_path / "loop-stdout.log"
+    loop_stderr = tmp_path / "loop-stderr.log"
     run_stub = run_cmd or _run_stub(tmp_path, run_log, pid_file)
     build_stub = _build_stub(tmp_path, build_log, built_file, fail_flag)
     if not built_file.exists():
         built_file.write_text(_git(clone_dir, "rev-parse", "--short", "HEAD"))
 
-    with loop_stdout.open("w") as stdout_file:
+    with loop_stdout.open("w") as stdout_file, loop_stderr.open("w") as stderr_file:
         proc = _start_loop(
             clone_dir,
             {
@@ -289,6 +295,7 @@ def _start_deployment(
                 "DEPLOY_IMAGE_COMMIT_CMD": f"cat {built_file}",
             },
             stdout=stdout_file.fileno(),
+            stderr=stderr_file.fileno(),
         )
     _wait_until(lambda: _read_or_empty(run_log).count("\n") >= 1)
     return _Deployment(
@@ -301,6 +308,7 @@ def _start_deployment(
         deploy_log,
         deploy_run_log,
         loop_stdout,
+        loop_stderr,
     )
 
 
@@ -587,7 +595,12 @@ def test_loop_lines_appear_on_stdout(tmp_path, repos):
     """The loop's own log lines stream to its stdout as well as the log file
     (#2980) — the terminal that ran `make prod-watch` shows the loop working
     instead of looking hung; under launchd that stdout is the plist's
-    StandardOutPath, so nothing changes there."""
+    StandardOutPath, so nothing changes there. Across several forced cycles the
+    loop's stderr stays free of `setpgid` text (#2991): under `set -m` the old
+    `printf | tee` pipeline put printf in its own process group, and it could
+    exit before the shell's setpgid call landed, printing
+    `child setpgid (…): Operation not permitted` on every log line — with no
+    pipeline there is nothing for bash to setpgid."""
     _origin, clone_dir, _first = repos
     dep = _start_deployment(tmp_path, clone_dir)
     try:
@@ -600,10 +613,24 @@ def test_loop_lines_appear_on_stdout(tmp_path, repos):
             "the line still lands in the log file as well"
         )
 
-        # A later cycle's line reaches stdout too — force a fetch-check with
-        # USR1 rather than waiting out DEPLOY_INTERVAL.
-        _tick(dep.proc)
-        _wait_until(lambda: "up to date" in _read_or_empty(dep.loop_stdout))
+        # Several forced cycles — force each fetch-check with USR1 rather than
+        # waiting out DEPLOY_INTERVAL, waiting for each one's "up to date" line
+        # so the ticks can't coalesce into a single cycle.
+        for _ in range(4):
+            before = _read_or_empty(dep.loop_stdout).count("up to date")
+            _tick(dep.proc)
+            _wait_until(
+                lambda seen=before: _read_or_empty(dep.loop_stdout).count("up to date") > seen
+            )
+        stdout_text = _read_or_empty(dep.loop_stdout)
+        assert stdout_text.count("up to date") >= 4, (
+            "the forced cycles each logged their own line on stdout"
+        )
+
+        stderr_text = _read_or_empty(dep.loop_stderr)
+        assert "setpgid" not in stderr_text, (
+            "the loop's stderr carries no setpgid warnings across the ticks (#2991)"
+        )
     finally:
         _stop(dep.proc)
 
