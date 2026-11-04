@@ -467,25 +467,21 @@ def test_a_run_that_called_tools_renders_them_natively_into_a_later_turns_histor
 
 
 def test_an_autonomous_turns_trigger_renders_ahead_of_the_reply(db):
-    """An autonomous delivery turn's trigger (#2974) — the live turn's own USER
-    message, prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` —
-    renders again, byte-identical, immediately before her reply in later
-    history: read back off the run's own promptlog row, never stored a second
-    time.  The turn is looked at at all only because its messagelog row was
-    autonomous (``HistoryTurn.mechanism`` non-null here) — an ordinary chat
-    turn's run, whose ``mechanism`` is ``None``, is never consulted even
-    though its run also ends in a user turn (pinned by the tool-call test
-    above, whose run ends in ``user`` and renders no trigger)."""
+    """An autonomous delivery turn's trigger (#2974) — the live turn's own
+    trailing SYSTEM message — renders again, byte-identical, immediately
+    before her reply in later history: read back off the run's own promptlog
+    row, never stored a second time.  An ordinary chat turn's run always ends
+    in a USER turn instead, so this never fires for one (pinned by the
+    tool-call test above, whose run ends in ``user``)."""
     run_id = "job-report-run-1"
     trigger_text = (
-        PennyConstants.SYSTEM_NOTIFICATION_PREFIX
-        + 'Your job "trail-conditions" finished a run and asked to tell the user.\n'
+        'Your job "trail-conditions" finished a run and asked to tell the user.\n'
         "What the job is for: Tracks trail-closure notices.\n"
         "It ran on its own schedule."
     )
     messages = [
         {"role": "system", "content": "## Identity\nYou are Penny."},
-        {"role": "user", "content": trigger_text},
+        {"role": "system", "content": trigger_text},
     ]
     response = {
         "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
@@ -494,12 +490,10 @@ def test_an_autonomous_turns_trigger_renders_ahead_of_the_reply(db):
 
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
-    turn = HistoryTurn(
-        "assistant", "Trail's closed this week.", run_id=run_id, mechanism="trail-conditions"
-    )
+    turn = HistoryTurn("assistant", "Trail's closed this week.", run_id=run_id)
     expanded = agent._expand_history_turn(turn)
 
-    assert [m.role for m in expanded] == ["user", "assistant"]
+    assert [m.role for m in expanded] == ["system", "assistant"]
     assert expanded[0].content == trigger_text
     assert expanded[1].content == "Trail's closed this week."
 
@@ -508,17 +502,12 @@ def test_the_trigger_is_found_past_a_discarded_or_rerolled_first_draw(db):
     """The run's chronologically FIRST row is never assumed clean (#2974): a
     draw rejected and rerolled still gets its own row, discard-stamped, but
     its ``messages`` column — written at send time — still carries the real
-    trigger, and that row answers.  A second row from the reroll (here, a
-    nudge-appended retry trailing on a USER note, which rides the same role
-    the trigger does in this shape) exists and is passed over — its trailing
-    message carries no notification prefix, so the walk reads the trigger
-    and never mistakes a retry note for one."""
+    trigger.  A second row from the reroll (here, a nudge-appended retry,
+    trailing on a USER note rather than a fresh SYSTEM turn) exists but is
+    never consulted, because the FIRST row already answers."""
     run_id = "job-report-run-reroll"
-    trigger_text = (
-        PennyConstants.SYSTEM_NOTIFICATION_PREFIX
-        + 'Your job "trail-conditions" finished a run and asked to tell the user.'
-    )
-    first_messages = [{"role": "user", "content": trigger_text}]
+    trigger_text = 'Your job "trail-conditions" finished a run and asked to tell the user.'
+    first_messages = [{"role": "system", "content": trigger_text}]
     first_response = {"choices": [{"message": {"role": "assistant", "content": "GARBLE???"}}]}
     first_id = db.messages.log_prompt(
         model="m", messages=first_messages, response=first_response, run_id=run_id
@@ -540,12 +529,10 @@ def test_the_trigger_is_found_past_a_discarded_or_rerolled_first_draw(db):
 
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
-    turn = HistoryTurn(
-        "assistant", "Trail's closed this week.", run_id=run_id, mechanism="trail-conditions"
-    )
+    turn = HistoryTurn("assistant", "Trail's closed this week.", run_id=run_id)
     expanded = agent._expand_history_turn(turn)
 
-    assert [m.role for m in expanded] == ["user", "assistant"]
+    assert [m.role for m in expanded] == ["system", "assistant"]
     assert expanded[0].content == trigger_text
 
 
@@ -557,33 +544,6 @@ def test_no_trigger_renders_when_the_runs_rows_are_pruned(db):
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     turn = HistoryTurn("assistant", "Trail's closed this week.", run_id="pruned-run")
-    expanded = agent._expand_history_turn(turn)
-
-    assert expanded == [LlmMessage(role=MessageRole.ASSISTANT, content="Trail's closed this week.")]
-
-
-def test_no_trigger_renders_for_a_direct_reply_whose_run_carries_a_prefixed_ask(db):
-    """The gate is the messagelog row's own mechanism, never the text (#2974): a
-    DIRECT reply's run also ends in a user turn — and a user who literally types
-    the notification prefix into chat makes that ask LOOK like a trigger — but
-    with no mechanism on her reply's row, the run is never consulted at all and
-    the message renders as the plain reply it is."""
-    run_id = "direct-reply-run-1"
-    messages = [
-        {"role": "system", "content": "## Identity\nYou are Penny."},
-        {
-            "role": "user",
-            "content": PennyConstants.SYSTEM_NOTIFICATION_PREFIX + "you there?",
-        },
-    ]
-    response = {
-        "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
-    }
-    db.messages.log_prompt(model="m", messages=messages, response=response, run_id=run_id)
-
-    agent = ChatAgent.__new__(ChatAgent)
-    agent.db = db
-    turn = HistoryTurn("assistant", "Trail's closed this week.", run_id=run_id)
     expanded = agent._expand_history_turn(turn)
 
     assert expanded == [LlmMessage(role=MessageRole.ASSISTANT, content="Trail's closed this week.")]

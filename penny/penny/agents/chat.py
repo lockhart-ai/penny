@@ -23,7 +23,7 @@ from penny.agents.models import (
 from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
-from penny.constants import ChatPromptType, PennyConstants, RunOutcome
+from penny.constants import ChatPromptType, RunOutcome
 from penny.database.memory.identity import WriteDecisionCache
 from penny.datetime_utils import current_datetime_line
 from penny.llm.call_link import CallLink
@@ -50,16 +50,6 @@ if TYPE_CHECKING:
     from penny.llm.image_client import MfluxImageClient
 
 logger = logging.getLogger(__name__)
-
-
-def _system_notification_trigger(facts: str) -> str:
-    """The trigger a system-originated delivery turn is given (#2974): the
-    framework's own facts, prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``
-    so the live turn reads as a notification, never as the user's words or an
-    instruction to send anything.  The ONE place the prefix is set — the same
-    message ``Agent._run_trigger_message`` later locates in the run's own
-    promptlog by that prefix, byte-identical."""
-    return f"{PennyConstants.SYSTEM_NOTIFICATION_PREFIX}{facts}"
 
 
 class ChatAgent(Agent):
@@ -406,33 +396,29 @@ class ChatAgent(Agent):
     async def handle_job_report(
         self, report: JobReport, sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
-        """The system-originated delivery turn (#2656, trigger reworked #2974):
-        a turn exactly like any other chat turn, given the finished job's report
-        as a fact of her situation rather than an instruction.
+        """The system-originated delivery turn (#2656): write the message that tells
+        the user what a finished job's cycle found.
 
         The input is the framework-rendered report (``render_job_report``) — the
         job's name, what it is for, why it ran, and the FULL content of every entry
-        the cycle wrote — never anything model-written.  It rides as the live turn's
-        own USER message prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``
-        (#2974) — a notification stating only what happened, never words from the
-        user; she decides for herself whether, how, and how many times to
-        reply, exactly as on any ordinary turn, over the same ambient state: her
-        persona and voice, the standing rules, the conversation history (a past
-        report is there to be read, and a formatting ask in it holds here as
-        anywhere), and the full chat tool surface — so "show me yesterday's" shape
-        follow-ups stay one ``collection_get`` away from the rendered job name.
+        the cycle wrote — never anything model-written.  Everything else the message
+        needs is the turn's own ambient state: her persona and voice, the standing
+        rules, the conversation history (a past report is there to be read, and a
+        formatting ask in it holds here as anywhere), and the full chat tool surface
+        — so "show me yesterday's" shape follow-ups stay one ``collection_get`` away
+        from the rendered job name.
 
         ``sender`` is the user the message is written for (the primary sender, read
         by the caller); ``call_link`` (#2458) is REQUIRED, as on every run starter.
-        Whatever she sends is NOT delivered here — the caller (the send-queue
-        drainer) gates it and queues it, so it is logged and delivered exactly like
-        any other autonomous send."""
+        The reply is NOT delivered here — the caller (the send-queue drainer) gates
+        it and queues it, so it is logged and delivered exactly like any other
+        autonomous send."""
         # The delivery turn's own link table (#2717): the report's entries keep
         # real URLs, so the render converts them to THIS turn's handles — the
         # same table the turn is dispatched with, so a number the model cites
         # back expands to its URL at send time.
         handles = HandleTable()
-        prompt = _system_notification_trigger(render_job_report(report, handles))
+        prompt = render_job_report(report, handles)
         logger.info("Handling job report for %s (delivery turn)", report.collection)
         return await self._dispatch_turn(
             prompt,
@@ -447,24 +433,23 @@ class ChatAgent(Agent):
     async def handle_sandbox_report(
         self, report: SandboxReport, sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
-        """The system-originated delivery turn for a SANDBOX preview (#2964,
-        trigger reworked #2974) — the sibling of ``handle_job_report``.
+        """The system-originated delivery turn for a SANDBOX preview (#2964): write
+        the message that tells the user what a previewed job's cycle would have
+        done.
 
-        The input is the framework-rendered report (``render_sandbox_report``) — the
-        job's name, what it is for, and the previewed cycle's own tool-call trace
-        (never written entries — nothing it did was real) — never anything
-        model-written.  It rides as the live turn's own USER message prefixed with
-        ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` (#2974), stating only what
-        the preview showed; everything else the turn needs is the same ambient
-        state any delivery turn gets.
+        The sibling of ``handle_job_report``.  The input is the framework-rendered
+        report (``render_sandbox_report``) — the job's name, what it is for, and
+        the previewed cycle's own tool-call trace (never written entries — nothing
+        it did was real) — never anything model-written.  Everything else the
+        message needs is the turn's own ambient state, same as any delivery turn.
 
-        ``sender``/``call_link`` are exactly as ``handle_job_report``'s.  Whatever
-        she sends is NOT delivered here — the caller (the send-queue drainer) gates
-        it and queues it, logged and delivered exactly like any other autonomous
-        send.  No link table: ``render_sandbox_report``'s trace carries no handle
+        ``sender``/``call_link`` are exactly as ``handle_job_report``'s.  The reply
+        is NOT delivered here — the caller (the send-queue drainer) gates it and
+        queues it, logged and delivered exactly like any other autonomous send.
+        No link table: ``render_sandbox_report``'s trace carries no handle
         conversion of its own (the same shape ``run_get``/``run_list`` already
         render their own trace in)."""
-        prompt = _system_notification_trigger(render_sandbox_report(report))
+        prompt = render_sandbox_report(report)
         logger.info("Handling sandbox report for %s (delivery turn)", report.collection)
         return await self._dispatch_turn(
             prompt,
@@ -478,29 +463,24 @@ class ChatAgent(Agent):
     async def handle_changelog_report(
         self, entries: list[ChangelogEntry], sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
-        """The startup delivery turn (#2846, #2890, trigger reworked #2974): a turn
-        exactly like any other chat turn, given this deploy's own changelog entries
-        as a fact of her situation — or, when there are none, the fact that she's
-        just restarted and nothing changed.
+        """The startup delivery turn (#2846, #2890): write the message that tells
+        the user what this deploy's new changelog entries are — or, when there
+        are none, that she's just restarted and nothing changed.
 
         The input is the framework-rendered entries (``render_changelog_announcement``)
         — each PR number and its text, never anything model-written, or (with no
-        entries) the framework's own "nothing changed" render.  It rides as the live
-        turn's own USER message prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``
-        (#2974), stating only what happened — never an instruction to send anything —
-        so she decides for herself whether, how, and how many times to reply, over
-        the same ambient state any chat turn
-        gets: her persona and voice, the standing rules, and the full chat tool
-        surface — so a change that names something she can look at stays reachable
-        before she writes about it.
+        entries) the framework's own "nothing changed" render. Everything else
+        the message needs is the turn's own ambient state: her persona and voice, the
+        standing rules, and the full chat tool surface — so a change that names
+        something she can look at stays reachable before she writes about it.
 
         ``sender`` is the user the message is written for; ``call_link`` (#2458) is
-        REQUIRED, as on every run starter.  Whatever she sends is NOT delivered here
-        — the caller (``Penny._send_changelog_announcement``) gates and enqueues it,
-        so it is logged and delivered exactly like any other autonomous send.  No
-        link table: changelog entries are authored, reviewed prose about Penny's own
+        REQUIRED, as on every run starter. The reply is NOT delivered here — the
+        caller (``Penny._send_changelog_announcement``) gates and enqueues it, so it
+        is logged and delivered exactly like any other autonomous send. No link
+        table: changelog entries are authored, reviewed prose about Penny's own
         tools — never user-sourced content carrying real URLs."""
-        prompt = _system_notification_trigger(render_changelog_announcement(entries))
+        prompt = render_changelog_announcement(entries)
         logger.info("Handling changelog announcement (%d entries)", len(entries))
         return await self._dispatch_turn(
             prompt,
@@ -535,14 +515,9 @@ class ChatAgent(Agent):
         installed, loop run.
 
         The two entry points differ only in what they hand in: a user turn carries
-        its attachments, its page context and its progress plumbing, runs in the
-        foreground scope, and its ``prompt`` is the user's own words; a delivery
-        turn carries none of that, runs in the background scope, and its
-        ``prompt`` is a system notification (``_system_notification_trigger``,
-        #2974) stating only what happened.  Beyond that one text, it is the SAME
-        turn — same history, same self-state, same full tool surface, same freedom
-        to call tools, send nothing, or send several messages. There is no second
-        state to pick an instruction for."""
+        its attachments, its page context and its progress plumbing and runs in the
+        foreground scope; a delivery turn carries none of that and runs in the
+        background scope.  There is no second state to pick an instruction for."""
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
@@ -616,17 +591,14 @@ class ChatAgent(Agent):
     ) -> list[LlmMessage]:
         """Build messages, injecting page context as a synthetic tools result.
 
-        ``super()`` ends the array ``[…history, state, live]`` (#2756 — the
-        state system message right BEFORE the live turn's own USER message —
-        the ordinary ask's own words, or a delivery turn's prefixed trigger,
-        #2974).  The synthetic page-context assistant-call + tool-result
-        appended below land AFTER that, so the full shape is
-        ``[…state][live][assistant][tool]`` — state between the history's
-        last entry and the live turn, the one mid-conversation placement
-        gemma's own raw-template transport renders in place regardless of
-        the role either side of it (see ``Agent._build_messages``'s
-        docstring).  Page context only ever rides an ordinary turn in
-        practice — a delivery turn never carries one."""
+        ``super()`` ends the array ``[…history, state, user]`` (#2756 — the
+        state system message right BEFORE the user's own turn).  The
+        synthetic page-context assistant-call + tool-result appended below
+        land AFTER that, so the full shape is
+        ``[…state][user][assistant][tool]`` — state between the history's
+        last entry and the user's own turn, the one mid-conversation
+        placement prod's patched oMLX and OpenRouter both render in place
+        (see ``Agent._build_messages``'s docstring)."""
         messages = super()._build_messages(prompt, history, system_prompt, images=images)
         if self._pending_page_context:
             self._inject_page_context(

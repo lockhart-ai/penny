@@ -146,26 +146,13 @@ class HistoryTurn(NamedTuple):
     no calls, a turn renders as the single plain message it always has; a run
     that DID call tools expands into its own native call + tool-result turns
     ahead of the reply text, so the act is visible beside the words rather than
-    only the words riding into the next turn's history.  It is also what lets
-    ``_expand_history_turn`` find an autonomous send's own TRIGGER (#2974,
-    ``Agent._run_trigger_message``) and prepend it ahead of everything else.
-    ``None`` only on a user turn (which carries no run) — an autonomous send
-    DOES carry the delivery turn's own run id (the drainer stamps it, #2656/
-    #2964), never ``None`` for that reason alone.
-
-    ``mechanism`` is the outgoing messagelog row's own ``mechanism`` — the
-    structural "this send was autonomous" bit (#2974).  A non-null value is
-    what licenses ``_expand_history_turn`` to look for a trigger at all: an
-    ordinary reply's run ends in a plain user ask, and a user who literally
-    types the trigger's own prefix into chat must never get it rendered back
-    as one — so the gate is this column, never the text and never a
-    mechanism-name list.  ``None`` on a user turn and on a direct reply (a
-    direct reply's messagelog row carries no mechanism)."""
+    only the words riding into the next turn's history.  ``None`` on a user turn
+    (which carries no run) and on an autonomous send (which has no run behind it
+    at all)."""
 
     role: str
     content: str
     run_id: str | None = None
-    mechanism: str | None = None
 
 
 def new_history_replay_call_id() -> str:

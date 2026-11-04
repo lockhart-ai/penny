@@ -110,18 +110,15 @@ _REPORT_PROMPT_HEAD = 'Your job "indie-metroidvanias" just finished a run'
 def _reply_handler(mock_llm, reply: str):
     """Answer ONLY the delivery turn — anything else is a test bug made loud.
 
-    The report rides as the live turn's own USER message, prefixed with
-    ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` (#2974), not a system turn."""
+    The report rides as the live turn's own trailing SYSTEM message (#2974), not
+    a user turn."""
 
     def handler(request: dict, count: int):
-        notification_turns = [
-            m.get("content", "")
-            for m in request["messages"]
-            if m.get("role") == "user"
-            and str(m.get("content", "")).startswith(PennyConstants.SYSTEM_NOTIFICATION_PREFIX)
+        system_turns = [
+            m.get("content", "") for m in request["messages"] if m.get("role") == "system"
         ]
-        assert any(_REPORT_PROMPT_HEAD in str(c) for c in notification_turns), (
-            f"the mock was asked something other than the delivery turn: {notification_turns!r}"
+        assert any(str(c).startswith(_REPORT_PROMPT_HEAD) for c in system_turns), (
+            f"the mock was asked something other than the delivery turn: {system_turns!r}"
         )
         return mock_llm._make_text_response(request, reply)
 
@@ -184,9 +181,9 @@ async def test_the_delivery_turn_reads_the_report_whole(db, test_config, mock_ll
     name, what it is for, why it ran, and every written entry with its key and FULL
     content — asserted whole off the promptlog row the run itself logged.
 
-    It rides as the live turn's own USER message (#2974), prefixed with
-    ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``: she's given the report as a
-    notification of her situation, never told to send anything."""
+    It rides as the live turn's own trailing SYSTEM message (#2974), not a user
+    turn: she's given the report as a fact of her situation, never told to send
+    anything."""
     _seed_cycle_writes(db, "cycle-run-1")
     _enqueue(db, "cycle-run-1")
     mock_llm.set_response_handler(_reply_handler(mock_llm, "On it — Cinder Drift is out."))
@@ -199,15 +196,14 @@ async def test_the_delivery_turn_reads_the_report_whole(db, test_config, mock_ll
             session.exec(select(PromptLog).where(col(PromptLog.prompt_type) == "job_report")).all()
         )
     assert rows, "the delivery turn logged its prompt"
-    notification_turn = next(
+    system_turn = next(
         message["content"]
         for row in rows
         for message in json.loads(row.messages)[-1:]
-        if message.get("role") == "user"
+        if message.get("role") == "system"
     )
-    assert notification_turn == (
-        PennyConstants.SYSTEM_NOTIFICATION_PREFIX
-        + 'Your job "indie-metroidvanias" just finished a run and asked to tell the user.\n'
+    assert system_turn == (
+        'Your job "indie-metroidvanias" just finished a run and asked to tell the user.\n'
         "What the job is for: Indie metroidvania releases\n"
         "It ran just now because the user asked it to run.\n"
         "\n"
@@ -363,19 +359,14 @@ _SANDBOX_PROMPT_HEAD = 'Your sandbox preview of "indie-metroidvanias" just finis
 def _sandbox_reply_handler(mock_llm, reply: str):
     """Answer ONLY the sandbox delivery turn — anything else is a test bug made
     loud (the sibling of ``_reply_handler`` for a SANDBOX report, #2964).  Rides
-    as the live turn's own USER message, prefixed with
-    ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` (#2974), not a system turn."""
+    as the live turn's own trailing SYSTEM message (#2974), not a user turn."""
 
     def handler(request: dict, count: int):
-        notification_turns = [
-            m.get("content", "")
-            for m in request["messages"]
-            if m.get("role") == "user"
-            and str(m.get("content", "")).startswith(PennyConstants.SYSTEM_NOTIFICATION_PREFIX)
+        system_turns = [
+            m.get("content", "") for m in request["messages"] if m.get("role") == "system"
         ]
-        assert any(_SANDBOX_PROMPT_HEAD in str(c) for c in notification_turns), (
-            f"the mock was asked something other than the sandbox delivery turn: "
-            f"{notification_turns!r}"
+        assert any(str(c).startswith(_SANDBOX_PROMPT_HEAD) for c in system_turns), (
+            f"the mock was asked something other than the sandbox delivery turn: {system_turns!r}"
         )
         return mock_llm._make_text_response(request, reply)
 

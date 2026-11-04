@@ -243,9 +243,7 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
         assert channel.sent[0] == (TEST_SENDER, _REPLY)
 
         prompt = _find_request(mock_llm, "reached you with this deploy")
-        assert prompt == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement([new_entry])
-        )
+        assert prompt == render_changelog_announcement([new_entry])
 
         changelog = require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG)
         assert [row.content for row in changelog.read_all()] == [
@@ -353,7 +351,7 @@ async def test_changelog_announcement_startup_sends_with_no_new_entries(make_con
 
     assert channel.sent == [(TEST_SENDER, _REPLY)]
     prompt = _find_request(mock_llm, "just restarted")
-    assert prompt == PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement([])
+    assert prompt == render_changelog_announcement([])
 
     await penny.shutdown()
 
