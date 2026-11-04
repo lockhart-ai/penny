@@ -85,13 +85,13 @@ _EXCHANGE_A = (
     "as soon as you've had a chance to work your magic on it.\n\n"
     "as for plan mode — i'd love to show you! it's not really a toggleable \"mode\"; "
     "it's more like a \"peek before i leap\" parameter i include when i'm about to "
-    "make a change. it basically asks the system, \"hey, if i were to do this, what "
-    "exactly would happen?\" and gives me a preview without actually committing to "
+    'make a change. it basically asks the system, "hey, if i were to do this, what '
+    'exactly would happen?" and gives me a preview without actually committing to '
     "it.\n\n"
-    "since i need a specific action to \"plan,\" what should i use for the demo? i "
+    'since i need a specific action to "plan," what should i use for the demo? i '
     "could:\n\n"
     "1. plan a job reconfiguration: i can show you what it would look like if i "
-    "added \"local food\" as a new topic for `lisbon_trip_research`.\n"
+    'added "local food" as a new topic for `lisbon_trip_research`.\n'
     "2. plan a memory write: i can show you how a new entry would look in a "
     "collection (like `dogs`) before i actually save it.\n"
     "3. plan a collection archive: i can show you what the confirmation looks like "
@@ -107,10 +107,10 @@ _EXCHANGE_B = (
     "hitting weird errors — plan would've let you see what that would've done "
     "without actually making changes, so try something like that",
     "i just ran all three tests, and it worked perfectly! no actual changes were "
-    "made to anything — i just saw the \"ghost\" of what would have happened. "
+    'made to anything — i just saw the "ghost" of what would have happened. '
     "exactly the safety net we talked about.\n\n"
     "**1. the reconfiguration test (lisbon research)**\n"
-    "i tried to add \"local food\" to your lisbon research job. the plan showed me "
+    'i tried to add "local food" to your lisbon research job. the plan showed me '
     "exactly how it would have updated the instructions — it would have swapped "
     "out the old prompt for the new one while keeping the existing schedule and "
     "description exactly as they were.\n\n"
@@ -124,13 +124,13 @@ _EXCHANGE_B = (
     "collection. the plan was blunt and clear: it confirmed the call *would* "
     "archive `sintra_trip_research`. knowing that before i actually do it is such "
     "a relief!\n\n"
-    "this is huge — it's like having an \"undo\" button that works *before* you "
+    'this is huge — it\'s like having an "undo" button that works *before* you '
     "even make the mistake.",
 )
 
 _EXCHANGE_C = (
     "awesome okay glad that worked!",
-    "it really is a game-changer! honestly, having that \"safety goggles\" mode "
+    'it really is a game-changer! honestly, having that "safety goggles" mode '
     "makes me feel so much more capable of actually managing things rather than "
     "just reacting to them. i'll be hanging out here, ready to go whenever you've "
     "got that `synthesize` fix ready — genuinely excited to see what it can do!",
@@ -202,16 +202,16 @@ _EXCHANGE_E = (
     "- **it identified the big picture**: it recognized the overarching theme of "
     "a relaxed iberian getaway and saw the trip as a cohesive adventure rather "
     "than a bunch of random cities.\n"
-    "- **it understood our \"system\"**: it noted the transition we made from "
+    '- **it understood our "system"**: it noted the transition we made from '
     "just planning an itinerary to having these specialized research jobs "
     "running in the background.\n"
     "- **it found the gap**: it spotted that while lisbon and porto are deeply "
-    "researched, our sintra research is still \"under construction.\" exactly the "
+    'researched, our sintra research is still "under construction." exactly the '
     "kind of insight that will prevent us from missing anything important.\n"
     "- **it linked everything together**: it connected the train travel in the "
     "itinerary to the research happening in the individual city collections.\n\n"
     "it's like i finally have the ability to step back from the individual tasks "
-    "and see the entire landscape. this is the \"signal vs noise\" solution we "
+    'and see the entire landscape. this is the "signal vs noise" solution we '
     "were looking for! thank you for fixing that!",
 )
 
@@ -225,15 +225,15 @@ _EXCHANGE_F = (
     "day better/easier', so try writing yourself some guidance to make that part "
     "of how you reflect going forward",
     "that is such a smart, proactive idea. it turns my review from just a "
-    "\"post-mortem\" on what went wrong into a \"roadmap\" for how i can actually "
+    '"post-mortem" on what went wrong into a "roadmap" for how i can actually '
     "get better and more efficient.\n\n"
     "i've updated the `nightly_review` prompt! i added a fifth section called "
     "**tool wishlist & growth**.\n\n"
     "from now on, whenever i run my nightly review, i'll be looking for:\n"
-    "- **missing or broken tools**: if i find myself saying \"man, i really wish "
+    '- **missing or broken tools**: if i find myself saying "man, i really wish '
     "i could just do x without all these steps,\" it's going straight in there.\n"
     "- **workflow friction**: i'll be watching for those annoying, repetitive "
-    "little tasks that eat up my \"thinking\" energy.\n\n"
+    'little tasks that eat up my "thinking" energy.\n\n'
     "this gives us a formal way to bridge the gap between my daily experience "
     "and your actual development work. i'm actually really looking forward to my "
     "next review run!",
@@ -242,26 +242,26 @@ _EXCHANGE_F = (
 _EXCHANGE_G = (
     "how did your self review go last night?",
     "it was actually incredibly productive — it basically performed a "
-    "high-level \"technical autopsy\" on all the weirdness we've been dealing "
+    'high-level "technical autopsy" on all the weirdness we\'ve been dealing '
     "with!\n\n"
     "since it ran right around that midnight window, it managed to catch the "
     "exact three issues that have been haunting my tool calls lately:\n\n"
     "1. **the name-collision issue (silent redirect)**: it correctly "
     "identified that when i try to name something similar to an existing "
     "collection (like that `sintra_newyear_2026` vs `newyear_2026` thing), the "
-    "system just silently redirects me. it flagged this as a major \"harness\" "
-    "issue that needs a \"refuse and notify\" policy.\n"
+    'system just silently redirects me. it flagged this as a major "harness" '
+    'issue that needs a "refuse and notify" policy.\n'
     "2. **the minimum-length trap**: it caught the fact that i couldn't clear "
     "out prompts or schedules because the system was enforcing a minimum "
     "character count — exactly the wall we were hitting when we were trying to "
     "clean up the new year collections!\n"
     "3. **the timestamp glitch**: it noted that new or revived jobs were "
-    "reporting weird, incorrect \"next run\" times.\n\n"
-    "the coolest part, though, was that it officially proposed the **\"pipes vs "
-    "judgment\" diagnostic** — the idea that i should separate my own logic "
+    'reporting weird, incorrect "next run" times.\n\n'
+    'the coolest part, though, was that it officially proposed the **"pipes vs '
+    'judgment" diagnostic** — the idea that i should separate my own logic '
     "errors from actual system/harness failures. i've actually already baked "
     "that suggestion directly into the new review instructions i just wrote!\n\n"
-    "so even though it was a \"review of failures,\" it ended up being a massive "
+    'so even though it was a "review of failures," it ended up being a massive '
     "win because it gave us the roadmap to fix the very things we spent today "
     "resolving.",
 )
@@ -270,21 +270,21 @@ _EXCHANGE_H = (
     "okay so nothing outstanding from your self review we need to address?",
     "most of those big issues from last night's review are actually what we've "
     "been tackling today!\n\n"
-    "we've essentially \"checked off\" two of the three major technical "
+    'we\'ve essentially "checked off" two of the three major technical '
     "issues:\n"
     "- **the character limit**: we talked about how that was blocking us from "
     "clearing prompts, and we've seen how `plan=true` helps us navigate it.\n"
     "- **the name-collision mix-ups**: we identified exactly why i was getting "
     "confused with the collection names.\n\n"
-    "the only \"outstanding\" item left on my technical punch list for you is "
+    'the only "outstanding" item left on my technical punch list for you is '
     "that **stale next-run date glitch** (where newly revived jobs show "
-    "weird, old dates for their \"next run\" time). that one's a bit more of a "
-    "\"under the hood\" thing for you to look at whenever you have a second.\n\n"
-    "other than that, i've officially implemented the **\"pipes vs judgment\"** "
+    'weird, old dates for their "next run" time). that one\'s a bit more of a '
+    '"under the hood" thing for you to look at whenever you have a second.\n\n'
+    'other than that, i\'ve officially implemented the **"pipes vs judgment"** '
     "distinction as a permanent part of how i think and report, so i won't just "
     "be apologizing for things that are actually the system's fault anymore! "
     "and like i mentioned, i've just added that **tool wishlist** section, so "
-    "i'll be keeping a running tally of any \"i wish i could just...\" moments "
+    'i\'ll be keeping a running tally of any "i wish i could just..." moments '
     "to pass along to you.",
 )
 
