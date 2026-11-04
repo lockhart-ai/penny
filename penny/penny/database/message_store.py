@@ -940,11 +940,13 @@ class MessageStore:
         """The conversation's DIRECT messages since a horizon, oldest first (#2752).
 
         The conversation map's own read: incoming user messages and outgoing
-        replies Penny sent herself — ``mechanism`` NULL, so autonomous sends stay
-        out (they render in the self-state header's activity block, #1568) —
-        non-reaction, since ``since``.  The two legs merge in ``_in_send_order``
-        like ``get_messages_since``: timestamp, then id for a tie, so a reply and
-        the message answering it can never swap.
+        replies Penny sent herself — ordinary (``mechanism`` NULL) and
+        autonomous (``mechanism`` stamped, #2982: the map renders each
+        autonomous send as its own notification line once it has left the
+        history window, beside the self-state header's activity block, #1568)
+        — non-reaction, since ``since``.  The legs merge in ``_in_send_order``
+        like ``get_messages_since``: timestamp, then id for a tie, so a reply
+        and the message answering it can never swap.
 
         Bounded by ``limit``; the OLDEST rows past it drop, which is how the map
         loses its front lines on a day that outgrew the pool — the same
@@ -966,7 +968,6 @@ class MessageStore:
                 .where(
                     MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
                     MessageLog.is_reaction == False,  # noqa: E712
-                    col(MessageLog.mechanism).is_(None),
                     MessageLog.timestamp >= since,
                 )
                 .order_by(*_NEWEST_MESSAGE_FIRST)
