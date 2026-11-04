@@ -1404,8 +1404,8 @@ class MessageStore:
         completion rows ARE the run index — one row per run, served by
         ``ix_promptlog_target_runs`` (a bounded ``ORDER BY ... LIMIT``, not a scan).
         Cancelled runs (preempted by a foreground message — not a real cycle
-        outcome) are excluded.  The completion-row timestamp is the run's finish
-        time.
+        outcome) and sandbox previews (#2964 — nothing persisted) are excluded.
+        The completion-row timestamp is the run's finish time.
         """
         if limit <= 0:
             return []
@@ -1416,6 +1416,7 @@ class MessageStore:
                     col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_target == run_target,
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                    PromptLog.run_outcome != RunOutcome.SANDBOX.value,
                 )
                 .order_by(col(PromptLog.timestamp).desc())
                 .limit(limit)
@@ -1427,8 +1428,9 @@ class MessageStore:
 
         Each run stamps ``run_outcome`` on exactly one prompt row, so the
         completion rows ARE the run count — one row per run.  Cancelled runs
-        (preempted by a foreground message, not a real cycle) are excluded, so a
-        preemption never burns a ``max_runs`` allotment.  Read from the ledger,
+        (preempted by a foreground message, not a real cycle) and sandbox previews
+        (#2964) are excluded, so a preemption or a preview never burns a
+        ``max_runs`` allotment.  Read from the ledger,
         never re-decided by the model — the run-quota retire gate (#1556, now the
         schedule's own ``COUNT=``, #1857).
         """
@@ -1440,6 +1442,7 @@ class MessageStore:
                     col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_target == run_target,
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                    PromptLog.run_outcome != RunOutcome.SANDBOX.value,
                 )
             ).one()
 
@@ -1473,8 +1476,8 @@ class MessageStore:
     @staticmethod
     def _run_call_groups_query(target: str, finished: Any) -> Any:
         """The base run_id-grouped query for ``run_call_groups``: the chat
-        agent's distinct runs, or one collector's completed, non-cancelled
-        runs."""
+        agent's distinct runs, or one collector's completed, non-cancelled,
+        non-sandbox (#2964) runs."""
         query = (
             select(PromptLog.run_id, finished.label("finished"))
             .where(col(PromptLog.run_id).isnot(None))
@@ -1486,6 +1489,7 @@ class MessageStore:
             PromptLog.run_target == target,
             col(PromptLog.run_outcome).isnot(None),
             PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+            PromptLog.run_outcome != RunOutcome.SANDBOX.value,
         )
 
     @staticmethod
@@ -1555,7 +1559,8 @@ class MessageStore:
         excluded HERE and surfaced instead through ``recent_failed_chat_turns`` —
         its own query, not a relaxed filter on this one, so an ordinary collector
         activity line's shape is untouched.  Cancelled runs (foreground-preempted,
-        not a real cycle) are excluded, like every other run index.  Each run's
+        not a real cycle) and sandbox previews (#2964) are excluded, like every
+        other run index.  Each run's
         outcome lands on exactly one prompt row (its last, via ``set_run_outcome``),
         so that row's timestamp is the finish time and one row = one run.  A second
         bounded query groups those runs' prompts to count their tool calls (the
@@ -1583,6 +1588,7 @@ class MessageStore:
             .where(
                 col(PromptLog.run_outcome).isnot(None),
                 PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                PromptLog.run_outcome != RunOutcome.SANDBOX.value,
                 col(PromptLog.run_target).isnot(None),
             )
             .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
@@ -1695,8 +1701,8 @@ class MessageStore:
         in one grouped query, is what keeps this inside SQLModel's typed
         ``select()`` overloads (capped at four) — ``run_outcome`` and the
         dispatch stamp alongside it (#2862) are read straight off the row
-        ``get()`` returns.  Cancelled runs are excluded so 'last run' reports
-        the last real cycle, not a preemption."""
+        ``get()`` returns.  Cancelled runs and sandbox previews (#2964) are excluded
+        so 'last run' reports the last real cycle, not a preemption or a preview."""
         with self._session() as session:
             index = session.exec(
                 select(
@@ -1707,6 +1713,7 @@ class MessageStore:
                 .where(
                     col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                    PromptLog.run_outcome != RunOutcome.SANDBOX.value,
                     col(PromptLog.run_target).isnot(None),
                 )
                 .group_by(PromptLog.run_target)

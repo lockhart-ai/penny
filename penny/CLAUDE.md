@@ -71,18 +71,18 @@ penny/
   responses.py        — All user-facing response strings (PennyResponse class)
   preflight.py        — Setup-health preflight checks: one legible startup summary; hard-fails on an unreachable LLM/embedding model, soft-warns on the decision model/image/browser/channel issues
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
-  notification.py     — The finished cycle's report hand-off (#1911, reshaped #2656): the report row the cycle enqueues, the typed JobReport + its deterministic render, the outcome vocabulary the run record is stamped from, and the send gate
+  notification.py     — The finished cycle's report hand-off (#1911, reshaped #2656): the report row the cycle enqueues, the typed JobReport + its deterministic render, the outcome vocabulary the run record is stamped from, and the send gate; `SandboxReport` + `render_sandbox_report` + `build_sandbox_report` (#2964) are the sibling for a sandbox preview — built from the previewed run's own tool-call trace (`render_run_calls`), never written entries
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
     models.py         — ControllerResponse, MessageRole, ToolCallRecord, GeneratedQuery, plus the run-abort trio (#1909)
-    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the static-leading system message split (static identity/rules/instructions + Jobs + the store map + the conversation map at its end, #2814, then the growing history, then a dynamic clock/page/activity/user-facts system message right before the user's own turn, #2756; previously two leading messages, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656); `handle_changelog_report` is the startup delivery turn a deploy's new changelog entries ride (#2846)
+    chat.py           — ChatAgent: conversation-mode agent — full tool surface, the static-leading system message split (static identity/rules/instructions + Jobs + the store map + the conversation map at its end, #2814, then the growing history, then a dynamic clock/page/activity/user-facts system message right before the user's own turn, #2756; previously two leading messages, #2745), one static instruction (there is no conversation machine), the config/writes record delivered onto the configuring/writing tool's own result; `handle_job_report` is the system-originated delivery turn a notifying job's report rides (#2656); `handle_sandbox_report` is its sibling for a sandbox preview's report (#2964); `handle_changelog_report` is the startup delivery turn a deploy's new changelog entries ride (#2846)
     conversation_map.py — `ConversationMap`: renders the conversation older than the history window as an append-only line-per-exchange map appended to the END of the static leading system message (#2752, placed there by #2757 to keep the map inside the reused cache prefix) — user's clipped words, recorded outcomes, the items her reply marked; bounded by `CHAT_MAP_DAYS`/`CHAT_MAP_MAX_LINES`; shares `Agent._history_window_size` with the history so the two never disagree about where the window starts
     self_state.py     — `SelfStateHeader`: renders Penny's operational self-state, split across both chat messages (#2814): Jobs + the store map ride the STATIC leading message (`render_static`, pure registry renders, byte-identical unless a job or collection changes), recent activity + durable user facts ride the per-turn DYNAMIC message right before the user's own turn (`render_dynamic`, #2756; previously the whole header rode there, #2745)
-    collector.py      — Collector: single dispatcher agent driving every per-collection extractor
+    collector.py      — Collector: single dispatcher agent driving every per-collection extractor; `run_sandbox` (#2964) starts a model-reachable SANDBOX preview as a background task — every mutating tool call forced onto its plan path, nothing persisted, excluded from every real-cycle index (`RunOutcome.SANDBOX`/`DispatchReason.SANDBOX`/`CycleTrigger.SANDBOX`) the same way a cancelled run already is
   scheduler/
     base.py           — BackgroundScheduler + Schedule ABC
     schedules.py      — PeriodicSchedule implementation
-    send_queue_drainer.py — `SendQueueDrainer`: delivers queued autonomous messages on the send cooldown, by origin lane (#1939); composes a notifying cycle's report on one chat-agent delivery turn before delivering it (#2656)
+    send_queue_drainer.py — `SendQueueDrainer`: delivers queued autonomous messages on the send cooldown, by origin lane (#1939); composes a notifying cycle's report on one chat-agent delivery turn before delivering it (#2656) — a SANDBOX-origin row (#2964) shares the cooldown-skipping lane and composes a `SandboxReport`/`handle_sandbox_report` instead
   commands/
     __init__.py       — create_command_registry() factory
     base.py           — Command ABC, CommandRegistry
@@ -91,7 +91,7 @@ penny/
     index.py          — /commands: list available commands
     profile.py        — /profile: user info collection (name, location, DOB, timezone)
   tools/
-    base.py           — Tool ABC (`args_model` + `run()`) + ToolRegistry/ToolExecutor — arg validation, did-you-mean on a missing tool
+    base.py           — Tool ABC (`args_model` + `run()`) + ToolRegistry/ToolExecutor — arg validation, did-you-mean on a missing tool; `ToolExecutor`'s `forced_plan` (#2964, required, no default) overwrites `plan=True` on every `mutates` call when set — a sandboxed collector cycle's own executor, never a chat turn's
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls/narration), ToolDefinition, and per-tool arg models
     browse.py         — BrowseTool: web search, result picking, and page reading in ONE call (#2718) — items (search/citation/URL, each with its own looking_for), the picker behind the tool boundary, fall-through while a read finds nothing, the extract cap
     browse_picker.py  — ResultPicker: which search result to read, decided behind the tool boundary (#2718) — DecisionClient choice question ranked by probabilities, or the named degraded arm (shared model, thinking off); the carry question drives fall-through
@@ -105,6 +105,7 @@ penny/
     list_folders.py   — ListFoldersTool (available mailboxes; Zoho only)
     draft_email.py    — DraftEmailTool (compose + stage draft; Zoho only). All five retired the /email + /zoho commands (epic #1445) — built per turn by ChatAgent's email_tools_builder; NL-dispatch contract: tests/eval/chat/idle/test_email_dispatch.py
     notifications.py  — NotificationsTool: one chat-surface tool (`on` bool) over the MuteState row (`db.users`); folds the retired notifications_mute/notifications_unmute pair (#2812); retired /mute + /unmute
+    collection_sandbox_run.py — CollectionSandboxRunTool: chat-only, preview a job's next cycle with nothing persisted (#2964) — starts `Collector.run_sandbox` (via the `SandboxRunner` protocol, never importing `Collector` itself) and returns at once; the preview's report follows as a separate message once the cycle finishes, through the same queue/drainer path a job's own report rides
     collection_instantiation.py — The pure pieces behind `collection_configure`: schedule/expiry parsing and renders — no parameters to bind, no rendering seam (#1591)
     memory_args.py    — Pydantic arg models for the memory tool surface
     memory_tools.py   — Memory tool subclasses dispatching through `db.memory(name)`; `find`/`run_list`/`run_get`, `collection_configure`

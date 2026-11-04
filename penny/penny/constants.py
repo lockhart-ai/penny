@@ -38,7 +38,11 @@ class RunOutcome(StrEnum):
     the ``failed`` bail it now honestly is.  The member stays for the historical rows
     that carry it and the ``⚠ INCOMPLETE`` flag that renders them ·
     ``cancelled`` (preempted by a foreground message — not a failure, not work;
-    the throttle ignores it).
+    the throttle ignores it) ·
+    ``sandbox`` (a preview run, #2964 — every mutating call went through its plan
+    path, nothing persisted; excluded from every "real cycle" index the same way
+    ``cancelled`` is, so a sandbox preview never counts as a job's own prior work,
+    its run count, or its last-run line).
     """
 
     FAILED = "failed"
@@ -46,6 +50,7 @@ class RunOutcome(StrEnum):
     WORKED = "worked"
     INCOMPLETE = "incomplete"
     CANCELLED = "cancelled"
+    SANDBOX = "sandbox"
 
 
 class CycleTrigger(StrEnum):
@@ -60,6 +65,12 @@ class CycleTrigger(StrEnum):
     the cycle sends is conversational rather than autonomous, and its attempts are
     the user's rather than the schedule's.
 
+    ``sandbox`` — the user asked to PREVIEW this job from chat (#2964): every
+    mutating call the cycle makes goes through its plan path, nothing it writes
+    survives, and it never consumes the schedule's own occurrence. Someone is
+    sitting in the same conversation waiting on the preview, exactly as with
+    ``on_demand``, so its report rides the same cooldown-skipping lane.
+
     Read in three places, which is why it is one word rather than three flags: the
     collector keys its per-occurrence retry budget on it, the send queue stores it
     on the row it queues (``send_queue.origin``), and the drainer reads that row to
@@ -68,6 +79,7 @@ class CycleTrigger(StrEnum):
 
     CADENCE = "cadence"
     ON_DEMAND = "on_demand"
+    SANDBOX = "sandbox"
 
 
 class DispatchReason(StrEnum):
@@ -89,7 +101,9 @@ class DispatchReason(StrEnum):
     own run record, one ``run_list`` read away — never copied here) ·
     ``on_demand`` — the user asked for this run directly (``CycleTrigger.ON_DEMAND``);
     it carries no occurrence, so it is this unconditionally, whatever a retry
-    count would otherwise say.
+    count would otherwise say ·
+    ``sandbox`` — the user asked to preview this job (``CycleTrigger.SANDBOX``,
+    #2964); like ``on_demand`` it carries no occurrence, unconditionally.
     """
 
     ON_TIME = "on_time"
@@ -98,6 +112,7 @@ class DispatchReason(StrEnum):
     RETRY_PREEMPTED = "retry_preempted"
     RETRY_FAILED = "retry_failed"
     ON_DEMAND = "on_demand"
+    SANDBOX = "sandbox"
 
 
 class WriteGateOutcome(StrEnum):
@@ -404,6 +419,11 @@ class ChatPromptType(StrEnum):
     # the same reason JOB_REPORT has one — a run trace shows this delivery apart
     # from an ordinary user turn.
     CHANGELOG = "changelog"
+    # The delivery turn for a sandbox run's preview (#2964): the framework renders
+    # the previewed cycle's own tool-call trace (never anything it actually wrote —
+    # nothing survived) and the chat agent writes the message from it. Its own type
+    # for the same reason JOB_REPORT has one.
+    SANDBOX_REPORT = "sandbox_report"
 
 
 class PennyConstants:

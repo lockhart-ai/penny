@@ -244,6 +244,14 @@ class Collector(BackgroundAgent):
         # consumed.  In memory for the same reason ``_retry_attempts`` is: nothing
         # durable to read it back from, and a restart is a fresh start.
         self._occurrence_attempts: dict[str, _OccurrenceAttempt] = {}
+        # Live sandbox-preview tasks (#2964) — held here only so a running task is
+        # never garbage-collected before it finishes; discarded by its own
+        # done-callback.  Deliberately OUTSIDE the scheduler's ``_active_task``
+        # slot: a preview is conversational, started from the very chat turn that
+        # is about to end, so it must survive the cancellation ordinary foreground
+        # activity sends that slot (``BackgroundScheduler.notify_message``) — a
+        # sandbox run never competes with the schedule for it.
+        self._sandbox_tasks: set[asyncio.Task[tuple[bool, str]]] = set()
 
     async def execute(self) -> bool:
         self._retire_expired()
@@ -286,26 +294,79 @@ class Collector(BackgroundAgent):
         notification skips the autonomous-send cooldown (someone is waiting for it) and
         its attempts draw on their own retry budget rather than the schedule's.
         """
-        collection = self.db.memories.get(collection_name)
-        if collection is None:
-            return False, str(MemoryNotFoundError(collection_name))
-        if collection.archived:
-            return (
-                False,
-                f"Collection '{collection_name}' is archived — restore it first with "
-                f"collection_archive{{'{collection_name}', archived: false}}, or test a "
-                f"different collection.",
-            )
-        if collection.extraction_prompt is None:
-            return (
-                False,
-                f"Collection '{collection_name}' has no extraction_prompt — "
-                f"set one with collection_configure before testing.",
-            )
+        found = self._find_testable_collection(collection_name)
+        if isinstance(found, str):
+            return False, found
         # ``run_for`` bypasses readiness entirely, so there is no occurrence to name
         # (#2862) — the dispatch reason is unconditionally "the user asked to run it
         # now", whatever a retry count at the schedule's own occurrence would say.
-        return await self._execute_cycle(collection, trigger=CycleTrigger.ON_DEMAND, due_at=None)
+        return await self._execute_cycle(found, trigger=CycleTrigger.ON_DEMAND, due_at=None)
+
+    async def run_sandbox(self, collection_name: str) -> tuple[bool, str]:
+        """Start a SANDBOX preview of ``collection_name`` and return at once (#2964) —
+        unlike ``run_for``, this one IS model-reachable (chat's
+        ``collection_sandbox_run`` tool).  ``run_for`` stays off the chat surface
+        because a real run both schedules and immediately runs the job, which is
+        not what the user asked for; nothing a sandbox preview does is real, so
+        that reason does not apply here.
+
+        A full cycle can run up to ``MAX_STEPS`` model calls — far past a chat tool
+        call's own timeout — so this never awaits the cycle.  It validates
+        synchronously (the same checks ``run_for`` makes, so a bad collection name
+        still refuses honestly, in the same turn) then starts the cycle as an
+        independent background task and returns immediately.  The task is tracked
+        on ``self`` only so it isn't garbage-collected before it finishes —
+        deliberately outside the scheduler's own ``_active_task`` slot, since a
+        preview is conversational, started from the very turn that is about to
+        end, and must survive the cancellation ordinary foreground activity sends
+        that slot.
+
+        The cycle's own settlement (``_settle_sandbox_cycle``) is what queues the
+        preview's report once it finishes; this call never does, and never
+        returns the preview itself — only whether it started."""
+        found = self._find_testable_collection(collection_name)
+        if isinstance(found, str):
+            return False, found
+        task = asyncio.create_task(
+            self._execute_cycle(found, trigger=CycleTrigger.SANDBOX, due_at=None)
+        )
+        self._sandbox_tasks.add(task)
+        task.add_done_callback(self._on_sandbox_task_done)
+        return True, (
+            f"Started a sandbox preview of '{collection_name}' — nothing it does will "
+            f"be saved. I'll let you know what it finds."
+        )
+
+    def _on_sandbox_task_done(self, task: asyncio.Task) -> None:
+        """Visible degradation (CLAUDE.md): a sandbox cycle that dies before its own
+        settlement can log anything else must still surface loudly, never silently
+        — the done-callback is the only place left to say so."""
+        self._sandbox_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error("Sandbox preview cycle died: %s", error)
+
+    def _find_testable_collection(self, collection_name: str) -> MemoryRow | str:
+        """The named collection, ready for a test cycle — or the refusal
+        ``run_for``/``run_sandbox`` share (not found, archived, no
+        ``extraction_prompt``)."""
+        collection = self.db.memories.get(collection_name)
+        if collection is None:
+            return str(MemoryNotFoundError(collection_name))
+        if collection.archived:
+            return (
+                f"Collection '{collection_name}' is archived — restore it first with "
+                f"collection_archive{{'{collection_name}', archived: false}}, or test a "
+                f"different collection."
+            )
+        if collection.extraction_prompt is None:
+            return (
+                f"Collection '{collection_name}' has no extraction_prompt — "
+                f"set one with collection_configure before testing."
+            )
+        return collection
 
     async def _execute_cycle(
         self, collection: MemoryRow, *, trigger: CycleTrigger, due_at: datetime | None
@@ -382,7 +443,13 @@ class Collector(BackgroundAgent):
                 # prior statements, so the settlement below sees the real run result
                 # instead of silently falling back to its defaults.
                 self._bind(collection)
-                result = await self._run_cycle(run_id, call_link)
+                # Every mutating tool call this cycle makes is forced onto its
+                # plan path iff this is a sandbox preview (#2964) — read off the
+                # SAME ``trigger`` the dispatch decision and the notify/settle
+                # branches below read, never a second flag that could disagree.
+                result = await self._run_cycle(
+                    run_id, call_link, forced_plan=(trigger is CycleTrigger.SANDBOX)
+                )
                 success = result.success
                 response = result.response
                 reads = result.reads
@@ -409,14 +476,16 @@ class Collector(BackgroundAgent):
         """Why this cycle is starting now (#2862) — the closed set, decided at
         dispatch, where the dispatcher already decided readiness and the trigger.
 
-        ``on_demand`` is unconditional on the trigger alone: a user-requested run
-        carries no occurrence, whatever a retry count at the schedule's own
-        occurrence would otherwise say.  A CADENCE dispatch always carries its
-        ``due_at`` (``execute`` reads it off the same pure computation readiness
-        already made); everything else is read off it and the collection's own
-        occurrence-attempt record."""
+        ``on_demand`` and ``sandbox`` are both unconditional on the trigger alone: a
+        user-requested run carries no occurrence, whatever a retry count at the
+        schedule's own occurrence would otherwise say.  A CADENCE dispatch always
+        carries its ``due_at`` (``execute`` reads it off the same pure computation
+        readiness already made); everything else is read off it and the
+        collection's own occurrence-attempt record."""
         if trigger is CycleTrigger.ON_DEMAND:
             return _DispatchDecision(due_at=None, reason=DispatchReason.ON_DEMAND)
+        if trigger is CycleTrigger.SANDBOX:
+            return _DispatchDecision(due_at=None, reason=DispatchReason.SANDBOX)
         if due_at is None:
             raise ValueError(f"cadence dispatch of '{name}' has no due occurrence")
         prior = self._occurrence_attempts.get(name)
@@ -458,15 +527,26 @@ class Collector(BackgroundAgent):
         this cycle reaches — WHY it started is independent of HOW it finished —
         and ``_track_occurrence`` remembers it for the next dispatch at the same
         occurrence, if any.
+
+        A SANDBOX cycle that reached its own end (not cancelled) never takes the
+        schedule's own settlement path at all (#2964) — ``_settle_sandbox_cycle``
+        is its own, entirely separate branch, because there is no occurrence to
+        consume and nothing it wrote ever committed.  A CANCELLED sandbox cycle
+        falls through to the ordinary path below unchanged: ``_settle_occurrence``
+        already takes its own CANCELLED branch first (never ``mark_collected``)
+        and ``_track_occurrence`` already no-ops for any non-CADENCE trigger, so
+        the existing cancelled handling is already correct for it.
         """
         end = self._cycle_end(cancelled, response, notified)
+        self.db.messages.set_run_dispatch(
+            run_id, dispatch.due_at, dispatch.reason.value, dispatch.attempt
+        )
+        if trigger is CycleTrigger.SANDBOX and not cancelled:
+            return self._settle_sandbox_cycle(collection, run_id, reads, response)
         landed = self._settle_writes(collection.name, end)
         self.settle_reads(reads, landed)
         deferred = self._settle_occurrence(collection.name, trigger, end, response)
         self._track_occurrence(collection.name, trigger, dispatch, end, deferred)
-        self.db.messages.set_run_dispatch(
-            run_id, dispatch.due_at, dispatch.reason.value, dispatch.attempt
-        )
         if cancelled:
             self._tag_promptlog_run_cancelled(run_id)
             return RunOutcome.FAILED, ""
@@ -477,6 +557,36 @@ class Collector(BackgroundAgent):
         if not deferred:
             self._retire_if_ended(collection, run_id)
         return outcome, reason
+
+    def _settle_sandbox_cycle(
+        self,
+        collection: MemoryRow,
+        run_id: str,
+        reads: tuple[CursorReadTool, ...],
+        response: ControllerResponse | None,
+    ) -> tuple[RunOutcome, str]:
+        """Settle a sandbox preview that reached its own end, healthy or not
+        (#2964) — never through the schedule's writes/occurrence settlement:
+        nothing it wrote ever committed (every mutating call was forced onto its
+        plan path, #2933), and there is no occurrence to consume, so
+        ``mark_collected``/``last_collected_at``/the run count/``max_runs`` are
+        never touched.
+
+        Cursors are always discarded (``consumed=False``), whatever the cycle's
+        own end — a preview must never advance what a REAL cycle reads next.
+        Queues the preview's report UNCONDITIONALLY: the model's own
+        ``done(notify=...)`` choice is not consulted (that is a job's own
+        editorial decision to speak up; a sandbox report answers what the user
+        explicitly asked for), so it rides the SAME queue row shape a real
+        notification does, keyed on the SANDBOX origin so the drainer composes
+        it from this run's own tool-call trace rather than written entries
+        (``notification.build_sandbox_report``) — never through
+        ``_notify_if_due``, which skips a SANDBOX trigger entirely so the two
+        paths can't both enqueue."""
+        self.settle_reads(reads, consumed=False)
+        self.db.send_queue.enqueue_report(collection.name, CycleTrigger.SANDBOX, run_id)
+        self._tag_promptlog_run(run_id, RunOutcome.SANDBOX, "", self._tool_failures(response))
+        return RunOutcome.SANDBOX, ""
 
     def _track_occurrence(
         self,
@@ -562,8 +672,14 @@ class Collector(BackgroundAgent):
         were: no registered recipient, or a muted user.  Both are decisions no retry
         changes, so they read ``NOT_DELIVERABLE`` — the decline, stamped on the run.
 
-        ``None`` when the cycle is not one that notifies, which is the ordinary case.
+        ``None`` when the cycle is not one that notifies, which is the ordinary case
+        — also, unconditionally, a SANDBOX trigger (#2964): a preview's report is
+        never this editorial decision, it is queued UNCONDITIONALLY by
+        ``_settle_sandbox_cycle`` instead, so this must skip entirely rather than
+        maybe enqueue a second, duplicate row for the same run.
         """
+        if trigger is CycleTrigger.SANDBOX:
+            return None
         if not collection.notify or self._stop_reason(response) is not None:
             return None
         if self._done_notify(response) is not True:

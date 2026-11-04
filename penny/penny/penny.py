@@ -257,6 +257,17 @@ class Penny:
         picks the most-overdue collection with an extraction_prompt, and
         runs the agent loop bound to that target.
         """
+        # Collector built FIRST (#2964): ChatAgent needs it wired in at
+        # construction (its ``collector`` param is required, no late ``set_``,
+        # per CLAUDE.md "Pass parameters, don't swap state") for the
+        # ``collection_sandbox_run`` tool; Collector needs nothing from ChatAgent.
+        self.collector = Collector(
+            model_client=self.model_client,
+            db=self.db,
+            config=config,
+            embedding_model_client=self.embedding_model_client,
+            process_started_at=self.start_time,
+        )
         self.chat_agent = ChatAgent(
             model_client=self.model_client,
             db=self.db,
@@ -265,13 +276,7 @@ class Penny:
             image_client=self.image_client,
             email_tools_builder=self.email_tools_builder,
             plugin_tools=self.plugin_tools,
-        )
-        self.collector = Collector(
-            model_client=self.model_client,
-            db=self.db,
-            config=config,
-            embedding_model_client=self.embedding_model_client,
-            process_started_at=self.start_time,
+            collector=self.collector,
         )
         # Delivers queued autonomous messages once the autonomous-send cooldown
         # clears.  Mostly deterministic — its one model-shaped step (#2656) is

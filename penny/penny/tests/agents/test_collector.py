@@ -997,7 +997,7 @@ async def _composed_for(collector: Collector, db: Database, name: str) -> tuple[
     reused leading system message (#2778 — framework-fixed, no job in it any
     more) and the cycle's whole user turn (the job + its per-cycle state)."""
     collector._bind(_get(db, name))
-    collector._install_tools(collector.get_tools())
+    collector._install_tools(collector.get_tools(), forced_plan=False)
     static = await collector._build_system_prompt(None)
     return static, collector._cycle_prompt()
 
@@ -1329,6 +1329,96 @@ async def test_a_done_closed_cycle_queues_exactly_one_report(mock_llm, test_conf
     # autonomous-send cooldown meant for messages nobody asked for.
     assert row.origin == CycleTrigger.ON_DEMAND
     assert _run_reason(db) == NOTIFICATION_NOTES[NotificationOutcome.QUEUED]
+
+
+@pytest.mark.asyncio
+async def test_run_sandbox_returns_at_once_and_the_cycle_finishes_in_the_background(
+    mock_llm, test_config, tmp_path
+):
+    """THE TIMEOUT FIX (#2964): a full cycle can run well past a chat tool call's
+    own timeout, so ``run_sandbox`` never awaits it — it validates, schedules the
+    cycle as an independent background task, and returns immediately, before the
+    task has had a chance to run at all."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm, content="Cinder Drift — a new metroidvania. https://ex.example/cd"
+        )
+    )
+
+    started, message = await collector.run_sandbox("indie-metroidvanias")
+
+    assert started is True
+    assert "indie-metroidvanias" in message
+    # Nothing has run yet — the task was only just scheduled.
+    assert db.send_queue.pending_items() == []
+    assert len(collector._sandbox_tasks) == 1
+
+    await next(iter(collector._sandbox_tasks))
+
+    assert collector._sandbox_tasks == set()
+    row = _report_row(db)
+    assert row.origin == CycleTrigger.SANDBOX
+    assert row.report_run_id == _collector_run(db)["run_id"]
+
+
+@pytest.mark.asyncio
+async def test_run_sandbox_shares_run_fors_own_refusals(test_config, tmp_path):
+    """``run_sandbox`` validates the same way ``run_for`` does (#2964,
+    ``_find_testable_collection``) — a bad collection name refuses honestly, in
+    the same turn, never starting a task at all."""
+    collector, db = _make_collector(test_config, tmp_path)
+
+    started, message = await collector.run_sandbox("never-heard-of-it")
+    assert started is False
+    assert "never-heard-of-it" in message
+    assert collector._sandbox_tasks == set()
+
+    db.memories.create_collection("blank-job", "a job with no extraction_prompt yet")
+    started, message = await collector.run_sandbox("blank-job")
+    assert started is False
+    assert "extraction_prompt" in message
+    assert collector._sandbox_tasks == set()
+
+    db.memories.create_collection("shelved-job", "an archived job", extraction_prompt="look around")
+    db.memories.archive("shelved-job")
+    started, message = await collector.run_sandbox("shelved-job")
+    assert started is False
+    assert "archived" in message
+    assert collector._sandbox_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_preview_writes_nothing_and_touches_no_schedule_state(
+    mock_llm, test_config, tmp_path
+):
+    """THE WHOLE POINT (#2964): a sandbox cycle's ``collection_write`` call —
+    passed with no ``plan`` argument at all, exactly as the model would send it —
+    is forced onto its plan path, so the collection ends up byte-identical. The
+    cycle also never advances the schedule: ``last_collected_at`` stays unset and
+    the run never counts toward a quota."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm, content="Cinder Drift — a new metroidvania. https://ex.example/cd"
+        )
+    )
+
+    await collector.run_sandbox("indie-metroidvanias")
+    await next(iter(collector._sandbox_tasks))
+
+    # The seeded entry is untouched and the "new" one was never written.
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift") == []
+    assert _get(db, "indie-metroidvanias").last_collected_at is None
+    assert db.messages.count_completed_runs("indie-metroidvanias") == 0
+
+    run = _collector_run(db)
+    assert run["run_outcome"] == RunOutcome.SANDBOX.value
+    # Excluded from the job's own run-history block — a preview is not a prior
+    # cycle a later REAL one should read as context.
+    assert db.messages.recent_run_outcomes("indie-metroidvanias", 10) == []
 
 
 @pytest.mark.asyncio
@@ -2205,7 +2295,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         )
         collector._tag_promptlog_run(run_id, outcome, reason, 0)
     collector._bind(db.memories.get("board-games"))
-    collector._install_tools(collector.get_tools())
+    collector._install_tools(collector.get_tools(), forced_plan=False)
 
     system_prompt = await collector._build_system_prompt(None)
     user_prompt = collector._cycle_prompt()
@@ -2300,7 +2390,7 @@ async def test_leading_system_message_and_tools_are_byte_identical_across_jobs_a
 
     async def _built(name: str) -> tuple[str, list[dict[str, Any]], str]:
         collector._bind(db.memories.get(name))
-        collector._install_tools(collector.get_tools())
+        collector._install_tools(collector.get_tools(), forced_plan=False)
         static = await collector._build_system_prompt(None)
         tools = collector._tool_registry.get_ollama_tools()
         user = collector._cycle_prompt()
@@ -2621,6 +2711,16 @@ def test_dispatch_decision_on_demand_is_unconditional(test_config, tmp_path):
         "watcher", CycleTrigger.ON_DEMAND, None, datetime.now(UTC)
     )
     assert decision == _DispatchDecision(due_at=None, reason=DispatchReason.ON_DEMAND)
+
+
+def test_dispatch_decision_sandbox_is_unconditional(test_config, tmp_path):
+    """SANDBOX (#2964) is read off the trigger alone, exactly like ON_DEMAND —
+    a preview carries no occurrence, whatever a retry count would say."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    decision = collector._dispatch_decision(
+        "watcher", CycleTrigger.SANDBOX, None, datetime.now(UTC)
+    )
+    assert decision == _DispatchDecision(due_at=None, reason=DispatchReason.SANDBOX)
 
 
 def test_dispatch_decision_on_time_within_the_window(test_config, tmp_path):
@@ -3201,7 +3301,9 @@ async def test_run_for_runs_a_short_extraction_prompt(test_config, tmp_path):
         extraction_prompt="short",
     )
 
-    async def mock_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
+    async def mock_run_cycle(
+        run_id: str, call_link: CallLink, *, forced_plan: bool = False
+    ) -> CycleResult:
         return CycleResult(
             success=True,
             response=ControllerResponse(
@@ -3236,7 +3338,9 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
         extraction_prompt='Extract things.\n1. log_read(log="user-messages")',
     )
 
-    async def mock_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
+    async def mock_run_cycle(
+        run_id: str, call_link: CallLink, *, forced_plan: bool = False
+    ) -> CycleResult:
         return CycleResult(
             success=True,
             response=ControllerResponse(
@@ -3340,7 +3444,9 @@ async def test_cycle_runs_under_lock(test_config, tmp_path):
 
     observed: dict = {}
 
-    async def fake_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
+    async def fake_run_cycle(
+        run_id: str, call_link: CallLink, *, forced_plan: bool = False
+    ) -> CycleResult:
         target = collector._current_target
         assert target is not None
         observed["locked"] = collector._cycle_lock.locked()

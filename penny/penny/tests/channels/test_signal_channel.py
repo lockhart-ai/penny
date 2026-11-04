@@ -9,7 +9,7 @@ from penny.channels.signal import SignalChannel
 from penny.constants import ChannelType
 from penny.database import Database
 from penny.llm import LlmClient
-from penny.tests.conftest import TEST_SENDER
+from penny.tests.conftest import NULL_SANDBOX_RUNNER, TEST_SENDER
 
 
 @pytest.mark.asyncio
@@ -35,6 +35,7 @@ async def test_validate_connectivity_success(signal_server, test_config, mock_ll
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -87,6 +88,7 @@ async def test_validate_connectivity_dns_failure(test_db, mock_llm):
         tools=[],
         db=db,
         config=config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -145,6 +147,7 @@ async def test_validate_connectivity_connection_refused(test_db, mock_llm):
         tools=[],
         db=db,
         config=config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -196,6 +199,7 @@ async def test_validate_connectivity_retries_then_succeeds(
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
     channel = SignalChannel(
         api_url=test_config.signal_api_url,
@@ -268,6 +272,7 @@ async def test_validate_connectivity_exhausts_attempts_then_logs_and_raises(
         tools=[],
         db=db,
         config=config,
+        collector=NULL_SANDBOX_RUNNER,
     )
     channel = SignalChannel(
         api_url=config.signal_api_url,
@@ -314,6 +319,7 @@ async def test_send_message_rejects_empty_without_attachments(signal_server, tes
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -354,6 +360,7 @@ async def test_send_message_allows_empty_text_with_attachments(
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -396,6 +403,7 @@ async def test_send_message_retries_on_socket_exception_400(signal_server, test_
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -449,6 +457,7 @@ async def test_send_message_no_retry_on_non_transient_400(signal_server, test_co
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -500,6 +509,7 @@ async def test_send_message_gives_up_after_max_retries(signal_server, test_confi
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
 
     channel = SignalChannel(
@@ -734,6 +744,7 @@ async def test_send_response_stamps_emission_provenance(signal_server, test_conf
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
     channel = SignalChannel(
         api_url=test_config.signal_api_url,
@@ -796,6 +807,7 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
     channel = SignalChannel(
         api_url=test_config.signal_api_url,
@@ -884,6 +896,7 @@ def _build_signal_world(test_config, db):
         tools=[],
         db=db,
         config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
     )
     channel = SignalChannel(
         api_url=test_config.signal_api_url,
