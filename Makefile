@@ -164,7 +164,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-build prod-run prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
+.PHONY: up prod prod-build prod-run prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-stories client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
 
 # --- Docker Compose ---
 
@@ -308,6 +308,11 @@ browser-build:
 # CI runs the same script on any PR touching penny-client/ (client-check.yml).
 client-check:
 	./scripts/client-check.sh
+
+# Build PennyClient (Debug) and screenshot every story mode screen (#2965) on
+# a simulator, one PNG per story id, to the gitignored penny-client/build/stories/.
+client-stories:
+	./scripts/client-stories.sh
 
 # Run service-layer tests without building or launching PennyDev/PennyTestflight.
 client-services-check:

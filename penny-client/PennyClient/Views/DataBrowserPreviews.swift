@@ -60,7 +60,7 @@ enum DataBrowserFixtures {
     }
 
     private static func runs() throws -> [PromptLogRun] {
-        try ["worked", "no_work", "failed", "incomplete", "cancelled"].map { outcome in
+        let collectorRuns = try ["worked", "no_work", "failed", "incomplete", "cancelled"].map { outcome in
             let json = """
             {"run_id":"preview-\(outcome)","agent_name":"collector","prompt_count":1,"started_at":"2026-09-01T12:00:00Z",
             "ended_at":"2026-09-01T12:00:01Z","total_duration_ms":1000,"total_input_tokens":125,"total_output_tokens":30,
@@ -74,6 +74,34 @@ enum DataBrowserFixtures {
             """
             return try JSONDecoder().decode(PromptLogRun.self, from: Data(json.utf8))
         }
+        // The chat run leads so a story that expands it (#2965) shows it
+        // without needing to scroll past the collector runs first.
+        return [try chatRun()] + collectorRuns
+    }
+
+    /// A chat-agent run, two steps/turns deep — next to the single-prompt
+    /// collector runs above, so the Prompts tab shows both agent kinds.
+    private static func chatRun() throws -> PromptLogRun {
+        let json = """
+        {"run_id":"preview-chat","agent_name":"chat","prompt_count":2,"started_at":"2026-09-01T12:00:00Z",
+        "ended_at":"2026-09-01T12:00:04Z","total_duration_ms":4000,"total_input_tokens":410,"total_output_tokens":96,
+        "run_outcome":"worked","run_reason":"Answered a roasting question after reading one page.","record":"Answered a roasting question after reading one page.",
+        "health":{"bailed":false,"no_writes":false,"incomplete":false,"tool_failures":0,"degenerate_send":false,"flags":[],"regressive":false},
+        "prompts":[
+        {"id":1,"timestamp":"2026-09-01T12:00:00Z","model":"example-model","agent_name":"chat","prompt_type":"chat",
+        "duration_ms":2200,"input_tokens":210,"output_tokens":40,
+        "messages":[{"role":"user","content":"What roast works best for a moka pot?"}],
+        "response":{"tool_calls":[{"name":"browse","arguments":{"queries":["https://example.com/coffee-roasting-guide"]}}]},
+        "thinking":"A moka pot needs a fine, even grind; check a roasting guide before answering.","has_tools":true},
+        {"id":2,"timestamp":"2026-09-01T12:00:03Z","model":"example-model","agent_name":"chat","prompt_type":"chat",
+        "duration_ms":1800,"input_tokens":200,"output_tokens":56,
+        "messages":[{"role":"user","content":"What roast works best for a moka pot?"},
+        {"role":"tool","content":{"title":"Coffee roasting guide","roast":"medium-dark"},"tool_call_id":"example-call-2"}],
+        "response":{"content":"A medium-dark roast with a fine grind works well for a moka pot."},
+        "thinking":"The guide recommends medium-dark for stovetop brewing; share that directly.","has_tools":false}
+        ]}
+        """
+        return try JSONDecoder().decode(PromptLogRun.self, from: Data(json.utf8))
     }
 
     private static func jsonValue<Value: Encodable>(_ value: Value) throws -> JSONValue {
