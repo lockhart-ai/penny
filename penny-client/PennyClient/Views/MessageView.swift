@@ -21,7 +21,7 @@ struct MessageView: View {
     @State private var pendingIncomingAutoScrollMessageID: Int?
     @State private var lastTopScrolledMessageID: Int?
     @State private var chatViewportFrame: CGRect = .zero
-    @State private var isShowingDataBrowser = false
+    @State private var browserDestination: BrowserDestination?
     @FocusState private var isComposerFocused: Bool
 
     var body: some View {
@@ -238,7 +238,7 @@ struct MessageView: View {
     private var dataBrowserButton: some View {
         Button {
             isComposerFocused = false
-            isShowingDataBrowser = true
+            browserDestination = BrowserDestination(runID: nil)
         } label: {
             Image(systemName: "memories")
                 .frame(width: 28, height: 28)
@@ -247,8 +247,8 @@ struct MessageView: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.primary)
         .accessibilityLabel("Browse Penny data")
-        .popover(isPresented: $isShowingDataBrowser) {
-            DataBrowserView(client: viewModel.client)
+        .popover(item: $browserDestination) { destination in
+            DataBrowserView(client: viewModel.client, runID: destination.runID)
                 .presentationCompactAdaptation(.sheet)
                 .presentationDetents([.large])
         }
@@ -673,7 +673,7 @@ private extension MessageView {
 
     func messageActionStack(for context: MessageActionContext, in containerSize: CGSize) -> some View {
         let stackWidth = actionProxyWidth(for: context, in: containerSize)
-        let estimatedMenuHeight: CGFloat = 112
+        let estimatedMenuHeight: CGFloat = context.message.runID == nil ? 112 : 168
         let stackSpacing: CGFloat = 10
         let availableStackHeight = max(1, containerSize.height - 32)
         let maximumProxyHeight = max(44, availableStackHeight - estimatedMenuHeight - stackSpacing)
@@ -797,6 +797,17 @@ private extension MessageView {
             } label: {
                 menuButtonRow(title: "Copy", systemImage: "doc.on.doc")
             }
+
+            if let runID = message.runID {
+                Divider().padding(.leading, 48)
+                Button {
+                    dismissMessageActions()
+                    isComposerFocused = false
+                    browserDestination = BrowserDestination(runID: runID)
+                } label: {
+                    menuButtonRow(title: "View prompts", systemImage: "text.bubble")
+                }
+            }
         }
         .buttonStyle(.plain)
         .font(.body)
@@ -842,6 +853,11 @@ private extension MessageView {
         activeMessageContext = nil
         messageContextScale = 1
     }
+}
+
+private struct BrowserDestination: Identifiable {
+    let id = UUID()
+    let runID: String?
 }
 
 private struct MessageActionContext: Identifiable {

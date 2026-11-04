@@ -43,6 +43,7 @@ enum DataBrowserFixtures {
                 "cursors": .array(name == "messages" ? [] : [.object(["log_name": .string("messages"), "last_read_at": .string("2026-09-01T12:00:00Z")])])
             ]
             return .detail(try JSONDecoder().decode(MemoryDetail.self, from: JSONEncoder().encode(values)))
+        case .run(let id): return .run(try runs().first { $0.runID == id })
         case .prompts: return .prompts(try runs(), hasMore: false)
         case .page: throw DataBrowserError.invalidResponse
         }

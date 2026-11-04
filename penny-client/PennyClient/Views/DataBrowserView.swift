@@ -5,9 +5,9 @@ struct DataBrowserView: View {
     let client: PennyService
     @State private var model: DataBrowserViewModel
 
-    init(client: PennyService) {
+    init(client: PennyService, runID: String? = nil) {
         self.client = client
-        _model = State(initialValue: DataBrowserViewModel { try await client.dataBrowser.read($0) })
+        _model = State(initialValue: DataBrowserViewModel(runID: runID) { try await client.dataBrowser.read($0) })
     }
 
     var body: some View {
@@ -159,18 +159,25 @@ struct DataBrowserContent: View {
         }
     }
 
-    private var promptsList: some View {
+    @ViewBuilder private var promptsList: some View {
+        if model.linkedRunID == nil {
+            promptResults.searchable(text: $model.promptQuery, prompt: "Search prompts")
+        } else {
+            promptResults
+        }
+    }
+
+    private var promptResults: some View {
         List {
-            Section("Filters") {
-                TextField("Agent name (all when empty)", text: $model.agent)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Toggle("Flagged only", isOn: $model.flaggedOnly)
+            if model.linkedRunID != nil {
+                Button("Browse all prompts") { model.linkedRunID = nil }
+            } else {
+                promptFilters
             }
             status(.prompts)
             ForEach(model.runs) { run in BrowserRunCard(run: run, model: model) }
             if model.runs.isEmpty && !model.isDebouncing && !model.loading.contains(.prompts) && model.errors[.prompts] == nil && model.isOnline {
-                ContentUnavailableView("No prompts", systemImage: "text.bubble", description: Text("No runs match these filters."))
+                ContentUnavailableView("No prompts", systemImage: "text.bubble", description: Text(model.linkedRunID == nil ? "No runs match these filters." : "This message’s run is no longer available."))
             }
             if model.promptsHasMore {
                 Button("Load more runs", action: model.loadMorePrompts)
@@ -179,8 +186,16 @@ struct DataBrowserContent: View {
         }
         .navigationTitle("Prompts")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $model.promptQuery, prompt: "Search prompts")
         .toolbar { refreshButton }
+    }
+
+    private var promptFilters: some View {
+        Section("Filters") {
+            TextField("Agent name (all when empty)", text: $model.agent)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Toggle("Flagged only", isOn: $model.flaggedOnly)
+        }
     }
 
     private var refreshButton: some ToolbarContent {

@@ -58,3 +58,13 @@ Covers the channel abstraction and each concrete channel (Signal, Discord, the b
 - `create_channel()` creates appropriate channel based on config
 - Auto-detects channel type from credentials if not explicit
 - **Primary channel seeds a default device at startup** (Signal with `signal_number`, Discord with `discord_channel_id`; iOS registers its own on pairing). The browser addon stays `is_default=0`. This makes proactive routing structural — `ChannelManager._resolve_channel` prefers the default device's channel over a device-identifier match on the recipient, so proactive/autonomous sends land on the configured primary channel and can never be captured by a browser addon whose label the profile's sender was pinned to during onboarding (#1298). Conversational replies are unaffected — each concrete channel handles its own receive→reply loop and never goes through the manager.
+
+### iOS message prompt provenance
+
+The iOS pull and history records expose optional `run_id` from the linked
+`MessageLog`, including direct chat replies and composed collection reports.
+Messages without a generating run omit it. The read-only data browser supports
+`run_detail_request` (`run_id`, optional `request_id`) and returns
+`run_detail_response` (`run_id`, `run`, echoed `request_id`). `run` is null when
+unavailable; invalid correlated requests use `data_read_error`. This is an exact
+lookup through the existing serialized-run store, independent of prompt pagination.

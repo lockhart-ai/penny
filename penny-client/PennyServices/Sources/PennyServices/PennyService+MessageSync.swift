@@ -3,6 +3,24 @@ import SwiftUI
 import UserNotifications
 
 extension PennyService {
+    /// History pages can enrich messages already on screen without replacing their attachments.
+    func updateRunLinks(_ incoming: [ChatMessage]) {
+        let received = Dictionary(uniqueKeysWithValues: incoming.map { ($0.id, $0) })
+        func update(_ stored: inout [ChatMessage]) -> Bool {
+            var changed = false
+            for index in stored.indices {
+                guard let message = received[stored[index].id], message.runID != stored[index].runID else { continue }
+                stored[index].runID = message.runID
+                changed = true
+            }
+            return changed
+        }
+        _ = update(&messages)
+        if var displayed = liveMessages?.wrappedValue, update(&displayed) {
+            liveMessages?.wrappedValue = displayed
+        }
+    }
+
     func replaceOptimisticMessage(localID: Int, with message: ChatMessage) {
         if let index = messages.firstIndex(where: { $0.id == localID }) {
             messages[index] = message

@@ -1,6 +1,7 @@
 import Foundation
 
 public enum DataBrowserRequest: Sendable {
+    case run(id: String)
     case memories(query: String?)
     case detail(name: String, query: String?)
     case page(name: String, section: MemorySection, offset: Int, query: String?)
@@ -8,6 +9,7 @@ public enum DataBrowserRequest: Sendable {
 
     var message: ClientMessage {
         switch self {
+        case .run(let id): return .runDetailRequest(runID: id)
         case .memories(let query): return .memoriesRequest(query: query)
         case .detail(let name, let query): return .memoryDetailRequest(name: name, query: query)
         case .page(let name, let section, let offset, let query):
@@ -19,6 +21,7 @@ public enum DataBrowserRequest: Sendable {
 }
 
 public enum DataBrowserResult: Sendable {
+    case run(PromptLogRun?)
     case memories([MemoryRecord])
     case detail(MemoryDetail)
     case page(MemoryPage)
@@ -127,6 +130,7 @@ public final class DataBrowserClient {
     private func decode(_ data: Data, type: String) throws -> DataBrowserResult {
         let decoder = JSONDecoder()
         switch type {
+        case "run_detail_response": return .run(try decoder.decode(RunDetailResponse.self, from: data).run)
         case "memories_response": return .memories(try decoder.decode(MemoriesResponsePayload.self, from: data).memories)
         case "memory_detail_response": return .detail(MemoryDetail(payload: try decoder.decode(MemoryDetailResponsePayload.self, from: data)))
         case "memory_page_response": return .page(MemoryPage(payload: try decoder.decode(MemoryPageResponsePayload.self, from: data)))
@@ -143,6 +147,10 @@ public final class DataBrowserClient {
         logger.debug("Data browser request completed in \(operation.startedAt.duration(to: .now))", privacy: .public)
         operation.continuation.resume(with: result)
     }
+}
+
+private struct RunDetailResponse: Decodable {
+    let run: PromptLogRun?
 }
 
 private struct CorrelatedRead: Encodable {
@@ -164,7 +172,7 @@ private struct ReadHeader: Decodable {
     let error: String?
 
     var isReadResponse: Bool {
-        ["memories_response", "memory_detail_response", "memory_page_response", "prompt_logs_response", "data_read_error"].contains(type)
+        ["memories_response", "memory_detail_response", "memory_page_response", "prompt_logs_response", "run_detail_response", "data_read_error"].contains(type)
     }
 
     private enum CodingKeys: String, CodingKey {

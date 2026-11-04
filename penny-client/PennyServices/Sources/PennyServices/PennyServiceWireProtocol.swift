@@ -15,6 +15,7 @@ enum ClientMessage: Encodable {
     case configRequest
     case configUpdate(key: String, value: String, requestID: String? = nil)
     case promptLogsRequest(agentName: String?, offset: Int?, query: String?, flaggedOnly: Bool?)
+    case runDetailRequest(runID: String)
     case memoriesRequest(query: String?)
     case memoryDetailRequest(name: String, query: String?)
     case memoryPageRequest(name: String, section: MemorySection, offset: Int, query: String?)
@@ -100,6 +101,9 @@ enum ClientMessage: Encodable {
             try container.encodeIfPresent(offset, forKey: .offset)
             try container.encodeIfPresent(query, forKey: .query)
             try container.encodeIfPresent(flaggedOnly, forKey: .flaggedOnly)
+        case .runDetailRequest(let runID):
+            try container.encode("run_detail_request", forKey: .type)
+            try container.encode(runID, forKey: .runID)
         case .memoriesRequest(let query):
             try container.encode("memories_request", forKey: .type)
             try container.encodeIfPresent(query, forKey: .query)
@@ -216,6 +220,8 @@ enum ClientMessage: Encodable {
             return requestID.map { "config_response:\($0)" } ?? "config_response"
         case .promptLogsRequest:
             return "prompt_logs_response"
+        case .runDetailRequest:
+            return "run_detail_response"
         case .memoriesRequest:
             return "memories_response"
         case .memoryDetailRequest:
@@ -257,6 +263,8 @@ enum ClientMessage: Encodable {
             return "config_update"
         case .promptLogsRequest:
             return "prompt_logs_request"
+        case .runDetailRequest:
+            return "run_detail_request"
         case .memoriesRequest:
             return "memories_request"
         case .memoryDetailRequest:
@@ -326,6 +334,7 @@ enum ClientMessage: Encodable {
         case lastReadAt = "last_read_at"
         case domain
         case permission
+        case runID = "run_id"
         case requestID = "request_id"
         case text
         case allowed

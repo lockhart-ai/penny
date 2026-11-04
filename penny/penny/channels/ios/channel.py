@@ -39,6 +39,7 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_MEMORY_UPDATE,
     BROWSER_MSG_TYPE_PERMISSION_DECISION,
     BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST,
+    BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST,
     BROWSER_RESP_TYPE_CONFIG,
     BROWSER_RESP_TYPE_PROMPT_LOGS,
     MEMORY_SECTION_COLLECTOR_RUNS,
@@ -328,6 +329,8 @@ class IosChannel(MessageChannel):
             await self._handle_config_update(ws, data)
         elif msg_type in self._DATA_READ_TYPES and data.get("request_id") is not None:
             await self._handle_correlated_read(ws, data)
+        elif msg_type == BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST:
+            await self._handle_run_detail_request(ws, data)
         elif msg_type == BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST:
             await self._handle_prompt_logs_request(ws, data)
         elif msg_type == BROWSER_MSG_TYPE_MEMORIES_REQUEST:
@@ -473,6 +476,7 @@ class IosChannel(MessageChannel):
     _DATA_READ_TYPES = frozenset(
         {
             BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST,
+            BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST,
             BROWSER_MSG_TYPE_MEMORIES_REQUEST,
             BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST,
             BROWSER_MSG_TYPE_MEMORY_PAGE_REQUEST,
@@ -482,6 +486,7 @@ class IosChannel(MessageChannel):
     async def _handle_correlated_read(self, ws: ServerConnection, data: dict) -> None:
         handlers = {
             BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST: self._handle_prompt_logs_request,
+            BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST: self._handle_run_detail_request,
             BROWSER_MSG_TYPE_MEMORIES_REQUEST: self._handle_memories_request,
             BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST: self._handle_memory_detail_request,
             BROWSER_MSG_TYPE_MEMORY_PAGE_REQUEST: self._handle_memory_page_request,
@@ -499,6 +504,24 @@ class IosChannel(MessageChannel):
         request_id = data.get("request_id")
         if isinstance(request_id, str):
             await self._send_ws(ws, IosDataReadError(request_id=request_id, error=error))
+
+    async def _handle_run_detail_request(self, ws: ServerConnection, data: dict) -> None:
+        """Load exactly the run linked to a delivered message, including older runs."""
+        run_id = data.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            if data.get("request_id") is not None:
+                raise ValueError("Invalid run id")
+            await self._send_ws(ws, IosStatus(error="invalid_run_detail_request"))
+            return
+        await self._send_json(
+            ws,
+            {
+                "type": "run_detail_response",
+                "run_id": run_id,
+                "run": self._db.messages.get_run(run_id),
+                **({"request_id": data["request_id"]} if "request_id" in data else {}),
+            },
+        )
 
     async def _handle_prompt_logs_request(self, ws: ServerConnection, data: dict) -> None:
         """Query prompt logs grouped by run_id and send them to iOS."""
@@ -990,7 +1013,7 @@ class IosChannel(MessageChannel):
         records = []
         for row in rows:
             message = messages_by_id.get(row.message_log_id) if row.message_log_id else None
-            records.append(_outbox_record(row, message.embedding if message else None))
+            records.append(_outbox_record(row, message))
         await self._send_ws(ws, IosMessages(messages=records, mode="outbox"))
 
     async def _handle_history(
@@ -1331,7 +1354,7 @@ class IosChannel(MessageChannel):
         return True
 
 
-def _outbox_record(row: IosOutboxItem, embedding: bytes | None = None) -> IosOutboxRecord:
+def _outbox_record(row: IosOutboxItem, message: MessageLog | None = None) -> IosOutboxRecord:
     return IosOutboxRecord(
         id=_required_outbox_id(row),
         message_id=row.message_log_id,
@@ -1344,7 +1367,8 @@ def _outbox_record(row: IosOutboxItem, embedding: bytes | None = None) -> IosOut
         source_hint=row.source_hint,
         push_title=row.push_title,
         push_summary=row.push_summary,
-        embedding=_encode_embedding(embedding),
+        embedding=_encode_embedding(message.embedding if message else None),
+        run_id=message.run_id if message else None,
     )
 
 
@@ -1386,6 +1410,7 @@ def _history_record(
         device_label=device.label if device is not None else None,
         device_identifier=device.identifier if device is not None else None,
         parent_id=message.parent_id,
+        run_id=message.run_id,
         embedding=_encode_embedding(message.embedding),
     )
 

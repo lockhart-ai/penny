@@ -6,6 +6,56 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct DataBrowserViewModelTests {
+    @Test func linkedRunLoadsDirectlyAndExpandsThenAllowsBrowsingAllPrompts() async throws {
+        let harness = BrowserReadHarness()
+        defer { harness.cancelAll() }
+        let model = DataBrowserViewModel(runID: "fixture-run", read: harness.read)
+        #expect(model.tab == .prompts)
+        #expect(model.expanded.contains("run:fixture-run"))
+        model.updateConnection(true)
+        model.refresh()
+        try await browserEventually { harness.requests.count == 1 }
+        guard case .run(let id) = harness.requests[0] else { Issue.record("Expected direct lookup"); return }
+        #expect(id == "fixture-run")
+        harness.resolve(0, .run(try run("fixture-run")))
+        try await browserEventually { model.runs.count == 1 }
+        #expect(model.runs.first?.runID == "fixture-run")
+        #expect(!model.promptsHasMore)
+        model.linkedRunID = nil
+        model.contextChanged()
+        model.refresh()
+        try await browserEventually { harness.requests.count == 2 }
+        guard case .prompts = harness.requests[1] else { Issue.record("Expected prompt browse"); return }
+        harness.resolve(1, .prompts([try run("another-run")], hasMore: true))
+        try await browserEventually { model.runs.first?.runID == "another-run" }
+        model.stop()
+    }
+
+    @Test func missingLinkedRunRetriesOnReconnectAndRejectsWrongRun() async throws {
+        let harness = BrowserReadHarness()
+        defer { harness.cancelAll() }
+        let model = DataBrowserViewModel(runID: "fixture-run", read: harness.read)
+        model.updateConnection(true)
+        model.refresh()
+        try await browserEventually { harness.requests.count == 1 }
+        harness.resolve(0, .run(nil))
+        try await browserEventually { model.loading.isEmpty }
+        #expect(model.runs.isEmpty)
+        #expect(model.errors.isEmpty)
+        model.updateConnection(false)
+        model.updateConnection(true)
+        model.refresh()
+        try await browserEventually { harness.requests.count == 2 }
+        harness.resolve(1, .run(try run("wrong-run")))
+        try await browserEventually { model.errors[.prompts] != nil }
+        model.refresh()
+        try await browserEventually { harness.requests.count == 3 }
+        harness.resolve(2, .run(try run("fixture-run")))
+        try await browserEventually { model.runs.count == 1 }
+        #expect(model.errors.isEmpty)
+        model.stop()
+    }
+
     @Test func groupsSelectionAndLiteralEntryPresentation() async throws {
         let harness = BrowserReadHarness()
         defer { harness.cancelAll() }

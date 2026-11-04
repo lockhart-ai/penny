@@ -18,6 +18,7 @@ struct ServerChatMessage: Decodable {
     let deviceLabel: String?
     let deviceIdentifier: String?
     let parentID: Int?
+    let runID: String?
     let embedding: Data?
 
     var canonicalID: Int { messageID ?? id }
@@ -39,6 +40,7 @@ struct ServerChatMessage: Decodable {
         case deviceLabel = "device_label"
         case deviceIdentifier = "device_identifier"
         case parentID = "parent_id"
+        case runID = "run_id"
         case embedding
     }
 
@@ -59,6 +61,7 @@ struct ServerChatMessage: Decodable {
         deviceLabel = try container.decodeIfPresent(String.self, forKey: .deviceLabel)
         deviceIdentifier = try container.decodeIfPresent(String.self, forKey: .deviceIdentifier)
         parentID = try container.decodeIfPresent(Int.self, forKey: .parentID)
+        runID = try container.decodeIfPresent(String.self, forKey: .runID)
         if let encodedEmbedding = try container.decodeIfPresent(String.self, forKey: .embedding) {
             embedding = Data(base64Encoded: encodedEmbedding)
         } else {
@@ -124,6 +127,7 @@ public struct ChatMessage: Identifiable {
     public let deviceLabel: String?
     public let deviceIdentifier: String?
     public let parentID: Int?
+    public internal(set) var runID: String?
     public let imageAttachmentDataURLs: [String]
     public let imageAttachments: [ImageAttachment]
     public let isOutgoing: Bool
@@ -151,6 +155,7 @@ public struct ChatMessage: Identifiable {
         deviceLabel: String? = nil,
         deviceIdentifier: String? = nil,
         parentID: Int? = nil,
+        runID: String? = nil,
         imageAttachmentDataURLs: [String] = [],
         imageAttachments: [ImageAttachment],
         isOutgoing: Bool,
@@ -165,6 +170,7 @@ public struct ChatMessage: Identifiable {
         self.deviceLabel = deviceLabel
         self.deviceIdentifier = deviceIdentifier
         self.parentID = parentID
+        self.runID = runID
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
         self.imageAttachments = imageAttachments
         self.isOutgoing = isOutgoing
@@ -181,6 +187,7 @@ public struct ChatMessage: Identifiable {
         deviceLabel = model.deviceLabel
         deviceIdentifier = model.deviceIdentifier
         parentID = model.parentID
+        runID = model.runID
         imageAttachmentDataURLs = model.imageAttachmentDataURLs
         embedding = model.embedding
         imageAttachments = model.imageAttachmentDataURLs.compactMap { dataURL in
@@ -207,6 +214,7 @@ public struct ChatMessage: Identifiable {
             deviceLabel: message.deviceLabel,
             deviceIdentifier: message.deviceIdentifier,
             parentID: message.parentID,
+            runID: message.runID,
             imageAttachmentDataURLs: imageAttachmentDataURLs,
             imageAttachments: imageAttachments,
             isOutgoing: message.direction == "incoming",
