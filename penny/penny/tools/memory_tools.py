@@ -1345,8 +1345,6 @@ class CollectionKeysTool(MemoryTool):
 # ── Collection writes ───────────────────────────────────────────────────────
 
 
-_SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{collection}'."
-
 # The standing-rules guard (#2633): the `rules` collection renders in full in every
 # prompt as standing instructions, so a page (or any job input) that says "always do
 # X" must not be able to write itself into every prompt through a job cycle.  Only
@@ -1629,13 +1627,6 @@ class CollectionWriteTool(MemoryTool):
         args = CollectionWriteArgs(**kwargs)
         if (guard := _rules_guard(self._scope, args.collection)) is not None:
             return guard
-        if self._scope is not None and args.collection != self._scope:
-            return ToolResult(
-                message=_SCOPE_REFUSAL_MESSAGE.format(
-                    scope=self._scope, collection=args.collection
-                ),
-                success=False,
-            )
         target, note, would_create = await self._materialize_target(args)
         if would_create:
             # plan=True reached the point apply would auto-create a missing
@@ -2812,13 +2803,6 @@ class CollectionRemoveTool(MemoryTool):
         args = CollectionRemoveArgs(**kwargs)
         if (guard := _rules_guard(self._scope, args.collection)) is not None:
             return guard
-        if self._scope is not None and args.collection != self._scope:
-            return ToolResult(
-                message=_SCOPE_REFUSAL_MESSAGE.format(
-                    scope=self._scope, collection=args.collection
-                ),
-                success=False,
-            )
         collection = _resolve(self._db, args.collection)
         if args.plan:
             return self._plan(collection, args)
@@ -4158,10 +4142,13 @@ def build_memory_tools(
       ``penny-messages`` / ``collector-runs`` is refused up front
       (``SYSTEM_LOGS``); the facades also raise ``ReadOnlyMemoryError`` if
       reached, since they're views over ``messagelog`` / ``promptlog``.
-    * **Collector binding.** ``scope`` pins a collector's entry
-      mutations to its bound collection ``X`` (the ``scope`` check in
-      each entry-mutation tool).  Chat passes ``scope=None`` — its
-      entry mutations are unrestricted, since edits are user-directed.
+    * **Collector binding.** ``scope`` keys a collector's read cursors
+      and entry author to its bound collection ``X`` (``#2963`` lifted
+      the old write pin: a job may write to any collection, so a
+      reflection job can file findings into a separate tracker).  The
+      one remaining wall on a scoped write is the standing-rules guard
+      above.  Chat passes ``scope=None`` — its entry mutations are
+      unrestricted, since edits are user-directed.
 
     ``memory_get`` is the genuinely shape-agnostic read — it works on either
     shape.  ``find`` (resolve-by-meaning, #1558/#1640/#2289) spans the whole
