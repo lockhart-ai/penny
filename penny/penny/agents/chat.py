@@ -396,23 +396,26 @@ class ChatAgent(Agent):
     async def handle_job_report(
         self, report: JobReport, sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
-        """The system-originated delivery turn (#2656): write the message that tells
-        the user what a finished job's cycle found.
+        """The system-originated delivery turn (#2656, trigger reworked #2974):
+        a turn exactly like any other chat turn, given the finished job's report
+        as a fact of her situation rather than an instruction.
 
         The input is the framework-rendered report (``render_job_report``) — the
         job's name, what it is for, why it ran, and the FULL content of every entry
-        the cycle wrote — never anything model-written.  Everything else the message
-        needs is the turn's own ambient state: her persona and voice, the standing
-        rules, the conversation history (a past report is there to be read, and a
-        formatting ask in it holds here as anywhere), and the full chat tool surface
-        — so "show me yesterday's" shape follow-ups stay one ``collection_get`` away
-        from the rendered job name.
+        the cycle wrote — never anything model-written.  It rides as the live turn's
+        own trailing SYSTEM message (#2974 — ``trailing_role``), stating only what
+        happened; she decides for herself whether, how, and how many times to
+        reply, exactly as on any ordinary turn, over the same ambient state: her
+        persona and voice, the standing rules, the conversation history (a past
+        report is there to be read, and a formatting ask in it holds here as
+        anywhere), and the full chat tool surface — so "show me yesterday's" shape
+        follow-ups stay one ``collection_get`` away from the rendered job name.
 
         ``sender`` is the user the message is written for (the primary sender, read
         by the caller); ``call_link`` (#2458) is REQUIRED, as on every run starter.
-        The reply is NOT delivered here — the caller (the send-queue drainer) gates
-        it and queues it, so it is logged and delivered exactly like any other
-        autonomous send."""
+        Whatever she sends is NOT delivered here — the caller (the send-queue
+        drainer) gates it and queues it, so it is logged and delivered exactly like
+        any other autonomous send."""
         # The delivery turn's own link table (#2717): the report's entries keep
         # real URLs, so the render converts them to THIS turn's handles — the
         # same table the turn is dispatched with, so a number the model cites
@@ -428,25 +431,26 @@ class ChatAgent(Agent):
             progress_scope="background",
             inbox=NO_INBOX,
             handles=handles,
+            trailing_role=MessageRole.SYSTEM,
         )
 
     async def handle_sandbox_report(
         self, report: SandboxReport, sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
-        """The system-originated delivery turn for a SANDBOX preview (#2964): write
-        the message that tells the user what a previewed job's cycle would have
-        done.
+        """The system-originated delivery turn for a SANDBOX preview (#2964,
+        trigger reworked #2974) — the sibling of ``handle_job_report``.
 
-        The sibling of ``handle_job_report``.  The input is the framework-rendered
-        report (``render_sandbox_report``) — the job's name, what it is for, and
-        the previewed cycle's own tool-call trace (never written entries — nothing
-        it did was real) — never anything model-written.  Everything else the
-        message needs is the turn's own ambient state, same as any delivery turn.
+        The input is the framework-rendered report (``render_sandbox_report``) — the
+        job's name, what it is for, and the previewed cycle's own tool-call trace
+        (never written entries — nothing it did was real) — never anything
+        model-written.  It rides as the live turn's own trailing SYSTEM message
+        (#2974), stating only what the preview showed; everything else the turn
+        needs is the same ambient state any delivery turn gets.
 
-        ``sender``/``call_link`` are exactly as ``handle_job_report``'s.  The reply
-        is NOT delivered here — the caller (the send-queue drainer) gates it and
-        queues it, logged and delivered exactly like any other autonomous send.
-        No link table: ``render_sandbox_report``'s trace carries no handle
+        ``sender``/``call_link`` are exactly as ``handle_job_report``'s.  Whatever
+        she sends is NOT delivered here — the caller (the send-queue drainer) gates
+        it and queues it, logged and delivered exactly like any other autonomous
+        send.  No link table: ``render_sandbox_report``'s trace carries no handle
         conversion of its own (the same shape ``run_get``/``run_list`` already
         render their own trace in)."""
         prompt = render_sandbox_report(report)
@@ -458,27 +462,32 @@ class ChatAgent(Agent):
             prompt_type=ChatPromptType.SANDBOX_REPORT,
             progress_scope="background",
             inbox=NO_INBOX,
+            trailing_role=MessageRole.SYSTEM,
         )
 
     async def handle_changelog_report(
         self, entries: list[ChangelogEntry], sender: str, *, call_link: CallLink
     ) -> ControllerResponse:
-        """The startup delivery turn (#2846, #2890): write the message that tells
-        the user what this deploy's new changelog entries are — or, when there
-        are none, that she's just restarted and nothing changed.
+        """The startup delivery turn (#2846, #2890, trigger reworked #2974): a turn
+        exactly like any other chat turn, given this deploy's own changelog entries
+        as a fact of her situation — or, when there are none, the fact that she's
+        just restarted and nothing changed.
 
         The input is the framework-rendered entries (``render_changelog_announcement``)
         — each PR number and its text, never anything model-written, or (with no
-        entries) the framework's own "nothing changed" render. Everything else
-        the message needs is the turn's own ambient state: her persona and voice, the
-        standing rules, and the full chat tool surface — so a change that names
-        something she can look at stays reachable before she writes about it.
+        entries) the framework's own "nothing changed" render.  It rides as the live
+        turn's own trailing SYSTEM message (#2974), stating only what happened —
+        never an instruction to send anything — so she decides for herself whether,
+        how, and how many times to reply, over the same ambient state any chat turn
+        gets: her persona and voice, the standing rules, and the full chat tool
+        surface — so a change that names something she can look at stays reachable
+        before she writes about it.
 
         ``sender`` is the user the message is written for; ``call_link`` (#2458) is
-        REQUIRED, as on every run starter. The reply is NOT delivered here — the
-        caller (``Penny._send_changelog_announcement``) gates and enqueues it, so it
-        is logged and delivered exactly like any other autonomous send. No link
-        table: changelog entries are authored, reviewed prose about Penny's own
+        REQUIRED, as on every run starter.  Whatever she sends is NOT delivered here
+        — the caller (``Penny._send_changelog_announcement``) gates and enqueues it,
+        so it is logged and delivered exactly like any other autonomous send.  No
+        link table: changelog entries are authored, reviewed prose about Penny's own
         tools — never user-sourced content carrying real URLs."""
         prompt = render_changelog_announcement(entries)
         logger.info("Handling changelog announcement (%d entries)", len(entries))
@@ -489,6 +498,7 @@ class ChatAgent(Agent):
             prompt_type=ChatPromptType.CHANGELOG,
             progress_scope="background",
             inbox=NO_INBOX,
+            trailing_role=MessageRole.SYSTEM,
         )
 
     async def _dispatch_turn(
@@ -507,6 +517,7 @@ class ChatAgent(Agent):
         on_interim_message: Callable[[str], Awaitable[None]] | None = None,
         handles: HandleTable | None = None,
         inbox: TurnInbox,
+        trailing_role: MessageRole = MessageRole.USER,
     ) -> ControllerResponse:
         """The one turn both entry points ride — the template method under
         ``handle`` and ``handle_job_report``: per-turn state held for the span of
@@ -515,9 +526,13 @@ class ChatAgent(Agent):
         installed, loop run.
 
         The two entry points differ only in what they hand in: a user turn carries
-        its attachments, its page context and its progress plumbing and runs in the
-        foreground scope; a delivery turn carries none of that and runs in the
-        background scope.  There is no second state to pick an instruction for."""
+        its attachments, its page context and its progress plumbing, runs in the
+        foreground scope, and trails on a USER message; a delivery turn carries
+        none of that, runs in the background scope, and trails on a SYSTEM message
+        instead (#2974 — ``trailing_role``) stating only what happened.  Beyond
+        that one role, it is the SAME turn — same history, same self-state, same
+        full tool surface, same freedom to call tools, send nothing, or send
+        several messages. There is no second state to pick an instruction for."""
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
@@ -557,6 +572,7 @@ class ChatAgent(Agent):
                 prompt_type=prompt_type,
                 handles=table,
                 inbox=inbox,
+                trailing_role=trailing_role,
             )
             # Send-time expansion (#2717): every handle the reply cites becomes
             # its URL, so the conversation record and the wire carry real links.
@@ -588,18 +604,24 @@ class ChatAgent(Agent):
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,
+        trailing_role: MessageRole = MessageRole.USER,
     ) -> list[LlmMessage]:
         """Build messages, injecting page context as a synthetic tools result.
 
-        ``super()`` ends the array ``[…history, state, user]`` (#2756 — the
-        state system message right BEFORE the user's own turn).  The
-        synthetic page-context assistant-call + tool-result appended below
-        land AFTER that, so the full shape is
-        ``[…state][user][assistant][tool]`` — state between the history's
-        last entry and the user's own turn, the one mid-conversation
-        placement prod's patched oMLX and OpenRouter both render in place
-        (see ``Agent._build_messages``'s docstring)."""
-        messages = super()._build_messages(prompt, history, system_prompt, images=images)
+        ``super()`` ends the array ``[…history, state, live]`` (#2756 — the
+        state system message right BEFORE the live turn's own message, #2974
+        — ``USER`` for an ordinary ask, ``SYSTEM`` for a delivery turn's
+        trigger).  The synthetic page-context assistant-call + tool-result
+        appended below land AFTER that, so the full shape is
+        ``[…state][live][assistant][tool]`` — state between the history's
+        last entry and the live turn, the one mid-conversation placement
+        gemma's own raw-template transport renders in place regardless of
+        the role either side of it (see ``Agent._build_messages``'s
+        docstring).  Page context only ever rides a USER turn in practice —
+        a delivery turn never carries one."""
+        messages = super()._build_messages(
+            prompt, history, system_prompt, images=images, trailing_role=trailing_role
+        )
         if self._pending_page_context:
             self._inject_page_context(
                 messages,

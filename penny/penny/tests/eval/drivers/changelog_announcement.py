@@ -108,17 +108,62 @@ async def _deliver_changelog(
     assert delivered, "the changelog announcement was composed but never delivered"
 
 
+async def _deliver_changelog_unforced(
+    penny: Penny, entries: Sequence[ChangelogEntry], *, retryable: bool
+) -> str:
+    """The sibling of ``_deliver_changelog`` for a case whose claim is ABOUT whether
+    a reply happens at all (#2974): the trigger is now facts-only, with no
+    instruction forcing a reply, so "she said nothing this turn" is part of what
+    is measured, never a thing this helper asserts against. Returns the text that
+    actually reached the user, or ``""`` when nothing did (no draw, a half-formed
+    draw, or one the send gate withheld) — each a real, distinct outcome a report
+    can read apart, never collapsed into one "it failed" case."""
+    run_id = uuid.uuid4().hex
+    response = await penny.chat_agent.handle_changelog_report(
+        list(entries), TEST_SENDER, call_link=CallLink.top(run_id)
+    )
+    answer = (response.answer or "").strip() if response is not None else ""
+    if answer == PennyResponse.AGENT_MODEL_ERROR and retryable:
+        raise _ModelCallError
+    if not answer:
+        return ""
+    if half_formed_send_reason(answer) is not None:
+        return ""
+    if withheld_reason(penny.db, answer) is not None:
+        return ""
+    delivered = await penny.send_queue_drainer.deliver_composed(
+        answer, collection=PennyConstants.MEMORY_CHANGELOG_LOG, run_id=run_id
+    )
+    return answer if delivered else ""
+
+
 @pytest.fixture
 def changelog_eval(
     make_config: Callable[..., Config], tmp_path, request
 ) -> Iterator[ChangelogEval]:
-    """Drive the real changelog delivery turn, one unrelated turn, then the ask
-    under test, and return the COHORT scored on the LAST turn's reply.
+    """Drive the real changelog delivery turn, then either a later ask (in its
+    wordings) or nothing at all, and return the COHORT scored on the LAST turn's
+    reply.
 
-    ``changelog_entries`` is the deploy's own new entries; ``unrelated_turn`` sits
-    between the delivery and the ask, so the question is never the very next
-    message after the announcement. Each sample is fully hermetic, exactly like
-    ``chat_eval``: its own mock Signal server, DB, and real-model Penny."""
+    ``changelog_entries`` is the deploy's own new entries. Two shapes, by
+    whether ``ask`` is given:
+
+    - ``ask`` set — the ordinary shape: ``unrelated_turn`` sits between the
+      delivery and the ask, so the question is never the very next message
+      after the announcement (pass ``""`` for a case that needs the ask to
+      follow directly instead — no turn is pushed; an empty string is never
+      sent as a real message), and the cohort is scored on the ASK's reply.
+    - ``ask`` left ``None`` (#2974) — no follow-up at all: the cohort is scored
+      on the DELIVERY TURN'S OWN reply instead, for a case whose claims are
+      about its discretion (she decides for herself whether, how, and how many
+      times to reply over a fact, never an instruction) rather than a later
+      turn's recall of it. ``world`` then names what the case is driving, so a
+      case still refuses to run with nothing to drive at all. No reply at all
+      is a real, measured outcome in this shape, never an assertion failure —
+      the trigger carries no instruction forcing one.
+
+    Each sample is fully hermetic, exactly like ``chat_eval``: its own mock
+    Signal server, DB, and real-model Penny."""
     _cohorts: dict[str, _PendingCase] = {}
 
     async def _run(
@@ -127,7 +172,7 @@ def changelog_eval(
         behaviour: str = "",
         area: Area | None = None,
         changelog_entries: Sequence[ChangelogEntry],
-        unrelated_turn: str,
+        unrelated_turn: str = "",
         ask: str | None = None,
         also_phrased: Sequence[str] = (),
         world: World | None = None,
@@ -150,10 +195,16 @@ def changelog_eval(
         # delivers.
         changelog_commits: Sequence[ChangelogEntry] = (),
     ) -> Cohort:
-        """Drive one later question in its wordings, each sample preceded by the
-        same real delivery turn and the same unrelated turn, and return the
-        cohort. A case with no ``ask`` is refused by name."""
-        _require_ask(case_id, "changelog_eval", "ask=<the later question>", ask)
+        """Drive the delivery turn, then (with ``ask`` given) one later question
+        in its wordings — or nothing — and return the cohort.  A case naming
+        neither an ``ask`` nor a ``world`` is refused by name: a delivery-turn-
+        alone case still has to say what it is driving."""
+        given_to_drive: Sequence[object] | None = (
+            ask if ask is not None else ([world] if world is not None else None)
+        )
+        _require_ask(
+            case_id, "changelog_eval", "ask=<the later question> or world=<...>", given_to_drive
+        )
         _require_report_only(case_id, min_pass_rate)
         catalogued = _declare_case(
             request,
@@ -165,7 +216,7 @@ def changelog_eval(
         )
         eval_artifacts.begin_case(case_id)
         arms = _arms(
-            [ask or "", *also_phrased],
+            [ask or "", *also_phrased] if ask is not None else [""],
             [world] if world is not None else [],
             samples_per_phrasing,
             samples,
@@ -191,33 +242,42 @@ def changelog_eval(
                 browse=list(world.pages) if world is not None else None,
                 prepare=prepare,
             )
-            await _deliver_changelog(penny, changelog_entries, retryable=retryable)
-
             before = collection_names(penny.db)
             held_before = _held_entries(penny.db)
-            turns = [unrelated_turn, spoken[sample_index]]
-            reply = ""
-            final_reply = ""
-            try:
-                messages = await _drive_turns(
-                    penny, server, turns, timeout=timeout, retryable=retryable
+
+            if ask is None:
+                answer = await _deliver_changelog_unforced(
+                    penny, changelog_entries, retryable=retryable
                 )
-                reply = "\n".join(messages)
-                final_reply = messages[-1] if messages else ""
+                reply = final_reply = answer
                 result = SampleResult.graded([])
                 _stamp_cause(penny.db, result)
-                _write_sample_report(
-                    penny.db,
-                    case_id,
-                    sample_index,
-                    result=result,
-                    reply=final_reply,
-                    driven=turns,
-                )
-            except TimeoutError:
-                result = SampleResult.binary(["no reply within timeout"])
-                _stamp_cause(penny.db, result, timed_out=True)
-                _write_sample_report(penny.db, case_id, sample_index, result=result)
+                _write_sample_report(penny.db, case_id, sample_index, result=result, reply=reply)
+            else:
+                await _deliver_changelog(penny, changelog_entries, retryable=retryable)
+                turns = [turn for turn in (unrelated_turn, spoken[sample_index]) if turn]
+                reply = ""
+                final_reply = ""
+                try:
+                    messages = await _drive_turns(
+                        penny, server, turns, timeout=timeout, retryable=retryable
+                    )
+                    reply = "\n".join(messages)
+                    final_reply = messages[-1] if messages else ""
+                    result = SampleResult.graded([])
+                    _stamp_cause(penny.db, result)
+                    _write_sample_report(
+                        penny.db,
+                        case_id,
+                        sample_index,
+                        result=result,
+                        reply=final_reply,
+                        driven=turns,
+                    )
+                except TimeoutError:
+                    result = SampleResult.binary(["no reply within timeout"])
+                    _stamp_cause(penny.db, result, timed_out=True)
+                    _write_sample_report(penny.db, case_id, sample_index, result=result)
 
             phrasing = arms.label(sample_index)
             arm = arms.index_of(sample_index)

@@ -30,7 +30,7 @@ from penny.config import Config
 from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.database import Database
-from penny.database.message_store import RunOutcomeStamp
+from penny.database.message_store import EmissionActivity, RunOutcomeStamp
 from penny.database.models import (
     MemoryEntry,
     MemoryRow,
@@ -1149,6 +1149,34 @@ def test_activity_emission_lines_and_exclusions(db):
     actual = SelfStateHeader(db, None).render()
     assert "you got it!" not in actual
     assert actual == _EMISSION_MATRIX
+
+
+def test_emission_line_carries_its_run_anchor(db):
+    """An emission's own ``run <id>`` anchor (#2974) renders the same way
+    ``_run_line``/``_chat_failure_line`` already do — the one-hop ``run_get``
+    path to the send's own trigger once the exchange ages out of the history
+    window that renders the trigger in place.  A row with no run (``run_id``
+    ``None``) renders the plain pre-#2974 shape — ``test_activity_emission_
+    lines_and_exclusions`` above pins that unmarked case."""
+    with_run = EmissionActivity(
+        mechanism="trail-conditions",
+        sent_at=_t(9, 5),
+        snippet="Your trail report run just finished.",
+        run_id="run-trail-01",
+    )
+    assert SelfStateHeader._emission_line(with_run) == (
+        "sent · run run-trail-01 · 2026-07-11 09:05 UTC · trail-conditions — "
+        '"Your trail report run just finished."'
+    )
+    no_run = EmissionActivity(
+        mechanism="trail-conditions",
+        sent_at=_t(9, 5),
+        snippet="Your trail report run just finished.",
+        run_id=None,
+    )
+    assert SelfStateHeader._emission_line(no_run) == (
+        'sent · 2026-07-11 09:05 UTC · trail-conditions — "Your trail report run just finished."'
+    )
 
 
 _MATRIX_ACTIONS = [

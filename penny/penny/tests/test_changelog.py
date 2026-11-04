@@ -304,30 +304,29 @@ def test_record_new_entries_only_appends_the_missing_ones(db):
 
 
 def test_render_changelog_announcement_is_whole_literal():
-    """The startup delivery turn's input (#2846) is framework-rendered verbatim —
-    never model-written — so the exact text the chat agent reads is pinned here
+    """The startup delivery turn's trigger (#2846, reworked #2974) is
+    framework-rendered verbatim — never model-written, and carrying no
+    instruction — so the exact text the chat agent reads is pinned here
     rather than left to whatever a live run happens to produce."""
     entries = [
         ChangelogEntry(pr=9101, text="We added a new way to save a note."),
         ChangelogEntry(pr=9102, text="We renamed the lookup tool."),
     ]
     assert render_changelog_announcement(entries) == (
-        "These changes to your tools and behaviour reached you with this deploy:\n"
+        "You've just restarted. These changes to your tools and behaviour reached "
+        "you with this deploy:\n"
         "\n"
         "- PR #9101: We added a new way to save a note.\n"
-        "- PR #9102: We renamed the lookup tool.\n"
-        "\n"
-        "Let the user know what changed, in your own words."
+        "- PR #9102: We renamed the lookup tool."
     )
 
 
 def test_render_changelog_announcement_with_no_entries_is_whole_literal():
     """Penny announces on every startup (#2890), including a deploy that
     brought no new entries (harness-only, CI-only, or a restart on an
-    already-recorded commit) — the render says so and asks for a short
-    "I'm back" message instead of listing entries."""
+    already-recorded commit) — the render states that fact alone, opening on
+    the same restart fact as the with-entries form (#2974), with no
+    instruction attached."""
     assert render_changelog_announcement([]) == (
-        "You've just restarted. This deploy changed nothing in your tools or behaviour.\n"
-        "\n"
-        "Send the user a short message letting them know you're back."
+        "You've just restarted. This deploy changed nothing in your tools or behaviour."
     )

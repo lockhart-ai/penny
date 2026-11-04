@@ -4169,14 +4169,18 @@ class TestLogTools:
 
 
 class TestEmissionProvenanceRender:
-    """The messagelog facade renders emission provenance inline (#1568).
+    """The messagelog facade renders emission provenance inline (#1568, the
+    run anchor #2974).
 
     An outgoing row stamped with the mechanism that sent it reads
     ``(sent by <mechanism>) <content>`` between the timestamp and content on
     every read path (all facade reads synthesize entries through ``_to_entry``)
-    — so pulling a message by recency or relevance IS resolving its source.  A
-    NULL-mechanism row (a direct reply) renders byte-identical to the
-    pre-provenance shape — the unmarked case stays the quiet default."""
+    — so pulling a message by recency or relevance IS resolving its source. A
+    row that ALSO carries the run that wrote it (every delivery-turn send does,
+    #2656/#2964) adds that run's own ``run <id>`` anchor to the same marker —
+    the one-hop ``run_get`` path to the send's trigger. A NULL-mechanism row (a
+    direct reply) renders byte-identical to the pre-provenance shape — the
+    unmarked case stays the quiet default."""
 
     def _seed(self, db: Database) -> None:
         db.memories.create_log(
@@ -4203,21 +4207,35 @@ class TestEmissionProvenanceRender:
                     timestamp=datetime(2026, 7, 2, 9, 14, tzinfo=UTC),
                 )
             )
+            session.add(
+                MessageLog(
+                    direction=PennyConstants.MessageDirection.OUTGOING,
+                    sender="penny",
+                    content="Your trail report run just finished.",
+                    mechanism="trail-conditions",
+                    run_id="run-trail-01",
+                    embedding=serialize_embedding([0.0, 0.0, 1.0]),
+                    timestamp=datetime(2026, 7, 2, 9, 20, tzinfo=UTC),
+                )
+            )
             session.commit()
 
     @pytest.mark.asyncio
     async def test_log_read_renders_provenance_whole(self, db):
-        """The whole log_read render, both shapes pinned: the direct reply line is
-        byte-identical to the pre-provenance shape (``N. [stamp] content``); the
-        mechanism-stamped line carries the inline marker."""
+        """The whole log_read render, all three shapes pinned: the direct reply
+        line is byte-identical to the pre-provenance shape (``N. [stamp]
+        content``); the mechanism-stamped line with no run carries the plain
+        inline marker; the one with a run adds its ``run <id>`` anchor too."""
         self._seed(db)
         result = await LogReadTool(db, agent_name="reader", scope="reader").execute(
             CallLink.new_top(), log=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
         )
         assert result.message == (
-            "2 entries from `penny-messages` (oldest first):\n"
+            "3 entries from `penny-messages` (oldest first):\n"
             "1. [2026-07-02 09:10 UTC] sure, happy to help!\n"
-            "2. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: the price dropped to $42!"
+            "2. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: the price dropped to $42!\n"
+            "3. [2026-07-02 09:20 UTC] (sent by trail-conditions, run run-trail-01) "
+            "Your trail report run just finished."
         )
 
     def test_read_similar_carries_provenance_too(self, db):

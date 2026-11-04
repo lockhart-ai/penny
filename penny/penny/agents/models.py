@@ -146,9 +146,12 @@ class HistoryTurn(NamedTuple):
     no calls, a turn renders as the single plain message it always has; a run
     that DID call tools expands into its own native call + tool-result turns
     ahead of the reply text, so the act is visible beside the words rather than
-    only the words riding into the next turn's history.  ``None`` on a user turn
-    (which carries no run) and on an autonomous send (which has no run behind it
-    at all)."""
+    only the words riding into the next turn's history.  It is also what lets
+    ``_expand_history_turn`` find an autonomous send's own TRIGGER (#2974,
+    ``Agent._run_trigger_message``) and prepend it ahead of everything else.
+    ``None`` only on a user turn (which carries no run) — an autonomous send
+    DOES carry the delivery turn's own run id (the drainer stamps it, #2656/
+    #2964), never ``None`` for that reason alone."""
 
     role: str
     content: str

@@ -922,17 +922,21 @@ class MessageLogMemory(Log):
 
     **Emission provenance renders inline (#1568)**: an outgoing row stamped with
     the ``mechanism`` that sent it (an autonomous collector send, carried onto the
-    row by the drainer) renders ``(sent by <mechanism>) <content>`` — so pulling a
-    message by relevance or recency IS resolving its source, on every read path
-    (they all synthesize entries through ``_to_entry``).  A NULL-mechanism row (a
-    direct reply; every incoming row) renders the bare content, byte-identical to
-    the pre-provenance render — the unmarked case stays the quiet default.
+    row by the drainer) renders ``(sent by <mechanism>, run <id>) <content>`` — so
+    pulling a message by relevance or recency IS resolving its source, on every
+    read path (they all synthesize entries through ``_to_entry``).  The ``run
+    <id>`` anchor (#2974) is the same one ``self_state.py``'s activity line
+    renders — a one-hop ``run_get`` to this send's own trigger, omitted only when
+    the row genuinely carries no run.  A NULL-mechanism row (a direct reply;
+    every incoming row) renders the bare content, byte-identical to the
+    pre-provenance render — the unmarked case stays the quiet default.
     """
 
     # The inline provenance marker, rendered between the timestamp stamp (added by
     # the tool layer's ``format_entries``) and the message content:
-    # ``3. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: …``.
+    # ``3. [2026-07-02 09:14 UTC] (sent by price-watch, run a1b2c3) Heads up: …``.
     SENT_BY_MARKER = "(sent by {mechanism}) "
+    SENT_BY_MARKER_WITH_RUN = "(sent by {mechanism}, {run_prefix}{run_id}) "
 
     def __init__(
         self,
@@ -972,13 +976,22 @@ class MessageLogMemory(Log):
         )
 
     def _render_content(self, row: MessageLog) -> str:
-        """The entry content with inline emission provenance (#1568): a
-        mechanism-stamped send leads with the ``(sent by <mechanism>)`` marker; a
-        NULL-mechanism row is the bare content, byte-identical to the
-        pre-provenance render."""
+        """The entry content with inline emission provenance (#1568, the run
+        anchor #2974): a mechanism-stamped send leads with the ``(sent by
+        <mechanism>, run <id>)`` marker — or, when the row carries no run,
+        ``(sent by <mechanism>)`` alone, never a guessed id.  A NULL-mechanism
+        row is the bare content, byte-identical to the pre-provenance render."""
         if row.mechanism is None:
             return row.content
-        return f"{self.SENT_BY_MARKER.format(mechanism=row.mechanism)}{row.content}"
+        if row.run_id is None:
+            marker = self.SENT_BY_MARKER.format(mechanism=row.mechanism)
+        else:
+            marker = self.SENT_BY_MARKER_WITH_RUN.format(
+                mechanism=row.mechanism,
+                run_prefix=PennyConstants.RUN_EVENT_PREFIX,
+                run_id=row.run_id,
+            )
+        return f"{marker}{row.content}"
 
     def _select(self):
         return select(MessageLog).where(

@@ -69,13 +69,8 @@ def test_a_job_report_renders_whole():
         "It ran on its own schedule.\n"
         "\n"
         "## What the job wrote this run\n"
-        "These entries are what the job kept for the user this run — the message "
-        "tells them about every one.\n"
-        "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
-        "\n"
-        "Write the one message to send the user about this run, from what the job wrote. It "
-        "can be as long as it takes to cover every entry — a job's report isn't a quick "
-        "text."
+        "These entries are what the job kept for the user this run.\n"
+        "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier"
     )
 
 
@@ -107,7 +102,8 @@ def test_a_job_report_renders_entry_urls_as_handles():
     )
     # No table → the entries render verbatim (the whole-render test's shape).
     assert render_job_report(report).endswith(
-        "can be as long as it takes to cover every entry — a job's report isn't a quick text."
+        "- into `tech-news`, under `lead story`: "
+        "Fusion milestone — [the report](https://example.com/fusion-report)"
     )
 
 
@@ -130,11 +126,7 @@ def test_a_report_states_a_no_write_cycle_and_a_user_triggered_run():
         "It ran just now because the user asked it to run.\n"
         "\n"
         "## What the job wrote this run\n"
-        "It wrote nothing down this run.\n"
-        "\n"
-        "Write the one message to send the user about this run, from what the job wrote. It "
-        "can be as long as it takes to cover every entry — a job's report isn't a quick "
-        "text."
+        "It wrote nothing down this run."
     )
 
 

@@ -1174,6 +1174,7 @@ class Collector(BackgroundAgent):
         system_prompt: str | None = None,
         images: list[str] | None = None,
         handles: HandleTable | None = None,
+        trailing_role: MessageRole = MessageRole.USER,
     ) -> list[LlmMessage]:
         """The collector's own two-message shape (#2778): ``[system, user]`` —
         no mid-conversation dynamic system message, no history (a cycle never
@@ -1187,11 +1188,14 @@ class Collector(BackgroundAgent):
         system message — identical across every job and cycle — and the tool
         schemas stay the one prefix a server-side cache reuses; only the user
         turn's own content is re-read each time.  ``images`` is unused: a
-        background cycle never carries an attachment."""
+        background cycle never carries an attachment.  ``trailing_role``
+        (#2974) is accepted for signature parity with ``Agent.run()`` — every
+        collector cycle runs with the default ``USER``; nothing in this agent
+        shape starts a system-originated delivery turn."""
         effective = system_prompt or self.system_prompt
         return [
             LlmMessage(role=MessageRole.SYSTEM, content=effective),
-            LlmMessage(role=MessageRole.USER, content=prompt, images=images or None),
+            LlmMessage(role=trailing_role, content=prompt, images=images or None),
         ]
 
     async def _build_system_prompt(
