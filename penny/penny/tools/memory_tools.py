@@ -3766,6 +3766,10 @@ class FindTool(MemoryTool):
             return ToolResult(message=_FIND_EMBED_FAILURE, success=False)
         if args.memory is not None:
             return self._run_scoped(args.memory, vec)
+        # Unscoped find has no multi-name override, so ``named`` stays empty
+        # (its default) — a ``search_only_when_named`` memory (#2956) is reached
+        # only via the scoped path above, exactly like ``memory=<name>`` already
+        # reaches it regardless of the mark.
         hits = self._db.memories.resolve_objects(vec, args.query, PennyConstants.FIND_STORE_LIMIT)
         # The conversation logs' own INDEPENDENT budget (#2774) — ranked and capped
         # entirely within its own section, so it can never be crowded out by (or
@@ -3990,9 +3994,26 @@ class SynthesizeTool(Tool):
     ) -> list[ResolvedEntry | ResolvedMessage]:
         """``find``'s own two lookups (#2932) — no new search logic — filtered to
         the content-bearing arms (a bare ``ResolvedMatch`` carries no content
-        to synthesize over) and then to ``memories``/``since`` when given."""
+        to synthesize over) and then to ``memories``/``since`` when given.
+
+        ``memories`` doubles as BOTH the ``named`` override and the ``restrict_to``
+        scope (#2956 round 2): a ``search_only_when_named`` memory
+        (``browse-results``) is excluded entirely when ``memories`` is empty, and
+        reachable only by naming it there (``named``); and when ``memories`` IS
+        given, retrieval's own CANDIDATE pool is restricted to exactly those
+        memories before ranking/limiting (``restrict_to``) — never an
+        already-cut result filtered afterward, which starved a scoped call
+        whenever the wider store out-ranked the named memories for the limit's
+        own slots before any filter ran. The post-filter below is now a no-op
+        for ``hits`` (``restrict_to`` already guarantees it) but still narrows
+        ``messages``, which has no ``restrict_to`` concept of its own."""
+        named = frozenset(args.memories) if args.memories else frozenset()
         hits = self._db.memories.resolve_objects(
-            vec, args.query, PennyConstants.SYNTHESIZE_HIT_LIMIT
+            vec,
+            args.query,
+            PennyConstants.SYNTHESIZE_HIT_LIMIT,
+            named=named,
+            restrict_to=named,
         )
         messages = self._db.memories.resolve_messages(
             vec, args.query, PennyConstants.SYNTHESIZE_HIT_LIMIT

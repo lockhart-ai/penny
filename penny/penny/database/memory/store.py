@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import math
 import re
 from collections.abc import Callable, Hashable, Sequence
 from datetime import datetime
@@ -1032,7 +1033,15 @@ class MemoryStore:
 
     # ── Resolve by meaning + by word (hybrid find, #2774) ──────────────────────
 
-    def resolve_objects(self, anchor: list[float], query: str, limit: int) -> list[ResolvedHit]:
+    def resolve_objects(
+        self,
+        anchor: list[float],
+        query: str,
+        limit: int,
+        *,
+        named: frozenset[str] = frozenset(),
+        restrict_to: frozenset[str] = frozenset(),
+    ) -> list[ResolvedHit]:
         """Rank Penny's own addressable things, best-first (#1558, #1640, #2774).
 
         TWO independently-ranked legs fused by reciprocal rank (``_fuse_rrf``):
@@ -1043,7 +1052,15 @@ class MemoryStore:
         a KEYWORD leg over stored entries' key/content via ``memory_entry_fts``
         (#2774; object descriptions are NOT indexed for keywords, so a collection/log
         hit only ever carries an embedding-leg score).  The search spans every
-        family in one fused list, no up-front narrowing (#1643).
+        family in one fused list, no up-front narrowing (#1643) — EXCEPT a memory
+        marked ``search_only_when_named`` (#2956): it contributes nothing to either
+        leg unless its name is in ``named``, so a raw log a model never asked for by
+        name doesn't compete at all. ``restrict_to``, when non-empty (a scoped
+        ``synthesize(memories=[...])`` call, #2956 round 2), narrows the CANDIDATE
+        pool itself to exactly those memories before ranking even starts — not a
+        post-filter on an already-limited result, which starved a scoped call
+        whenever the wider store's own noise or raw pages out-ranked the named
+        memories' own entries for the limit's own slots before the filter ever ran.
 
         Fusing by RANK (not raw score) means a candidate the keyword leg finds but
         whose embedding fell at or below the cosine>0 gate (so it's simply absent
@@ -1051,22 +1068,62 @@ class MemoryStore:
         the literal-name-beats-unremarkable-embedding case #2774 exists for.  An
         entry contributes up to two embedding facets (content + key); the embedding
         leg keeps the FIRST (best-scoring) facet of each entry (max-of-facets, same
-        disjunction the write-dedup uses).  Capped at ``limit`` after a relative
-        floor drops hits far below the section's own best fused score
-        (``_apply_relative_floor``) — an unrelated query honestly returns fewer
-        hits, or none, rather than padding out with filler.  The tool layer turns
-        each hit into identity + the deterministic addressing; ambiguity (several
-        hits) is returned, never silently resolved.
+        disjunction the write-dedup uses).  A relative floor drops hits far below
+        the fused list's own best score (``_apply_relative_floor``, over the wider
+        RRF pool rather than cut straight to ``limit`` — the spread below needs the
+        room) — an unrelated query honestly returns fewer hits, or none, rather than
+        padding out with filler.  Spread across memories (#2956, ``_spread_by_memory``)
+        is the FINAL cut to ``limit``, and the share each memory gets depends on
+        ``restrict_to`` (#2956 round 3): UNSCOPED (``restrict_to`` empty), at most
+        ``RESOLVE_SPREAD_PER_MEMORY`` hits from any one memory, across at most
+        ``RESOLVE_SPREAD_MEMORY_CAP`` distinct memories — a cap meant to diversify
+        an open-ended search, so one memory that ranks best on every hit can no
+        longer fill every slot. SCOPED (``restrict_to`` set), that same fixed
+        per-memory cap would starve the very memories the caller named — a call
+        naming one collection could never get more than
+        ``RESOLVE_SPREAD_PER_MEMORY`` of its own entries — so the share is instead
+        ``limit`` divided evenly across ``restrict_to`` (``ceil``, so the last
+        memory isn't shorted by integer division), and the memory cap is
+        ``len(restrict_to)``: every named memory is eligible, and if there is only
+        one, it can fill every slot. The tool layer turns each hit into identity +
+        the deterministic addressing; ambiguity (several hits) is returned, never
+        silently resolved.
         """
         embedding_ranked = cast(
             "list[ResolvedHit]",
             self._rank_candidates(
-                self._resolution_candidates(), anchor, PennyConstants.FIND_RRF_POOL
+                self._resolution_candidates(named, restrict_to),
+                anchor,
+                PennyConstants.FIND_RRF_POOL,
             ),
         )
-        keyword_ranked = self._keyword_candidates_entries(query)
+        keyword_ranked = self._keyword_candidates_entries(query, named, restrict_to)
         fused = self._fuse_rrf(embedding_ranked, keyword_ranked, lambda hit: hit.fusion_identity)
-        return self._apply_relative_floor(fused, limit)
+        floored = self._apply_relative_floor(fused, PennyConstants.FIND_RRF_POOL)
+        if restrict_to:
+            per_memory = math.ceil(limit / len(restrict_to))
+            memory_cap = len(restrict_to)
+        else:
+            per_memory = PennyConstants.RESOLVE_SPREAD_PER_MEMORY
+            memory_cap = PennyConstants.RESOLVE_SPREAD_MEMORY_CAP
+        return self._spread_by_memory(floored, limit, per_memory=per_memory, memory_cap=memory_cap)
+
+    @staticmethod
+    def _memory_admitted(
+        row: MemoryRow, named: frozenset[str], restrict_to: frozenset[str]
+    ) -> bool:
+        """Whether ``row`` competes in resolution (#2956 round 2).
+
+        ``restrict_to``, when non-empty, decides admission ALONE — exactly the
+        named memories, nothing else — restricting the CANDIDATE pool before
+        ranking/limiting rather than filtering an already-cut result, which is
+        what let a noisy store starve a scoped ``synthesize(memories=[...])``
+        call of the very memories it named. Empty ``restrict_to`` falls back to
+        the unscoped rule: any live memory competes except one marked
+        ``search_only_when_named`` and not in ``named``."""
+        if restrict_to:
+            return row.name in restrict_to
+        return not row.search_only_when_named or row.name in named
 
     def resolve_messages(
         self, anchor: list[float], query: str, limit: int
@@ -1145,12 +1202,17 @@ class MemoryStore:
         with self._session() as session:
             return list(session.execute(sql, params).all())
 
-    def _keyword_candidates_entries(self, query: str) -> list[tuple[ResolvedEntry, int]]:
+    def _keyword_candidates_entries(
+        self, query: str, named: frozenset[str], restrict_to: frozenset[str]
+    ) -> list[tuple[ResolvedEntry, int]]:
         """The keyword leg's ranked ``ResolvedEntry`` candidates (#2774) — every
         ``memory_entry`` whose key/content matches ``query`` via ``memory_entry_fts``
         (migration 0127), best ``bm25`` first, capped at ``FIND_RRF_POOL``, filtered
-        to the same live (non-archived) containers the embedding leg's
-        ``_entry_candidates`` filters to."""
+        to the same live (non-archived), ``_memory_admitted`` containers the
+        embedding leg's ``_entry_candidates`` filters to (#2956 round 2: a memory
+        ``_memory_admitted`` excludes is left out of ``kinds``, so
+        ``_entry_hits_from_rows``'s own existing "unknown container" skip excludes
+        its rows too)."""
         sql = text(
             "SELECT e.id, e.memory_name, e.key, e.content, e.created_at "
             "FROM memory_entry_fts f "
@@ -1165,7 +1227,7 @@ class MemoryStore:
                 ResolvedKind.COLLECTION if row.type == MemoryType.COLLECTION else ResolvedKind.LOG
             )
             for row in self.list_all()
-            if not row.archived
+            if not row.archived and self._memory_admitted(row, named, restrict_to)
         }
         return self._entry_hits_from_rows(rows, kinds)
 
@@ -1277,6 +1339,40 @@ class MemoryStore:
         return [item for item, score in scored if score >= floor][:limit]
 
     @staticmethod
+    def _spread_by_memory(
+        ranked: Sequence[ResolvedHit], limit: int, *, per_memory: int, memory_cap: int
+    ) -> list[ResolvedHit]:
+        """The shared retrieval's spread (#2956): walk an already best-first
+        ``ranked`` list once, admitting a hit only while its OWN memory hasn't used
+        its ``per_memory`` share and the walk hasn't yet admitted more than
+        ``memory_cap`` distinct memories — stopping once ``limit`` hits are
+        admitted. Without this, one memory that ranks best on every hit (a raw
+        page dump embedding close to the query) can fill the whole result on
+        best-first rank alone, crowding out a memory that ranks second-best but
+        holds the more useful fact.
+
+        Walking the list top-down and admitting a new memory the first time it's
+        seen IS ranking memories by their own best hit — a memory's best hit is
+        wherever it first appears in a best-first list — so this needs no second
+        pass to rank memories themselves.  ``Sequence`` (covariant), not ``list``
+        (invariant, same reasoning ``_rank_candidates`` documents): a caller
+        fabricating a ``list[ResolvedMatch]`` fixture passes it directly rather
+        than widening it by hand first."""
+        counts: dict[str, int] = {}
+        admitted: list[ResolvedHit] = []
+        for hit in ranked:
+            name = hit.memory_identity
+            if name not in counts and len(counts) >= memory_cap:
+                continue
+            if counts.get(name, 0) >= per_memory:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+            admitted.append(hit)
+            if len(admitted) >= limit:
+                break
+        return admitted
+
+    @staticmethod
     def _rank_candidates(
         candidates: Sequence[tuple[ResolvedHit | ResolvedMessage, bytes]],
         anchor: list[float],
@@ -1372,15 +1468,21 @@ class MemoryStore:
             return candidates[best][0]
         return None
 
-    def _resolution_candidates(self) -> list[tuple[ResolvedHit, bytes]]:
+    def _resolution_candidates(
+        self, named: frozenset[str], restrict_to: frozenset[str]
+    ) -> list[tuple[ResolvedHit, bytes]]:
         """Every (hit, embedding-blob) pair eligible for ``resolve_objects`` —
         registry rows carrying a description anchor, and stored entries carrying a
         content/key anchor.  A row/entry without its vector is silently absent (the
         backfill fills it) — never surfaced unscored.  Every family contributes; the
-        search never narrows up front (#1643)."""
+        search never narrows up front (#1643) — EXCEPT a memory ``_memory_admitted``
+        excludes: a ``search_only_when_named`` memory not in ``named``, or (#2956
+        round 2) any memory outside a non-empty ``restrict_to``."""
         candidates: list[tuple[ResolvedHit, bytes]] = []
         for row in self.list_all():
             if row.description_embedding is None:
+                continue
+            if not self._memory_admitted(row, named, restrict_to):
                 continue
             row_kind = (
                 ResolvedKind.COLLECTION if row.type == MemoryType.COLLECTION else ResolvedKind.LOG
@@ -1389,10 +1491,12 @@ class MemoryStore:
                 name=row.name, kind=row_kind, archived=row.archived, label=row.description
             )
             candidates.append((match, row.description_embedding))
-        candidates.extend(self._entry_candidates())
+        candidates.extend(self._entry_candidates(named, restrict_to))
         return candidates
 
-    def _entry_candidates(self) -> list[tuple[ResolvedEntry, bytes]]:
+    def _entry_candidates(
+        self, named: frozenset[str], restrict_to: frozenset[str]
+    ) -> list[tuple[ResolvedEntry, bytes]]:
         """Every (entry-hit, facet-embedding) pair eligible for resolution (#1640).
 
         Each ``memory_entry`` in a NON-archived collection or real log contributes
@@ -1401,9 +1505,12 @@ class MemoryStore:
         key surfaces the entry (``resolve_objects`` dedups the two facets by entry
         id, keeping the better-scoring — max-of-facets).  Facades over
         ``messagelog`` / ``promptlog`` have no ``memory_entry`` rows, so they never
-        appear; archived memories are excluded via the containing-row filter."""
+        appear; archived memories are excluded via the containing-row filter, as is
+        any memory ``_memory_admitted`` excludes (a ``search_only_when_named``
+        memory not in ``named``, or outside a non-empty ``restrict_to``, #2956
+        round 2)."""
         pairs: list[tuple[ResolvedEntry, bytes]] = []
-        for entry, container_kind in self._embedded_entry_rows():
+        for entry, container_kind in self._embedded_entry_rows(named, restrict_to):
             hit = ResolvedEntry(
                 entry_id=entry.id,  # ty: ignore[invalid-argument-type]
                 memory_name=entry.memory_name,
@@ -1418,19 +1525,23 @@ class MemoryStore:
                 pairs.append((hit, entry.key_embedding))
         return pairs
 
-    def _embedded_entry_rows(self) -> list[tuple[MemoryEntry, ResolvedKind]]:
+    def _embedded_entry_rows(
+        self, named: frozenset[str], restrict_to: frozenset[str]
+    ) -> list[tuple[MemoryEntry, ResolvedKind]]:
         """Every embedded entry in a non-archived collection/log, paired with its
         container's kind (``collection`` | ``log``).  One pass over ``memory_entry``
         — a single-user deployment, so no index gymnastics — filtered against the
-        registry's live (non-archived) rows built from ``list_all`` (which also
-        supplies each container's shape); an entry whose memory is archived or is a
-        facade marker with no real rows never matches."""
+        registry's live (non-archived), ``_memory_admitted`` rows built from
+        ``list_all`` (which also supplies each container's shape); an entry whose
+        memory is archived, is a facade marker with no real rows, or is excluded by
+        ``_memory_admitted`` (a ``search_only_when_named`` memory not in ``named``,
+        or outside a non-empty ``restrict_to``, #2956 round 2) never matches."""
         kinds = {
             row.name: (
                 ResolvedKind.COLLECTION if row.type == MemoryType.COLLECTION else ResolvedKind.LOG
             )
             for row in self.list_all()
-            if not row.archived
+            if not row.archived and self._memory_admitted(row, named, restrict_to)
         }
         with self._session() as session:
             entries = session.exec(

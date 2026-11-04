@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 135
+        assert count == 136
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 135
+        assert count1 == 136
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 134 migrations
-        assert count == 134
+        # 0001 is skipped; the rest run = 135 migrations
+        assert count == 135
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 135  # all migrations applied
+        assert count == 136  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -271,6 +271,39 @@ class TestMigrate:
         assert "notify" in columns
         by_name = dict(conn.execute("SELECT name, notify FROM memory").fetchall())
         assert by_name == {"watched": 1, "silent": 0}
+        conn.close()
+
+    def test_0136_marks_browse_results_search_only_when_named(self, tmp_path):
+        """Migration 0136 adds ``memory.search_only_when_named`` and sets it on
+        the seeded ``browse-results`` row by its known key alone — every other
+        row, including one sharing no name with it, is left false (#2956)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO memory (name) VALUES ('browse-results')")
+        conn.execute("INSERT INTO memory (name) VALUES ('user-messages')")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0136_mark_browse_results_search_only_when_named.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0136", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory)").fetchall()}
+        assert "search_only_when_named" in columns
+        by_name = dict(conn.execute("SELECT name, search_only_when_named FROM memory").fetchall())
+        assert by_name == {"browse-results": 1, "user-messages": 0}
         conn.close()
 
     def test_0120_adds_messagelog_run_id(self, tmp_path):

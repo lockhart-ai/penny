@@ -351,6 +351,16 @@ class MemoryRow(SQLModel, table=True):
     # #1557 retired the ``published`` pub/sub side-channel + the notifier consumer.
     # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
     notify: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
+    # The retrieval exclusion mark (#2956): when true, `find`'s and `synthesize`'s
+    # default (unnamed) search never surfaces this memory's entries — only
+    # explicitly naming it (`find(memory=...)`, `synthesize(memories=[...])`)
+    # reaches them. Read structurally by ``MemoryStore.resolve_objects``
+    # (never by comparing a memory's NAME), so a future raw log carries the
+    # same treatment just by setting this column. Seeded true on the
+    # ``browse-results`` log alone (migration 0136) — a raw page dump embeds
+    # very close to a question about the same topic, so it otherwise crowds
+    # out the curated collection built FROM those pages.
+    search_only_when_named: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     extraction_prompt: str | None = Field(default=None)
     # The collection's schedule: ONE RRULE string (#1857, migration 0104) — the whole
     # schedule grammar, replacing the interval / run_at / on_advance / cron union.  An

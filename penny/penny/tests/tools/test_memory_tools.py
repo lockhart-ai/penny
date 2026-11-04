@@ -5015,6 +5015,85 @@ class TestFind:
         assert result.success is False
         assert "did you mean 'garage'?" in result.message
 
+    @pytest.mark.asyncio
+    async def test_one_memory_never_fills_every_store_slot(self, db, mock_llm):
+        """However many entries one memory holds — even more than
+        FIND_STORE_LIMIT, every one scoring as well as a second memory's own
+        single entry — the second memory still gets a slot (#2956): the spread
+        caps any one memory's share so it can never fill the whole result, the
+        store-side mirror of ``test_many_matching_messages_never_displace_store_hits``
+        above."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
+        for i in range(PennyConstants.FIND_STORE_LIMIT + 2):
+            await CollectionWriteTool(
+                db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+            ).execute(
+                CallLink.new_top(),
+                collection="aurora-watch",
+                entries=[{"key": f"aurora beacon {i}", "content": "aurora beacon cascade"}],
+            )
+        await _create_collection(db, client, "nebula-watch", "aurora beacon cascade")
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="nebula-watch",
+            entries=[{"key": "nebula entry", "content": "aurora beacon cascade"}],
+        )
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
+        assert result.success
+        assert "nebula-watch" in result.message
+
+    @staticmethod
+    async def _seed_marked_log(db, client: LlmClient) -> None:
+        """A log carrying both an object anchor and a matching entry, then marked
+        ``search_only_when_named`` (#2956) — set directly, since no tool writes
+        this column (only migration 0136 does, on the seeded ``browse-results``
+        row)."""
+        await LogCreateTool(db, client).execute(
+            CallLink.new_top(), log="aurora-feed", description="aurora beacon cascade"
+        )
+        await LogAppendTool(db, client, author="test").execute(
+            CallLink.new_top(), log="aurora-feed", content="cascade gamma"
+        )
+        with Session(db.engine) as session:
+            row = session.get(MemoryRow, "aurora-feed")
+            assert row is not None
+            row.search_only_when_named = True
+            session.add(row)
+            session.commit()
+
+    @pytest.mark.asyncio
+    async def test_a_marked_memory_is_excluded_from_the_default_search(self, db, mock_llm):
+        """A memory with ``search_only_when_named`` set (#2956) surfaces nowhere
+        in an unscoped ``find`` — neither as its own hit nor via an entry —
+        however closely it matches."""
+        client = _axis_client(mock_llm)
+        await self._seed_marked_log(db, client)
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade"
+        )
+        assert result.success
+        assert "aurora-feed" not in result.message
+        assert "cascade gamma" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_a_marked_memory_is_reached_by_naming_it(self, db, mock_llm):
+        """The scoped path (``memory=<name>``) already bypasses the unscoped
+        search entirely, so it reaches a ``search_only_when_named`` memory
+        exactly as it reaches any other — naming it is how she searches it
+        (#2956)."""
+        client = _axis_client(mock_llm)
+        await self._seed_marked_log(db, client)
+        result = await FindTool(db, client).execute(
+            CallLink.new_top(), query="aurora beacon cascade", memory="aurora-feed"
+        )
+        assert result.success
+        assert "cascade gamma" in result.message
+
 
 class TestSynthesize:
     """Reads exactly ``find``'s own two deterministic lookups (#2932), then
@@ -5163,6 +5242,101 @@ class TestSynthesize:
         assert "notes-one" in result.message
         assert "notes-two" not in result.message
         assert result.message.count("entry key=") == 1
+
+    async def test_a_scoped_call_is_not_starved_by_higher_ranked_other_memories(self, db, mock_llm):
+        """#2956 round 2: the old code ranked ACROSS EVERY memory first, cut to
+        ``SYNTHESIZE_HIT_LIMIT``, THEN filtered to ``memories`` — so naming one
+        memory that ranks below several others got nothing, the same way raw
+        pages crowded out the curated collections in prod. More than
+        ``RESOLVE_SPREAD_MEMORY_CAP`` other memories here each match the query
+        PERFECTLY, ranking strictly above the named one — on the fix, the
+        named memory's own entry still reaches the draw regardless, because
+        the candidate pool is restricted to it before ranking ever runs."""
+        client = _axis_client(mock_llm)
+        for i in range(PennyConstants.RESOLVE_SPREAD_MEMORY_CAP + 1):
+            name = f"noise-{i}"
+            await _create_collection(db, client, name, "aurora beacon cascade")
+            await CollectionWriteTool(
+                db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+            ).execute(
+                CallLink.new_top(),
+                collection=name,
+                # A perfect match for the query — ranks strictly above "target"
+                # below, which has one extra, non-matching word diluting it.
+                entries=[{"key": "k", "content": "aurora beacon cascade"}],
+            )
+        await _create_collection(db, client, "target", "aurora beacon cascade")
+        await CollectionWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(),
+            collection="target",
+            entries=[{"key": "k", "content": "aurora beacon cascade echo"}],
+        )
+        mock_llm.set_response_handler(
+            lambda request, count: LlmResponse(
+                message=LlmMessage(role="assistant", content="Just the one note.")
+            )
+        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade", memories=["target"])
+        assert result.success
+        assert "target" in result.message
+        for i in range(PennyConstants.RESOLVE_SPREAD_MEMORY_CAP + 1):
+            assert f"noise-{i}" not in result.message
+
+    @staticmethod
+    async def _seed_marked_log(db, client: LlmClient) -> None:
+        """A log carrying an entry that matches the query, marked
+        ``search_only_when_named`` (#2956) — set directly, since no tool writes
+        this column (only migration 0136 does, on the seeded ``browse-results``
+        row)."""
+        await LogCreateTool(db, client).execute(
+            CallLink.new_top(), log="aurora-feed", description="aurora beacon cascade"
+        )
+        await LogAppendTool(db, client, author="test").execute(
+            CallLink.new_top(), log="aurora-feed", content="aurora beacon cascade"
+        )
+        with Session(db.engine) as session:
+            row = session.get(MemoryRow, "aurora-feed")
+            assert row is not None
+            row.search_only_when_named = True
+            session.add(row)
+            session.commit()
+
+    @pytest.mark.asyncio
+    async def test_a_marked_memory_is_excluded_from_the_default_search(self, db, mock_llm):
+        """A memory with ``search_only_when_named`` set (#2956) is excluded from
+        ``synthesize``'s default (unnamed) search, the same shared retrieval
+        ``find`` uses — nothing of its matches the draw, so the honest empty
+        fires rather than a draw over an excluded source."""
+        client = _axis_client(mock_llm)
+        await self._seed_marked_log(db, client)
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade")
+        assert result.success
+        assert "aurora-feed" not in result.message
+        assert mock_llm.requests == []  # only the query embed ran — no draw over an excluded source
+
+    @pytest.mark.asyncio
+    async def test_memories_filter_still_reaches_a_marked_memory(self, db, mock_llm):
+        """Naming a ``search_only_when_named`` memory in ``memories`` still
+        searches it (#2956) — the same exemption ``find(memory=...)`` already
+        gives it, now on synthesize's own multi-name filter."""
+        client = _axis_client(mock_llm)
+        await self._seed_marked_log(db, client)
+        mock_llm.set_response_handler(
+            lambda request, count: LlmResponse(
+                message=LlmMessage(role="assistant", content="Just the one note.")
+            )
+        )
+        result = await SynthesizeTool(
+            db, embedding_client=client, model_client=client, agent_name="test-agent"
+        ).execute(CallLink.new_top(), query="aurora beacon cascade", memories=["aurora-feed"])
+        assert result.success
+        assert "aurora-feed" in result.message
 
     @pytest.mark.asyncio
     async def test_since_drops_an_older_entry(self, db, mock_llm):

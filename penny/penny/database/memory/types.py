@@ -235,6 +235,15 @@ class ResolvedMatch(BaseModel):
         chain."""
         return ("object", self.name)
 
+    @property
+    def memory_identity(self) -> str:
+        """The memory this hit belongs to (#2956) — the grouping key
+        ``MemoryStore._spread_by_memory`` caps per-memory and distinct-memory
+        counts on: an object hit IS its own memory. A property on each
+        ``ResolvedHit`` arm, the same reason ``fusion_identity`` is one rather
+        than an ``isinstance`` check at the spread's call site."""
+        return self.name
+
 
 class ResolvedEntry(BaseModel):
     """One resolve-by-meaning hit on a *stored entry* (#1640) — the entry arm of a
@@ -268,6 +277,12 @@ class ResolvedEntry(BaseModel):
         _fuse_rrf``): an entry's id (deduping its two facets, content and key,
         to one row).  See :meth:`ResolvedMatch.fusion_identity`."""
         return ("entry", self.entry_id)
+
+    @property
+    def memory_identity(self) -> str:
+        """The memory this hit belongs to (#2956) — its containing collection
+        or log. See :meth:`ResolvedMatch.memory_identity`."""
+        return self.memory_name
 
 
 class ResolvedMessage(BaseModel):
