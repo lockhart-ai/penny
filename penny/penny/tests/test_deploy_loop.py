@@ -98,6 +98,27 @@ def _write_executable(path: pathlib.Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _child_is_stopped(pid: int) -> bool:
+    """Reads the kernel's own record that a process is in the stopped ('T') state
+    — never a fixed sleep guessing when a SIGSTOP landed. Linux (the gate's
+    container, which has no `ps`) exposes it in /proc/<pid>/stat; macOS has no
+    /proc and falls back to `ps`, which is present there."""
+    proc_stat = pathlib.Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        # Field 3 is the state letter; comm (field 2) may itself contain spaces
+        # and parens, so read past the final ')' to the state field.
+        return proc_stat.read_text().rsplit(")", 1)[1].split()[0] == "T"
+    if shutil.which("ps") is None:
+        return False
+    result = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.returncode == 0 and result.stdout.strip().startswith("T")
+
+
 def _read_or_empty(path: pathlib.Path) -> str:
     """`path`'s text, or "" before it exists — a stub's log file is created by
     its own first write, so a `_wait_until` condition polling it must not treat
@@ -200,6 +221,7 @@ class _Deployment:
     cursor_file: pathlib.Path
     fail_flag: pathlib.Path
     deploy_log: pathlib.Path
+    deploy_run_log: pathlib.Path
 
 
 def _start_deployment(
@@ -224,6 +246,7 @@ def _start_deployment(
     cursor_file = tmp_path / "cursor"
     fail_flag = tmp_path / "fail-flag"
     deploy_log = tmp_path / "deploy.log"
+    deploy_run_log = tmp_path / "deploy-run.log"
     run_stub = run_cmd or _run_stub(tmp_path, run_log, pid_file)
     build_stub = _build_stub(tmp_path, build_log, cursor_file, fail_flag)
     if not cursor_file.exists():
@@ -235,11 +258,14 @@ def _start_deployment(
             "DEPLOY_RUN_CMD": str(run_stub),
             "DEPLOY_BUILD_CMD": str(build_stub),
             "DEPLOY_LOG": str(deploy_log),
+            "DEPLOY_RUN_LOG": str(deploy_run_log),
             "DEPLOY_BUILD_CURSOR_FILE": str(cursor_file),
         },
     )
     _wait_until(lambda: _read_or_empty(run_log).count("\n") >= 1)
-    return _Deployment(proc, run_log, pid_file, build_log, cursor_file, fail_flag, deploy_log)
+    return _Deployment(
+        proc, run_log, pid_file, build_log, cursor_file, fail_flag, deploy_log, deploy_run_log
+    )
 
 
 @pytest.fixture
@@ -442,6 +468,72 @@ def test_stopping_the_loop_stops_the_child_cleanly(tmp_path, repos):
     dep = _start_deployment(tmp_path, clone_dir)
     try:
         child_pid = int(dep.pid_file.read_text().strip())
+
+        dep.proc.send_signal(signal.SIGTERM)
+        dep.proc.wait(timeout=5)
+
+        def _child_gone() -> bool:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        _wait_until(_child_gone)
+    finally:
+        _stop(dep.proc)
+
+
+def test_child_runs_detached_from_the_terminal(tmp_path, repos):
+    """Under `set -m` a background child that touches the controlling tty is
+    stopped by the kernel (SIGTTOU/SIGTTIN) and never resumes (#2971) — so the
+    child must read no terminal (stdin from /dev/null) and write to none
+    (stdout and stderr appended to DEPLOY_RUN_LOG). The stub records whether
+    its own stdin is a terminal and emits on both streams; the old stubs never
+    touched a terminal, which is exactly why this went unseen."""
+    _origin, clone_dir, _first = repos
+    run_log = tmp_path / "run.log"
+    pid_file = tmp_path / "run.pid"
+    tty_marker = tmp_path / "tty.marker"
+    stub = tmp_path / "run-stub.sh"
+    _write_executable(
+        stub,
+        f'echo "run $$" >> "{run_log}"\n'
+        f'if [ -t 0 ]; then echo "tty" >> "{tty_marker}"; else echo "notty" >> "{tty_marker}"; fi\n'
+        'echo "child stdout line"\n'
+        'echo "child stderr line" >&2\n'
+        f'echo "$$" > "{pid_file}"\n'
+        "exec sleep 999\n",
+    )
+    dep = _start_deployment(tmp_path, clone_dir, run_cmd=stub)
+    try:
+        _wait_until(lambda: "notty" in _read_or_empty(tty_marker))
+        assert _read_or_empty(tty_marker).strip() == "notty", "stdin is not a terminal"
+
+        def _run_log_has_both_streams() -> bool:
+            text = _read_or_empty(dep.deploy_run_log)
+            return "child stdout line" in text and "child stderr line" in text
+
+        _wait_until(_run_log_has_both_streams)
+        run_log_text = _read_or_empty(dep.deploy_run_log)
+        assert "child stdout line" in run_log_text
+        assert "child stderr line" in run_log_text, "stderr lands in the run log too"
+    finally:
+        _stop(dep.proc)
+
+
+def test_stopped_child_is_still_stopped_by_the_loop(tmp_path, repos):
+    """A child the kernel has stopped (SIGSTOP — what an attached `docker compose
+    up` suffers under `set -m`, #2971) can't act on the loop's TERM until it is
+    continued: stop_child sends SIGCONT along with TERM, so the shutdown still
+    lands — the loop exits and the stopped child is gone, instead of hanging."""
+    _origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    try:
+        child_pid = int(dep.pid_file.read_text().strip())
+        os.kill(child_pid, signal.SIGSTOP)
+
+        _wait_until(lambda: _child_is_stopped(child_pid))
 
         dep.proc.send_signal(signal.SIGTERM)
         dep.proc.wait(timeout=5)
