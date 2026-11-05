@@ -14,8 +14,9 @@ exactly that row at egress (see the image side-channel design in
 describes it — never a stale, embedding-nearest one.  The row is still stored
 with an embedding of the description, so the drawn image joins the
 nearest-image pool (``MediaStore.select_image``) for *future* replies.  The
-tool returns a text result naming what it drew so the model's final reply
-honestly describes the image the user is about to receive.
+tool returns a text result naming what it drew and the ``[image <id>]``
+token (#3033) to put in her reply — egress strips the token from the wire text
+(the image attaches by id regardless) and the stored reply keeps it (#2722).
 """
 
 from __future__ import annotations
@@ -54,8 +55,8 @@ class GenerateImageTool(Tool):
         "Generate an image from a text description.  Use this when the user asks "
         "you to draw, paint, sketch, or make a picture/image of something.  Pass "
         "the full visual description as `description`.  The call makes the image "
-        "and returns; your reply after it goes out with the image attached, and "
-        "can tell the user it's ready and describe what you drew."
+        "and returns; put the `[image <id>]` token its result names into your "
+        "reply to hand the image to the user, and describe what you drew."
     )
     parameters = {
         "type": "object",
@@ -94,10 +95,15 @@ class GenerateImageTool(Tool):
                 # Naming the stored media id (via the shared prefix constant) makes
                 # the drawn image an addressable part of the egress/media trace:
                 # ``run_list`` reads this id back so a delivery can be inspected
-                # by a read, not confabulated (#1560).
+                # by a read, not confabulated (#1560).  The closing sentence hands
+                # over the image token (#3033) — the one legitimate way to place
+                # the image in her reply; egress strips it from the wire and the
+                # stored reply keeps it (#2722).
                 f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}{media_id} of: "
-                f"{args.description}.  It goes out with your next reply, which can "
-                "describe it."
+                f"{args.description}. The image is finished. Put "
+                f"{PennyConstants.GENERATED_IMAGE_TOKEN_PREFIX}{media_id}"
+                f"{PennyConstants.GENERATED_IMAGE_TOKEN_SUFFIX} in your reply to "
+                "hand it to the user."
             ),
             mutated=True,
             media_id=media_id,

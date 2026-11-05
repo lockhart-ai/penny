@@ -11,8 +11,13 @@ mutated by the conversion.
 
 from unittest.mock import AsyncMock, MagicMock
 
+from sqlmodel import select
+
+from penny.constants import PennyConstants
 from penny.database import Database
+from penny.database.models import Media
 from penny.llm.call_link import CallLink
+from penny.tests.conftest import ONE_PX_PNG_B64
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import IMAGE_GENERATION_FAILED, GenerateImageTool
@@ -200,6 +205,28 @@ class TestGenerateImageToolHandlesItsOwnFailure:
         assert result.success is False
         assert result.message == IMAGE_GENERATION_FAILED.format(e="endpoint unreachable")
         image_client.generate_image.assert_called_once()
+
+    async def test_success_result_names_the_row_and_hands_over_the_token_whole(self, db: Database):
+        """The success result is pinned whole (#3033): what the model reads names the
+        stored media row's id, then the ``[image <id>]`` token to put in her reply —
+        the one legitimate way to place the image in the reply."""
+        image_client = AsyncMock()
+        image_client.generate_image.return_value = ONE_PX_PNG_B64
+        embedding_client = AsyncMock()
+        embedding_client.embed.return_value = [[1.0, 0.0]]
+        tool = GenerateImageTool(image_client, db, embedding_client)
+
+        result = await tool.execute(CallLink.new_top(), description="a red fox")
+
+        assert result.success is True
+        with db.get_session() as session:
+            media_id = session.exec(select(Media)).one().id
+        assert result.message == (
+            f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}{media_id} of: a red fox. "
+            "The image is finished. Put "
+            f"[image {media_id}] in your reply to hand it to the user."
+        )
+        assert result.media_id == media_id
 
 
 class TestMemoryReadNarration:
