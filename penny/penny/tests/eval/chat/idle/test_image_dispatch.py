@@ -1,14 +1,15 @@
-"""Image dispatch: two cases (#2208, the chat idle group).
+"""Image dispatch: three cases (#2208, #3033 — the chat idle group).
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-**Two cases, because one setup cannot produce both directions.**  A case is one setup, one run
-and one set of assertions (#2100), and the two messages ask different things of the same world:
+**Three cases, because one setup cannot produce every direction.**  A case is one setup, one run
+and one set of assertions (#2100), and the three messages ask different things of the same world:
 
 | direction | case | what the run must leave |
 |---|---|---|
 | asked for | ``image-request-draws`` | a picture of what was asked for, in the media store |
 | the topic alone | ``image-no-fire`` | a reply that invents nothing |
+| handed over | ``image-request-hands-over-token`` | a reply carrying the image token once |
 
 **"Draw me X" and "make a picture of X" are one behaviour in two wordings**, so they are two of
 the request case's five wordings rather than two cases.  The other three use verbs the tool's
@@ -39,6 +40,23 @@ a claim over it would run 15/15 by construction.
 not a description of one, so "here you go!" is a complete answer and no reply token is owed.
 The reply is held only to provenance: every specific value in it traces to what she was given.
 
+**The handover case claims what the record holds, not the wire.**  The ``generate_image`` result
+hands her an ``[image <id>]`` token to put in her reply (#3033); egress strips the token from
+the wire text — the image attaches by id regardless — and the stored reply keeps it as she
+wrote it (#2722).  So this case's reply claims read ``stored_reply`` (the conversation record,
+"as she wrote it"), never ``reply`` (the wire, "as the user saw it"): the token is egress
+machinery, deterministic and mock-test-owned, and what the model decides is whether she put the
+token in her reply at all.  The claims: the media store holds exactly ONE image drawn this turn
+for the one request (what survives — a second draw is the defect #3033 fixes, measured here as
+the store fact the ruling chose over a restraint claim on the tool sequence); the stored reply
+carries the token form exactly once; no other image placeholder stands in it (the excluded
+forms are the ones she invented when no token was handed to her — ``{image}``, a bare
+``[image]``, and the markdown image shape — each a form the result rules out by naming the one
+legitimate token); and the token's id traces to the tool result she was given (PROVENANCE: the
+result names the id, so an invented id fails).  The subject is a fresh invented one — a red
+paper crane on a stack of books — so this case's fixture never lends its wording to the sibling
+cases' claims.
+
 **The no-fire case asserts what survives, never that she refrained** (`docs/principles.md`
 §4.3).  A message about a painting someone else made asks for nothing, so whether she draws
 anyway is measured in the tool sequence rather than claimed.  The image store is append-only
@@ -59,6 +77,7 @@ public.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import NamedTuple
 from unittest.mock import AsyncMock
@@ -94,6 +113,12 @@ pytestmark = pytest.mark.eval
 _FAMILY = "nl-dispatch"
 
 _GENERATE_IMAGE = "generate_image"
+
+# The image token the ``generate_image`` result hands her (#3033) — the bracket
+# form naming the stored media row's id, spelled here rather than imported: the
+# case is the contract's wording of the form, and it must run on a tree that
+# predates the fix's own constants.
+_IMAGE_TOKEN_RE = re.compile(r"\[image (\d+)\]")
 
 
 def install_image_client(penny: Penny) -> None:
@@ -165,9 +190,27 @@ _NO_FIRE = ImageCase(
     world=World(name="image-no-fire", pages=(), keeps=(), excludes=()),
 )
 
+_HANDOVER = ImageCase(
+    case_id="image-request-hands-over-token",
+    behaviour=(
+        "In the chat agent, when the user asks for a picture, Penny's reply carries the "
+        "image token the generate_image result named — exactly once, and no other image "
+        "placeholder."
+    ),
+    ask="can you draw a red paper crane sitting on a stack of books?",
+    also_phrased=(
+        "make a picture of a red paper crane sitting on a stack of books",
+        "i'd love an image of a red paper crane sitting on a stack of books",
+        "sketch a red paper crane sitting on a stack of books, please",
+        "could you draw me a red paper crane sitting on a stack of books?",
+    ),
+    facts=("red paper crane sitting on a stack of books",),
+    world=World(name="image-request-hands-over-token", pages=(), keeps=(), excludes=()),
+)
+
 # Every case in this file, in one place — so the deterministic probes in
 # ``test_eval_harness.py`` can hold the wordings and the world without a GPU.
-IMAGE_CASES = (_REQUEST, _NO_FIRE)
+IMAGE_CASES = (_REQUEST, _NO_FIRE, _HANDOVER)
 
 
 # ── The premise, asserted before the turn runs ───────────────────────────────
@@ -236,6 +279,67 @@ def drew(subject: tuple[str, ...]) -> _ClaimFn:
     return answer
 
 
+# ── The handover case's claims (#3033) ───────────────────────────────────────
+#
+# All three reply claims read ``stored_reply`` — the conversation record, which
+# keeps what egress strips from the wire (#2722) — never ``reply``, the wire
+# form "as the user saw it".  The strip is deterministic egress machinery the
+# mock tests own; what the model decides, and what this case measures, is
+# whether she put the token in her reply at all.
+
+
+def _token_ids(text: str) -> list[str]:
+    """The id of every ``[image <id>]`` token in ``text``, in order."""
+    return _IMAGE_TOKEN_RE.findall(text)
+
+
+def _token_once(sample: SampleObservation, _world: World) -> Answer:
+    """The stored reply carries the image token form exactly once (#3033).
+
+    Once: the token is how she hands the image over, and a doubled token would
+    hand it twice."""
+    found = _IMAGE_TOKEN_RE.findall(sample.stored_reply)
+    return len(found) == 1, f"tokens {found or 'none'} in the stored reply"
+
+
+# The placeholder forms she invented when no token was handed to her (#3033's
+# why).  The result names the one legitimate token, so any of these standing in
+# the reply is a wrong fact rather than a wording choice.  Matched folded —
+# ``{image}`` and ``{Image}`` are one form.
+_EXCLUDED_PLACEHOLDERS = ("{image}", "[image]", "[image attached]", "[image placeholder]", "![")
+
+
+def _no_other_placeholder(sample: SampleObservation, _world: World) -> Answer:
+    """No other image placeholder stands in the stored reply."""
+    text = fold_typography(sample.stored_reply)
+    present = [form for form in _EXCLUDED_PLACEHOLDERS if form in text]
+    return not present, f"placeholders {present}" if present else "none of the excluded forms"
+
+
+def _one_drawn_image(sample: SampleObservation, _world: World) -> Answer:
+    """The media store holds exactly ONE image drawn this turn for the one request.
+
+    What survives — the store fact the ruling chose over a restraint claim on
+    the tool sequence, since a second draw is the defect #3033 fixes.  The world
+    starts empty, so every drawn image is this turn's."""
+    drawn = [image.description for image in sample.images if image.drawn]
+    return len(drawn) == 1, f"drew {drawn or 'nothing'}"
+
+
+def _token_id_is_sourced(sample: SampleObservation, _world: World) -> Answer:
+    """Every id the stored reply's token names traces to what she was given
+    (PROVENANCE): the generate_image result names the id, so an invented id
+    fails.  A claim over the record, not over ``reply`` — the token is stripped
+    from the wire, so the id never appears there."""
+    missing = [
+        i for i in _IMAGE_TOKEN_RE.findall(sample.stored_reply) if i not in sample.given.content
+    ]
+    return (
+        not missing,
+        f"ids {missing} appear nowhere in what she was given" if missing else "in the tool result",
+    )
+
+
 # ═══ asked for ═══════════════════════════════════════════════════════════════
 
 
@@ -254,6 +358,47 @@ async def test_a_request_for_a_picture_draws_it(chat_eval: ChatEval, model: str)
     # report rather than an omission: the ask keeps nothing, and whether a sample wrote something
     # anyway is measured in ENTRIES_STORED.  The image's description is the open prose the tool
     # asks the model to elaborate, so no provenance claim reads it.
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
+
+
+# ═══ asked for, handed over ══════════════════════════════════════════════════
+#
+# The result hands her the token; the claims read what she wrote, not the wire.
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_request_for_a_picture_hands_over_the_token(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """An empty media store, the image tool on the surface, and a request for one
+    picture — the result hands her the ``[image <id>]`` token to put in her reply
+    (#3033)."""
+    cohort = await _drive(chat_eval, model, _HANDOVER)
+    # STORE — the one drawn image, the token once, no other placeholder.
+    cohort.claim(
+        "state: the media store holds exactly one image drawn this turn for the one request",
+        _one_drawn_image,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the stored reply carries the image token exactly once",
+        _token_once,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: no other image placeholder stands in the stored reply",
+        _no_other_placeholder,
+        SpecCategory.STORE,
+    )
+    # PROVENANCE — the token's id traces to the tool result she was given; the
+    # visible reply (the wire, token stripped) still invents nothing.
+    cohort.claim(
+        "provenance: the token's id traces to the generate_image result she was given",
+        _token_id_is_sourced,
+        SpecCategory.PROVENANCE,
+    )
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
