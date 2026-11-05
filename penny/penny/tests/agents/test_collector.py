@@ -53,12 +53,19 @@ from penny.database.models import MemoryRow, SendQueueItem
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmMessage, LlmResponse
-from penny.notification import NOTIFICATION_NOTES, NOTIFIED_CYCLE_ENDS, NotificationOutcome
+from penny.notification import (
+    NOTIFICATION_NOTES,
+    NOTIFIED_CYCLE_ENDS,
+    NotificationOutcome,
+    build_sandbox_report,
+    render_sandbox_report,
+)
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient, deterministic_embed
 from penny.tests.schema_template import schema_only_db
+from penny.tools.base import PLAN_MESSAGE_PREFIX
 from penny.tools.memory_tools import (
     CollectionSetTool,
     DoneTool,
@@ -1422,7 +1429,12 @@ async def test_a_sandbox_preview_writes_nothing_and_touches_no_schedule_state(
     passed with no ``plan`` argument at all, exactly as the model would send it —
     is forced onto its plan path, so the collection ends up byte-identical. The
     cycle also never advances the schedule: ``last_collected_at`` stays unset and
-    the run never counts toward a quota."""
+    the run never counts toward a quota.
+
+    And the run looks LIVE to the job (#2995): every tool result the job read
+    carries no plan wording — the ordinary result for the call — while the run's
+    own record keeps each forced-plan call's plan wording stamped, so the report
+    can say what the call WOULD have done."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)
     mock_llm.set_response_handler(
@@ -1444,6 +1456,31 @@ async def test_a_sandbox_preview_writes_nothing_and_touches_no_schedule_state(
     # Excluded from the job's own run-history block — a preview is not a prior
     # cycle a later REAL one should read as context.
     assert db.messages.recent_run_outcomes("indie-metroidvanias", 10) == []
+
+    # The job saw no plan wording on ANY tool result (#2995) — the forced-plan
+    # write read back like an ordinary write, not a preview.
+    tool_results = [
+        str(message.get("content") or "")
+        for request in mock_llm.requests
+        for message in request["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert tool_results, "the cycle's write and read steps round-tripped results"
+    assert all(PLAN_MESSAGE_PREFIX not in result for result in tool_results)
+
+    # The report tells the user what each call WOULD have done (#2995): the run's
+    # stamped plan wording renders into the trace, beside the lead that names the
+    # writes unapplied.
+    run_id = run["run_id"]
+    assert db.messages.plan_descriptions_for_run(run_id), (
+        "the sandbox run stamped its forced-plan calls' plan wording"
+    )
+    report = build_sandbox_report(db, "indie-metroidvanias", run_id)
+    assert report is not None
+    rendered = render_sandbox_report(report)
+    assert 'The sandbox run of "indie-metroidvanias" is complete' in rendered
+    assert "its writes were not applied because it was sandboxed." in rendered
+    assert PLAN_MESSAGE_PREFIX in rendered
 
 
 @pytest.mark.asyncio

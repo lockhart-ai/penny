@@ -367,7 +367,10 @@ async def test_a_report_for_a_vanished_collection_never_reaches_the_model(
         assert row.attempts == 0
 
 
-_SANDBOX_PROMPT_HEAD = 'Your sandbox preview of "indie-metroidvanias" just finished'
+_SANDBOX_PROMPT_HEAD = (
+    'The sandbox run of "indie-metroidvanias" is complete — its writes were not '
+    "applied because it was sandboxed."
+)
 
 
 def _sandbox_reply_handler(mock_llm, reply: str):

@@ -318,11 +318,17 @@ def test_logged_log_call_renders_its_log_argument_under_either_key():
     and the read projection — never the stored row — maps it to ``log``."""
     run = [_prompt([_call("log_read", {"memory": "user-messages"}), _DONE_OK], outcome="no_work")]
     assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
-        run, with_thinking=False, delivered_text=None
+        run,
+        with_thinking=False,
+        delivered_text=None,
+        plan_descriptions={},
     )
     fresh = [_prompt([_call("log_read", {"log": "user-messages"}), _DONE_OK], outcome="no_work")]
     assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
-        fresh, with_thinking=False, delivered_text=None
+        fresh,
+        with_thinking=False,
+        delivered_text=None,
+        plan_descriptions={},
     )
 
 
@@ -420,7 +426,12 @@ browse{['a', 'b']}
 collection_write{collection: 'games', entries: 'x'}"""
     )
     assert (
-        render_run_calls(run, with_thinking=False, delivered_text=None)
+        render_run_calls(
+            run,
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
         == f"""\
 run wrote-fixed
 [games]
@@ -634,7 +645,12 @@ def test_render_run_calls_chat_kitchen_sink_full_literal():
     gate outcomes (written / duplicate-rejected) and the failed call render
     honestly, and the egress trace names the delivered media by typed id — so a
     delivery is inspected by a read, not confabulated."""
-    assert render_run_calls(_chat_kitchen_sink_run(), with_thinking=False, delivered_text=None) == (
+    assert render_run_calls(
+        _chat_kitchen_sink_run(),
+        with_thinking=False,
+        delivered_text=None,
+        plan_descriptions={},
+    ) == (
         "run run-fixed\n"
         "user: draw me a cartoon fox and log any new fox shows\n"
         "    step 1: browse{['new fox cartoons']} => "
@@ -685,7 +701,12 @@ def test_render_run_calls_collector_run_full_literal():
             ),
         ),
     ]
-    assert render_run_calls(run, with_thinking=False, delivered_text=None) == (
+    assert render_run_calls(
+        run,
+        with_thinking=False,
+        delivered_text=None,
+        plan_descriptions={},
+    ) == (
         "run coll-fixed\n"
         "[games]\n"
         "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
@@ -754,7 +775,12 @@ def test_render_run_calls_with_thinking_shows_a_short_thinking_whole():
     — short enough to sit under the excerpt cap, so it shows WHOLE either way —
     on its own line right before that step's call line."""
     run = _collector_run_with_thinking(_SHORT_THINKING)
-    assert render_run_calls(run, with_thinking=True, delivered_text=None) == (
+    assert render_run_calls(
+        run,
+        with_thinking=True,
+        delivered_text=None,
+        plan_descriptions={},
+    ) == (
         "run coll-fixed\n"
         "[games]\n"
         "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
@@ -771,7 +797,12 @@ def test_render_run_calls_with_thinking_false_shows_nothing_even_when_logged():
     line at all, even for a step whose call DID log one — the batch reader states
     it wants none, rather than relying on every step happening to carry none."""
     run = _collector_run_with_thinking(_SHORT_THINKING)
-    rendered = render_run_calls(run, with_thinking=False, delivered_text=None)
+    rendered = render_run_calls(
+        run,
+        with_thinking=False,
+        delivered_text=None,
+        plan_descriptions={},
+    )
     assert "thinking" not in rendered
 
     # And a step with NO logged thinking renders identically whichever flag is
@@ -780,8 +811,16 @@ def test_render_run_calls_with_thinking_false_shows_nothing_even_when_logged():
         _prompt([_call("browse", {"queries": ["budget handhelds"]})], run_id="coll-fixed"),
         _prompt([_DONE_OK], run_id="coll-fixed", outcome="worked"),
     ]
-    assert render_run_calls(bare, with_thinking=True, delivered_text=None) == render_run_calls(
-        bare, with_thinking=False, delivered_text=None
+    assert render_run_calls(
+        bare,
+        with_thinking=True,
+        delivered_text=None,
+        plan_descriptions={},
+    ) == render_run_calls(
+        bare,
+        with_thinking=False,
+        delivered_text=None,
+        plan_descriptions={},
     )
 
 
@@ -790,7 +829,12 @@ def test_render_run_calls_thinking_excerpt_cuts_to_last_600_chars_at_sentence_bo
     last ~600 characters, advanced to the NEXT sentence boundary inside that tail
     so the excerpt opens on a whole sentence rather than a severed one (#2841)."""
     run = _collector_run_with_thinking(_LONG_THINKING)
-    rendered = render_run_calls(run, with_thinking=True, delivered_text=None)
+    rendered = render_run_calls(
+        run,
+        with_thinking=True,
+        delivered_text=None,
+        plan_descriptions={},
+    )
     assert f"    step 2 thinking: {_LONG_THINKING_EXCERPT}\n" in rendered
     assert _LONG_THINKING not in rendered  # the excerpt, never the whole thing
 
@@ -800,7 +844,13 @@ def test_render_run_calls_step_arg_shows_that_steps_full_thinking():
     text the default excerpted render cuts — while every other step (none here
     with thinking) stays excerpted."""
     run = _collector_run_with_thinking(_LONG_THINKING)
-    rendered = render_run_calls(run, with_thinking=True, step=2, delivered_text=None)
+    rendered = render_run_calls(
+        run,
+        with_thinking=True,
+        step=2,
+        delivered_text=None,
+        plan_descriptions={},
+    )
     assert f"    step 2 thinking: {_LONG_THINKING}\n" in rendered
     assert f"    step 2 thinking: {_LONG_THINKING_EXCERPT}\n" not in rendered
 
@@ -811,8 +861,21 @@ def test_render_run_calls_unmatched_step_appends_an_honest_line_not_a_no_op():
     silent no-op, which would read as "that step has no thinking" rather than
     "that step doesn't exist"."""
     run = _collector_run_with_thinking(_SHORT_THINKING)
-    rendered = render_run_calls(run, with_thinking=True, step=9, delivered_text=None)
-    assert rendered.startswith(render_run_calls(run, with_thinking=True, delivered_text=None))
+    rendered = render_run_calls(
+        run,
+        with_thinking=True,
+        step=9,
+        delivered_text=None,
+        plan_descriptions={},
+    )
+    assert rendered.startswith(
+        render_run_calls(
+            run,
+            with_thinking=True,
+            delivered_text=None,
+            plan_descriptions={},
+        )
+    )
     assert rendered.endswith("\nrun coll-fixed has no step 9; its steps are 1–2")
 
 
@@ -820,7 +883,13 @@ def test_render_run_calls_unmatched_step_on_a_run_with_no_steps():
     """A run that rendered no steps at all (every call was ``done()``) gets the
     "has no steps" line rather than a fabricated range."""
     run = [_prompt([_DONE_OK], run_id="bail-fixed", outcome="no_work")]
-    rendered = render_run_calls(run, with_thinking=True, step=1, delivered_text=None)
+    rendered = render_run_calls(
+        run,
+        with_thinking=True,
+        step=1,
+        delivered_text=None,
+        plan_descriptions={},
+    )
     assert rendered.endswith("\nrun bail-fixed has no steps")
 
 
@@ -853,7 +922,12 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
         )
     ]
     assert (
-        render_run_calls(run, with_thinking=False, delivered_text=None)
+        render_run_calls(
+            run,
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
         == f"""\
 run stop-fixed
 [games]
@@ -890,7 +964,12 @@ def test_render_run_calls_pure_reply_run_full_literal():
         run_target=None,
     )
     assert (
-        render_run_calls([only], with_thinking=False, delivered_text=None)
+        render_run_calls(
+            [only],
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
         == f"""\
 run chat-quiet
 user: how are you?
@@ -916,7 +995,12 @@ def test_render_run_calls_bare_utterance_origin_full_literal():
         run_target=None,
     )
     assert (
-        render_run_calls([only], with_thinking=False, delivered_text=None)
+        render_run_calls(
+            [only],
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
         == f"""\
 run chat-bare
 user: how are you?
@@ -982,7 +1066,12 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
     )
     run = _terminal_write_run(trailing=tail)
     assert (
-        render_run_calls(run, with_thinking=False, delivered_text=None)
+        render_run_calls(
+            run,
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
         == f"""\
 run tail-fixed
 user: log the new shelf price
@@ -994,7 +1083,10 @@ user: log the new shelf price
     # gap this closes.
     assert (
         render_run_calls(
-            _terminal_write_run(trailing=None), with_thinking=False, delivered_text=None
+            _terminal_write_run(trailing=None),
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
         )
         == f"""\
 run tail-fixed
@@ -1006,7 +1098,15 @@ user: log the new shelf price
 
 def test_render_run_calls_empty_history():
     """No prompts → the honest empty marker, not a fabricated frame."""
-    assert render_run_calls([], with_thinking=False, delivered_text=None) == "(no data)"
+    assert (
+        render_run_calls(
+            [],
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
+        == "(no data)"
+    )
 
 
 def test_render_run_calls_first_line_whole():
@@ -1025,7 +1125,12 @@ def test_render_run_calls_first_line_whole():
         )
     ]
     assert (
-        render_run_calls(run, with_thinking=False, delivered_text=None)
+        render_run_calls(
+            run,
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
         == f"run run-long\n    step 1: browse{{['a']}} => {long_line}\n{_facts(1)}"
     )
 
@@ -1067,7 +1172,12 @@ def test_run_facts_line_reports_cost_discards_and_tool_errors_whole():
         ),
     ]
     assert (
-        render_run_calls(run, with_thinking=False, delivered_text=None)
+        render_run_calls(
+            run,
+            with_thinking=False,
+            delivered_text=None,
+            plan_descriptions={},
+        )
         == """\
 run facts-1
 [games]
@@ -1085,14 +1195,23 @@ def test_run_facts_line_reports_a_link_only_when_the_delivered_text_has_one():
     a message with no link names zero links; one whose delivered text carries
     a URL names one."""
     run = [_prompt([_DONE_OK], run_id="facts-2", outcome="worked")]
-    assert "sent 0 messages" in render_run_calls(run, with_thinking=False, delivered_text=None)
+    assert "sent 0 messages" in render_run_calls(
+        run,
+        with_thinking=False,
+        delivered_text=None,
+        plan_descriptions={},
+    )
     assert "sent 1 message, links: 0" in render_run_calls(
-        run, with_thinking=False, delivered_text="all done!"
+        run,
+        with_thinking=False,
+        delivered_text="all done!",
+        plan_descriptions={},
     )
     assert "sent 1 message, links: 1" in render_run_calls(
         run,
         with_thinking=False,
         delivered_text="done — see https://example.com/report for the details",
+        plan_descriptions={},
     )
 
 
@@ -1266,7 +1385,12 @@ def test_render_run_calls_prepends_the_dispatch_line():
         )
     ]
     rendered = render_run_calls(
-        prompts, with_thinking=False, delivered_text=None, timezone_name=_NY, schedule_words="daily"
+        prompts,
+        with_thinking=False,
+        delivered_text=None,
+        timezone_name=_NY,
+        schedule_words="daily",
+        plan_descriptions={},
     )
     assert rendered.startswith(
         "started 09:32 AM EDT for the daily 09:30 AM EDT run · on time\nrun r8\n"

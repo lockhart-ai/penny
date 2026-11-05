@@ -171,6 +171,16 @@ class ToolResult(BaseModel):
       (#2768), never the call's requested ``email_ids``: the backend can silently drop
       an id it failed to fetch, so a headline built from the request would count one
       that was never opened.  Empty for every other tool.
+    - ``plan_description`` / ``applied_message`` (#2995): the TWO texts a plan-path
+      result carries, set together by ``as_plan_result`` and ``None`` for every result
+      that did not come off a plan path.  ``plan_description`` is the full
+      ``PLAN — nothing was changed…`` wording; ``applied_message`` is the same call's
+      wording as if it had been applied.  An ordinary explicit ``plan=true`` call shows
+      ``message`` (the plan wording) to the model as always; ``ToolExecutor``'s
+      ``forced_plan`` (#2964, a sandbox run) shows the job ``applied_message`` instead —
+      the run must look live to the job — while ``plan_description`` rides on to the
+      run record, so the sandbox report can show what each call WOULD have done
+      (``notification.build_sandbox_report``).
     """
 
     message: str
@@ -179,6 +189,8 @@ class ToolResult(BaseModel):
     source_urls: list[str] = Field(default_factory=list)
     narration: str | None = None
     media_id: int | None = None
+    plan_description: str | None = None
+    applied_message: str | None = None
     stop: WriteGateOutcome | None = None
     saved_keys: list[str] = Field(default_factory=list)
     merged_keys: list[str] = Field(default_factory=list)
