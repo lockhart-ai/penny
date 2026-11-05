@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Watches origin/<branch> for new commits and redeploys through the Makefile's own
-# `prod-build`/`prod-run` targets — never a second build path (#2955). Run by
-# `make prod-watch`, or under launchd via the rendered
+# `prod-build`/`prod-run` targets — never a second build path (#2955). Stopping the
+# loop (TERM/INT, e.g. Ctrl+C on `make prod-watch`) also stops Penny: the shutdown
+# runs `DEPLOY_STOP_CMD` (default `make prod-stop`) after stopping the child (#3015).
+# Run by `make prod-watch`, or under launchd via the rendered
 # scripts/com.penny.deployloop.plist.template.
 #
 # Deliberately NOT `set -e`: this is a long-running supervisor, not a one-shot
@@ -15,6 +17,10 @@ set -m # job control: each backgrounded command gets its own process group, so
 DEPLOY_INTERVAL="${DEPLOY_INTERVAL:-300}"
 DEPLOY_BUILD_CMD="${DEPLOY_BUILD_CMD:-make prod-build}"
 DEPLOY_RUN_CMD="${DEPLOY_RUN_CMD:-make prod-run}"
+# The shutdown path runs this after stop_child: since #2992 the child's subshell
+# swallows the group TERM, so the group kill above can't reach its `docker compose
+# up` — stopping the loop left Penny's containers running (#3015).
+DEPLOY_STOP_CMD="${DEPLOY_STOP_CMD:-make prod-stop}"
 DEPLOY_LOG="${DEPLOY_LOG:-data/penny/logs/deploy-loop.log}"
 # Where the child's own stdout/stderr is appended (#2971). The child must never
 # hold the terminal — an attached `docker compose up` has the kernel
@@ -248,4 +254,13 @@ done
 
 log "stopping"
 stop_child
+# #3015: stop_child's group kill can't reach the child's `docker compose up` (see
+# DEPLOY_STOP_CMD above), so stopping prod is explicit here — the same `prod-stop`
+# target prod-run opens with. The redeploy path (stop_child/start_child in
+# fetch_and_maybe_deploy) deliberately does NOT run it: prod-run brings the old
+# containers down itself.
+log "stopping penny: $DEPLOY_STOP_CMD"
+if ! $DEPLOY_STOP_CMD >>"$DEPLOY_LOG" 2>&1; then
+    log "stopping penny FAILED — Penny's containers may still be running"
+fi
 log "stopped"
