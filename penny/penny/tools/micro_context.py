@@ -117,8 +117,19 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     "sentence and stop there.\n"
     "\n"
     "Write only the answer — no preamble, no restating the instruction, and "
-    "nothing about how you are answering."
+    "nothing about how you are answering.\n"
+    "\n"
+    "Keep each value together with what the page says it is — what it counts, "
+    "whose it is, and as of when — in the page's own words."
 )
+
+# The qualifier sentence (#2998): a figure alone is not the answer.  The sentence
+# keeps each value together with what the page says it is, so the page's own label
+# for a figure travels with the figure instead of the answer carrying a bare
+# count.  Its known limit: on a page whose own wording differs from the
+# instruction's, a draw may answer that the page carries nothing, dropping
+# identifiers a plain read would have carried.  The extractor case
+# `test_browse_extract_page_labels.py` is the regression guard.
 
 # The structural reading-mode note (#2388).  The extension already knows whether it
 # read the page as its article body or as its own link list (``isLinkIndex``/``richer``
