@@ -191,6 +191,9 @@ class IosAgentProgress(BaseModel):
     max_steps: int | None = None
     tools: list[IosAgentProgressTool] = Field(default_factory=list)
     outcome: str | None = None
+    # The step's reasoning, trimmed to IOS_PROGRESS_THINKING_MAX_CHARS (#3040).
+    # Foreground (chat) runs only — background collectors don't stream thinking.
+    thinking: str | None = None
 
 
 class IosDataReadRequest(BaseModel):

@@ -309,6 +309,53 @@ async def test_agent_progress_is_redacted_and_connection_scoped(db):
         "subject": long_subject[: PennyConstants.IOS_PROGRESS_REDACT_PREVIEW_CHARS]
     }
 
+    # A step's thinking rides its tools_started event (#3040), trimmed to the named
+    # cap with the ellipsis counted inside it.
+    long_thinking = "Considering " * 100
+    await channel._send_agent_progress(
+        AgentProgressEvent(
+            event="tools_started",
+            run_id="run-4",
+            agent="chat",
+            scope="foreground",
+            step=2,
+            max_steps=8,
+            tools=(("browse", {"queries": ["coffee"]}),),
+            thinking=long_thinking,
+        )
+    )
+    limit = PennyConstants.IOS_PROGRESS_THINKING_MAX_CHARS
+    assert foreground.sent[3]["thinking"] == long_thinking[: limit - 1].rstrip() + "…"
+
+    # A background collector's thinking never reaches the wire — chat runs only.
+    await channel._send_agent_progress(
+        AgentProgressEvent(
+            event="tools_started",
+            run_id="run-5",
+            agent="collector",
+            scope="background",
+            step=1,
+            max_steps=20,
+            tools=(("log_append", {"name": "notes"}),),
+            thinking="Extraction plan…",
+        )
+    )
+    assert foreground.sent[4].get("thinking") is None
+
+    # A step that reasoned nothing carries no thinking at all.
+    await channel._send_agent_progress(
+        AgentProgressEvent(
+            event="tools_started",
+            run_id="run-6",
+            agent="chat",
+            scope="foreground",
+            step=3,
+            max_steps=8,
+            tools=(("browse", {"queries": ["tea"]}),),
+        )
+    )
+    assert foreground.sent[5].get("thinking") is None
+
 
 async def _wait_for_server(channel: IosChannel) -> None:
     while channel._server is None:

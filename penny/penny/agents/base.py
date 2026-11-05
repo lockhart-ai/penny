@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, assert_never
 
 from penny.agents.models import (
@@ -148,6 +149,14 @@ class _LoggedBoundary:
         return messages[self.turns :] if self.turns else []
 
 
+class ProgressScope(StrEnum):
+    """The run surface a progress event describes (#3040) — the iOS channel gates
+    the thinking field on ``FOREGROUND``, so background collectors never stream it."""
+
+    FOREGROUND = "foreground"
+    BACKGROUND = "background"
+
+
 @dataclass(frozen=True)
 class AgentProgressEvent:
     """Structured, transport-neutral progress emitted by an agent run."""
@@ -160,6 +169,11 @@ class AgentProgressEvent:
     max_steps: int | None = None
     tools: tuple[tuple[str, dict], ...] = ()
     outcome: str | None = None
+    # The step's own reasoning (#3040), carried on ``tools_started`` — the one event
+    # emitted per model step whose calls actually start, after the draw it belongs
+    # to.  Transport-neutral here; the iOS channel gates it to foreground runs and
+    # trims it for the wire.
+    thinking: str | None = None
 
 
 ProgressCallback = Callable[[AgentProgressEvent], Awaitable[None]]
@@ -437,7 +451,7 @@ class Agent:
             prompt_type=self.name,
             on_progress=on_progress,
             handles=handles,
-            progress_scope="background",
+            progress_scope=ProgressScope.BACKGROUND,
             inbox=NO_INBOX,
         )
         return CycleResult(
@@ -539,7 +553,7 @@ class Agent:
         on_progress: ProgressCallback | None = None,
         on_interim_message: Callable[[str], Awaitable[None]] | None = None,
         prompt_type: str | None = None,
-        progress_scope: str = "foreground",
+        progress_scope: str = ProgressScope.FOREGROUND,
         handles: HandleTable | None = None,
         inbox: TurnInbox,
     ) -> ControllerResponse:
@@ -2048,7 +2062,7 @@ class Agent:
         on_progress: ProgressCallback | None,
         run_id: str,
         call_link: CallLink,
-        progress_scope: str = "foreground",
+        progress_scope: str = ProgressScope.FOREGROUND,
         step: int | None = None,
         max_steps: int | None = None,
     ) -> _StepResult:
@@ -2077,6 +2091,7 @@ class Agent:
                     step=step,
                     max_steps=max_steps,
                     tools=tuple((name, dict(args)) for _, name, args in pending),
+                    thinking=response.thinking,
                 ),
             )
 

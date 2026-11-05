@@ -1050,6 +1050,10 @@ class PennyConstants:
     # event carries (#2642).  The progress payload is a transient preview, not the
     # data — the run record and the tool's own result render the argument whole.
     IOS_PROGRESS_REDACT_PREVIEW_CHARS = 120
+    # How many characters of a step's thinking an iOS agent-progress event carries
+    # (#3040).  The payload is a transient preview of what she is reasoning about
+    # between tool calls, not the trace — the prompt log holds it whole.
+    IOS_PROGRESS_THINKING_MAX_CHARS = 600
     # Discord's own hard message-length limit (#2642): a longer outgoing message is
     # split into chunks of this size, so nothing is ever lost.
     DISCORD_MESSAGE_LIMIT = 2000

@@ -18,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from websockets.asyncio.server import Server, ServerConnection
 
-from penny.agents.base import AgentProgressEvent, ProgressCallback
+from penny.agents.base import AgentProgressEvent, ProgressCallback, ProgressScope
 from penny.channels.base import IncomingMessage, MessageChannel, strip_image_tokens
 from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_COLLECTION_TRIGGER,
@@ -1290,6 +1290,22 @@ class IosChannel(MessageChannel):
                 ]
         return redacted
 
+    @staticmethod
+    def _progress_thinking(event: AgentProgressEvent) -> str | None:
+        """The step's thinking for the wire, foreground (chat) runs only (#3040).
+
+        Background collectors stream which tool is running, never their reasoning;
+        a longer trace is trimmed with the ellipsis counted inside the cap — the
+        payload is a transient preview, the prompt log holds it whole.
+        """
+        if event.scope != ProgressScope.FOREGROUND or not event.thinking:
+            return None
+        thinking = event.thinking
+        limit = PennyConstants.IOS_PROGRESS_THINKING_MAX_CHARS
+        if len(thinking) <= limit:
+            return thinking
+        return thinking[: limit - 1].rstrip() + "…"
+
     async def _send_agent_progress(
         self, event: AgentProgressEvent, recipient: str | None = None
     ) -> None:
@@ -1310,6 +1326,7 @@ class IosChannel(MessageChannel):
             max_steps=event.max_steps,
             tools=tools,
             outcome=event.outcome,
+            thinking=self._progress_thinking(event),
         )
         connections = (
             [self._connections.get(recipient)]
