@@ -420,9 +420,9 @@ class Penny:
         ``PreflightError`` — caught in ``main()`` and surfaced in ``penny.log``
         before exiting — instead of letting every downstream call fail opaquely.
 
-        Returns the report: its soft-warned checks (``degraded()``, #2975) ride
-        the startup changelog notice's facts, so a degraded startup is never
-        silent — the caller hands them to the announcement turn.
+        Returns the report, logged here line by line. The startup notice
+        announces only the new changes (#3003): the report's soft warnings ride
+        nothing — they stay in this startup's log, where they already are.
         """
         report = await self._build_preflight().run()
         report.log(logger)
@@ -581,14 +581,14 @@ class Penny:
         # Validate channel connectivity before starting
         await self.channel.validate_connectivity()
 
-        preflight_report = await self._run_preflight()
+        await self._run_preflight()
         await self._run_startup_backfills()
         new_changelog_entries = self._record_changelog_entries()
 
         listen_task = asyncio.create_task(self.channel.listen(), name="channel.listen")
         scheduler_task = asyncio.create_task(self.scheduler.run(), name="scheduler.run")
         startup_task = asyncio.create_task(
-            self._run_startup_notifications(new_changelog_entries, preflight_report.degraded()),
+            self._run_startup_notifications(new_changelog_entries),
             name="startup.notifications",
         )
         tasks = {listen_task, scheduler_task, startup_task}
@@ -663,15 +663,11 @@ class Penny:
             )
         return recorded
 
-    async def _run_startup_notifications(
-        self, new_changelog_entries: list[ChangelogEntry], degraded: list[str]
-    ) -> None:
+    async def _run_startup_notifications(self, new_changelog_entries: list[ChangelogEntry]) -> None:
         """Send startup notifications after the outgoing channel is ready.
 
-        ``degraded`` (#2975) is REQUIRED — the capabilities the startup
-        preflight soft-warned about (an empty list when none did) — carried to
-        the changelog announcement's facts so a degraded startup is never
-        silent."""
+        The startup notice announces only the new changes (#3003) — the
+        preflight's soft warnings ride nothing."""
         try:
             await self.channel.wait_until_ready()
         except asyncio.CancelledError:
@@ -680,25 +676,22 @@ class Penny:
             logger.warning("Startup notifications skipped; channel never became ready: %s", e)
             return
 
-        await self._send_changelog_announcement(new_changelog_entries, degraded)
+        await self._send_changelog_announcement(new_changelog_entries)
         await self._prompt_for_missing_profiles()
 
-    async def _send_changelog_announcement(
-        self, entries: list[ChangelogEntry], degraded: list[str]
-    ) -> None:
+    async def _send_changelog_announcement(self, entries: list[ChangelogEntry]) -> None:
         """Dispatch the changelog delivery turn for this deploy's new entries
         (#2846), and deliver what it writes straight through the channel
         (#2913) — the channel is already known ready
         (``_run_startup_notifications`` awaited it), so there is no reason to
         make the user wait out the idle/cooldown gate every other autonomous
-        send does. ``degraded`` (#2975) rides the turn's facts. Summary method:
-        who it's for (and whether it should run at all), then compose, then
-        deliver."""
+        send does. Summary method: who it's for (and whether it should run at
+        all), then compose, then deliver."""
         sender = self._changelog_announcement_recipient()
         if sender is None:
             return
         try:
-            composed = await self._compose_changelog_announcement(entries, degraded, sender)
+            composed = await self._compose_changelog_announcement(entries, sender)
             if composed is None:
                 return
             answer, run_id = composed
@@ -725,7 +718,7 @@ class Penny:
         return sender
 
     async def _compose_changelog_announcement(
-        self, entries: list[ChangelogEntry], degraded: list[str], sender: str
+        self, entries: list[ChangelogEntry], sender: str
     ) -> tuple[str, str] | None:
         """Run the delivery turn; ``None`` means nothing reaches the queue —
         iOS's own shortcut fired instead (unchanged by this feature — prod's
@@ -734,7 +727,7 @@ class Penny:
             return None
         run_id = uuid.uuid4().hex
         response = await self.chat_agent.handle_changelog_report(
-            entries, degraded, sender, call_link=CallLink.top(run_id)
+            entries, sender, call_link=CallLink.top(run_id)
         )
         answer = (response.answer or "").strip() if response is not None else ""
         if not self._changelog_reply_is_sendable(answer):

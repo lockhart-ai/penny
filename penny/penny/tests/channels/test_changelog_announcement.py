@@ -132,14 +132,13 @@ async def test_changelog_announcement_dispatches_the_whole_literal_render(test_c
         return_value=ControllerResponse(answer=_REPLY)
     )
 
-    await penny._send_changelog_announcement(_ENTRIES, [])
+    await penny._send_changelog_announcement(_ENTRIES)
 
     penny.chat_agent.handle_changelog_report.assert_awaited_once()
     await_args = penny.chat_agent.handle_changelog_report.await_args
     assert await_args is not None
     assert await_args.args[0] == _ENTRIES
-    assert await_args.args[1] == []
-    assert await_args.args[2] == TEST_SENDER
+    assert await_args.args[1] == TEST_SENDER
     # The real run id the delivery turn was dispatched with — read off the
     # SAME ``CallLink`` production built, not re-derived here.
     delivery_run_id = await_args.kwargs["call_link"].run_id
@@ -172,7 +171,7 @@ async def test_changelog_announcement_still_sends_with_no_new_entries(test_confi
         return_value=ControllerResponse(answer=_REPLY)
     )
 
-    await penny._send_changelog_announcement([], [])
+    await penny._send_changelog_announcement([])
 
     penny.chat_agent.handle_changelog_report.assert_awaited_once()
     await_args = penny.chat_agent.handle_changelog_report.await_args
@@ -204,7 +203,7 @@ async def test_changelog_announcement_skipped_with_profile_but_no_messages(
 
 
 @pytest.mark.asyncio
-async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_llm):
+async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_llm, caplog):
     """Startup sends must not block listener startup before the channel is ready,
     and the delivery turn's prompt is the framework render, byte for byte.
 
@@ -214,7 +213,14 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
     commit list carries both an old, already-announced PR and a genuinely
     new one: ``record_new_entries``'s own idempotency (never a separate
     selection step — #2891) skips the old one and records/announces only
-    the new one."""
+    the new one.
+
+    The boot's browser channel is enabled with no addon able to connect in the
+    test env (``_init_channel`` installed a custom channel, so no browser
+    channel exists for the preflight to see connected), so the preflight
+    soft-warns about the addon — and the notice still announces only the new
+    changes (#3003): no degraded text rides it, while the preflight's own log
+    line still names the warning."""
     old_entry = ChangelogEntry(pr=9300, text="an already-recorded PR from an earlier deploy")
     new_entry = ChangelogEntry(pr=9301, text="We added a new way to save a note.")
     # A plain always-answer handler, not ``set_default_flow``'s two-step
@@ -226,7 +232,7 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
     # No idle/cooldown tuning needed (#2913): the announcement is delivered
     # directly through the channel the moment the delivery turn composes it,
     # never through the send-queue drainer's own idle-gated schedule.
-    config = make_config(changelog_commits=[old_entry, new_entry])
+    config = make_config(changelog_commits=[old_entry, new_entry], browser_enabled=True)
     penny = Penny(config, channel=None)
     channel = StartupReadyChannel(message_agent=penny.chat_agent, db=penny.db)
     penny._init_channel(config, channel)
@@ -244,16 +250,16 @@ async def test_changelog_announcement_waits_for_channel_ready(make_config, mock_
         assert channel.sent[0] == (TEST_SENDER, _REPLY)
 
         prompt = _find_request(mock_llm, "reached you with this deploy")
-        # The degraded facts the announcement carried are exactly the startup
-        # preflight's own soft warns (#2975) — recomputed here off the same
-        # deterministic mocks, so the assert is byte-identical when nothing
-        # warns (the tests' own run is what pins the threading, whatever the
-        # environment warns about).
-        report = await penny._build_preflight().run()
+        # The notice announces only the new changes (#3003): this boot's
+        # preflight soft-warned about the disconnected browser addon, and no
+        # degraded text rides the notice for it — the render is byte-identical
+        # to the no-warnings shape.
         assert prompt == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
-            + render_changelog_announcement([new_entry], report.degraded())
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement([new_entry])
         )
+        assert "degraded" not in prompt
+        # The preflight still ran and still logged the warning as before.
+        assert "no browser addon connected" in caplog.text
 
         changelog = require_memory(penny.db, PennyConstants.MEMORY_CHANGELOG_LOG)
         assert [row.content for row in changelog.read_all()] == [
@@ -308,9 +314,7 @@ async def test_record_changelog_entries_cuts_at_the_log_not_the_build(make_confi
     ]
     # Recorded == announced, by construction: the delivery turn's input is the
     # same framework render over exactly this boot's recorded set.
-    assert render_changelog_announcement(recorded, []) == render_changelog_announcement(
-        new_entries, []
-    )
+    assert render_changelog_announcement(recorded) == render_changelog_announcement(new_entries)
 
     # A re-boot on the same snapshot — the cut lands on 9302, now recorded.
     assert penny._record_changelog_entries() == []
@@ -359,13 +363,11 @@ async def test_changelog_announcement_startup_sends_with_no_new_entries(make_con
     _seed_profile_and_history(penny)
     channel.ready.set()
 
-    await penny._run_startup_notifications([], [])
+    await penny._run_startup_notifications([])
 
     assert channel.sent == [(TEST_SENDER, _REPLY)]
     prompt = _find_request(mock_llm, "just restarted")
-    assert prompt == PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement(
-        [], []
-    )
+    assert prompt == PennyConstants.SYSTEM_NOTIFICATION_PREFIX + render_changelog_announcement([])
 
     await penny.shutdown()
 
@@ -386,7 +388,7 @@ async def test_ios_operational_changelog_announcement_respects_history_gate(
     penny.chat_agent.handle_changelog_report = AsyncMock()
 
     # No message history yet — the push is suppressed, not spammed per deploy.
-    await penny._send_changelog_announcement(_ENTRIES, [])
+    await penny._send_changelog_announcement(_ENTRIES)
     channel.send_message.assert_not_awaited()
 
     # Once the user has chatted, the operational push fires — and the real
@@ -394,7 +396,7 @@ async def test_ios_operational_changelog_announcement_respects_history_gate(
     penny.db.messages.log_message(
         direction=PennyConstants.MessageDirection.INCOMING, sender=TEST_SENDER, content="hey penny"
     )
-    await penny._send_changelog_announcement(_ENTRIES, [])
+    await penny._send_changelog_announcement(_ENTRIES)
     channel.send_message.assert_awaited_once_with("ios-device-id", "Penny is operational.")
     penny.chat_agent.handle_changelog_report.assert_not_awaited()
 
