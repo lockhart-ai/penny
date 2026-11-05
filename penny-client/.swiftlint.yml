@@ -1,6 +1,7 @@
 included:
   - PennyClient
   - PennyClientTests
+  - PennyDesign
 
 excluded:
   - swift-syntax

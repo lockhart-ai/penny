@@ -10,6 +10,8 @@
 		A00000000000000000000001 /* PennyServices in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000002 /* PennyServices */; };
 		A00000000000000000000004 /* PennyServices in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000002 /* PennyServices */; };
 		A10000000000000000000001 /* PennyServices in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000002 /* PennyServices */; };
+		B00000000000000000000001 /* PennyDesign in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000004 /* PennyDesign */; };
+		B00000000000000000000002 /* PennyDesign in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000004 /* PennyDesign */; };
 		D1F83D7F2FF98F1D0010DBDD /* PennyClient.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */; };
 		D1F83D822FF9A0000010DBDD /* PennyClient.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */; };
 /* End PBXBuildFile section */
@@ -55,6 +57,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				A00000000000000000000001 /* PennyServices in Frameworks */,
+				B00000000000000000000001 /* PennyDesign in Frameworks */,
 			);
 		};
 		A10000000000000000000004 /* Frameworks */ = {
@@ -72,6 +75,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				A00000000000000000000004 /* PennyServices in Frameworks */,
+				B00000000000000000000002 /* PennyDesign in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -121,6 +125,7 @@
 			name = PennyDev;
 			packageProductDependencies = (
 				A00000000000000000000002 /* PennyServices */,
+				B00000000000000000000004 /* PennyDesign */,
 			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* PennyDev.app */;
@@ -189,6 +194,7 @@
 			name = PennyTestflight;
 			packageProductDependencies = (
 				A00000000000000000000002 /* PennyServices */,
+				B00000000000000000000004 /* PennyDesign */,
 			);
 			productName = PennyTestflight;
 			productReference = D1F83D832FF9A0000010DBDD /* PennyTestflight.app */;
@@ -230,6 +236,7 @@
 				D18FD9872FF8E53D00225D47 /* XCRemoteSwiftPackageReference "SQLite" */,
 				D18FD98C2FF8E5A400225D47 /* XCLocalSwiftPackageReference "SQLPropertyMacros" */,
 				D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */,
+				B00000000000000000000003 /* XCLocalSwiftPackageReference "PennyDesign" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -852,6 +859,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = PennyServices;
 		};
+		B00000000000000000000003 /* XCLocalSwiftPackageReference "PennyDesign" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = PennyDesign;
+		};
 		D18FD98C2FF8E5A400225D47 /* XCLocalSwiftPackageReference "SQLPropertyMacros" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = SQLPropertyMacros;
@@ -882,6 +893,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A00000000000000000000005 /* XCLocalSwiftPackageReference "PennyServices" */;
 			productName = PennyServices;
+		};
+		B00000000000000000000004 /* PennyDesign */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000003 /* XCLocalSwiftPackageReference "PennyDesign" */;
+			productName = PennyDesign;
 		};
 		D10235282FFF4848008CD9FF /* SwiftLintBuildToolPlugin */ = {
 			isa = XCSwiftPackageProductDependency;
