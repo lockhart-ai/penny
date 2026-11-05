@@ -193,6 +193,28 @@ def _build_stub(
     return stub
 
 
+def _stop_stub(
+    tmp_path: pathlib.Path, stop_log: pathlib.Path, pid_file: pathlib.Path
+) -> pathlib.Path:
+    """Stands in for `make prod-stop` (#3015): records that it ran, and whether
+    the child was already gone when it did — the loop's shutdown must run the
+    stop command only AFTER stop_child has taken the child down, never while it
+    is still alive. The child's pid comes from the same `pid_file` the run stub
+    wrote, so the liveness check is the kernel's own record, never a sleep."""
+    stub = tmp_path / "stop-stub.sh"
+    _write_executable(
+        stub,
+        f'child_pid="$(cat "{pid_file}")"\n'
+        f'if kill -0 "$child_pid" 2>/dev/null; then\n'
+        f'  echo "stop while child alive" >> "{stop_log}"\n'
+        "else\n"
+        f'  echo "stop after child gone" >> "{stop_log}"\n'
+        "fi\n"
+        f'echo "stop" >> "{stop_log}"\n',
+    )
+    return stub
+
+
 def _start_loop(
     clone_dir: pathlib.Path,
     env_overrides: dict[str, str],
@@ -232,10 +254,10 @@ def _stop(proc: subprocess.Popen) -> None:
 @dataclasses.dataclass
 class _Deployment:
     """Everything a test needs to drive and inspect one loop run — the paths
-    its stub build/run commands write to, and the started process. `loop_stdout`
-    is what the loop itself wrote to its stdout — what a terminal (or the
-    launchd plist's StandardOutPath) would have shown (#2980); `loop_stderr` is
-    what the loop wrote to its stderr (#2991)."""
+    its stub build/run/stop commands write to, and the started process.
+    `loop_stdout` is what the loop itself wrote to its stdout — what a terminal
+    (or the launchd plist's StandardOutPath) would have shown (#2980);
+    `loop_stderr` is what the loop wrote to its stderr (#2991)."""
 
     proc: subprocess.Popen
     run_log: pathlib.Path
@@ -243,6 +265,7 @@ class _Deployment:
     build_log: pathlib.Path
     built_file: pathlib.Path
     fail_flag: pathlib.Path
+    stop_log: pathlib.Path
     deploy_log: pathlib.Path
     deploy_run_log: pathlib.Path
     loop_stdout: pathlib.Path
@@ -272,12 +295,14 @@ def _start_deployment(
     build_log = tmp_path / "build.log"
     built_file = tmp_path / "built"
     fail_flag = tmp_path / "fail-flag"
+    stop_log = tmp_path / "stop.log"
     deploy_log = tmp_path / "deploy.log"
     deploy_run_log = tmp_path / "deploy-run.log"
     loop_stdout = tmp_path / "loop-stdout.log"
     loop_stderr = tmp_path / "loop-stderr.log"
     run_stub = run_cmd or _run_stub(tmp_path, run_log, pid_file)
     build_stub = _build_stub(tmp_path, build_log, built_file, fail_flag)
+    stop_stub = _stop_stub(tmp_path, stop_log, pid_file)
     if not built_file.exists():
         built_file.write_text(_git(clone_dir, "rev-parse", "--short", "HEAD"))
 
@@ -287,6 +312,7 @@ def _start_deployment(
             {
                 "DEPLOY_RUN_CMD": str(run_stub),
                 "DEPLOY_BUILD_CMD": str(build_stub),
+                "DEPLOY_STOP_CMD": str(stop_stub),
                 "DEPLOY_LOG": str(deploy_log),
                 "DEPLOY_RUN_LOG": str(deploy_run_log),
                 # No quotes around the path on purpose (see the variable's own
@@ -305,6 +331,7 @@ def _start_deployment(
         build_log,
         built_file,
         fail_flag,
+        stop_log,
         deploy_log,
         deploy_run_log,
         loop_stdout,
@@ -368,6 +395,12 @@ def test_ahead_clean_ff_able_rebuilds_and_restarts(tmp_path, repos):
         second_short = _git(clone_dir, "rev-parse", "--short", "HEAD")
         assert dep.built_file.read_text().strip() == second_short
         assert f"built {second_short}" in _read_or_empty(dep.build_log)
+        # A redeploy stops the old child and starts a new one — prod-run brings the
+        # old containers down itself, so the stop command is shutdown-only (#3015).
+        # Asserted here, BEFORE the finally's TERM (which legitimately runs it).
+        assert not dep.stop_log.exists(), (
+            "a redeploy must not run the stop command — only the shutdown does"
+        )
     finally:
         _stop(dep.proc)
 
@@ -508,7 +541,11 @@ def test_crashed_child_is_restarted_after_backoff(tmp_path, repos):
 
 def test_stopping_the_loop_stops_the_child_cleanly(tmp_path, repos):
     """Sending the loop a stop signal stops the running child too — Penny never
-    keeps running headless after the loop that supervises it has gone away."""
+    keeps running headless after the loop that supervises it has gone away. And
+    since #2992 the group kill no longer reaches the child's `docker compose up`,
+    the shutdown also runs DEPLOY_STOP_CMD once, after the child is down (#3015):
+    the same `prod-stop` target prod-run opens with, so stopping the watcher
+    stops Penny's containers too."""
     _origin, clone_dir, _first = repos
     dep = _start_deployment(tmp_path, clone_dir)
     try:
@@ -525,6 +562,17 @@ def test_stopping_the_loop_stops_the_child_cleanly(tmp_path, repos):
             return False
 
         _wait_until(_child_gone)
+
+        _wait_until(lambda: _read_or_empty(dep.stop_log).count("stop\n") >= 1)
+        stop_text = _read_or_empty(dep.stop_log)
+        assert stop_text.count("stop\n") == 1, "the stop command runs exactly once"
+        assert "stop after child gone" in stop_text, (
+            "the stop command runs only after the child is stopped"
+        )
+        assert "stop while child alive" not in stop_text
+        assert "stopping penny:" in _read_or_empty(dep.deploy_log), (
+            "the shutdown names the stop command it ran in the loop's own log"
+        )
     finally:
         _stop(dep.proc)
 

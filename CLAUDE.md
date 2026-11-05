@@ -202,8 +202,11 @@ The project runs inside Docker Compose. A top-level Makefile wraps all commands:
 ```bash
 make up               # Start Penny with Docker Compose (dev source mounts)
 make prod             # Deploy penny (no dev override)
+make prod-stop        # Stop prod's containers — the one definition of stopping prod;
+                      # prod-run and the deploy loop's shutdown (#3015) both use it
 make prod-watch       # Auto-deploy loop (#2955): watches origin/main, fast-forwards and
-                      # redeploys through prod-build/prod-run as new commits land
+                      # redeploys through prod-build/prod-run as new commits land; stopping
+                      # it (Ctrl+C/TERM) also stops Penny's containers (prod-stop, #3015)
 make kill             # Tear down containers and remove local images
 make clean-project-images # Remove this compose project's built images + anon volumes (alias target of kill)
 make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes

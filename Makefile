@@ -166,7 +166,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-build prod-run prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-stories client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
+.PHONY: up prod prod-build prod-run prod-stop prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-stories client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
 
 # --- Docker Compose ---
 
@@ -220,11 +220,18 @@ prod-build: browser-build
 # the loop's own stopped child left behind. Runs the `penny:prod` tag prod-build
 # tagged — a crash-restart here can never bring up a worktree's shared `penny`
 # image (#2977).
-prod-run:
-	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
+prod-run: prod-stop
 	SNAPSHOT=1 \
 	PENNY_IMAGE=penny:prod \
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up
+
+# Stopping prod, defined ONCE (#3015): prod-run opens with it, and the deploy
+# loop's shutdown (`scripts/deploy-loop.sh`, `DEPLOY_STOP_CMD`) runs it after
+# stopping its child — since #2992 the loop's group kill no longer reaches the
+# child's `docker compose up`, so Ctrl+C on `make prod-watch` left the containers
+# running without this.
+prod-stop:
+	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 
 prod: prod-build prod-run
 
@@ -248,6 +255,7 @@ prod-ios: browser-build
 DEPLOY_INTERVAL ?= 300
 DEPLOY_BUILD_CMD ?= make prod-build
 DEPLOY_RUN_CMD ?= make prod-run
+DEPLOY_STOP_CMD ?= make prod-stop
 DEPLOY_LOG ?= $(CURDIR)/data/penny/logs/deploy-loop.log
 # The child's own stdout/stderr (detached from the terminal, #2971) — appended,
 # next to the loop's own log above.
@@ -257,6 +265,7 @@ prod-watch:
 	DEPLOY_INTERVAL="$(DEPLOY_INTERVAL)" \
 	DEPLOY_BUILD_CMD="$(DEPLOY_BUILD_CMD)" \
 	DEPLOY_RUN_CMD="$(DEPLOY_RUN_CMD)" \
+	DEPLOY_STOP_CMD="$(DEPLOY_STOP_CMD)" \
 	DEPLOY_LOG="$(DEPLOY_LOG)" \
 	DEPLOY_RUN_LOG="$(DEPLOY_RUN_LOG)" \
 	./scripts/deploy-loop.sh
