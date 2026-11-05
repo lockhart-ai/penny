@@ -19,17 +19,32 @@ for it.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlmodel import Session, select
 
-from penny.constants import ChannelType, CycleTrigger, MutationAction, PennyConstants
+from penny.agents.collector import Collector
+from penny.agents.models import ControllerResponse
+from penny.constants import (
+    ChannelType,
+    CycleTrigger,
+    MutationAction,
+    PennyConstants,
+    QueueItemKind,
+)
 from penny.database import Database
+from penny.database.memory import EntryInput
 from penny.database.models import SendQueueItem
 from penny.database.mutation_store import MutationDetail, render_mutation
+from penny.llm.call_link import CallLink
+from penny.llm.client import LlmClient
+from penny.llm.models import LlmMessage, LlmResponse
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
+from penny.tests.conftest import require_memory, wait_until
 from penny.tests.schema_template import schema_only_db
 
 _PENNY_LOG = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
@@ -75,10 +90,25 @@ def _make_channel():
     return SimpleNamespace(send_response=AsyncMock(return_value=42))
 
 
-def _make_drainer(db, channel, cooldown_seconds: float = 600.0) -> SendQueueDrainer:
+class _IdleCollector:
+    """A collector double exposing the one read the drainer makes off it (#3025):
+    no job run in progress, always.  The tests that need a run ACTUALLY in
+    progress drive a real ``Collector`` (below) — this only stands in for the
+    ordinary-row tests, whose subject is the cooldown lanes, not the run gate."""
+
+    def is_cycle_running(self) -> bool:
+        return False
+
+
+def _make_drainer(db, channel, cooldown_seconds: float = 600.0, *, collector=None):
     # The chat agent only matters to the compose path (#2656), which these
     # ordinary-row tests never reach — a mock stands in for it.
-    drainer = SendQueueDrainer(db=db, config=_make_config(cooldown_seconds), chat_agent=MagicMock())
+    drainer = SendQueueDrainer(
+        db=db,
+        config=_make_config(cooldown_seconds),
+        chat_agent=MagicMock(),
+        collector=collector if collector is not None else _IdleCollector(),
+    )
     drainer.set_channel(channel)
     return drainer
 
@@ -308,7 +338,9 @@ async def test_drainer_falls_back_to_primary_sender_with_no_default_device(tmp_p
 async def test_drain_no_channel_is_noop(tmp_path):
     """No channel wired → drainer reports no work rather than crashing."""
     db = _make_db(tmp_path)
-    drainer = SendQueueDrainer(db=db, config=_make_config(), chat_agent=MagicMock())
+    drainer = SendQueueDrainer(
+        db=db, config=_make_config(), chat_agent=MagicMock(), collector=_IdleCollector()
+    )
     db.send_queue.enqueue(content="queued", collection=_COLLECTION)
 
     assert await drainer.execute() is False
@@ -346,7 +378,9 @@ async def test_deliver_composed_no_channel_or_recipient_reports_false(tmp_path):
     """No channel wired → ``deliver_composed`` reports failure rather than
     crashing, the same honesty ``execute()`` gives a queued row."""
     db = _make_db(tmp_path)
-    drainer = SendQueueDrainer(db=db, config=_make_config(), chat_agent=MagicMock())
+    drainer = SendQueueDrainer(
+        db=db, config=_make_config(), chat_agent=MagicMock(), collector=_IdleCollector()
+    )
 
     delivered = await drainer.deliver_composed(
         "the announcement", collection=_COLLECTION, run_id="run-123"
@@ -456,3 +490,158 @@ async def test_unarchive_does_not_resurrect_cancelled_sends(tmp_path):
     with Session(db.engine) as session:
         rows = session.exec(select(SendQueueItem)).all()
     assert len(rows) == 1 and rows[0].cancelled_at is not None
+
+
+# ── The run gate (#3025): a job run in progress holds queued reports back ──
+
+_REPORT_COLLECTION = "indie-release-watch"
+
+
+class _GatedLlm(LlmClient):
+    """A model client that holds its first call open until the test releases it —
+    the deterministic stand-in for a job run mid-cycle, no timers.  The test
+    awaits the collector's own ``is_cycle_running()`` to see the run start, then
+    sets ``release``; the canned text response ends the cycle, which settles and
+    frees the cycle lock."""
+
+    def __init__(self) -> None:
+        super().__init__("http://localhost:9", "test-model", max_retries=1, retry_delay=0.0)
+        self.release = asyncio.Event()
+
+    async def chat(
+        self,
+        messages: list[LlmMessage],
+        tools: list[dict] | None = None,
+        format: dict | str | None = None,
+        *,
+        call_link: CallLink,
+        agent_name: str | None = None,
+        prompt_type: str | None = None,
+        run_target: str | None = None,
+        token_budget: int | None = None,
+        thinking_enabled: bool = True,
+    ) -> LlmResponse:
+        await self.release.wait()
+        return LlmResponse(
+            message=LlmMessage(role="assistant", content="All caught up."),
+            model=self.model,
+        )
+
+
+def _make_real_collector(db: Database, test_config, model_client) -> Collector:
+    """A real Collector wired to the given model client — the genuine run path
+    (``run_for`` → ``_execute_cycle`` → ``_run_locked_cycle`` under the cycle
+    lock) is what holds the gate closed in the tests below.  ``run_for`` is the
+    user-requested path that lives OUTSIDE the scheduler — the case the cooldown
+    never kept apart from a queued report's delivery turn; the scheduled and
+    sandbox paths hold the same lock, so the gate reads them the same way."""
+    return Collector(
+        model_client=model_client,
+        db=db,
+        config=test_config,
+        embedding_model_client=LlmClient(
+            "http://localhost:9", "test-model", max_retries=1, retry_delay=0.0
+        ),
+        process_started_at=datetime(2000, 1, 1, tzinfo=UTC),
+    )
+
+
+def _seed_report_row(db: Database, run_id: str) -> None:
+    """A buildable composing report row: the collection plus the entry its run
+    wrote, so once the gate opens the compose path can actually assemble the
+    fact set instead of failing the row."""
+    db.memories.create_collection(
+        _REPORT_COLLECTION,
+        "New indie releases",
+        extraction_prompt="Check the store page for new releases.",
+        notify=True,
+    )
+    require_memory(db, _REPORT_COLLECTION).write_rule_decided(
+        [
+            EntryInput(
+                key="Astral Drift",
+                content="Astral Drift — a new indie metroidvania, announced for spring.",
+            )
+        ],
+        author="producer",
+        run_id=run_id,
+    )
+    db.send_queue.enqueue_report(
+        _REPORT_COLLECTION, CycleTrigger.ON_DEMAND, run_id, kind=QueueItemKind.REPORT
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_queued_report_is_not_delivered_while_a_job_run_is_in_progress(
+    tmp_path, test_config
+):
+    """#3025: with a job run mid-cycle, the drainer holds its whole tick back —
+    the queued report stays pending, nothing is composed, the channel hears
+    nothing.  The run here is a real user-requested one (``run_for``), the path
+    outside the scheduler the old idle/cooldown gates never saw."""
+    db = _make_db(tmp_path)
+    channel = _make_channel()
+    model = _GatedLlm()
+    collector = _make_real_collector(db, test_config, model)
+    drainer = _make_drainer(db, channel, collector=collector)
+    _seed_report_row(db, "run-report-1")
+
+    cycle = asyncio.create_task(collector.run_for(_REPORT_COLLECTION))
+    await wait_until(collector.is_cycle_running)
+
+    assert await drainer.execute() is False
+    channel.send_response.assert_not_awaited()
+    # Delayed, never dropped: the row is exactly as it was.
+    assert db.send_queue.next_pending() is not None
+
+    model.release.set()
+    await cycle
+
+
+@pytest.mark.asyncio
+async def test_a_queued_report_is_delivered_once_the_cycle_ends(tmp_path, test_config):
+    """#3025: the same report, held back while the cycle ran, goes out on the
+    first tick with no run in progress."""
+    db = _make_db(tmp_path)
+    channel = _make_channel()
+    model = _GatedLlm()
+    collector = _make_real_collector(db, test_config, model)
+    # The compose's delivery turn — a canned reply is all this test needs from it;
+    # the turn itself is test_report_delivery.py's subject.
+    chat = MagicMock()
+    chat.handle_job_report = AsyncMock(
+        return_value=ControllerResponse(answer="Astral Drift was announced for spring!")
+    )
+    drainer = SendQueueDrainer(db=db, config=_make_config(), chat_agent=chat, collector=collector)
+    drainer.set_channel(channel)
+    _seed_report_row(db, "run-report-1")
+
+    cycle = asyncio.create_task(collector.run_for(_REPORT_COLLECTION))
+    await wait_until(collector.is_cycle_running)
+    assert await drainer.execute() is False
+    model.release.set()
+    await cycle
+    await wait_until(lambda: not collector.is_cycle_running())
+
+    assert await drainer.execute() is True
+    channel.send_response.assert_awaited_once()
+    assert db.send_queue.next_pending() is None
+
+
+@pytest.mark.asyncio
+async def test_delivery_is_unchanged_when_no_job_run_is_in_progress(tmp_path, test_config):
+    """#3025: with a real collector sitting idle (no run in progress), delivery
+    behaves exactly as before — the queued message goes out this tick."""
+    db = _make_db(tmp_path)
+    channel = _make_channel()
+    collector = _make_real_collector(
+        db,
+        test_config,
+        LlmClient("http://localhost:9", "test-model", max_retries=1, retry_delay=0.0),
+    )
+    drainer = _make_drainer(db, channel, collector=collector)
+    db.send_queue.enqueue(content="all quiet on the watch", collection=_COLLECTION)
+
+    assert await drainer.execute() is True
+    channel.send_response.assert_awaited_once()
+    assert db.send_queue.next_pending() is None

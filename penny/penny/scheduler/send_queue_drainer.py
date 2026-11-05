@@ -41,6 +41,15 @@ very conversation that asked for the preview — but composes a different report
 previewed cycle's own tool-call trace, never written entries, since nothing it did
 was real).
 
+A queued report is also held back while ANY job run is in progress (#3025): the
+drainer's delivery turn is itself a model call, and running it beside a cycle on the
+one local model halves both.  The gate is the collector's own ``is_cycle_running()`` —
+one structural read covering scheduled cycles, a user's "run this now" dispatch and a
+sandbox preview (every kind of run passes through the collector's cycle lock) — read
+at each tick, never a timer.  A held-back row stays pending: delayed, never dropped,
+and the next tick with no run in progress delivers it.  ``deliver_composed`` is not
+gated — it is a caller's own already-composed send, not this task's tick.
+
 Compose failures are bounded and visible (#2656): a turn that produced nothing
 sendable bumps the row's ``attempts`` and leaves it pending for the next idle tick,
 until ``COLLECTOR_RETRY_ATTEMPTS`` is spent and the row is stamped ``failed_at`` —
@@ -57,7 +66,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from penny.constants import CycleTrigger, PennyConstants, QueueItemKind
 from penny.llm.call_link import CallLink
@@ -85,15 +94,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class JobRunTracker(Protocol):
+    """The collector surface the drainer reads (#3025): whether any job run is in
+    progress.  Structural, like ``ScheduledTask`` — the real ``Collector``
+    satisfies it (``is_cycle_running`` reads its cycle lock, the one chokepoint
+    every scheduled cycle, "run it now" dispatch and sandbox preview passes
+    through), and the drainer never imports the agent module."""
+
+    def is_cycle_running(self) -> bool: ...
+
+
 class SendQueueDrainer:
     """Deliver the oldest queued message its lane allows out this tick."""
 
     name = "send_queue_drain"
 
-    def __init__(self, db: Database, config: Config, chat_agent: ChatAgent) -> None:
+    def __init__(
+        self, db: Database, config: Config, chat_agent: ChatAgent, collector: JobRunTracker
+    ) -> None:
         self._db = db
         self._config = config
         self._chat_agent = chat_agent
+        # The collector's own run state (#3025) — ``is_cycle_running()`` is the one
+        # structural read this drainer makes off it: a job run in progress holds a
+        # queued report's delivery turn back, since both are model calls on the one
+        # local model.
+        self._collector = collector
         self._channel: MessageChannel | None = None
 
     def set_channel(self, channel: MessageChannel) -> None:
@@ -103,13 +129,21 @@ class SendQueueDrainer:
     async def execute(self) -> bool:
         """Deliver one queued message if its lane allows; return whether one went out.
 
-        Returns False (no work) when the queue holds nothing deliverable this tick or
-        no channel/recipient is wired — the scheduler then moves on to the next
-        schedule this tick.  A composing report whose turn produced nothing usable
-        also returns False: the row stays pending (or fails out) and a later tick
-        picks the queue up again — but no message behind it goes out until this head
-        resolves, because the queue is FIFO.
+        Returns False (no work) when a job run is in progress (#3025), when the
+        queue holds nothing deliverable this tick, or when no channel/recipient is
+        wired — the scheduler then moves on to the next schedule this tick.  A
+        composing report whose turn produced nothing usable also returns False:
+        the row stays pending (or fails out) and a later tick picks the queue up
+        again — but no message behind it goes out until this head resolves,
+        because the queue is FIFO.
         """
+        if self._collector.is_cycle_running():
+            # A job run — a scheduled cycle, a "run this now" dispatch or a sandbox
+            # preview — is mid-flight on the local model.  The delivery turn is a
+            # model call too; running the two together halves both (#3025).  The
+            # row stays pending exactly as it is: delayed, never dropped, and the
+            # next tick with no run in progress delivers it.
+            return False
         if self._channel is None:
             return False
         item = self._next_deliverable()

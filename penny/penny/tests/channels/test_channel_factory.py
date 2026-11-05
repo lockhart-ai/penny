@@ -14,6 +14,15 @@ from penny.scheduler.send_queue_drainer import SendQueueDrainer
 _USER_NUMBER = "+15559876543"  # distinct from DEFAULT_TEST_CONFIG's signal_number
 
 
+class _NoCycleCollector:
+    """The one read the send-queue drainer makes off the collector (#3025), as a
+    test double: no job run in progress.  These tests exercise recipient
+    resolution, not the run gate."""
+
+    def is_cycle_running(self) -> bool:
+        return False
+
+
 @pytest.mark.asyncio
 async def test_ios_enabled_registers_ios_alongside_signal(make_config):
     """IOS_ENABLED keeps Signal primary while adding the iOS listener."""
@@ -121,7 +130,9 @@ async def test_signal_primary_reclaims_a_stale_penny_number_default(make_config,
         assert default is not None
         assert default.identifier == _USER_NUMBER
 
-        drainer = SendQueueDrainer(db=db, config=MagicMock(), chat_agent=MagicMock())
+        drainer = SendQueueDrainer(
+            db=db, config=MagicMock(), chat_agent=MagicMock(), collector=_NoCycleCollector()
+        )
         assert drainer._resolve_recipient() == _USER_NUMBER
         assert drainer._resolve_recipient() != config.signal_number
     finally:

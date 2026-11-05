@@ -349,6 +349,20 @@ class Collector(BackgroundAgent):
         if error is not None:
             logger.error("Sandbox preview cycle died: %s", error)
 
+    def is_cycle_running(self) -> bool:
+        """Whether any job run is in progress right now (#3025) — a scheduled
+        cycle, a user's "run this now" (``run_for``) or a sandbox preview.
+
+        The one structural read: every kind of run passes through
+        ``_run_locked_cycle`` under ``_cycle_lock``, and the WHOLE cycle happens
+        inside it — the loop, the notification hand-off that queues a report
+        row, and the settlement.  Lock held = a job run is in progress; lock
+        released = the run is fully settled and everything it was going to
+        write (its queued report included) is written.  The send-queue drainer
+        reads this to hold a queued report back while a run shares the model
+        with its delivery turn — no timer, no guess."""
+        return self._cycle_lock.locked()
+
     def _find_testable_collection(self, collection_name: str) -> MemoryRow | str:
         """The named collection, ready for a test cycle — or the refusal
         ``run_for``/``run_sandbox`` share (not found, archived, no
