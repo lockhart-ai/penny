@@ -547,6 +547,7 @@ eval-remote: $(if $(LOCAL),,build)
 		EVAL_RUN_ID="$$run_id" \
 		EVAL_HEALTH_DIR="$$health_dir" \
 		LLM_PROVIDER="$$pinned" \
+		EVAL_MODELS="$${EVAL_MODELS:-$$(from_env EVAL_MODELS)}" \
 		EVAL_PREFERRED_PROVIDER="$$pinned" \
 		EVAL_PROVIDER="$$provider" \
 		EVAL_COMMIT="$$commit" \
