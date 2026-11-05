@@ -256,7 +256,12 @@ from penny.tests.eval.drivers.end_to_end import (
 )
 from penny.tests.eval.drivers.extractor import _observe_extraction, _write_classifier_report
 from penny.tests.eval.end_to_end.world import seed_known_routine
-from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
+from penny.tests.eval.extractor.test_browse_extract_fields import (
+    FIXTURES as _BROWSE_EXTRACT_FIELDS_FIXTURES,
+)
+from penny.tests.eval.extractor.test_browse_extract_page_labels import (
+    FIXTURES as _BROWSE_EXTRACT_PAGE_LABELS_FIXTURES,
+)
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report
 from penny.tests.eval.utils.artifacts import (
@@ -4091,7 +4096,11 @@ def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuou
         _ = cohort.claims
 
 
-@pytest.mark.parametrize("fixture", EXTRACT_FIELD_FIXTURES, ids=lambda f: f.case_id)
+@pytest.mark.parametrize(
+    "fixture",
+    (*_BROWSE_EXTRACT_FIELDS_FIXTURES, *_BROWSE_EXTRACT_PAGE_LABELS_FIXTURES),
+    ids=lambda f: f.case_id,
+)
 def test_each_extract_field_case_coheres_with_the_page_it_claims(fixture) -> None:
     """Per-case coherence probe (#1942): every thing a case says its page supplies really
     is on that page, exactly once, and every case declares at least one thing to look for.
