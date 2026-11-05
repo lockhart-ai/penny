@@ -241,6 +241,16 @@ Quotes are the code owner's own words.
    renders identically wherever it appears and is never re-worded to make a case pass. A
    fixture's wording never appears in a prompt.
 
+8. **What the model must react to arrives as a user turn;** system-role messages carry only
+   context.
+   - An event, report or trigger she must react to rides as a user-role turn prefixed
+     `System notification (not from the user): `, stating facts only (#2974).
+   - System-role messages carry context next to a real turn: the static prompt, and the
+     per-turn state including `## Related earlier exchanges`.
+   - A request ending on a system message reads to the model as "wait for the user".
+   - Measured: engaging with an announced fix went 0/15 as a system message against 3/15
+     as a prefixed user turn (#2979).
+
 ## 4. How behaviour is verified
 
 Penny is code plus a model, so a change to her is reasoned about by measuring the whole system.
