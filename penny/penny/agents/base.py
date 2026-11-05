@@ -1118,7 +1118,7 @@ class Agent:
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
                 messages.append(response.message)
-                messages.append(LlmMessage(role=MessageRole.USER, content=message))
+                messages.append(self._system_notification_turn(message))
                 return True
             case Proceed():
                 return False
@@ -1527,9 +1527,22 @@ class Agent:
         return None
 
     @staticmethod
+    def _system_notification_turn(content: str) -> LlmMessage:
+        """A harness note the model must react to, as a USER turn prefixed
+        ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX`` (principles §3.8, #2974) —
+        the ONE builder every harness note turn in the loop goes through (#2871),
+        so no site can forget the prefix.  What arrives unprefixed stays the
+        user's own words: joined mid-turn messages, the live turn's own message."""
+        return LlmMessage(
+            role=MessageRole.USER,
+            content=f"{PennyConstants.SYSTEM_NOTIFICATION_PREFIX}{content}",
+        )
+
+    @staticmethod
     def _append_retry_note(messages: list[LlmMessage], draft: LlmMessage | None, note: str) -> None:
         """Show the redraw the discarded draft (assistant turn, when there is one)
-        plus the note naming what was wrong (user turn) — the one case a reroll is
+        plus the note naming what was wrong (user turn, prefixed as a system
+        notification, ``_system_notification_turn``) — the one case a reroll is
         not blind (#2790, extending the dangling-link design, #2729).  ``draft=None``
         omits the assistant turn — the EMPTY condition's draft has nothing worth
         echoing back, so only the note is appended.
@@ -1551,7 +1564,7 @@ class Agent:
         re-read by every later draw; this is confined to resolving one call)."""
         if draft is not None:
             messages.append(draft)
-        messages.append(LlmMessage(role=MessageRole.USER, content=note))
+        messages.append(Agent._system_notification_turn(note))
 
     def _unusable_output_condition(self, response: LlmResponse) -> ConditionKey | None:
         """The condition that makes this raw draw unusable, or ``None`` if it's clean.
@@ -1742,13 +1755,12 @@ class Agent:
 
     @staticmethod
     def _with_facts_turn(messages: list[LlmMessage], facts: str) -> list[LlmMessage]:
-        """``messages`` plus one user turn stating ``facts`` — the shape every
+        """``messages`` plus one user turn stating ``facts`` (prefixed as a system
+        notification, ``_system_notification_turn``) — the shape every
         narrate-or-account call site hands the draw."""
         return [
             *messages,
-            LlmMessage(
-                role=MessageRole.USER, content=Prompt.NARRATE_TERMINAL_FACTS.format(facts=facts)
-            ),
+            Agent._system_notification_turn(Prompt.NARRATE_TERMINAL_FACTS.format(facts=facts)),
         ]
 
     async def _narrate_or_account(
@@ -2553,12 +2565,15 @@ class Agent:
         under it: if the true first call's row is gone, the next surviving row
         whose trailing message still carries the prefix (a blind reroll resends
         the identical messages) is read instead.  Rows that do not qualify are
-        skipped in order: a round-trip's trailing message is a tool result; a
-        nudge-appended retry's is the retry note, a user turn WITHOUT the
-        prefix — the prefix, set once at the ``handle_*_report`` call sites, is
-        the one mark that tells the trigger from a note, since both ride the
-        user role here.  If nothing qualifies — every row pruned, or only a
-        nudged-retry row survives — this returns ``None`` and the caller
+        skipped in order: a round-trip's trailing message is a tool result.  A
+        retry note's trailing turn now carries the prefix too (#2871 — every
+        harness note rides as a system notification), but a note is appended
+        only AFTER a draw inside the same run, so the trigger row always
+        precedes any note row and the first-qualifying-row walk reads the
+        trigger; only if every earlier row is pruned could a note row be the
+        first survivor, and then its note text renders as the trigger —
+        harness text, never the user's words, and never invented.  If nothing
+        qualifies — every row pruned — this returns ``None`` and the caller
         renders the reply plainly, never guessing at lost text.
 
         The prefix here never DECIDES anything: autonomy is the messagelog
