@@ -476,7 +476,7 @@ struct PennyWebSocketClientTests {
         {"type":"agent_progress","event":"step_started","run_id":"run-1","agent":"chat","scope":"foreground","step":1,"max_steps":4,"tools":[]}
         """)
         transport.emit("""
-        {"type":"agent_progress","event":"tools_started","run_id":"run-1","agent":"chat","scope":"foreground","step":1,"tools":[{"name":"browse","arguments":{"queries":["coffee"]}}]}
+        {"type":"agent_progress","event":"tools_started","run_id":"run-1","agent":"chat","scope":"foreground","step":1,"tools":[{"name":"browse","arguments":{"queries":["coffee"]}}],"thinking":"The user wants coffee; search first."}
         """)
 
         // Duplicate step and an out-of-order tool event must not duplicate state.
@@ -485,6 +485,9 @@ struct PennyWebSocketClientTests {
         """)
         #expect(client.foregroundProgress?.steps.count == 1)
         #expect(client.foregroundProgress?.steps.first?.tools.first?.name == "browse")
+        // The step's thinking decodes off the optional field (#3040); frames without
+        // the key (every other event above) decode fine and leave it nil.
+        #expect(client.foregroundProgress?.steps.first?.thinking == "The user wants coffee; search first.")
 
         transport.emit("""
         {"type":"agent_progress","event":"run_finished","run_id":"run-1","agent":"chat","scope":"foreground","outcome":"completed","tools":[]}

@@ -70,3 +70,14 @@ Messages without a generating run omit it. The read-only data browser supports
 `run_detail_response` (`run_id`, `run`, echoed `request_id`). `run` is null when
 unavailable; invalid correlated requests use `data_read_error`. This is an exact
 lookup through the existing serialized-run store, independent of prompt pagination.
+
+### iOS agent progress thinking
+
+The ephemeral `agent_progress` stream's `tools_started` event carries an optional
+`thinking` string — the reasoning the model returned for that step (#3040), trimmed
+to `IOS_PROGRESS_THINKING_MAX_CHARS` (600) with the ellipsis counted inside the cap.
+It is sent only for foreground (chat) runs: background collectors' progress carries
+no thinking. Like the rest of `agent_progress` it is transient — sent only to
+connected iOS clients, never stored as a message; the prompt log holds the trace
+whole. The Swift `AgentProgressPayload` decodes it as an optional, so older servers
+(and older clients, which ignore the extra key) keep working.

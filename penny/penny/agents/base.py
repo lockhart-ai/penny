@@ -160,6 +160,11 @@ class AgentProgressEvent:
     max_steps: int | None = None
     tools: tuple[tuple[str, dict], ...] = ()
     outcome: str | None = None
+    # The step's own reasoning (#3040), carried on ``tools_started`` — the one event
+    # emitted per model step whose calls actually start, after the draw it belongs
+    # to.  Transport-neutral here; the iOS channel gates it to foreground runs and
+    # trims it for the wire.
+    thinking: str | None = None
 
 
 ProgressCallback = Callable[[AgentProgressEvent], Awaitable[None]]
@@ -2077,6 +2082,7 @@ class Agent:
                     step=step,
                     max_steps=max_steps,
                     tools=tuple((name, dict(args)) for _, name, args in pending),
+                    thinking=response.thinking,
                 ),
             )
 

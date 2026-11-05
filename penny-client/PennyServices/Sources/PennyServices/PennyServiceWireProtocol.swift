@@ -757,6 +757,8 @@ struct AgentProgressPayload: Decodable {
     let maxSteps: Int?
     let tools: [AgentProgressToolPayload]
     let outcome: AgentProgressOutcome?
+    /// The step's reasoning (#3040). Optional, so older servers without the field keep decoding.
+    let thinking: String?
 
     private enum CodingKeys: String, CodingKey {
         case event
@@ -767,5 +769,6 @@ struct AgentProgressPayload: Decodable {
         case maxSteps = "max_steps"
         case tools
         case outcome
+        case thinking
     }
 }

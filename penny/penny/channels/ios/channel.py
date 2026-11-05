@@ -1290,6 +1290,22 @@ class IosChannel(MessageChannel):
                 ]
         return redacted
 
+    @staticmethod
+    def _progress_thinking(event: AgentProgressEvent) -> str | None:
+        """The step's thinking for the wire, foreground (chat) runs only (#3040).
+
+        Background collectors stream which tool is running, never their reasoning;
+        a longer trace is trimmed with the ellipsis counted inside the cap — the
+        payload is a transient preview, the prompt log holds it whole.
+        """
+        if event.scope != "foreground" or not event.thinking:
+            return None
+        thinking = event.thinking
+        limit = PennyConstants.IOS_PROGRESS_THINKING_MAX_CHARS
+        if len(thinking) <= limit:
+            return thinking
+        return thinking[: limit - 1].rstrip() + "…"
+
     async def _send_agent_progress(
         self, event: AgentProgressEvent, recipient: str | None = None
     ) -> None:
@@ -1310,6 +1326,7 @@ class IosChannel(MessageChannel):
             max_steps=event.max_steps,
             tools=tools,
             outcome=event.outcome,
+            thinking=self._progress_thinking(event),
         )
         connections = (
             [self._connections.get(recipient)]
