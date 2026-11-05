@@ -236,6 +236,58 @@ class TestEveryArmCarriesTheSameResolvedTarget:
             )
         assert len(captures) == 1  # the refused arm sent nothing
 
+    async def test_a_last_tool_result_replaces_the_last_tool_message_only(
+        self, tmp_path, monkeypatch, captures
+    ) -> None:
+        """Two tool messages: the replacement rides the LAST one (the result the
+        model is about to react to), never the earlier one — and a request with no
+        tool message refuses the arm, as the other transforms refuse."""
+        _install_roster(monkeypatch)
+        two_tools = [
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": "draw a cat"},
+            {"role": "tool", "content": "earlier tool result"},
+            {"role": "tool", "content": "Generated image #897 of: a cat."},
+            {"role": "user", "content": "nice"},
+        ]
+        body = {"model": "old-model", "messages": two_tools}
+        db_path = _write_row(tmp_path, PromptTransport.CHAT.value, body, messages=two_tools)
+        await replay_variants(
+            1,
+            [ReplayVariant(name="reworded", last_tool_result="The image is finished.")],
+            1,
+            db_path=db_path,
+            api_url="http://fake/v1",
+            api_key="key",
+        )
+        sent = captures[0]["messages"]
+        assert sent[0] == two_tools[0]
+        assert sent[2] == two_tools[2]  # the earlier tool message untouched
+        assert sent[3]["content"] == "The image is finished."
+        assert sent[4] == two_tools[4]
+        no_tools = [
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": "Run your cycle."},
+        ]
+        no_tools_dir = tmp_path / "no-tools"
+        no_tools_dir.mkdir()
+        db_path = _write_row(
+            no_tools_dir,
+            PromptTransport.CHAT.value,
+            {"model": "old-model", "messages": no_tools},
+            messages=no_tools,
+        )
+        with pytest.raises(ValueError, match="no tool message"):
+            await replay_variants(
+                1,
+                [ReplayVariant(name="reworded", last_tool_result="Anything.")],
+                1,
+                db_path=db_path,
+                api_url="http://fake/v1",
+                api_key="key",
+            )
+        assert len(captures) == 1  # the refused arm sent nothing
+
 
 class TestTheByteIdentityCheck:
     async def test_a_transformed_raw_row_re_renders_from_the_matching_state(
