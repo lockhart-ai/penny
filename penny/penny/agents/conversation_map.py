@@ -503,27 +503,40 @@ class ConversationMap:
     ) -> list[ConversationMap._Line]:
         """Past ``CHAT_MAP_MAX_LINES``, the OLDEST WHOLE DAY collapses into one
         line — ``Oct 20 · 23 exchanges — log_read('user-messages', day=…)`` —
-        repeated while the map is over the ceiling and more than one day remains.
-        Never line-by-line: trimming the front one line per turn would break the
-        cached prefix every turn, while a whole-day line is fixed once rendered."""
+        repeated while the map is over the ceiling.  Each pass folds the OLDEST
+        day that still has more than one line, never the newest day, so every
+        pass strictly reduces the line count; when no such day remains the fold
+        stops, even with the map still over the ceiling.  An already-folded day
+        is never folded again — that pass would change nothing, so the loop
+        would never end (#3014).  Never line-by-line: trimming the front one
+        line per turn would break the cached prefix every turn, while a
+        whole-day line is fixed once rendered."""
         ceiling = int(self.runtime.CHAT_MAP_MAX_LINES)
         lines = list(lines)
-        while len(lines) > ceiling and len({line.date for line in lines}) > 1:
-            oldest_date, oldest_iso = lines[0].date, lines[0].date_iso
+        while len(lines) > ceiling:
+            newest_date = lines[-1].date
+            counts: dict[str, int] = {}
+            for line in lines:
+                if line.date != newest_date:
+                    counts[line.date] = counts.get(line.date, 0) + 1
+            # ``lines`` is oldest-first, so the dict's insertion order is too.
+            oldest_date = next((date for date, count in counts.items() if count > 1), None)
+            if oldest_date is None:
+                break
+            oldest_iso = next(line.date_iso for line in lines if line.date == oldest_date)
             covered = sum(line.exchanges for line in lines if line.date == oldest_date)
-            rest = [line for line in lines if line.date != oldest_date]
-            lines = [
-                self._Line(
-                    text=(
-                        f"- {oldest_date} · {covered} {self.DAY_LINE_TAIL} — "
-                        f"{PennyConstants.USER_MESSAGES_DAY_ANCHOR.format(day=oldest_iso)}"
-                    ),
-                    date=oldest_date,
-                    date_iso=oldest_iso,
-                    exchanges=covered,
+            fold = self._Line(
+                text=(
+                    f"- {oldest_date} · {covered} {self.DAY_LINE_TAIL} — "
+                    f"{PennyConstants.USER_MESSAGES_DAY_ANCHOR.format(day=oldest_iso)}"
                 ),
-                *rest,
-            ]
+                date=oldest_date,
+                date_iso=oldest_iso,
+                exchanges=covered,
+            )
+            first = next(i for i, line in enumerate(lines) if line.date == oldest_date)
+            rest = [line for line in lines if line.date != oldest_date]
+            lines = [*rest[:first], fold, *rest[first:]]
         return lines
 
     def _anchor(self) -> str:
