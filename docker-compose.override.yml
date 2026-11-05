@@ -29,6 +29,9 @@ services:
       # The auto-deploy loop (#2955, `make prod-watch`) is the same kind of shell file its
       # own test drives from inside the container.
       - ./scripts/deploy-loop.sh:/penny/scripts/deploy-loop.sh:ro
+      # The idle check the deploy loop polls before a redeploy (#3026) — the same
+      # kind of shell file its own test drives from inside the container.
+      - ./scripts/penny-idle.sh:/penny/scripts/penny-idle.sh:ro
       # The catalogue of supported behaviours is generated from the eval cases inside the
       # container: `make fix` writes docs/eval-catalogue.md and `make check` compares it.
       - ./docs:/docs
