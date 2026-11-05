@@ -137,31 +137,25 @@ def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[Chang
 _CHANGELOG_RESTART_LEAD = "You've just restarted."
 _CHANGELOG_LEAD = "These changes to your tools and behaviour reached you with this deploy:"
 _CHANGELOG_NONE_LEAD = "This deploy changed nothing in your tools or behaviour."
-_CHANGELOG_DEGRADED_LEAD = "Some capabilities started degraded:"
 
 
-def render_changelog_announcement(entries: list[ChangelogEntry], degraded: list[str]) -> str:
+def render_changelog_announcement(entries: list[ChangelogEntry]) -> str:
     """The whole delivery turn's input, rendered from framework-assembled facts
     alone — pure and deterministic, so the exact text the chat agent reads is
     pinned by a whole-render test rather than by whatever a live run produced.
+
+    The notice announces only the changes that deployed (#3003): the startup
+    preflight's soft warnings ride nothing — she can't act on them, and the
+    preflight's own startup log already records them.
 
     Both forms open on the same restart fact (#2974 — so a later turn reading
     this back off history always sees a restart happened, whether or not
     anything changed with it).  ``entries`` may be empty — a restart, or a
     deploy that brought only harness/CI/doc changes, still runs this turn
     (Penny announces on every startup); the render then just states that
-    nothing changed, with nothing else to list.
-
-    ``degraded`` (#2975) is REQUIRED — the capabilities the startup preflight
-    soft-warned about, each line already the check's own render, and an empty
-    list when nothing is degraded (the byte-identical quiet case).  A degraded
-    startup is never silent: whatever the preflight named rides the notice's
-    facts, so she knows what isn't working."""
+    nothing changed, with nothing else to list."""
     if not entries:
-        lines: list[str] = [" ".join([_CHANGELOG_RESTART_LEAD, _CHANGELOG_NONE_LEAD])]
-    else:
-        lines = [f"{_CHANGELOG_RESTART_LEAD} {_CHANGELOG_LEAD}", ""]
-        lines.extend(f"- {entry.render()}" for entry in entries)
-    if degraded:
-        lines.extend(["", _CHANGELOG_DEGRADED_LEAD, *(f"- {line}" for line in degraded)])
+        return " ".join([_CHANGELOG_RESTART_LEAD, _CHANGELOG_NONE_LEAD])
+    lines = [f"{_CHANGELOG_RESTART_LEAD} {_CHANGELOG_LEAD}", ""]
+    lines.extend(f"- {entry.render()}" for entry in entries)
     return "\n".join(lines)

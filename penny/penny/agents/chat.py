@@ -529,7 +529,6 @@ class ChatAgent(Agent):
     async def handle_changelog_report(
         self,
         entries: list[ChangelogEntry],
-        degraded: list[str],
         sender: str,
         *,
         call_link: CallLink,
@@ -541,7 +540,9 @@ class ChatAgent(Agent):
 
         The input is the framework-rendered entries (``render_changelog_announcement``)
         — each PR number and its text, never anything model-written, or (with no
-        entries) the framework's own "nothing changed" render.  It rides as the live
+        entries) the framework's own "nothing changed" render.  The notice announces
+        only the changes that deployed (#3003) — the preflight's soft warnings ride
+        nothing.  It rides as the live
         turn's own USER message prefixed with ``PennyConstants.SYSTEM_NOTIFICATION_PREFIX``
         (#2974), stating only what happened — never an instruction to send anything —
         so she decides for herself whether, how, and how many times to reply, over
@@ -550,18 +551,13 @@ class ChatAgent(Agent):
         surface — so a change that names something she can look at stays reachable
         before she writes about it.
 
-        ``degraded`` (#2975) is REQUIRED — the capabilities the startup preflight
-        soft-warned about, each already the check's own rendered line, and an
-        empty list when nothing is degraded.  A degraded startup is never silent:
-        whatever the preflight named rides this notice's facts.
-
         ``sender`` is the user the message is written for; ``call_link`` (#2458) is
         REQUIRED, as on every run starter.  Whatever she sends is NOT delivered here
         — the caller (``Penny._send_changelog_announcement``) gates and enqueues it,
         so it is logged and delivered exactly like any other autonomous send.  No
         link table: changelog entries are authored, reviewed prose about Penny's own
         tools — never user-sourced content carrying real URLs."""
-        prompt = _system_notification_trigger(render_changelog_announcement(entries, degraded))
+        prompt = _system_notification_trigger(render_changelog_announcement(entries))
         logger.info("Handling changelog announcement (%d entries)", len(entries))
         return await self._dispatch_turn(
             prompt,
