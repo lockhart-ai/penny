@@ -18,5 +18,10 @@ enum StoryID: String, CaseIterable {
     case dataBrowserPrompts
     case dataBrowserPromptExpanded
     case dataBrowserPromptExpandedChat
+    case kitTopTabBar
+    case kitPageHeader
+    case kitListRows
+    case kitPillsTiles
+    case kitCodeBlock
 }
 #endif

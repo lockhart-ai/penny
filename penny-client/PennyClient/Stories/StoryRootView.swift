@@ -48,6 +48,16 @@ struct StoryRootView: View {
                 tab: .prompts,
                 expanded: ["run:preview-chat", "prompt:preview-chat:1", "prompt:preview-chat:2", "prompt:preview-chat:2:turn:1"]
             ))
+        case .kitTopTabBar:
+            KitTopTabBarStory()
+        case .kitPageHeader:
+            KitPageHeaderStory()
+        case .kitListRows:
+            KitListRowsStory()
+        case .kitPillsTiles:
+            KitPillsTilesStory()
+        case .kitCodeBlock:
+            KitCodeBlockStory()
         }
     }
 }
