@@ -88,7 +88,9 @@ concurrency 5, with the default ``--mode plain``:
 
 The supported A/B path is ``make replay ID=<row> VARIANTS=<spec.json> SAMPLES=<n>``
 (#3001): the spec names each variant and its transforms of the stored request (a
-system-prompt replacement or append, a swapped message, thinking on or off), every
+system-prompt replacement or append, a ``last_system_append`` to the request's LAST
+system message — the per-turn dynamic one (#3008), a swapped message, thinking on or
+off), every
 arm is re-rendered through the byte-identity check for ``raw_template`` rows, and all
 arms go through the SAME resolved roster entry in one SDK session. The recipe holds
 the provider lock for the whole run and resolves the roster once for all arms — the
@@ -398,6 +400,13 @@ class ReplayVariant(BaseModel):
     system_prompt_append: str | None = None
     # Replaces the final user message's content (the trigger-wording A/B).
     user_message: str | None = None
+    # Appended after the LAST system message's content (#3008 — a chat request's
+    # per-turn dynamic message just before the user's turn), separated by a blank
+    # line; on a one-system request that is the same message the first-append
+    # targets, so the two compose. Applied after the first-message transforms.
+    # A request with no system message refuses the arm, as the first-message
+    # transforms do.
+    last_system_append: str | None = None
     # The reasoning channel on or off; None keeps the recorded state.
     thinking: bool | None = None
 
@@ -427,6 +436,18 @@ def _transformed_messages(messages: list[dict], variant: ReplayVariant) -> list[
                 else variant.system_prompt_append
             )
         rebuilt[system_at]["content"] = content
+    if variant.last_system_append is not None:
+        last_system_at = next(
+            (i for i in reversed(range(len(rebuilt))) if rebuilt[i]["role"] == "system"), None
+        )
+        if last_system_at is None:
+            raise ValueError(
+                f"variant '{variant.name}': the stored request has no system message to transform"
+            )
+        content = rebuilt[last_system_at]["content"]
+        rebuilt[last_system_at]["content"] = (
+            f"{content}\n\n{variant.last_system_append}" if content else variant.last_system_append
+        )
     if variant.user_message is not None:
         user_at = next(
             (i for i in reversed(range(len(rebuilt))) if rebuilt[i]["role"] == "user"), None
@@ -1147,7 +1168,7 @@ def _variants_from_spec(spec_json: str) -> list[ReplayVariant]:
         raise SystemExit(
             "the variants spec is not a list of "
             '{"name": ..., "system_prompt"?: ..., "system_prompt_append"?: ..., '
-            '"user_message"?: ..., "thinking"?: ...} entries: '
+            '"last_system_append"?: ..., "user_message"?: ..., "thinking"?: ...} entries: '
             f"{error}\nAn entry with no transform is the baseline arm."
         ) from error
     return variants

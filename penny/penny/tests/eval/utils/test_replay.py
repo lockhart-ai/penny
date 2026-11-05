@@ -161,6 +161,81 @@ class TestEveryArmCarriesTheSameResolvedTarget:
         assert "reasoning" not in sent  # the off form omits the key entirely, not False
         assert sent["reasoning_effort"] == "none"
 
+    async def test_a_last_system_append_lands_on_the_last_system_message_only(
+        self, tmp_path, monkeypatch, captures
+    ) -> None:
+        """#3008 — a chat request's two system messages: the append rides the LAST
+        one (the per-turn dynamic message), never the static first."""
+        _install_roster(monkeypatch)
+        two_system = [
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": "an earlier turn"},
+            {"role": "system", "content": "Self-state: idle."},
+            {"role": "user", "content": "Run your cycle."},
+        ]
+        body = {"model": "old-model", "messages": two_system}
+        db_path = _write_row(tmp_path, PromptTransport.CHAT.value, body, messages=two_system)
+        await replay_variants(
+            1,
+            [ReplayVariant(name="appended", last_system_append="## Related earlier exchanges")],
+            1,
+            db_path=db_path,
+            api_url="http://fake/v1",
+            api_key="key",
+        )
+        sent = captures[0]["messages"]
+        assert sent[0]["content"] == "You are Penny."
+        assert sent[2]["content"] == "Self-state: idle.\n\n## Related earlier exchanges"
+        assert sent[3] == two_system[3]
+
+    async def test_a_one_system_request_composes_the_last_append_with_the_first_append(
+        self, tmp_path, monkeypatch, captures
+    ) -> None:
+        """On a one-system request the LAST system message IS the first-message
+        transform's target, so the two appends compose in order — and a request with
+        no system message at all refuses a last-system append, as the first-message
+        transforms refuse."""
+        _install_roster(monkeypatch)
+        body = {"model": "old-model", "messages": _MESSAGES}
+        db_path = _write_row(tmp_path, PromptTransport.CHAT.value, body)
+        await replay_variants(
+            1,
+            [
+                ReplayVariant(
+                    name="both",
+                    system_prompt_append="First note.",
+                    last_system_append="Last note.",
+                )
+            ],
+            1,
+            db_path=db_path,
+            api_url="http://fake/v1",
+            api_key="key",
+        )
+        assert captures[0]["messages"] == [
+            {"role": "system", "content": "You are Penny.\n\nFirst note.\n\nLast note."},
+            _MESSAGES[1],
+        ]
+        no_system = [{"role": "user", "content": "Run your cycle."}]
+        no_system_dir = tmp_path / "no-system"
+        no_system_dir.mkdir()
+        db_path = _write_row(
+            no_system_dir,
+            PromptTransport.CHAT.value,
+            {"model": "old-model", "messages": no_system},
+            messages=no_system,
+        )
+        with pytest.raises(ValueError, match="no system message"):
+            await replay_variants(
+                1,
+                [ReplayVariant(name="appended", last_system_append="Later note.")],
+                1,
+                db_path=db_path,
+                api_url="http://fake/v1",
+                api_key="key",
+            )
+        assert len(captures) == 1  # the refused arm sent nothing
+
 
 class TestTheByteIdentityCheck:
     async def test_a_transformed_raw_row_re_renders_from_the_matching_state(
@@ -260,8 +335,9 @@ class TestTheSpecIsValidatedAsAWhole:
                 [
                     {"name": "baseline"},
                     {"name": "more", "system_prompt_append": "One more rule."},
+                    {"name": "dynamic", "last_system_append": "One more per-turn note."},
                     {"name": "off", "thinking": False},
                 ]
             )
         )
-        assert [variant.name for variant in variants] == ["baseline", "more", "off"]
+        assert [variant.name for variant in variants] == ["baseline", "more", "dynamic", "off"]
