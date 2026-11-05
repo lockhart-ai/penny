@@ -18,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from websockets.asyncio.server import Server, ServerConnection
 
-from penny.agents.base import AgentProgressEvent, ProgressCallback
+from penny.agents.base import AgentProgressEvent, ProgressCallback, ProgressScope
 from penny.channels.base import IncomingMessage, MessageChannel, strip_image_tokens
 from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_COLLECTION_TRIGGER,
@@ -1298,7 +1298,7 @@ class IosChannel(MessageChannel):
         a longer trace is trimmed with the ellipsis counted inside the cap — the
         payload is a transient preview, the prompt log holds it whole.
         """
-        if event.scope != "foreground" or not event.thinking:
+        if event.scope != ProgressScope.FOREGROUND or not event.thinking:
             return None
         thinking = event.thinking
         limit = PennyConstants.IOS_PROGRESS_THINKING_MAX_CHARS

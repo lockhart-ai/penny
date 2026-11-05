@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, assert_never
 
 from penny.agents.models import (
@@ -146,6 +147,14 @@ class _LoggedBoundary:
         call there is no record of this run to complete, and everything in ``messages``
         is still just the input the loop was handed."""
         return messages[self.turns :] if self.turns else []
+
+
+class ProgressScope(StrEnum):
+    """The run surface a progress event describes (#3040) — the iOS channel gates
+    the thinking field on ``FOREGROUND``, so background collectors never stream it."""
+
+    FOREGROUND = "foreground"
+    BACKGROUND = "background"
 
 
 @dataclass(frozen=True)
@@ -442,7 +451,7 @@ class Agent:
             prompt_type=self.name,
             on_progress=on_progress,
             handles=handles,
-            progress_scope="background",
+            progress_scope=ProgressScope.BACKGROUND,
             inbox=NO_INBOX,
         )
         return CycleResult(
@@ -544,7 +553,7 @@ class Agent:
         on_progress: ProgressCallback | None = None,
         on_interim_message: Callable[[str], Awaitable[None]] | None = None,
         prompt_type: str | None = None,
-        progress_scope: str = "foreground",
+        progress_scope: str = ProgressScope.FOREGROUND,
         handles: HandleTable | None = None,
         inbox: TurnInbox,
     ) -> ControllerResponse:
@@ -2053,7 +2062,7 @@ class Agent:
         on_progress: ProgressCallback | None,
         run_id: str,
         call_link: CallLink,
-        progress_scope: str = "foreground",
+        progress_scope: str = ProgressScope.FOREGROUND,
         step: int | None = None,
         max_steps: int | None = None,
     ) -> _StepResult:

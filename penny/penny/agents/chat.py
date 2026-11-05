@@ -10,7 +10,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from penny.agents.base import Agent, InvalidDraw, ProgressCallback
+from penny.agents.base import Agent, InvalidDraw, ProgressCallback, ProgressScope
 from penny.agents.conversation_map import ConversationMap
 from penny.agents.models import (
     NO_INBOX,
@@ -410,7 +410,7 @@ class ChatAgent(Agent):
             sender,
             call_link=call_link,
             prompt_type=ChatPromptType.USER_MESSAGE,
-            progress_scope="foreground",
+            progress_scope=ProgressScope.FOREGROUND,
             inbox=inbox,
             images=images,
             page_context=page_context,
@@ -456,7 +456,7 @@ class ChatAgent(Agent):
             sender,
             call_link=call_link,
             prompt_type=ChatPromptType.JOB_REPORT,
-            progress_scope="background",
+            progress_scope=ProgressScope.BACKGROUND,
             inbox=NO_INBOX,
             handles=handles,
         )
@@ -488,7 +488,7 @@ class ChatAgent(Agent):
             sender,
             call_link=call_link,
             prompt_type=ChatPromptType.SANDBOX_REPORT,
-            progress_scope="background",
+            progress_scope=ProgressScope.BACKGROUND,
             inbox=NO_INBOX,
         )
 
@@ -530,7 +530,7 @@ class ChatAgent(Agent):
             sender,
             call_link=call_link,
             prompt_type=ChatPromptType.JOB_EVENT,
-            progress_scope="background",
+            progress_scope=ProgressScope.BACKGROUND,
             inbox=NO_INBOX,
         )
 
@@ -572,7 +572,7 @@ class ChatAgent(Agent):
             sender,
             call_link=call_link,
             prompt_type=ChatPromptType.CHANGELOG,
-            progress_scope="background",
+            progress_scope=ProgressScope.BACKGROUND,
             inbox=NO_INBOX,
         )
 
