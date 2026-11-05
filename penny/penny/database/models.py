@@ -215,6 +215,15 @@ class MessageLog(SQLModel, table=True):
     # like ``mechanism`` above) — ``run_id`` is not unique on ``promptlog``, so
     # no DB-level FK is possible; the pairing joins on it.
     run_id: str | None = Field(default=None, index=True)
+    # The exchange embedding (#3010): user message + Penny's reply as ONE text,
+    # embedded with the same model as ``embedding``, stored on the REPLY row —
+    # the exchange, not the user message alone, is the retrieval unit, because
+    # the user's later message often refers to the plan by a pronoun ("do
+    # those") while the plan's words sit in her reply.  Computed when the reply
+    # is logged (``_deliver_agent_response``); the startup backfill fills any
+    # row that missed it, reconstructing both sides off the run stamps
+    # (``MessageStore.exchange_sides_for``).  NULL for every non-reply row.
+    exchange_embedding: bytes | None = None
 
     __table_args__ = (
         Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),
@@ -231,6 +240,16 @@ class MessageLog(SQLModel, table=True):
             "timestamp",
             "id",
             sqlite_where=text("mechanism IS NOT NULL"),
+        ),
+        # Partial index over exchange-bearing rows only (#3010): the related-
+        # exchanges retrieval scans every reply row that carries an exchange
+        # vector, filtered to the window boundary and ordered newest-first —
+        # the same sparse-filter shape the emission index above serves.
+        Index(
+            "ix_messagelog_exchange_time",
+            "timestamp",
+            "id",
+            sqlite_where=text("exchange_embedding IS NOT NULL"),
         ),
     )
 

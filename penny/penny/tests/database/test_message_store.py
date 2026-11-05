@@ -294,3 +294,163 @@ class TestLiveStepMarkerPublishing:
         )
 
         assert len(received) == 1
+
+
+# ── The exchange pairing and the related-exchanges reads (#3010) ─────────────
+
+
+class TestExchangeSides:
+    """The exchange a reply row closes, reconstructed off the run stamps —
+    the one pairing the write-time stamp, the backfill and the render share."""
+
+    USER = "+15551234567"
+
+    def _seed_turn(self, db: Database) -> int:
+        """One exchange with everything the stamps can carry: the triggering
+        ask, an interim send, a message that JOINED the run mid-turn, and the
+        closing reply — all under one run id."""
+        ask_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            self.USER,
+            "should each run read the log first?",
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "reading the log now.",
+            run_id="run-sides",
+            recipient=self.USER,
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            self.USER,
+            "also the bloom notes",
+            run_id="run-sides",
+        )
+        reply_id = db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "done — each run reads the log first, then writes the summary.",
+            parent_id=ask_id,
+            run_id="run-sides",
+            recipient=self.USER,
+        )
+        assert reply_id is not None, "the closing reply failed to log"
+        return reply_id
+
+    def test_sides_read_off_the_run_stamps(self, db):
+        reply_id = self._seed_turn(db)
+        reply = db.messages.get_by_id(reply_id)
+        assert reply is not None
+
+        sides = db.messages.exchange_sides_for(reply)
+
+        assert [row.content for row in sides.user_rows] == [
+            "should each run read the log first?",
+            "also the bloom notes",
+        ]
+        assert [row.content for row in sides.reply_rows] == [
+            "reading the log now.",
+            "done — each run reads the log first, then writes the summary.",
+        ]
+        assert sides.joined_text() == (
+            "should each run read the log first?\nalso the bloom notes\n"
+            "reading the log now.\ndone — each run reads the log first, then writes the summary."
+        )
+
+    def test_sides_without_a_run_degrade_to_the_single_row(self, db):
+        """A pre-#2630 reply row carries no run id: its own text is the reply
+        side, its ``parent_id`` row the user side — never a guessed neighbour."""
+        ask_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, self.USER, "the ask"
+        )
+        reply_id = db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "the reply",
+            parent_id=ask_id,
+            recipient=self.USER,
+        )
+        reply = db.messages.get_by_id(reply_id)
+        assert reply is not None
+
+        sides = db.messages.exchange_sides_for(reply)
+
+        assert [row.id for row in sides.user_rows] == [ask_id]
+        assert [row.id for row in sides.reply_rows] == [reply_id]
+
+    def test_only_the_closing_reply_is_an_exchange_vector_candidate(self, db):
+        """The vector belongs on the row that CLOSES the exchange — the reply
+        with both the run id and the parent.  An interim send carries the run
+        id but no parent (there was no id to link against yet), so the
+        backfill's selector passes it over: one exchange, one vector."""
+        self._seed_turn(db)
+
+        pending = db.messages.replies_without_exchange_embeddings(limit=100)
+
+        assert [row.content for row in pending] == [
+            "done — each run reads the log first, then writes the summary."
+        ]
+
+
+class TestExchangeWindowBoundary:
+    """The window boundary the related-exchanges retrieval reads — anchored on
+    the same user-turn count the history's grow/cut cycle uses."""
+
+    USER = "+15551234567"
+
+    def _seed_exchange(self, db: Database, content_user: str, content_reply: str, at: datetime):
+        ask_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, self.USER, content_user, timestamp=at
+        )
+        reply_id = db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            content_reply,
+            parent_id=ask_id,
+            timestamp=at + timedelta(minutes=1),
+            recipient=self.USER,
+        )
+        return ask_id, reply_id
+
+    def test_user_turn_at_offset_walks_newest_first(self, db):
+        old = datetime(2026, 1, 1, 12, 0)
+        new = datetime(2026, 1, 3, 9, 0)
+        self._seed_exchange(db, "old ask", "old reply", old)
+        newest_ask_id, _ = self._seed_exchange(db, "new ask", "new reply", new)
+
+        newest = db.messages.user_turn_at_offset(self.USER, 0)
+        older = db.messages.user_turn_at_offset(self.USER, 1)
+        assert newest is not None and newest.id == newest_ask_id
+        assert older is not None and older.content == "old ask"
+        assert db.messages.user_turn_at_offset(self.USER, 5) is None
+
+    def test_exchange_vectors_before_stops_at_the_boundary(self, db):
+        first = datetime(2026, 1, 1, 12, 0)
+        second = datetime(2026, 1, 2, 12, 0)
+        third = datetime(2026, 1, 3, 12, 0)
+        _, first_reply_id = self._seed_exchange(db, "first ask", "first reply", first)
+        _, second_reply_id = self._seed_exchange(db, "second ask", "second reply", second)
+        self._seed_exchange(db, "third ask", "third reply", third)
+        db.messages.set_exchange_embedding(first_reply_id, b"vec-1")
+        db.messages.set_exchange_embedding(second_reply_id, b"vec-2")
+
+        # The boundary is the second exchange's own ask (what a window keeping
+        # the newest two user turns would anchor on): the first exchange's
+        # reply precedes it, the second's own reply follows it — so only the
+        # first exchange's vector comes back.
+        boundary = db.messages.user_turn_at_offset(self.USER, 1)
+        assert boundary is not None
+
+        candidates = db.messages.exchange_vectors_before(boundary)
+
+        assert [row.id for row in candidates] == [first_reply_id]
+
+    def test_exchange_vectors_before_is_empty_inside_the_window(self, db):
+        only = datetime(2026, 1, 1, 12, 0)
+        _, only_reply_id = self._seed_exchange(db, "only ask", "only reply", only)
+        db.messages.set_exchange_embedding(only_reply_id, b"vec")
+        boundary = db.messages.user_turn_at_offset(self.USER, 0)
+        assert boundary is not None
+
+        assert db.messages.exchange_vectors_before(boundary) == []

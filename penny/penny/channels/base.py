@@ -1193,9 +1193,38 @@ class MessageChannel(ABC):
             media_ids=response.generated_media_ids,
             run_id=run_id,
         )
+        if sent is not None:
+            await self._stamp_exchange_embedding(sent)
         if sent is None:
             logger.error("Failed to deliver response to %s — notifying user", message.sender)
             await self.send_message(message.sender, PennyResponse.DELIVERY_FAILURE)
+
+    async def _stamp_exchange_embedding(self, reply_id: int) -> None:
+        """Stamp the exchange embedding on a just-delivered reply (#3010).
+
+        The exchange — the user message plus her reply as ONE text — is the
+        retrieval unit the related-exchanges section scores, so it is embedded
+        at the moment the reply is logged and stored on the reply's row.  Both
+        sides are reconstructed off the run stamps
+        (``MessageStore.exchange_sides_for``), never from the in-memory answer,
+        so the embedded text covers interim sends and mid-turn joins exactly as
+        they render.  Runs AFTER the send, never before: a failure only logs —
+        the row keeps its place in the conversation and the startup backfill
+        reconstructs the same sides and fills the vector.
+        """
+        reply = self._db.messages.get_by_id(reply_id)
+        if reply is None:
+            logger.warning("Exchange embedding skipped — reply row %d not found", reply_id)
+            return
+        sides = self._db.messages.exchange_sides_for(reply)
+        embedding = await self._embed_message(sides.joined_text())
+        if embedding is None:
+            logger.warning(
+                "Exchange embedding failed for reply %d — startup backfill will recover it",
+                reply_id,
+            )
+            return
+        self._db.messages.set_exchange_embedding(reply_id, serialize_embedding(embedding))
 
     async def _handle_reaction(self, message: IncomingMessage) -> None:
         """Log a reaction as a regular incoming message in the thread."""
