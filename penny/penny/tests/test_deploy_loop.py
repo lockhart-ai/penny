@@ -31,6 +31,7 @@ import time
 import pytest
 
 _SCRIPT = pathlib.Path("scripts") / "deploy-loop.sh"
+_IDLE_SCRIPT = pathlib.Path("scripts") / "penny-idle.sh"
 _MAKEFILE = pathlib.Path("Makefile")
 _COMPOSE_FILE = pathlib.Path("docker-compose.yml")
 
@@ -215,6 +216,27 @@ def _stop_stub(
     return stub
 
 
+def _idle_stub(
+    tmp_path: pathlib.Path, control_file: pathlib.Path, call_log: pathlib.Path
+) -> pathlib.Path:
+    """Stands in for `DEPLOY_IDLE_CMD` (#3026): exits with the code
+    `control_file` holds (0 idle / 1 busy / 2 unreadable), prints the fixed
+    "last activity" timestamp the loop's waiting line names, and records each
+    call — a test bounds the polling by the call count, never a fixed sleep."""
+    stub = tmp_path / "idle-stub.sh"
+    _write_executable(
+        stub,
+        f'echo call >> "{call_log}"\n'
+        f'echo "2026-11-05 04:05:21"\n'
+        f'rc="$(cat "{control_file}")"\n'
+        f'if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then\n'
+        f'  echo "penny-idle: cannot read the database" >&2\n'
+        "fi\n"
+        f'exit "$rc"\n',
+    )
+    return stub
+
+
 def _start_loop(
     clone_dir: pathlib.Path,
     env_overrides: dict[str, str],
@@ -225,6 +247,7 @@ def _start_loop(
         **os.environ,
         "DEPLOY_INTERVAL": "3600",  # never fires on its own during a test
         "DEPLOY_CRASH_BACKOFF": "0.2",
+        "DEPLOY_IDLE_POLL": "0.2",  # the idle wait polls fast under test (#3026)
         **env_overrides,
     }
     return subprocess.Popen(
@@ -270,6 +293,8 @@ class _Deployment:
     deploy_run_log: pathlib.Path
     loop_stdout: pathlib.Path
     loop_stderr: pathlib.Path
+    idle_control: pathlib.Path
+    idle_call_log: pathlib.Path
 
 
 def _start_deployment(
@@ -300,9 +325,16 @@ def _start_deployment(
     deploy_run_log = tmp_path / "deploy-run.log"
     loop_stdout = tmp_path / "loop-stdout.log"
     loop_stderr = tmp_path / "loop-stderr.log"
+    idle_control = tmp_path / "idle-control"
+    idle_call_log = tmp_path / "idle-calls.log"
     run_stub = run_cmd or _run_stub(tmp_path, run_log, pid_file)
     build_stub = _build_stub(tmp_path, build_log, built_file, fail_flag)
     stop_stub = _stop_stub(tmp_path, stop_log, pid_file)
+    idle_stub = _idle_stub(tmp_path, idle_control, idle_call_log)
+    # The idle check answers "idle" by default (#3026), so an ordinary test's
+    # redeploy path is unchanged; an idle-wait test flips `idle_control` to
+    # "1" (busy) or "2" (unreadable) before its tick.
+    idle_control.write_text("0")
     if not built_file.exists():
         built_file.write_text(_git(clone_dir, "rev-parse", "--short", "HEAD"))
 
@@ -313,6 +345,7 @@ def _start_deployment(
                 "DEPLOY_RUN_CMD": str(run_stub),
                 "DEPLOY_BUILD_CMD": str(build_stub),
                 "DEPLOY_STOP_CMD": str(stop_stub),
+                "DEPLOY_IDLE_CMD": str(idle_stub),
                 "DEPLOY_LOG": str(deploy_log),
                 "DEPLOY_RUN_LOG": str(deploy_run_log),
                 # No quotes around the path on purpose (see the variable's own
@@ -336,6 +369,8 @@ def _start_deployment(
         deploy_run_log,
         loop_stdout,
         loop_stderr,
+        idle_control,
+        idle_call_log,
     )
 
 
@@ -769,6 +804,224 @@ def test_stopped_child_is_still_stopped_by_the_loop(tmp_path, repos):
         _wait_until(_child_gone)
     finally:
         _stop(dep.proc)
+
+
+def test_busy_penny_builds_but_does_not_restart(tmp_path, repos):
+    """A successful build restarts Penny only once she is idle (#3026): while
+    the idle check answers busy, the new commit is still fast-forwarded and
+    built, the wait is logged once (not once per poll), and the old Penny keeps
+    serving — never restarted mid-turn."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    dep.idle_control.write_text("1")
+    try:
+        second = _commit(origin, "fix(penny): second (#2)", "B")
+
+        _tick(dep.proc)
+
+        _wait_until(lambda: "waiting for Penny to be idle" in _read_or_empty(dep.deploy_log))
+        # The wait keeps polling while she stays busy — bounded by the check's
+        # own call count, never a fixed sleep guessed to be long enough.
+        _wait_until(lambda: _read_or_empty(dep.idle_call_log).count("\n") >= 3)
+        # The per-poll waiting line (distinct from the "build succeeded …
+        # waiting for Penny to be idle" line, which shares its tail) once, with
+        # the check's last-activity output.
+        assert (
+            _read_or_empty(dep.deploy_log).count("waiting for Penny to be idle (last activity") == 1
+        ), "the wait is logged once, not once per poll"
+        assert "last activity 2026-11-05 04:05:21" in _read_or_empty(dep.deploy_log)
+        assert _read_or_empty(dep.run_log).count("\n") == 1, "busy Penny was never restarted"
+        assert _git(clone_dir, "rev-parse", "HEAD") == second, (
+            "the new commit still fast-forwards and builds while Penny is busy"
+        )
+        assert dep.built_file.read_text().strip() == _git(clone_dir, "rev-parse", "--short", "HEAD")
+    finally:
+        _stop(dep.proc)
+
+
+def test_idle_penny_is_redeployed_without_waiting(tmp_path, repos):
+    """The idle path: the check answers idle (the default control value), so
+    the redeploy happens at once — no waiting line in the log at all."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    try:
+        second = _commit(origin, "fix(penny): second (#2)", "B")
+
+        _tick(dep.proc)
+
+        _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
+        # The check ran exactly once, answered idle, and the redeploy happened
+        # — no per-poll waiting line in the log at all (that line shares its
+        # tail with the "build succeeded …" line, so match the whole shape).
+        assert "waiting for Penny to be idle (last activity" not in _read_or_empty(
+            dep.deploy_log
+        ), "an idle Penny is redeployed at once, with no wait logged"
+        assert _read_or_empty(dep.idle_call_log).count("\n") == 1, (
+            "the idle check ran once and answered idle"
+        )
+        assert _git(clone_dir, "rev-parse", "HEAD") == second
+    finally:
+        _stop(dep.proc)
+
+
+def test_failed_idle_check_logs_and_deploys_anyway(tmp_path, repos):
+    """An unreadable database (exit 2) must never block the deploy forever: the
+    failure is logged (the check's own error output with it) and Penny is
+    redeployed anyway."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    dep.idle_control.write_text("2")
+    try:
+        second = _commit(origin, "fix(penny): second (#2)", "B")
+
+        _tick(dep.proc)
+
+        _wait_until(lambda: "idle check FAILED" in _read_or_empty(dep.deploy_log))
+        _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
+        assert _git(clone_dir, "rev-parse", "HEAD") == second, "redeployed despite the failed check"
+        assert "cannot read the database" in _read_or_empty(dep.deploy_log), (
+            "the check's own error output is in the loop's log"
+        )
+    finally:
+        _stop(dep.proc)
+
+
+def test_stop_while_waiting_for_idle_stops_cleanly_without_redeploy(tmp_path, repos):
+    """A TERM/INT while the loop waits for idle stops the loop through the
+    existing shutdown path — Penny is stopped with it, and nothing is
+    redeployed."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    dep.idle_control.write_text("1")
+    try:
+        _commit(origin, "fix(penny): second (#2)", "B")
+        _tick(dep.proc)
+        _wait_until(lambda: "waiting for Penny to be idle" in _read_or_empty(dep.deploy_log))
+
+        dep.proc.send_signal(signal.SIGTERM)
+        dep.proc.wait(timeout=5)
+
+        assert _read_or_empty(dep.run_log).count("\n") == 1, "the stop never redeployed"
+        assert "stop arrived while waiting for Penny to be idle" in _read_or_empty(
+            dep.deploy_log
+        ), "the wait says why it gave up, then leaves the deploy to the shutdown"
+        assert "stop" in _read_or_empty(dep.stop_log), "the existing shutdown path ran"
+    finally:
+        _stop(dep.proc)
+
+
+def test_newer_commit_landing_while_waiting_is_built_and_deploys_once_idle(tmp_path, repos):
+    """While the loop waits for idle, origin keeps moving: a newer commit is
+    fast-forwarded and built right away (the same fetch-and-ff path), and it is
+    THAT newest build that deploys once Penny finally goes idle."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    dep.idle_control.write_text("1")
+    try:
+        _commit(origin, "fix(penny): second (#2)", "B")
+        _tick(dep.proc)
+        _wait_until(lambda: "waiting for Penny to be idle" in _read_or_empty(dep.deploy_log))
+
+        third = _commit(origin, "fix(penny): third (#3)", "C")
+        third_short = third[:7]
+        _wait_until(lambda: f"built {third_short}" in _read_or_empty(dep.build_log))
+        assert _git(clone_dir, "rev-parse", "HEAD") == third, (
+            "the newer commit was fast-forwarded and built while waiting"
+        )
+        assert _read_or_empty(dep.run_log).count("\n") == 1, "still busy, still not restarted"
+
+        dep.idle_control.write_text("0")
+        _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
+        assert dep.built_file.read_text().strip() == third_short, (
+            "the build that deployed is the newest one"
+        )
+    finally:
+        _stop(dep.proc)
+
+
+def test_child_dying_while_waiting_redeploys_without_waiting_for_idle(tmp_path, repos):
+    """If the child dies while the loop waits for idle, there is no activity
+    left to protect — waiting out the whole idle threshold would leave Penny
+    down for it — so the redeploy happens at once, busy check or not."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    dep.idle_control.write_text("1")
+    try:
+        _commit(origin, "fix(penny): second (#2)", "B")
+        _tick(dep.proc)
+        _wait_until(lambda: "waiting for Penny to be idle" in _read_or_empty(dep.deploy_log))
+
+        child_pid = int(dep.pid_file.read_text().strip())
+        os.kill(child_pid, signal.SIGKILL)
+
+        _wait_until(lambda: "nothing left to protect" in _read_or_empty(dep.deploy_log))
+        _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
+        assert dep.idle_control.read_text().strip() == "1", (
+            "redeployed even though the check still answered busy"
+        )
+    finally:
+        _stop(dep.proc)
+
+
+def _sqlite(db: pathlib.Path, sql: str) -> None:
+    result = subprocess.run(["sqlite3", str(db), sql], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_penny_idle_script_reports_busy_idle_and_read_errors(tmp_path):
+    """`scripts/penny-idle.sh` against a real, throwaway SQLite database: a
+    recent model call makes it busy (exit 1), timestamps older than
+    DEPLOY_IDLE_SECONDS make it idle (exit 0, printing the newest timestamp for
+    the loop's waiting line), an empty table counts as idle (nothing to
+    protect), and an unreadable database is a read error (exit 2), never a
+    silent 'idle'. Needs the sqlite3 CLI on PATH — a missing one is a hard,
+    reported FAILURE here, never a silent skip."""
+    if shutil.which("sqlite3") is None:
+        pytest.fail(
+            "sqlite3 is not installed in this environment — scripts/penny-idle.sh "
+            "reads the newest promptlog/messagelog timestamps through it, and this "
+            "test cannot verify the script without it"
+        )
+    script = _repo_file(_IDLE_SCRIPT)
+    db = tmp_path / "penny.db"
+    _sqlite(
+        db, "CREATE TABLE promptlog (timestamp TEXT); CREATE TABLE messagelog (timestamp TEXT);"
+    )
+
+    # A model call moments ago: busy, whatever the message log says.
+    _sqlite(
+        db,
+        "INSERT INTO promptlog VALUES (strftime('%Y-%m-%d %H:%M:%f','now'));"
+        "INSERT INTO messagelog VALUES (strftime('%Y-%m-%d %H:%M:%f','now','-2 hours'));",
+    )
+    busy = subprocess.run(["bash", script, str(db)], capture_output=True, text=True, timeout=10)
+    assert busy.returncode == 1, busy.stderr
+
+    # Both logs older than the threshold: idle, with the newest timestamp named.
+    _sqlite(
+        db,
+        "UPDATE promptlog SET timestamp = strftime('%Y-%m-%d %H:%M:%f','now','-2 hours');",
+    )
+    idle = subprocess.run(["bash", script, str(db)], capture_output=True, text=True, timeout=10)
+    assert idle.returncode == 0, idle.stderr
+    assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", idle.stdout.strip()), (
+        "the newest timestamp is printed for the waiting line"
+    )
+
+    # An empty table has a NULL newest timestamp — no activity to protect.
+    _sqlite(db, "DELETE FROM promptlog; DELETE FROM messagelog;")
+    empty = subprocess.run(["bash", script, str(db)], capture_output=True, text=True, timeout=10)
+    assert empty.returncode == 0, empty.stderr
+
+    # A missing database is a read error, not a silent "idle".
+    missing = subprocess.run(
+        ["bash", script, str(tmp_path / "no-such.db")],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert missing.returncode == 2
+    assert "cannot read" in missing.stderr
 
 
 def _makefile_target_recipe(makefile_text: str, target: str) -> str:

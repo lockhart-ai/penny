@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Watches origin/<branch> for new commits and redeploys through the Makefile's own
-# `prod-build`/`prod-run` targets — never a second build path (#2955). Stopping the
+# `prod-build`/`prod-run` targets — never a second build path (#2955). A successful
+# build restarts Penny only once she has been IDLE for DEPLOY_IDLE_SECONDS (#3026):
+# a deploy must not cut off a turn or a job run, so the old Penny keeps serving
+# while the wait polls DEPLOY_IDLE_CMD (default scripts/penny-idle.sh) and builds
+# any newer commit that lands meanwhile. The startup build path never waits —
+# Penny isn't running yet. Stopping the
 # loop (TERM/INT, e.g. Ctrl+C on `make prod-watch`) also stops Penny: the shutdown
 # runs `DEPLOY_STOP_CMD` (default `make prod-stop`) after stopping the child (#3015).
 # Run by `make prod-watch`, or under launchd via the rendered
@@ -21,6 +26,18 @@ DEPLOY_RUN_CMD="${DEPLOY_RUN_CMD:-make prod-run}"
 # swallows the group TERM, so the group kill above can't reach its `docker compose
 # up` — stopping the loop left Penny's containers running (#3015).
 DEPLOY_STOP_CMD="${DEPLOY_STOP_CMD:-make prod-stop}"
+# How long Penny must have been idle before a successful build restarts her (#3026),
+# how often the wait polls, and the check itself — mirroring the other DEPLOY_*_CMD
+# variables: exit 0 means idle, 1 busy, anything else a read error (deployed anyway,
+# never blocking forever; see wait_for_idle). Default on its own line, single-quoted
+# there — the call site expands it unquoted (see DEPLOY_IMAGE_COMMIT_CMD's comment
+# below), so the value must carry no quotes and no redirects.
+DEPLOY_IDLE_SECONDS="${DEPLOY_IDLE_SECONDS:-600}"
+DEPLOY_IDLE_POLL="${DEPLOY_IDLE_POLL:-30}"
+DEPLOY_IDLE_CMD="${DEPLOY_IDLE_CMD:-}"
+if [ -z "$DEPLOY_IDLE_CMD" ]; then
+    DEPLOY_IDLE_CMD='scripts/penny-idle.sh data/penny/penny.db'
+fi
 DEPLOY_LOG="${DEPLOY_LOG:-data/penny/logs/deploy-loop.log}"
 # Where the child's own stdout/stderr is appended (#2971). The child must never
 # hold the terminal — an attached `docker compose up` has the kernel
@@ -216,10 +233,66 @@ fetch_and_maybe_deploy() {
         return
     fi
 
-    log "build succeeded at $remote_head — redeploying: $DEPLOY_RUN_CMD"
+    log "build succeeded at $remote_head — waiting for Penny to be idle"
+    if ! wait_for_idle; then
+        return
+    fi
+
+    log "redeploying: $DEPLOY_RUN_CMD"
     stop_child
     start_child
     log "redeployed $local_head -> $remote_head"
+}
+
+# Waits for Penny to be idle before a successful build may restart her (#3026):
+# a deploy must not cut off a turn or a job run, so the old Penny keeps serving
+# until the newest promptlog/messagelog activity in the prod database is older
+# than DEPLOY_IDLE_SECONDS — read by polling $DEPLOY_IDLE_CMD every
+# $DEPLOY_IDLE_POLL seconds, the wait itself logged once, naming the check's
+# "last activity" output. While waiting, origin keeps moving: a newer commit is
+# fast-forwarded and built right away (the same fetch-and-ff path as the
+# per-cycle check), so the build that deploys once idle is the newest one.
+#
+# Returns 0 = deploy now: the check says idle, or it FAILED (any exit but 0/1 —
+# logged and deployed anyway; a deploy blocked forever on a bad check is worse
+# than an eager one), or the child has died while waiting (nothing left to
+# protect — the new build is what replaces it, and the wait would otherwise
+# leave Penny down for a whole idle threshold).
+# Returns 1 = a stop (TERM/INT) arrived while waiting: deploy nothing — the
+# main loop's shutdown path takes over, and nothing else.
+wait_for_idle() {
+    local wait_logged="" out rc
+    while :; do
+        if [ -n "$stopping" ]; then
+            log "stop arrived while waiting for Penny to be idle — not redeploying"
+            return 1
+        fi
+        out="$($DEPLOY_IDLE_CMD 2>>"$DEPLOY_LOG")"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            return 0
+        fi
+        if [ "$rc" -ne 1 ]; then
+            log "idle check FAILED (exit $rc) — deploying anyway: ${out:-no output}"
+            return 0
+        fi
+        if [ -z "$wait_logged" ]; then
+            log "waiting for Penny to be idle (last activity ${out:-unknown})"
+            wait_logged=1
+        fi
+        if [ -n "$child_pid" ] && ! kill -0 "$child_pid" 2>/dev/null; then
+            log "child exited while waiting for idle — nothing left to protect; redeploying now"
+            return 0
+        fi
+        fetch_and_fast_forward
+        if [ "$?" -eq "$FF_ADVANCED" ]; then
+            log "newer commit $remote_head landed while waiting — building it: $DEPLOY_BUILD_CMD"
+            if ! $DEPLOY_BUILD_CMD >>"$DEPLOY_LOG" 2>&1; then
+                log "build FAILED at $remote_head while waiting — old Penny keeps running; keep waiting for idle"
+            fi
+        fi
+        interruptible_sleep "$DEPLOY_IDLE_POLL"
+    done
 }
 
 # Interruptible wait: a trapped signal (TERM/INT/USR1) ends it immediately instead

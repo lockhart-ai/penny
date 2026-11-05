@@ -256,6 +256,11 @@ DEPLOY_INTERVAL ?= 300
 DEPLOY_BUILD_CMD ?= make prod-build
 DEPLOY_RUN_CMD ?= make prod-run
 DEPLOY_STOP_CMD ?= make prod-stop
+# How long Penny must have been idle before a successful build restarts her (#3026),
+# and the check that answers it (exit 0 idle / 1 busy / anything else unreadable —
+# see scripts/penny-idle.sh). The startup build path never waits.
+DEPLOY_IDLE_SECONDS ?= 600
+DEPLOY_IDLE_CMD ?= scripts/penny-idle.sh data/penny/penny.db
 DEPLOY_LOG ?= $(CURDIR)/data/penny/logs/deploy-loop.log
 # The child's own stdout/stderr (detached from the terminal, #2971) — appended,
 # next to the loop's own log above.
@@ -266,6 +271,8 @@ prod-watch:
 	DEPLOY_BUILD_CMD="$(DEPLOY_BUILD_CMD)" \
 	DEPLOY_RUN_CMD="$(DEPLOY_RUN_CMD)" \
 	DEPLOY_STOP_CMD="$(DEPLOY_STOP_CMD)" \
+	DEPLOY_IDLE_SECONDS="$(DEPLOY_IDLE_SECONDS)" \
+	DEPLOY_IDLE_CMD="$(DEPLOY_IDLE_CMD)" \
 	DEPLOY_LOG="$(DEPLOY_LOG)" \
 	DEPLOY_RUN_LOG="$(DEPLOY_RUN_LOG)" \
 	./scripts/deploy-loop.sh

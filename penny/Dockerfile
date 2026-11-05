@@ -3,8 +3,11 @@ FROM python:3.14-slim
 
 # git — scripts/store_git_info.sh (#2891) shells out to it on the HOST before a
 # real build, but its own test (test_store_git_info.py) runs INSIDE this image
-# under `make check`, building a temp repo to exercise it against
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+# under `make check`, building a temp repo to exercise it against.
+# sqlite3 — the deploy loop's idle check (scripts/penny-idle.sh, #3026) reads the
+# newest promptlog/messagelog timestamps through the sqlite3 CLI, and its test
+# (#3026) drives that real file from inside the container too.
+RUN apt-get update && apt-get install -y --no-install-recommends git sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
