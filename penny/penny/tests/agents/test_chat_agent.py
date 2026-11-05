@@ -747,9 +747,10 @@ def test_the_trigger_is_found_past_a_discarded_or_rerolled_first_draw(db):
     its ``messages`` column — written at send time — still carries the real
     trigger, and that row answers.  A second row from the reroll (here, a
     nudge-appended retry trailing on a USER note, which rides the same role
-    the trigger does in this shape) exists and is passed over — its trailing
-    message carries no notification prefix, so the walk reads the trigger
-    and never mistakes a retry note for one."""
+    and — since #2871 — the same notification prefix the trigger does) exists
+    and is passed over: the walk takes the FIRST qualifying row, and the
+    trigger row precedes any note row a reroll appends, so the note is never
+    mistaken for the trigger."""
     run_id = "job-report-run-reroll"
     trigger_text = (
         PennyConstants.SYSTEM_NOTIFICATION_PREFIX
@@ -766,7 +767,12 @@ def test_the_trigger_is_found_past_a_discarded_or_rerolled_first_draw(db):
     reroll_messages = [
         *first_messages,
         first_response["choices"][0]["message"],
-        {"role": "user", "content": "That reply was garbled — try again, plainly."},
+        {
+            "role": "user",
+            "content": (
+                PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.CALL_AS_TEXT_RETRY_NOTE_UNNAMED
+            ),
+        },
     ]
     reroll_response = {
         "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
@@ -1949,14 +1955,17 @@ async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
         image_client.generate_image.assert_awaited_once()
         assert "sea turtle" in image_client.generate_image.await_args.kwargs["prompt"]
         assert len(mock_llm.requests) == 3
-        # The redraw is shown the draft plus a note naming the tool it never ran
-        # (#2790) — not a blind re-roll on the unchanged context.
+        # The redraw is shown the draft plus a note about the discarded draft, as a
+        # prefixed system-notification turn (#2790, #2871) — not a blind re-roll.
         redraw = mock_llm.requests[1]["messages"]
         assert redraw[:-2] == mock_llm.requests[0]["messages"]
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="generate_image")
+        assert note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+            + Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="generate_image")
+        )
 
         # The raw call-as-text never reached the user, in this reply or any other
         # the channel sent.
@@ -2007,15 +2016,19 @@ async def test_call_written_as_text_in_brace_form_is_rerolled_not_sent(
         )
         reply = await signal_server.wait_for_message_containing("all done", timeout=10.0)
 
-        # The redrawn step is shown the draft plus a note naming the tool it
-        # never ran (#2790) — not a blind re-roll on the unchanged context.
+        # The redrawn step is shown the draft plus a note about the discarded draft,
+        # as a prefixed system-notification turn (#2790, #2871) — not a blind
+        # re-roll on the unchanged context.
         assert len(mock_llm.requests) == 2
         redraw = mock_llm.requests[1]["messages"]
         assert redraw[:-2] == mock_llm.requests[0]["messages"]
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="run_get")
+        assert note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+            + Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="run_get")
+        )
 
         # The raw call-as-text never reached the user, in this reply or any
         # other the channel sent.

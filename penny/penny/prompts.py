@@ -193,26 +193,35 @@ class Prompt:
     # TEXT_INSTEAD_OF_TOOL (the collector) are the model's own CHOICE, so the redraw
     # is shown what was wrong; a transport artifact (a punctuation collapse, a leaked
     # envelope, a budget cut) stays a blind reroll — there was no choice to correct.
+    #
+    # Every note speaks about the DISCARDED DRAFT, never about the tool alone
+    # (#2871): a note that reads "it didn't run" can contradict a tool result
+    # already in the context (the prod duplicate-image redraw), so the note says
+    # the draft was discarded and nothing in it was sent.  The note rides as a
+    # user turn prefixed ``SYSTEM_NOTIFICATION_PREFIX``
+    # (``Agent._system_notification_turn``, #2871), so it never reads as the
+    # user speaking.
     CALL_AS_TEXT_RETRY_NOTE = (
-        "The call to {tool} was written out as text, so it didn't run, and the user "
-        "would only see the text."
+        "Your last draft wrote a call to {tool} out as text, so the draft was "
+        "discarded and nothing in it was sent."
     )
     CALL_AS_TEXT_RETRY_NOTE_UNNAMED = (
-        "That reply was a tool call written out as text instead of a real call, so "
-        "it didn't run, and the user would only see the text."
+        "Your last draft was a tool call written out as text instead of a real "
+        "call, so the draft was discarded and nothing in it was sent."
     )
     CALL_FRAGMENT_RETRY_NOTE = (
-        "That reply was a fragment of a tool call's arguments, not a finished reply "
-        "or a real call — it never ran and the user would only see the fragment."
+        "Your last draft was a fragment of a tool call's arguments, not a finished "
+        "reply or a real call — the draft was discarded and nothing in it was sent."
     )
     EMPTY_DRAW_RETRY_NOTE = "That last draft came out empty — nothing a user could read."
     DONE_JSON_BAIL_RETRY_NOTE = (
-        "That reply tried to end the run by writing done's arguments as text instead "
-        "of calling the tool, so the run hasn't actually ended."
+        "Your last draft tried to end the run by writing done's arguments as text "
+        "instead of calling the tool, so the draft was discarded and the run "
+        "hasn't actually ended."
     )
     TEXT_INSTEAD_OF_TOOL_RETRY_NOTE = (
-        "That reply was words, not a tool call, and this step can only act through a "
-        "tool call — nothing in it ran."
+        "Your last draft was words, not a tool call, and this step can only act "
+        "through a tool call — the draft was discarded and nothing in it ran."
     )
     # The raw-template transport's own tool-call grammar failed to read that
     # draft (#2854) — a transport-level parse failure, but still the model's
@@ -223,8 +232,9 @@ class Prompt:
     # changes and a tool/argument shape nobody has seen yet still reads as
     # exactly this: a call that couldn't be read.
     TOOL_PARSE_ERROR_RETRY_NOTE = (
-        "That tool call couldn't be read, so it never ran: {reason}. Make the "
-        "call again in your tool-call format."
+        "Your last draft was a tool call that couldn't be read, so the draft was "
+        "discarded and it never ran: {reason}. Make the call again in your "
+        "tool-call format."
     )
 
     # What a chat run that tried to keep something is shown before its reply is written

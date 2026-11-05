@@ -64,9 +64,11 @@ from penny.tools.models import BrowseArgs, BrowseItem, ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
+    NudgeContinue,
     Proceed,
     Repair,
     Retry,
+    ValidationOutcome,
     run_validators,
 )
 from penny.validation.response_validators import (
@@ -367,6 +369,17 @@ class TestLastStepToolRemoval:
         ]
         # The narrate draw is tools-off too.
         assert mock_llm.requests[2]["tools"] is None
+        # Its facts turn is a SYSTEM-NOTIFICATION user turn (#2871) — the harness's
+        # own note about the run's state, prefixed so it never reads as the user
+        # speaking, whole render, not a fragment.
+        narrate_tail = mock_llm.requests[2]["messages"][-1]
+        assert narrate_tail["role"] == "user"
+        assert narrate_tail["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+            + Prompt.NARRATE_TERMINAL_FACTS.format(
+                facts=PennyResponse.FACTS_EMPTY_WITH_TOOLS.format(count=1)
+            )
+        )
         # The run's own work still travels with the close (#1776).
         assert [record.tool for record in response.tool_calls] == ["search"]
 
@@ -1199,7 +1212,10 @@ class TestToolParseErrorOnRawTemplate:
             parse_completion(malformed)
         expected_reason = str(exc_info.value)
         _expected_thinking, expected_draft = split_thought(malformed)
-        expected_note = Prompt.TOOL_PARSE_ERROR_RETRY_NOTE.format(reason=expected_reason)
+        expected_note = (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
+            + Prompt.TOOL_PARSE_ERROR_RETRY_NOTE.format(reason=expected_reason)
+        )
 
         requests: list[dict] = []
 
@@ -1354,7 +1370,9 @@ class TestDegenerateOutputGuard:
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.CALL_FRAGMENT_RETRY_NOTE
+        assert note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.CALL_FRAGMENT_RETRY_NOTE
+        )
 
         await agent.close()
 
@@ -3721,7 +3739,9 @@ class TestCollectorInvalidDrawReroll:
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
+        assert note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
+        )
         # The cycle closed with a real done() record (not a lost/failed cycle).
         assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
@@ -3782,7 +3802,9 @@ class TestCollectorInvalidDrawReroll:
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == ""
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
+        assert note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
+        )
         assert "Please provide your response" not in str(redraw)
         assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
@@ -3816,7 +3838,9 @@ class TestCollectorInvalidDrawReroll:
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.DONE_JSON_BAIL_RETRY_NOTE
+        assert note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.DONE_JSON_BAIL_RETRY_NOTE
+        )
         done_records = [r for r in response.tool_calls if r.tool == "stub_terminator"]
         assert len(done_records) == 1
         assert done_records[0].arguments == {}
@@ -3920,7 +3944,9 @@ class TestChatCallShapedTextReroll:
         draft_turn, note_turn = redraw[-2], redraw[-1]
         assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
         assert note_turn["role"] == "user"
-        assert note_turn["content"] == Prompt.CALL_FRAGMENT_RETRY_NOTE
+        assert note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.CALL_FRAGMENT_RETRY_NOTE
+        )
 
         await agent.close()
 
@@ -4090,7 +4116,9 @@ class TestChatEmptyDrawReroll:
         redrawn = mock_llm.requests[2]["messages"]
         assert redrawn[:-1] == mock_llm.requests[1]["messages"]
         note_turn = redrawn[-1]
-        assert note_turn["role"] == "user" and note_turn["content"] == Prompt.EMPTY_DRAW_RETRY_NOTE
+        assert note_turn["role"] == "user" and note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.EMPTY_DRAW_RETRY_NOTE
+        )
         # Still no collapse residue, and still no ASSISTANT turn from either bad draw —
         # only the note's own user turn is new.
         assert "?????" not in str(redrawn)
@@ -4179,8 +4207,55 @@ class TestChatEmptyDrawReroll:
         redrawn = mock_llm.requests[2]["messages"]
         assert redrawn[:-1] == mock_llm.requests[1]["messages"]
         note_turn = redrawn[-1]
-        assert note_turn["role"] == "user" and note_turn["content"] == Prompt.EMPTY_DRAW_RETRY_NOTE
+        assert note_turn["role"] == "user" and note_turn["content"] == (
+            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.EMPTY_DRAW_RETRY_NOTE
+        )
         assert "---" not in str(redrawn)
+
+        await agent.close()
+
+
+class _NudgeFirstText:
+    """A run-shape validator stub: nudge the first text draw, pass the second —
+    the seam a real run-shape validator fills, so the loop's nudge branch runs."""
+
+    def __init__(self) -> None:
+        self.checks = 0
+
+    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
+        self.checks += 1
+        if self.checks == 1:
+            return NudgeContinue(message="keep going")
+        return Proceed()
+
+
+class TestNudgeTurnIsSystemNotification:
+    """A run-shape validator's ``NudgeContinue`` message rides as a user turn
+    prefixed ``SYSTEM_NOTIFICATION_PREFIX`` (#2871) — a harness note the model
+    must react to, never something that reads as the user speaking."""
+
+    @pytest.mark.asyncio
+    async def test_nudge_turn_carries_the_prefix(self, test_db, mock_llm):
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.run_shape_validators = [_NudgeFirstText()]
+
+        def handler(request, count):
+            return mock_llm._make_text_response(request, f"draft {count}")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run(
+            "test", max_steps=max_steps, call_link=CallLink.new_top(), inbox=NO_INBOX
+        )
+        assert response.answer == "draft 2"
+        assert len(mock_llm.requests) == 2
+        # The nudge appends the nudged draw (assistant turn) plus its message as a
+        # prefixed system-notification user turn — whole render, not a fragment.
+        redraw = mock_llm.requests[1]["messages"]
+        nudge_draft, nudge_turn = redraw[-2], redraw[-1]
+        assert nudge_draft["role"] == "assistant" and nudge_draft["content"] == "draft 1"
+        assert nudge_turn["role"] == "user"
+        assert nudge_turn["content"] == PennyConstants.SYSTEM_NOTIFICATION_PREFIX + "keep going"
 
         await agent.close()
 
