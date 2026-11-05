@@ -564,6 +564,7 @@ eval-remote: $(if $(LOCAL),,build)
 #   LLM_MODEL=google/gemma-4-26b-a4b-it make replay ID=<promptlog id>                       the suite's model, mode=plain, 15 samples
 #   LLM_MODEL=google/gemma-4-26b-a4b-it make replay ID=<id> MODE=verbatim-request SAMPLES=5  the row's own exact wire request
 #   LLM_MODEL=<a model EVAL_MODELS names> make replay ID=<id>                                 a different roster entry
+#   make replay ID=<id> VARIANTS=<spec.json> SAMPLES=5                                       the A/B run (#3001, see the VARIANTS note below)
 #
 # LLM_MODEL has no default here — the primary checkout's EVAL_MODELS may not list the
 # suite's model first (the code owner hasn't ruled on reordering it), so naming it
@@ -575,6 +576,17 @@ eval-remote: $(if $(LOCAL),,build)
 MODE ?= plain
 SAMPLES ?= 15
 CONCURRENCY ?= 5
+# VARIANTS=<path to a JSON spec> turns this into the A/B run (#3001): the spec names
+# each arm and its transforms of the stored request — a list of
+#   [{"name": "baseline"}, {"name": "split", "system_prompt": "...", "user_message": "..."},
+#    {"name": "nothink", "thinking": false}]
+# (`system_prompt` replaces the system message, `system_prompt_append` appends to it,
+# `user_message` replaces the final user message, `thinking` toggles reasoning; an
+# entry with no transform is the baseline arm). Every arm goes through the SAME
+# resolved roster entry in one session; with --jsonl, one JSONL per arm suffixed with
+# the arm's name. The recipe reads the spec host-side and forwards its contents in
+# REPLAY_VARIANTS_SPEC — a host path would not be visible in the container, and an
+# env value never word-splits the way an argv JSON would.
 replay: $(if $(LOCAL),,build)
 	@if [ -z "$(ID)" ]; then \
 		echo "make replay: ID=<promptlog id> is required." >&2; \
@@ -582,9 +594,10 @@ replay: $(if $(LOCAL),,build)
 	fi; \
 	mkdir -p "$(EVAL_PRIMARY_CHECKOUT)/data/penny" "$(EVAL_PRIMARY_CHECKOUT)/data/reports/replay"; \
 	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | sed -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"; }; \
+	roster_env="$${EVAL_MODELS:-$$(from_env EVAL_MODELS)}"; \
 	model="$${LLM_MODEL}"; \
 	roster_log="$$(mktemp)"; \
-	if ( $(RUN) env EVAL_MODELS="$${EVAL_MODELS:-$$(from_env EVAL_MODELS)}" \
+	if ( $(RUN) env EVAL_MODELS="$$roster_env" \
 		python -m penny.tests.eval.utils.roster $$model ) > "$$roster_log" 2>&1; then rostered=1; else rostered=0; fi; \
 	cat "$$roster_log"; \
 	model="$$(sed -n 's/^$(ROSTER_MODEL_LINE) //p' "$$roster_log" | tail -1)"; \
@@ -599,10 +612,18 @@ replay: $(if $(LOCAL),,build)
 		exit 1; \
 	fi; \
 	export LLM_API_KEY="$$llm_key"; \
-	echo "replay: id=$(ID) mode=$(MODE) samples=$(SAMPLES) $$model at $$llm_url$${pinned:+ pinned to $$pinned}"; \
+	echo "replay: id=$(ID) $${VARIANTS:+variants=$(VARIANTS) }mode=$(MODE) samples=$(SAMPLES) $$model at $$llm_url$${pinned:+ pinned to $$pinned}"; \
+	if [ -n "$$pinned" ]; then \
+		. "$(CURDIR)/scripts/eval-provider-lock.sh"; \
+		provider_lock_acquire "$(EVAL_PROVIDER_LOCK_DIR)" "$$pinned" "$(EVAL_PROVIDER_LOCK_WAIT)" || exit 1; \
+		trap 'provider_lock_release' EXIT; \
+		trap 'exit 130' INT; trap 'exit 143' TERM; \
+	fi; \
 	$(REPLAY_RUN) env \
 		LLM_API_URL="$$llm_url" \
-		LLM_MODEL="$$model" LLM_PROVIDER="$$pinned" \
+		LLM_MODEL="$$model" \
+		EVAL_MODELS="$$roster_env" \
+		REPLAY_VARIANTS_SPEC="$$( [ -n "$(VARIANTS)" ] && cat "$(VARIANTS)" )" \
 		python -m penny.tests.eval.utils.replay --id "$(ID)" \
 			--samples "$(SAMPLES)" --mode "$(MODE)" --concurrency "$(CONCURRENCY)" \
 			--jsonl "/penny/data/reports/replay/$(ID).jsonl"
