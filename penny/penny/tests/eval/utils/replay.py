@@ -89,7 +89,9 @@ concurrency 5, with the default ``--mode plain``:
 The supported A/B path is ``make replay ID=<row> VARIANTS=<spec.json> SAMPLES=<n>``
 (#3001): the spec names each variant and its transforms of the stored request (a
 system-prompt replacement or append, a ``last_system_append`` to the request's LAST
-system message — the per-turn dynamic one (#3008), a swapped message, thinking on or
+system message — the per-turn dynamic one (#3008), a ``last_tool_result`` replacing
+the request's LAST tool message — the tool result the model reacts to, a swapped
+message, thinking on or
 off), every
 arm is re-rendered through the byte-identity check for ``raw_template`` rows, and all
 arms go through the SAME resolved roster entry in one SDK session. The recipe holds
@@ -407,6 +409,10 @@ class ReplayVariant(BaseModel):
     # A request with no system message refuses the arm, as the first-message
     # transforms do.
     last_system_append: str | None = None
+    # Replaces the LAST tool-role message's content — the tool result the model is
+    # about to react to (the A/B lever for a tool-result wording). A request with
+    # no tool message refuses the arm, as the other transforms do.
+    last_tool_result: str | None = None
     # The reasoning channel on or off; None keeps the recorded state.
     thinking: bool | None = None
 
@@ -448,6 +454,15 @@ def _transformed_messages(messages: list[dict], variant: ReplayVariant) -> list[
         rebuilt[last_system_at]["content"] = (
             f"{content}\n\n{variant.last_system_append}" if content else variant.last_system_append
         )
+    if variant.last_tool_result is not None:
+        last_tool_at = next(
+            (i for i in reversed(range(len(rebuilt))) if rebuilt[i]["role"] == "tool"), None
+        )
+        if last_tool_at is None:
+            raise ValueError(
+                f"variant '{variant.name}': the stored request has no tool message to replace"
+            )
+        rebuilt[last_tool_at]["content"] = variant.last_tool_result
     if variant.user_message is not None:
         user_at = next(
             (i for i in reversed(range(len(rebuilt))) if rebuilt[i]["role"] == "user"), None
@@ -1168,7 +1183,8 @@ def _variants_from_spec(spec_json: str) -> list[ReplayVariant]:
         raise SystemExit(
             "the variants spec is not a list of "
             '{"name": ..., "system_prompt"?: ..., "system_prompt_append"?: ..., '
-            '"last_system_append"?: ..., "user_message"?: ..., "thinking"?: ...} entries: '
+            '"last_system_append"?: ..., "last_tool_result"?: ..., '
+            '"user_message"?: ..., "thinking"?: ...} entries: '
             f"{error}\nAn entry with no transform is the baseline arm."
         ) from error
     return variants
