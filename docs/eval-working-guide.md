@@ -513,7 +513,7 @@ conversation, not the page the current ask named.
   samples, carrying the called-off page's token instead of the new one; tool sequence stays
   ordinary; token cost stays ordinary too — this is a wrong-answer failure, not a death-spiral one,
   and this rests on the one observed sample, not yet a measured rate.
-- **Model and provider:** the suite's model, gemma, pinned to Cloudflare.
+- **Model and provider:** the suite's model, gemma; its pin comes from its `EVAL_MODELS` entry.
 - **Rulings needed:** whether "names the called-off page" belongs as a provenance claim (the
   ask's own page is a fact the reply either states correctly or doesn't) or stays a case-local
   measured feature — recommend the provenance claim, since the world settles which page is
