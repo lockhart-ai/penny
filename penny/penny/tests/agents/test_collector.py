@@ -35,6 +35,7 @@ from penny.agents.models import ControllerResponse, ModelCallError, RunAbort, To
 from penny.constants import (
     CYCLE_END_RETRY_REASONS,
     HEALTHY_CYCLE_ENDS,
+    SANDBOX_INTERRUPTED_REASON,
     WRITE_GATE_STOP_REASONS,
     CycleEnd,
     CycleTrigger,
@@ -1477,10 +1478,90 @@ async def test_a_sandbox_preview_writes_nothing_and_touches_no_schedule_state(
     )
     report = build_sandbox_report(db, "indie-metroidvanias", run_id)
     assert report is not None
+    # A run that reached its own end is not an interrupted one (#3024) — the
+    # completed render is exactly as it always was.
+    assert report.interrupted is False
     rendered = render_sandbox_report(report)
     assert 'The sandbox run of "indie-metroidvanias" is complete' in rendered
     assert "its writes were not applied because it was sandboxed." in rendered
     assert PLAN_MESSAGE_PREFIX in rendered
+
+
+def _one_step_then_cancel(mock_llm) -> Callable[[dict, int], LlmResponse]:
+    """A preview that gets ONE step through, then is cut off: a shutdown's
+    ``task.cancel()`` surfaces at the next model call, leaving the run one
+    completed, logged step and no close — the interrupted shape (#3024)."""
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if _results_so_far(request) == 0:
+            return mock_llm._make_tool_call_response(
+                request, "collection_list", {"collection": "indie-metroidvanias"}
+            )
+        raise asyncio.CancelledError
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_cycle_cancelled_by_a_shutdown_is_reported_as_interrupted(
+    mock_llm, test_config, tmp_path, caplog
+):
+    """SEEN IN PROD (#3024): a deploy restarted Penny minutes into a sandbox
+    preview; the shutdown cancelled the cycle and its report still went out
+    reading ``ended: sandbox`` — a partial run delivered as its finished result.
+
+    A cancelled preview is recorded as interrupted, in the run's existing ending
+    vocabulary, and its queued report states that as fact, followed by the steps
+    it got through — never the complete-run lead, never ``ended: sandbox``.  The
+    schedule is untouched, as for every sandbox cycle."""
+    caplog.set_level(logging.INFO)
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(_one_step_then_cancel(mock_llm))
+
+    await collector.run_sandbox("indie-metroidvanias")
+    task = next(iter(collector._sandbox_tasks))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(3):
+        await asyncio.sleep(0)  # let the done-callback's own log line land
+
+    # The run record names the interruption, in the ending vocabulary.
+    run = _collector_run(db)
+    assert run["run_outcome"] == RunOutcome.CANCELLED.value
+    assert run["run_reason"] == SANDBOX_INTERRUPTED_REASON
+
+    # The report still queues — silence would read as a finished run that found
+    # nothing — and it leads with the interruption as fact.
+    row = _report_row(db)
+    assert row.origin == CycleTrigger.SANDBOX
+    assert row.report_run_id == run["run_id"]
+    assert row.report_run_id is not None
+    report = build_sandbox_report(db, "indie-metroidvanias", row.report_run_id)
+    assert report is not None
+    assert report.interrupted is True
+    rendered = render_sandbox_report(report)
+    lines = rendered.split("\n")
+    assert lines[0] == (
+        'The sandbox run of "indie-metroidvanias" was interrupted by a restart '
+        "before it finished; these are the steps it got through:"
+    )
+    assert lines[1] == "What the job is for: Indie metroidvania releases"
+    # The one step the run got through renders in the trace, and the record ends
+    # in the interrupted ending — never the finished sandbox stamp.
+    assert "step 1: collection_list{collection: 'indie-metroidvanias'}" in rendered
+    assert "ended: interrupted by a restart" in rendered
+    assert "ended: sandbox" not in rendered
+    assert "is complete" not in rendered
+
+    # The schedule is untouched, as for every sandbox cycle however it ends.
+    assert _get(db, "indie-metroidvanias").last_collected_at is None
+    assert db.messages.recent_run_outcomes("indie-metroidvanias", 10) == []
+
+    # The death log names the cause, not an empty CancelledError message.
+    assert "Sandbox preview cycle cancelled: interrupted by a restart" in [
+        record.getMessage() for record in caplog.records
+    ]
 
 
 @pytest.mark.asyncio

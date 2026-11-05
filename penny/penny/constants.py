@@ -309,6 +309,13 @@ CYCLE_END_RETRY_REASONS: dict[CycleEnd, str] = {
 }
 
 
+# The reason a SANDBOX preview cut off before it finished stamps on its run (#3024) —
+# the ``ended: <reason>`` line its run record renders, never the ``sandbox`` a finished
+# preview stamps.  Read back at compose time by ``build_sandbox_report``, which picks
+# the interrupted lead on it.
+SANDBOX_INTERRUPTED_REASON = "interrupted by a restart"
+
+
 # The write-gate outcomes that changed durable state — either a genuinely new key
 # landed (``NEW_KEY``) or an existing key's baseline was auto-refreshed in place
 # (``KEY_EXISTS_CHANGED``, #1633).  Read by the write path's change-notify and the

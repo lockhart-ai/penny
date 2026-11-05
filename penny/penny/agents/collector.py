@@ -58,6 +58,7 @@ from penny.config import Config
 from penny.constants import (
     CYCLE_END_RETRY_REASONS,
     HEALTHY_CYCLE_ENDS,
+    SANDBOX_INTERRUPTED_REASON,
     WRITE_GATE_STOP_REASONS,
     CycleEnd,
     CycleTrigger,
@@ -341,9 +342,13 @@ class Collector(BackgroundAgent):
     def _on_sandbox_task_done(self, task: asyncio.Task) -> None:
         """Visible degradation (CLAUDE.md): a sandbox cycle that dies before its own
         settlement can log anything else must still surface loudly, never silently
-        — the done-callback is the only place left to say so."""
+        — the done-callback is the only place left to say so.  A cancelled task
+        names its cause (#3024) instead of vanishing or dying on an empty
+        ``CancelledError`` message: a shutdown interrupted the preview before it
+        finished."""
         self._sandbox_tasks.discard(task)
         if task.cancelled():
+            logger.info("Sandbox preview cycle cancelled: %s", SANDBOX_INTERRUPTED_REASON)
             return
         error = task.exception()
         if error is not None:
@@ -529,21 +534,21 @@ class Collector(BackgroundAgent):
         and ``_track_occurrence`` remembers it for the next dispatch at the same
         occurrence, if any.
 
-        A SANDBOX cycle that reached its own end (not cancelled) never takes the
-        schedule's own settlement path at all (#2964) — ``_settle_sandbox_cycle``
-        is its own, entirely separate branch, because there is no occurrence to
-        consume and nothing it wrote ever committed.  A CANCELLED sandbox cycle
-        falls through to the ordinary path below unchanged: ``_settle_occurrence``
-        already takes its own CANCELLED branch first (never ``mark_collected``)
-        and ``_track_occurrence`` already no-ops for any non-CADENCE trigger, so
-        the existing cancelled handling is already correct for it.
+        A SANDBOX cycle never takes the schedule's own settlement path at all
+        (#2964) — there is no occurrence to consume and nothing it wrote ever
+        committed.  One that reached its own end settles through
+        ``_settle_sandbox_cycle``; one CANCELLED by a shutdown settles through
+        ``_settle_cancelled_sandbox_cycle`` (#3024) — recorded as interrupted and
+        still reporting, never silently vanishing nor reading as finished.
         """
         end = self._cycle_end(cancelled, response, notified)
         self.db.messages.set_run_dispatch(
             run_id, dispatch.due_at, dispatch.reason.value, dispatch.attempt
         )
-        if trigger is CycleTrigger.SANDBOX and not cancelled:
-            return self._settle_sandbox_cycle(collection, run_id, reads, response)
+        if trigger is CycleTrigger.SANDBOX:
+            if not cancelled:
+                return self._settle_sandbox_cycle(collection, run_id, reads, response)
+            return self._settle_cancelled_sandbox_cycle(collection, run_id, reads, response)
         landed = self._settle_writes(collection.name, end)
         self.settle_reads(reads, landed)
         deferred = self._settle_occurrence(collection.name, trigger, end, response, run_id)
@@ -596,6 +601,39 @@ class Collector(BackgroundAgent):
         )
         self._tag_promptlog_run(run_id, RunOutcome.SANDBOX, "", self._tool_failures(response))
         return RunOutcome.SANDBOX, ""
+
+    def _settle_cancelled_sandbox_cycle(
+        self,
+        collection: MemoryRow,
+        run_id: str,
+        reads: tuple[CursorReadTool, ...],
+        response: ControllerResponse | None,
+    ) -> tuple[RunOutcome, str]:
+        """Settle a sandbox preview a shutdown cut off before it finished (#3024).
+
+        Cancellation is not the preview's own end, so it never reads as one: the
+        run is stamped ``cancelled`` carrying ``SANDBOX_INTERRUPTED_REASON`` — the
+        ``ended: <reason>`` line its record renders, never the ``sandbox`` a
+        finished preview stamps and never the foreground-preemption line, which
+        would name the wrong cause.  The report is still queued (the user asked
+        for this preview; silence would read as a finished run that found
+        nothing): the same SANDBOX row shape, composed at delivery time from the
+        interrupted run's own stamped cause and the steps it got through.
+
+        Cursors are discarded like every sandbox settle (a preview never advances
+        what a REAL cycle reads next), and the plan wording is stamped so the
+        report can show what each forced-plan call WOULD have done.  No writes
+        settle and no occurrence is consumed — a sandbox cycle never touches the
+        schedule, however it ends."""
+        self.settle_reads(reads, consumed=False)
+        self.db.messages.set_run_plan_descriptions(run_id, self._plan_descriptions(response))
+        self.db.messages.set_run_outcome(
+            run_id, RunOutcome.CANCELLED.value, SANDBOX_INTERRUPTED_REASON
+        )
+        self.db.send_queue.enqueue_report(
+            collection.name, CycleTrigger.SANDBOX, run_id, kind=QueueItemKind.REPORT
+        )
+        return RunOutcome.CANCELLED, SANDBOX_INTERRUPTED_REASON
 
     def _track_occurrence(
         self,
