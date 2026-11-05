@@ -283,7 +283,14 @@ class Penny:
         # composing a notifying cycle's report, which it rides through the chat
         # agent before delivering.
         self.send_queue_drainer = SendQueueDrainer(
-            db=self.db, config=config, chat_agent=self.chat_agent
+            db=self.db,
+            config=config,
+            chat_agent=self.chat_agent,
+            # Queued reports wait while any job run is in progress (#3025): the
+            # drainer reads ``is_cycle_running()`` off the collector — the one
+            # structural read covering scheduled cycles, "run it now" dispatches
+            # and sandbox previews.
+            collector=self.collector,
         )
 
     def _init_commands(self, config: Config) -> None:

@@ -43,6 +43,16 @@ from penny.tests.conftest import NULL_SANDBOX_RUNNER, require_memory
 from penny.tools.link_handles import CITATION_LINE
 
 
+class _NoCycleCollector:
+    """The one read the drainer makes off the collector (#3025), as a test double:
+    no job run in progress.  These tests exercise the compose and delivery
+    machinery, not the run gate — the gate's own tests drive a real Collector in
+    ``tests/scheduler/test_send_queue_drainer.py``."""
+
+    def is_cycle_running(self) -> bool:
+        return False
+
+
 class _StubChannel:
     """Captures what the drainer delivers — the boundary the real channel sits at."""
 
@@ -72,7 +82,9 @@ def _make_delivery(db, test_config) -> tuple[SendQueueDrainer, _StubChannel]:
         embedding_model_client=_llm(None),
         collector=NULL_SANDBOX_RUNNER,
     )
-    drainer = SendQueueDrainer(db=db, config=test_config, chat_agent=chat)
+    drainer = SendQueueDrainer(
+        db=db, config=test_config, chat_agent=chat, collector=_NoCycleCollector()
+    )
     channel = _StubChannel()
     # The stub is the test double at the delivery boundary; the real channel type is
     # what production binds, and the drainer reads nothing else off it.

@@ -69,6 +69,15 @@ class RejectingApns(FakeApns):
         raise ApnsError(400, "BadDeviceToken")
 
 
+class _NoCycleCollector:
+    """The one read the send-queue drainer makes off the collector (#3025), as a
+    test double: no job run in progress.  These tests exercise delivery timing on
+    the iOS surface, not the run gate."""
+
+    def is_cycle_running(self) -> bool:
+        return False
+
+
 def _make_channel(db: Database, apns=None, is_primary: bool = True) -> IosChannel:
     return IosChannel(
         host="localhost",
@@ -1193,7 +1202,9 @@ async def test_ios_image_policy_only_changes_new_automatic_deliveries(db, test_c
     async def deliver():
         if collector:
             db.send_queue.enqueue(content=content, collection="test-images")
-            drainer = SendQueueDrainer(db, test_config, chat_agent=MagicMock())
+            drainer = SendQueueDrainer(
+                db, test_config, chat_agent=MagicMock(), collector=_NoCycleCollector()
+            )
             drainer.set_channel(channel)
             db.messages.log_message("incoming", "ios-keychain-id", "run now")
             assert await drainer.execute()
