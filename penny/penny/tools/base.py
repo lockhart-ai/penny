@@ -86,10 +86,21 @@ def as_plan_result(result: ToolResult) -> ToolResult:
     collection_configure's same-job near-match, a bad schedule, #2946) reads
     "this call would be refused — {message}", and KEEPS ``success=False`` —
     a plan that correctly foresees a refusal is an honest plan, not a failed
-    one, but it must never claim the refused call would otherwise succeed."""
+    one, but it must never claim the refused call would otherwise succeed.
+
+    Both texts ride the result (#2995): ``plan_description`` is the full plan
+    wording just built, ``applied_message`` is the tool's own description the
+    call would read as if applied — the wording ``ToolExecutor`` shows a
+    sandboxed caller (#2964) in place of this plan, since a sandbox run must
+    look live to the job while nothing persists."""
     verb = "" if result.success else "be refused "
     return result.model_copy(
-        update={"message": f"{PLAN_MESSAGE_PREFIX} {verb}— {result.message}", "mutated": False}
+        update={
+            "message": f"{PLAN_MESSAGE_PREFIX} {verb}— {result.message}",
+            "mutated": False,
+            "plan_description": f"{PLAN_MESSAGE_PREFIX} {verb}— {result.message}",
+            "applied_message": result.message,
+        }
     )
 
 
@@ -549,7 +560,32 @@ class ToolExecutor:
         if tool is None:
             return self._tool_not_found_result(tool_call)
         tool_call = self._force_plan(tool, tool_call)
-        return await self._execute_with_timeout(tool, tool_call, call_link)
+        result = await self._execute_with_timeout(tool, tool_call, call_link)
+        return self._unplan_for_sandbox(tool, result)
+
+    def _unplan_for_sandbox(self, tool: Tool, result: ToolResult) -> ToolResult:
+        """Show a sandboxed caller the AS-APPLIED wording of a plan-path result
+        (#2995): a sandbox run must look live to the job — a forced-plan call's
+        result reads like the ordinary result for that call — while nothing
+        persists and the plan path still ran underneath.
+
+        The swap carries the plan wording forward on ``plan_description`` (set by
+        ``as_plan_result``, the structural mark every plan-path result carries —
+        never a string check), so the run record keeps what the call WOULD have
+        done and the sandbox report can render it
+        (``notification.build_sandbox_report``).  Keyed on ``self.forced_plan`` and
+        ``tool.mutates`` — never a tool's name — so a future mutating tool is
+        covered with no change here.  A result that never went through a plan path
+        (a framework failure: bad arguments, timeout, a crash; a refusal returned
+        before the plan branch) carries ``plan_description=None`` and passes
+        through untouched — an honest failure needs no re-wording."""
+        if not (self.forced_plan and tool.mutates and result.plan_description is not None):
+            return result
+        # ``applied_message`` is set together with ``plan_description`` by
+        # ``as_plan_result`` — read it plainly, so a broken pair fails loudly
+        # rather than quietly showing the job the plan wording it must never see.
+        assert result.applied_message is not None
+        return result.model_copy(update={"message": result.applied_message})
 
     def _force_plan(self, tool: Tool, tool_call: ToolCall) -> ToolCall:
         """Overwrite ``plan`` to ``True`` on a mutating call, when this executor is

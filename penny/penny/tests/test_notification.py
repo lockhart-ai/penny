@@ -34,6 +34,7 @@ from penny.notification import (
     JobReport,
     JobRetiredReport,
     NotificationOutcome,
+    SandboxReport,
     WrittenEntry,
     build_job_failed_report,
     build_job_report,
@@ -41,6 +42,7 @@ from penny.notification import (
     render_job_failed_report,
     render_job_report,
     render_job_retired_report,
+    render_sandbox_report,
     withheld_reason,
 )
 from penny.tests.conftest import require_memory
@@ -50,6 +52,35 @@ pytestmark = pytest.mark.bare_db
 
 
 # ── The job report (#2656) ────────────────────────────────────────────────────
+
+
+def test_a_sandbox_report_renders_whole():
+    """The whole sandbox delivery turn's input, char-for-char (#2964, lead reworded
+    #2995): the run looks live to the job — its tool results read like ordinary
+    results — so THIS lead is the one surface that says the writes were not applied,
+    followed by the full trace, whose mutating steps render the plan wording the job
+    never saw (``build_sandbox_report`` renders it off the run's stamp)."""
+    report = SandboxReport(
+        collection="ferry-departures",
+        description="the dawn sailing on the north pier timetable",
+        run_id="preview-run-1",
+        trace=(
+            "as a sandbox preview\n"
+            "run preview-run-1\n"
+            "    step 1: collection_write{collection: 'ferry-departures', …} => "
+            "PLAN — nothing was changed: this call would — Saved 1 entry."
+        ),
+    )
+    assert render_sandbox_report(report) == (
+        'The sandbox run of "ferry-departures" is complete — its writes were not '
+        "applied because it was sandboxed.\n"
+        "What the job is for: the dawn sailing on the north pier timetable\n"
+        "\n"
+        "as a sandbox preview\n"
+        "run preview-run-1\n"
+        "    step 1: collection_write{collection: 'ferry-departures', …} => "
+        "PLAN — nothing was changed: this call would — Saved 1 entry."
+    )
 
 
 def test_a_job_report_renders_whole():

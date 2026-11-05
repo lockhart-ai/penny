@@ -224,10 +224,11 @@ def build_job_report(
 class SandboxReport(BaseModel):
     """Everything the delivery chat turn is given about a finished SANDBOX preview
     (#2964) — the sibling of :class:`JobReport` for a cycle that wrote nothing
-    real.  ``trace`` is the previewed cycle's own tool-call sequence (each
-    mutating call's result already reads "PLAN — nothing was changed: this call
-    would …", #2933) — never the written entries ``JobReport`` carries, because
-    nothing here ever committed."""
+    real.  ``trace`` is the previewed cycle's own tool-call sequence, each
+    mutating call rendered with the plan wording it WOULD have shown (#2995 —
+    the job read the ordinary wording instead, so the run's stamped
+    ``plan_descriptions`` is what names it here) — never the written entries
+    ``JobReport`` carries, because nothing here ever committed."""
 
     collection: str
     description: str
@@ -235,12 +236,17 @@ class SandboxReport(BaseModel):
     trace: str
 
 
-_SANDBOX_REPORT_LEAD = 'Your sandbox preview of "{collection}" just finished — nothing was saved.'
+_SANDBOX_REPORT_LEAD = (
+    'The sandbox run of "{collection}" is complete — its writes were not applied '
+    "because it was sandboxed."
+)
 
 
 def render_sandbox_report(report: SandboxReport) -> str:
     """The whole sandbox delivery turn's input, rendered from framework-assembled
-    facts alone — the sibling of ``render_job_report`` (trigger reworked #2974).
+    facts alone — the sibling of ``render_job_report`` (trigger reworked #2974;
+    lead reworded #2995 — the run looks live to the job, so THIS is the one
+    surface that says its writes were not applied).
 
     Pure and deterministic, same as ``render_job_report``.  ``report.trace`` is
     already the full tool-call sequence (``render_run_calls``), so there is
@@ -266,12 +272,14 @@ def build_sandbox_report(db: Database, collection: str, run_id: str) -> SandboxR
 
     The trace is ``render_run_calls`` — the same renderer ``run_get``/``run_list``
     use to show a run's own tool-call sequence, call syntax plus each call's
-    compact result — so a mutating call's result already reads "PLAN — nothing
-    was changed: this call would …" with no second description to drift from it.
-    ``with_thinking=False``: the user-facing report needs what each step did, not
-    why the model chose it.  ``schedule_words=""``: a sandbox preview names no
-    cadence (``dispatch_line``'s own SANDBOX branch renders "as a sandbox
-    preview" regardless of this argument).
+    compact result — with the run's stamped plan wording (#2995) rendered for
+    every call that went through its plan path: the job itself read the as-applied
+    wording (a sandbox run looks live to the job), so the stamp is the only record
+    of what each call WOULD have done.  ``with_thinking=False``: the user-facing
+    report needs what each step did, not why the model chose it.
+    ``schedule_words=""``: a sandbox preview names no cadence
+    (``dispatch_line``'s own SANDBOX branch renders "as a sandbox preview"
+    regardless of this argument).
 
     ``None`` when the collection has vanished between the enqueue and the
     compose — the same honest failure ``build_job_report`` names for the real
@@ -292,6 +300,11 @@ def build_sandbox_report(db: Database, collection: str, run_id: str) -> SandboxR
         delivered_text=db.messages.delivered_text_for_run(run_id),
         timezone_name=user_timezone_name(db),
         schedule_words="",
+        # The stamped plan wording (#2995) replaces each forced-plan call's
+        # recorded result — the as-applied wording the job read, since the run
+        # looks live to it.  What each call WOULD have done is what this report
+        # exists to show.
+        plan_descriptions=db.messages.plan_descriptions_for_run(run_id),
     )
     return SandboxReport(
         collection=collection, description=row.description, run_id=run_id, trace=trace

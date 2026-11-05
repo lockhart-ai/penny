@@ -2151,6 +2151,7 @@ def render_run_calls(
     delivered_text: str | None,
     timezone_name: str | None = None,
     schedule_words: str = "",
+    plan_descriptions: dict[str, str],
 ) -> str:
     """One run as its tool-call SEQUENCE: ``run id → origin → the numbered steps →
     conclusion → egress``.
@@ -2206,7 +2207,17 @@ def render_run_calls(
     ``timezone_name``/``schedule_words`` (#2862) feed one more leading line —
     why this cycle started when it did (``dispatch_line``) — empty, and so
     rendering nothing, for a chat run or a row logged before that stamp
-    existed."""
+    existed.
+
+    ``plan_descriptions`` (#2995) is REQUIRED, no default — every caller states
+    the mapping it renders with: a sandbox report passes the run's stamped
+    per-call plan wording (``MessageStore.plan_descriptions_for_run``), and every
+    other caller passes ``{}`` — a run that carries no sandbox stamp renders
+    byte-identically to how it always did.  A call whose id is in the mapping
+    renders the plan wording in place of its recorded result — in a sandbox run
+    the recorded result is the as-applied wording the job read (#2995), and the
+    report's job is to show what each call WOULD have done, which the job never
+    saw."""
     if not prompts:
         return "(no data)"
     results = _tool_results_by_id(prompts)
@@ -2224,7 +2235,14 @@ def render_run_calls(
         rendered_indices.append(index)
         if with_thinking:
             lines.extend(_step_thinking_lines(index, thinking, full=(step == index)))
-        lines.append(_step_line(index, call, results.get(call_id) if call_id else None))
+        result = results.get(call_id) if call_id else None
+        # A sandbox run's forced-plan calls show the wording the job never saw
+        # (#2995): the caller's ``plan_descriptions`` (stamped by the sandbox
+        # settlement, keyed by tool-call id) replaces the ordinary result the job
+        # actually read — what each call WOULD have done is what the report is for.
+        if call_id and call_id in plan_descriptions:
+            result = plan_descriptions[call_id]
+        lines.append(_step_line(index, call, result))
         if call_id:
             lines.extend(_draw_line(draw) for draw in by_call_id.get(call_id, []))
     lines.extend(_draw_line(draw) for draw in unanchored)

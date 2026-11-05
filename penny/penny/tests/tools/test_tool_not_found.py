@@ -11,7 +11,7 @@ from penny.database import Database
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
 from penny.tests.mocks.llm_patches import MockLlmClient
-from penny.tools.base import Tool, ToolExecutor, ToolRegistry
+from penny.tools.base import Tool, ToolExecutor, ToolRegistry, as_plan_result
 from penny.tools.browse import BrowseTool
 from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import CollectionSetTool, DoneTool
@@ -652,6 +652,75 @@ class _StubMutatingArgs(ToolArgs):
     (``Tool.__init_subclass__`` asserts it) — this stub is no different."""
 
     plan: bool = False
+
+
+class StubPlanningMutatingTool(Tool):
+    """A stub mutating tool whose plan path goes through ``as_plan_result`` —
+    the shape EVERY production mutating tool shares (#2933) — so #2995's
+    sandbox swap is proved against the real seam, never against a named
+    production tool (CLAUDE.md: "never key logic to the example in front of
+    you").  Its as-applied wording is an ordinary success result; its plan
+    wording is what ``as_plan_result`` builds from it."""
+
+    name = "stub_plan_mutate"
+    description = "A stub mutating tool that plans through as_plan_result."
+    parameters = {"type": "object", "properties": {}}
+    args_model = _StubMutatingArgs
+    mutates = True
+
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
+        args = _StubMutatingArgs(**kwargs)
+        result = ToolResult(message="Saved 1 entry.", success=True, mutated=not args.plan)
+        return as_plan_result(result) if args.plan else result
+
+
+class TestForcedPlanSandboxWording:
+    """``ToolExecutor(forced_plan=True)`` shows a plan-path result's AS-APPLIED
+    wording (#2995): a sandbox run must look live to the job, so the forced-plan
+    call's result reads like the ordinary result for that call — while the plan
+    wording rides the result for the run record and the sandbox report.  Proved
+    against a stub that plans through ``as_plan_result``, like every production
+    mutating tool does."""
+
+    @staticmethod
+    def _registry() -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(StubPlanningMutatingTool())
+        return registry
+
+    @pytest.mark.asyncio
+    async def test_forced_plan_call_reads_as_applied_and_keeps_the_plan_wording(self):
+        executor = ToolExecutor(self._registry(), forced_plan=True)
+        result = await executor.execute(
+            ToolCall(tool="stub_plan_mutate", arguments={}, id="1"), CallLink.new_top()
+        )
+        assert result.message == "Saved 1 entry."
+        assert result.mutated is False
+        assert result.plan_description == (
+            "PLAN — nothing was changed: this call would — Saved 1 entry."
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_plan_call_still_reads_the_plan_wording(self):
+        """An ordinary (unforced) ``plan=true`` call keeps #2933's contract —
+        the caller asked for a preview and reads the PLAN wording."""
+        executor = ToolExecutor(self._registry(), forced_plan=False)
+        result = await executor.execute(
+            ToolCall(tool="stub_plan_mutate", arguments={"plan": True}, id="1"),
+            CallLink.new_top(),
+        )
+        assert result.message == "PLAN — nothing was changed: this call would — Saved 1 entry."
+        assert result.mutated is False
+
+    @pytest.mark.asyncio
+    async def test_unforced_apply_call_carries_no_plan_wording(self):
+        executor = ToolExecutor(self._registry(), forced_plan=False)
+        result = await executor.execute(
+            ToolCall(tool="stub_plan_mutate", arguments={}, id="1"), CallLink.new_top()
+        )
+        assert result.message == "Saved 1 entry."
+        assert result.mutated is True
+        assert result.plan_description is None
 
 
 class StubMutatingTool(Tool):

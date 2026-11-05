@@ -2310,6 +2310,13 @@ class Agent:
         record.failed = not result.success
         record.mutated = result.mutated
         record.result = result.message
+        # The dispatched id and any plan wording ride the record (#2995): the id
+        # pairs the record with the run's promptlog tool turns; the plan wording —
+        # only ever present on a plan-path result, forced or explicitly asked — is
+        # what the sandbox settlement stamps onto the run so its report can show
+        # what each call WOULD have done, the wording the job itself never saw.
+        record.tool_call_id = tool_call_id
+        record.plan_description = result.plan_description
         # A media row this call created (generate_image) rides to egress on the
         # record → ControllerResponse.generated_media_ids → deterministic attach.
         record.media_id = result.media_id

@@ -58,6 +58,15 @@ class PromptLog(SQLModel, table=True):
     # `set_run_injected_messages`; NULL for a run that joined nothing (and for
     # every row that isn't its run's last).
     injected_messages: str | None = None
+    # The PLAN wording each forced-plan call of a SANDBOX run would have shown
+    # (#2995) — a JSON map of ``{"<tool_call_id>": "<plan wording>"}``, stamped on
+    # the run's last prompt by `set_run_plan_descriptions` from the run's own tool
+    # records at settlement.  The job never saw this wording: in a sandbox run
+    # every mutating call's result reads like the ordinary result for that call
+    # (#2995), so the sandbox report reads the stamp to render each call with what
+    # it WOULD have done.  NULL for every non-sandbox run and every row that isn't
+    # its run's last.
+    plan_descriptions: str | None = None
     # How this CALL ended (#2355 part A) — "completed" | "cancelled" | "timed_out" |
     # "raised" (see ``penny.llm.models.CallOutcome``).  NULL on every row logged before
     # this column existed, which is read as "completed" by convention (the old code

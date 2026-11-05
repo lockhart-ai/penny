@@ -1415,6 +1415,44 @@ class MessageStore:
             logger.error("Failed to read injected messages for run %s: %s", run_id, e)
             return []
 
+    def set_run_plan_descriptions(self, run_id: str, descriptions: dict[str, str]) -> None:
+        """Stamp the PLAN wording each forced-plan call of a SANDBOX run carried
+        (#2995) onto the run's last prompt row, keyed by tool-call id.
+
+        In a sandbox run every mutating call's result reads like the ordinary
+        result for that call — the run must look live to the job — so the PLAN
+        wording ("PLAN — nothing was changed: this call would …") exists nowhere
+        else on the run record.  The sandbox report is what tells the user what
+        each call WOULD have done, and this stamp is where it reads the wording
+        from (``build_sandbox_report`` → ``render_run_calls``).  Stamped by the
+        sandbox settlement from the run's own tool records.  Best-effort like
+        ``log_prompt``: a failed record write must never fail the run it records."""
+        if not descriptions:
+            return
+        try:
+            with self._session() as session:
+                last_prompt = self._last_run_prompt(session, run_id)
+                if last_prompt:
+                    last_prompt.plan_descriptions = json.dumps(descriptions)
+                    session.add(last_prompt)
+                    session.commit()
+        except Exception as e:
+            logger.error("Failed to stamp plan descriptions for run %s: %s", run_id, e)
+
+    def plan_descriptions_for_run(self, run_id: str) -> dict[str, str]:
+        """The run's stamped plan wording by tool-call id (#2995) — empty when the
+        run stamped none (every non-sandbox run, and the column is NULL on every
+        pre-#2995 row)."""
+        try:
+            with self._session() as session:
+                last_prompt = self._last_run_prompt(session, run_id)
+                if not last_prompt or not last_prompt.plan_descriptions:
+                    return {}
+                return json.loads(last_prompt.plan_descriptions)
+        except Exception as e:
+            logger.error("Failed to read plan descriptions for run %s: %s", run_id, e)
+            return {}
+
     @staticmethod
     def _last_run_prompt(session: Session, run_id: str) -> PromptLog | None:
         """The run's final prompt row — the one row per run that carries the run's

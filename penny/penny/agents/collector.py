@@ -575,6 +575,11 @@ class Collector(BackgroundAgent):
 
         Cursors are always discarded (``consumed=False``), whatever the cycle's
         own end — a preview must never advance what a REAL cycle reads next.
+        Stamps the run's per-call plan wording (#2995): in a sandbox run every
+        mutating call's result reads like the ordinary result for that call (the
+        run looks live to the job), so the PLAN wording it would have shown
+        exists only on the run's own tool records — the stamp is what the sandbox
+        report reads to show what each call WOULD have done.
         Queues the preview's report UNCONDITIONALLY: the model's own
         ``done(notify=...)`` choice is not consulted (that is a job's own
         editorial decision to speak up; a sandbox report answers what the user
@@ -585,6 +590,7 @@ class Collector(BackgroundAgent):
         ``_notify_if_due``, which skips a SANDBOX trigger entirely so the two
         paths can't both enqueue."""
         self.settle_reads(reads, consumed=False)
+        self.db.messages.set_run_plan_descriptions(run_id, self._plan_descriptions(response))
         self.db.send_queue.enqueue_report(
             collection.name, CycleTrigger.SANDBOX, run_id, kind=QueueItemKind.REPORT
         )
@@ -1167,6 +1173,24 @@ class Collector(BackgroundAgent):
         if response is None:
             return 0
         return sum(1 for record in response.tool_calls if record.failed)
+
+    @staticmethod
+    def _plan_descriptions(response: ControllerResponse | None) -> dict[str, str]:
+        """The plan wording each of this cycle's plan-path calls carried (#2995),
+        keyed by its dispatched tool-call id — the map the sandbox settlement
+        stamps onto the run so its report can show what each call WOULD have done.
+
+        A record carries ``plan_description`` only when its result came off a plan
+        path (``as_plan_result`` sets it; a framework failure never does), so the
+        map holds exactly the calls whose ordinary-looking result hid the wording —
+        and nothing has to re-derive which tools mutate."""
+        if response is None:
+            return {}
+        return {
+            record.tool_call_id: record.plan_description
+            for record in response.tool_calls
+            if record.plan_description is not None and record.tool_call_id is not None
+        }
 
     def _tag_promptlog_run_cancelled(self, run_id: str) -> None:
         """Stamp a cycle that was cut off by foreground activity.

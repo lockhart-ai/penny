@@ -188,6 +188,24 @@ class ToolCallRecord(BaseModel):
 
     tool: str = Field(description="Tool name")
     arguments: dict = Field(description="Arguments passed to the tool")
+    tool_call_id: str | None = Field(
+        default=None,
+        description=(
+            "The dispatched call's own id — set by the dispatcher (_execute_single_tool) "
+            "after execution, pairing this record with the run's promptlog tool turns "
+            "(#2995: the key the sandbox's plan-description stamp is keyed by)."
+        ),
+    )
+    plan_description: str | None = Field(
+        default=None,
+        description=(
+            "The PLAN wording this call's result carried — set after execution from "
+            "ToolResult.plan_description, so only a call that went through a plan path "
+            "carries one (#2995).  The sandbox settlement stamps these onto the run's "
+            "promptlog rows so the sandbox report can render what each call would have "
+            "done — the wording the job itself never saw."
+        ),
+    )
     failed: bool = Field(
         default=False, description="Whether the tool returned an error or empty result"
     )

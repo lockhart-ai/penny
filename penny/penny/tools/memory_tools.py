@@ -3329,6 +3329,7 @@ class ReadRunCallsTool(CursorReadTool):
                 delivered_text=delivered_text,
                 timezone_name=user_timezone_name(self._db),
                 schedule_words=_run_schedule_words(self._db, group[0].run_target),
+                plan_descriptions={},
             ),
             author=PennyConstants.MessageAuthor.COLLECTOR,
             created_at=group[-1].timestamp,
@@ -3460,6 +3461,7 @@ class GetEventTool(Tool):
                 delivered_text=delivered_text,
                 timezone_name=user_timezone_name(self._db),
                 schedule_words=_run_schedule_words(self._db, prompts[0].run_target),
+                plan_descriptions={},
             )
         )
 
