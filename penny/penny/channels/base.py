@@ -53,6 +53,7 @@ def strip_image_tokens(text: str) -> str:
     stripped = PennyConstants.GENERATED_IMAGE_TOKEN_RE.sub("", text)
     return re.sub(r"\n{3,}", "\n\n", stripped) if stripped != text else text
 
+
 # URLs Penny cites in an outgoing message — used to attach the cited page's own
 # captured image at egress (see ``MediaStore.select_image``).
 _MESSAGE_URL_RE = re.compile(r"https?://[^\s)>\]]+")
