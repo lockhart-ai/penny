@@ -10,7 +10,8 @@ a prod breakdown the suite doesn't reproduce.
 Prod runs gemma (`google/gemma-4-26b-a4b-it`) on oMLX, at **8-bit** — MLX 8-bit, model id
 `gemma-4-26b-a4b-it-8bit` — not a 4-bit build.
 
-The eval suite runs the same model at bf16 on OpenRouter, pinned to CoreWeave. The suite's
+The eval suite runs the same model at bf16 on OpenRouter; its pin comes from its
+`EVAL_MODELS` entry. The suite's
 run only predicts prod when prod's build behaves like the suite's provider. 8-bit does; 4-bit
 does not (below).
 

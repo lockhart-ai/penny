@@ -32,7 +32,8 @@ their channel-readiness window), so raise `EVAL_REMOTE_WORKERS`/`EVAL_REMOTE_CON
 only with a measurement in hand. Every value stays individually overridable —
 `EVAL_WORKERS=1 make eval-remote` is serial for debugging one case, `EVAL_SAMPLES=N`
 changes the per-case sample count. The suite's model is gemma
-(`google/gemma-4-26b-a4b-it`), pinned to Cloudflare; name a different roster entry with
+(`google/gemma-4-26b-a4b-it`; its pin comes from its `EVAL_MODELS` entry); name a different
+roster entry with
 `LLM_MODEL=<name> make eval-remote` (below). The embedding model is the one piece that
 stays local (below).
 
