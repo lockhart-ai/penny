@@ -1910,6 +1910,60 @@ async def test_generate_image_delivers_the_drawn_image_deterministically(
 
 
 @pytest.mark.asyncio
+async def test_generate_image_reply_token_is_stripped_from_the_wire_kept_in_the_record(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """The ``[image <id>]`` token the result hands her (#3033) is egress-only.
+
+    The wire text never carries the token — an id this turn did NOT generate is
+    stripped too, so a fabricated token can't reach the user as text — while the
+    stored reply keeps it as she wrote it (#2722), and the drawn image still
+    attaches through ``generated_media_ids`` (the no-token reply shape is the
+    test above)."""
+    config = make_config()
+
+    def handler(request: dict, count: int):
+        if count == 1:
+            return mock_llm._make_tool_call_response(
+                request,
+                "generate_image",
+                {"description": "a teal origami dragon perched on a coffee mug"},
+            )
+        return mock_llm._make_text_response(
+            request, "here's your teal origami dragon!\n\n[image 999]\nenjoy"
+        )
+
+    mock_llm.set_response_handler(handler)
+
+    image_client = AsyncMock()
+    image_client.generate_image.return_value = ONE_PX_PNG_B64
+
+    async with running_penny(config) as penny:
+        penny.chat_agent._image_client = image_client
+        await signal_server.push_message(
+            sender=TEST_SENDER, content="draw me a teal origami dragon on a coffee mug"
+        )
+        reply = await signal_server.wait_for_message_containing("dragon", timeout=10.0)
+
+        # The wire text carries no token — not even the fabricated one — and the
+        # blank-line run the strip opened where the token stood alone is
+        # collapsed back to the paragraph break.
+        assert reply["message"] == "here's your teal origami dragon!\n\nenjoy"
+
+        # The image still attached, by id, regardless of the token in the text.
+        assert reply.get("base64_attachments") == [f"data:image/png;base64,{ONE_PX_PNG_B64}"]
+
+        # The conversation record keeps the token as she wrote it (#2722).
+        with penny.db.get_session() as session:
+            outgoing = session.exec(
+                select(MessageLog).where(
+                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING
+                )
+            ).all()
+        assert any("[image 999]" in row.content for row in outgoing)
+
+
+@pytest.mark.asyncio
 async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):

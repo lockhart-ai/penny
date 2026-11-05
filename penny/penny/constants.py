@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 
 
@@ -601,6 +602,23 @@ class PennyConstants:
     # trace (#1560).  Single source of truth: ``GenerateImageTool`` formats with
     # it and ``render_run_calls`` parses it back, so the two can't drift.
     GENERATED_IMAGE_RESULT_PREFIX = "Generated image #"
+    # The token a ``generate_image`` result hands the model to put in her reply
+    # (#3033): the bracket form names the stored media row's id.  The result
+    # names it, egress strips every occurrence from the wire text (the image
+    # itself still attaches through ``generated_media_ids`` — and a token for an
+    # id the turn didn't generate is stripped too, so it never reaches the user
+    # as text), and the stored reply keeps it as she wrote it (#2722), so a
+    # later turn's history shows she handed the image over.  Form and matching
+    # regex live here so the tool, the egress strip and the eval case cannot
+    # drift; the optional leading space keeps a strip from gluing words together.
+    GENERATED_IMAGE_TOKEN_PREFIX = "[image "
+    GENERATED_IMAGE_TOKEN_SUFFIX = "]"
+    GENERATED_IMAGE_TOKEN_RE = re.compile(
+        r" ?"
+        + re.escape(GENERATED_IMAGE_TOKEN_PREFIX)
+        + r"\d+"
+        + re.escape(GENERATED_IMAGE_TOKEN_SUFFIX)
+    )
     SECTION_SEPARATOR = "\n\n---\n\n"
     DISLIKE_FILTER_THRESHOLD = 0.8
 

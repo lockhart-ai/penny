@@ -38,6 +38,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def strip_image_tokens(text: str) -> str:
+    """``text`` with every ``[image <id>]`` token removed (#3033) — the client-facing
+    form of stored outgoing content.
+
+    The token never reaches a user as text, whatever id it names: the image itself
+    attaches to the live send (``media_ids``/attachments), and the conversation
+    record keeps the token so a later turn's history shows she handed the image
+    over (#2722).  When a token stood on its own line, the strip opens a blank-line
+    run; collapsed back to the paragraph break the channel formatting already
+    enforces.  Text with no token is returned untouched.
+    """
+    stripped = PennyConstants.GENERATED_IMAGE_TOKEN_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", stripped) if stripped != text else text
+
+
 # URLs Penny cites in an outgoing message — used to attach the cited page's own
 # captured image at egress (see ``MediaStore.select_image``).
 _MESSAGE_URL_RE = re.compile(r"https?://[^\s)>\]]+")
@@ -492,6 +508,13 @@ class MessageChannel(ABC):
         reply a direct reply delivers, NULL for an autonomous send. Returns
         ``(message_id, external_id)``.
         """
+        # An image token (#3033) never reaches the user as text: the wire form is
+        # stripped of every ``[image <id>]``, whatever id it names — the image
+        # itself attaches through ``attachments``/``media_ids``, and the stored
+        # ``content`` keeps the token so a later turn's history shows she handed
+        # it over (#2722).  Applied here, the one funnel every send passes
+        # through, after channel conversion and before the raw platform send.
+        prepared = strip_image_tokens(prepared)
         if (not prepared or not prepared.strip()) and not attachments:
             logger.error("Attempted to send empty message to %s", recipient)
             raise ValueError("Cannot send empty or whitespace-only message")

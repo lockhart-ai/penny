@@ -19,7 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from websockets.asyncio.server import Server, ServerConnection
 
 from penny.agents.base import AgentProgressEvent, ProgressCallback
-from penny.channels.base import IncomingMessage, MessageChannel
+from penny.channels.base import IncomingMessage, MessageChannel, strip_image_tokens
 from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_COLLECTION_TRIGGER,
     BROWSER_MSG_TYPE_CONFIG_REQUEST,
@@ -1362,13 +1362,21 @@ class IosChannel(MessageChannel):
         return True
 
 
+def _client_content(text: str) -> str:
+    """Stored content as a client sees it (#3033): the ``[image <id>]`` token is
+    stripped — it never reaches a user as text; the image itself attaches to the
+    live send (egress, ``MessageChannel._log_and_send``), and the record keeps
+    the token for the model's history (#2722)."""
+    return strip_image_tokens(text)
+
+
 def _outbox_record(row: IosOutboxItem, message: MessageLog | None = None) -> IosOutboxRecord:
     return IosOutboxRecord(
         id=_required_outbox_id(row),
         message_id=row.message_log_id,
         outbox_id=row.id,
         created_at=row.created_at.isoformat(),
-        content=row.content,
+        content=_client_content(row.content),
         attachments=_decode_outbox_attachments(row),
         source_type=row.source_type,
         source_name=row.source_name,
@@ -1404,7 +1412,7 @@ def _history_record(
         message_id=message.id,
         outbox_id=outbox.id if outbox is not None else None,
         created_at=message.timestamp.isoformat(),
-        content=message.content,
+        content=_client_content(message.content),
         attachments=(
             _decode_outbox_attachments(outbox) if include_attachments and outbox is not None else []
         ),

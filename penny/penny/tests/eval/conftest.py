@@ -49,7 +49,7 @@ from penny.database.memory import EntryInput, MemoryType
 from penny.database.memory.objects import run_tool_calls
 from penny.database.memory.store import snapshot_fields
 from penny.database.message_store import MessageStore, PromptPerf
-from penny.database.models import Media, MemoryRow, MutationEvent, PromptLog
+from penny.database.models import Media, MemoryRow, MessageLog, MutationEvent, PromptLog
 from penny.database.mutation_store import mutation_detail
 from penny.datetime_utils import user_timezone_name
 from penny.llm.models import CallOutcome, LlmFault, strip_harmony_control_tokens
@@ -2649,6 +2649,26 @@ def reply_embedding(db: Database, final_reply: str) -> list[float] | None:
     return deserialize_embedding(row.embedding)
 
 
+def _stored_reply(db: Database) -> str:
+    """What the conversation RECORD holds for the messages this sample delivered,
+    joined in order — the messagelog rows' own content (#3033).
+
+    ``_drive_turns`` reads the wire text back off the mock server, which is the
+    channel-converted form the user saw; egress strips from that form what the
+    record keeps (an ``[image <id>]`` token, #2722), so a claim over what she
+    WROTE reads this join instead.  The sample database is hermetic, so every
+    OUTGOING row is this turn's; the order is the rows' own timestamps, the same
+    order the wire join reads the sends back in.
+    """
+    with db.get_session() as session:
+        rows = session.exec(
+            select(MessageLog)
+            .where(MessageLog.direction == PennyConstants.MessageDirection.OUTGOING)
+            .order_by(col(MessageLog.timestamp).asc())
+        ).all()
+    return "\n".join(str(row.content) for row in rows)
+
+
 def _stored_entries(db: Database) -> list[eval_cohort.StoredEntry]:
     """Every COLLECTION entry this sample wrote, wherever it landed — the run-id stamp
     answering "what did she store", so a case never has to guess which container a framed
@@ -2910,7 +2930,9 @@ def _observe_sample(
     ``reply`` is every message the turn delivered, joined in order, as the user saw it
     (#2839/#2934) — what a claim means by "the reply" unless it means the last message
     specifically, which is ``final_reply`` (the model-error identity check, the embedding
-    lookup).
+    lookup).  ``stored_reply`` is the same messages as the conversation RECORD holds them —
+    the content egress strips from the wire survives there (#3033) — so a claim over what
+    she WROTE reads that one.
 
     Every read below is a CHAT read — the machine's walk, the registry, the collections, the
     outgoing message the reply was embedded on, and a tool sequence filtered to the chat
@@ -2940,6 +2962,7 @@ def _observe_sample(
         collection_write_keys=_collection_write_keys(db),
         reply=reply,
         final_reply=final_reply,
+        stored_reply=_stored_reply(db),
         reply_embedding=reply_embedding(db, final_reply),
         aborted_on_model_error=_aborted_on_model_error(final_reply),
         tool_raised_exception=tool_call_raised_exception(db),

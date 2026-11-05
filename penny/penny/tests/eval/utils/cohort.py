@@ -402,6 +402,14 @@ class SampleObservation(BaseModel):
     # fix exists to deliver.  A collector sample sets the SAME field to its own joined sent
     # notifications — one field because both answer "what did the user receive".
     reply: str = ""
+    # What the conversation RECORD holds for those same messages, joined in the same
+    # order — the messagelog rows' own content, which keeps what egress strips
+    # (#3033): the wire text ``reply`` carries is the channel-converted form, so a
+    # token removed at egress (an ``[image <id>]``) is invisible there while the
+    # record keeps it (#2722).  "As the user saw it" and "as she wrote it" are two
+    # reads of one turn; a claim over what she WROTE reads this one.  Empty for a
+    # shape that never populates it.
+    stored_reply: str = ""
     # The LAST message alone, where ``reply``'s own join would answer the wrong question: the
     # model-error identity check (an interim message ahead of the apology doesn't make the
     # turn's actual end any less an abort) and the reply's own embedding lookup (an exact
