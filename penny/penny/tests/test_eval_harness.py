@@ -197,6 +197,7 @@ from penny.tests.eval.conftest import (
     _seed_sample,
     _stamp_cause,
     _stored_entries,
+    _system_prompts,
     _turn_kind,
     _turns_to_events,
     _write_sample_report,
@@ -3129,6 +3130,65 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
         "</details>\n"
         "\n"
     )
+
+
+# ── A chat call's per-turn system message is stated beside the static one (#3016) ────────────
+
+
+def _two_system_chat_row(static: str, dynamic: str) -> PromptLog:
+    """One chat-shaped promptlog row with TWO system messages, the shape a chat call has had
+    since #2756: the static leading message, a tool step, then the per-turn dynamic message
+    (clock, self-state, related exchanges) just before the live user turn."""
+    return PromptLog(
+        agent_name="chat",
+        model="a-model",
+        prompt_type="chat",
+        messages=json.dumps(
+            [
+                {"role": "system", "content": static},
+                {"role": "user", "content": "deepest lake?"},
+                {"role": "assistant", "content": "", "tool_calls": []},
+                {"role": "system", "content": dynamic},
+                {"role": "user", "content": "and the second-deepest?"},
+            ]
+        ),
+        response="{}",
+    )
+
+
+def test_a_chats_per_turn_system_prompt_is_stated_beside_the_static_one():
+    """`_system_prompts` took only a row's FIRST system message, so the per-turn dynamic one a
+    chat call carries just before the live user turn never reached the report (#3016) — and that
+    message holds the clock, the dynamic self-state and `## Related earlier exchanges`, exactly
+    what a reader diagnosing "the model never saw X" needs. Every system message of a row now
+    deposits, labelled by its position within the call, deduped by verbatim text as before."""
+    static, dynamic = "You are Penny.", "clock: Wed 14 Oct 2026, 14:00"
+    row = _two_system_chat_row(static, dynamic)
+    assert [(prompt.context, prompt.text) for prompt in _system_prompts([row])] == [
+        ("chat", static),
+        ("chat · per-turn", dynamic),
+    ], "both of the call's system messages state, each labelled by its position"
+
+    # A second row carrying the same two texts adds nothing — verbatim dedupe, as before.
+    assert _system_prompts([row, _two_system_chat_row(static, dynamic)]) == _system_prompts([row])
+
+    # Three system messages read apart: anything between the leading and per-turn ones rode
+    # mid-history.
+    three = _two_system_chat_row(static, dynamic)
+    three.messages = json.dumps(
+        [
+            {"role": "system", "content": static},
+            {"role": "system", "content": "an older dynamic message"},
+            {"role": "user", "content": "deepest lake?"},
+            {"role": "system", "content": dynamic},
+            {"role": "user", "content": "and the second-deepest?"},
+        ]
+    )
+    assert [(prompt.context, prompt.text) for prompt in _system_prompts([three])] == [
+        ("chat", static),
+        ("chat · in history", "an older dynamic message"),
+        ("chat · per-turn", dynamic),
+    ]
 
 
 # ── The labeller runner's learn → render step (#1828) ─────────────────────────
