@@ -70,6 +70,7 @@ def test_a_sandbox_report_renders_whole():
             "    step 1: collection_write{collection: 'ferry-departures', …} => "
             "PLAN — nothing was changed: this call would — Saved 1 entry."
         ),
+        interrupted=False,
     )
     assert render_sandbox_report(report) == (
         'The sandbox run of "ferry-departures" is complete — its writes were not '
@@ -80,6 +81,36 @@ def test_a_sandbox_report_renders_whole():
         "run preview-run-1\n"
         "    step 1: collection_write{collection: 'ferry-departures', …} => "
         "PLAN — nothing was changed: this call would — Saved 1 entry."
+    )
+
+
+def test_an_interrupted_sandbox_report_renders_whole():
+    """The interrupted variant's whole render, char-for-char (#3024): the lead
+    states the interruption as fact and hands over the steps the run got
+    through — never the complete-run lead a partial run must not read as."""
+    report = SandboxReport(
+        collection="ferry-departures",
+        description="the dawn sailing on the north pier timetable",
+        run_id="preview-run-1",
+        trace=(
+            "as a sandbox preview\n"
+            "run preview-run-1\n"
+            "    step 1: collection_list{collection: 'ferry-departures'} => "
+            "2 entries held.\n"
+            "ended: interrupted by a restart"
+        ),
+        interrupted=True,
+    )
+    assert render_sandbox_report(report) == (
+        'The sandbox run of "ferry-departures" was interrupted by a restart before '
+        "it finished; these are the steps it got through:\n"
+        "What the job is for: the dawn sailing on the north pier timetable\n"
+        "\n"
+        "as a sandbox preview\n"
+        "run preview-run-1\n"
+        "    step 1: collection_list{collection: 'ferry-departures'} => "
+        "2 entries held.\n"
+        "ended: interrupted by a restart"
     )
 
 

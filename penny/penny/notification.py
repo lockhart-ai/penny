@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from penny.constants import (
+    SANDBOX_INTERRUPTED_REASON,
     CycleEnd,
     CycleTrigger,
     MutationAction,
@@ -228,17 +229,27 @@ class SandboxReport(BaseModel):
     mutating call rendered with the plan wording it WOULD have shown (#2995 —
     the job read the ordinary wording instead, so the run's stamped
     ``plan_descriptions`` is what names it here) — never the written entries
-    ``JobReport`` carries, because nothing here ever committed."""
+    ``JobReport`` carries, because nothing here ever committed.
+
+    ``interrupted`` (#3024) is whether the preview was cut off before it
+    finished — read off the run's own outcome stamp at compose time, never
+    guessed — and picks the lead the render opens with."""
 
     collection: str
     description: str
     run_id: str
     trace: str
+    interrupted: bool
 
 
 _SANDBOX_REPORT_LEAD = (
     'The sandbox run of "{collection}" is complete — its writes were not applied '
     "because it was sandboxed."
+)
+
+_SANDBOX_REPORT_INTERRUPTED_LEAD = (
+    'The sandbox run of "{collection}" was interrupted by a restart before it '
+    "finished; these are the steps it got through:"
 )
 
 
@@ -250,13 +261,18 @@ def render_sandbox_report(report: SandboxReport) -> str:
 
     Pure and deterministic, same as ``render_job_report``.  ``report.trace`` is
     already the full tool-call sequence (``render_run_calls``), so there is
-    nothing here to condense or cap.  ``_SANDBOX_REPORT_LEAD`` is the one fact
-    that keeps the model from mistaking a preview for a thing that happened —
-    nothing here instructs her to say so; she decides for herself whether, how,
-    and how many times to reply, the same as on any chat turn."""
+    nothing here to condense or cap.  The lead is the one fact that keeps the
+    model from mistaking a preview for a thing that happened — an interrupted
+    run's lead (#3024) states that the run never finished, instead of reporting
+    a partial run as complete; nothing here instructs her to say so; she decides
+    for herself whether, how, and how many times to reply, the same as on any
+    chat turn."""
+    lead = (
+        _SANDBOX_REPORT_INTERRUPTED_LEAD if report.interrupted else _SANDBOX_REPORT_LEAD
+    ).format(collection=report.collection)
     return "\n".join(
         [
-            _SANDBOX_REPORT_LEAD.format(collection=report.collection),
+            lead,
             _REPORT_ABOUT.format(description=report.description),
             "",
             report.trace,
@@ -269,6 +285,15 @@ def build_sandbox_report(db: Database, collection: str, run_id: str) -> SandboxR
     words, and the previewed cycle's own tool-call trace — never written
     entries, since a sandbox cycle commits none (every mutating call went
     through its plan path, #2933).
+
+    ``interrupted`` (#3024) is read at COMPOSE time off the run's own outcome
+    stamp — the same read ``build_job_failed_report`` makes.  A finished preview
+    stamps ``sandbox`` on its last prompt row; one a shutdown cut off stamps
+    ``cancelled`` carrying ``SANDBOX_INTERRUPTED_REASON`` — which always lands,
+    because even a call cancelled mid-flight logs its own promptlog row
+    (``LlmClient.chat``), so the interrupted stamp has a row to sit on.  A run
+    carrying no stamp at all reads as not interrupted — there is nothing its
+    record names the interruption from.
 
     The trace is ``render_run_calls`` — the same renderer ``run_get``/``run_list``
     use to show a run's own tool-call sequence, call syntax plus each call's
@@ -293,6 +318,7 @@ def build_sandbox_report(db: Database, collection: str, run_id: str) -> SandboxR
         )
         return None
     prompts = db.messages.get_run_prompts(run_id)
+    stamped = next((prompt for prompt in reversed(prompts) if prompt.run_outcome), None)
     trace = render_run_calls(
         prompts,
         db.messages.get_child_draws(run_id),
@@ -307,7 +333,11 @@ def build_sandbox_report(db: Database, collection: str, run_id: str) -> SandboxR
         plan_descriptions=db.messages.plan_descriptions_for_run(run_id),
     )
     return SandboxReport(
-        collection=collection, description=row.description, run_id=run_id, trace=trace
+        collection=collection,
+        description=row.description,
+        run_id=run_id,
+        trace=trace,
+        interrupted=stamped is not None and stamped.run_reason == SANDBOX_INTERRUPTED_REASON,
     )
 
 
