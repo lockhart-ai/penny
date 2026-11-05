@@ -379,6 +379,42 @@ def test_startup_builds_first_when_head_is_already_ahead_of_the_last_build(tmp_p
         _stop(dep.proc)
 
 
+def test_startup_fetches_origin_before_the_startup_build(tmp_path, repos):
+    """origin/main moves ahead while the loop is down (#3020): on start, the
+    loop's one startup fetch+fast-forward advances HEAD BEFORE the startup build
+    check runs — so the first build and child start happen at the fetched commit,
+    not the stale local one, with no interval wait and no tick (the startup fetch
+    runs unconditionally, before anything else)."""
+    origin, clone_dir, _first = repos
+    second = _commit(origin, "fix(penny): second (#2)", "B")
+    second_short = second[:7]
+
+    dep = _start_deployment(tmp_path, clone_dir)
+    try:
+        _wait_until(
+            lambda: (
+                "building before starting" in _read_or_empty(dep.deploy_log)
+                and f"built {second_short}" in _read_or_empty(dep.build_log)
+            )
+        )
+        assert _git(clone_dir, "rev-parse", "HEAD") == second, (
+            "the startup fetch fast-forwarded HEAD before anything was built"
+        )
+        log_text = _read_or_empty(dep.deploy_log)
+        assert "fast-forwarding" in log_text
+        assert (
+            log_text.index("fast-forwarding")
+            < log_text.index("building before starting")
+            < (log_text.index("started child"))
+        ), "the fetch, then the build, then the child start — in that order"
+        assert f"built {dep.built_file.read_text().strip()}" in _read_or_empty(dep.build_log)
+        assert dep.built_file.read_text().strip() == _git(
+            clone_dir, "rev-parse", "--short", "HEAD"
+        ), "the startup build's own success retags the image at the fetched commit"
+    finally:
+        _stop(dep.proc)
+
+
 def test_ahead_clean_ff_able_rebuilds_and_restarts(tmp_path, repos):
     """The main path: a new commit on origin/main, a clean checkout on main that
     can fast-forward — the loop merges, builds, stops the old child, and starts
@@ -401,6 +437,19 @@ def test_ahead_clean_ff_able_rebuilds_and_restarts(tmp_path, repos):
         assert not dep.stop_log.exists(), (
             "a redeploy must not run the stop command — only the shutdown does"
         )
+
+        # A follow-up cycle with HEAD already at origin/main is a no-op: it logs its
+        # own "up to date" and builds and redeploys nothing (#3021 — only a cycle
+        # that ADVANCED HEAD may reach the build). The startup fetch already logged
+        # one "up to date", so count occurrences, never test presence.
+        ups_before = _read_or_empty(dep.deploy_log).count("up to date")
+        builds_before = _read_or_empty(dep.build_log).count("build ")
+        _tick(dep.proc)
+        _wait_until(lambda: _read_or_empty(dep.deploy_log).count("up to date") > ups_before)
+        assert _read_or_empty(dep.build_log).count("build ") == builds_before, (
+            "an up-to-date cycle runs no build"
+        )
+        assert _read_or_empty(dep.run_log).count("\n") == 2, "an up-to-date cycle never redeploys"
     finally:
         _stop(dep.proc)
 
@@ -456,9 +505,13 @@ def test_diverged_history_blocks_the_deploy(tmp_path, repos):
     try:
         _commit(origin, "fix(penny): second (#2)", "B")
 
+        # The startup fetch logs the same "not a fast-forward" line (the local
+        # commit predates the loop), so count occurrences, never test presence.
+        skips_before = _read_or_empty(dep.deploy_log).count("not a fast-forward")
         _tick(dep.proc)
-
-        _wait_until(lambda: "not a fast-forward" in _read_or_empty(dep.deploy_log))
+        _wait_until(
+            lambda: _read_or_empty(dep.deploy_log).count("not a fast-forward") > skips_before
+        )
         assert _git(clone_dir, "rev-parse", "HEAD") == local_head, "never reset or checked out"
         assert _read_or_empty(dep.run_log).count("\n") == 1
     finally:
@@ -473,9 +526,14 @@ def test_unreachable_origin_logs_the_reason_and_leaves_the_child_running(tmp_pat
     _git(clone_dir, "remote", "set-url", "origin", str(tmp_path / "no-such-origin"))
     dep = _start_deployment(tmp_path, clone_dir)
     try:
+        # The startup fetch fails the same way before the loop even settles in,
+        # so count occurrences of this tick's line, never test presence.
+        fails_before = _read_or_empty(dep.deploy_log).count("fetch origin main failed")
         _tick(dep.proc)
 
-        _wait_until(lambda: "fetch origin main failed" in _read_or_empty(dep.deploy_log))
+        _wait_until(
+            lambda: _read_or_empty(dep.deploy_log).count("fetch origin main failed") > fails_before
+        )
         assert not dep.build_log.exists()
         assert _read_or_empty(dep.run_log).count("\n") == 1
     finally:
@@ -512,11 +570,13 @@ def test_failed_build_leaves_old_child_running_and_never_retags_the_image(tmp_pa
         assert _read_or_empty(dep.build_log).count("build ") == 1
 
         # A second tick: HEAD already equals origin/main, so nothing is "ahead" and the
-        # build is not retried. Wait for THIS tick's own "up to date" line (logged only
-        # on the no-op path) rather than a fixed sleep, so the assertion below can never
-        # race the loop's own processing of the signal.
+        # build is not retried. Wait for THIS tick's own "up to date" line — counted
+        # past the one the startup fetch already logged, so the wait can never be
+        # satisfied before the tick's cycle has run, and the assertion below can
+        # never race the loop's own processing of the signal.
+        ups_before = _read_or_empty(dep.deploy_log).count("up to date")
         _tick(dep.proc)
-        _wait_until(lambda: "up to date" in _read_or_empty(dep.deploy_log))
+        _wait_until(lambda: _read_or_empty(dep.deploy_log).count("up to date") > ups_before)
         assert _read_or_empty(dep.build_log).count("build ") == 1, (
             "the same failed commit is never retried"
         )
