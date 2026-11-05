@@ -13,6 +13,7 @@ The live-model contract is the ``chat/idle`` refer-back case beside them.
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 
 from sqlmodel import col, update
@@ -115,6 +116,27 @@ def _content_lines(rendered: str) -> list[str]:
     if not rendered:
         return []
     return rendered.split("\n")[1:-1]
+
+
+def _render_bounded(map: ConversationMap, seconds: float = 10.0) -> str:
+    """``render()`` on a worker thread, joined with a timeout — the ceiling
+    fold must always end, so a spin (a fold pass that changes nothing) fails
+    the test instead of hanging the suite (#3014)."""
+    outcome: dict[str, str] = {}
+
+    def run() -> None:
+        try:
+            outcome["rendered"] = map.render()
+        except Exception as exc:  # surfaced below, on the calling thread
+            outcome["error"] = repr(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), "render() never returned — the fold loop spun"
+    if "error" in outcome:
+        raise RuntimeError(outcome["error"])
+    return outcome["rendered"]
 
 
 # ── The line render ──────────────────────────────────────────────────────────
@@ -387,6 +409,65 @@ def test_past_the_ceiling_the_oldest_whole_day_collapses(db) -> None:
     # Never trimmed line-by-line: every exchange the day line replaced is gone whole.
     assert "exchange ask 0" not in rendered and "exchange ask 4" not in rendered
     assert "exchange ask 5" in rendered
+
+
+def test_the_fold_folds_the_oldest_unfolded_day_and_terminates(db) -> None:
+    """The oldest day already a single fold line, the NEXT day alone over the
+    ceiling: each pass folds the oldest day that still has more than one line
+    and is not the newest, never an already-folded day — folding that one
+    again would change nothing, and the pre-fix loop spanned forever on it
+    (#3014).  The render returns, with that next day folded too."""
+    db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_MAP_MAX_LINES", "3", "test ceiling")
+    db.config.set("CHAT_MAP_DAYS", "4", "test horizon")
+    for index in range(10):
+        _outcome_exchange(db, index)
+        ids = _last_ids(db, 2)
+        if index < 2:
+            _backdate(db, ids, 3.0)  # the oldest day: 2 exchanges
+        elif index < 6:
+            _backdate(db, ids, 2.0)  # the next day: 4 exchanges — alone over the ceiling
+        elif index < 8:
+            _backdate(db, ids, 1.0)  # the newest day: two exchanges, in the map
+    # total=10, window=2: the map covers the oldest 8 — day A ×2, day B ×4, day C ×2.
+
+    rendered = _render_bounded(_map(db))
+    content_lines = _content_lines(rendered)
+    day_lines = [line for line in content_lines if "exchanges — log_read" in line]
+    assert len(day_lines) == 2, rendered  # day A already folded, then day B folded too
+    assert any("· 2 exchanges — log_read" in line for line in day_lines), rendered
+    assert any("· 4 exchanges — log_read" in line for line in day_lines), rendered
+    assert len(content_lines) == 4, rendered  # 2 fold lines + the newest day's 2 lines
+    assert "exchange ask 6" in rendered and "exchange ask 7" in rendered  # never folded
+    assert "exchange ask 0" not in rendered and "exchange ask 2" not in rendered
+
+
+def test_only_the_newest_day_over_the_ceiling_stops_the_fold(db) -> None:
+    """Only the newest day is over the ceiling: the oldest day folds, then no
+    day but the newest has more than one line left — the fold stops and the
+    render returns with the map still over the ceiling, the newest day
+    untouched (#3014).  The pre-fix loop spanned forever re-folding the
+    already-folded oldest day."""
+    db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_MAP_MAX_LINES", "3", "test ceiling")
+    db.config.set("CHAT_MAP_DAYS", "4", "test horizon")
+    for index in range(8):
+        _outcome_exchange(db, index)
+        ids = _last_ids(db, 2)
+        if index < 2:
+            _backdate(db, ids, 3.0)  # the oldest day: 2 exchanges
+        elif index < 6:
+            _backdate(db, ids, 1.0)  # the newest day: 4 exchanges — alone over the ceiling
+    # total=8, window=2: the map covers the oldest 6 — day A ×2, day C ×4.
+
+    rendered = _render_bounded(_map(db))
+    content_lines = _content_lines(rendered)
+    day_lines = [line for line in content_lines if "exchanges — log_read" in line]
+    assert len(day_lines) == 1, rendered  # only the oldest day folded
+    assert "· 2 exchanges — log_read" in day_lines[0], rendered
+    assert len(content_lines) == 5, rendered  # over the ceiling — the fold stopped
+    for index in range(2, 6):
+        assert f"exchange ask {index}" in rendered  # the newest day stays unfolded
 
 
 def test_the_horizon_reads_the_databases_clock_not_the_machines(tmp_path) -> None:
