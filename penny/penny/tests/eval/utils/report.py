@@ -60,6 +60,11 @@ MICRO_OUT_ARROW = "→"
 
 # ── System-prompt row (#1759) — one always-collapsed row per distinct context's system prompt ──
 SYSTEM_PROMPT_LABEL = "system prompt"
+# Position suffixes on a call's LATER system messages (#3016): since #2756 a chat call carries a
+# static leading message AND a per-turn dynamic one just before the live user turn, and the last
+# of several is the per-turn one; anything between rode mid-history.
+SYSTEM_PROMPT_PER_TURN_SUFFIX = " · per-turn"
+SYSTEM_PROMPT_IN_HISTORY_SUFFIX = " · in history"
 
 # ── Check class + scored/advisory markers ────────────────────────────────────
 GATING_MARKER = "⚖"  # a scored check (counts toward the sample score)
@@ -345,7 +350,8 @@ class RunClose:
 class SystemPrompt:
     """One distinct system prompt among a sample's promptlog calls (main agent + each micro-context
     flavour), rendered as an ALWAYS-collapsed ``<details>`` directly under the sample banner: the
-    summary names the ``context`` (the agent name) + the prompt size, the verbatim prompt sits
+    summary names the ``context`` (the agent name, with a position suffix on a call's later system
+    messages — per-turn / in history, #3016) + the prompt size, the verbatim prompt sits
     inside. Distinct prompts within a sample dedupe by text — a repeated main-loop prompt renders
     once. The user mistook a micro-context's user turn for its system prompt; this makes each
     context's real system prompt visible (its own row) without inflating any step table."""

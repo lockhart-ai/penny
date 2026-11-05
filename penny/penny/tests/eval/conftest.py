@@ -1845,18 +1845,37 @@ def _micro_events(row: PromptLog) -> list[report.Event]:
 def _system_prompts(rows: list[PromptLog]) -> list[report.SystemPrompt]:
     """The DISTINCT system prompts across a sample's promptlog rows (main agent + each micro-context
     flavour), in first-appearance order, deduped by verbatim text — a repeated main-loop prompt
-    renders once (#1759). Each is labelled by the ``agent_name`` of the row it first appeared on
-    (the context under test); a row carrying no system message contributes none."""
+    renders once (#1759). Since #2756 a chat call carries TWO system messages — the static leading
+    one and the per-turn dynamic one just before the live user turn (clock, self-state, related
+    exchanges) — so EVERY system message of a row is yielded, each labelled by its position within
+    the call (#3016). A row carrying no system message contributes none."""
     seen: set[str] = set()
     prompts: list[report.SystemPrompt] = []
     for row in rows:
         messages = json.loads(row.messages) if row.messages else []
-        system = next((m.get("content") or "" for m in messages if m.get("role") == "system"), "")
-        if not system or system in seen:
-            continue
-        seen.add(system)
-        prompts.append(report.SystemPrompt(context=row.agent_name or "", text=system))
+        texts = [m.get("content") or "" for m in messages if m.get("role") == "system"]
+        for position, text in enumerate(texts):
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            prompts.append(
+                report.SystemPrompt(
+                    context=_system_prompt_label(row.agent_name or "", position, len(texts)),
+                    text=text,
+                )
+            )
     return prompts
+
+
+def _system_prompt_label(agent_name: str, position: int, count: int) -> str:
+    """A call's system messages read apart by position (#3016): the first keeps the row's plain
+    ``agent_name``; the LAST of several is the per-turn dynamic message; anything between rode
+    mid-history."""
+    if position == 0:
+        return agent_name
+    if position == count - 1:
+        return f"{agent_name}{report.SYSTEM_PROMPT_PER_TURN_SUFFIX}"
+    return f"{agent_name}{report.SYSTEM_PROMPT_IN_HISTORY_SUFFIX}"
 
 
 @dataclass
