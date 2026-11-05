@@ -16,6 +16,8 @@ import pytest
 
 from penny.tests.eval.utils.roster import (
     EVAL_MODELS_ENV,
+    LLM_MODEL_ENV,
+    LLM_PROVIDER_ENV,
     MINIMUM_MODELS,
     EvalModel,
     RosterError,
@@ -23,6 +25,7 @@ from penny.tests.eval.utils.roster import (
     parse_roster,
     render_resolution,
     resolve,
+    resolve_from_env,
 )
 
 _ROSTER = json.dumps(
@@ -124,6 +127,76 @@ class TestWhatTheRecipeReads:
 
         # A stray argument is a usage error, distinct from an unconfigured roster.
         assert main(["a", "b"]) == 2
+
+
+class TestTheOneResolutionEveryPathUses:
+    """`resolve_from_env` (#3001) — the eval suite's config, `make replay` and the A/B
+    run all land here, so nothing can run on a model or upstream the roster does not
+    define. A hand-set variable is a selector against the roster, never a value."""
+
+    def test_an_unset_name_resolves_the_rosters_first_entry_with_its_pin(self, monkeypatch) -> None:
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        monkeypatch.delenv(LLM_MODEL_ENV, raising=False)
+        assert resolve_from_env() == EvalModel(model="vendor/model-a", provider="SomeCloud")
+
+    def test_an_exported_model_names_which_roster_entry_runs(self, monkeypatch) -> None:
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        monkeypatch.setenv(LLM_MODEL_ENV, "vendor/model-b")
+        assert resolve_from_env().provider == "OtherCloud"
+
+    def test_an_explicit_request_beats_the_exported_name(self, monkeypatch) -> None:
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        monkeypatch.setenv(LLM_MODEL_ENV, "vendor/model-a")
+        assert resolve_from_env("vendor/model-b").model == "vendor/model-b"
+
+    def test_a_model_outside_the_roster_refuses_and_the_roster_is_listed(self, monkeypatch) -> None:
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        monkeypatch.setenv(LLM_MODEL_ENV, "vendor/model-c")
+        with pytest.raises(RosterError) as refusal:
+            resolve_from_env()
+        message = str(refusal.value)
+        assert "vendor/model-c" in message
+        assert "vendor/model-a via SomeCloud" in message
+
+    def test_an_exported_provider_matching_the_entry_is_accepted(self, monkeypatch) -> None:
+        """What the recipes hand down (the roster subprocess's own output) passes."""
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        monkeypatch.setenv(LLM_PROVIDER_ENV, "SomeCloud")
+        assert resolve_from_env().model == "vendor/model-a"
+
+    def test_an_exported_provider_mismatching_the_entry_fails_the_run_up_front(
+        self, monkeypatch
+    ) -> None:
+        """The stale-docs copy that ran one arm on the wrong upstream: never silently
+        ignored and never used — the refusal names the roster."""
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        monkeypatch.setenv(LLM_PROVIDER_ENV, "StaleDocs")
+        with pytest.raises(RosterError) as refusal:
+            resolve_from_env()
+        message = str(refusal.value)
+        assert "StaleDocs" in message
+        assert "vendor/model-a via SomeCloud" in message
+        assert "vendor/model-b via OtherCloud" in message
+
+    def test_an_exported_provider_against_a_providerless_entry_is_a_mismatch(
+        self, monkeypatch
+    ) -> None:
+        """A direct endpoint has no pin; an exported one names a different upstream."""
+        monkeypatch.setenv(EVAL_MODELS_ENV, json.dumps([{"model": "local-model"}]))
+        monkeypatch.setenv(LLM_PROVIDER_ENV, "SomeCloud")
+        with pytest.raises(RosterError):
+            resolve_from_env()
+
+    def test_an_empty_exported_provider_reads_as_unset(self, monkeypatch) -> None:
+        """A recipe forwards an unset value as an EMPTY string, not absent."""
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        monkeypatch.setenv(LLM_PROVIDER_ENV, "")
+        assert resolve_from_env().model == "vendor/model-a"
+
+    def test_an_unset_roster_refuses_the_resolution(self, monkeypatch) -> None:
+        monkeypatch.delenv(EVAL_MODELS_ENV, raising=False)
+        with pytest.raises(RosterError):
+            resolve_from_env()
 
 
 # ── What the Makefile actually hands this parser (#1997) ─────────────────────

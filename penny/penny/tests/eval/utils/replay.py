@@ -35,11 +35,12 @@ defaults, no token budget) from the row's ``messages``/``tools`` alone, so a rep
 always a reconstruction at whatever commit happens to be checked out. This mode
 instead reads the row's own ``request`` column — the exact kwargs ``LlmClient`` handed
 the OpenAI SDK at send time (#2875) — and sends that body straight through a bare
-``openai.AsyncOpenAI`` of its own, overriding only ``model`` (``--model``/``LLM_MODEL``)
-and the provider pin inside ``extra_body`` (``--provider``/``LLM_PROVIDER``) when
-retargeting a different runner than the one that originally served it. Everything
-else — messages/prompt, tools, every sampling field, stop sequences, the token
-budget — rides unchanged, proving the bytes match rather than approximating them.
+``openai.AsyncOpenAI`` of its own, overriding only what differs about the TARGET
+runner: the model and the provider pin inside ``extra_body``, both resolved from
+`EVAL_MODELS` through the roster (`roster.resolve_from_env`), never read from a
+hand-set ``LLM_MODEL``/``LLM_PROVIDER`` (#3001). Everything else — messages/prompt,
+tools, every sampling field, stop sequences, the token budget — rides unchanged,
+proving the bytes match rather than approximating them.
 
 ``--mode ollama-native`` sends the SAME rendered raw-template prompt through Ollama's
 native ``/api/generate`` (``raw: true``) instead of the OpenAI-compatible
@@ -64,15 +65,18 @@ Run inside the penny container (the prod DB is mounted at /penny/data):
         python -m penny.tests.eval.utils.replay --id 138385 --samples 5 \
             --mode verbatim-request
 
-A remote provider (OpenRouter) additionally needs ``LLM_API_KEY`` and, per the
-project's always-pin-the-provider rule, ``LLM_PROVIDER`` — both optional env vars
-read the same way ``make eval-remote`` reads them, never hardcoded here. ``make
-replay ID=<promptlog id>`` (the Makefile target, #2917) wires this up end to end:
-it resolves the named model's pinned provider the same way ``make eval-remote``
-does (the roster, over ``EVAL_MODELS``), reads the key host-side from the primary
-checkout's ``.env`` the same way too (``from_env``, never exported to a shell or
-assumed to already be in the container's environment, since only the primary
-checkout's ``.env`` is ever a real file — a worktree's own is a placeholder
+A remote provider (OpenRouter) additionally needs ``LLM_API_KEY`` — optional, read
+the same way ``make eval-remote`` reads it, never hardcoded here. The model and its
+pin come from `EVAL_MODELS` through the roster (`roster.resolve_from_env`, #3001):
+the suite's model (the roster's first entry) unless ``LLM_MODEL`` names another
+ROSTER entry, and a model or provider outside the roster refuses the run up front —
+a hand-set ``LLM_PROVIDER`` that does not match the resolved entry is never silently
+ignored and never used. ``make replay ID=<promptlog id>`` (the Makefile target,
+#2917) wires this up end to end: it resolves the named model's entry the same way
+``make eval-remote`` does (the roster, over ``EVAL_MODELS``), reads the key host-side
+from the primary checkout's ``.env`` the same way too (``from_env``, never exported
+to a shell or assumed to already be in the container's environment, since only the
+primary checkout's ``.env`` is ever a real file — a worktree's own is a placeholder
 directory), and writes ``--jsonl`` to the primary checkout's
 ``data/reports/replay/<id>.jsonl`` so it survives the worktree that ran it being
 swept. Name the model explicitly — the primary checkout's ``EVAL_MODELS`` may not
@@ -81,6 +85,16 @@ whichever roster entry is first instead. This run draws 12 samples at once,
 concurrency 5, with the default ``--mode plain``:
 
     LLM_MODEL=google/gemma-4-26b-a4b-it make replay ID=138385 SAMPLES=12 CONCURRENCY=5
+
+The supported A/B path is ``make replay ID=<row> VARIANTS=<spec.json> SAMPLES=<n>``
+(#3001): the spec names each variant and its transforms of the stored request (a
+system-prompt replacement or append, a swapped message, thinking on or off), every
+arm is re-rendered through the byte-identity check for ``raw_template`` rows, and all
+arms go through the SAME resolved roster entry in one SDK session. The recipe holds
+the provider lock for the whole run and resolves the roster once for all arms — the
+same lock and the same resolution every other recipe path uses; ``replay_variants``
+is that recipe's Python step, not a separately importable entry point (kittens call
+make targets, never harness helpers).
 """
 
 from __future__ import annotations
@@ -94,12 +108,13 @@ import sqlite3
 import tempfile
 import time
 import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 import openai
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from sqlmodel import Session
 
 # Import order workaround: ``penny.database`` and ``penny.agents`` import each
@@ -115,17 +130,26 @@ from penny.database.database import Database
 from penny.database.models import PromptLog
 from penny.llm import raw_template
 from penny.llm.call_link import CallLink
-from penny.llm.client import LlmClient
+from penny.llm.client import REASONING_ENABLED_BODY, THINKING_OFF_BODY, LlmClient
 from penny.llm.models import (
     PROVIDER_REQUEST_FIELD,
     LlmError,
     LlmMessage,
+    LlmToolCall,
+    LlmToolCallFunction,
     LlmToolParseError,
     PromptTransport,
     ProviderPin,
 )
+from penny.tests.eval.utils.roster import EvalModel, resolve_from_env
 
 _DEFAULT_DB = "/penny/data/penny/penny.db"
+# The A/B spec's env var (#3001): the make recipe reads the `VARIANTS` file host-side
+# and forwards its JSON here (an env value never word-splits the way an argv JSON
+# would, and a host path would not be visible in the container the tool runs in).
+# Empty reads as unset, the same convention `env_seconds` uses for a
+# recipe-forwarded-but-empty variable.
+REPLAY_VARIANTS_SPEC_ENV = "REPLAY_VARIANTS_SPEC"
 _RUNTIME_MARKER = "## Runtime rules"
 _COLLECTOR_MARKER = "You are the collector"
 
@@ -244,29 +268,47 @@ def _load_request(db_path: str, prompt_id: int) -> dict:
     return json.loads(zlib.decompress(request_blob))
 
 
-def _retargeted_body(sent_request: dict, model: str | None, provider: str | None) -> dict:
-    """Override ONLY what differs about the TARGET RUNNER (#2875) — ``model`` and
-    the provider pin inside ``extra_body`` — leaving the prompt/messages, tools,
-    every sampling field, and the stop sequences exactly as recorded. ``None``
-    for either argument changes nothing (replay against the same runner that
-    served the original call)."""
-    body = dict(sent_request["body"])
-    if model:
-        body["model"] = model
-    if provider:
-        extra_body = dict(body.get("extra_body") or {})
-        extra_body[PROVIDER_REQUEST_FIELD] = ProviderPin(provider=provider).as_request_field()
+def _client_for(api_url: str, api_key: str) -> openai.AsyncOpenAI:
+    """The bare SDK client the verbatim and A/B transports send through — one seam,
+    so the tests can stand in for the SDK boundary without a live endpoint."""
+    return openai.AsyncOpenAI(base_url=f"{api_url.rstrip('/')}/v1", api_key=api_key)
+
+
+def _retarget_body(body: dict, entry: EvalModel) -> dict:
+    """Override ONLY what differs about the TARGET RUNNER (#2875, retarget always
+    #3001) — ``model`` and the provider pin inside ``extra_body`` — leaving the
+    prompt/messages, tools, every sampling field, and the stop sequences exactly as
+    recorded. The target is ALWAYS the resolved roster entry: nothing may run against
+    a model or upstream `EVAL_MODELS` does not define, so there is no
+    "replay-against-the-stored-runner" mode left — a stored request for a different
+    model is retargeted to the resolved one, and a stored pin from the original call
+    is STRIPPED when the resolved entry names no provider, because leaving it behind
+    would route the replay to the original call's upstream rather than the resolved
+    one."""
+    body = dict(body)
+    body["model"] = entry.model
+    extra_body = dict(body.get("extra_body") or {})
+    if entry.provider:
+        extra_body[PROVIDER_REQUEST_FIELD] = ProviderPin(provider=entry.provider).as_request_field()
         body["extra_body"] = extra_body
+    elif PROVIDER_REQUEST_FIELD in extra_body or "extra_body" in body:
+        extra_body.pop(PROVIDER_REQUEST_FIELD, None)
+        if extra_body:
+            body["extra_body"] = extra_body
+        else:
+            body.pop("extra_body", None)
     return body
 
 
 async def _send_verbatim_request(
     client: openai.AsyncOpenAI, transport: str, body: dict
-) -> tuple[str | None, list[str], str]:
+) -> tuple[str | None, list[LlmToolCall], str]:
     """Send ``body`` straight through the bare SDK client — no ``LlmClient``, no
     template re-render, no sampling default of this tool's own — and parse the
     response the SAME way prod parses it on this transport. Returns
-    ``(thinking, tool_call_names, reply_content)``.
+    ``(thinking, tool_calls, reply_content)`` with the calls as typed
+    ``LlmToolCall``s (arguments parsed off the wire into dicts, the record shape
+    the JSONL carries whole).
 
     A raw-template body recorded with ``stream: true`` is sent with streaming
     turned OFF instead (``stream_options`` dropped along with it): sampling is
@@ -281,52 +323,322 @@ async def _send_verbatim_request(
         body["stream"] = False
         raw = await client.completions.create(**body)
         thinking, tool_calls, content = raw_template.parse_completion(raw.choices[0].text or "")
-        return thinking, [call.function.name for call in (tool_calls or [])], content
+        return thinking, list(tool_calls or []), content
     raw = await client.chat.completions.create(**body)
     message = raw.choices[0].message
     extras = message.model_extra or {}
     thinking = extras.get("reasoning_content") or extras.get("reasoning")
-    names = [call.function.name for call in (message.tool_calls or [])]
-    return thinking, names, message.content or ""
+    calls = []
+    for call in message.tool_calls or []:
+        try:
+            arguments = json.loads(call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        calls.append(
+            LlmToolCall(
+                id=call.id,
+                function=LlmToolCallFunction(name=call.function.name, arguments=arguments),
+            )
+        )
+    return thinking, calls, message.content or ""
 
 
-async def _replay_verbatim_request(db_path: str, prompt_id: int, samples: int) -> None:
+async def _replay_verbatim_request(
+    db_path: str, prompt_id: int, samples: int, entry: EvalModel
+) -> None:
     """``--mode verbatim-request`` (#2875): replay the row's own exact wire
-    request, unchanged, N times — see the module docstring for why this mode
-    is not a re-render like every other one here.
+    request, unchanged apart from the target runner, N times — see the module
+    docstring for why this mode is not a re-render like every other one here.
 
-    The target runner comes from the SAME env vars every other mode in this
-    module reads: ``LLM_API_URL``/``LLM_API_KEY`` pick where this sends it
-    (required — there is no runner to default to); ``LLM_MODEL``/
-    ``LLM_PROVIDER`` are overrides, read with NO default, so leaving either
-    unset replays against the EXACT model/pin the row's own request already
-    carries rather than silently retargeting it.
+    The target runner is the resolved roster entry (passed in — ``_main`` resolves
+    ONCE for the whole invocation, #3001): ``LLM_API_URL``/``LLM_API_KEY`` pick where
+    this sends it, and the model + pin come from `EVAL_MODELS` — never from a
+    hand-set ``LLM_MODEL``/``LLM_PROVIDER``, which are only checked against the
+    roster and otherwise refused.
     """
     sent_request = _load_request(db_path, prompt_id)
     transport = sent_request["transport"]
-    body = _retargeted_body(
-        sent_request, os.environ.get("LLM_MODEL"), os.environ.get("LLM_PROVIDER")
-    )
+    body = _retarget_body(sent_request["body"], entry)
     api_url = os.environ.get("LLM_API_URL", "http://host.docker.internal:11434")
-    client = openai.AsyncOpenAI(
-        base_url=f"{api_url.rstrip('/')}/v1",
-        api_key=os.environ.get("LLM_API_KEY", "not-needed"),
-    )
+    client = _client_for(api_url, os.environ.get("LLM_API_KEY") or "not-needed")
     print(
         f"replaying id={prompt_id} transport={transport} model={body.get('model')} "
         f"against {api_url}"
     )
     for index in range(samples):
         try:
-            thinking, names, content = await _send_verbatim_request(client, transport, body)
+            thinking, calls, content = await _send_verbatim_request(client, transport, body)
         except openai.OpenAIError as error:
             print(f"  [{index + 1}/{samples}] ERROR {type(error).__name__}: {error}")
             continue
+        names = [call.function.name for call in calls]
         tail = (thinking or "")[-200:]
         print(
             f"  [{index + 1}/{samples}] tools={names or '—'} "
             f"thinking_tail={tail!r} reply={content[:200]!r}"
         )
+
+
+class ReplayVariant(BaseModel):
+    """One named arm of an A/B replay (#3001) — named transforms of ONE stored
+    request, everything left unset riding as recorded. ``name`` is the arm's
+    label in the JSONL and the tally report; duplicate names are refused, since
+    two arms with one label could not be told apart in the output. Unknown keys
+    are refused too (``extra="forbid"``), so a typo'd spec key errors loudly
+    instead of silently running the arm untransformed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    # Replaces the system message's content (the prompt A/B's usual lever).
+    system_prompt: str | None = None
+    # Appended after the recorded system content (a follow-up instruction A/B),
+    # separated by a blank line — composes with `system_prompt` (replace first,
+    # then append) and with leaving the recorded content alone.
+    system_prompt_append: str | None = None
+    # Replaces the final user message's content (the trigger-wording A/B).
+    user_message: str | None = None
+    # The reasoning channel on or off; None keeps the recorded state.
+    thinking: bool | None = None
+
+
+# The A/B spec file validates as a WHOLE list, so one bad entry refuses the run
+# before anything is loaded or sent (the roster's own fail-fast shape).
+_VARIANT_SPEC_ADAPTER = TypeAdapter(list[ReplayVariant])
+
+
+def _transformed_messages(messages: list[dict], variant: ReplayVariant) -> list[dict]:
+    """Apply the variant's message transforms — system replacement/append and a
+    user content swap — to a copy of the messages, never mutating the loaded row."""
+    rebuilt = [dict(message) for message in messages]
+    if variant.system_prompt is not None or variant.system_prompt_append is not None:
+        system_at = next((i for i, m in enumerate(rebuilt) if m["role"] == "system"), None)
+        if system_at is None:
+            raise ValueError(
+                f"variant '{variant.name}': the stored request has no system message to transform"
+            )
+        content = rebuilt[system_at]["content"]
+        if variant.system_prompt is not None:
+            content = variant.system_prompt
+        if variant.system_prompt_append is not None:
+            content = (
+                f"{content}\n\n{variant.system_prompt_append}"
+                if content
+                else variant.system_prompt_append
+            )
+        rebuilt[system_at]["content"] = content
+    if variant.user_message is not None:
+        user_at = next(
+            (i for i in reversed(range(len(rebuilt))) if rebuilt[i]["role"] == "user"), None
+        )
+        if user_at is None:
+            raise ValueError(
+                f"variant '{variant.name}': the stored request has no user message to replace"
+            )
+        rebuilt[user_at]["content"] = variant.user_message
+    return rebuilt
+
+
+def _thinking_body_keys(body: dict, enabled: bool) -> dict:
+    """The chat-transport thinking toggle — the SAME two building blocks
+    ``LlmClient`` composes its body from (``REASONING_ENABLED_BODY`` /
+    ``THINKING_OFF_BODY``), merged the same way: the off form must omit
+    ``reasoning`` entirely (Ollama reads the key's presence, not its content),
+    so every thinking key is dropped before the chosen block is applied."""
+    body = dict(body)
+    for key in ("reasoning", "reasoning_effort", "chat_template_kwargs"):
+        body.pop(key, None)
+    body.update(REASONING_ENABLED_BODY if enabled else THINKING_OFF_BODY)
+    return body
+
+
+def _recorded_thinking(messages: list[dict], tools: list[dict] | None, stored_prompt: str) -> bool:
+    """Which thinking state the row was rendered with — the BYTE-IDENTITY CHECK
+    for a raw_template row (#3001): the untransformed re-render must match the
+    stored ``prompt`` for exactly one state. Neither matching means this
+    re-render is not faithful to what prod sent (a thinking-loop continuation's
+    prompt, say, or a template that has since changed), and an A/B re-rendered
+    on top of it would compare against different bytes — refused."""
+    for enabled in (True, False):
+        rendered = raw_template.render_prompt(messages, tools, thinking_enabled=enabled)
+        if rendered == stored_prompt:
+            return enabled
+    raise ValueError(
+        "the stored request's prompt does not byte-match a re-render of the row's own "
+        "messages under either thinking state — the re-render is not faithful to what "
+        "prod sent (a continuation call's prompt, or a template that has since "
+        "changed), so an A/B on it would compare against different bytes"
+    )
+
+
+def _variant_bodies(
+    sent_request: dict, db_path: str, prompt_id: int, variants: Sequence[ReplayVariant]
+) -> dict[str, dict]:
+    """Each variant's wire body, per transport. A raw_template row re-renders its
+    transformed messages through ``render_prompt`` — gated by the byte-identity
+    check, which proves the re-render pipeline is faithful before any variant's
+    render is trusted; a chat row transforms the stored body's own ``messages``
+    (the exact wire bytes, nothing to re-derive)."""
+    transport = sent_request["transport"]
+    base = sent_request["body"]
+    bodies: dict[str, dict] = {}
+    if transport == PromptTransport.RAW_TEMPLATE.value:
+        messages, tools = _load_prompt(db_path, prompt_id)
+        recorded = _recorded_thinking(messages, tools, base["prompt"])
+        for variant in variants:
+            thinking = variant.thinking if variant.thinking is not None else recorded
+            body = dict(base)
+            body["prompt"] = raw_template.render_prompt(
+                _transformed_messages(messages, variant), tools, thinking_enabled=thinking
+            )
+            bodies[variant.name] = body
+        return bodies
+    for variant in variants:
+        body = (
+            _thinking_body_keys(base, variant.thinking)
+            if variant.thinking is not None
+            else dict(base)
+        )
+        body["messages"] = _transformed_messages(body.get("messages") or [], variant)
+        bodies[variant.name] = body
+    return bodies
+
+
+async def _one_variant_sample(
+    client: openai.AsyncOpenAI,
+    transport: str,
+    body: dict,
+    variant: ReplayVariant,
+    index: int,
+    samples: int,
+    semaphore: asyncio.Semaphore,
+    handle: Any | None,
+    write_lock: asyncio.Lock | None,
+) -> _SampleRecord:
+    """One sample of one arm, gated by the arm's shared semaphore, printing and
+    recording in the same shape every other mode here prints. The record lands
+    in the JSONL the moment it finishes (#2884 pause resilience), never batched."""
+    async with semaphore:
+        try:
+            thinking, calls, content = await _send_verbatim_request(client, transport, body)
+        except openai.OpenAIError as error:
+            print(f"  [{variant.name} {index + 1}/{samples}] ERROR {type(error).__name__}: {error}")
+            record = _SampleRecord(
+                label=variant.name,
+                sample=index + 1,
+                error=f"{type(error).__name__}: {error}",
+            )
+            await _write_record(record, handle, write_lock)
+            return record
+    names = [call.function.name for call in calls]
+    print(
+        f"  [{variant.name} {index + 1}/{samples}] first={names[0] if names else '—'} tools={names}"
+    )
+    print(f"    thinking-tail: {(thinking or '')[-300:]!r}")
+    print(f"    reply: {content!r}")
+    record = _SampleRecord(
+        label=variant.name,
+        sample=index + 1,
+        tool_calls=[
+            _ToolCallRecord(name=call.function.name, arguments=call.function.arguments)
+            for call in calls
+        ],
+        thinking=thinking,
+        reply=content,
+    )
+    await _write_record(record, handle, write_lock)
+    return record
+
+
+async def _run_variant_arm(
+    client: openai.AsyncOpenAI,
+    transport: str,
+    body: dict,
+    variant: ReplayVariant,
+    samples: int,
+    concurrency: int,
+    jsonl_path: str | None,
+) -> _Tally:
+    """One arm's full batch of samples — concurrent under the same semaphore
+    shape as every other mode, JSONL written per-sample the moment it finishes
+    (#2884), tallied exactly like the other modes' ``_replay``."""
+    tally = _Tally()
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    with contextlib.ExitStack() as stack:
+        handle = stack.enter_context(open(jsonl_path, "w")) if jsonl_path else None
+        write_lock = asyncio.Lock() if handle is not None else None
+        tasks = [
+            _one_variant_sample(
+                client, transport, body, variant, index, samples, semaphore, handle, write_lock
+            )
+            for index in range(samples)
+        ]
+        records = await asyncio.gather(*tasks)
+    for record in records:
+        if record.error is not None:
+            tally.record_error()
+        else:
+            first = record.tool_calls[0].name if record.tool_calls else None
+            tally.record(first, record.thinking)
+    return tally
+
+
+async def replay_variants(
+    prompt_id: int,
+    variants: Sequence[ReplayVariant],
+    samples: int,
+    *,
+    db_path: str = _DEFAULT_DB,
+    jsonl_base: str | None = None,
+    api_url: str | None = None,
+    api_key: str | None = None,
+    concurrency: int = 1,
+) -> dict[str, _Tally]:
+    """The A/B run behind ``make replay … VARIANTS=<spec.json>`` (#3001): N samples
+    of each named variant of ONE stored request, every arm through the SAME
+    resolved target, in one SDK session. NOT a separately importable entry point —
+    the make recipe is the only caller, holds the provider lock for the whole run
+    (the same shell lock every other recipe path uses), and resolves the roster
+    for its own banner before dispatching here.
+
+    The target is resolved ONCE from `EVAL_MODELS` through the roster
+    (``resolve_from_env``) — a model or upstream the roster does not define
+    refuses the run before anything is sent. Every arm's body is retargeted to
+    that one entry (model + pin), so all arms in one call necessarily carry the
+    same model and pin. ``jsonl_base`` writes one JSONL per arm
+    (``<base>-<name>.jsonl``), per-sample, the moment each finishes.
+    """
+    if not variants:
+        raise ValueError("replay_variants: at least one variant is required")
+    names = [variant.name for variant in variants]
+    if len(set(names)) != len(names):
+        raise ValueError(f"replay_variants: duplicate variant names: {sorted(set(names))}")
+    entry = resolve_from_env()
+    sent_request = _load_request(db_path, prompt_id)
+    transport = sent_request["transport"]
+    bodies = _variant_bodies(sent_request, db_path, prompt_id, variants)
+    retargeted = {name: _retarget_body(body, entry) for name, body in bodies.items()}
+    url = api_url or os.environ.get("LLM_API_URL", "http://host.docker.internal:11434")
+    client = _client_for(url, api_key or os.environ.get("LLM_API_KEY") or "not-needed")
+    print(
+        f"replaying id={prompt_id} transport={transport} model={entry.model} "
+        f"against {url} · {len(variants)} variant(s) x {samples} sample(s)"
+    )
+    tallies: dict[str, _Tally] = {}
+    for variant in variants:
+        jsonl_path = f"{jsonl_base.rsplit('.', 1)[0]}-{variant.name}.jsonl" if jsonl_base else None
+        tally = await _run_variant_arm(
+            client,
+            transport,
+            retargeted[variant.name],
+            variant,
+            samples,
+            concurrency,
+            jsonl_path,
+        )
+        tally.report(variant.name)
+        tallies[variant.name] = tally
+    return tallies
 
 
 def _is_collector_prompt(messages: list[dict]) -> bool:
@@ -819,9 +1131,55 @@ def _open_metrics_db(path: str | None) -> Database:
     return metrics_db
 
 
+def _variants_from_spec(spec_json: str) -> list[ReplayVariant]:
+    """The A/B spec's variants, validated as a whole — unknown keys, a wrong
+    shape, or an empty list are all refused before anything is loaded or sent.
+    The spec arrives INLINE (the make recipe reads the ``VARIANTS`` file host-side
+    and passes its contents here — a host path would not be visible inside the
+    container the recipe runs the tool in)."""
+    try:
+        raw = json.loads(spec_json)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"the variants spec is not valid JSON: {error}") from error
+    try:
+        variants = _VARIANT_SPEC_ADAPTER.validate_python(raw)
+    except ValidationError as error:
+        raise SystemExit(
+            "the variants spec is not a list of "
+            '{"name": ..., "system_prompt"?: ..., "system_prompt_append"?: ..., '
+            '"user_message"?: ..., "thinking"?: ...} entries: '
+            f"{error}\nAn entry with no transform is the baseline arm."
+        ) from error
+    return variants
+
+
 async def _main(args: argparse.Namespace) -> None:
+    # The ONE resolution for the whole invocation (#3001): the model and its pin come
+    # from `EVAL_MODELS` through the roster (`resolve_from_env`) — never from a
+    # hand-set ``LLM_MODEL``/``LLM_PROVIDER``, which are only checked against the
+    # roster and otherwise refused up front.
+    entry = resolve_from_env()
+    spec = os.environ.get(REPLAY_VARIANTS_SPEC_ENV)
+    if spec:
+        if args.mode != "plain" or args.body_file or args.nudge:
+            raise SystemExit(
+                "the A/B spec (REPLAY_VARIANTS_SPEC) is the whole run — it replaces "
+                "--mode/--body-file/--nudge"
+            )
+        variants = _variants_from_spec(spec)
+        await replay_variants(
+            args.id,
+            variants,
+            args.samples,
+            db_path=args.db,
+            jsonl_base=args.jsonl,
+            api_url=os.environ.get("LLM_API_URL", "http://host.docker.internal:11434"),
+            api_key=os.environ.get("LLM_API_KEY") or "not-needed",
+            concurrency=args.concurrency,
+        )
+        return
     if args.mode == "verbatim-request":
-        await _replay_verbatim_request(args.db, args.id, args.samples)
+        await _replay_verbatim_request(args.db, args.id, args.samples, entry)
         return
     messages, tools = _load_prompt(args.db, args.id)
     if args.mode == "ollama-native":
@@ -829,7 +1187,7 @@ async def _main(args: argparse.Namespace) -> None:
         # ``LlmClient.chat()`` at all (see ``_replay_native``'s docstring) —
         # the collector placement split doesn't apply either, same as 'plain'.
         api_url = os.environ.get("LLM_API_URL", "http://host.docker.internal:11434")
-        model = os.environ.get("LLM_MODEL", "gpt-oss:20b")
+        model = entry.model
         (
             await _replay_native(
                 api_url,
@@ -847,7 +1205,7 @@ async def _main(args: argparse.Namespace) -> None:
     metrics_db = _open_metrics_db(args.metrics_db)
     client = LlmClient(
         api_url=os.environ.get("LLM_API_URL", "http://host.docker.internal:11434"),
-        model=os.environ.get("LLM_MODEL", "gpt-oss:20b"),
+        model=entry.model,
         api_key=os.environ.get("LLM_API_KEY") or "not-needed",
         # Required so ``LlmClient._log_call`` actually writes a ``promptlog`` row
         # at all (it's a no-op with ``db=None``) — without this, every sample's
@@ -855,9 +1213,10 @@ async def _main(args: argparse.Namespace) -> None:
         # ``_TimingRecord`` (#2884 perf comparison: this was missing and every
         # oMLX timing came back empty).
         db=metrics_db,
-        # A remote gateway (OpenRouter) pin — ``None`` on a direct local endpoint,
-        # which has never heard of the routing field and ignores it.
-        provider_pin=ProviderPin.pin(os.environ.get("LLM_PROVIDER")),
+        # The resolved entry's own pin — ``None`` when the entry names no provider
+        # (a direct local endpoint, which has never heard of the routing field and
+        # ignores it). Never a hand-set ``LLM_PROVIDER`` (#3001).
+        provider_pin=ProviderPin.pin(entry.provider),
         max_retries=3,
         retry_delay=1.0,
         timeout=120.0,

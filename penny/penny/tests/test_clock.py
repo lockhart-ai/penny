@@ -18,6 +18,7 @@ machine's clock in ``tests/agents/test_collector.py`` and ``tests/agents/test_ch
 from __future__ import annotations
 
 import ast
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -81,10 +82,15 @@ def test_a_pinned_clock_starts_where_it_is_told_and_keeps_time() -> None:
     assert clock.now() == SAMPLE_STARTS_AT + timedelta(seconds=90)
 
 
-def test_every_sample_starts_on_a_wednesday_afternoon_where_the_user_is(make_config) -> None:
+def test_every_sample_starts_on_a_wednesday_afternoon_where_the_user_is(
+    make_config, monkeypatch
+) -> None:
     """The instant every eval sample starts at, read the way the model is shown it: on the
     wall clock of the profile ``seed_user`` writes.  And the one seam every runner builds its
     config through hands the sample that clock."""
+    monkeypatch.setenv(
+        "EVAL_MODELS", json.dumps([{"model": "vendor/model-a", "provider": "SomeCloud"}])
+    )
     local = SAMPLE_STARTS_AT.astimezone(ZoneInfo(SAMPLE_TIMEZONE))
     assert local.strftime("%A %H:%M") == "Wednesday 14:00"
 

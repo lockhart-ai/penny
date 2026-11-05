@@ -63,6 +63,16 @@ from penny.tests.eval.utils.run_health import (
 )
 
 
+# Every rig test here drives samples through the real `_run_samples` skeleton, whose
+# configs resolve model and pin from the roster (#3001) — so give them one, naming the
+# model the test world's configs and the boot stubs already pin (`test-model`): what
+# these tests simulate (boots that never start, drivers that refuse a case) is not a
+# rosterless run.
+@pytest.fixture(autouse=True)
+def _rostered_world(monkeypatch):
+    monkeypatch.setenv("EVAL_MODELS", json.dumps([{"model": "test-model"}]))
+
+
 class _NoChoices:
     """A gateway answering 200 with an error payload where a completion belongs.
 

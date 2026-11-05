@@ -536,8 +536,9 @@ the intended contract first.
 Live-model cases are slow — a collector cycle is ~120-180s **per sample**, so a careless
 `4 cases × N=5` loop is ~60 min. Don't iterate that way. While converging a fix:
 
-- Run ONLY the case(s) you're actively changing, at low N — `EVAL_SAMPLES=3 pytest
-  "…::test_repairs_done_only_bailout" -m eval -s`. That's ~9 min, not ~60.
+- Run ONLY the case(s) you're actively changing, at low N — `LLM_MODEL=<the suite's
+  model> make eval-remote EVAL_LEVER='<hypothesis>' EVAL_PYTEST_ARGS="<the case's test
+  path> -m eval -s" EVAL_SAMPLES=3`. That's ~9 min, not ~60.
 - Add a guard case (e.g. `test_healthy` for over-correction) only when a change could
   plausibly affect it, not every loop.
 - To inspect *why* a single run failed, run one cycle against the seeded fixture and

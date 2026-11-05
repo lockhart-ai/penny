@@ -28,6 +28,13 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 # and forwarded into the run.
 EVAL_MODELS_ENV = "EVAL_MODELS"
 
+# The two hand-down variables the Makefile recipes used to set for the helpers to trust.
+# Neither is read as a value any more: ``LLM_MODEL`` is only ever a NAME to look up in the
+# roster, and an exported ``LLM_PROVIDER`` is only ever CHECKED against the resolved entry's
+# own pin — so nothing can run on a model or upstream `EVAL_MODELS` does not define.
+LLM_MODEL_ENV = "LLM_MODEL"
+LLM_PROVIDER_ENV = "LLM_PROVIDER"
+
 # Why one: see the module docstring.  A count, never a named model.
 MINIMUM_MODELS = 1
 
@@ -127,6 +134,38 @@ def render_resolution(entry: EvalModel) -> list[str]:
     return lines
 
 
+def resolve_from_env(requested: str | None = None) -> EvalModel:
+    """The ONE resolution every run path uses — the eval suite, ``make replay``, and the
+    A/B helper (`replay.py`'s ``replay_variants``) all land here.
+
+    The model and its pin come from `EVAL_MODELS` through :func:`resolve` and nothing
+    else.  The two hand-down variables are consulted only as selectors against that
+    roster, never as values to run on:
+
+    - ``LLM_MODEL`` names WHICH roster entry this invocation runs (unset → the first);
+      a name outside the roster is :func:`resolve`'s refusal, listing every entry.
+    - an exported ``LLM_PROVIDER`` that does not match the resolved entry's own pin
+      REFUSES the run up front — never silently ignored and never used — because a run
+      sent to an upstream the roster does not define is exactly the invalid comparison
+      this module exists to make impossible.  An empty value reads as unset, the same
+      convention ``env_seconds`` uses for a recipe-forwarded-but-empty variable.
+    """
+    roster = parse_roster(os.environ.get(EVAL_MODELS_ENV))
+    entry = resolve(
+        roster, requested if requested is not None else (os.environ.get(LLM_MODEL_ENV) or None)
+    )
+    exported = os.environ.get(LLM_PROVIDER_ENV)
+    if exported and exported != (entry.provider or ""):
+        listed = "\n".join(f"  - {other.render()}" for other in roster)
+        raise RosterError(
+            f"{LLM_PROVIDER_ENV}='{exported}' does not match the resolved entry "
+            f"({entry.render()}), so this run would go to an upstream the roster does "
+            f"not define. Configured:\n{listed}\n"
+            f"Unset {LLM_PROVIDER_ENV} and let the resolved entry's own pin be used."
+        )
+    return entry
+
+
 def main(argv: list[str]) -> int:
     """Print this invocation's model + pinned provider; 1 when the roster refuses.
 
@@ -137,7 +176,7 @@ def main(argv: list[str]) -> int:
         print(USAGE, file=sys.stderr)
         return 2
     try:
-        entry = resolve(parse_roster(os.environ.get(EVAL_MODELS_ENV)), argv[0] if argv else None)
+        entry = resolve_from_env(argv[0] if argv else None)
     except RosterError as error:
         print(f"eval: {error}", file=sys.stderr)
         return 1

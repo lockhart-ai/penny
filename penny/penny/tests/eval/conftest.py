@@ -77,6 +77,7 @@ from penny.tests.eval.utils.clock import SAMPLE_TIMEZONE, PinnedClock
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
 from penny.tests.eval.utils.given import read_given
 from penny.tests.eval.utils.mailbox import CannedEmail, CannedMailbox
+from penny.tests.eval.utils.roster import resolve_from_env
 from penny.tests.eval.utils.worlds import World
 from penny.tests.mocks.signal_server import MockSignalServer
 from penny.text_validity import (
@@ -500,7 +501,6 @@ class _Perf:
 # unchanged by this list existing.
 _ENDPOINT_ENV_VARS = (
     "LLM_API_KEY",
-    "LLM_PROVIDER",
     "LLM_EMBEDDING_API_URL",
     "LLM_EMBEDDING_API_KEY",
 )
@@ -571,22 +571,27 @@ def _real_model_config(
 ) -> Config:
     """A test Config pointed at the real text + embedding models.
 
-    Reads endpoint/model from the environment so the same suite runs on the
-    host (localhost), inside the penny container (host.docker.internal), and
-    against a remote OpenAI-compatible provider (e.g. OpenRouter), falling back
-    to local defaults.  ``signal_api_url`` binds to the sample's own mock server
-    so samples never share a channel.
+    The MODEL and its provider pin come from `EVAL_MODELS` through the roster
+    (``resolve_from_env``, #3001) — a live-model eval may not run on a model or
+    upstream the roster does not define, so an unset roster, a model outside it, or
+    an exported ``LLM_PROVIDER`` that does not match the resolved entry refuses the
+    sample up front with the roster's own actionable message.  Endpoint settings
+    (the key, the embedding endpoint) still read from the environment so the same
+    suite runs inside the penny container (host.docker.internal) and against a
+    remote OpenAI-compatible provider (e.g. OpenRouter).  ``signal_api_url`` binds
+    to the sample's own mock server so samples never share a channel.
 
     The sample's CLOCK is set here too, on the one seam every runner builds its config
     through: a ``PinnedClock`` that starts at the suite's declared instant, so what a
     sample is told the time is — and everything it records and counts from — does not
     depend on when the run is made (``utils/clock.py``, #2207).
     """
+    entry = resolve_from_env()
     return make_config(
         signal_api_url=signal_api_url,
         # A case is parametrized over MODEL, so a cohort names the one it is measured on;
-        # with none named, the run's configured model.
-        llm_model=model or os.environ.get("LLM_MODEL", "gpt-oss:20b"),
+        # with none named, the roster's resolved model.
+        llm_model=model or entry.model,
         llm_api_url=os.environ.get("LLM_API_URL", _DEFAULT_LLM_API_URL),
         llm_embedding_model=os.environ.get("LLM_EMBEDDING_MODEL", "embeddinggemma"),
         # The identity ladder's decision step (#2715) — env-configured like every
@@ -599,6 +604,9 @@ def _real_model_config(
         llm_timeout=_EVAL_LLM_TIMEOUT,
         db_path=db_path,
         clock=PinnedClock(),
+        # The resolved entry's own pin — never a hand-set ``LLM_PROVIDER`` (#3001);
+        # ``_endpoint_overrides`` no longer carries that variable.
+        llm_provider=entry.provider,
         **_endpoint_overrides(),
     )
 
@@ -2489,11 +2497,12 @@ async def _run_samples(
 # produces one score and one threshold set per model, which is what a per-model ceiling needs.
 #
 # WHICH models exist is the ROSTER's business (`roster.py`, #1999/#2222): it is the one
-# configured list, it carries each model's pinned provider, and a remote run refuses to start
-# unless it names at least one.  Which of them a RUN measures is resolved before pytest starts
-# and arrives as `LLM_MODEL`, so this reads that rather than re-parsing `EVAL_MODELS` — the two
-# would be the same variable meaning two different things.  A roster entry is therefore its own
-# run, each self-describing in its own manifest.
+# configured list, it carries each model's pinned provider, and a run refuses to start
+# unless it names at least one — the sample configs resolve through `resolve_from_env`
+# (#3001).  Which of them a RUN measures is resolved before pytest starts and arrives as
+# `LLM_MODEL`, so this cohort list reads that name rather than re-parsing `EVAL_MODELS` —
+# the two would be the same variable meaning two different things.  A roster entry is
+# therefore its own run, each self-describing in its own manifest.
 EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 
 # Why a sample is not counted.  The one structural completeness condition every case shares:
