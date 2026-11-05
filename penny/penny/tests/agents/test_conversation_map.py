@@ -1,13 +1,14 @@
-"""The conversation map's mechanism, pinned deterministically (#2752).
+"""The conversation map's mechanism, pinned deterministically (#2752, #2982).
 
 The map is a render over stored rows, so every test seeds rows through the
 stores' own write paths (``log_message``, ``write_rule_decided``, the
-browse-results append with its run id, ``mutations.record``) and asserts on
-``ConversationMap.render()`` whole — never by substring.  What the mock tests
-pin here is what ``make check`` owns: the line render, the window boundary
-shared with the history's own grow/cut cycle (#2756/#2757), the collapse
-rules, and the two boundings.  The live-model contract is the ``chat/idle``
-refer-back case beside them.
+browse-results append with its run id, ``mutations.record``, ``log_prompt``)
+and asserts on ``ConversationMap.render()`` whole — never by substring.  What
+the mock tests pin here is what ``make check`` owns: the line render (the
+user's words whole to ``USER_CLIP_CHARS``, the recorded outcome, the
+autonomous-notification line), the window boundary shared with the history's
+own grow/cut cycle (#2756/#2757), the collapse rules, and the two boundings.
+The live-model contract is the ``chat/idle`` refer-back case beside them.
 """
 
 from __future__ import annotations
@@ -17,9 +18,15 @@ from datetime import UTC, datetime, timedelta
 from sqlmodel import col, update
 
 from penny.agents.base import Agent
-from penny.agents.conversation_map import CLIP_CHARS, ConversationMap
+from penny.agents.conversation_map import USER_CLIP_CHARS, ConversationMap
 from penny.config_params import RuntimeParams
-from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
+from penny.constants import (
+    ChatPromptType,
+    MutationAction,
+    MutationActor,
+    MutationEntityType,
+    PennyConstants,
+)
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MessageLog
 from penny.tests.conftest import TEST_SENDER, require_memory
@@ -38,6 +45,29 @@ def _map(db) -> ConversationMap:
 def _exchange(db, user: str, reply: str, *, run_id: str | None = None) -> None:
     db.messages.log_message(_INCOMING, TEST_SENDER, user)
     db.messages.log_message(_OUTGOING, _PENNY, reply, recipient=TEST_SENDER, run_id=run_id)
+
+
+def _autonomous_send(db, collection: str, run_id: str, *, prompt_type: str | None) -> None:
+    """One autonomous send, stamped the way the framework stamps it (#1568):
+    an outgoing row with a non-null ``mechanism`` and the delivery run's id,
+    plus that run's own promptlog row carrying the delivery turn's
+    ``prompt_type`` — the stamp the map's kind label reads."""
+    db.messages.log_message(
+        _OUTGOING,
+        _PENNY,
+        f"the composed {collection} report message",
+        recipient=TEST_SENDER,
+        mechanism=collection,
+        run_id=run_id,
+    )
+    db.messages.log_prompt(
+        model="test-model",
+        messages=[{"role": "user", "content": "the delivery turn's trigger"}],
+        response={"content": f"the composed {collection} report message"},
+        agent_name="chat",
+        prompt_type=prompt_type,
+        run_id=run_id,
+    )
 
 
 def _backdate(db, message_ids: list[int], days: float) -> None:
@@ -90,7 +120,7 @@ def _content_lines(rendered: str) -> list[str]:
 # ── The line render ──────────────────────────────────────────────────────────
 
 
-def test_a_line_renders_clip_outcome_and_names(db) -> None:
+def test_a_line_renders_the_users_words_whole_and_the_outcome(db) -> None:
     run_id = "a" * 32
     ask = (
         "which bands did the Talking Heads members form after the band broke up, "
@@ -121,28 +151,102 @@ def test_a_line_renders_clip_outcome_and_names(db) -> None:
 
     rendered = _map(db).render()
     lines = [line for line in rendered.split("\n")[1:] if line.startswith("- ")]
-    # The exchange's own line, older than the window — the user's own
-    # words clipped at the named length, the outcome from the records, the names
-    # her reply marked:
+    # The exchange's own line, older than the window — the user's own words
+    # WHOLE (the ask is under the clip), the outcome from the records:
     assert any(
-        f'"{ask[:CLIP_CHARS]}…"' in line
+        f'"{ask}"' in line
         and "read 1 page" in line
         and "saved 'remain-in-light' → albums-to-hear" in line
         and "created albums-to-hear" in line
-        and "named: Tom Tom Club, The Modern Lovers" in line
         for line in lines
     ), rendered
-    # A stored URL never rides the map — the name is the link's text.
+    # Her reply's own markup is never the map's content: the items it marked
+    # and the URL it kept are gone (#2982).
+    assert "named:" not in rendered
+    assert "Tom Tom Club" not in rendered
     assert "example.com" not in rendered
 
 
-def test_a_reply_marking_nothing_contributes_no_names(db) -> None:
+def test_a_long_message_keeps_its_head_and_its_tail(db) -> None:
+    long_ask = "opening words " + "x" * 400 + " and the conclusion everyone needed"
+    _exchange(db, long_ask, "a short answer")
+    ids = _last_ids(db, 2)
+    _filler(db, 20)
+    _backdate(db, ids, 1.0)
+    rendered = _map(db).render()
+    # The clip: head + " … " + tail, counted inside USER_CLIP_CHARS — the
+    # conclusion, which came last, still rides the line.
+    assert long_ask[: (USER_CLIP_CHARS - 3 + 1) // 2] in rendered
+    assert "and the conclusion everyone needed" in rendered
+    assert " … " in rendered
+    line = next(line for line in rendered.split("\n") if " … " in line)
+    assert len(line) < len(long_ask) + 40  # the line is bounded, the ask was not
+
+
+def test_a_reply_with_no_outcome_renders_no_arrow(db) -> None:
     _exchange(db, "what did you find?", "nothing usable came back, honestly.")
     ids = _last_ids(db, 2)
     _filler(db, 20)
     _backdate(db, ids, 1.0)
     rendered = _map(db).render()
-    assert "named:" not in rendered and "→" not in rendered
+    assert "→" not in rendered and "nothing usable" not in rendered
+
+
+# ── The autonomous-notification lines (#2982) ───────────────────────────────
+
+
+def test_an_autonomous_send_renders_its_notification_line(db) -> None:
+    """A mechanism-stamped outgoing row older than the window renders as its
+    own line — kind label off the delivery run's ``prompt_type`` stamp, the
+    job's name, and the verbatim ``run_get`` anchor."""
+    report_run = "c" * 32
+    _autonomous_send(db, "morning-brief", report_run, prompt_type=ChatPromptType.JOB_REPORT)
+    ids = _last_ids(db, 1)
+    _filler(db, 20)
+    _backdate(db, ids, 1.0)
+    rendered = _map(db).render()
+    assert f"job report: morning-brief (run {report_run}) → you replied" in rendered, rendered
+    # The delivered message's own prose never rides the map.
+    assert "the composed morning-brief report message" not in rendered
+
+
+def test_a_sandbox_report_and_the_startup_notice_render_their_kinds(db) -> None:
+    sandbox_run = "d" * 32
+    changelog_run = "e" * 32
+    _autonomous_send(db, "tabletop-lore", sandbox_run, prompt_type=ChatPromptType.SANDBOX_REPORT)
+    _autonomous_send(db, "changelog", changelog_run, prompt_type=ChatPromptType.CHANGELOG)
+    ids = _last_ids(db, 2)
+    _filler(db, 20)
+    _backdate(db, ids, 1.0)
+    rendered = _map(db).render()
+    assert f"sandbox report: tabletop-lore (run {sandbox_run}) → you replied" in rendered
+    # The startup notice renders WITHOUT its mechanism — ``changelog`` is the
+    # memory row's own name, internal naming, never a job name to anchor.
+    assert f"startup notice (run {changelog_run}) → you replied" in rendered
+    assert "changelog" not in rendered
+
+
+def test_an_unknown_delivery_kind_renders_the_fallback_label(db) -> None:
+    """A future delivery mechanism — a prompt_type the labels table doesn't
+    name — renders the generic label with the row's own mechanism, visibly,
+    never silently dropped (visible degradation over silent success)."""
+    future_run = "f" * 32
+    _autonomous_send(db, "new-thing", future_run, prompt_type="new_delivery_kind")
+    ids = _last_ids(db, 1)
+    _filler(db, 20)
+    _backdate(db, ids, 1.0)
+    rendered = _map(db).render()
+    assert f"notification: new-thing (run {future_run}) → you replied" in rendered, rendered
+
+
+def test_a_notification_newer_than_the_window_renders_nothing(db) -> None:
+    """The window boundary is the window's first USER exchange (#2982): a
+    notification still inside the history renders no line, whatever its
+    position in the send order."""
+    _filler(db, 20)
+    _autonomous_send(db, "fresh-job", "9" * 32, prompt_type=ChatPromptType.JOB_REPORT)
+    # The notification is the newest item — inside the window by position.
+    assert "fresh-job" not in _map(db).render()
 
 
 # ── The window boundary — shared with the history's grow/cut cycle (#2757) ──
@@ -188,6 +292,24 @@ def test_the_map_grows_by_the_exchanges_that_left_on_a_cut_turn(db) -> None:
     assert len(after_lines) == 4
     assert "exchange ask 2" in after_lines[2]
     assert "exchange ask 3" in after_lines[3]
+
+
+def test_the_map_grows_by_the_notifications_that_left_on_a_cut_turn(db) -> None:
+    """A notification between two user exchanges ages out with the exchange
+    ahead of it: the slice runs to the window's first USER exchange, so a
+    notification that precedes it rides the map (#2982)."""
+    db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    _outcome_exchange(db, 0)
+    _autonomous_send(db, "old-job", "7" * 32, prompt_type=ChatPromptType.JOB_REPORT)
+    for index in range(1, 5):
+        _outcome_exchange(db, index)
+    # total=5 user turns: growing, window=3, older = exchanges 0-1 + the
+    # notification between them.
+    assert Agent._history_window_size(5, 2) == 3
+    rendered = _map(db).render()
+    lines = _content_lines(rendered)
+    assert len(lines) == 3
+    assert "old-job" in lines[1]
 
 
 def test_an_empty_map_renders_nothing(db) -> None:

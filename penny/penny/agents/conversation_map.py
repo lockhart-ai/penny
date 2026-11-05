@@ -1,33 +1,54 @@
 """ConversationMap — the deterministic map of the conversation older than the
-history window (#2752).
+history window (#2752, reworked #2982).
 
 The history window is ``CHAT_HISTORY_TURNS`` exchanges, growing to twice that
 minus one before cutting back (#2756/#2757) — so anything older than its own
 FIRST exchange is out of sight unless she searches her logs.  Full-text recall
 of her own replies failed before on three counts — size (about 6k tokens
 re-read every turn), fixation (showing her own past prose makes her copy it,
-§3.6), and stale-request confusion — so this map carries NONE of it: one line
-per exchange, built by the framework from the user's own words and the run
-records (§2.3), never the model; her replies appear only as the items they
-MARKED (bold spans and link texts), never as sentences; and it renders at the
-END of the LEADING static system message (#2757), after the identity and
-instructions and before the tool schemas — never in the per-turn state message,
-and never near the user's own turn.
+§3.6), and stale-request confusion — so this map carries NONE of her reply
+prose: one line per exchange, built by the framework from the user's own
+words and the run records (§2.3), never the model.  Her replies appear only
+as the actions the records show they DID — pages read, keyed writes, registry
+changes — never as sentences, and the ``named:`` heading extraction that
+belonged to her reply's own markup is gone (#2982): a heading names a topic,
+never an outcome, and it was her prose riding the map.  What replaced it is
+the user's own words, whole up to ``USER_CLIP_CHARS`` — a correction renders
+to its point instead of stopping short of it, which is the decision the map
+exists to carry forward.
 
 One line, per exchange older than the window::
 
     - Oct 20 19:38 · "which bands did the Talking Heads members form after…" →
-      read 3 pages · saved 'remain-in-light' → albums_to_hear · named: Tom Tom Club
+      read 3 pages · saved 'remain-in-light' → albums_to_hear
 
 - The date and time are absolute, on the user's own clock.
-- The user's message is its first line, clipped at ``CLIP_CHARS``.
+- The user's message is its first line, whole to ``USER_CLIP_CHARS``; a longer
+  one keeps its head and its tail around one " … " — conclusions often come
+  last.
 - The outcome is the exchange's recorded run: pages read (browse-results entries
   stamped with the run), keyed writes (the ledger stamp), registry mutations (the
   mutation ledger).  Omitted when the turn made no recorded action — never her
   claimed actions, only records (a false claim can't ride into the map).
-- ``named:`` — the items her stored reply marked, parsed deterministically, at
-  most ``MAX_NAMES`` per line.  Stored replies keep real URLs (#2729), so a link
-  contributes its TEXT and never its address.
+
+One line, per AUTONOMOUS send that has left the window (#2982) — a job's
+report, a sandbox preview, the startup notice::
+
+    - Nov 04 09:12 · job report: daily_headlines
+      (run 55d0aa1b2c3d4e5f6a7b8c9d0e1f2a3b) → you replied
+
+- Detection is STRUCTURAL: the outgoing ``messagelog`` row's non-null
+  ``mechanism`` — the same mark #2974/#2979 chose for autonomy in history
+  (``HistoryTurn.mechanism``) — never the message text, never a
+  mechanism-name list.  The kind reads off the delivery run's own
+  ``promptlog.prompt_type`` stamp (``ChatPromptType``); an unknown or
+  run-less row renders the generic ``notification:`` label, so a future
+  delivery mechanism degrades visibly rather than vanishing.
+- ``(run <id>)`` is the verbatim anchor ``run_get(run: 'run <id>')`` consumes
+  (#2974's self-state convention); the delivered message is one
+  ``log_read{'penny-messages', day: …}`` away — the day the line's own stamp
+  names.  The ``→ you replied`` fragment states the one record-derived fact
+  the row carries: the send happened.
 
 Append-only (§3 cache): a line's text depends only on records fixed at that
 exchange's creation — its message rows, its closed run's stamps — so the map is
@@ -49,18 +70,18 @@ through the rest.
 
 Reachability: each line carries its absolute time, so the full text of any
 exchange is one anchored read away — ``log_read`` with the ``day`` the line's
-date names, on the log the closing line points at.
+date names, on the log the closing line points at.  An autonomous line's own
+anchor is ``(run <id>)``, read by ``run_get`` verbatim.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
 from penny.agents.base import Agent
-from penny.constants import PennyConstants
+from penny.constants import ChatPromptType, PennyConstants
 from penny.datetime_utils import stored_as_utc, user_timezone_name, zone_or_utc
 
 if TYPE_CHECKING:
@@ -70,11 +91,10 @@ if TYPE_CHECKING:
 
 # ── The line's named constants ────────────────────────────────────────────────
 
-# The user's message is clipped to this many characters, with "…" when cut (§2.8);
-# each rendered name is clipped to the same length.
-CLIP_CHARS = 60
-# At most this many of her marked items render on one line, deduplicated.
-MAX_NAMES = 5
+# The user's message renders whole up to this many characters; a longer one
+# keeps its head and its tail around one " … " (§2.8) — conclusions often
+# come last.
+USER_CLIP_CHARS = 280
 # A "short exchange" — no recorded outcome, and both sides under this many
 # characters — is collapse fodder; the rule reads only lengths and records, so
 # it is deterministic.
@@ -89,13 +109,30 @@ MAX_OUTCOME_PARTS = 3
 # At most this many written keys render per collection, with a "…" tail.
 MAX_WRITE_KEYS = 3
 
+# The separator between a clipped message's head and its tail, counted inside
+# ``USER_CLIP_CHARS``.
+_CLIP_SEPARATOR = " … "
 
-# Her stored reply's markdown, parsed deterministically: bold spans, and the
-# TEXT of markdown links (a stored reply keeps real URLs since #2729, so a
-# link's label is the name and its address is discarded).  A link whose text is
-# its own URL contributes nothing, and an image's alt text is not a name.
-_BOLD_SPAN_RE = re.compile(r"\*\*([^*\n]+)\*\*")
-_LINK_TEXT_RE = re.compile(r"\[([^\]\n]+)\]\(https?://[^)\s]+\)")
+# The render label per delivery-run ``prompt_type`` — a framework stamp, never
+# the message text or a mechanism-name list.  An unknown prompt_type (a future
+# delivery mechanism) renders ``_NOTIFICATION_FALLBACK`` with the row's own
+# ``mechanism`` instead, so nothing vanishes silently.
+_NOTIFICATION_LABELS: dict[str, str] = {
+    ChatPromptType.JOB_REPORT: "job report",
+    ChatPromptType.SANDBOX_REPORT: "sandbox report",
+    ChatPromptType.CHANGELOG: "startup notice",
+}
+_NOTIFICATION_FALLBACK = "notification"
+# The startup notice renders WITHOUT its mechanism: the changelog row's
+# ``mechanism`` is the changelog memory row's own name, internal naming, never
+# a job name the line could anchor.
+_CHANGELOG_LABEL = _NOTIFICATION_LABELS[ChatPromptType.CHANGELOG]
+# The one fragment every autonomous line ends with — the record-derived fact
+# the row itself carries: the send happened (#2982).
+_SENT_FRAGMENT = "you replied"
+
+# A run id renders as the verbatim ``run_get`` anchor (#2974's convention).
+_RUN_ANCHOR = "(run {run_id})"
 
 
 @dataclass(frozen=True)
@@ -104,13 +141,28 @@ class _Exchange:
 
     ``user_at`` is the turn's own instant (the line's time anchor); ``run_ids``
     are the reply rows' run ids, the join to every recorded outcome; ``reply``
-    is the reply text whole, read only for the names it marks and the
-    short-exchange length, never rendered."""
+    is the reply text whole, read only for the short-exchange length, never
+    rendered."""
 
     user: str
     reply: str
     user_at: datetime
     run_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Notification:
+    """One autonomous send that has left the history window (#2982) — the
+    map's other line kind.
+
+    Built from the outgoing row's own stamps (``mechanism``, ``run_id``,
+    timestamp) plus the delivery run's ``prompt_type`` — every input a record
+    fixed at the send's creation, so the line is as byte-stable as any
+    exchange's.  ``label`` is the line's whole head, built once here."""
+
+    at: datetime
+    run_id: str | None
+    label: str
 
 
 class ConversationMap:
@@ -125,7 +177,6 @@ class ConversationMap:
     # that answers at the horizon's age.
     ANCHOR_PREFIX = "Full text: "
     CLIP_SUFFIX = "…"
-    NAMES_PREFIX = "named: "
     SHORT_LINE_TAIL = "short messages"
     DAY_LINE_TAIL = "exchanges"
 
@@ -137,43 +188,54 @@ class ConversationMap:
     # ── Summary ──────────────────────────────────────────────────────────────
 
     def render(self) -> str:
-        """The whole block — header, one line per exchange older than the
-        window (collapses applied), and the closing anchor.  Empty string when
-        nothing in the horizon is older than the window: a section with nothing
-        to show renders nothing."""
-        exchanges = self._older_than_window(self._in_horizon())
-        if not exchanges:
+        """The whole block — header, one line per exchange and per autonomous
+        send older than the window (collapses applied), and the closing anchor.
+        Empty string when nothing in the horizon is older than the window: a
+        section with nothing to show renders nothing."""
+        items = self._older_than_window(self._in_horizon())
+        if not items:
             return ""
-        lines = self._collapse_short(exchanges)
+        lines = self._collapse_short(items)
         lines = self._collapse_at_ceiling(lines)
         return "\n".join([self.HEADER, *(line.text for line in lines), self._anchor()])
 
     # ── The exchanges ────────────────────────────────────────────────────────
 
-    def _in_horizon(self) -> list[_Exchange]:
-        """The horizon's exchanges, oldest first: the direct messages since the
+    def _in_horizon(self) -> list[_Exchange | _Notification]:
+        """The horizon's items, oldest first: the direct messages since the
         horizon start, grouped as ``_build_conversation`` groups them —
         consecutive incoming rows are one user turn, the outgoing rows that
-        follow are its reply.  Leading reply rows with no user turn before them
-        belong to an exchange whose ask is outside the horizon, so they drop."""
+        follow are its reply — and every mechanism-stamped outgoing row
+        (#2982) is its own ``_Notification``, flushing any open exchange
+        first.  Leading reply rows with no user turn before them and no
+        mechanism behind them drop."""
         rows = self.db.messages.recent_direct_messages(
             since=self._horizon_start(), limit=MESSAGE_POOL
         )
-        exchanges: list[_Exchange] = []
+        items: list[_Exchange | _Notification] = []
         user_rows: list[MessageLog] = []
         reply_rows: list[MessageLog] = []
         for row in rows:
+            if row.direction == PennyConstants.MessageDirection.OUTGOING and (
+                row.mechanism is not None
+            ):
+                if user_rows:
+                    items.append(self._exchange(user_rows, reply_rows))
+                    reply_rows = []
+                    user_rows = []
+                items.append(self._notification(row))
+                continue
             if row.direction == PennyConstants.MessageDirection.INCOMING:
                 if user_rows:
-                    exchanges.append(self._exchange(user_rows, reply_rows))
+                    items.append(self._exchange(user_rows, reply_rows))
                     reply_rows = []
                     user_rows = []
                 user_rows.append(row)
             elif user_rows:
                 reply_rows.append(row)
         if user_rows:
-            exchanges.append(self._exchange(user_rows, reply_rows))
-        return exchanges
+            items.append(self._exchange(user_rows, reply_rows))
+        return items
 
     def _exchange(self, user_rows: list[MessageLog], reply_rows: list[MessageLog]) -> _Exchange:
         """One exchange from its rows: merged user text, merged reply, the turn's
@@ -185,7 +247,36 @@ class ConversationMap:
             run_ids=tuple(row.run_id for row in reply_rows if row.run_id is not None),
         )
 
-    def _older_than_window(self, exchanges: list[_Exchange]) -> list[_Exchange]:
+    def _notification(self, row: MessageLog) -> _Notification:
+        """One autonomous send from its row: the row's own stamps plus the
+        delivery run's ``prompt_type`` label, rendered with the mechanism
+        behind it — except the startup notice, whose ``mechanism``
+        (``changelog``) is internal naming, never a job name.  A run-less or
+        unknown-kind row renders the fallback label with the row's own
+        ``mechanism`` — visible, never silent (visible degradation over
+        silent success)."""
+        label = self._notification_label(row.run_id)
+        mechanism = row.mechanism or ""
+        head = label if label == _CHANGELOG_LABEL or not mechanism else f"{label}: {mechanism}"
+        return _Notification(
+            at=row.timestamp,
+            run_id=row.run_id,
+            label=head,
+        )
+
+    def _notification_label(self, run_id: str | None) -> str:
+        """The line's kind label, read off the delivery run's own
+        ``promptlog.prompt_type`` stamp — a framework stamp, never the message
+        text.  Falls back to the generic label when the run is unknown."""
+        if run_id is None:
+            return _NOTIFICATION_FALLBACK
+        prompts = self.db.messages.prompts_for_run(run_id)
+        prompt_type = prompts[0].prompt_type if prompts else None
+        return _NOTIFICATION_LABELS.get(prompt_type or "", _NOTIFICATION_FALLBACK)
+
+    def _older_than_window(
+        self, items: list[_Exchange | _Notification]
+    ) -> list[_Exchange | _Notification]:
         """Everything in the horizon before the history window's own first
         exchange — computed by the SAME grow/cut function the history itself
         is built from (``Agent._history_window_size``), anchored on the SAME
@@ -193,21 +284,31 @@ class ConversationMap:
         history's own grow/cut cycle reads.  One shared function, so the map
         and the history can never disagree about where the window starts.
 
+        The slice runs to the window's first USER exchange (#2982): a
+        notification rides the map exactly when it has left the history —
+        notifications sit between user turns in the send order, so the
+        boundary is that exchange's position, not a count of items.
+
         The window grows from ``CHAT_HISTORY_TURNS`` to twice that minus one
         before cutting back to the window — so its FIRST exchange stays fixed
         through the whole growth phase and only moves at a cut turn.  That is
         the only turn this boundary moves: between cuts, the map changes only
-        by the one exchange that ages out at its end (#2757)."""
+        by the one item that ages out at its end (#2757)."""
         window = int(self.runtime.CHAT_HISTORY_TURNS)
-        if window <= 0 or not exchanges:
+        if window <= 0 or not items:
             return []
         total_user_turns = (
-            self.db.messages.count_user_turns(self.user) if self.user else len(exchanges)
+            self.db.messages.count_user_turns(self.user)
+            if self.user
+            else sum(1 for item in items if isinstance(item, _Exchange))
         )
         size = Agent._history_window_size(total_user_turns, window)
-        if size <= 0 or len(exchanges) <= size:
+        if size <= 0:
             return []
-        return exchanges[:-size]
+        user_positions = [index for index, item in enumerate(items) if isinstance(item, _Exchange)]
+        if len(user_positions) <= size:
+            return []
+        return items[: user_positions[-size]]
 
     def _horizon_start(self) -> datetime:
         """Local midnight of the horizon's first day — ``CHAT_MAP_DAYS`` local
@@ -238,18 +339,35 @@ class ConversationMap:
         date_iso: str
         exchanges: int
 
+    def _item_line(self, item: _Exchange | _Notification) -> ConversationMap._Line:
+        """One line for one horizon item, of whichever kind it is."""
+        if isinstance(item, _Notification):
+            return self._notification_line(item)
+        return self._exchange_line(item)
+
     def _exchange_line(self, exchange: _Exchange) -> ConversationMap._Line:
-        """One line for one exchange: its absolute time, the user's clipped
-        first line, then the recorded outcome and the marked names — each
-        omitted when the exchange has none.  Every input is a record fixed at
-        the exchange's creation, so the line's text is fixed at creation."""
+        """One line for one exchange: its absolute time, the user's first line
+        whole to ``USER_CLIP_CHARS``, then the recorded outcome — omitted when
+        the exchange has none.  Every input is a record fixed at the
+        exchange's creation, so the line's text is fixed at creation."""
         outcome = self._outcome(exchange)
-        names = self._names(exchange.reply)
-        parts = [part for part in (outcome, names) if part]
-        tail = f" → {' · '.join(parts)}" if parts else ""
+        tail = f" → {outcome}" if outcome else ""
         date, date_iso = self._local_date(exchange.user_at)
         return self._Line(
             text=f'- {self._stamp(exchange.user_at)} · "{self._clip(exchange.user)}"{tail}',
+            date=date,
+            date_iso=date_iso,
+            exchanges=1,
+        )
+
+    def _notification_line(self, note: _Notification) -> ConversationMap._Line:
+        """One line for one autonomous send (#2982): its absolute time, the
+        head built at construction (kind label with the mechanism behind it),
+        the run anchor, and the record-derived send fragment."""
+        anchor = f" {_RUN_ANCHOR.format(run_id=note.run_id)}" if note.run_id else ""
+        date, date_iso = self._local_date(note.at)
+        return self._Line(
+            text=f"- {self._stamp(note.at)} · {note.label}{anchor} → {_SENT_FRAGMENT}",
             date=date,
             date_iso=date_iso,
             exchanges=1,
@@ -266,10 +384,16 @@ class ConversationMap:
         return local.strftime("%b %d"), local.date().isoformat()
 
     def _clip(self, text: str) -> str:
+        """The user's message, whole to ``USER_CLIP_CHARS``; a longer first
+        line keeps its head and its tail around one " … " — conclusions often
+        come last (#2982)."""
         first_line = text.split("\n", 1)[0]
-        if len(first_line) > CLIP_CHARS:
-            return f"{first_line[:CLIP_CHARS]}{self.CLIP_SUFFIX}"
-        return first_line
+        if len(first_line) <= USER_CLIP_CHARS:
+            return first_line
+        budget = USER_CLIP_CHARS - len(_CLIP_SEPARATOR)
+        head_len = (budget + 1) // 2
+        tail_len = budget - head_len
+        return f"{first_line[:head_len]}{_CLIP_SEPARATOR}{first_line[-tail_len:]}"
 
     def _outcome(self, exchange: _Exchange) -> str:
         """The exchange's recorded run: pages read, keyed writes, registry
@@ -307,58 +431,47 @@ class ConversationMap:
                 grouped.setdefault(write.memory_name, []).append(write.key)
         return list(grouped.items())
 
-    def _names(self, reply: str) -> str:
-        """``named: …`` — the items her stored reply MARKED, never her
-        sentences: bold spans and link texts, deduplicated in order of
-        appearance, at most ``MAX_NAMES``, each clipped.  A reply that marked
-        nothing contributes no names, so none of her prose is here to copy
-        (§3.6) and a false claim can't ride in."""
-        found: list[str] = []
-        for match in (*_BOLD_SPAN_RE.findall(reply), *_LINK_TEXT_RE.findall(reply)):
-            name = match.strip()
-            if name and name not in found:
-                found.append(name)
-            if len(found) == MAX_NAMES:
-                break
-        if not found:
-            return ""
-        named = ", ".join(self._clip(name) for name in found)
-        more = self.CLIP_SUFFIX if len(found) == MAX_NAMES else ""
-        return f"{self.NAMES_PREFIX}{named}{more}"
-
     # ── The collapses ────────────────────────────────────────────────────────
 
     def _is_short(self, exchange: _Exchange) -> bool:
-        """No recorded outcome, no marked names, and both sides short — the
-        deterministic collapse rule.  It reads only the records its exchange is
-        built from, so an exchange's collapsibility is as fixed as its line."""
+        """No recorded outcome and both sides short — the deterministic
+        collapse rule.  It reads only the records its exchange is built from,
+        so an exchange's collapsibility is as fixed as its line."""
         return (
             not self._outcome(exchange)
-            and not self._names(exchange.reply)
             and len(exchange.user) <= SHORT_CHARS
             and len(exchange.reply) <= SHORT_CHARS
         )
 
-    def _collapse_short(self, exchanges: list[_Exchange]) -> list[ConversationMap._Line]:
+    def _collapse_short(
+        self, items: list[_Exchange | _Notification]
+    ) -> list[ConversationMap._Line]:
         """Consecutive short exchanges collapse into one line, ranged
         ``19:30–19:34 · 3 short messages``.  A group never spans a local date
         (the range would be ambiguous), and a group only ever extends at its
         tail — an exchange crossing into the map joins the trailing group if it
-        qualifies, changing nothing before it."""
+        qualifies, changing nothing before it.  A notification is never
+        collapse fodder: its line is the record the map exists to carry
+        (#2982)."""
         lines: list[ConversationMap._Line] = []
         group: list[_Exchange] = []
-        for exchange in exchanges:
-            joins_group = self._is_short(exchange) and (
+        for item in items:
+            if isinstance(item, _Notification):
+                self._flush_short_group(group, lines)
+                group = []
+                lines.append(self._item_line(item))
+                continue
+            joins_group = self._is_short(item) and (
                 not group
-                or self._local_date(group[-1].user_at)[1] == self._local_date(exchange.user_at)[1]
+                or self._local_date(group[-1].user_at)[1] == self._local_date(item.user_at)[1]
             )
             if joins_group:
-                group.append(exchange)
+                group.append(item)
                 continue
             self._flush_short_group(group, lines)
-            group = [exchange] if self._is_short(exchange) else []
+            group = [item] if self._is_short(item) else []
             if not group:
-                lines.append(self._exchange_line(exchange))
+                lines.append(self._item_line(item))
         self._flush_short_group(group, lines)
         return lines
 
