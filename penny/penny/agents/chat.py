@@ -20,6 +20,7 @@ from penny.agents.models import (
     ToolCallRecord,
     TurnInbox,
 )
+from penny.agents.related_exchanges import RelatedExchanges
 from penny.agents.self_state import SelfStateHeader, standing_rules_instruction
 from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
@@ -105,6 +106,13 @@ class ChatAgent(Agent):
 
     name: str = "chat"
     system_prompt = Prompt.CONVERSATION_PROMPT
+    # The related earlier exchanges section (#3010) — rendered ONCE per turn in
+    # ``_dispatch_turn`` (the live message embeds there, once) and read by
+    # ``_dynamic_system_section`` on every loop step; cleared with the rest of
+    # the per-turn state in its ``finally``.  ``None`` on the class is the
+    # never-dispatched default, so an agent built outside ``_dispatch_turn``
+    # renders the section's quiet absence.
+    _related_exchanges: str | None = None
     # Chat's run-shape chain (base Agent's is empty).  Empty here too (#2455 naive
     # baseline / #2473): what a run wrote and what it configured are both delivered
     # earlier, straight onto the tool result the moment their call lands (see
@@ -603,6 +611,12 @@ class ChatAgent(Agent):
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
+        # The related earlier exchanges (#3010) — computed once per turn here,
+        # where the live message's own embedding happens, and read by
+        # ``_dynamic_system_section`` on every loop step.  A delivery turn's
+        # trigger is the framework's, never the user's words, so no retrieval
+        # runs for one (``_related_exchanges_section`` gates on the prompt type).
+        self._related_exchanges = await self._related_exchanges_section(prompt, sender, prompt_type)
         # One numbered link table per turn (#2717) — created here, beside the run
         # identity, and passed to the history render, the tool surface and the
         # loop alike; the reply is expanded through it before it is returned.
@@ -649,6 +663,7 @@ class ChatAgent(Agent):
             self._current_user = None
             self._pending_page_context = None
             self._current_message = None
+            self._related_exchanges = None
 
     def _record_turn_failure(self, run_id: str, reason: str) -> None:
         """Stamp a chat turn that needed the honest-fallback machinery (#2355 part
@@ -827,18 +842,48 @@ class ChatAgent(Agent):
         """The per-turn system message's content, placed right BEFORE the
         live user turn (#2756): the clock, the page hint, then the rest of
         Penny's own state (recent activity · durable user facts ·
-        pointers, ``SelfStateHeader.render_dynamic``, #2814) — in that
-        order, everything that may change between turns, none of it able to
-        touch the reused static-system + history prefix that precedes it."""
+        pointers, ``SelfStateHeader.render_dynamic``, #2814), then the
+        related earlier exchanges (#3010, computed once per turn in
+        ``_dispatch_turn``) — in that order, everything that may change
+        between turns, none of it able to touch the reused static-system +
+        history prefix that precedes it."""
         return "\n\n".join(
             section
             for section in [
                 current_datetime_line(self.db),
                 self._page_hint_section(),
                 SelfStateHeader(self.db, self._current_user).render_dynamic(),
+                self._related_exchanges,
             ]
             if section
         )
+
+    async def _related_exchanges_section(
+        self, prompt: str, sender: str, prompt_type: ChatPromptType
+    ) -> str | None:
+        """The turn's related earlier exchanges, or ``None`` when there are none
+        (#3010).  Keyed to the user's own words: an ordinary user turn only — a
+        delivery turn's trigger is the framework's notification, never the user
+        asking, so no retrieval runs for one.  Embeds the live message once,
+        here, so every later loop step reads the section this computed."""
+        if prompt_type is not ChatPromptType.USER_MESSAGE:
+            return None
+        if not prompt.strip():
+            return None
+        try:
+            vectors = await self._embedding_model_client.embed([prompt])
+        except LlmError as error:
+            logger.warning("Related-exchanges retrieval skipped — embed failed: %s", error)
+            return None
+        rendered = RelatedExchanges(
+            self.db,
+            sender,
+            self.config.runtime,
+            vectors[0],
+        ).render()
+        if not rendered:
+            return None
+        return rendered
 
     def _page_hint_section(self) -> str | None:
         """Minimal hint about what page the user is currently viewing."""

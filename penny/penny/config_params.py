@@ -226,6 +226,36 @@ ConfigParam(
     group=GROUP_CHAT,
 )
 
+ConfigParam(
+    key="RELATED_EXCHANGES_MAX",
+    description=(
+        "How many related earlier exchanges a chat turn's system message may "
+        "show in full (#3010) — the top scorers at or above "
+        "RELATED_EXCHANGES_MIN_SIMILARITY, so an agreed plan stays visible "
+        "after it leaves the history window and the conversation map."
+    ),
+    type=int,
+    default=3,
+    validator=_validate_positive_int,
+    group=GROUP_CHAT,
+)
+
+ConfigParam(
+    key="RELATED_EXCHANGES_MIN_SIMILARITY",
+    description=(
+        "The cosine-similarity floor an earlier exchange must clear to show in "
+        "a chat turn's related-exchanges section (#3010) — the midpoint of the "
+        "gap between the agreed plan's scores and the best unrelated exchange's "
+        "across the cohort that measured it (plan 0.47-0.57, best non-plan "
+        "0.39), tuned on that cohort's five wordings with the embedding model "
+        "the feature uses. Below the floor, no section."
+    ),
+    type=float,
+    default=0.43,
+    validator=_validate_unit_float,
+    group=GROUP_CHAT,
+)
+
 # ── Background — every background agent (thinking, notify, extractors) ───────
 
 ConfigParam(

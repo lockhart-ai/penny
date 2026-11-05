@@ -527,6 +527,12 @@ class Penny:
         ``read_similar`` over them ranks on ``messagelog.embedding`` — so any
         table with an embedding column gets vectorized here (no row is copied
         from another table).  Idempotent: a row keeps its embedding once set.
+
+        The exchange embeddings (#3010) fill in the same backfill: a reply row
+        missing its exchange vector gets one computed from both sides of its
+        exchange (``exchange_sides_for`` — the same reconstruction the
+        write-time stamp covers), so the related-exchanges retrieval has
+        vectors for the exchanges logged before this deploy, too.
         """
         total = 0
         while True:
@@ -542,6 +548,31 @@ class Penny:
             except LlmError as e:
                 logger.warning("Startup embedding backfill failed for messages: %s", e)
                 break
+        total += await self._backfill_exchange_embeddings(batch_limit)
+        return total
+
+    async def _backfill_exchange_embeddings(self, batch_limit: int) -> int:
+        """Backfill reply rows missing their exchange embedding (#3010).
+
+        Each exchange is embedded as ONE text — the user message joined with
+        her reply (``ExchangeSides.joined_text``, the same text the write-time
+        stamp embeds) — so the retrieval ranks on the same words whatever path
+        computed the vector.  Idempotent like the content pass."""
+        total = 0
+        while True:
+            replies = self.db.messages.replies_without_exchange_embeddings(limit=batch_limit)
+            if not replies:
+                break
+            texts = [self.db.messages.exchange_sides_for(reply).joined_text() for reply in replies]
+            try:
+                vectors = await self.embedding_model_client.embed(texts)
+            except LlmError as e:
+                logger.warning("Startup embedding backfill failed for exchanges: %s", e)
+                break
+            for reply, vector in zip(replies, vectors, strict=True):
+                if reply.id is not None:
+                    self.db.messages.set_exchange_embedding(reply.id, serialize_embedding(vector))
+            total += len(replies)
         return total
 
     async def _backfill_description_embeddings(self, batch_limit: int) -> int:

@@ -12,7 +12,7 @@ Test organization:
 import base64
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
@@ -23,14 +23,14 @@ from penny.agents.chat import ChatAgent
 from penny.agents.conversation_map import ConversationMap
 from penny.agents.models import HistoryTurn, MessageRole
 from penny.changelog import ChangelogEntry
-from penny.constants import MutationAction, MutationActor, PennyConstants
+from penny.constants import ChatPromptType, MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog, PromptLog
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, require_memory, wait_until
-from penny.tests.mocks.llm_patches import deterministic_embed
+from penny.tests.mocks.llm_patches import MockLlmClient, deterministic_embed
 from penny.tools.link_handles import HandleTable
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
@@ -351,6 +351,243 @@ async def test_history_stays_between_static_and_user_state_right_before_user(
     assert messages[2].content == "earlier answer"
     assert messages[3].content.startswith("Current date and time: ")
     assert messages[-1].content == "hi"
+
+
+# ── Related earlier exchanges (#3010) ────────────────────────────────────────
+#
+# The exchange — user message + her reply as one text — embedded at write time
+# and scored per turn against every exchange older than the history window; the
+# top few at or above the floor render IN FULL in the per-turn dynamic system
+# message.  The texts below share the plan's own words (garden · weather-log ·
+# messages) so the deterministic bag-of-words mock ranks them the way the real
+# embedding model ranked the measured prod turn; the fillers sit on unrelated
+# topics and score far below any floor.
+
+_PLAN_ASK = (
+    "for the garden job, should each run first read the weather-log and then "
+    "my recent messages about the garden?"
+)
+_PLAN_REPLY = (
+    "yes — each garden-log run will first read the weather-log and your recent "
+    "messages about the garden, then write the usual summary."
+)
+_PLAN_LIVE = (
+    "ok, go ahead and update the garden job like we planned — weather-log first, then my messages?"
+)
+_PLAN_AT = datetime(2026, 10, 12, 14, 5)
+
+# Enough newer filler exchanges that the plan sits past the history window's
+# own grow/cut boundary at any window size (the window never keeps more than
+# 2 * CHAT_HISTORY_TURNS - 1 exchanges).
+_FILLER_COUNT = 11
+_FILLER_USERS = (
+    "what time is the bake sale on saturday?",
+    "we should settle the house rules debate at game night sometime.",
+    "have you finished that novel you were reading last week?",
+)
+_FILLER_REPLIES = (
+    "the bake sale starts at ten — i'll note it.",
+    "whenever you like — bring the rulebook and we'll go through it.",
+    "almost — a chapter to go, and the ending is worth the wait.",
+)
+
+
+def _seed_plan_exchange(db) -> tuple[int, int]:
+    """The plan exchange, two days back and outside the window, with its
+    exchange vector stamped the way the write path stamps one — the user side
+    joined with the reply side as ONE text."""
+    ask_id = db.messages.log_message(
+        PennyConstants.MessageDirection.INCOMING, TEST_SENDER, _PLAN_ASK, timestamp=_PLAN_AT
+    )
+    reply_id = db.messages.log_message(
+        PennyConstants.MessageDirection.OUTGOING,
+        "penny",
+        _PLAN_REPLY,
+        parent_id=ask_id,
+        run_id="run-plan",
+        timestamp=_PLAN_AT + timedelta(minutes=1),
+        recipient=TEST_SENDER,
+    )
+    assert ask_id is not None and reply_id is not None
+    exchange_text = f"{_PLAN_ASK}\n{_PLAN_REPLY}"
+    db.messages.set_exchange_embedding(
+        reply_id, serialize_embedding(deterministic_embed(exchange_text))
+    )
+    return ask_id, reply_id
+
+
+def _seed_filler_exchanges(db) -> None:
+    """The newer exchanges that push the plan out of the window — each with its
+    own exchange vector, so they are real scored candidates, not absent ones."""
+    for index in range(_FILLER_COUNT):
+        user_text = _FILLER_USERS[index % len(_FILLER_USERS)]
+        reply_text = _FILLER_REPLIES[index % len(_FILLER_REPLIES)]
+        ask_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, user_text
+        )
+        reply_id = db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            reply_text,
+            parent_id=ask_id,
+            recipient=TEST_SENDER,
+        )
+        assert ask_id is not None and reply_id is not None
+        db.messages.set_exchange_embedding(
+            reply_id,
+            serialize_embedding(deterministic_embed(f"{user_text}\n{reply_text}")),
+        )
+
+
+def _render_agent(db, config) -> ChatAgent:
+    """A ChatAgent built for direct section renders — the same shape the
+    prompt-structure tests above use, with the mock embedding client wired so
+    the live message embeds deterministically."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    agent.config = config
+    agent._pending_page_context = None
+    agent._current_user = TEST_SENDER
+    agent._embedding_model_client = MockLlmClient()
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_related_exchanges_render_in_the_dynamic_section(db, make_config):
+    """An exchange older than the history window that scores at or above the
+    floor renders IN FULL in the per-turn dynamic system message — both sides
+    whole, the message ids, and the conversation map's own day anchor — while
+    the static prefix stays untouched and the unrelated fillers stay out."""
+    config = make_config(related_exchanges_min_similarity=0.35)
+    ask_id, reply_id = _seed_plan_exchange(db)
+    _seed_filler_exchanges(db)
+    agent = _render_agent(db, config)
+
+    section = await agent._related_exchanges_section(
+        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+    )
+    assert section is not None
+    assert section == (
+        "## Related earlier exchanges\n\n"
+        f"Related earlier exchange · Oct 12 14:05 (messages {ask_id}, reply {reply_id}) — "
+        "log_read{'user-messages', day: '2026-10-12'}\n"
+        f'User: "{_PLAN_ASK}"\n'
+        f'Penny: "{_PLAN_REPLY}"'
+    )
+    # The section rides the per-turn DYNAMIC message, right before the live
+    # turn — never the static prefix the server reuses.  The per-turn attr is
+    # set by ``_dispatch_turn``; the render test mimics that one assignment.
+    agent._related_exchanges = section
+    assert agent._dynamic_system_section().endswith(section)
+    assert "Related earlier exchanges" not in await agent._build_system_prompt(TEST_SENDER)
+
+
+@pytest.mark.asyncio
+async def test_related_exchanges_stay_quiet_below_the_floor(db, test_config):
+    """The default floor (0.43) is above this world's natural mock overlap, so
+    no section renders — the quiet default, not an empty block."""
+    _seed_plan_exchange(db)
+    _seed_filler_exchanges(db)
+    agent = _render_agent(db, test_config)
+
+    section = await agent._related_exchanges_section(
+        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+    )
+
+    assert section is None
+    agent._related_exchanges = section
+    assert "## Related earlier exchanges" not in agent._dynamic_system_section()
+
+
+@pytest.mark.asyncio
+async def test_related_exchanges_exclude_the_history_window(db, make_config):
+    """An exchange the history window still carries never renders — the
+    boundary is the same grow/cut function the history itself is built from,
+    so the section can never duplicate what history already shows."""
+    config = make_config(related_exchanges_min_similarity=0.1)
+    _seed_plan_exchange(db)
+    agent = _render_agent(db, config)
+
+    section = await agent._related_exchanges_section(
+        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+    )
+
+    assert section is None
+    agent._related_exchanges = section
+    assert "## Related earlier exchanges" not in agent._dynamic_system_section()
+
+
+@pytest.mark.asyncio
+async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_max(db, make_config):
+    """MORE exchanges score above the floor than ``RELATED_EXCHANGES_MAX``
+    allows — the block shows exactly the TOP-scoring ones, never the weakest
+    above the floor.  The four seeded exchanges rank strictly under the
+    deterministic bag-of-words mock (0.82 · 0.67 · 0.58 · 0.47 against the
+    live message's words: 0.89 · 0.57 · 0.47 · 0.35), the max is 2, and the
+    top exchange's reply runs past the side clip — so the render also pins
+    the clip's form."""
+    config = make_config(related_exchanges_max=2, related_exchanges_min_similarity=0.4)
+    live = "alpha bravo charlie delta echo foxtrot"
+    long_reply = "alpha bravo charlie delta echo foxtrot. " * 20
+    assert len(long_reply) > 600
+    # Oldest first, weakest first: the block renders the top TWO by score, in
+    # the block's own oldest-first order.
+    seeded = []
+    for minute, user_text, reply_text in (
+        (5, "alpha bravo — oldest notes", "just the two words."),
+        (10, "alpha bravo charlie — earlier notes", "three words in."),
+        (15, "alpha bravo charlie delta — partial notes", "delta notes, and the rest."),
+        (20, "alpha bravo charlie delta echo foxtrot — the full plan", long_reply),
+    ):
+        at = _PLAN_AT + timedelta(minutes=minute)
+        ask_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, user_text, timestamp=at
+        )
+        reply_id = db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            reply_text,
+            parent_id=ask_id,
+            run_id=f"run-ranked-{minute}",
+            timestamp=at + timedelta(seconds=30),
+            recipient=TEST_SENDER,
+        )
+        assert ask_id is not None and reply_id is not None
+        db.messages.set_exchange_embedding(
+            reply_id,
+            serialize_embedding(deterministic_embed(f"{user_text}\n{reply_text}")),
+        )
+        seeded.append((user_text, reply_text, ask_id, reply_id))
+    # Newer exchanges push all four past the history window — logged WITHOUT
+    # exchange vectors, so they are not candidates of their own.
+    for index in range(11):
+        ask_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, f"window filler {index}"
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            f"the filler reply number {index}.",
+            parent_id=ask_id,
+            recipient=TEST_SENDER,
+        )
+    agent = _render_agent(db, config)
+
+    section = await agent._related_exchanges_section(live, TEST_SENDER, ChatPromptType.USER_MESSAGE)
+
+    assert section is not None
+    (_, _, second_ask, second_reply), (_, _, top_ask, top_reply) = seeded[2], seeded[3]
+    assert section == (
+        "## Related earlier exchanges\n\n"
+        f"Related earlier exchange · Oct 12 14:20 (messages {second_ask}, reply {second_reply}) — "
+        "log_read{'user-messages', day: '2026-10-12'}\n"
+        'User: "alpha bravo charlie delta — partial notes"\n'
+        'Penny: "delta notes, and the rest."\n\n'
+        f"Related earlier exchange · Oct 12 14:25 (messages {top_ask}, reply {top_reply}) — "
+        "log_read{'user-messages', day: '2026-10-12'}\n"
+        'User: "alpha bravo charlie delta echo foxtrot — the full plan"\n'
+        f'Penny: "{long_reply[:600]}…"'
+    )
 
 
 def _wire_call(call_id: str, name: str, arguments: dict) -> dict:
@@ -1904,6 +2141,64 @@ async def test_startup_backfill_fills_missing_key_vector(
         assert healed.content_embedding is not None
         # No entry is left with an unfilled vector after the backfill.
         assert penny.db.memories.get_entries_without_embeddings(limit=100) == []
+
+
+@pytest.mark.asyncio
+async def test_startup_backfill_fills_missing_exchange_vector(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """The same startup backfill (``Penny._backfill_message_embeddings``) fills a
+    reply row missing its exchange embedding (#3010) — the vector computed from
+    BOTH sides of the exchange (``ExchangeSides.joined_text``), the exact text
+    the write-time stamp embeds — and passes the interim send of the same run
+    over: the vector belongs on the row that closes the exchange, one exchange,
+    one vector."""
+    config = make_config()
+    ask_text = "should each run read the weather-log first?"
+    reply_text = "yes — weather-log, then your recent messages."
+    async with running_penny(config) as penny:
+        ask_id = penny.db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, ask_text
+        )
+        assert ask_id is not None
+        # An interim send of the same run: run id, no parent — not a closing reply.
+        penny.db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "reading the log now.",
+            run_id="run-gap",
+            recipient=TEST_SENDER,
+        )
+        reply_id = penny.db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            reply_text,
+            parent_id=ask_id,
+            run_id="run-gap",
+            recipient=TEST_SENDER,
+        )
+        assert reply_id is not None
+
+        embedded = await penny._backfill_message_embeddings(batch_limit=100)
+        assert embedded >= 2
+
+        reply = penny.db.messages.get_by_id(reply_id)
+        assert reply is not None
+        # The exchange text covers the whole turn: the ask, the interim send,
+        # and the closing reply — exactly what the block will render.
+        expected = serialize_embedding(
+            deterministic_embed(f"{ask_text}\nreading the log now.\n{reply_text}")
+        )
+        assert reply.exchange_embedding == expected
+        assert penny.db.messages.replies_without_exchange_embeddings(limit=100) == [], (
+            "the closing reply is vectorised — nothing with both stamps is left pending"
+        )
+        rows = penny.db.messages.recent_direct_messages(since=datetime.min, limit=10)
+        interim_rows = [row for row in rows if row.run_id == "run-gap" and row.parent_id is None]
+        assert len(interim_rows) == 1
+        assert interim_rows[0].exchange_embedding is None, (
+            "the interim send must stay vectorless — it closes no exchange"
+        )
 
 
 @pytest.mark.asyncio

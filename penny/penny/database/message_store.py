@@ -249,6 +249,27 @@ def _in_send_order(message: MessageLog) -> tuple[datetime, int]:
     return (message.timestamp, message.id or 0)
 
 
+class ExchangeSides(NamedTuple):
+    """Both sides of one exchange, as rows (#3010) — the unit the exchange
+    embedding is computed from and the related-exchanges block renders.
+
+    ``user_rows`` are the triggering message plus anything that joined the turn
+    mid-run (#2985); ``reply_rows`` are the direct reply plus any interim send
+    of the same run.  Both oldest first, per send order."""
+
+    user_rows: list[MessageLog]
+    reply_rows: list[MessageLog]
+
+    def joined_text(self) -> str:
+        """The exchange as ONE text — the user side joined, then the reply
+        side (#3010).  The exact text the exchange embedding is computed from,
+        shared by the write-time stamp and the startup backfill so both rank
+        on the same words."""
+        user_text = "\n".join(row.content for row in self.user_rows)
+        reply_text = "\n".join(row.content for row in self.reply_rows)
+        return "\n".join(part for part in (user_text, reply_text) if part)
+
+
 class MessageStore:
     """Manages MessageLog, PromptLog, and CommandLog records.
 
@@ -256,7 +277,10 @@ class MessageStore:
     (``subscribe_*``/``publish_*``) · message logging (``log_message``,
     ``log_prompt``, ``log_command``) · message metadata
     (``set_signal_timestamp``, ``set_external_id``) · embedding backfill
-    (``messages_without_embeddings``, ``set_embedding``) · message lookup
+    (``messages_without_embeddings``, ``set_embedding``, the exchange-vector
+    triple ``replies_without_exchange_embeddings``/``set_exchange_embedding``/
+    ``exchange_sides_for``, ``user_turn_at_offset``, ``exchange_vectors_before``)
+    · message lookup
     (``get_by_id``, ``get_by_ids``, ``find_by_external_id``,
     ``find_outgoing_by_content``) · thread context (``get_thread_history``) ·
     conversation queries (``get_conversation_leaves``, ``get_user_messages``,
@@ -738,6 +762,124 @@ class MessageStore:
                 message.embedding = embedding
                 session.add(message)
                 session.commit()
+
+    def replies_without_exchange_embeddings(self, limit: int) -> list[MessageLog]:
+        """Reply rows still missing an exchange embedding (#3010).
+
+        The reply row an exchange vector belongs on is the one that CLOSES the
+        exchange — the direct reply carrying both its ``run_id`` (#2630) and
+        the ``parent_id`` linking it to the user message it answers.  An
+        interim send of the same run carries the run id but no parent
+        (``_interim_message_sender`` — there is no id to link against yet), so
+        it is excluded: one exchange, one vector, on one row.  The startup
+        backfill fills any gaps: historical exchanges + anything logged since
+        the last run."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(MessageLog)
+                    .where(
+                        col(MessageLog.exchange_embedding).is_(None),
+                        col(MessageLog.is_reaction).is_(False),
+                        col(MessageLog.run_id).is_not(None),
+                        col(MessageLog.parent_id).is_not(None),
+                    )
+                    .limit(limit)
+                ).all()
+            )
+
+    def set_exchange_embedding(self, message_id: int, embedding: bytes) -> None:
+        """Store the serialized exchange embedding on a reply row (#3010)."""
+        with self._session() as session:
+            message = session.get(MessageLog, message_id)
+            if message is not None:
+                message.exchange_embedding = embedding
+                session.add(message)
+                session.commit()
+
+    def exchange_sides_for(self, reply: MessageLog) -> ExchangeSides:
+        """Both sides of the exchange a reply row closes, read off the run stamps.
+
+        The structural pairing (#3010): a direct reply carries its own
+        ``run_id`` (#2630) and ``parent_id`` → the user message it answers, and
+        every other row of the same turn carries the same ``run_id`` — interim
+        sends on the reply side (#2656's multi-part replies), messages that
+        JOINED the run mid-turn on the user side (#2985).  Reconstructed by
+        identity, never re-scanned, so the sides a write-time or backfill
+        embedding covers are exactly the rows that render.
+
+        A row with no ``run_id`` (pre-#2630) degrades to the single-row shape:
+        its own text as the reply, the ``parent_id`` row as the user side."""
+        with self._session() as session:
+            reply_rows = self._run_rows(session, reply, PennyConstants.MessageDirection.OUTGOING)
+            user_rows = self._run_rows(session, reply, PennyConstants.MessageDirection.INCOMING)
+            if reply.parent_id is not None:
+                parent = session.get(MessageLog, reply.parent_id)
+                if parent is not None and all(row.id != parent.id for row in user_rows):
+                    user_rows.append(parent)
+        reply_rows.sort(key=_in_send_order)
+        user_rows.sort(key=_in_send_order)
+        return ExchangeSides(user_rows=user_rows, reply_rows=reply_rows)
+
+    def _run_rows(self, session: Session, reply: MessageLog, direction: str) -> list[MessageLog]:
+        """The rows of one direction stamped with the reply's ``run_id`` — or the
+        reply row itself, when it carries no run (a pre-#2630 row degrades to
+        the single-row shape rather than guessing at neighbours)."""
+        if reply.run_id is None:
+            return [reply] if reply.direction == direction else []
+        return list(
+            session.exec(
+                select(MessageLog).where(
+                    MessageLog.run_id == reply.run_id,
+                    MessageLog.direction == direction,
+                    col(MessageLog.is_reaction).is_(False),
+                )
+            ).all()
+        )
+
+    def user_turn_at_offset(self, sender: str, offset: int) -> MessageLog | None:
+        """The ``offset``-th newest user turn (0 = the newest) — the window
+        boundary's anchor (#3010).
+
+        Same filters as ``count_user_turns`` (incoming, non-reaction, no run id
+        — joined messages render inside their run's own history, #2985), so the
+        boundary the related-exchanges retrieval reads is anchored on exactly
+        the turns the history window's own grow/cut cycle counts."""
+        with self._session() as session:
+            return session.exec(
+                select(MessageLog)
+                .where(
+                    MessageLog.sender == sender,
+                    MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                    col(MessageLog.run_id).is_(None),
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+                .offset(offset)
+                .limit(1)
+            ).first()
+
+    def exchange_vectors_before(self, boundary: MessageLog) -> list[MessageLog]:
+        """Every exchange vector strictly OLDER than a boundary row, oldest first (#3010).
+
+        ``boundary`` is the history window's own oldest kept user turn
+        (``user_turn_at_offset``): a reply row before it in send order belongs
+        to an exchange the window has already dropped.  The send-order compare
+        runs in Python over the timestamp-indexed candidates — a reply and the
+        message answering it can never swap, the same merge order every other
+        conversation read uses."""
+        with self._session() as session:
+            rows = list(
+                session.exec(
+                    select(MessageLog)
+                    .where(
+                        col(MessageLog.exchange_embedding).is_not(None),
+                        MessageLog.timestamp <= boundary.timestamp,
+                    )
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
+                ).all()
+            )
+        return [row for row in rows if _in_send_order(row) < _in_send_order(boundary)]
 
     # --- Message lookup ---
 

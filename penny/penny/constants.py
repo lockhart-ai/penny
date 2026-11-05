@@ -517,6 +517,12 @@ class PennyConstants:
     # prefix on her behalf.
     SYSTEM_NOTIFICATION_PREFIX = "System notification (not from the user): "
 
+    # The model-facing day-read anchor for the user's message log, shared by
+    # the two surfaces that point at the same read: the conversation map's
+    # collapsed-day line and the related-exchanges block (#3010).  Rendered
+    # with ``.format(day=<ISO date>)`` — the map's byte-exact form.
+    USER_MESSAGES_DAY_ANCHOR = "log_read{{'user-messages', day: '{day}'}}"
+
     # Browse tool constants
     URL_BLOCKLIST_DOMAINS = (
         "play.google.com",

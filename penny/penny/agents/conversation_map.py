@@ -516,7 +516,7 @@ class ConversationMap:
                 self._Line(
                     text=(
                         f"- {oldest_date} · {covered} {self.DAY_LINE_TAIL} — "
-                        f"log_read{{'user-messages', day: '{oldest_iso}'}}"
+                        f"{PennyConstants.USER_MESSAGES_DAY_ANCHOR.format(day=oldest_iso)}"
                     ),
                     date=oldest_date,
                     date_iso=oldest_iso,
