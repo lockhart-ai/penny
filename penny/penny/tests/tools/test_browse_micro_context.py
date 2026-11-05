@@ -1816,9 +1816,7 @@ def test_micro_context_system_prompt_is_plain_text_with_no_tags():
     sentence, never a separate tagged line.  The value never leads with the
     page's own address (#2735): the section header names the page, and a leading
     address took the run's FIRST link number, so a list page's headlines and
-    numbers met in reading order one slot late.  The closing qualifier sentence
-    (#2998) keeps each figure together with what the page says it is, so a page's
-    own label reaches the answer instead of a bare count."""
+    numbers met in reading order one slot late."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
@@ -1846,10 +1844,7 @@ def test_micro_context_system_prompt_is_plain_text_with_no_tags():
         "sentence and stop there.\n"
         "\n"
         "Write only the answer — no preamble, no restating the instruction, and "
-        "nothing about how you are answering.\n"
-        "\n"
-        "Keep each value together with what the page says it is — what it counts, "
-        "whose it is, and as of when — in the page's own words."
+        "nothing about how you are answering."
     )
 
 
