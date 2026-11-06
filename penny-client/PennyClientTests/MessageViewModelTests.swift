@@ -188,6 +188,94 @@ struct MessageViewModelTests {
         #expect(viewModel.dockStreamItems.isEmpty, "the resolved row lives only as long as its own run's dock")
     }
 
+    /// A message sent while `dockPhase == .working` is sent immediately
+    /// (#2985: the server's turn inbox is what holds and injects it, not
+    /// the client) but shown in the queued style until picked up — and
+    /// the dock's queued count tracks every message still marked (#3043).
+    @Test func sendDraftWhileWorkingMarksEachSentMessageAsQueued() {
+        let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
+        let viewModel = MessageView.ViewModel(client: client)
+        var run = AgentProgressRunItem(id: "run-queue", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        viewModel.draftMessage = "Oh, and grab a bag of the dark roast too?"
+        viewModel.sendDraft()
+        viewModel.draftMessage = "Actually the decaf, if they have it."
+        viewModel.sendDraft()
+
+        #expect(client.messages.map(\.content) == [
+            "Oh, and grab a bag of the dark roast too?",
+            "Actually the decaf, if they have it."
+        ])
+        let sentIDs = client.messages.map(\.id)
+        #expect(sentIDs.allSatisfy(viewModel.isMessageQueued))
+        #expect(viewModel.queuedMessageIDs.count == 2)
+    }
+
+    /// The queued mark clears the moment the run's next `step_started`
+    /// arrives — that's the server having folded the message into the
+    /// running turn (#2985) — never waiting for the whole run to finish.
+    @Test func queuedMarkClearsOnTheRunsNextStepStarted() {
+        let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
+        let viewModel = MessageView.ViewModel(client: client)
+        var run = AgentProgressRunItem(id: "run-queue", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        viewModel.draftMessage = "Oh, and grab a bag of the dark roast too?"
+        viewModel.sendDraft()
+        let sentID = client.messages[0].id
+        #expect(viewModel.isMessageQueued(sentID))
+
+        run.steps.append(AgentProgressStepItem(number: 2, maxSteps: 20))
+        client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        #expect(viewModel.isMessageQueued(sentID) == false)
+        #expect(viewModel.queuedMessageIDs.isEmpty)
+    }
+
+    /// The queued mark also clears when the run ends with no further
+    /// step — the message already reached Penny's turn one way or
+    /// another (#2985) by the time it's gone.
+    @Test func queuedMarkClearsWhenTheRunEnds() {
+        let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
+        let viewModel = MessageView.ViewModel(client: client)
+        var run = AgentProgressRunItem(id: "run-queue", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        viewModel.draftMessage = "Oh, and grab a bag of the dark roast too?"
+        viewModel.sendDraft()
+        let sentID = client.messages[0].id
+        #expect(viewModel.isMessageQueued(sentID))
+
+        client.agentProgressRuns.removeValue(forKey: "run-queue")
+        viewModel.syncDock()
+
+        #expect(viewModel.isMessageQueued(sentID) == false)
+    }
+
+    /// A message sent while Penny is idle (no foreground run) never shows
+    /// queued — only a busy dock makes sending ambiguous enough to need
+    /// the mark.
+    @Test func sendDraftWhileIdleNeverMarksAsQueued() {
+        let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
+        let viewModel = MessageView.ViewModel(client: client)
+        #expect(viewModel.dockPhase == .hidden)
+
+        viewModel.draftMessage = "What roast works best for a moka pot?"
+        viewModel.sendDraft()
+
+        #expect(client.messages.count == 1)
+        #expect(viewModel.queuedMessageIDs.isEmpty)
+        #expect(viewModel.isMessageQueued(client.messages[0].id) == false)
+    }
+
     @Test func messageLayoutDefaultsToCurrentMessageStyle() {
         let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
 

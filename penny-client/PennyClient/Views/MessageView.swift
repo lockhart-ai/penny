@@ -210,6 +210,7 @@ struct MessageView: View {
                     items: viewModel.dockStreamItems,
                     step: dockRun.steps.last?.number ?? 1,
                     startedAt: dockRun.startedAt,
+                    queued: viewModel.queuedMessageIDs.count,
                     permission: viewModel.dockPermission
                 ) {
                     ChatTabAvatar()
@@ -234,7 +235,8 @@ struct MessageView: View {
                 LiveDock(
                     items: dockRun.liveDockItems,
                     step: dockRun.steps.last?.number ?? 1,
-                    startedAt: dockRun.startedAt
+                    startedAt: dockRun.startedAt,
+                    queued: viewModel.queuedMessageIDs.count
                 ) {
                     ChatTabAvatar()
                 }
@@ -415,7 +417,7 @@ private extension MessageView {
                 .id(MessageTopAnchorID(messageID: message.id))
                 .accessibilityHidden(true)
 
-            ChatMessageView(message: message, layout: layout)
+            ChatMessageView(message: message, layout: layout, isQueued: viewModel.isMessageQueued(message.id))
                 .id(message.id)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .background {

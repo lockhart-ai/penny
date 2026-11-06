@@ -113,6 +113,10 @@ public enum Tokens {
     /// (#3042): the dock's content fades out and the reply bubble's own
     /// arrival fades it in over this span, then the dock is removed.
     public static let dockMorphDuration: TimeInterval = 0.4
+    /// A message sent while Penny is working (#3043) renders at this
+    /// opacity, with "🕒 Queued" standing in for its time, until the
+    /// server's turn inbox (#2985) picks it up or the run ends.
+    public static let queuedBubbleOpacity: Double = 0.55
     /// The composer's control height, shared by the `+` button and the
     /// message field's capsule so the row reads as one matched pair.
     public static let composerControlHeight: CGFloat = 47

@@ -89,6 +89,54 @@ enum StoryFixtures {
         )
     }
 
+    /// One message sent while she's working (#3043, `chat-queued`): the
+    /// normal blue bubble at reduced opacity, "🕒 Queued" standing in for
+    /// its time, above the live dock. `queuedMessageIDs` set directly —
+    /// same shortcut every other story uses into `ViewModel`'s own state.
+    static func queuedViewModel() -> MessageView.ViewModel {
+        let queued = queuedMessages(count: 1)
+        let viewModel = chatViewModel(
+            messages: conversationMessages + queued,
+            workingSteps: workingSteps,
+            workingElapsedSeconds: 8
+        )
+        markQueued(queued, on: viewModel)
+        return viewModel
+    }
+
+    /// Two messages sent while she's working (#3043, `chat-queued-two`) —
+    /// the dock header's "· 2 queued".
+    static func queuedTwoViewModel() -> MessageView.ViewModel {
+        let queued = queuedMessages(count: 2)
+        let viewModel = chatViewModel(
+            messages: conversationMessages + queued,
+            workingSteps: workingSteps,
+            workingElapsedSeconds: 8
+        )
+        markQueued(queued, on: viewModel)
+        return viewModel
+    }
+
+    /// Marks each message queued (#3043), with its step baseline set to the
+    /// run's own step count (`workingSteps.count`) — matching a real send,
+    /// where `sendDraft()` always records both together. Leaving the
+    /// baseline at its default of 0 would read as "sent before step 1",
+    /// so the view's own `syncDock()` clears the mark again on `.onAppear`,
+    /// before the story ever renders it.
+    private static func markQueued(_ queued: [ChatMessage], on viewModel: MessageView.ViewModel) {
+        viewModel.queuedMessageIDs = Set(queued.map(\.id))
+        for message in queued {
+            viewModel.queuedMessageStepBaselines[message.id] = workingSteps.count
+        }
+    }
+
+    private static func queuedMessages(count: Int) -> [ChatMessage] {
+        let texts = ["Oh, and grab a bag of the dark roast too?", "Actually the decaf, if they have it."]
+        return (0..<count).map { index in
+            ChatMessage.local(id: 9_001 + index, content: texts[index])
+        }
+    }
+
     static func disconnectedViewModel() -> MessageView.ViewModel {
         chatViewModel(messages: conversationMessages, isConnected: false)
     }
