@@ -166,7 +166,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-build prod-run prod-stop prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-stories client-services-check fix typecheck check pytest eval-remote replay eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
+.PHONY: up prod prod-build prod-run prod-stop prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-stories client-services-check fix typecheck check pytest eval-remote replay describe-images eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
 
 # --- Docker Compose ---
 
@@ -375,6 +375,7 @@ ifdef LOCAL
 RUN = cd penny &&
 EVAL_RUN = cd penny &&
 REPLAY_RUN = cd penny &&
+DESCRIBE_RUN = cd penny &&
 else
 # On host — run tools inside Docker containers
 # --no-deps: dev tools don't need signal-api healthy (would block on first run)
@@ -398,6 +399,13 @@ EVAL_RUN = docker compose run --rm --no-deps -e LLM_API_KEY -e LLM_EMBEDDING_API
 REPLAY_RUN = docker compose run --rm --no-deps -e LLM_API_KEY \
 	-v "$(EVAL_PRIMARY_CHECKOUT)/data/penny:/penny/data/penny:ro" \
 	-v "$(EVAL_PRIMARY_CHECKOUT)/data/reports/replay:/penny/data/reports/replay" \
+	penny
+# `make describe-images` (#3065) nests the SAME two binds as replay — the prod DB
+# read-only — but writes its JSONL under data/reports/describe/, so its report bind
+# names that directory instead.
+DESCRIBE_RUN = docker compose run --rm --no-deps -e LLM_API_KEY \
+	-v "$(EVAL_PRIMARY_CHECKOUT)/data/penny:/penny/data/penny:ro" \
+	-v "$(EVAL_PRIMARY_CHECKOUT)/data/reports/describe:/penny/data/reports/describe" \
 	penny
 endif
 
@@ -644,6 +652,70 @@ replay: $(if $(LOCAL),,build)
 		python -m penny.tests.eval.utils.replay --id "$(ID)" \
 			--samples "$(SAMPLES)" --mode "$(MODE)" --concurrency "$(CONCURRENCY)" \
 			--jsonl "/penny/data/reports/replay/$(ID).jsonl"
+
+# Describe stored media images on the suite's model (#3065) — the measurement tool
+# behind matching an outgoing reply against image DESCRIPTIONS instead of today's
+# page-title embedding (MediaStore.select_image's jittered nearest). penny.tests.
+# eval.utils.describe_images' module docstring is the full reference. One
+# implementation behind one make target, reusing replay's recipe pieces: the SAME
+# roster resolution from EVAL_MODELS (LLM_MODEL names WHICH entry, never a value),
+# the SAME from_env credential read, the SAME provider lock, the SAME container run
+# with the primary checkout's prod DB nested bind — READ-ONLY: media rows are never
+# written, the only output is the JSONL under data/reports/describe/.
+#
+#   LLM_MODEL=google/gemma-4-26b-a4b-it make describe-images IDS=12,34,56
+#   LLM_MODEL=google/gemma-4-26b-a4b-it make describe-images RECENT=50
+#
+# IDS names media row ids; RECENT names a count of the most recent CAPTURED images
+# (generated images — rows with no source_url — are excluded). Exactly one, and
+# LLM_MODEL has no default here, the same rule as `make replay`: name the roster
+# entry explicitly, every time, so a describe run is always on the model you meant.
+DESCRIBE_CONCURRENCY ?= 5
+describe-images: $(if $(LOCAL),,build)
+	@if [ -z "$(IDS)" ] && [ -z "$(RECENT)" ]; then \
+		echo "make describe-images: IDS=<comma-separated media ids> or RECENT=<n> is required." >&2; \
+		exit 1; \
+	fi; \
+	if [ -n "$(IDS)" ] && [ -n "$(RECENT)" ]; then \
+		echo "make describe-images: give IDS or RECENT, not both." >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(EVAL_PRIMARY_CHECKOUT)/data/penny" "$(EVAL_PRIMARY_CHECKOUT)/data/reports/describe"; \
+	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | sed -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"; }; \
+	roster_env="$${EVAL_MODELS:-$$(from_env EVAL_MODELS)}"; \
+	model="$${LLM_MODEL}"; \
+	roster_log="$$(mktemp)"; \
+	if ( $(RUN) env EVAL_MODELS="$$roster_env" \
+		python -m penny.tests.eval.utils.roster $$model ) > "$$roster_log" 2>&1; then rostered=1; else rostered=0; fi; \
+	cat "$$roster_log"; \
+	model="$$(sed -n 's/^$(ROSTER_MODEL_LINE) //p' "$$roster_log" | tail -1)"; \
+	pinned="$$(sed -n 's/^$(ROSTER_PROVIDER_LINE) //p' "$$roster_log" | tail -1)"; \
+	rm -f "$$roster_log"; \
+	if [ "$$rostered" = 0 ]; then exit 1; fi; \
+	llm_url="$${LLM_API_URL:-$(EVAL_REMOTE_ENDPOINT)}"; \
+	llm_key="$${LLM_API_KEY}"; \
+	if [ -z "$$llm_key" ]; then llm_key="$$(from_env "$(EVAL_REMOTE_API_KEY_VAR)")"; fi; \
+	if [ -z "$$llm_key" ]; then \
+		echo "make describe-images: no credential — set $(EVAL_REMOTE_API_KEY_VAR) in $(EVAL_PRIMARY_ENV), or LLM_API_KEY in the shell." >&2; \
+		exit 1; \
+	fi; \
+	export LLM_API_KEY="$$llm_key"; \
+	echo "describe: $${IDS:+ids=$(IDS) }$${RECENT:+recent=$(RECENT) }concurrency=$(DESCRIBE_CONCURRENCY) $$model at $$llm_url$${pinned:+ pinned to $$pinned}"; \
+	if [ -n "$$pinned" ]; then \
+		. "$(CURDIR)/scripts/eval-provider-lock.sh"; \
+		provider_lock_acquire "$(EVAL_PROVIDER_LOCK_DIR)" "$$pinned" "$(EVAL_PROVIDER_LOCK_WAIT)" || exit 1; \
+		trap 'provider_lock_release' EXIT; \
+		trap 'exit 130' INT; trap 'exit 143' TERM; \
+	fi; \
+	stamp="$$(date -u +%Y%m%dT%H%M%SZ)"; \
+	$(DESCRIBE_RUN) env \
+		LLM_API_URL="$$llm_url" \
+		LLM_MODEL="$$model" \
+		EVAL_MODELS="$$roster_env" \
+		python -m penny.tests.eval.utils.describe_images \
+			$(if $(IDS),--ids "$(IDS)",--recent "$(RECENT)") \
+			--concurrency "$(DESCRIBE_CONCURRENCY)" \
+			--jsonl "/penny/data/reports/describe/describe-$$stamp.jsonl"
 
 # The same prune `make eval-remote` runs automatically (above), on demand — e.g. after
 # raising/lowering the window, or to reclaim space without starting a run.
