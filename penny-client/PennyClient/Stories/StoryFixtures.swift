@@ -164,6 +164,25 @@ enum StoryFixtures {
         return viewModel
     }
 
+    /// Find-in-chat open with matches (#3045): "ferry" appears in all three
+    /// plain-text bubbles — both bubble colours, no table or reply-quote
+    /// involved (those don't highlight yet — see `ChatMessageView`'s known
+    /// gap), so the story shows a clean, readable highlight.
+    static func chatSearchViewModel(query: String = "ferry") -> MessageView.ViewModel {
+        let viewModel = chatViewModel(messages: findInChatMessages)
+        viewModel.search.open()
+        viewModel.search.query = query
+        return viewModel
+    }
+
+    /// Find-in-chat open with an empty field (#3045): the placeholder, no
+    /// highlights, the step arrows dimmed.
+    static func chatSearchEmptyViewModel() -> MessageView.ViewModel {
+        let viewModel = chatViewModel(messages: findInChatMessages)
+        viewModel.search.open()
+        return viewModel
+    }
+
     /// A rendered placeholder photo for the pending state — a gradient sky
     /// over a stylised bird on a branch, so the composer's thumbnail reads
     /// as a photo, not a grey block. Rendered here, since the composer's
@@ -354,6 +373,32 @@ enum StoryFixtures {
                 sourceHint: "Price watch", runID: "run:bubbles:3",
                 toolCalls: 3, durationMs: 18_000,
                 imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
+            )
+        ]
+    }
+
+    /// Find-in-chat's story conversation (#3045): three plain-text
+    /// bubbles — no table, no reply-quote — all three containing "ferry",
+    /// so the highlight shows cleanly on both bubble colours.
+    static var findInChatMessages: [ChatMessage] {
+        let now = Date()
+        func at(_ secondsAgo: TimeInterval) -> Date { now.addingTimeInterval(-secondsAgo) }
+
+        return [
+            ChatMessage(
+                id: 101, serverID: 101, createdAt: at(180),
+                content: "What time does the Saturday ferry leave?",
+                sourceHint: nil, imageAttachments: [], isOutgoing: true
+            ),
+            ChatMessage(
+                id: 102, serverID: 102, createdAt: at(150),
+                content: "The 9:30 ferry has space — want me to book it?",
+                sourceHint: nil, imageAttachments: [], isOutgoing: false
+            ),
+            ChatMessage(
+                id: 103, serverID: 103, createdAt: at(60),
+                content: "Yes, please book the ferry.",
+                sourceHint: nil, imageAttachments: [], isOutgoing: true
             )
         ]
     }

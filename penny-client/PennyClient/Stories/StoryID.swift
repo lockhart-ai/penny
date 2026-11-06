@@ -25,7 +25,8 @@ enum StoryID: String, CaseIterable {
     case shellPromptsExpanded
     case shellPromptsExpandedChat
     case shellSettings
-    case sheetSearch
+    case chatSearch
+    case chatSearchEmpty
     case sheetCardDetail
     case kitTopTabBar
     case kitPageHeader

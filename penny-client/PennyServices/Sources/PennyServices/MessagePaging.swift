@@ -29,6 +29,15 @@ public struct MessagePage {
     public let hasMore: Bool
 }
 
+/// One hit of find-in-chat's keyword search (#3045): a message id and its
+/// timestamp, nothing else — the chat view already holds the message
+/// itself once it's loaded; the search only needs to name which messages
+/// match and in what order.
+public struct MessageKeywordMatch: Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let createdAt: Date
+}
+
 struct HistoryPageResult {
     let payload: MessagesPayload
     let savedOrUpdatedCount: Int

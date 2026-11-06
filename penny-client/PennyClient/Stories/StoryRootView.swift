@@ -91,8 +91,10 @@ struct StoryRootView: View {
                 initialTab: .settings,
                 chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages)
             )
-        case .sheetSearch:
-            MessageView(viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages), isShowingSearchStory: true)
+        case .chatSearch:
+            AppShellView(chatViewModel: StoryFixtures.chatSearchViewModel())
+        case .chatSearchEmpty:
+            AppShellView(chatViewModel: StoryFixtures.chatSearchEmptyViewModel())
         case .sheetCardDetail:
             MessageView(
                 viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages),

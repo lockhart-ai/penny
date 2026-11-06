@@ -9,8 +9,10 @@ import PennyServices
 /// with the metadata line under it. Markdown, tables and links are parsed
 /// here and handed to the kit bubble as rendered content; a table wider
 /// than the bubble scrolls horizontally inside it. The `.compact` and
-/// `.media` layouts are the search results' cards, untouched by the
-/// bubble redesign.
+/// `.media` layouts rendered the old semantic search screen's result
+/// cards; that screen is gone (#3045 — find-in-chat replaced it) and
+/// nothing constructs these two layouts anymore — left in place rather
+/// than cleaned up in the same change, flagged as a follow-up.
 struct ChatMessageView: View {
     let message: ChatMessage
     let layout: MessageView.MessageLayout
@@ -18,11 +20,33 @@ struct ChatMessageView: View {
     /// renders at `Tokens.queuedBubbleOpacity` with "🕒 Queued" standing
     /// in for the real time, until the view model clears the mark.
     let isQueued: Bool
+    /// Find-in-chat (#3045): the query to highlight in this row's text, and
+    /// whether this message is the current match — every occurrence of the
+    /// query gets a solid background (dark text on both bubble colours),
+    /// the current message's occurrences a stronger orange. Matches are
+    /// counted per message, not per occurrence, so every occurrence in the
+    /// current message's bubble is marked, not just one. The search itself
+    /// matches a message's full stored content, but highlighting only
+    /// reaches what's actually rendered as this row's text blocks — a
+    /// table's cells and an outgoing reply's quoted block (rendered
+    /// separately, by the kit's `MessageBubble`) are known gaps: such a
+    /// message can count as a match without a visible highlight on it.
+    /// `nil`/`false` outside a search.
+    var searchQuery: String?
+    var isCurrentSearchMatch = false
 
-    init(message: ChatMessage, layout: MessageView.MessageLayout, isQueued: Bool = false) {
+    init(
+        message: ChatMessage,
+        layout: MessageView.MessageLayout,
+        isQueued: Bool = false,
+        searchQuery: String? = nil,
+        isCurrentSearchMatch: Bool = false
+    ) {
         self.message = message
         self.layout = layout
         self.isQueued = isQueued
+        self.searchQuery = searchQuery
+        self.isCurrentSearchMatch = isCurrentSearchMatch
     }
 
     private var messageContentBlocks: [ChatMessageContentBlock] {
@@ -117,13 +141,22 @@ struct ChatMessageView: View {
     @ViewBuilder
     private var outgoingMessageText: some View {
         if let replyContent {
-            Text(replyContent.body)
-                .font(.body)
+            highlightedText(replyContent.body)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            Text(message.content)
-                .font(.body)
+            highlightedText(message.content)
         }
+    }
+
+    /// Plain text (the user's bubble carries no markdown), with find-in-chat
+    /// highlighting applied when a search is active.
+    private func highlightedText(_ text: String) -> Text {
+        guard let searchQuery else {
+            return Text(text).font(.body)
+        }
+        return Text(ChatMessageContentParser.highlighted(
+            AttributedString(text), query: searchQuery, isCurrentMatch: isCurrentSearchMatch
+        )).font(.body)
     }
 
     private var messageContent: some View {
@@ -141,14 +174,20 @@ struct ChatMessageView: View {
     private func messageContentBlock(_ block: ChatMessageContentBlock) -> some View {
         switch block.kind {
         case .text(let text):
-            ChatAttributedText(attributedText: text)
+            ChatAttributedText(attributedText: highlightedBlockText(text))
                 .lineLimit(nil)
                 .font(.body)
         case .table(let table):
+            // Find-in-chat highlighting doesn't reach table cells (#3045).
             ScrollView(.horizontal, showsIndicators: false) {
                 ChatMarkdownTableView(table: table)
             }
         }
+    }
+
+    private func highlightedBlockText(_ text: AttributedString) -> AttributedString {
+        guard let searchQuery else { return text }
+        return ChatMessageContentParser.highlighted(text, query: searchQuery, isCurrentMatch: isCurrentSearchMatch)
     }
 
     var body: some View {
@@ -591,6 +630,23 @@ enum ChatReplyContentParser {
 }
 
 enum ChatMessageContentParser {
+    /// Find-in-chat (#3045): every occurrence of `query` in `text` gets a
+    /// solid background — yellow with primary (dark) text, readable on
+    /// both bubble colours; the current match's message uses a stronger
+    /// orange instead, for every occurrence in that message.
+    static func highlighted(_ text: AttributedString, query: String, isCurrentMatch: Bool) -> AttributedString {
+        var result = text
+        let highlightColor: Color = isCurrentMatch ? .orange : .yellow
+        var cursor = result.startIndex
+        while cursor < result.endIndex,
+              let range = result[cursor...].range(of: query, options: [.caseInsensitive]) {
+            result[range].backgroundColor = highlightColor
+            result[range].foregroundColor = .primary
+            cursor = range.upperBound
+        }
+        return result
+    }
+
     static func parse(_ content: String) -> [ChatMessageContentBlock] {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var blocks: [ChatMessageContentBlock] = []

@@ -661,33 +661,98 @@ struct MessageViewModelTests {
         #expect(viewModel.shouldShowLiveDock == false)
     }
 
-    @Test func searchHistoryDefaultsToCompactAndLoadsSelectedFilter() async {
+    // MARK: Find-in-chat (#3045)
+
+    @Test func searchFindsMatchesNewestFirstAndReportsTheCounter() async {
         let database = configuredDatabase()
-        saveFilterFixture(in: database)
-        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs())
-        let viewModel = MessageSearchViewModel(client: client, pageSize: 2)
+        saveSearchFixture(in: database)
+        let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
+        await viewModel.connect()
 
-        viewModel.selectedFilter = .penny
-        await viewModel.loadInitialHistory()
+        viewModel.search.open()
+        viewModel.search.query = "alpha"
 
-        #expect(viewModel.selectedLayout == .compact)
-        #expect(viewModel.displayedMessages.map(\.id) == [2, 5])
-
-        viewModel.selectedLayout = .media
-        #expect(viewModel.selectedLayout == .media)
+        #expect(viewModel.search.matches.map(\.id) == [5, 3, 1])
+        #expect(viewModel.search.currentMatchID == 5)
+        #expect(viewModel.search.counterText == "1 of 3")
+        #expect(viewModel.search.highlightQuery == "alpha")
     }
 
-    @Test func searchHistoryLoadsOlderPagesForTheSelectedFilter() async {
+    @Test func searchSteppingWrapsInBothDirections() async {
         let database = configuredDatabase()
-        saveFilterFixture(in: database)
-        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs())
-        let viewModel = MessageSearchViewModel(client: client, pageSize: 2)
+        saveSearchFixture(in: database)
+        let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
+        await viewModel.connect()
+        viewModel.search.open()
+        viewModel.search.query = "alpha"
+        #expect(viewModel.search.currentMatchID == 5)
 
-        viewModel.selectedFilter = .penny
-        await viewModel.loadInitialHistory()
-        await viewModel.loadMoreHistory()
+        viewModel.search.stepToOlderMatch()
+        #expect(viewModel.search.currentMatchID == 3)
+        #expect(viewModel.search.counterText == "2 of 3")
 
-        #expect(viewModel.displayedMessages.map(\.id) == [1, 2, 5])
+        viewModel.search.stepToOlderMatch()
+        #expect(viewModel.search.currentMatchID == 1)
+        #expect(viewModel.search.counterText == "3 of 3")
+
+        viewModel.search.stepToOlderMatch() // wraps back to the newest match
+        #expect(viewModel.search.currentMatchID == 5)
+        #expect(viewModel.search.counterText == "1 of 3")
+
+        viewModel.search.stepToNewerMatch() // wraps back to the oldest match
+        #expect(viewModel.search.currentMatchID == 1)
+        #expect(viewModel.search.counterText == "3 of 3")
+    }
+
+    @Test func closingSearchClearsQueryMatchesAndCounter() async {
+        let database = configuredDatabase()
+        saveSearchFixture(in: database)
+        let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
+        await viewModel.connect()
+        viewModel.search.open()
+        viewModel.search.query = "alpha"
+        #expect(viewModel.search.hasMatches)
+
+        viewModel.search.close()
+
+        #expect(viewModel.search.isSearching == false)
+        #expect(viewModel.search.query.isEmpty)
+        #expect(viewModel.search.matches.isEmpty)
+        #expect(viewModel.search.currentMatchID == nil)
+        #expect(viewModel.search.counterText == nil)
+        #expect(viewModel.search.highlightQuery == nil)
+    }
+
+    @Test func emptySearchQueryShowsNoMatchesAndIgnoresStepping() async {
+        let database = configuredDatabase()
+        saveSearchFixture(in: database)
+        let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
+        await viewModel.connect()
+
+        viewModel.search.open()
+
+        #expect(viewModel.search.hasMatches == false)
+        #expect(viewModel.search.counterText == nil)
+        #expect(viewModel.search.highlightQuery == nil)
+
+        viewModel.search.stepToOlderMatch()
+        #expect(viewModel.search.currentMatchID == nil)
+    }
+
+    @Test func searchPagesOlderHistoryUntilTheSteppedToMatchIsLoaded() async {
+        let database = configuredDatabase()
+        saveSearchFixture(in: database)
+        let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
+        await viewModel.connect()
+        viewModel.enableOlderPaging()
+        #expect(viewModel.displayedMessages.map(\.id) == [4, 5])
+        #expect(viewModel.isSearchMatchLoaded(3) == false)
+
+        let loaded = await viewModel.loadUntilSearchMatchIsPresent(3)
+
+        #expect(loaded)
+        #expect(viewModel.isSearchMatchLoaded(3))
+        #expect(viewModel.displayedMessages.map(\.id) == [2, 3, 4, 5])
     }
 
 }
@@ -762,6 +827,17 @@ private func saveNumberedMessages(in database: DatabaseService, ids: ClosedRange
     for id in ids {
         database.save(message: testMessage(id: id, content: "Message \(id)"))
     }
+}
+
+/// Five messages, newest last (ids are seconds-since-epoch, #testMessage),
+/// three of them containing "alpha" — find-in-chat's view-model tests
+/// (#3045).
+private func saveSearchFixture(in database: DatabaseService) {
+    database.save(message: testMessage(id: 1, content: "alpha one"))
+    database.save(message: testMessage(id: 2, content: "bravo"))
+    database.save(message: testMessage(id: 3, content: "alpha two"))
+    database.save(message: testMessage(id: 4, content: "charlie"))
+    database.save(message: testMessage(id: 5, content: "alpha three"))
 }
 
 /// A solid-colour photo for the composer's pending-image tests (#3039).
