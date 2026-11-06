@@ -10,11 +10,8 @@ struct MessageView: View {
     @State private var isShowingActivity: Bool
     @State private var presentedCardMessage: ChatMessage?
     @State private var isShowingSearchStory: Bool
-    @State private var activeMessageContext: MessageActionContext?
     @State private var messageFrames: [Int: CGRect] = [:]
     @State private var messageScrollFrames: [Int: CGRect] = [:]
-    @State private var messageActionProxyHeights: [Int: CGFloat] = [:]
-    @State private var messageContextScale: CGFloat = 1
     @State private var keyboardSettledScrollTask: Task<Void, Never>?
     @State private var typingIndicatorStatus = "Penny is typing"
     @State private var isTypingIndicatorVisible = false
@@ -75,9 +72,6 @@ struct MessageView: View {
             }
             .onPreferenceChange(ChatViewportFramePreferenceKey.self) { frame in
                 chatViewportFrame = frame
-            }
-            .overlay {
-                messageActionOverlay
             }
         }
         .task {
@@ -377,7 +371,6 @@ private extension MessageView {
 
             ChatMessageView(message: message, layout: layout)
                 .id(message.id)
-                .opacity(activeMessageContext?.message.id == message.id ? 0 : 1)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .background {
                     GeometryReader { geometry in
@@ -392,24 +385,19 @@ private extension MessageView {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if activeMessageContext?.message.id == message.id {
-                        dismissMessageActions()
-                        return
-                    }
                     if layout == .message {
                         onTap?(message)
                         return
                     }
                     presentedCardMessage = message
                 }
-                .onLongPressGesture(minimumDuration: 0.35) {
-                    presentMessageActions(for: message)
+                .contextMenu {
+                    messageContextMenu(for: message)
                 }
         }
         .modifier(IncomingMessageArrivalModifier(isEnabled: arrivalAnimatedMessageIDs.contains(message.id)) {
             arrivalAnimatedMessageIDs.remove(message.id)
         })
-        .animation(.spring(response: 0.24, dampingFraction: 0.78), value: activeMessageContext?.message.id)
     }
 
     func messageGridRows(for layout: MessageLayout) -> [MessageGridRow] {
@@ -586,236 +574,45 @@ private extension MessageView {
         }
     }
 
+    /// The system long-press menu (#3038): Reply, Copy, View steps (when
+    /// the message carries a run), and Agent activity — which stays
+    /// reachable until the live dock (#3042) replaces it. Replaces the
+    /// custom overlay menu.
     @ViewBuilder
-    var messageActionOverlay: some View {
-        if let context = activeMessageContext {
-            GeometryReader { geometry in
-                ZStack(alignment: .topLeading) {
-                    Rectangle()
-                        .fill(.regularMaterial)
-                        .opacity(0.86)
-                        .ignoresSafeArea()
-                        .onTapGesture(perform: dismissMessageActions)
-
-                    messageActionStack(for: context, in: geometry.size)
-                }
-                .onPreferenceChange(MessageActionProxyHeightPreferenceKey.self) { heights in
-                    messageActionProxyHeights.merge(heights, uniquingKeysWith: { _, newValue in newValue })
-                }
+    func messageContextMenu(for message: ChatMessage) -> some View {
+        Button {
+            withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
+                viewModel.startReply(to: message)
             }
-            .transition(.opacity)
-        }
-    }
-
-    func messageActionStack(for context: MessageActionContext, in containerSize: CGSize) -> some View {
-        let stackWidth = actionProxyWidth(for: context, in: containerSize)
-        // Menu rows: Reply/Copy/Agent activity (3), plus View prompts when
-        // the message carries a run — two heights.
-        let estimatedMenuHeight: CGFloat = context.message.runID == nil ? 168 : 224
-        let stackSpacing: CGFloat = 10
-        let availableStackHeight = max(1, containerSize.height - 32)
-        let maximumProxyHeight = max(44, availableStackHeight - estimatedMenuHeight - stackSpacing)
-        let measuredProxyHeight = messageActionProxyHeights[context.id]
-        let shouldScrollProxy = shouldScrollMessageActionProxy(
-            for: context,
-            measuredHeight: measuredProxyHeight,
-            maxHeight: maximumProxyHeight
-        )
-        let fallbackProxyHeight = context.frame.height
-        let proxyHeight = shouldScrollProxy ? maximumProxyHeight : min(maximumProxyHeight, max(1, measuredProxyHeight ?? fallbackProxyHeight))
-        let stackHeight = proxyHeight + estimatedMenuHeight + stackSpacing
-        let leading = actionProxyLeading(for: context, width: stackWidth, in: containerSize)
-        let maximumTop = max(16, containerSize.height - stackHeight - 16)
-        let top = min(max(16, context.frame.minY), maximumTop)
-        let messageAlignment: Alignment = context.message.isOutgoing ? .trailing : .leading
-
-        return VStack(alignment: context.message.isOutgoing ? .trailing : .leading, spacing: stackSpacing) {
-            messageActionProxy(
-                for: context,
-                layout: MessageActionProxyLayout(
-                    width: stackWidth,
-                    height: proxyHeight,
-                    measuredHeight: measuredProxyHeight,
-                    maxHeight: maximumProxyHeight,
-                    alignment: messageAlignment
-                )
-            )
-            .scaleEffect(messageContextScale)
-
-            messageActionMenu(for: context.message)
-                .frame(width: 220)
-        }
-        .frame(width: stackWidth, alignment: messageAlignment)
-        .background {
-            messageActionProxyMeasurement(for: context, width: stackWidth, alignment: messageAlignment)
-        }
-        .offset(x: leading, y: top)
-        .animation(.spring(response: 0.22, dampingFraction: 0.72), value: messageContextScale)
-    }
-
-    func messageActionProxyMeasurement(for context: MessageActionContext, width: CGFloat, alignment: Alignment) -> some View {
-        ChatMessageView(message: context.message, layout: .message)
-            .frame(width: width, alignment: alignment)
-            .fixedSize(horizontal: false, vertical: true)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: MessageActionProxyHeightPreferenceKey.self,
-                        value: [context.id: geometry.size.height]
-                    )
-                }
+            Task { @MainActor in
+                await Task.yield()
+                isComposerFocused = true
             }
-            .opacity(0)
-            .allowsHitTesting(false)
-    }
-
-    func actionProxyWidth(for context: MessageActionContext, in containerSize: CGSize) -> CGFloat {
-        let maximumWidth = max(1, containerSize.width - MessageLayout.message.horizontalPadding * 2)
-        return min(max(1, context.frame.width), maximumWidth)
-    }
-
-    func actionProxyLeading(for context: MessageActionContext, width: CGFloat, in containerSize: CGSize) -> CGFloat {
-        let maximumLeading = max(MessageLayout.message.horizontalPadding, containerSize.width - width - MessageLayout.message.horizontalPadding)
-        return min(max(MessageLayout.message.horizontalPadding, context.frame.minX), maximumLeading)
-    }
-
-    func shouldScrollMessageActionProxy(
-        for context: MessageActionContext,
-        measuredHeight: CGFloat?,
-        maxHeight: CGFloat
-    ) -> Bool {
-        if let measuredHeight {
-            return measuredHeight > maxHeight
+        } label: {
+            Label("Reply", systemImage: "arrowshape.turn.up.left")
         }
-        return context.frame.height > maxHeight
-    }
 
-    @ViewBuilder
-    func messageActionProxy(for context: MessageActionContext, layout: MessageActionProxyLayout) -> some View {
-        if shouldScrollMessageActionProxy(for: context, measuredHeight: layout.measuredHeight, maxHeight: layout.maxHeight) {
-            ScrollView {
-                ChatMessageView(message: context.message, layout: .message)
-                    .frame(width: layout.width, alignment: layout.alignment)
-            }
-            .frame(width: layout.width)
-            .frame(height: layout.height, alignment: .top)
-            .scrollIndicators(.hidden)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .contentShape(Rectangle())
-            .onTapGesture(perform: dismissMessageActions)
-        } else {
-            ChatMessageView(message: context.message, layout: .message)
-                .frame(width: layout.width, alignment: layout.alignment)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: dismissMessageActions)
+        Button {
+            UIPasteboard.general.string = message.content
+        } label: {
+            Label("Copy", systemImage: "doc.on.doc")
         }
-    }
 
-    func messageActionMenu(for message: ChatMessage) -> some View {
-        VStack(spacing: 0) {
+        if let runID = message.runID {
             Button {
-                withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
-                    viewModel.startReply(to: message)
-                    dismissMessageActions()
-                }
-                Task { @MainActor in
-                    await Task.yield()
-                    isComposerFocused = true
-                }
+                isComposerFocused = false
+                shellOpenPrompts(runID)
             } label: {
-                menuButtonRow(title: "Reply", systemImage: "arrowshape.turn.up.left")
-            }
-
-            Divider()
-                .padding(.leading, 48)
-
-            Button {
-                UIPasteboard.general.string = message.content
-                dismissMessageActions()
-            } label: {
-                menuButtonRow(title: "Copy", systemImage: "doc.on.doc")
-            }
-
-            if let runID = message.runID {
-                Divider().padding(.leading, 48)
-                Button {
-                    dismissMessageActions()
-                    isComposerFocused = false
-                    shellOpenPrompts(runID)
-                } label: {
-                    menuButtonRow(title: "View prompts", systemImage: "text.bubble")
-                }
-            }
-
-            Divider().padding(.leading, 48)
-            Button {
-                dismissMessageActions()
-                isShowingActivity = true
-            } label: {
-                menuButtonRow(title: "Agent activity", systemImage: "waveform.path")
+                Label("View steps", systemImage: "text.bubble")
             }
         }
-        .buttonStyle(.plain)
-        .font(.body)
-        .foregroundStyle(.primary)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Color(.separator).opacity(0.28), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
-    }
 
-    func menuButtonRow(title: String, systemImage: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .frame(width: 22)
-
-            Text(title)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.clear)
-        .contentShape(Rectangle())
-    }
-
-    func presentMessageActions(for message: ChatMessage) {
-        guard let frame = messageFrames[message.id] else { return }
-        activeMessageContext = MessageActionContext(message: message, frame: frame)
-        messageContextScale = 1.06
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            guard activeMessageContext?.message.id == message.id else { return }
-            messageContextScale = 1
+        Button {
+            isShowingActivity = true
+        } label: {
+            Label("Agent activity", systemImage: "waveform.path")
         }
     }
-
-    func dismissMessageActions() {
-        if let activeMessageContext {
-            messageActionProxyHeights[activeMessageContext.id] = nil
-        }
-        activeMessageContext = nil
-        messageContextScale = 1
-    }
-}
-
-private struct MessageActionContext: Identifiable {
-    let message: ChatMessage
-    let frame: CGRect
-
-    var id: Int {
-        message.id
-    }
-}
-
-private struct MessageActionProxyLayout {
-    let width: CGFloat
-    let height: CGFloat
-    let measuredHeight: CGFloat?
-    let maxHeight: CGFloat
-    let alignment: Alignment
 }
 
 private enum IncomingMessageAutoScrollDestination {
@@ -844,14 +641,6 @@ private struct MessageFramePreferenceKey: PreferenceKey {
     static let defaultValue: [Int: MessageFrameGeometry] = [:]
 
     static func reduce(value: inout [Int: MessageFrameGeometry], nextValue: () -> [Int: MessageFrameGeometry]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
-    }
-}
-
-private struct MessageActionProxyHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: [Int: CGFloat] = [:]
-
-    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
         value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
     }
 }
@@ -894,7 +683,7 @@ struct MessageCardDetailSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                ChatMessageView(message: message, layout: .message, showsSourceHintInline: false, fillsMessageRowWidth: true)
+                ChatMessageView(message: message, layout: .message)
                     .padding(.horizontal, MessageView.MessageLayout.message.horizontalPadding)
                     .padding(.vertical, 16)
             }

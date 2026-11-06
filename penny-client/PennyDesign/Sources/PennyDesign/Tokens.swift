@@ -74,6 +74,21 @@ public enum Tokens {
     public static let navGlyphSize: CGFloat = 19.5
     public static let imageBubbleWidth: CGFloat = 270   // 16:10 flair image bubble
     public static let drawingImageWidth: CGFloat = 260  // 4:5 drawing bubble
+    public static let userPhotoBubbleWidth: CGFloat = 260 // the user's photo bubble
+    /// Cap on an image band's height: an extreme aspect crops (centre) at
+    /// this height instead of towering — a 4:5 drawing (325pt at its fixed
+    /// width) fits uncropped beneath it.
+    public static let bubbleImageMaxHeight: CGFloat = 360
+    /// The gap each side of a bubble before the row's margin — how far a
+    /// bubble keeps from the opposite screen edge.
+    public static let bubbleSideGap: CGFloat = 40
+    /// A text-only bubble's padding on all sides.
+    public static let bubbleTextPadding: CGFloat = 10
+    /// A bubble-with-image's text padding: the text sits below the image
+    /// band with normal padding (horizontal 14, top 8, bottom 10).
+    public static let bubbleTextPaddingH: CGFloat = 14
+    public static let bubbleTextTop: CGFloat = 8
+    public static let bubbleTextBottom: CGFloat = 10
     public static let dockScreenCapFraction: CGFloat = 0.4
     /// The composer's control height, shared by the `+` button and the
     /// message field's capsule so the row reads as one matched pair.

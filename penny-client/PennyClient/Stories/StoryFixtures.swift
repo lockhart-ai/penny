@@ -14,6 +14,14 @@ enum StoryFixtures {
     private static let tinyImageDataURL =
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mM4MisHK2IYWhIA01xygQpKgBgAAAAASUVORK5CYII="
 
+    /// Two more tiny solid-color PNGs for the bubble story (#3038): a
+    /// landscape 8x5 (a flair photo's 16:10 shape) and a portrait 8x10 (a
+    /// drawing's 4:5 shape).
+    private static let tinyLandscapeImageDataURL =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAFCAIAAAD38zoCAAAAEUlEQVR4nGPQz5yIFTHQQQIARjYuaXcnV0MAAAAASUVORK5CYII="
+    private static let tinyPortraitImageDataURL =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAKCAIAAAAGpYjXAAAAEUlEQVR4nGM4UmKHFTEMdwkAP5F04b8kGgYAAAAASUVORK5CYII="
+
     static func chatViewModel(
         messages: [ChatMessage],
         isConnected: Bool = true,
@@ -88,6 +96,72 @@ enum StoryFixtures {
                 > A medium-dark roast with a fine, even grind usually works best for stovetop brewing.
                 """,
                 sourceHint: nil, parentID: 2, imageAttachments: [], isOutgoing: true
+            )
+        ]
+    }
+
+    /// The bubble story's conversation (#3038): every Penny bubble carries
+    /// her image, every bubble has its metadata line (Penny's with tool
+    /// count and seconds, the collector's with its source segment), the
+    /// user quotes one of Penny's, and the collector digest carries a
+    /// table that scrolls horizontally inside its bubble.
+    static var bubbleMessages: [ChatMessage] {
+        let now = Date()
+        func at(_ secondsAgo: TimeInterval) -> Date { now.addingTimeInterval(-secondsAgo) }
+
+        return [
+            ChatMessage(
+                id: 11, serverID: 11, createdAt: at(300),
+                content: "Done — the 9:30 ferry is booked and the confirmation is in your inbox.",
+                sourceHint: nil, runID: "run:bubbles:1",
+                toolCalls: 12, durationMs: 40_000,
+                imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
+            ),
+            ChatMessage(
+                id: 12, serverID: 12, createdAt: at(220),
+                content: "Perfect. And what's the weather for the crossing?",
+                sourceHint: nil, imageAttachments: [], isOutgoing: true
+            ),
+            ChatMessage(
+                id: 13, serverID: 13, createdAt: at(140),
+                content: "Calm seas — a light south-westerly, so a smooth crossing on the 9:30.",
+                sourceHint: nil, runID: "run:bubbles:2",
+                durationMs: 3_000,
+                imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
+            ),
+            ChatMessage(
+                id: 15, serverID: 15, createdAt: at(60),
+                content: """
+                Here's tonight's price-watch digest.
+
+                | Shop | Price | Change |
+                | --- | --- | --- |
+                | North Coffee | $189 | −$10 |
+                | Bean Bros | $205 | — |
+                | Harbor Roasters | $212 | +$3 |
+
+                The Comandante C40 dipped below $200 for the first time this month.
+                """,
+                sourceHint: "Price watch", runID: "run:bubbles:3",
+                toolCalls: 3, durationMs: 18_000,
+                imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
+            ),
+            ChatMessage(
+                id: 16, serverID: 16, createdAt: at(40),
+                content: """
+                Can you draw a lighthouse at dusk?
+
+                In reply to Penny:
+                > Calm seas — a light south-westerly, so a smooth crossing on the 9:30.
+                """,
+                sourceHint: nil, parentID: 13, imageAttachments: [], isOutgoing: true
+            ),
+            ChatMessage(
+                id: 17, serverID: 17, createdAt: at(20),
+                content: "Here's the lighthouse at dusk you asked for.",
+                sourceHint: nil, runID: "run:bubbles:4",
+                durationMs: 18_000,
+                imageAttachmentDataURLs: [tinyPortraitImageDataURL], imageAttachments: [], isOutgoing: false
             )
         ]
     }
