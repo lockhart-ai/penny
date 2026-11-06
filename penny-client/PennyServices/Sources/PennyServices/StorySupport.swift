@@ -53,7 +53,8 @@ public extension PennyService {
         isConnected: Bool = false,
         workingSteps: [StoryWorkingStep] = [],
         workingElapsedSeconds: Int = 0,
-        backgroundRunCount: Int = 0
+        backgroundRunCount: Int = 0,
+        pendingPermissionDomain: String? = nil
     ) -> PennyService {
         let databaseService = DatabaseService()
         databaseService.setupForTesting()
@@ -71,6 +72,13 @@ public extension PennyService {
         }
         for run in makeBackgroundRuns(count: backgroundRunCount) {
             service.agentProgressRuns[run.id] = run
+        }
+        if let pendingPermissionDomain {
+            service.permissionPrompt = PermissionPrompt(
+                requestID: "story-permission",
+                domain: pendingPermissionDomain,
+                url: "https://\(pendingPermissionDomain)"
+            )
         }
         return service
     }

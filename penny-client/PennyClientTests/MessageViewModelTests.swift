@@ -142,6 +142,52 @@ struct MessageViewModelTests {
         #expect(viewModel.resolvingMessageID == nil)
     }
 
+    /// The dock's permission row (#3044) shows the server's pending ask
+    /// only while a foreground run is live — never while the dock is
+    /// hidden, which is the Settings-only path (behaviour bullet 3).
+    @Test func dockPermissionShowsThePendingPromptOnlyWhileTheDockIsWorking() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        viewModel.client.permissionPrompt = PermissionPrompt(requestID: "req-1", domain: "example.com", url: "https://example.com")
+
+        #expect(viewModel.dockPermission == nil, "no live run — Settings is the only surface")
+
+        var run = AgentProgressRunItem(id: "run-1", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        #expect(viewModel.dockPermission?.domain == "example.com")
+    }
+
+    /// Answering from the dock sends the existing decision and turns the
+    /// pending row into a normal resolved stream item — the SAME `.tool`
+    /// kind every other dock row uses (behaviour bullet 2).
+    @Test func decidePermissionSendsTheDecisionAndResolvesTheRowIntoATrailingStreamItem() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        viewModel.client.permissionPrompt = PermissionPrompt(requestID: "req-1", domain: "example.com", url: "https://example.com")
+        var run = AgentProgressRunItem(id: "run-1", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        viewModel.decidePermission(allowed: true)
+
+        #expect(viewModel.client.permissionPrompt == nil, "the decision clears the pending prompt, same as Settings")
+        #expect(viewModel.dockPermission == nil, "no pending row left to ask about")
+
+        guard case .tool(let symbol, let label, let running) = viewModel.dockStreamItems.last?.kind else {
+            Issue.record("expected the resolved permission to trail the stream as a tool row")
+            return
+        }
+        #expect(symbol == "lock.fill")
+        #expect(label == "Allowed example.com")
+        #expect(running == false)
+
+        viewModel.client.agentProgressRuns.removeValue(forKey: "run-1")
+        viewModel.finishDock()
+        #expect(viewModel.dockStreamItems.isEmpty, "the resolved row lives only as long as its own run's dock")
+    }
+
     @Test func messageLayoutDefaultsToCurrentMessageStyle() {
         let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
 
