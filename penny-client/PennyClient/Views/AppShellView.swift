@@ -162,7 +162,8 @@ struct AppShellView: View {
                 Spacer()
                 TopTabBar(
                     selected: selected,
-                    promptsBadge: chatViewModel.client.backgroundProgressRuns.count
+                    promptsBadge: chatViewModel.client.backgroundProgressRuns.count,
+                    onSelect: { selected = $0 }
                 ) { ChatTabAvatar() }
                 Spacer()
             }
