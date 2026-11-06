@@ -637,19 +637,7 @@ class ChatAgent(Agent):
         table = handles if handles is not None else HandleTable()
         try:
             self._current_message = prompt
-            history = self.get_history(sender, thread_parent_id=thread_parent_id, anchor=anchor)
-            # Past replies are stored with real URLs — converted to this turn's
-            # handles here, so a URL the model READS always arrives as a handle
-            # (#2717).  User turns are the user's own words and stay as typed.
-            if history:
-                history = [
-                    turn._replace(
-                        content=table.convert(turn.content)
-                        if turn.role == str(MessageRole.ASSISTANT)
-                        else turn.content
-                    )
-                    for turn in history
-                ]
+            history = self._history_for_turn(sender, thread_parent_id, anchor, table)
             # A chat turn is never sandboxed (#2964) — only a collector cycle can be.
             self._install_tools(self.get_tools(run_id=run_id, handles=table), forced_plan=False)
             system_prompt = await self._build_system_prompt(sender)
@@ -882,9 +870,7 @@ class ChatAgent(Agent):
             if section
         )
 
-    def _session_state_section(
-        self, user: str | None, anchor: SessionAnchor | None = None
-    ) -> str | None:
+    def _session_state_section(self, user: str | None, anchor: SessionAnchor) -> str | None:
         """Jobs + Your memory + Recent activity + About the user
         (``SelfStateHeader.render``) + the conversation map — the ONE
         session-state system message (#3089), inserted by ``_build_messages``
@@ -896,11 +882,10 @@ class ChatAgent(Agent):
         would be the duplication #3089 rules out.  Only an idle rotation (a
         NEW session, a new ``as_of``) changes what this says.
 
-        ``anchor`` (#3078) lets a caller that already read the session anchor
-        (``_dispatch_turn``, which reads it ONCE and passes it here and to
-        ``get_history`` rather than each re-reading it) hand it straight
-        through.  ``None`` — every direct test call, unchanged — computes it
-        the same way this always has.
+        ``anchor`` (#3078) is REQUIRED, no default (``CLAUDE.md``, "pass
+        parameters, don't swap state") — the caller's own one read of the
+        session anchor (``_dispatch_turn``, which reads it ONCE and passes
+        it here and to ``get_history`` rather than each re-reading it).
 
         ``None`` for a caller with no user (there's no session to bound
         against, and no store map worth showing without one) — a delivery
@@ -917,10 +902,6 @@ class ChatAgent(Agent):
         reads its one-to-one line ids off, never a second map."""
         if user is None:
             return None
-        if anchor is None:
-            anchor = self.db.messages.session_anchor(
-                user, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-            )
         return self._render_session_state(user, anchor, self._conversation_map_for(user))
 
     def _render_session_state(
@@ -1041,7 +1022,8 @@ class ChatAgent(Agent):
         self,
         user: str,
         thread_parent_id: int | None = None,
-        anchor: SessionAnchor | None = None,
+        *,
+        anchor: SessionAnchor,
     ) -> list[HistoryTurn] | None:
         """Recent conversation messages for chat continuity.
 
@@ -1053,22 +1035,51 @@ class ChatAgent(Agent):
         its own, so it keeps its own smaller, short-chain approximation).
         Falls back to the standard recent-message window.
 
-        ``anchor`` (#3078) lets a caller that already read the session
-        anchor (``_dispatch_turn``, once, shared with
-        ``_session_state_section``) hand it straight through to
-        ``_build_conversation`` instead of a second read.  ``None`` — every
-        direct test call, unchanged — computes it the same way this always
-        has.
+        ``anchor`` (#3078) is REQUIRED, no default (``CLAUDE.md``, "pass
+        parameters, don't swap state") — the caller's own one read of the
+        session anchor (``_dispatch_turn``'s ``session_anchor``, shared with
+        ``_session_state_section``; the chat pre-warm's own
+        ``anchor_for_arrival``), never a second read taken here. Keyword-only
+        so ``thread_parent_id`` keeps its own optional, positional shape.
         """
         if thread_parent_id is not None:
             thread_history = self.db.messages.get_thread_history(thread_parent_id)
             if thread_history:
                 return self._trim_history_window(thread_history)
-        if anchor is None:
-            anchor = self.db.messages.session_anchor(
-                user, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-            )
         return self._build_conversation(user, anchor)
+
+    def _history_for_turn(
+        self,
+        sender: str,
+        thread_parent_id: int | None,
+        anchor: SessionAnchor,
+        table: HandleTable,
+    ) -> list[HistoryTurn] | None:
+        """This turn's history, with every past assistant reply's real URLs
+        converted to THIS turn's own handles (#2717) — the ONE method both
+        the real turn (``_dispatch_turn``) and the chat pre-warm
+        (``build_prewarm_prefix``, passing a fresh ``HandleTable()``) call,
+        so the warm's rendered history can never diverge from the real
+        turn's at the first linked reply in it. A reply citing a link used
+        to render raw URLs in the warm's own history (it called
+        ``get_history`` directly, skipping this conversion), so its prefix
+        missed the server's cache from that point on in prod, where almost
+        every reply cites one (#3078 fix). The handle numbering is
+        deterministic per table — the same history walked in the same
+        order always assigns the same numbers, whichever fresh table does
+        the walking, so the warm's own ``HandleTable()`` and the real
+        turn's agree."""
+        history = self.get_history(sender, thread_parent_id, anchor=anchor)
+        if not history:
+            return history
+        return [
+            turn._replace(
+                content=table.convert(turn.content)
+                if turn.role == str(MessageRole.ASSISTANT)
+                else turn.content
+            )
+            for turn in history
+        ]
 
     # ── Chat pre-warm (#3078) ────────────────────────────────────────────
 
@@ -1081,8 +1092,8 @@ class ChatAgent(Agent):
         for the chat pre-warm's background task.
 
         Touches NO shared agent state: a fresh, local ``ConversationMap``
-        (never ``self._conversation_map_for``), a pure ``get_tools()`` read
-        for the tool schemas (never ``self._install_tools`` /
+        (never ``self._conversation_map_for``) and a fresh, local
+        ``HandleTable``/``ToolRegistry`` (never ``self._install_tools`` /
         ``self._tool_registry``), and no write to ``self._session_state`` /
         ``self._related_exchanges`` / ``self._current_message`` anywhere.  A
         foreground turn starting mid-build and this call racing it can
@@ -1094,6 +1105,14 @@ class ChatAgent(Agent):
         which structurally comes back already rotated once the idle gap has
         passed — no separate rotated/mid-session branch anywhere here.
 
+        The history and the tool schemas are built through the SAME methods
+        a real turn's own ``_dispatch_turn`` calls (``_history_for_turn``,
+        ``_tool_schemas``) over a fresh ``HandleTable()`` — a real turn's
+        past replies are stored with real URLs, converted to numbered
+        handles per turn (#2717); skipping that conversion here would have
+        rendered raw URLs in the warm's history where the real turn renders
+        handles, diverging the two prefixes at the first linked reply.
+
         Excludes the per-turn dynamic system message and the live turn on
         purpose (the caller renders only up to here): those differ every
         turn and sit after the cache boundary, so warming them would warm
@@ -1103,20 +1122,25 @@ class ChatAgent(Agent):
         session_state = self._render_session_state(
             user, anchor, ConversationMap(self.db, user, self.config.runtime)
         )
-        history = self._build_conversation(user, anchor)
+        table = HandleTable()
+        history = self._history_for_turn(user, None, anchor, table)
         system_prompt = await self._build_system_prompt(user)
         messages = self._build_session_prefix_messages(history, system_prompt, session_state)
-        return messages, self._tool_schemas()
+        return messages, self._tool_schemas(table)
 
-    def _tool_schemas(self) -> list[dict]:
-        """The chat pre-warm's own read of the tool-schema block (#3078) — a
-        PURE function over ``get_tools()``, never ``_install_tools`` (which
-        writes ``self._tool_registry``, shared agent state a background warm
-        must never touch while a foreground turn might be installing its
-        own). The same per-tool conversion (``Tool.to_ollama_tool()``) a real
-        turn's own ``self._tool_registry.get_ollama_tools()`` uses after
-        ``_install_tools`` — just never written anywhere."""
-        return [tool.to_ollama_tool() for tool in self.get_tools()]
+    def _tool_schemas(self, table: HandleTable) -> list[dict]:
+        """The chat pre-warm's own read of the tool-schema block (#3078):
+        the SAME registry mechanics a real turn's own ``_install_tools`` +
+        ``self._tool_registry.get_ollama_tools()`` apply
+        (``Agent._tool_registry_for``), run on a FRESH, local
+        ``ToolRegistry`` instead of ``self._tool_registry`` — shared agent
+        state a background warm must never touch while a foreground turn
+        might be installing its own. Never a parallel list comprehension
+        that only happens to match whatever ordering/dedup-by-name the
+        registry applies. ``table`` mirrors the real turn's own
+        ``get_tools(run_id=run_id, handles=table)`` call exactly, even
+        though no tool's declared schema reads the handle table today."""
+        return self._tool_registry_for(self.get_tools(handles=table)).get_ollama_tools()
 
     # ── Memory description embedding ──────────────────────────────────────
 

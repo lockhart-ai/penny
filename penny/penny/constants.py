@@ -699,6 +699,11 @@ class PennyConstants:
     # poll granularity (the drainer checks ~once a minute and sends at most one).
     SEND_QUEUE_DRAIN_INTERVAL = 60.0
 
+    # Chat pre-warm (#3078) — how often the schedule rechecks whether a warm is
+    # due, once CHAT_PREWARM_IDLE_SECONDS has cleared.  Cheap enough (one
+    # promptlog read, one prefix render) that this need not be runtime-configurable.
+    CHAT_PREWARM_RECHECK_INTERVAL = 60.0
+
     # Signal API connectivity validation
     SIGNAL_VALIDATE_MAX_ATTEMPTS = 12
     SIGNAL_VALIDATE_RETRY_DELAY = 5.0

@@ -16,11 +16,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How often ``execute()`` rechecks whether a warm is due, once its own idle
-# threshold (``CHAT_PREWARM_IDLE_SECONDS``) has cleared — cheap enough (one
-# promptlog read, one prefix render) that this need not be runtime-configurable.
-RECHECK_INTERVAL_SECONDS = 60.0
-
 
 class CycleGate(Protocol):
     """The one capability this task needs from the Collector — duck-typed

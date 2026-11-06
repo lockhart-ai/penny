@@ -44,7 +44,6 @@ from penny.plugins.zoho.mail_models import ZohoCredentials
 from penny.preflight import Preflight, PreflightError, PreflightReport
 from penny.responses import PennyResponse
 from penny.scheduler import (
-    RECHECK_INTERVAL_SECONDS,
     BackgroundScheduler,
     ChatPrewarmTask,
     PeriodicSchedule,
@@ -419,7 +418,7 @@ class Penny:
                     cycle_gate=self.collector,
                     runtime=config.runtime,
                 ),
-                interval=lambda: RECHECK_INTERVAL_SECONDS,
+                interval=lambda: PennyConstants.CHAT_PREWARM_RECHECK_INTERVAL,
                 idle_threshold=lambda: config.runtime.CHAT_PREWARM_IDLE_SECONDS,
             ),
         ]

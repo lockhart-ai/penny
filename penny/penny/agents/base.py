@@ -1974,9 +1974,7 @@ class Agent:
         whether this turn/cycle forces every mutating call onto its plan path
         (a sandboxed collector cycle) or not (every other turn/cycle) — threaded
         straight onto the fresh ``ToolExecutor``, never read from ambient state."""
-        self._tool_registry = ToolRegistry()
-        for tool in tools:
-            self._tool_registry.register(tool)
+        self._tool_registry = self._tool_registry_for(tools)
         self._tool_executor = ToolExecutor(
             self._tool_registry, timeout=self.config.tool_timeout, forced_plan=forced_plan
         )
@@ -1986,6 +1984,21 @@ class Agent:
             self.name,
             ", ".join(t.name for t in tools),
         )
+
+    @staticmethod
+    def _tool_registry_for(tools: list[Tool]) -> ToolRegistry:
+        """A fresh ``ToolRegistry`` populated with ``tools``, in order (#3078)
+        — the ONE place a tool list becomes a registry, shared by
+        ``_install_tools`` above (the real turn's own, stored on
+        ``self._tool_registry``) and the chat pre-warm's own throwaway read
+        (``ChatAgent._tool_schemas``), so the warm's tool-schema list is
+        built through the SAME registry mechanics — whatever ordering or
+        dedup-by-name it applies — rather than a parallel list
+        comprehension that only happens to match it."""
+        registry = ToolRegistry()
+        for tool in tools:
+            registry.register(tool)
+        return registry
 
     async def _process_tool_calls(
         self,

@@ -37,6 +37,16 @@ from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 from penny.validation import ConditionKey
 
+
+def _session_anchor(agent, user: str = TEST_SENDER):
+    """The anchor ``_session_state_section``/``get_history`` now take
+    explicitly (#3078, so the real turn and the chat pre-warm share one
+    read) — computed fresh, the same way ``_dispatch_turn`` does, for a
+    direct test call outside a live turn."""
+    idle_seconds = int(agent.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+    return agent.db.messages.session_anchor(user, idle_seconds)
+
+
 # ── 1. Full integration (happy path) ─────────────────────────────────────
 
 
@@ -336,7 +346,7 @@ async def test_session_state_message_byte_identical_within_a_session_across_a_cl
             return self._when
 
     monkeypatch.setattr(db, "clock", _FixedClock(session_start))
-    before = agent._session_state_section(TEST_SENDER)
+    before = agent._session_state_section(TEST_SENDER, _session_anchor(agent))
 
     # All within the SAME session (no idle gap past CHAT_SESSION_IDLE_SECONDS):
     # the clock moves, the job's cycle runs (a completed collector run in the
@@ -370,7 +380,7 @@ async def test_session_state_message_byte_identical_within_a_session_across_a_cl
         )
         session.commit()
 
-    after = agent._session_state_section(TEST_SENDER)
+    after = agent._session_state_section(TEST_SENDER, _session_anchor(agent))
 
     # Byte-identical across the run and the write — the cache invariant.
     assert after == before
@@ -409,12 +419,12 @@ async def test_session_state_message_rebuilds_only_at_a_new_session(db, test_con
     # "late-addition" will be created at the real wall-clock instant below.
     session_start = datetime.now(UTC) - timedelta(hours=2)
     _seed_closed_exchange(db, when=session_start)
-    first = agent._session_state_section(TEST_SENDER)
+    first = agent._session_state_section(TEST_SENDER, _session_anchor(agent))
 
     # Still mid-session (no new incoming row, so the anchor is unchanged): a
     # new collection, created at real "now", appears nowhere yet.
     db.memories.create_collection("late-addition", "created mid-session")
-    still_mid_session = agent._session_state_section(TEST_SENDER)
+    still_mid_session = agent._session_state_section(TEST_SENDER, _session_anchor(agent))
     assert still_mid_session == first
     assert "late-addition" not in still_mid_session
 
@@ -425,7 +435,7 @@ async def test_session_state_message_rebuilds_only_at_a_new_session(db, test_con
     idle_seconds = int(agent.config.runtime.CHAT_SESSION_IDLE_SECONDS)
     new_session_start = datetime.now(UTC) + timedelta(seconds=idle_seconds + 60)
     _seed_closed_exchange(db, when=new_session_start)
-    rebuilt = agent._session_state_section(TEST_SENDER)
+    rebuilt = agent._session_state_section(TEST_SENDER, _session_anchor(agent))
 
     assert rebuilt != first
     assert "late-addition" in rebuilt
@@ -1221,7 +1231,9 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
                 parent_id=user_id,
                 recipient=TEST_SENDER,
             )
-            history = penny.chat_agent.get_history(TEST_SENDER)
+            history = penny.chat_agent.get_history(
+                TEST_SENDER, anchor=_session_anchor(penny.chat_agent)
+            )
             table = HandleTable()
             converted = [
                 table.convert(turn.content) if turn.role == "assistant" else turn.content
@@ -1297,7 +1309,12 @@ async def test_the_conversation_map_within_the_session_state_message_is_stable_e
                 recipient=TEST_SENDER,
                 run_id=run_id,
             )
-            statics.append(penny.chat_agent._session_state_section(TEST_SENDER) or "")
+            statics.append(
+                penny.chat_agent._session_state_section(
+                    TEST_SENDER, _session_anchor(penny.chat_agent)
+                )
+                or ""
+            )
 
         def map_suffix(static: str) -> str:
             """The map's own header-through-end slice, or "" when absent —

@@ -79,7 +79,9 @@ async def test_image_with_text_goes_to_the_chat_model(
 
         # The conversation record keeps a marker where the image was, so a later
         # turn reads it without the image ever being resent
-        history = penny.chat_agent.get_history(TEST_SENDER)
+        idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+        anchor = penny.db.messages.session_anchor(TEST_SENDER, idle_seconds)
+        history = penny.chat_agent.get_history(TEST_SENDER, anchor=anchor)
         assert any(
             turn.role == "user"
             and f"what's in this photo? {PennyConstants.IMAGE_HISTORY_MARKER}" in turn.content

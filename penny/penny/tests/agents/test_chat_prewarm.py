@@ -12,12 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlmodel import select
 
-from penny.agents.models import MessageRole
 from penny.constants import PennyConstants
 from penny.database.models import PromptLog
 from penny.llm import raw_template
@@ -36,14 +35,20 @@ from penny.tests.conftest import TEST_SENDER, wait_until
 _GENERATION_PROMPT_MARKER = "<|turn>model\n"
 
 
-def _rendered(messages: list[LlmMessage], tools: list[dict] | None) -> str:
-    """The exact bytes ``raw_template.render_prompt`` would send for this
-    message/tool list — through the SAME translation ``LlmClient.chat()``'s
-    raw-template branch applies first, never a second render path."""
-    dict_messages = [message.to_log_dict() for message in messages]
+def _rendered_dicts(dict_messages: list[dict], tools: list[dict] | None) -> str:
+    """The exact bytes ``raw_template.render_prompt`` would send for an
+    already-dict-shaped message/tool list (the shape ``MockLlmClient``
+    records a real request in) — through the SAME translation
+    ``LlmClient.chat()``'s raw-template branch applies first, never a
+    second render path."""
     translated_messages = LlmClient._translate_messages(dict_messages)
     translated_tools = LlmClient._translate_tools(tools) if tools else None
     return raw_template.render_prompt(translated_messages, translated_tools, True)
+
+
+def _rendered(messages: list[LlmMessage], tools: list[dict] | None) -> str:
+    """The warm's own ``list[LlmMessage]`` output, rendered the same way."""
+    return _rendered_dicts([message.to_log_dict() for message in messages], tools)
 
 
 def _seed_closed_exchange(db, sender: str, ask: str, reply: str, at) -> None:
@@ -58,25 +63,6 @@ def _seed_closed_exchange(db, sender: str, ask: str, reply: str, at) -> None:
         timestamp=at + timedelta(seconds=5),
         recipient=sender,
     )
-
-
-async def _real_next_turn_request(
-    chat_agent, sender: str, idle_seconds: int, live_prompt: str
-) -> tuple[list[LlmMessage], list[dict]]:
-    """The next real turn's own would-be request — built through the exact
-    same render methods ``_dispatch_turn`` uses, but never dispatched."""
-    anchor = chat_agent.db.messages.session_anchor(sender, idle_seconds)
-    session_state = chat_agent._session_state_section(sender, anchor)
-    history = chat_agent.get_history(sender, anchor=anchor)
-    system_prompt = await chat_agent._build_system_prompt(sender)
-    prefix = chat_agent._build_session_prefix_messages(history, system_prompt, session_state)
-    dynamic = chat_agent._dynamic_system_section()
-    full = [
-        *prefix,
-        LlmMessage(role=MessageRole.SYSTEM, content=dynamic),
-        LlmMessage(role=MessageRole.USER, content=live_prompt),
-    ]
-    return full, chat_agent._tool_schemas()
 
 
 class _FakeCycleGate:
@@ -102,68 +88,116 @@ class _FakeModelClient:
 
 @pytest.mark.asyncio
 async def test_mid_session_prefix_is_a_prefix_of_the_real_next_turns_request(
-    make_config, running_penny, test_user_info, mock_llm
+    signal_server, make_config, running_penny, test_user_info, mock_llm
 ) -> None:
+    """The warm's own render must match what a REAL turn, driven end to end,
+    actually sends — never a second, hand-built implementation of the same
+    path, which could only ever agree with itself (#3078 review). The past
+    reply cites a URL, so the real turn's own history rewrites it to a
+    handle (#2717) — exercising the exact conversion the warm must mirror."""
     config = make_config()
     async with running_penny(config) as penny:
         db = penny.db
         now = db.clock.now()
         _seed_closed_exchange(
-            db, TEST_SENDER, "hi there", "hey, what's up", now - timedelta(minutes=5)
+            db,
+            TEST_SENDER,
+            "check this out",
+            "sure, see https://example.com/article for details",
+            now - timedelta(minutes=5),
         )
         idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
 
         warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(
             TEST_SENDER, idle_seconds, db.clock.now()
         )
-        real_messages, real_tools = await _real_next_turn_request(
-            penny.chat_agent, TEST_SENDER, idle_seconds, "what's new?"
-        )
-
         warm_text = _rendered(warm_messages, warm_tools)
-        real_text = _rendered(real_messages, real_tools)
-
         assert warm_text.endswith(_GENERATION_PROMPT_MARKER)
-        assert real_text.startswith(warm_text[: -len(_GENERATION_PROMPT_MARKER)])
+        warm_prefix_text = warm_text[: -len(_GENERATION_PROMPT_MARKER)]
+
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, "all set"),
+            answers_micro_contexts=False,
+        )
+        await signal_server.push_message(sender=TEST_SENDER, content="what's new?")
+        await signal_server.wait_for_message(timeout=10.0)
+
+        real_request = mock_llm.requests[0]
+        real_text = _rendered_dicts(real_request["messages"], real_request.get("tools"))
+
+        assert real_text.startswith(warm_prefix_text)
+
+
+class _FixedClock:
+    """A controllable ``db.clock`` substitute — a plain, reassignable
+    attribute (``Database.clock``), read only by stored-timestamp writes and
+    anchor reads, so swapping it mid-test advances "now" for those alone."""
+
+    def __init__(self, when: datetime) -> None:
+        self._when = when
+
+    def now(self) -> datetime:
+        return self._when
 
 
 @pytest.mark.asyncio
 async def test_post_rotation_prefix_matches_once_the_session_actually_rotates(
-    make_config, running_penny, test_user_info, mock_llm
+    signal_server, make_config, running_penny, test_user_info, mock_llm
 ) -> None:
-    """Once the idle gap has already passed, the warm's anchor comes back
-    rotated — assert it matches what a real next turn gets once it actually
-    arrives that late (#3078: one anchor rule, no separate rotate flag)."""
-    config = make_config(chat_session_idle_seconds=1)
+    """Once the idle gap has passed, the NEXT real turn's own anchor comes
+    back rotated — assert the warm's prediction matches it (#3078: one
+    anchor rule, no separate rotate flag), driven end to end.
+
+    A turn's own incoming row is logged only AFTER its run finishes
+    (``_finish_turn``, deliberately deferred so it never doubles into the
+    turn's own recall) — so a turn never sees ITSELF as the live, open row;
+    the rotation only becomes visible once that row is stored and a LATER
+    turn reads it. Two real turns, with the idle gap advanced on
+    ``db.clock`` (a plain, reassignable attribute — nothing else reads it
+    besides stored-timestamp writes and anchor reads) between them, so the
+    SECOND turn's own dispatch is the one the warm's prediction is checked
+    against."""
+    config = make_config(chat_session_idle_seconds=5)
     async with running_penny(config) as penny:
         db = penny.db
-        now = db.clock.now()
-        _seed_closed_exchange(
-            db, TEST_SENDER, "hi there", "hey, what's up", now - timedelta(minutes=5)
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(
+                request, "sure, see https://example.com/article for details"
+            ),
+            answers_micro_contexts=False,
         )
+        await signal_server.push_message(sender=TEST_SENDER, content="check this out")
+        await signal_server.wait_for_message(timeout=10.0)
+        mock_llm.requests.clear()
+
         idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-        arrival = now  # well past the 1s idle gap from the seeded exchange
+        rotated_now = db.clock.now() + timedelta(seconds=idle_seconds + 30)
+        db.clock = _FixedClock(rotated_now)
+
+        # The session has actually rotated by this point — not a weaker,
+        # still-mid-session case that the prefix check below couldn't tell
+        # apart from one.
+        anchor = db.messages.anchor_for_arrival(TEST_SENDER, idle_seconds, db.clock.now())
+        assert anchor.session_turns == 0, "the session must actually have rotated"
 
         warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(
-            TEST_SENDER, idle_seconds, arrival
+            TEST_SENDER, idle_seconds, db.clock.now()
         )
-
-        # The real next turn actually arrives at `arrival`: its own incoming
-        # row lands, then the anchor a live ``_dispatch_turn`` would read.
-        db.messages.log_message(
-            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, "what's new?", timestamp=arrival
-        )
-        anchor = db.messages.session_anchor(TEST_SENDER, idle_seconds)
-        assert anchor.session_turns == 0, "the session must actually have rotated"
-        real_messages, real_tools = await _real_next_turn_request(
-            penny.chat_agent, TEST_SENDER, idle_seconds, "what's new?"
-        )
-
         warm_text = _rendered(warm_messages, warm_tools)
-        real_text = _rendered(real_messages, real_tools)
-
         assert warm_text.endswith(_GENERATION_PROMPT_MARKER)
-        assert real_text.startswith(warm_text[: -len(_GENERATION_PROMPT_MARKER)])
+        warm_prefix_text = warm_text[: -len(_GENERATION_PROMPT_MARKER)]
+
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, "all set"),
+            answers_micro_contexts=False,
+        )
+        await signal_server.push_message(sender=TEST_SENDER, content="what's new?")
+        await signal_server.wait_for_message(timeout=10.0)
+
+        real_request = mock_llm.requests[0]
+        real_text = _rendered_dicts(real_request["messages"], real_request.get("tools"))
+
+        assert real_text.startswith(warm_prefix_text)
 
 
 @pytest.mark.asyncio
@@ -319,7 +353,10 @@ async def test_foreground_start_cancels_an_in_flight_warm_leaving_no_shared_stat
         try:
             await wait_until(lambda: entered.is_set(), timeout=5.0)
             scheduler.notify_foreground_start()
-            await asyncio.sleep(0.1)  # give the cancel a moment to land
+            # Deterministic, not a sleep: the scheduler's own ``finally`` clears
+            # ``_active_task`` the moment the cancellation it just issued has
+            # actually landed and been processed.
+            await wait_until(lambda: scheduler._active_task is None, timeout=5.0)
 
             assert model_client.prewarm_requests == []  # never actually completed
         finally:

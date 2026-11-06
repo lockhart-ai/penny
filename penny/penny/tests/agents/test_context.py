@@ -457,7 +457,7 @@ async def test_the_map_stops_one_exchange_before_the_historys_first(
 
         # The history: the open live turn is NOT history — the closed window
         # (5 + 2 session turns = 7) keeps user message 4 through 10.
-        history = penny.chat_agent.get_history(TEST_SENDER)
+        history = penny.chat_agent.get_history(TEST_SENDER, anchor=_current_session_anchor(penny))
         user_turns = [turn.content for turn in history if turn.role == "user"]
         assert user_turns == [f"user message {n}" for n in range(4, 11)]
         assert "user message 11" not in user_turns
@@ -468,7 +468,10 @@ async def test_the_map_stops_one_exchange_before_the_historys_first(
         # history's own first) is nowhere on the map.  The map rides the
         # session-state message now (#3089; previously the static leading
         # one, #2752/#2757).
-        session_state = penny.chat_agent._session_state_section(TEST_SENDER) or ""
+        session_state = (
+            penny.chat_agent._session_state_section(TEST_SENDER, _current_session_anchor(penny))
+            or ""
+        )
         map_start = session_state.find(ConversationMap.HEADER)
         map_lines = session_state[map_start:].split("\n")[1:-1]
         assert "3 short messages" in map_lines[-1]
@@ -567,7 +570,9 @@ async def test_thread_history_grows_then_cuts_back(
                 recipient=TEST_SENDER,
             )
 
-        thread_history = penny.chat_agent.get_history(TEST_SENDER, thread_parent_id=previous_id)
+        thread_history = penny.chat_agent.get_history(
+            TEST_SENDER, thread_parent_id=previous_id, anchor=_current_session_anchor(penny)
+        )
         # 8 exchanges is within the window's growth (5 upward, cap 20) — everything so far.
         assert [turn.content for turn in thread_history] == [
             "user message 1",
