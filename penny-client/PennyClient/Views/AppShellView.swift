@@ -14,6 +14,9 @@ struct AppShellView: View {
     /// The top safe-area inset (the status bar), which the top fade holds
     /// opaque through.
     @State private var topInset: CGFloat = 0
+    /// Find-in-chat's field focus (#3045) — lives here, not on the view
+    /// model, since focus is UI state the chrome row owns.
+    @FocusState private var isSearchFieldFocused: Bool
 
     /// Story mode only (#3042): passed straight through to the chat tab's
     /// `MessageView`, freezing the live dock mid-morph.
@@ -123,7 +126,37 @@ struct AppShellView: View {
         .ignoresSafeArea(edges: .top)
     }
 
+    /// The chrome row: the tab capsule, or — on the Chat tab, while
+    /// find-in-chat is open (#3045) — the search bar in its place. Per-tab
+    /// search on the other tabs is a later ticket, so the circle stays
+    /// inert everywhere but Chat.
     private var chromeRow: some View {
+        Group {
+            if isChatSearchActive {
+                ChatSearchBar(
+                    query: $chatViewModel.search.query,
+                    matchCountText: chatViewModel.search.counterText,
+                    arrowsEnabled: chatViewModel.search.hasMatches,
+                    isFocused: $isSearchFieldFocused,
+                    onStepToOlderMatch: chatViewModel.search.stepToOlderMatch,
+                    onStepToNewerMatch: chatViewModel.search.stepToNewerMatch,
+                    onClose: chatViewModel.search.close
+                )
+            } else {
+                tabRow
+            }
+        }
+        .padding(.top, Tokens.chromeTopGap)
+        .onChange(of: isChatSearchActive) { _, isActive in
+            isSearchFieldFocused = isActive
+        }
+    }
+
+    private var isChatSearchActive: Bool {
+        selected == .chat && chatViewModel.search.isSearching
+    }
+
+    private var tabRow: some View {
         ZStack {
             HStack {
                 Spacer()
@@ -139,13 +172,11 @@ struct AppShellView: View {
                         .accessibilityLabel("Back")
                 }
                 Spacer()
-                // Per-tab search lands with #3045 and the later tickets;
-                // until then the circle is inert.
-                GlassCircle(symbol: "magnifyingglass")
+                GlassCircleButton(symbol: "magnifyingglass", onTap: openChatSearch)
+                    .accessibilityLabel("Search")
             }
         }
         .padding(.horizontal, Tokens.margin)
-        .padding(.top, Tokens.chromeTopGap)
     }
 
     /// The only pushed page today is the memory detail, reached when the
@@ -156,6 +187,11 @@ struct AppShellView: View {
 
     private func goBack() {
         browserModel.selection = nil
+    }
+
+    private func openChatSearch() {
+        guard selected == .chat else { return }
+        chatViewModel.search.open()
     }
 }
 

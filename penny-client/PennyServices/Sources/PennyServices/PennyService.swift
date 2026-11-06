@@ -246,6 +246,12 @@ extension PennyService {
         return page
     }
 
+    /// Find-in-chat (#3045): every local message matching `query`, newest
+    /// first — see `DatabaseService.searchMessages`.
+    public func searchMessages(_ query: String, filter: MessagePageFilter = .all) -> [MessageKeywordMatch] {
+        databaseService.searchMessages(query, filter: filter)
+    }
+
     func requestEmbedding(_ text: String) async throws -> Data {
         guard canSend else { throw PennyEmbeddingError.disconnected }
         let requestID = UUID().uuidString

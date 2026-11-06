@@ -211,6 +211,32 @@ struct DatabaseServiceTests {
         #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .collector)).messages.map(\.id) == [7])
     }
 
+    @Test func searchMessagesMatchesCaseInsensitivelyNewestFirstAndEscapesWildcards() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        database.save(message: makeMessage(id: 1, content: "Book the ferry for Saturday"))
+        database.save(message: makeMessage(id: 2, content: "No mention of boats here", sourceHint: "Notifier"))
+        database.save(message: makeMessage(id: 3, content: "The FERRY is booked for 9:30"))
+        database.save(message: makeMessage(id: 4, content: "A 50% off ferry sale this weekend"))
+        database.save(message: makeMessage(id: 5, content: "A 50X off coupon too", sourceHint: "Chat"))
+
+        let matches = database.searchMessages("ferry", filter: .all)
+
+        #expect(matches.map(\.id) == [4, 3, 1])
+        #expect(matches.map(\.createdAt) == [4, 3, 1].map { Date(timeIntervalSince1970: TimeInterval($0)) })
+
+        // The literal "%" in the query must not act as a SQL LIKE wildcard.
+        #expect(database.searchMessages("50%", filter: .all).map(\.id) == [4])
+        #expect(database.searchMessages("50%", filter: .all).map(\.id).contains(5) == false)
+
+        // A filter narrows the same search the same way it narrows paging.
+        #expect(database.searchMessages("ferry", filter: .notifier).isEmpty)
+
+        // An empty (or all-whitespace) query matches nothing — never every row.
+        #expect(database.searchMessages("", filter: .all).isEmpty)
+        #expect(database.searchMessages("   ", filter: .all).isEmpty)
+    }
+
     @Test func messageIdentityHelpersUsePersistedRows() {
         let database = DatabaseService()
         database.setupForTesting()

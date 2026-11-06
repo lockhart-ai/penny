@@ -128,6 +128,11 @@ extension MessageView {
         var hasMoreOlderMessages = false
         var scrollToBottomRequest = 0
         var shouldSettleScrollToBottom = true
+        /// Find-in-chat's state (#3045) — see `MessageView+Search.swift`.
+        /// `var`, not `let`: the chrome row's `$chatViewModel.search.query`
+        /// binding needs a writable key path to reach through, even though
+        /// `search` itself (a reference type) is never reassigned.
+        var search = ChatSearchState()
 
         // MARK: Live dock (#3042)
         var dockPhase: DockPhase = .hidden
@@ -177,6 +182,7 @@ extension MessageView {
             let resolvedClient = client ?? PennyWebSocketClient()
             self.client = resolvedClient
             self.messagePageSize = max(1, messagePageSize)
+            search.attach(resolvedClient)
         }
 
         /// The live dock (#3042) only shows on the filters that read as

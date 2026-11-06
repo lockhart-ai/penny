@@ -9,7 +9,6 @@ struct MessageView: View {
     @Environment(\.shellOpenPrompts) private var shellOpenPrompts
     @State private var viewModel: ViewModel
     @State private var presentedCardMessage: ChatMessage?
-    @State private var isShowingSearchStory: Bool
     @State private var messageFrames: [Int: CGRect] = [:]
     @State private var messageScrollFrames: [Int: CGRect] = [:]
     @State private var keyboardSettledScrollTask: Task<Void, Never>?
@@ -32,21 +31,16 @@ struct MessageView: View {
     /// opacity instead of animating it, so the transition is screenshottable.
     private let storyDockResolveProgress: Double?
 
-    /// `presentedCardMessage` and `isShowingSearchStory` only exist so story
-    /// mode (#2965) can open the card detail sheet or the search screen
-    /// already presented over the chat story. They default to today's
-    /// behaviour, so `MessageView()` is unchanged, and `isShowingSearchStory`
-    /// is a seam separate from the real `NavigationLink` search entry point
-    /// below — it never changes that path.
+    /// `presentedCardMessage` only exists so story mode (#2965) can open the
+    /// card detail sheet already presented over the chat story. It defaults
+    /// to today's behaviour, so `MessageView()` is unchanged.
     init(
         viewModel: ViewModel? = nil,
         presentedCardMessage: ChatMessage? = nil,
-        isShowingSearchStory: Bool = false,
         dockResolveProgress: Double? = nil
     ) {
         _viewModel = State(initialValue: viewModel ?? ViewModel())
         _presentedCardMessage = State(initialValue: presentedCardMessage)
-        _isShowingSearchStory = State(initialValue: isShowingSearchStory)
         storyDockResolveProgress = dockResolveProgress
     }
 
@@ -66,13 +60,6 @@ struct MessageView: View {
             .toolbar(.hidden, for: .navigationBar)
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
-            }
-            .navigationDestination(isPresented: $isShowingSearchStory) {
-                MessageSearchView(client: viewModel.client) { message in
-                    withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
-                        viewModel.startReply(to: message)
-                    }
-                }
             }
             .coordinateSpace(name: messageRootCoordinateSpace)
             .onPreferenceChange(MessageFramePreferenceKey.self) { frames in
@@ -180,6 +167,22 @@ struct MessageView: View {
                     animated: false,
                     shouldSettleLayout: viewModel.shouldSettleScrollToBottom
                 )
+            }
+            .onChange(of: viewModel.search.currentMatchID) { _, matchID in
+                scrollToSearchMatch(matchID, with: proxy)
+            }
+        }
+    }
+
+    /// Find-in-chat (#3045): pages further back if the match isn't loaded
+    /// yet, then centres it — the same centring the mock uses for the
+    /// current match, `UnitPoint(x: 0.5, y: 0.45)`.
+    private func scrollToSearchMatch(_ matchID: Int?, with proxy: ScrollViewProxy) {
+        guard let matchID else { return }
+        Task {
+            await viewModel.loadUntilSearchMatchIsPresent(matchID)
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(matchID, anchor: UnitPoint(x: 0.5, y: 0.45))
             }
         }
     }
@@ -417,31 +420,37 @@ private extension MessageView {
                 .id(MessageTopAnchorID(messageID: message.id))
                 .accessibilityHidden(true)
 
-            ChatMessageView(message: message, layout: layout, isQueued: viewModel.isMessageQueued(message.id))
-                .id(message.id)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: MessageFramePreferenceKey.self,
-                            value: [message.id: MessageFrameGeometry(
-                                root: geometry.frame(in: .named(messageRootCoordinateSpace)),
-                                scroll: geometry.frame(in: .named(messageScrollCoordinateSpace))
-                            )]
-                        )
-                    }
+            ChatMessageView(
+                message: message,
+                layout: layout,
+                isQueued: viewModel.isMessageQueued(message.id),
+                searchQuery: viewModel.search.highlightQuery,
+                isCurrentSearchMatch: message.id == viewModel.search.currentMatchID
+            )
+            .id(message.id)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: MessageFramePreferenceKey.self,
+                        value: [message.id: MessageFrameGeometry(
+                            root: geometry.frame(in: .named(messageRootCoordinateSpace)),
+                            scroll: geometry.frame(in: .named(messageScrollCoordinateSpace))
+                        )]
+                    )
                 }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if layout == .message {
-                        onTap?(message)
-                        return
-                    }
-                    presentedCardMessage = message
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if layout == .message {
+                    onTap?(message)
+                    return
                 }
-                .contextMenu {
-                    messageContextMenu(for: message)
-                }
+                presentedCardMessage = message
+            }
+            .contextMenu {
+                messageContextMenu(for: message)
+            }
         }
         .modifier(IncomingMessageArrivalModifier(isEnabled: arrivalAnimatedMessageIDs.contains(message.id)) {
             arrivalAnimatedMessageIDs.remove(message.id)

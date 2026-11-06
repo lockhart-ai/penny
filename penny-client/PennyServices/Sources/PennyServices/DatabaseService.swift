@@ -208,6 +208,27 @@ extension DatabaseService {
         }
     }
 
+    /// Find-in-chat (#3045): every local message whose content contains
+    /// `query`, case-insensitive, newest first — the whole local history,
+    /// not just what's currently paged into the chat. An empty query
+    /// matches nothing (an unescaped empty `LIKE` pattern would match
+    /// every row).
+    @MainActor
+    func searchMessages(_ query: String, filter: MessagePageFilter) -> [MessageKeywordMatch] {
+        setup()
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return [] }
+
+        do {
+            return try measureQuery("search_messages") {
+                try MessageModel.search(database: databaseConnection, query: trimmedQuery, filter: filter)
+            }
+        } catch {
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
+            return []
+        }
+    }
+
     func minimumMessageID() -> Int? {
         setup()
 
@@ -540,6 +561,36 @@ struct MessageModel: Codable, Identifiable, Hashable {
         let models = fetched.prefix(limit).reversed()
         let nextCursor = models.first.map { MessagePageCursor(createdAt: $0.createdAt, id: $0.id) }
         return (Array(models), nextCursor, hasMore)
+    }
+
+    /// The `LIKE` escape character and the pattern it protects `query`
+    /// with: `%` and `_` are SQL `LIKE` wildcards, so a literal occurrence
+    /// in the user's query is escaped before it reaches SQLite — a search
+    /// for "50%" matches the literal text "50%", not "50" followed by
+    /// anything.
+    private static let likeEscapeCharacter: Character = "\\"
+
+    private static func likePattern(for query: String) -> String {
+        var escaped = ""
+        escaped.reserveCapacity(query.count)
+        for character in query {
+            if character == likeEscapeCharacter || character == "%" || character == "_" {
+                escaped.append(likeEscapeCharacter)
+            }
+            escaped.append(character)
+        }
+        return "%\(escaped)%"
+    }
+
+    @MainActor
+    fileprivate static func search(database: Connection, query: String, filter: MessagePageFilter) throws -> [MessageKeywordMatch] {
+        let pattern = likePattern(for: query)
+        let matchingRows = filteredTable(for: filter)
+            .filter(contentExp.like(pattern, escape: likeEscapeCharacter))
+            .order(createdAtExp.desc, idExp.desc)
+        return try database.prepare(matchingRows).map { row in
+            MessageKeywordMatch(id: row[idExp], createdAt: row[createdAtExp])
+        }
     }
 
     fileprivate static func minimumID(database: Connection) throws -> Int? {
