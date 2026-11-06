@@ -11,6 +11,9 @@ struct AppShellView: View {
     @State private var selected: TopTab
     @State private var chatViewModel: MessageView.ViewModel
     @State private var browserModel: DataBrowserViewModel
+    /// The top safe-area inset (the status bar), which the top fade holds
+    /// opaque through.
+    @State private var topInset: CGFloat = 0
 
     /// `chatViewModel` and `browserModel` are injectable so story mode
     /// (#2965) can render any tab from fixtures; the defaults are the real
@@ -43,6 +46,7 @@ struct AppShellView: View {
             chromeRow
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .onGeometryChange(for: CGFloat.self, of: { $0.safeAreaInsets.top }, action: { topInset = $0 })
         .onAppear {
             syncBrowserTab(with: selected)
             browserModel.updateConnection(chatViewModel.client.canSend)
@@ -98,15 +102,19 @@ struct AppShellView: View {
 
     // MARK: Chrome
 
-    /// The soft fade over the whole chrome zone: content scrolling up a tab
-    /// dissolves into the background before it reaches the nav row. Fully
-    /// clear `topFadeBleed` below the row's bottom, so a tab's first content
-    /// at `contentTopClearance` sits just below it.
+    /// The soft fade over the whole chrome zone: fully opaque from the
+    /// screen's top through the nav row's bottom (status bar + gap + row),
+    /// then fading out over `topFadeBleed` — a tab's first content at
+    /// `contentTopClearance` sits exactly where the fade clears. Sized from
+    /// the measured top safe-area inset, as the mock's `ChatCanvasTopFade`.
     private var topFade: some View {
-        TopFade(background: Color(.systemGroupedBackground))
-            .frame(height: Tokens.chromeTopGap + Tokens.navControlHeight + Tokens.topFadeBleed)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .ignoresSafeArea(edges: .top)
+        TopFade(
+            background: Color(.systemGroupedBackground),
+            height: topInset + Tokens.chromeTopGap + Tokens.navControlHeight + Tokens.topFadeBleed,
+            opaqueThrough: topInset + Tokens.chromeTopGap + Tokens.navControlHeight
+        )
+        .frame(maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea(edges: .top)
     }
 
     private var chromeRow: some View {
