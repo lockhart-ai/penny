@@ -710,6 +710,30 @@ def describe_schedule_field(
     return describe_schedule(row, timezone_name, now=now)
 
 
+def describe_schedule_rule(row: MemoryRow, timezone_name: str | None = None) -> str:
+    """``describe_schedule``'s STABLE half (#3055): the plain-words cadence with its
+    exact rule span, and nothing after it — no next-run clause, so no ``now`` and no
+    clock read.  This is the clause the cached static prompt prefix renders
+    (``SelfStateHeader._cadence``): the next-run part changes as the clock passes each
+    occurrence or a run moves it, which would rebuild the prefix on every turn.
+    Empty for no schedule, like ``describe_schedule``."""
+    if row.schedule is None:
+        return ""
+    return _describe_rule_with_span(row.schedule, render_schedule_clause(row), timezone_name)
+
+
+def describe_next_run(row: MemoryRow, timezone_name: str | None, *, now: datetime) -> str:
+    """``describe_schedule``'s VOLATILE half (#3055): ``next run <when or due now>`` —
+    the clause ``_next_run_clause`` renders, without its joining comma, so the per-turn
+    dynamic ``### Job status`` line states it on its own.  Empty for no schedule, no
+    occurrence left, or an archived row (``_next_run_clause``'s own rules), in which
+    case the line simply drops the clause."""
+    if row.schedule is None:
+        return ""
+    clause = _next_run_clause(row, row.schedule, timezone_name, now)
+    return clause.removeprefix(", ")
+
+
 # ── The end condition: ISO first, then the user's own words (#1857) ──────────
 
 # What dateparser is told about the words it is reading: they are the USER's, so they
