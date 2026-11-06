@@ -38,7 +38,7 @@ from penny.llm.models import (
     LlmToolCallFunction,
     LlmToolParseError,
 )
-from penny.llm.raw_template import parse_completion, split_thought
+from penny.llm.raw_template import parse_completion
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
@@ -108,7 +108,7 @@ def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None, agent
 
     Returns (agent, db, max_steps) — max_steps and inbox=NO_INBOX must be passed to agent.run().
     Pass runtime_overrides={key: value} to override runtime config params for the test.
-    Pass agent_cls to build a different polarity (e.g. ``_ChatRerollAgent`` below) — the
+    Pass agent_cls to build a different polarity (e.g. ``ChatAgent``) — the
     class, not an instance, since all of this method's own setup still applies.
     """
     db = Database(test_db)
@@ -154,14 +154,6 @@ def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None, agent
     # because they exit via a terminator tool call (done / send_message).
     agent._keep_tools_on_final_step = False
     return agent, db, max_steps
-
-
-class _ChatRerollAgent(ChatAgent):
-    """A real ``ChatAgent``, built on ``_make_agent``'s plain test setup (#2790) —
-    so a loop test exercises ``ChatAgent``'s own invalid-draw shapes AND notes, not
-    a copy of them pasted onto a lighter base.  (A plain instance attribute can't
-    stand in for ``_retry_note_for_condition``: its zero-arg ``super()`` call binds
-    to the class it was textually defined on, which only a real subclass is.)"""
 
 
 class TestReasoningStripped:
@@ -1186,15 +1178,13 @@ def _make_raw_template_agent(test_db, monkeypatch: pytest.MonkeyPatch, raw_creat
 
 class TestToolParseErrorOnRawTemplate:
     """A raw-template draw whose tool call doesn't parse (#2854) is stamped
-    TOOL_PARSE_ERROR with its thinking kept, and the redraw is shown the
-    discarded draft plus a note naming what went wrong — unlike the
-    chat-transport's own parse failure (``TestToolParseErrorReroll`` above),
-    which carries no raw completion to split and stays a blind reroll."""
+    TOOL_PARSE_ERROR with its thinking kept, and the reroll is blind like every
+    other discard (#3052) — the redraw is drawn on the unchanged context, shown
+    neither the discarded draft nor a note.  The raw completion still survives in
+    the failed draw's own logged row (#2833), which is where diagnosis reads it."""
 
     @pytest.mark.asyncio
-    async def test_parse_failure_is_discarded_and_the_redraw_is_shown_the_draft(
-        self, test_db, monkeypatch
-    ):
+    async def test_parse_failure_is_discarded_and_the_redraw_is_blind(self, test_db, monkeypatch):
         malformed = (
             "<|channel>thought\nchecking the catalog\n<channel|>"
             "<|tool_call>call:search{query}<tool_call|>"
@@ -1204,18 +1194,6 @@ class TestToolParseErrorOnRawTemplate:
             '{query:<|"|>widgets<|"|>}<tool_call|>'
         )
         final = "<|channel>thought\nwrapping up\n<channel|>Here are the results."
-
-        # Derived off the SAME parser the client calls, never hand-predicted —
-        # the exact reason a real draw would carry, and the exact draft text
-        # left after its thought block is split off.
-        with pytest.raises(LlmToolParseError) as exc_info:
-            parse_completion(malformed)
-        expected_reason = str(exc_info.value)
-        _expected_thinking, expected_draft = split_thought(malformed)
-        expected_note = (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
-            + Prompt.TOOL_PARSE_ERROR_RETRY_NOTE.format(reason=expected_reason)
-        )
 
         requests: list[dict] = []
 
@@ -1237,14 +1215,16 @@ class TestToolParseErrorOnRawTemplate:
         first_row = rows[0]
         assert first_row.discard_reason == "tool_parse_error"
         assert first_row.thinking == "checking the catalog"
+        # The raw completion the model actually drafted is what the failed row
+        # keeps (#2833) — the diagnosis read, since the redraw is never shown it.
+        with pytest.raises(LlmToolParseError):
+            parse_completion(malformed)
+        assert malformed in json.loads(first_row.response)["choices"][0]["text"]
 
-        # The redraw (the SECOND raw completion) is built from a prompt that
-        # renders the discarded draft and the note — both whole literals, not
-        # fragments of either.
+        # The reroll is blind: the second raw completion is requested with a prompt
+        # byte-identical to the first — no draft, no note.
         assert len(requests) == 3
-        second_prompt = requests[1]["prompt"]
-        assert expected_draft in second_prompt
-        assert expected_note in second_prompt
+        assert requests[1]["prompt"] == requests[0]["prompt"]
 
         assert "tool_parse_error×1" in run_facts_line(list(rows), None)
 
@@ -1345,10 +1325,8 @@ class TestDegenerateOutputGuard:
         assert is_call_fragment_reply('I saved it as {"key": "price"} for you') is False
         assert is_call_fragment_reply("An empty JSON object is {}.") is False
 
-        # The ChatAgent polarity, built on the test agent, with its real notes.
-        agent, _db, max_steps = _make_agent(
-            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
-        )
+        # The ChatAgent polarity, built on the test agent.
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3, agent_cls=ChatAgent)
         draft = '{"memory": "rip? wait we need"}'
 
         def handler(request, count):
@@ -1362,17 +1340,11 @@ class TestDegenerateOutputGuard:
             "test", max_steps=max_steps, call_link=CallLink.new_top(), inbox=NO_INBOX
         )
         assert response.answer == "here is the real answer"
-        # Exactly one reroll, shown the draft plus the note (not blind, #2790) — the
-        # fragment itself never becomes the redraw's OWN content.
+        # Exactly one reroll, byte-identical to the discarded draw's own request
+        # (blind, #3052) — the fragment never enters the redraw's own content.
         assert len(mock_llm.requests) == 2
-        redraw = mock_llm.requests[1]["messages"]
-        assert redraw[:-2] == mock_llm.requests[0]["messages"]
-        draft_turn, note_turn = redraw[-2], redraw[-1]
-        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
-        assert note_turn["role"] == "user"
-        assert note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.CALL_FRAGMENT_RETRY_NOTE
-        )
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        assert draft not in str(mock_llm.requests[1]["messages"])
 
         await agent.close()
 
@@ -3709,9 +3681,9 @@ class TestCollectorInvalidDrawReroll:
 
     @pytest.mark.asyncio
     async def test_prose_draw_is_discarded_and_the_redraw_proceeds(self, test_db, mock_llm):
-        """Work, then prose ("Done. Summary: ...") → discarded, the redraw shown the
-        prose plus a note that nothing in it ran, and a clean redraw closes the cycle
-        with a real done().
+        """Work, then prose ("Done. Summary: ...") → discarded, the redraw drawn BLIND
+        on the unchanged context (no draft, no note — #3052), and a clean redraw closes
+        the cycle with a real done().
 
         The realistic production shape: the model does real work, THEN narrates
         completion as prose instead of calling done()."""
@@ -3731,17 +3703,17 @@ class TestCollectorInvalidDrawReroll:
             "", max_steps=max_steps, call_link=CallLink.new_top(), inbox=NO_INBOX
         )
 
-        # Exactly one reroll, shown the draft plus the note — never a nudge turn, and
-        # never stored (#2790).
+        # Exactly one reroll, byte-identical to the discarded draw's own request —
+        # nothing is ever appended for the redraw to read (#3052).
         assert len(mock_llm.requests) == 3
-        redraw = mock_llm.requests[2]["messages"]
-        assert redraw[:-2] == mock_llm.requests[1]["messages"]
-        draft_turn, note_turn = redraw[-2], redraw[-1]
-        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
-        assert note_turn["role"] == "user"
-        assert note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
-        )
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        assert draft not in str(mock_llm.requests[2]["messages"])
+        # The discarded draw's own row carries the condition it was rejected for
+        # (#2702); the accepted re-draw follows with no mark.
+        with Session(db.engine) as session:
+            rows = session.exec(select(PromptLog).order_by(col(PromptLog.id))).all()
+        discard_reasons = [row.discard_reason for row in rows if row.discard_reason]
+        assert discard_reasons == [ConditionKey.TEXT_INSTEAD_OF_TOOL.value]
         # The cycle closed with a real done() record (not a lost/failed cycle).
         assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
@@ -3778,9 +3750,9 @@ class TestCollectorInvalidDrawReroll:
     async def test_empty_draw_is_the_same_invalid_draw(self, test_db, mock_llm):
         """An EMPTY draw (no text, no tool call) is a draw with no call like any
         other — ``TEXT_INSTEAD_OF_TOOL``, the collector's own state-keyed catch-all,
-        not a separate empty condition — so it gets the SAME note (#2790), not the
-        old collector-flavoured empty-content nudge that retired with the rest of
-        the family."""
+        not a separate empty condition — and it rerolls blind like every other
+        (#3052), not the old collector-flavoured empty-content nudge that retired
+        with the rest of the family."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
@@ -3798,14 +3770,10 @@ class TestCollectorInvalidDrawReroll:
 
         assert len(mock_llm.requests) == 3
         redraw = mock_llm.requests[2]["messages"]
-        assert redraw[:-2] == mock_llm.requests[1]["messages"]
-        draft_turn, note_turn = redraw[-2], redraw[-1]
-        assert draft_turn["role"] == "assistant" and draft_turn["content"] == ""
-        assert note_turn["role"] == "user"
-        assert note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.TEXT_INSTEAD_OF_TOOL_RETRY_NOTE
-        )
-        assert "Please provide your response" not in str(redraw)
+        # An EMPTY draw is a draw with no call like any other: the redraw is blind,
+        # byte-identical to the discarded draw's own request — nothing is appended
+        # for it to read (#3052).
+        assert redraw == mock_llm.requests[1]["messages"]
         assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
         await agent.close()
@@ -3814,8 +3782,8 @@ class TestCollectorInvalidDrawReroll:
     async def test_done_as_json_text_is_the_same_invalid_draw(self, test_db, mock_llm):
         """The argless ``done()`` composed as a JSON envelope but never routed through
         the tool channel (gpt-oss's Harmony fallback, #1569) is discarded like any
-        other call-less draw — shown the draft plus a note that the run hasn't ended
-        (#2790) — and the model's own real done() closes the cycle."""
+        other call-less draw — the redraw drawn blind on the unchanged context
+        (#3052) — and the model's own real done() closes the cycle."""
         agent, db, max_steps = _make_background_agent(test_db)
         draft = '{"name": "done", "arguments": {}}'
 
@@ -3833,14 +3801,13 @@ class TestCollectorInvalidDrawReroll:
         )
 
         assert len(mock_llm.requests) == 3
-        redraw = mock_llm.requests[2]["messages"]
-        assert redraw[:-2] == mock_llm.requests[1]["messages"]
-        draft_turn, note_turn = redraw[-2], redraw[-1]
-        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
-        assert note_turn["role"] == "user"
-        assert note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.DONE_JSON_BAIL_RETRY_NOTE
-        )
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        assert draft not in str(mock_llm.requests[2]["messages"])
+        # The discarded envelope's own row says why it was not used (#2702).
+        with Session(db.engine) as session:
+            rows = session.exec(select(PromptLog).order_by(col(PromptLog.id))).all()
+        discard_reasons = [row.discard_reason for row in rows if row.discard_reason]
+        assert discard_reasons == [ConditionKey.DONE_JSON_BAIL.value]
         done_records = [r for r in response.tool_calls if r.tool == "stub_terminator"]
         assert len(done_records) == 1
         assert done_records[0].arguments == {}
@@ -3905,16 +3872,15 @@ class TestChatCallShapedTextReroll:
     @pytest.mark.asyncio
     async def test_call_as_text_is_discarded_and_rerolled(self, test_db, mock_llm):
         """Real search, then a browse call emitted as JSON *text* → discarded, and the
-        redraw is shown the draft plus a note (#2790) — not blind, since this is the
-        model's own choice, not a transport artifact.  The model's prose answer
-        stands. This draft is a bare-args fragment with no envelope and no tool
-        named in it: before #2813 the framework's ``reasoning`` key alone
-        identified this as a call-as-text bail; now that signal is gone, it's
-        caught instead as CALL_FRAGMENT_REPLY (any ``{"…`` that isn't the full
-        envelope) — still discarded and rerolled, just under that note."""
-        agent, db, max_steps = _make_agent(
-            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
-        )
+        redraw is drawn BLIND on the unchanged context (#3052) — this is the model's
+        own choice rather than a transport artifact, but a redraw shown its own broken
+        call imitates it, measured.  The model's prose answer stands. This draft is a
+        bare-args fragment with no envelope and no tool named in it: before #2813 the
+        framework's ``reasoning`` key alone identified this as a call-as-text bail;
+        now that signal is gone, it's caught instead as CALL_FRAGMENT_REPLY (any
+        ``{"…`` that isn't the full envelope) — still discarded and rerolled, just
+        under that condition's mark."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3, agent_cls=ChatAgent)
         draft = '{"queries": ["deepest lake"], "reasoning": "read the page"}'
 
         def handler(request, count):
@@ -3935,18 +3901,18 @@ class TestChatCallShapedTextReroll:
             inbox=NO_INBOX,
         )
 
-        # The JSON blob never became the reply — the redraw shows it back as a draft
-        # plus the note, and the clean prose answer is what the turn finalizes.
+        # The JSON blob never became the reply — the redraw is byte-identical to the
+        # discarded draw's own request, and the clean prose answer is what the turn
+        # finalizes.
         assert response.answer == "I couldn't find that app anywhere."
         assert len(mock_llm.requests) == 3
-        redraw = mock_llm.requests[2]["messages"]
-        assert redraw[:-2] == mock_llm.requests[1]["messages"]
-        draft_turn, note_turn = redraw[-2], redraw[-1]
-        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
-        assert note_turn["role"] == "user"
-        assert note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.CALL_FRAGMENT_RETRY_NOTE
-        )
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        assert draft not in str(mock_llm.requests[2]["messages"])
+        # The discarded fragment's own row says why it was not used (#2702).
+        with Session(db.engine) as session:
+            rows = session.exec(select(PromptLog).order_by(col(PromptLog.id))).all()
+        discard_reasons = [row.discard_reason for row in rows if row.discard_reason]
+        assert discard_reasons == [ConditionKey.CALL_FRAGMENT_REPLY.value]
 
         await agent.close()
 
@@ -4072,19 +4038,15 @@ class TestChatEmptyDrawReroll:
     @pytest.mark.asyncio
     async def test_the_production_sequence_never_grows_the_conversation(self, test_db, mock_llm):
         """The observed sequence, recreated: a tool call whose arguments collapsed is
-        discarded (a true positive for the punctuation guard, stays blind — a transport
-        artifact, not the model's choice), the re-roll on the unchanged context comes
-        back EMPTY (the model's own choice — shown a note, no draft), and the third
-        draw is a clean call.
+        discarded (a true positive for the punctuation guard), the re-roll on the
+        unchanged context comes back EMPTY, and the third draw is a clean call.  Both
+        discards reroll blind (#3052) — the redraw after each is byte-identical to the
+        discarded draw's own request, whatever family the discard belongs to.
 
-        The collapse leaves no trace at all; the EMPTY draw leaves exactly one note
-        turn and no assistant turn — never the draft-plus-note shape the other
-        model-choice conditions get, since there is no draft worth echoing back; and
-        the clean call executes, so the write the model was in the middle of is not
-        lost."""
-        agent, db, max_steps = _make_agent(
-            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
-        )
+        The collapse leaves no trace at all; the EMPTY draw leaves nothing appended
+        either — and the clean call executes, so the write the model was in the middle
+        of is not lost."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3, agent_cls=ChatAgent)
 
         def handler(request, count):
             if count == 1:
@@ -4109,29 +4071,26 @@ class TestChatEmptyDrawReroll:
         )
 
         assert len(mock_llm.requests) == 4
-        # The collapse (transport, blind) leaves the context exactly as it was.
+        # Every redraw is byte-identical to the discarded draw's own request — no
+        # draft, no note, no residue of either bad draw (#3052).
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
-        # The EMPTY draw (the model's own choice) is shown ONLY the note — no draft,
-        # since an empty draw has nothing worth echoing back (#2790).
-        redrawn = mock_llm.requests[2]["messages"]
-        assert redrawn[:-1] == mock_llm.requests[1]["messages"]
-        note_turn = redrawn[-1]
-        assert note_turn["role"] == "user" and note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.EMPTY_DRAW_RETRY_NOTE
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[0]["messages"]
+        assert "?????" not in str(mock_llm.requests[2]["messages"])
+        assert not any(
+            message.get("role") == MessageRole.ASSISTANT
+            for message in mock_llm.requests[2]["messages"]
         )
-        # Still no collapse residue, and still no ASSISTANT turn from either bad draw —
-        # only the note's own user turn is new.
-        assert "?????" not in str(redrawn)
-        assert not any(message.get("role") == MessageRole.ASSISTANT for message in redrawn)
         # The clean draw's call ran, and the turn ends on the model's own reply.
         assert [record.tool for record in response.tool_calls] == ["search"]
         assert response.tool_calls[0].arguments["query"] == "harbour lantern price"
         assert response.answer == "It is nine credits."
-        # The collapse's own durable trace: two persisted draws on one context (#1841).
-        # The EMPTY draw's redraw is no longer a byte-identical re-roll (it carries the
-        # note), so this reads the collapse pair alone — accepted, the same shape #2698
-        # established for the dangling-link note.
+        # Each discard's own durable trace: two persisted draws on one context (#1841),
+        # and each rejected draw's row names why it was not used (#2702).
         assert draw_rerolled(db)
+        with Session(db.engine) as session:
+            rows = session.exec(select(PromptLog).order_by(col(PromptLog.id))).all()
+        discard_reasons = [row.discard_reason for row in rows if row.discard_reason]
+        assert discard_reasons == [ConditionKey.DEGENERATE_OUTPUT.value, ConditionKey.EMPTY.value]
 
         await agent.close()
 
@@ -4180,11 +4139,9 @@ class TestChatEmptyDrawReroll:
     @pytest.mark.asyncio
     async def test_garbage_shaped_draw_after_a_tool_call_is_rerolled(self, test_db, mock_llm):
         """A draw that carries no real words — a bare markdown separator — is the same
-        empty draw, so it is re-rolled (shown the note-only redraw, #2790) rather than
-        finalized over a real prior answer."""
-        agent, db, max_steps = _make_agent(
-            test_db, mock_llm, max_steps=3, agent_cls=_ChatRerollAgent
-        )
+        empty draw, so it is re-rolled blind on the unchanged context (#3052) rather
+        than finalized over a real prior answer."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3, agent_cls=ChatAgent)
 
         def handler(request, count):
             if count == 1:
@@ -4205,11 +4162,7 @@ class TestChatEmptyDrawReroll:
         assert response.answer == "It is nine credits."
         assert len(mock_llm.requests) == 3
         redrawn = mock_llm.requests[2]["messages"]
-        assert redrawn[:-1] == mock_llm.requests[1]["messages"]
-        note_turn = redrawn[-1]
-        assert note_turn["role"] == "user" and note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.EMPTY_DRAW_RETRY_NOTE
-        )
+        assert redrawn == mock_llm.requests[1]["messages"]
         assert "---" not in str(redrawn)
 
         await agent.close()
@@ -4366,9 +4319,10 @@ class TestResponseValidators:
         bad = HallucinatedUrlValidator().check(resp, _ctx(source_text="unrelated text"))
         assert isinstance(bad, Retry) and bad.condition == ConditionKey.HALLUCINATED_URLS
 
-        # A link citation the run's table does not hold is rejected with a note
-        # naming which links DO exist (#2717) — the action-space repair beside the
-        # raw-URL branch, which never fires for a handle-cited link.
+        # A link citation the run's table does not hold is rejected (#2717) — the
+        # branch beside the raw-URL check, which never fires for a handle-cited
+        # link.  The redraw is blind (#3052): the Retry carries no note, and the
+        # readable summary of which links DO exist goes to the log only.
         table = HandleTable()
         for i in range(1, 25):
             table.register(f"https://source.example/page-{i}")
@@ -4377,9 +4331,6 @@ class TestResponseValidators:
             cited, _ctx(source_text="some source", handles=table)
         )
         assert isinstance(dangling, Retry) and dangling.condition == ConditionKey.HALLUCINATED_URLS
-        assert dangling.note == (
-            "There is no link [27] in this turn; the links you have are [1]–[24]."
-        )
         # A citation the table holds proceeds — even with no raw URL in the source.
         ok_cite = _text_response("Read all about it, see [3].")
         assert isinstance(

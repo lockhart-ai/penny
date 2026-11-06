@@ -39,20 +39,15 @@ class Retry(BaseModel):
     ``condition`` (a repeat of the same condition proceeds with what it has).
 
     A retry re-samples the state the draft was drawn from.  Nothing is written into
-    the conversation: not the draft, and not a note about it.  The conditions this
-    serves — markup, a refusal, an ungrounded URL — are usually not repeated by a
-    fresh draw, and when one is, the second draw proceeds because its condition is
-    spent.
-
-    ``note`` is the one exception: when a retry carries a note, the loop shows the
-    model its draft (assistant turn) plus the note (user turn) before re-drawing —
-    for a defect the model cannot usually see in its own draft.  The dangling-link
-    rejection (#2717) is one: the note names which numbered links exist, so the
-    re-draw cites a real one."""
+    the conversation: not the draft, and not a note about it — every redraw is blind
+    (#3052; the last exception, the dangling-link rejection's note, #2717, retired
+    with the measured finding that a redraw shown its own discarded draft imitates
+    it).  The conditions this serves — markup, a refusal, an ungrounded URL — are
+    usually not repeated by a fresh draw, and when one is, the second draw proceeds
+    because its condition is spent."""
 
     model_config = ConfigDict(frozen=True)
     condition: ConditionKey
-    note: str | None = None
 
 
 class Repair(BaseModel):
