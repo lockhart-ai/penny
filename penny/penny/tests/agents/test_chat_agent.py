@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from penny.agents.chat import ChatAgent
 from penny.agents.conversation_map import ConversationMap
@@ -25,7 +25,7 @@ from penny.agents.models import HistoryTurn, MessageRole
 from penny.changelog import ChangelogEntry
 from penny.constants import ChatPromptType, MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.models import Media, MessageLog, PromptLog
+from penny.database.models import Media, MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
@@ -325,6 +325,92 @@ async def test_static_system_prefix_unaffected_by_an_activity_only_change(db, te
     assert static_after == static_before
     assert dynamic_after != dynamic_before
     assert "heads up, done!" in dynamic_after
+
+
+@pytest.mark.asyncio
+async def test_static_system_prefix_survives_a_job_run_and_a_write(db, test_config, monkeypatch):
+    """The cache invariant (#3055): a job RUN and a job WRITE — the two events
+    that used to rebuild the static prefix on nearly every turn (the last-run
+    stamp and the written store's entry count rode its Jobs and Your memory
+    sections) — must leave the static leading system message BYTE-IDENTICAL,
+    while the per-turn dynamic message carries the new state: the run's
+    ``### Job status`` line and the written store's ``### Memory sizes`` count.
+    A job or a collection CHANGING — a user or config action — still correctly
+    rebuilds the prefix; that companion case is
+    ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    agent.config = test_config
+    agent._pending_page_context = None
+    agent._current_user = TEST_SENDER
+
+    with Session(db.engine) as session:
+        session.add(
+            MemoryRow(
+                name="hourly-watch",
+                type="collection",
+                description="a running job",
+                extraction_prompt="1. go",
+                schedule="FREQ=HOURLY",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.add(
+            MemoryRow(
+                name="watched",
+                type="collection",
+                description="the store it writes",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.commit()
+
+    static_before = await agent._build_system_prompt(TEST_SENDER)
+    dynamic_before = agent._dynamic_system_section()
+
+    # Between the two turns: the job's cycle ran (a completed collector run in
+    # the promptlog — the ledger row the last-run stamp reads) and wrote one
+    # entry (the write that used to tick the store map's count).
+    run_id = "run-cache-invariant"
+    with Session(db.engine) as session:
+        session.add(
+            PromptLog(
+                model="test-model",
+                messages="[]",
+                response=json.dumps({"choices": [{"message": {"tool_calls": []}}]}),
+                agent_name="collector",
+                run_id=run_id,
+                run_outcome="worked",
+                run_target="hourly-watch",
+                timestamp=datetime(2026, 1, 1, 12, 30, tzinfo=UTC),
+            )
+        )
+        session.add(
+            MemoryEntry(
+                memory_name="watched",
+                key="first finding",
+                content="value for first finding",
+                author="collector",
+                created_at=datetime(2026, 1, 1, 12, 30, tzinfo=UTC),
+                created_by_run_id=run_id,
+                last_written_by_run_id=run_id,
+            )
+        )
+        session.commit()
+
+    static_after = await agent._build_system_prompt(TEST_SENDER)
+    dynamic_after = agent._dynamic_system_section()
+
+    # The reused prefix: byte-identical across a run and a write.
+    assert static_after == static_before
+    # The volatile facts still render — in the per-turn dynamic message.
+    assert dynamic_after != dynamic_before
+    assert "### Job status" in dynamic_after
+    assert "- hourly-watch — " in dynamic_after
+    assert "last run WORKED 2026-01-01 12:30 UTC" in dynamic_after
+    assert "- watched 1 entries" in dynamic_after
 
 
 @pytest.mark.asyncio
@@ -2384,13 +2470,13 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "- collector-runs (log) — One entry per Collector cycle: the target + its "
     "generated structural record (outcome, counts, tool trace)\n"
     "- penny-messages (log) — Every outgoing Penny reply\n"
-    "- playlists (collection, 1 entries) — favorite playlists\n"
-    "- rules (collection, 0 entries) — Standing instructions the user has given: things "
+    "- playlists (collection) — favorite playlists\n"
+    "- rules (collection) — Standing instructions the user has given: things "
     "to always or never do\n"
     "- run-health (log) — One line per run: cost, discards, tool errors, and what was "
     "sent — chat and every job\n"
-    "- secrets (collection, 1 entries) — hidden\n"
-    "- tips (log, 1 entries) — useful tips\n"
+    "- secrets (collection) — hidden\n"
+    "- tips (log) — useful tips\n"
     "- user-messages (log) — Every incoming user message\n"
     "archived: `old-facts`"
 )
@@ -2408,6 +2494,12 @@ _BASIC_FLOW_STATE_EXPECTED = (
     "change · YYYY-MM-DD HH:MM UTC · old-facts created by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · secrets created by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · playlists created by user-run\n"
+    "\n"
+    "### Memory sizes\n"
+    "- playlists 1 entries\n"
+    "- rules 0 entries\n"
+    "- secrets 1 entries\n"
+    "- tips 1 entries\n"
     "\n"
     "### About the user\n"
     "- name: Test User\n"
