@@ -1,18 +1,23 @@
 import Foundation
 import SwiftUI
+import PennyDesign
 import PennyServices
 
+/// The chat tab's message row. The `.message` layout is the redesigned
+/// bubble (`MessageBubble` in PennyDesign): Penny in solid white — her
+/// image riding the top edge to edge — and the user in solid blue, each
+/// with the metadata line under it. Markdown, tables and links are parsed
+/// here and handed to the kit bubble as rendered content; a table wider
+/// than the bubble scrolls horizontally inside it. The `.compact` and
+/// `.media` layouts are the search results' cards, untouched by the
+/// bubble redesign.
 struct ChatMessageView: View {
     let message: ChatMessage
     let layout: MessageView.MessageLayout
-    let showsSourceHintInline: Bool
-    let fillsMessageRowWidth: Bool
 
-    init(message: ChatMessage, layout: MessageView.MessageLayout, showsSourceHintInline: Bool = true, fillsMessageRowWidth: Bool = false) {
+    init(message: ChatMessage, layout: MessageView.MessageLayout) {
         self.message = message
         self.layout = layout
-        self.showsSourceHintInline = showsSourceHintInline
-        self.fillsMessageRowWidth = fillsMessageRowWidth
     }
 
     private var messageContentBlocks: [ChatMessageContentBlock] {
@@ -32,18 +37,6 @@ struct ChatMessageView: View {
 
     private var firstAttachment: ImageAttachment? {
         message.imageAttachments.first
-    }
-
-    private var shouldFillIncomingMessageRow: Bool {
-        fillsMessageRowWidth || (layout == .message && !message.isOutgoing)
-    }
-
-    private var shouldFillMessageRowContent: Bool {
-        fillsMessageRowWidth || shouldFillIncomingMessageRow
-    }
-
-    private var messageRowContentAlignment: Alignment {
-        message.isOutgoing && !fillsMessageRowWidth ? .trailing : .leading
     }
 
     private var compactCardBackground: Color {
@@ -70,99 +63,71 @@ struct ChatMessageView: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
-    private var messageBubble: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if !message.imageAttachments.isEmpty {
-                messageAttachments
-            }
-
-            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                messageText
-                    .padding(.horizontal, replyContent == nil ? 12 : 10)
-                    .padding(.vertical, 9)
-            }
-        }
-        .frame(
-            maxWidth: shouldFillMessageRowContent || !message.imageAttachments.isEmpty ? .infinity : nil,
-            alignment: .leading
-        )
-        .background(compactCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    private var messageAttachments: some View {
-        VStack(spacing: 2) {
-            ForEach(message.imageAttachments) { attachment in
-                // Keep the whole image visible while leaving room for long digests.
-                ChatAttachmentLayout(imageSize: attachment.image.size) {
-                    Image(uiImage: attachment.image)
-                        .resizable()
-                        .scaledToFit()
-                        .accessibilityLabel("Image attachment")
-                }
-                .background(Color(.tertiarySystemGroupedBackground))
-            }
+    /// A table wider than the bubble scrolls horizontally inside it —
+    /// never overflowing the bubble or squashing below its minimum
+    /// column widths. Messages with a table stretch their bubble to the
+    /// row so the scroll view has a width to scroll against.
+    private var hasTableBlock: Bool {
+        messageContentBlocks.contains { block in
+            if case .table = block.kind { return true }
+            return false
         }
     }
 
-    @ViewBuilder
-    private var messageText: some View {
-        if message.isOutgoing {
-            outgoingMessageText
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(messageContentBlocks) { block in
-                    messageContentBlock(block)
-                }
+    /// The run's duration in seconds, as the metadata line shows it.
+    static func durationLabel(_ durationMs: Int?) -> String? {
+        guard let durationMs else { return nil }
+        let seconds = Int((Double(durationMs) / 1000).rounded())
+        return "\(seconds) s"
+    }
+
+    /// The message row: the redesigned kit bubble with the metadata line
+    /// under it. The quote is one-way — only the user's outgoing reply
+    /// carries one (`ChatReplyContentParser` reads it back out of the
+    /// message's own text); Penny's bubbles never show a quote. A
+    /// collector or notification message names its source as the metadata
+    /// line's first segment; chat replies carry no source.
+    private var messageRow: some View {
+        MessageBubble(
+            role: message.isOutgoing ? .user : .penny,
+            images: message.imageAttachments.map(\.image),
+            quote: message.isOutgoing ? replyContent?.summary : nil,
+            quoteAuthor: replyContent?.author ?? "Penny",
+            fillsWidth: hasTableBlock,
+            time: message.displayTime,
+            source: message.isOutgoing ? nil : message.sourceHint,
+            tools: message.toolCalls,
+            duration: Self.durationLabel(message.durationMs)
+        ) {
+            if message.isOutgoing {
+                outgoingMessageText
+            } else if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                messageContent
             }
-            .foregroundStyle(.primary)
-            .frame(maxWidth: shouldFillIncomingMessageRow ? .infinity : nil, alignment: .leading)
         }
     }
 
     @ViewBuilder
     private var outgoingMessageText: some View {
         if let replyContent {
-            VStack(alignment: .leading, spacing: 8) {
-                replyPreviewBlock(replyContent)
-
-                Text(replyContent.body)
-                    .font(.body)
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
+            Text(replyContent.body)
+                .font(.body)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
             Text(message.content)
                 .font(.body)
-                .foregroundStyle(.white)
-                .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
         }
     }
 
-    private func replyPreviewBlock(_ replyContent: ChatReplyContent) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(.white.opacity(0.86))
-                .frame(width: 3)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(replyContent.author)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                Text(replyContent.summary)
-                    .font(.body)
-                    .italic()
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
+    private var messageContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(messageContentBlocks) { block in
+                messageContentBlock(block)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(.white.opacity(0.38), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .lineLimit(nil)
+        .font(.body)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
@@ -173,12 +138,10 @@ struct ChatMessageView: View {
                 .lineLimit(nil)
                 .font(.body)
         case .table(let table):
-            markdownTable(table)
+            ScrollView(.horizontal, showsIndicators: false) {
+                ChatMarkdownTableView(table: table)
+            }
         }
-    }
-
-    private func markdownTable(_ table: ChatMarkdownTable) -> some View {
-        ChatMarkdownTableView(table: table)
     }
 
     var body: some View {
@@ -190,34 +153,6 @@ struct ChatMessageView: View {
         case .media:
             mediaCard
         }
-    }
-
-    private var messageRow: some View {
-        HStack {
-            if message.isOutgoing && !fillsMessageRowWidth {
-                Spacer(minLength: 48)
-            }
-
-            VStack(alignment: message.isOutgoing && !fillsMessageRowWidth ? .trailing : .leading, spacing: 5) {
-                if showsSourceHintInline, let sourceHint = message.sourceHint, !sourceHint.isEmpty {
-                    Text(sourceHint)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-
-                messageBubble
-
-                Text(message.displayTime)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: shouldFillMessageRowContent ? .infinity : nil, alignment: messageRowContentAlignment)
-
-            if !message.isOutgoing && !shouldFillIncomingMessageRow {
-                Spacer(minLength: 48)
-            }
-        }
-        .frame(maxWidth: .infinity)
     }
 
     private var compactCard: some View {
@@ -275,26 +210,6 @@ struct ChatMessageView: View {
         }
         .padding(message.isOutgoing ? 3 : 0)
         .background(message.isOutgoing ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-}
-
-private struct ChatAttachmentLayout: Layout {
-    let imageSize: CGSize
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = max(0, proposal.width ?? imageSize.width)
-        let aspectRatio = imageSize.width / max(imageSize.height, 1)
-        return CGSize(width: width, height: min(280, width / max(aspectRatio, 0.01)))
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        for subview in subviews {
-            subview.place(
-                at: CGPoint(x: bounds.midX, y: bounds.midY),
-                anchor: .center,
-                proposal: ProposedViewSize(bounds.size)
-            )
-        }
     }
 }
 

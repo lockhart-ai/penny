@@ -33,28 +33,29 @@ struct ChatMessageAttachmentLayoutTests {
         let textOnly = try render(content: digest, attachments: [], width: 320)
         let illustrated = try render(content: digest, width: 320)
         let largeText = try render(content: digest, width: 320, textSize: .accessibility3)
-        let wide = try render(content: digest, width: 600)
 
         // Adding an image must add height rather than compress or truncate the digest.
         #expect(illustrated.size.height > textOnly.size.height + 150)
         #expect(illustrated.size.width == 320)
-        let headerPixel = try pixel(illustrated, x: 160, y: 40)
-        let imagePixel = try pixel(image(), x: 240, y: 40)
-        #expect(headerPixel == imagePixel)
+        // The image band renders the attachment itself — the sampled band
+        // pixel equals the source image's pixel at the scaled point.
+        let bandPixel = try pixel(illustrated, x: 200, y: 40)
+        let imagePixel = try pixel(image(), x: 355, y: 71)
+        #expect(bandPixel == imagePixel)
         #expect(largeText.size.height > illustrated.size.height)
-        #expect(wide.size.height < illustrated.size.height)
         try save(illustrated, name: "digest")
         try save(largeText, name: "large-text")
     }
 
-    @Test func portraitHeaderIsBoundedAndImageOnlyHasNoCaptionPadding() throws {
+    @Test func portraitImageIsBoundedAndImageOnlyHasNoTextPadding() throws {
         let portrait = image(size: CGSize(width: 100, height: 800))
         let imageOnly = try render(content: "", attachments: [portrait], width: 320)
         let whitespace = try render(content: " \n ", attachments: [portrait], width: 320)
         let captioned = try render(content: "A short caption.", attachments: [portrait], width: 320)
 
-        // Source and timestamp fit in the remaining space above and below the 280pt header.
-        #expect(imageOnly.size.height < 340)
+        // The band crops an extreme aspect at the max band height; the
+        // metadata line rides below it, and text adds its own height.
+        #expect(imageOnly.size.height < 400)
         #expect(imageOnly.size.height == whitespace.size.height)
         #expect(captioned.size.height > imageOnly.size.height)
         try save(captioned, name: "portrait")

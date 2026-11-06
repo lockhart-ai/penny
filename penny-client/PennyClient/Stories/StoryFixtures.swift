@@ -14,6 +14,11 @@ enum StoryFixtures {
     private static let tinyImageDataURL =
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mM4MisHK2IYWhIA01xygQpKgBgAAAAASUVORK5CYII="
 
+    /// Another tiny solid-color PNG for the bubble story (#3038): a
+    /// landscape 8x5, a flair photo's 16:10 shape.
+    private static let tinyLandscapeImageDataURL =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAFCAIAAAD38zoCAAAAEUlEQVR4nGPQz5yIFTHQQQIARjYuaXcnV0MAAAAASUVORK5CYII="
+
     static func chatViewModel(
         messages: [ChatMessage],
         isConnected: Bool = true,
@@ -100,6 +105,51 @@ enum StoryFixtures {
                 > A medium-dark roast with a fine, even grind usually works best for stovetop brewing.
                 """,
                 sourceHint: nil, parentID: 2, imageAttachments: [], isOutgoing: true
+            )
+        ]
+    }
+
+    /// The bubble story's conversation (#3038), sized to fit one screen:
+    /// every Penny bubble carries her image, every bubble has its metadata
+    /// line (Penny's with tool count and seconds, the collector's with its
+    /// source segment), the user quotes one of Penny's, and the collector
+    /// digest carries a table that scrolls horizontally inside its bubble.
+    static var bubbleMessages: [ChatMessage] {
+        let now = Date()
+        func at(_ secondsAgo: TimeInterval) -> Date { now.addingTimeInterval(-secondsAgo) }
+
+        return [
+            ChatMessage(
+                id: 13, serverID: 13, createdAt: at(140),
+                content: "Calm seas — a light south-westerly, so a smooth crossing on the 9:30.",
+                sourceHint: nil, runID: "run:bubbles:2",
+                durationMs: 3_000,
+                imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
+            ),
+            ChatMessage(
+                id: 16, serverID: 16, createdAt: at(80),
+                content: """
+                Can you check the ferry prices for this weekend?
+
+                In reply to Penny:
+                > Calm seas — a light south-westerly, so a smooth crossing on the 9:30.
+                """,
+                sourceHint: nil, parentID: 13, imageAttachments: [], isOutgoing: true
+            ),
+            ChatMessage(
+                id: 17, serverID: 17, createdAt: at(40),
+                content: """
+                Here's tonight's price-watch digest.
+
+                | Shop | Price | Change |
+                | --- | --- | --- |
+                | North Coffee | $189 | −$10 |
+                | Bean Bros | $205 | — |
+                | Harbor Roasters | $212 | +$3 |
+                """,
+                sourceHint: "Price watch", runID: "run:bubbles:3",
+                toolCalls: 3, durationMs: 18_000,
+                imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
             )
         ]
     }
