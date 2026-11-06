@@ -3,10 +3,13 @@
  *
  * After the page reports "complete", polls extraction up to EXTRACT_MAX_RETRIES
  * times to handle JS-rendered content (e.g. Kagi search results, SPAs).
+ * Failures retrying can't fix (PDFs, downloads, unscriptable tabs) throw
+ * UnreadableUrlError at once — see unreadable.ts.
  */
 
 import { PageReading, TAB_LOAD_TIMEOUT_MS } from "../../protocol.js";
 import { logStep } from "../ws_log.js";
+import { UnreadableUrlError, isUnreadableFailure } from "./unreadable.js";
 
 const EXTRACT_MAX_RETRIES = 10;
 const EXTRACT_POLL_MS = 500;
@@ -30,26 +33,110 @@ export async function browseUrl(url: string): Promise<BrowseResult> {
     console.log(`[browse_url] opening: ${url} (attempt ${attempt}/${MAX_TAB_ATTEMPTS})`);
     logStep("browse", `attempt ${attempt}/${MAX_TAB_ATTEMPTS} for ${url}`);
     const tab = await openHiddenTab(url);
+    const guard = watchForDownload(tab, url);
     try {
-      logStep("browse", `waitForTabLoad tab=${tab.id}`);
-      await waitForTabLoad(tab.id!);
-      logStep("browse", `tab loaded tab=${tab.id}, polling content`);
-      const pageData = await pollForContent(tab.id!, url);
-      logStep("browse", `content settled tab=${tab.id}, formatting result`);
-      const result = await formatResult(pageData);
+      const result = await Promise.race([readTab(tab.id!, url), guard.promise]);
       logStep("browse", `result ready tab=${tab.id} (${result.text.length}ch)`);
       return result;
     } catch (err) {
       console.warn(`[browse_url] attempt ${attempt} failed:`, err);
       logStep("browse", `attempt ${attempt} failed tab=${tab.id}: ${err}`);
       lastError = err;
+      if (isUnreadable(err)) {
+        logStep("browse", `unreadable ${url} — failing without retry tab=${tab.id}`);
+        throw new UnreadableUrlError(url);
+      }
     } finally {
+      guard.dispose();
       logStep("browse", `closeTab tab=${tab.id}`);
       await closeTab(tab.id!);
     }
   }
   const reason = lastError instanceof Error ? lastError.message : String(lastError);
   throw new Error(`failed to read ${url} after ${MAX_TAB_ATTEMPTS} attempts: ${reason}`);
+}
+
+async function readTab(tabId: number, url: string): Promise<BrowseResult> {
+  logStep("browse", `waitForTabLoad tab=${tabId}`);
+  await waitForTabLoad(tabId);
+  logStep("browse", `tab loaded tab=${tabId}, polling content`);
+  const pageData = await pollForContent(tabId, url);
+  logStep("browse", `content settled tab=${tabId}, formatting result`);
+  return await formatResult(pageData);
+}
+
+function isUnreadable(err: unknown): boolean {
+  return (
+    err instanceof UnreadableUrlError ||
+    (err instanceof Error && isUnreadableFailure(err.message))
+  );
+}
+
+interface DownloadGuard {
+  /** Rejects with UnreadableUrlError the moment the tab starts a download. */
+  promise: Promise<never>;
+  dispose: () => void;
+}
+
+/** Cancels any download one of the browse's tabs starts, and fails the browse at once. */
+function watchForDownload(tab: browser.tabs.Tab, url: string): DownloadGuard {
+  let reject: ((err: UnreadableUrlError) => void) | undefined;
+  const promise = new Promise<never>((_, rej) => {
+    reject = rej;
+  });
+  let currentUrl = url;
+
+  const onUpdated = (
+    updatedTabId: number,
+    changeInfo: browser.tabs._OnUpdatedChangeInfo,
+  ): void => {
+    if (updatedTabId === tab.id && changeInfo.url) currentUrl = changeInfo.url;
+  };
+  const onCreated = (item: browser.downloads.DownloadItem): void => {
+    if (!isOwnDownload(item, url, currentUrl)) return;
+    console.warn(`[browse_url] download started from ${url} — cancelling (id=${item.id})`);
+    logStep("browse", `download from tab=${tab.id} — cancelling id=${item.id}`);
+    void cancelAndErase(item.id);
+    reject?.(new UnreadableUrlError(url));
+  };
+
+  browser.downloads.onCreated.addListener(onCreated);
+  browser.tabs.onUpdated.addListener(onUpdated);
+  return {
+    promise,
+    dispose: () => {
+      browser.downloads.onCreated.removeListener(onCreated);
+      browser.tabs.onUpdated.removeListener(onUpdated);
+    },
+  };
+}
+
+function isOwnDownload(
+  item: browser.downloads.DownloadItem,
+  requestedUrl: string,
+  currentUrl: string,
+): boolean {
+  // finalUrl exists at runtime (the post-redirect address) but not in these typings
+  const finalUrl = (item as { finalUrl?: string }).finalUrl ?? "";
+  return [item.url, finalUrl].some((u) => u === requestedUrl || u === currentUrl);
+}
+
+async function cancelAndErase(id: number): Promise<void> {
+  try {
+    await browser.downloads.cancel(id);
+  } catch {
+    // Download may already be finished — remove the landed file before erasing
+    try {
+      await browser.downloads.removeFile(id);
+    } catch {
+      // File may already be gone too
+    }
+  }
+  try {
+    await browser.downloads.erase({ id });
+  } catch {
+    // Download record may already be gone
+  }
 }
 
 async function pollForContent(tabId: number, url: string): Promise<PageData> {
