@@ -21,7 +21,14 @@ from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.models import Media, PromptLog, RuntimeConfig
+from penny.database.models import (
+    LinkThumbnail as LinkThumbnailRow,
+)
+from penny.database.models import (
+    Media,
+    PromptLog,
+    RuntimeConfig,
+)
 from penny.datetime_utils import utc_isoformat
 from penny.llm.call_link import CallLink
 from penny.tests.conftest import require_memory, wait_until
@@ -45,6 +52,11 @@ def _data_uri(raw: bytes, mime: str = "image/jpeg") -> str:
 def _all_media(db: Database) -> list[Media]:
     with Session(db.engine) as session:
         return list(session.exec(select(Media)).all())
+
+
+def _all_link_thumbnails(db: Database) -> list[LinkThumbnailRow]:
+    with Session(db.engine) as session:
+        return list(session.exec(select(LinkThumbnailRow)).all())
 
 
 class TestBrowserChannelExtract:
@@ -1121,6 +1133,18 @@ class TestBrowserRegister:
                         "request_id": request_id,
                         "result": "page content here",
                         "reading": "link_list",
+                        "link_thumbnails": [
+                            {
+                                "url": "https://example.com/story,",
+                                "image_url": "https://example.com/story.jpg",
+                                "title": "The story",
+                            },
+                            {
+                                "url": "https://example.com/story,",
+                                "image_url": "https://example.com/story-2.jpg",
+                                "title": "The story, retold",
+                            },
+                        ],
                     }
                 ),
                 "firefox-macbook",
@@ -1129,6 +1153,18 @@ class TestBrowserRegister:
         asyncio.create_task(fake_tool_response())
         result = await channel.send_tool_request("browse_url", {"url": "https://example.com"})
         assert result == ("page content here", None, PageReading.LINK_LIST)
+
+        # #3072: the read's link-card thumbnails are recorded at the response
+        # seam — addresses only, upserted, each URL normalised the way the
+        # link-handle table normalises a link (the trailing prose comma the
+        # index line carried is gone), so the same link seen twice is one row
+        # whose newest card wins.
+        rows = _all_link_thumbnails(db)
+        assert len(rows) == 1
+        assert rows[0].url == "https://example.com/story"
+        assert rows[0].image_url == "https://example.com/story-2.jpg"
+        assert rows[0].title == "The story, retold"
+        assert rows[0].seen_at is not None
 
         # #3068: the same message shape carrying ``link_thumbnails`` parses
         # into typed entries (the read above tolerates it on the real path);

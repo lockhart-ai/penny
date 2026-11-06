@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 140
+        assert count == 141
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 140
+        assert count1 == 141
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 138 migrations
-        assert count == 139
+        # 0001 is skipped; the rest run = 140 migrations
+        assert count == 140
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 140  # all migrations applied
+        assert count == 141  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -308,6 +308,52 @@ class TestMigrate:
         mod.up(conn)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(promptlog)").fetchall()}
         assert "injected_messages" in columns
+        conn.close()
+
+    def test_0141_adds_link_thumbnail(self, tmp_path):
+        """Migration 0141 creates the ``link_thumbnail`` table (#3072) — each
+        link card's image address, keyed by the link's URL — and is a no-op on
+        a fresh ``create_tables()`` DB, which the model already provisions."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0141_add_link_thumbnail.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0141", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(link_thumbnail)").fetchall()}
+        assert columns == {"url", "image_url", "title", "seen_at"}
+        pk = [
+            row[1] for row in conn.execute("PRAGMA table_info(link_thumbnail)").fetchall() if row[5]
+        ]
+        assert pk == ["url"]
+        # Idempotent: a second pass over the same DB changes nothing.
+        mod.up(conn)
+        conn.execute(
+            "INSERT INTO link_thumbnail (url, image_url, title, seen_at) VALUES (?, ?, ?, ?)",
+            (
+                "https://example.com/story",
+                "https://example.com/story.jpg",
+                "The story",
+                "2026-11-05T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+        rows = conn.execute("SELECT url, image_url, title FROM link_thumbnail").fetchall()
+        assert rows == [("https://example.com/story", "https://example.com/story.jpg", "The story")]
         conn.close()
 
     def test_0138_adds_send_queue_kind(self, tmp_path):

@@ -159,6 +159,19 @@ async def _fetch_cited_page_image(page_url: str) -> CitedPageImage | None:
         )
 
 
+async def _fetch_image_bytes(image_url: str) -> CitedPageImage:
+    """Download one image address and name its mime type — the fetch a recorded
+    link-card thumbnail gets at egress (#3072), riding the same client seam and
+    bounded timeout the cited-page preview fetch does.  Raises on any fetch
+    failure — the caller catches everything."""
+    async with _cited_page_http_client() as client:
+        image = await client.get(image_url)
+        image.raise_for_status()
+        return CitedPageImage(
+            data=image.content, mime_type=_image_mime(image, image_url), title=None
+        )
+
+
 class PageContext(BaseModel):
     """The page the user is currently viewing in the browser."""
 
@@ -693,10 +706,12 @@ class MessageChannel(ABC):
         She cites links she never opened — an article straight off an index
         page's link list — so no image was ever captured for the URL, and the
         exact-URL tier never fired.  Here, the FIRST cited URL with no capture
-        gets one bounded fetch of its page HTML, its ``og:image`` (then
-        ``twitter:image``) downloaded and stored like a browse capture (page
-        title, URL-keyed, metadata embedded) — so the exact-URL tier attaches
-        the page's own image.  The whole operation is cancelled past
+        gets one: a link card recorded for it at browse time (#3072) has its
+        own card image downloaded; when no card is recorded (or that download
+        fails), a bounded fetch of the page's HTML and its ``og:image`` (then
+        ``twitter:image``) follows, stored like a browse capture (title,
+        URL-keyed, metadata embedded) — so the exact-URL tier attaches the
+        page's own image.  Each fetch is cancelled past
         ``_CITED_PAGE_FETCH_TIMEOUT``; any failure is logged and the ordinary
         nearest-image fallback runs unchanged.  The fetch runs outside any DB
         transaction — ``media.put`` opens its own session after the download.
@@ -706,6 +721,8 @@ class MessageChannel(ABC):
             return
         url = self._db.media.uncaptured_cited_url(self._cited_urls(text))
         if url is None:
+            return
+        if await self._capture_link_thumbnail(url):
             return
         try:
             image = await asyncio.wait_for(_fetch_cited_page_image(url), _CITED_PAGE_FETCH_TIMEOUT)
@@ -729,6 +746,45 @@ class MessageChannel(ABC):
             embedding=serialize_embedding(vector) if vector else None,
         )
         logger.info("Stored cited-page preview image for %s", url)
+
+    async def _capture_link_thumbnail(self, url: str) -> bool:
+        """Download a link card's recorded thumbnail for a cited URL with no
+        capture (#3072) — the card image the extension saw when the link index
+        was read, which is the page's real picture where the page's own
+        ``og:image`` is the front page's.  Stores it as a media row keyed to
+        the cited URL (title = the card label, embedded like a browse capture)
+        and returns True.  ``False`` — no card recorded, or the download
+        failed (logged) — hands the og:image fetch its turn; the send never
+        waits past the one bounded timeout per fetch.
+        """
+        thumb = self._db.link_thumbnails.lookup(url)
+        if thumb is None:
+            return False
+        try:
+            image = await asyncio.wait_for(
+                _fetch_image_bytes(thumb.image_url), _CITED_PAGE_FETCH_TIMEOUT
+            )
+        except Exception:
+            logger.warning(
+                "Link-card thumbnail download failed for %s (%s) — falling through to the "
+                "page preview fetch",
+                url,
+                thumb.image_url,
+            )
+            return False
+        # Embedded like a browse capture (tools/browse.py): the title plus the
+        # cited URL, one text, so egress matching ranks this row the same way.
+        metadata = "\n".join(part for part in (thumb.title, url) if part)
+        vector = await self._embed_message(metadata)
+        self._db.media.put(
+            data=image.data,
+            mime_type=image.mime_type,
+            source_url=url,
+            title=thumb.title,
+            embedding=serialize_embedding(vector) if vector else None,
+        )
+        logger.info("Stored link-card thumbnail for %s", url)
+        return True
 
     def _image_selection_policy(self) -> ImageSelectionPolicy:
         """Channels can restrict automatic images without changing explicit delivery."""

@@ -94,8 +94,11 @@ def _registrable_domain(url: str) -> str:
     return urlparse(url).hostname or url
 
 
-def _address_only(url: str) -> str:
-    """A bare URL's address without the prose marks it ran into at its end."""
+def normalise_link_address(url: str) -> str:
+    """A URL's address without the prose marks it ran into at its end — the one
+    normalisation a link goes through before the handle table registers it, and
+    the one every consumer that must match what a handle resolves to applies
+    too (#3072: a recorded link card thumbnail is keyed by this)."""
     while url:
         last = url[-1]
         if last in _PROSE_TAIL_MARKS:
@@ -236,7 +239,7 @@ class HandleTable:
         return f"[{self._convert_bare(label)}][{number}]"
 
     def _bare_sub_full(self, match: re.Match) -> str:
-        url = _address_only(match.group(0))
+        url = normalise_link_address(match.group(0))
         if not url:
             return match.group(0)
         number = self.register(url)
@@ -371,7 +374,7 @@ class HandleTable:
         return _BARE_URL_RE.sub(self._bare_sub, text)
 
     def _bare_sub(self, match: re.Match) -> str:
-        url = _address_only(match.group(0))
+        url = normalise_link_address(match.group(0))
         if not url:
             return match.group(0)
         number = self.register(url)
