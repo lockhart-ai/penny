@@ -13,6 +13,7 @@ from penny.channels.signal import SignalChannel
 from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType
 from penny.database import Database
+from penny.database.link_thumbnail_store import LinkThumbnailEntry
 from penny.database.models import Media
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
@@ -1006,6 +1007,101 @@ async def test_send_response_fetches_cited_page_preview_image(
     assert row.embedding is not None
     # The site-relative og:image was absolutized against the page URL.
     assert "https://news.test/preview.jpg" in requested
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_send_response_cited_link_thumbnail_attaches_without_page_fetch(
+    signal_server, db, test_config, mock_llm, monkeypatch
+):
+    """A cited URL a browse read recorded a link card for (#3072) gets that
+    card's own image downloaded and attached at egress — with no page fetch:
+    the card image is the page's real picture, which the page's own og:image
+    (the front page's) never is."""
+    channel = _media_egress_channel(test_config, db)
+    db.link_thumbnails.record(
+        [
+            LinkThumbnailEntry(
+                url="https://news.test/story/2026-11-04/",
+                image_url="https://cdn.test/cards/story.jpg",
+                title="The Story Card",
+            )
+        ]
+    )
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(200, content=b"card-thumbnail", headers={"content-type": "image/png"})
+
+    _mock_cited_page_http(monkeypatch, handler)
+
+    await channel.send_response(
+        TEST_SENDER,
+        "worth a read https://news.test/story/2026-11-04/ today",
+        parent_id=None,
+        author="penny",
+    )
+
+    sent = signal_server.outgoing_messages[-1]
+    assert sent.get("base64_attachments") == [_data_uri(b"card-thumbnail")]
+    rows = _all_media(db)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.source_url == "https://news.test/story/2026-11-04/"
+    assert row.title == "The Story Card"
+    assert row.data == b"card-thumbnail"
+    assert row.mime_type == "image/png"
+    assert row.embedding is not None
+    # Only the card image was fetched — the page itself never was.
+    assert requested == ["/cards/story.jpg"]
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_send_response_failed_thumbnail_download_falls_through_to_page_preview(
+    signal_server, db, test_config, mock_llm, monkeypatch
+):
+    """A recorded card whose image download fails hands the og:image fetch its
+    turn (#3072): the page is then fetched and its preview stored exactly as
+    #3064 does — the nearest-image ladder is still only the last resort."""
+    channel = _media_egress_channel(test_config, db)
+    db.link_thumbnails.record(
+        [
+            LinkThumbnailEntry(
+                url="https://news.test/story/2026-11-04/",
+                image_url="https://cdn.test/cards/gone.jpg",
+                title="The Story Card",
+            )
+        ]
+    )
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/cards/gone.jpg":
+            return httpx.Response(500)
+        return _story_site_handler(request)
+
+    _mock_cited_page_http(monkeypatch, handler)
+
+    await channel.send_response(
+        TEST_SENDER,
+        "worth a read https://news.test/story/2026-11-04/ today",
+        parent_id=None,
+        author="penny",
+    )
+
+    sent = signal_server.outgoing_messages[-1]
+    assert sent.get("base64_attachments") == [_data_uri(b"fetched-preview")]
+    rows = _all_media(db)
+    assert len(rows) == 1
+    assert rows[0].source_url == "https://news.test/story/2026-11-04/"
+    assert rows[0].title == "The Story"
+    # The card image was tried first, then the page's own preview.
+    assert requested == ["/cards/gone.jpg", "/story/2026-11-04/", "/preview.jpg"]
 
     await channel.close()
 

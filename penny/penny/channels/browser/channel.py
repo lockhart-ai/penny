@@ -101,6 +101,7 @@ from penny.channels.permission_manager import PermissionManager
 from penny.channels.turns import TurnRegistry
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
 from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
+from penny.database.link_thumbnail_store import LinkThumbnailEntry
 from penny.database.memory import (
     EntryInput,
     MemoryAlreadyExistsError,
@@ -748,8 +749,31 @@ class BrowserChannel(MessageChannel):
         if response.error:
             pending.future.set_exception(RuntimeError(response.error))
         else:
+            self._record_link_thumbnails(response)
             pending.future.set_result(
                 (response.result or "", response.image, self._reading(response))
+            )
+
+    def _record_link_thumbnails(self, response: BrowserToolResponse) -> None:
+        """Record the read's link-card thumbnails (#3072) — image addresses
+        only, never bytes; a cited link with no capture gets its card image
+        downloaded at egress.  Best-effort: a recording failure is logged and
+        the tool response still resolves, since the read itself succeeded."""
+        if not response.link_thumbnails:
+            return
+        try:
+            self._db.link_thumbnails.record(
+                [
+                    LinkThumbnailEntry(url=thumb.url, image_url=thumb.image_url, title=thumb.title)
+                    for thumb in response.link_thumbnails
+                ]
+            )
+        except Exception:
+            logger.warning(
+                "Recording %d link thumbnails from request %s failed",
+                len(response.link_thumbnails),
+                response.request_id,
+                exc_info=True,
             )
 
     @staticmethod

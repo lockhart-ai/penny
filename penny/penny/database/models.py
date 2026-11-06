@@ -654,6 +654,28 @@ class Media(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class LinkThumbnail(SQLModel, table=True):
+    """One link card's thumbnail address, recorded at browse read time (#3072).
+
+    The extension pairs each link card on a read page with its own image
+    ADDRESS (never bytes) in ``BrowserToolResponse.link_thumbnails``; the
+    channel upserts each entry here, keyed by the URL normalised the way the
+    link-handle table normalises a link, so it matches what a handle resolves
+    to.  A reply citing a link with no captured ``media`` row gets this card's
+    image downloaded at egress (``MessageChannel._capture_cited_page_image``)
+    and stored as a media row — the og:image fetch runs only when no card is
+    recorded.  Bounded: the newest rows are kept (``LinkThumbnailStore``'s
+    cap) so a long-running deployment's table stays small.
+    """
+
+    __tablename__ = "link_thumbnail"
+
+    url: str = Field(primary_key=True)
+    image_url: str
+    title: str
+    seen_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class EmailRule(SQLModel, table=True):
     """A persistent email rule for automatic organization.
 

@@ -133,6 +133,7 @@ penny/
     memory/           — The memory layer: `Memory`/`Collection`/`Log`, `MemoryStore`, the message-log/run-log facades, the undo journal, the entry-identity ladder (`identity.py`)
     mutation_store.py — `MutationStore`: the registry-mutation event ledger, with before/after field priors (#1946)
     cursor_store.py   — CursorStore: per-agent read cursors into log-shaped memories
+    link_thumbnail_store.py — LinkThumbnailStore (`db.link_thumbnails`): link-card image addresses recorded at browse time (#3072), upserted keyed by the link-handle normalisation, newest ~5,000 kept
     media_store.py    — MediaStore: browsed images, matched to outgoing text by embedding at egress (generated images deliver by id to their own reply, then join this pool)
     models.py         — SQLModel tables (see Data Model section)
     migrate.py        — Migration runner: file discovery, tracking table, validation
