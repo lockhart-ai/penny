@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from sqlmodel import col, update
 
 from penny.agents.base import Agent
-from penny.agents.conversation_map import USER_CLIP_CHARS, ConversationMap
+from penny.agents.conversation_map import MESSAGE_POOL, USER_CLIP_CHARS, ConversationMap
 from penny.config_params import RuntimeParams
 from penny.constants import (
     ChatPromptType,
@@ -108,6 +108,17 @@ def _outcome_exchange(db, index: int) -> None:
     run_id = f"{index:032x}"
     _write_entry(db, f"list-{index}", f"key-{index}", run_id)
     _exchange(db, f"exchange ask {index}", f"exchange reply {index}", run_id=run_id)
+
+
+def _long_exchange(db, index: int) -> None:
+    """One plain exchange whose ask is longer than ``SHORT_CHARS`` — never
+    collapse fodder, so each renders its own line, without needing a recorded
+    outcome (a seeded day of 100+ of these stays cheap)."""
+    _exchange(
+        db,
+        f"a busy day's question {index}, asked at enough length that " + "y" * 80,
+        f"the reply {index}",
+    )
 
 
 def _content_lines(rendered: str) -> list[str]:
@@ -468,6 +479,48 @@ def test_only_the_newest_day_over_the_ceiling_stops_the_fold(db) -> None:
     assert len(content_lines) == 5, rendered  # over the ceiling — the fold stopped
     for index in range(2, 6):
         assert f"exchange ask {index}" in rendered  # the newest day stays unfolded
+
+
+def test_a_folded_day_over_the_pool_keeps_its_true_count(db) -> None:
+    """A folded day holding more rows than ``MESSAGE_POOL``: its fold line's
+    count is the day's true count off the store, never whatever part of the
+    day the bounded read still holds — so as later-day messages push more of
+    the day's front out of the pool, the fold line is byte-identical between
+    renders instead of shrinking turn by turn (#3056, the prod Nov 5 churn
+    that busted the cached prefix at the map)."""
+    db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_MAP_DAYS", "4", "test horizon")
+    db.config.set("CHAT_MAP_MAX_LINES", "50", "test ceiling")
+    # Each exchange is 2 rows, so this day holds more rows than the pool — the
+    # read keeps only the day's tail, and later messages keep shaving it.
+    day_a_count = MESSAGE_POOL // 2 + 20
+    for index in range(day_a_count):
+        _long_exchange(db, index)
+    day_a_ids = _last_ids(db, 2 * day_a_count)
+    _backdate(db, day_a_ids, 2.0)  # the folded day
+    for index in range(6):  # a later day with lines of its own — the fold needs one
+        _long_exchange(db, 100 + index)
+    _backdate(db, _last_ids(db, 12), 1.0)
+
+    # Sanity: the horizon's read is saturated — the day really did outgrow the pool.
+    assert len(db.messages.recent_direct_messages(since=datetime.min, limit=MESSAGE_POOL)) == (
+        MESSAGE_POOL
+    )
+
+    before = _render_bounded(_map(db))
+    before_fold = next(line for line in _content_lines(before) if "exchanges — log_read" in line)
+    assert f"· {day_a_count} exchanges — log_read" in before_fold, before
+    assert "a busy day's question 0" not in before  # the day folded whole, not line-by-line
+
+    _long_exchange(db, 200)  # later-day messages: the pool drops more of day A's front
+    _long_exchange(db, 201)
+    after = _render_bounded(_map(db))
+    after_fold = next(line for line in _content_lines(after) if "exchanges — log_read" in line)
+
+    assert after_fold == before_fold  # byte-identical — a pure function of the day
+    # The fold replaced the day's lines at the map's front, so everything the
+    # first render showed is still there, in order.
+    assert _content_lines(after)[: len(_content_lines(before))] == _content_lines(before)
 
 
 def test_the_horizon_reads_the_databases_clock_not_the_machines(tmp_path) -> None:

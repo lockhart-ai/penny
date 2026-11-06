@@ -1132,6 +1132,34 @@ class MessageStore:
             rows.sort(key=_in_send_order)
             return rows[-limit:]
 
+    def count_map_items(self, since: datetime, until: datetime) -> int:
+        """The conversation map's item count for one day, bounded ``[since,
+        until)`` in stored (naive UTC) time (#3056) — the folded-day line's
+        count, a pure function of the day rather than of whatever part of it
+        the bounded ``MESSAGE_POOL`` read still holds.
+
+        The definition is the row-level half of ``ConversationMap._in_horizon``'s
+        grouping — keep the two in step: every incoming non-reaction row starts
+        an exchange (one item), and every mechanism-stamped outgoing row is an
+        autonomous send (one item); ordinary outgoing rows are replies and are
+        never items of their own.
+        """
+        with self._session() as session:
+            return session.exec(
+                select(func.count()).where(
+                    MessageLog.is_reaction == False,  # noqa: E712
+                    MessageLog.timestamp >= since,
+                    MessageLog.timestamp < until,
+                    or_(
+                        col(MessageLog.direction) == PennyConstants.MessageDirection.INCOMING,
+                        and_(
+                            col(MessageLog.direction) == PennyConstants.MessageDirection.OUTGOING,
+                            col(MessageLog.mechanism).is_not(None),
+                        ),
+                    ),
+                )
+            ).one()
+
     def get_messages_since(
         self, sender: str, since: datetime, limit: int = 100
     ) -> list[MessageLog]:
