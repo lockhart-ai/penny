@@ -65,7 +65,11 @@ Covers the channel abstraction and each concrete channel (Signal, Discord, the b
 
 The iOS pull and history records expose optional `run_id` from the linked
 `MessageLog`, including direct chat replies and composed collection reports.
-Messages without a generating run omit it. The read-only data browser supports
+Messages without a generating run omit it. Since #3041 they also carry that
+run's `tool_calls` (the run's own-prompt tool-call rollup) and `duration_ms`
+(the wall time from the run's structural start to the reply's own timestamp),
+derived from the run's prompt log in one batched query per page; both omit on
+messages with no run. The read-only data browser supports
 `run_detail_request` (`run_id`, optional `request_id`) and returns
 `run_detail_response` (`run_id`, `run`, echoed `request_id`). `run` is null when
 unavailable; invalid correlated requests use `data_read_error`. This is an exact

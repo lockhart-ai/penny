@@ -133,6 +133,16 @@ public final class DatabaseService: @unchecked Sendable {
             }
             databaseConnection.userVersion = 7
         }
+
+        if currentVersion < 8 {
+            if try !MessageModel.columnExists(database: databaseConnection, name: "tool_calls") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.toolCallsExp))
+            }
+            if try !MessageModel.columnExists(database: databaseConnection, name: "duration_ms") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.durationMsExp))
+            }
+            databaseConnection.userVersion = 8
+        }
     }
 }
 
@@ -364,6 +374,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
         deviceIdentifier = message.deviceIdentifier
         parentID = message.parentID
         runID = message.runID
+        toolCalls = message.toolCalls
+        durationMs = message.durationMs
         imageAttachmentDataURLs = message.imageAttachmentDataURLs
         embedding = message.embedding
         isOutgoing = message.isOutgoing
@@ -380,6 +392,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
         deviceIdentifier: String? = nil,
         parentID: Int? = nil,
         runID: String? = nil,
+        toolCalls: Int? = nil,
+        durationMs: Int? = nil,
         imageAttachmentDataURLs: [String],
         isOutgoing: Bool,
         embedding: Data? = nil
@@ -394,6 +408,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
         self.deviceIdentifier = deviceIdentifier
         self.parentID = parentID
         self.runID = runID
+        self.toolCalls = toolCalls
+        self.durationMs = durationMs
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
         self.embedding = embedding
         self.isOutgoing = isOutgoing
@@ -419,6 +435,10 @@ struct MessageModel: Codable, Identifiable, Hashable {
     var parentID: Int?
     @SqlProperty
     var runID: String?
+    @SqlProperty
+    var toolCalls: Int?
+    @SqlProperty
+    var durationMs: Int?
     var imageAttachmentDataURLs: [String]
     fileprivate static var imageAttachmentDataURLsExp: SQLite.Expression<String> {
         Expression<String>("image_attachment_data_urls")
@@ -476,6 +496,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
                 MessageModel.deviceIdentifierExp <- deviceIdentifier,
                 MessageModel.parentIDExp <- parentID,
                 MessageModel.runIDExp <- runID,
+                MessageModel.toolCallsExp <- toolCalls,
+                MessageModel.durationMsExp <- durationMs,
                 MessageModel.imageAttachmentDataURLsExp <- MessageModel.encodedImageAttachmentDataURLs(imageAttachmentDataURLs),
                 MessageModel.embeddingExp <- embedding,
                 MessageModel.isOutgoingExp <- isOutgoing
@@ -613,6 +635,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
             deviceIdentifier: entry[deviceIdentifierExp],
             parentID: entry[parentIDExp],
             runID: entry[runIDExp],
+            toolCalls: entry[toolCallsExp],
+            durationMs: entry[durationMsExp],
             imageAttachmentDataURLs: decodedImageAttachmentDataURLs(entry[imageAttachmentDataURLsExp]),
             isOutgoing: entry[isOutgoingExp],
             embedding: entry[embeddingExp]

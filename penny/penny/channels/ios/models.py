@@ -113,6 +113,11 @@ class IosOutboxRecord(BaseModel):
     device_identifier: str | None = None
     parent_id: int | None = None
     embedding: str | None = None
+    # The producing run's tool-call count and wall time, run start → this reply
+    # (#3041). None — and absent from the wire (`exclude_none`) — when the
+    # message has no run; older clients ignore them all the same.
+    tool_calls: int | None = None
+    duration_ms: int | None = None
 
 
 class IosStatus(BaseModel):

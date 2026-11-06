@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -112,6 +112,7 @@ from penny.database.memory import (
     MemoryNotFoundError,
     MemoryTypeError,
 )
+from penny.database.message_store import RunSendStats
 from penny.datetime_utils import user_timezone_name
 from penny.llm.embeddings import serialize_embedding
 from penny.tools.collection_instantiation import describe_schedule
@@ -1003,6 +1004,13 @@ class IosChannel(MessageChannel):
             ),
         )
 
+    def _run_send_stats(self, messages: Iterable[MessageLog]) -> dict[str, RunSendStats]:
+        """One batched rollup for a page of messages' runs (#3041) — the store
+        query is per PAGE, never per message, so history sync's cost stays
+        proportional to the page size."""
+        run_ids = {message.run_id for message in messages if message.run_id is not None}
+        return self._db.messages.run_send_stats(run_ids)
+
     async def _handle_pull(self, ws: ServerConnection, data: dict, device_identifier: str) -> None:
         """Return unacknowledged outbox messages."""
         try:
@@ -1018,10 +1026,11 @@ class IosChannel(MessageChannel):
         messages_by_id = self._db.messages.get_by_ids(
             {row.message_log_id for row in rows if row.message_log_id is not None}
         )
+        run_stats = self._run_send_stats(messages_by_id.values())
         records = []
         for row in rows:
             message = messages_by_id.get(row.message_log_id) if row.message_log_id else None
-            records.append(_outbox_record(row, message))
+            records.append(_outbox_record(row, message, run_stats=run_stats))
         await self._send_ws(ws, IosMessages(messages=records, mode="outbox"))
 
     async def _handle_history(
@@ -1057,8 +1066,12 @@ class IosChannel(MessageChannel):
             before=cursor,
             limit=request.limit,
         )
+        run_stats = self._run_send_stats(message for message, _, _ in rows)
         records = [
-            _history_record(row, include_attachments=request.include_attachments) for row in rows
+            _history_record(
+                row, include_attachments=request.include_attachments, run_stats=run_stats
+            )
+            for row in rows
         ]
         next_cursor = None
         if has_more and rows:
@@ -1387,7 +1400,13 @@ def _client_content(text: str) -> str:
     return strip_image_tokens(text)
 
 
-def _outbox_record(row: IosOutboxItem, message: MessageLog | None = None) -> IosOutboxRecord:
+def _outbox_record(
+    row: IosOutboxItem,
+    message: MessageLog | None = None,
+    *,
+    run_stats: dict[str, RunSendStats],
+) -> IosOutboxRecord:
+    tool_calls, duration_ms = _run_stats_fields(message, run_stats)
     return IosOutboxRecord(
         id=_required_outbox_id(row),
         message_id=row.message_log_id,
@@ -1402,6 +1421,8 @@ def _outbox_record(row: IosOutboxItem, message: MessageLog | None = None) -> Ios
         push_summary=row.push_summary,
         embedding=_encode_embedding(message.embedding if message else None),
         run_id=message.run_id if message else None,
+        tool_calls=tool_calls,
+        duration_ms=duration_ms,
     )
 
 
@@ -1409,6 +1430,7 @@ def _history_record(
     row: tuple[MessageLog, Device | None, IosOutboxItem | None],
     *,
     include_attachments: bool = True,
+    run_stats: dict[str, RunSendStats],
 ) -> IosOutboxRecord:
     message, device, outbox = row
     if outbox is not None and (outbox.source_hint or outbox.source_name):
@@ -1424,6 +1446,7 @@ def _history_record(
         source_hint = "Penny"
         source_type = None
         source_name = None
+    tool_calls, duration_ms = _run_stats_fields(message, run_stats)
     return IosOutboxRecord(
         id=_required_message_id(message),
         message_id=message.id,
@@ -1444,8 +1467,27 @@ def _history_record(
         device_identifier=device.identifier if device is not None else None,
         parent_id=message.parent_id,
         run_id=message.run_id,
+        tool_calls=tool_calls,
+        duration_ms=duration_ms,
         embedding=_encode_embedding(message.embedding),
     )
+
+
+def _run_stats_fields(
+    message: MessageLog | None, run_stats: dict[str, RunSendStats]
+) -> tuple[int | None, int | None]:
+    """The producing run's tool-call count and start→reply wall time (#3041).
+
+    ``None, None`` when the message has no run — or its run left no prompt rows
+    (a run the ledger never saw) — so the fields drop off the wire entirely.
+    """
+    if message is None or message.run_id is None:
+        return None, None
+    stats = run_stats.get(message.run_id)
+    if stats is None:
+        return None, None
+    duration_ms = int((message.timestamp - stats.started_at).total_seconds() * 1000)
+    return stats.tool_calls, duration_ms
 
 
 def _encode_embedding(embedding: bytes | None) -> str | None:

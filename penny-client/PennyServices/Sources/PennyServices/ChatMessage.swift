@@ -19,6 +19,8 @@ struct ServerChatMessage: Decodable {
     let deviceIdentifier: String?
     let parentID: Int?
     let runID: String?
+    let toolCalls: Int?
+    let durationMs: Int?
     let embedding: Data?
 
     var canonicalID: Int { messageID ?? id }
@@ -41,6 +43,8 @@ struct ServerChatMessage: Decodable {
         case deviceIdentifier = "device_identifier"
         case parentID = "parent_id"
         case runID = "run_id"
+        case toolCalls = "tool_calls"
+        case durationMs = "duration_ms"
         case embedding
     }
 
@@ -62,6 +66,8 @@ struct ServerChatMessage: Decodable {
         deviceIdentifier = try container.decodeIfPresent(String.self, forKey: .deviceIdentifier)
         parentID = try container.decodeIfPresent(Int.self, forKey: .parentID)
         runID = try container.decodeIfPresent(String.self, forKey: .runID)
+        toolCalls = try container.decodeIfPresent(Int.self, forKey: .toolCalls)
+        durationMs = try container.decodeIfPresent(Int.self, forKey: .durationMs)
         if let encodedEmbedding = try container.decodeIfPresent(String.self, forKey: .embedding) {
             embedding = Data(base64Encoded: encodedEmbedding)
         } else {
@@ -128,6 +134,8 @@ public struct ChatMessage: Identifiable {
     public let deviceIdentifier: String?
     public let parentID: Int?
     public internal(set) var runID: String?
+    public let toolCalls: Int?
+    public let durationMs: Int?
     public let imageAttachmentDataURLs: [String]
     public let imageAttachments: [ImageAttachment]
     public let isOutgoing: Bool
@@ -156,6 +164,8 @@ public struct ChatMessage: Identifiable {
         deviceIdentifier: String? = nil,
         parentID: Int? = nil,
         runID: String? = nil,
+        toolCalls: Int? = nil,
+        durationMs: Int? = nil,
         imageAttachmentDataURLs: [String] = [],
         imageAttachments: [ImageAttachment],
         isOutgoing: Bool,
@@ -171,6 +181,8 @@ public struct ChatMessage: Identifiable {
         self.deviceIdentifier = deviceIdentifier
         self.parentID = parentID
         self.runID = runID
+        self.toolCalls = toolCalls
+        self.durationMs = durationMs
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
         self.imageAttachments = imageAttachments
         self.isOutgoing = isOutgoing
@@ -188,6 +200,8 @@ public struct ChatMessage: Identifiable {
         deviceIdentifier = model.deviceIdentifier
         parentID = model.parentID
         runID = model.runID
+        toolCalls = model.toolCalls
+        durationMs = model.durationMs
         imageAttachmentDataURLs = model.imageAttachmentDataURLs
         embedding = model.embedding
         imageAttachments = model.imageAttachmentDataURLs.compactMap { dataURL in
@@ -215,6 +229,8 @@ public struct ChatMessage: Identifiable {
             deviceIdentifier: message.deviceIdentifier,
             parentID: message.parentID,
             runID: message.runID,
+            toolCalls: message.toolCalls,
+            durationMs: message.durationMs,
             imageAttachmentDataURLs: imageAttachmentDataURLs,
             imageAttachments: imageAttachments,
             isOutgoing: message.direction == "incoming",
