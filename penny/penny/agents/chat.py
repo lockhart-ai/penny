@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from penny.agents.base import Agent, InvalidDraw, ProgressCallback, ProgressScope
-from penny.agents.conversation_map import ConversationMap
+from penny.agents.conversation_map import ConversationMap, map_horizon_start
 from penny.agents.models import (
     NO_INBOX,
     ControllerResponse,
@@ -827,7 +827,12 @@ class ChatAgent(Agent):
             for section in [
                 current_datetime_line(self.db),
                 self._page_hint_section(),
-                SelfStateHeader(self.db, self._current_user).render_dynamic(),
+                # The activity block's emission cutoff is the map's own horizon
+                # (#3079) — one shared reader, so a send can never be dropped
+                # here while the map hasn't picked it up (or vice versa).
+                SelfStateHeader(self.db, self._current_user).render_dynamic(
+                    map_horizon_start(self.db, self.config.runtime)
+                ),
                 self._related_exchanges,
             ]
             if section

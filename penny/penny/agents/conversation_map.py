@@ -140,6 +140,38 @@ _SENT_FRAGMENT = "you replied"
 _RUN_ANCHOR = "(run {run_id})"
 
 
+def _user_zone(db: Database) -> tzinfo:
+    """The user's timezone, UTC when none is set — the map's date arithmetic and
+    the shared horizon cutoff both read it."""
+    return zone_or_utc(user_timezone_name(db))
+
+
+def utc_day_bounds(zone: tzinfo, date_iso: str) -> tuple[datetime, datetime]:
+    """One local date's bounds ``[start, end)`` in stored (naive UTC) time —
+    the window a per-day count reads over."""
+    local_date = date.fromisoformat(date_iso)
+    start_local = datetime.combine(local_date, datetime.min.time(), tzinfo=zone)
+    end_local = start_local + timedelta(days=1)
+    return (
+        start_local.astimezone(UTC).replace(tzinfo=None),
+        end_local.astimezone(UTC).replace(tzinfo=None),
+    )
+
+
+def map_horizon_start(db: Database, runtime: RuntimeParams) -> datetime:
+    """Local midnight of the conversation map's horizon's first day — the date
+    cutoff the map's own lines read (#2752) and, since #3079, the recent-activity
+    block reads too: an autonomous send inside the horizon is already covered by
+    the history window or the map, so only a send OLDER than it still renders an
+    emission line there.  One function for both readers, on the same
+    ``CHAT_MAP_DAYS`` the map reads, so the two can never disagree about the
+    boundary.  Returned naive, because that is how every timestamp is stored."""
+    zone = _user_zone(db)
+    today = db.clock.now().astimezone(zone).date()
+    days = max(int(runtime.CHAT_MAP_DAYS), 1)
+    return utc_day_bounds(zone, (today - timedelta(days=days - 1)).isoformat())[0]
+
+
 @dataclass(frozen=True)
 class _Exchange:
     """One user turn with the reply it drew — the map's unit of grouping.
@@ -337,29 +369,17 @@ class ConversationMap:
         return items[: user_positions[-size]]
 
     def _horizon_start(self) -> datetime:
-        """Local midnight of the horizon's first day — ``CHAT_MAP_DAYS`` local
-        dates including today, so a line leaves the map only when its DATE
-        leaves, at most once a day.  Returned naive, because that is how every
-        timestamp is stored."""
-        zone = self._zone()
-        today = self.db.clock.now().astimezone(zone).date()
-        days = max(int(self.runtime.CHAT_MAP_DAYS), 1)
-        return self._utc_day_bounds((today - timedelta(days=days - 1)).isoformat())[0]
+        """The shared horizon cutoff — :func:`map_horizon_start`, the one
+        function the recent-activity block reads too (#3079)."""
+        return map_horizon_start(self.db, self.runtime)
 
     def _utc_day_bounds(self, date_iso: str) -> tuple[datetime, datetime]:
         """One local date's bounds ``[start, end)`` in stored (naive UTC)
         time — the window a per-day count reads over."""
-        local_date = date.fromisoformat(date_iso)
-        zone = self._zone()
-        start_local = datetime.combine(local_date, datetime.min.time(), tzinfo=zone)
-        end_local = start_local + timedelta(days=1)
-        return (
-            start_local.astimezone(UTC).replace(tzinfo=None),
-            end_local.astimezone(UTC).replace(tzinfo=None),
-        )
+        return utc_day_bounds(self._zone(), date_iso)
 
     def _zone(self) -> tzinfo:
-        return zone_or_utc(user_timezone_name(self.db))
+        return _user_zone(self.db)
 
     # ── The lines ────────────────────────────────────────────────────────────
 

@@ -34,7 +34,9 @@ one guess-free tool call from the detail). Sections:
   hop. The *complement* of the
   conversation — chat turns (direct replies) are already in context, so they're
   never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
-  #1568) appear. **One exception (#2355 part D):** a chat turn that FAILED (fell
+  #1568) appear, and (#3079) only when older than the conversation map's horizon
+  — a send inside it is already in the history window or on the map, so its line
+  would repeat text shown elsewhere. **One exception (#2355 part D):** a chat turn that FAILED (fell
   back to the last-draw-or-account machinery) IS a background fact in the sense
   that matters here — asked about it a turn, or a day, later, there is no
   conversation left to carry it — so it gets its own ``run <id> · <when> · chat
@@ -67,9 +69,14 @@ instructions rather than state.  With no rule set the section is omitted entirel
 always lists it with its description.
 
 Autonomous-send (emission) rows join the recent-activity block (#1568): each
-delivered mechanism send renders one ``sent · <when> · <mechanism> — "<snippet>"``
-line, interleaved by time with the runs and mutations, so Penny sees her own
-background emissions ambiently; older sends carry the same provenance inline on
+delivered mechanism send OLDER than the conversation map's horizon renders one
+short ``sent · run <id> · <when> · <mechanism>`` line, interleaved by time with
+the runs and mutations (#3079) — a send inside the horizon is already in the
+history window (its trigger and text ride there since #2979) or on the map once
+it has left the window, so its line would repeat text shown elsewhere, and the
+cutoff is the map's own ``map_horizon_start`` so the two readers can never
+disagree.  No quoted text: ``run_get`` on the line's anchor reaches the send
+after; older sends carry the same provenance inline on
 every ``penny-messages`` read, and ``memory_get(<mechanism>)`` is the hop to
 the creating request (#1566).
 """
@@ -221,7 +228,10 @@ class SelfStateHeader:
             self.HEADER,
             self._mechanisms_section(),
             self._job_status_section(),
-            self._activity_section(),
+            # The legacy whole-render applies no horizon cutoff: it is this
+            # class's own test-facing shape, never a message the model reads —
+            # only :meth:`render_dynamic` rides the cutoff (#3079).
+            self._activity_section(None),
             self._memory_map_section(),
             self._memory_sizes_section(),
             self._durable_core_section(),
@@ -241,7 +251,7 @@ class SelfStateHeader:
         sections = [self._mechanisms_section(), self._memory_map_section()]
         return "\n\n".join(section for section in sections if section)
 
-    def render_dynamic(self) -> str:
+    def render_dynamic(self, map_horizon: datetime) -> str:
         """``## Penny's current state`` + Job status + Recent activity + Memory
         sizes + About the user + the pointers line — what rides ``ChatAgent``'s
         per-turn dynamic system message (#2814): the activity block churns on every
@@ -250,11 +260,17 @@ class SelfStateHeader:
         counts (``### Memory sizes``) ride here too — they churn on every job run
         and every job write, and were what kept the static prefix from ever being
         reused.  The durable core and the pointers line are cheap enough to just
-        ride along beside them rather than earn their own split."""
+        ride along beside them rather than earn their own split.
+
+        ``map_horizon`` is the conversation map's own horizon cutoff
+        (:func:`penny.agents.conversation_map.map_horizon_start`, #3079): an
+        autonomous send inside it is already rendered by the history window or
+        the map, so its emission line is dropped here — only a send OLDER than
+        the horizon still renders one."""
         sections = [
             self.HEADER,
             self._job_status_section(),
-            self._activity_section(),
+            self._activity_section(map_horizon),
             self._memory_sizes_section(),
             self._durable_core_section(),
             self.POINTERS,
@@ -428,12 +444,15 @@ class SelfStateHeader:
 
     # ── Recent activity ──────────────────────────────────────────────────────
 
-    def _activity_section(self) -> str:
+    def _activity_section(self, map_horizon: datetime | None) -> str:
         """Background runs, config mutations, and autonomous sends, interleaved
         newest-first at rollup altitude (one line each). Chat turns (direct replies)
         are excluded by construction — they're already the conversation; this is its
-        complement (ledger, #1560; emissions, #1568)."""
-        events = self._activity_events()
+        complement (ledger, #1560; emissions, #1568).  ``map_horizon`` is the
+        conversation map's own horizon cutoff (:func:`penny.agents.conversation_map.
+        map_horizon_start`, #3079), or ``None`` for the legacy whole-render, which
+        applies no cutoff — the model-facing dynamic render always passes one."""
+        events = self._activity_events(map_horizon)
         limit = PennyConstants.SELF_STATE_ACTIVITY_LIMIT
         shown = events[:limit]
         lines = [self.ACTIVITY_HEADER]
@@ -444,7 +463,7 @@ class SelfStateHeader:
             lines.append(self.MORE_ACTIVITY)
         return "\n".join(lines)
 
-    def _activity_events(self) -> list[tuple[datetime, str]]:
+    def _activity_events(self, map_horizon: datetime | None) -> list[tuple[datetime, str]]:
         """(timestamp, rendered line) for recent runs + mutations + emissions,
         newest first.
 
@@ -452,6 +471,13 @@ class SelfStateHeader:
         ``cap + 1``-th event exists and show the overflow tail), merged, and
         sorted by time — so the block stays flat as activity grows and the newest
         events of any kind win a slot.
+
+        Emission lines render only for sends OLDER than ``map_horizon`` (#3079):
+        a send inside the horizon is already in the history window (its trigger
+        and text ride there since #2979) or on the conversation map once it has
+        left the window, so repeating it here duplicated text shown elsewhere.
+        The line dropped here is never a lost fact — the same send renders on
+        whichever of the two surfaces covers its age.
 
         The runs' writes are joined once (``writes_by_run`` over the fetched run
         ids, #1641) rather than per line, so the writes clause stays one bounded
@@ -469,6 +495,7 @@ class SelfStateHeader:
         events.extend(
             (emission.sent_at, self._emission_line(emission))
             for emission in self.db.messages.recent_emissions(fetch)
+            if map_horizon is None or emission.sent_at < map_horizon
         )
         events.extend(
             (failure.finished_at, self._chat_failure_line(failure))
@@ -479,22 +506,20 @@ class SelfStateHeader:
 
     @staticmethod
     def _emission_line(emission: EmissionActivity) -> str:
-        """``sent · run <id> · <when> · <mechanism> — "<snippet>"`` — a delivered
-        autonomous send (#1568). The mechanism is the ``memory_get`` anchor (its
-        #1566 block names the creating request); the snippet is what Penny
-        autonomously said, at rollup altitude.
+        """``sent · run <id> · <when> · <mechanism>`` — a delivered autonomous
+        send (#1568), rendered ONLY for a send older than the conversation map's
+        horizon (#3079): a send inside the horizon is already in the history
+        window (its trigger and text ride there since #2979) or on the map once
+        it has left the window, so this line exists exactly where neither surface
+        carries it. The mechanism is the ``memory_get`` anchor (its #1566 block
+        names the creating request).
 
-        The ``run <id>`` anchor (#2974) is the SAME one ``_run_line``/
-        ``_chat_failure_line`` already render — ``run_get`` on it is the one-hop
-        reachability path to this send's own trigger once the exchange ages out
-        of the history window that renders the trigger in place.  Omitted only
-        when the row genuinely carries no run (``run_id`` is ``None``), never
-        guessed."""
+        No quoted text (#3079): the send's full message is one ``run_get`` on the
+        line's ``run <id>`` anchor away, the SAME anchor ``_run_line``/
+        ``_chat_failure_line`` already render. Omitted only when the row
+        genuinely carries no run (``run_id`` is ``None``), never guessed."""
         anchor = f"{PennyConstants.RUN_EVENT_PREFIX}{emission.run_id} · " if emission.run_id else ""
-        return (
-            f"sent · {anchor}{format_log_timestamp(emission.sent_at)} · "
-            f'{emission.mechanism} — "{emission.snippet}"'
-        )
+        return f"sent · {anchor}{format_log_timestamp(emission.sent_at)} · {emission.mechanism}"
 
     @staticmethod
     def _chat_failure_line(failure: ChatFailureActivity) -> str:
