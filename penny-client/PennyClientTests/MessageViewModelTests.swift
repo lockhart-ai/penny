@@ -86,6 +86,33 @@ struct MessageViewModelTests {
         #expect(viewModel.dockRun == nil)
     }
 
+    /// A second run starting while the dock is still `.resolving` a first
+    /// one (that first reply's morph never got its full duration to finish
+    /// before new steps arrived) must not leave the new run's content
+    /// sitting behind the old resolve's faded opacity (#3042).
+    @Test func syncDockRecoversFromAStuckResolvingPhaseWhenANewRunStarts() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        var firstRun = AgentProgressRunItem(id: "run-a", agent: "chat", scope: .foreground)
+        firstRun.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[firstRun.id] = firstRun
+        viewModel.syncDock()
+        viewModel.beginResolvingIfMatched(appendedMessages: [ChatMessage(
+            id: 1, serverID: 1, createdAt: Date(), content: "Done.",
+            sourceHint: nil, runID: "run-a", imageAttachments: [], isOutgoing: false
+        )])
+        #expect(viewModel.dockPhase == .resolving)
+
+        viewModel.client.agentProgressRuns.removeValue(forKey: "run-a")
+        var secondRun = AgentProgressRunItem(id: "run-b", agent: "chat", scope: .foreground)
+        secondRun.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[secondRun.id] = secondRun
+
+        viewModel.syncDock()
+
+        #expect(viewModel.dockPhase == .working)
+        #expect(viewModel.dockRun?.id == "run-b")
+    }
+
     /// A reply carrying the dock's own run id starts the resolve morph
     /// immediately — never waiting on `run_finished` — and the dock clears
     /// once the morph's duration elapses (#3042).

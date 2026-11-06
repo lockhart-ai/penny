@@ -8,11 +8,11 @@ build verification on a freshly booted simulator). For service-only changes,
 building or launching an app target. CI runs the complete gate on pull requests
 touching `penny-client/`.
 
-While Penny works, a left-aligned progress bubble sizes itself to its text and wraps
-long labels. It shows `Working • Step 1`, then `Working • Step 1: Reading example.com`
-when a tool starts. Step labels omit the maximum step budget in both the chat and
-the activity sheet. Long-press a message and choose **Agent activity** to see the
-active steps and tools.
+While Penny works, a rainbow-edged glass live dock sits at the end of the
+conversation, above the message field: a header (`Working · Step n · t s`) over
+a chronological stream of her thinking and tool calls, growing with the run up
+to 40% of the screen before it scrolls internally. It fades into her reply
+bubble once the run ends.
 
 Settings → Image Attachments controls automatic images for the entire iOS channel:
 cited-page images, same-site images, and broader related images. All switches start

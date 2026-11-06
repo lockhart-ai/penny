@@ -175,16 +175,27 @@ extension MessageView {
         }
 
         /// Keeps `dockRun` current while a foreground run is live, and
-        /// reacts the moment it disappears (run_finished).
+        /// reacts the moment it disappears (run_finished). Tracks the run
+        /// regardless of `shouldShowLiveDock` — the view already gates
+        /// *rendering* on that filter separately, so this can stay simple:
+        /// state always mirrors the live run, never a value that could go
+        /// stale while a non-chat filter is selected and then reappear
+        /// wrong the moment the filter switches back.
+        ///
+        /// Resets to `.working` whenever a run is live and the dock isn't
+        /// already `.working` — covering not just `.hidden` but a run that
+        /// starts while the dock is still `.resolving` a previous one (an
+        /// earlier reply's morph never finished because this new run's own
+        /// steps started arriving first): that run's content must not sit
+        /// behind the old resolve's faded opacity.
         func syncDock() {
             guard let run = client.foregroundProgress else {
                 handleForegroundRunEnded()
                 return
             }
-            guard shouldShowLiveDock else { return }
             dockPendingTask?.cancel()
             dockRun = run
-            if dockPhase == .hidden {
+            if dockPhase != .working {
                 dockPhase = .working
             }
         }

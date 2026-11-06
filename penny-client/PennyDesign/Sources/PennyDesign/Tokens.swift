@@ -341,3 +341,18 @@ public let pennyRainbow = AngularGradient(
     colors: [.blue, .purple, .pink, .orange, .blue],
     center: .center
 )
+
+/// The "still running" indicator — an animated blue ellipsis, footnote
+/// size. Shared by `ListRow`'s `.running` trailing item and the live
+/// dock's running tool rows (#3042), so the one definition serves both
+/// rather than each re-authoring the same symbol/effect/style chain.
+public struct RunningEllipsis: View {
+    public init() {}
+
+    public var body: some View {
+        Image(systemName: "ellipsis")
+            .symbolEffect(.variableColor.iterative)
+            .foregroundStyle(.blue)
+            .font(.footnote)
+    }
+}

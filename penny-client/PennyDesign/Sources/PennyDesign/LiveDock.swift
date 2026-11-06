@@ -35,34 +35,38 @@ private struct LiveDockRow: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(width: Tokens.iconColumn, alignment: .center)
+                    .accessibilityHidden(true)
             } content: {
                 Text(text)
                     .font(.footnote)
                     .italic()
                     .foregroundStyle(.secondary)
             }
+            .accessibilityElement(children: .combine)
         case .tool(let symbol, let label, let running):
             IconRow(textStyle: .footnote, weight: .regular, spacing: 8) {
                 Image(systemName: symbol)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(width: Tokens.iconColumn, alignment: .center)
+                    .accessibilityHidden(true)
             } content: {
                 Text(label)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
                 if running {
-                    Image(systemName: "ellipsis")
-                        .symbolEffect(.variableColor.iterative)
-                        .foregroundStyle(.blue)
-                        .font(.footnote)
+                    RunningEllipsis()
+                        .accessibilityHidden(true)
                 } else {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.blue)
                         .font(.footnote)
+                        .accessibilityHidden(true)
                 }
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(label), \(running ? "in progress" : "done")")
         }
     }
 }
@@ -161,8 +165,13 @@ public struct LiveDock<Avatar: View>: View {
 
     /// The elapsed seconds tick off a `TimelineView` rather than a value
     /// read once — the header keeps counting while the dock is showing.
+    /// One accessibility element reads the full status text regardless of
+    /// the visual `lineLimit(1)` truncation; the avatar and progress ring
+    /// are decorative on their own (the status text already says she's
+    /// working).
     private var header: some View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
+            let text = headerText(elapsed: max(0, Int(context.date.timeIntervalSince(startedAt))))
             HStack(spacing: 12) {
                 ZStack {
                     avatar()
@@ -174,12 +183,15 @@ public struct LiveDock<Avatar: View>: View {
                         .rotationEffect(.degrees(-90))
                 }
                 .frame(width: Tokens.iconColumn - 4, height: Tokens.iconColumn - 4)
-                Text(headerText(elapsed: max(0, Int(context.date.timeIntervalSince(startedAt)))))
+                .accessibilityHidden(true)
+                Text(text)
                     .font(.subheadline)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Spacer(minLength: 8)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
         }
     }
 
