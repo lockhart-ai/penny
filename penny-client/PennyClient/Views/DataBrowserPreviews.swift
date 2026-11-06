@@ -109,12 +109,21 @@ enum DataBrowserFixtures {
     }
 }
 
+/// Hosts one browser tab's root the way the app shell does, without the
+/// chrome — the previews are about the interim content.
 private struct DataBrowserPreview: View {
     @State var model: DataBrowserViewModel
+    var tab: DataBrowserViewModel.Tab = .memories
+
     var body: some View {
-        DataBrowserContent(model: model, reconnect: {})
-            .onAppear { model.updateConnection(true) }
-            .onDisappear { model.stop() }
+        Group {
+            switch tab {
+            case .memories: DataBrowserMemoriesView(model: model, reconnect: {})
+            case .prompts: DataBrowserPromptsView(model: model, reconnect: {})
+            }
+        }
+        .onAppear { model.updateConnection(true) }
+        .onDisappear { model.stop() }
     }
 }
 
@@ -126,9 +135,9 @@ private struct DataBrowserPreview: View {
 #Preview("Archived") { DataBrowserPreview(model: DataBrowserFixtures.model(group: .archived)) }
 #Preview("Log list") { DataBrowserPreview(model: DataBrowserFixtures.model(group: .logs)) }
 #Preview("Logs") { DataBrowserPreview(model: DataBrowserFixtures.model(selection: "messages")) }
-#Preview("Prompts") { DataBrowserPreview(model: DataBrowserFixtures.model(tab: .prompts)) }
+#Preview("Prompts") { DataBrowserPreview(model: DataBrowserFixtures.model(tab: .prompts), tab: .prompts) }
 #Preview("Expanded structured prompt") {
-    DataBrowserPreview(model: DataBrowserFixtures.model(tab: .prompts, expanded: ["run:preview-worked", "prompt:preview-worked:1", "prompt:preview-worked:1:turn:1"]))
+    DataBrowserPreview(model: DataBrowserFixtures.model(tab: .prompts, expanded: ["run:preview-worked", "prompt:preview-worked:1", "prompt:preview-worked:1:turn:1"]), tab: .prompts)
 }
 #Preview("Loading") {
     DataBrowserPreview(model: DataBrowserViewModel { _ in

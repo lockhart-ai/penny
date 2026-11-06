@@ -4,6 +4,8 @@ import PennyServices
 
 struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.shellContentTopClearance) private var shellContentTopClearance
+    @Environment(\.shellOpenPrompts) private var shellOpenPrompts
     @State private var viewModel: ViewModel
     @State private var isShowingActivity: Bool
     @State private var presentedCardMessage: ChatMessage?
@@ -22,7 +24,6 @@ struct MessageView: View {
     @State private var pendingIncomingAutoScrollMessageID: Int?
     @State private var lastTopScrolledMessageID: Int?
     @State private var chatViewportFrame: CGRect = .zero
-    @State private var browserDestination: BrowserDestination?
     @FocusState private var isComposerFocused: Bool
 
     /// `isShowingActivity`, `presentedCardMessage`, and `isShowingSearchStory`
@@ -53,58 +54,7 @@ struct MessageView: View {
                 composer
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 8) {
-                        dataBrowserButton
-
-                        if viewModel.hasHiddenNewMessages {
-                            hiddenNewMessagesButton
-                        }
-                    }
-                }
-
-                ToolbarItem(placement: .principal) {
-                    titleBar
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 14) {
-                        NavigationLink {
-                            MessageSearchView(client: viewModel.client) { message in
-                                withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
-                                    viewModel.startReply(to: message)
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                                .frame(width: 28, height: 28)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.primary)
-                        .simultaneousGesture(TapGesture().onEnded {
-                            isComposerFocused = false
-                        })
-                        .accessibilityLabel("Search messages")
-
-                        Button {
-                            viewModel.isShowingSettings = true
-                        } label: {
-                            Image(systemName: "gearshape")
-                                .frame(width: 28, height: 28)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.primary)
-                        .accessibilityLabel("Settings")
-
-                    }
-                }
-            }
-            .sheet(isPresented: $viewModel.isShowingSettings) {
-                SettingsView(client: viewModel.client)
-            }
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $isShowingActivity) {
                 AgentActivityView(client: viewModel.client)
             }
@@ -181,6 +131,11 @@ struct MessageView: View {
             }
             .coordinateSpace(name: messageScrollCoordinateSpace)
             .scrollDismissesKeyboard(.interactively)
+            .overlay(alignment: .bottom) {
+                if viewModel.hasHiddenNewMessages {
+                    showNewMessagesPill
+                }
+            }
             .onAppear {
                 updateTypingIndicator(isTyping: viewModel.client.isTyping)
                 scheduleScrollToBottom(with: proxy, animated: false)
@@ -261,70 +216,25 @@ struct MessageView: View {
         viewModel.client.foregroundProgress?.currentStatus ?? "Penny is typing"
     }
 
-    private var dataBrowserButton: some View {
-        Button {
-            isComposerFocused = false
-            browserDestination = BrowserDestination(runID: nil)
-        } label: {
-            Image(systemName: "memories")
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.borderless)
-        .foregroundStyle(.primary)
-        .accessibilityLabel("Browse Penny data")
-        .popover(item: $browserDestination) { destination in
-            DataBrowserView(client: viewModel.client, runID: destination.runID)
-                .presentationCompactAdaptation(.sheet)
-                .presentationDetents([.large])
-        }
-    }
-
-    private var hiddenNewMessagesButton: some View {
+    /// The old toolbar's "show new messages" button, kept reachable as a
+    /// floating pill over the chat canvas (#3037) — it is a filter action,
+    /// not navigation.
+    private var showNewMessagesPill: some View {
         Button {
             Task {
                 await viewModel.clearFiltersAndShowNewMessages()
             }
         } label: {
-            Image(systemName: "message.badge")
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.borderless)
-        .foregroundStyle(Color.accentColor)
-        .accessibilityLabel("Show new messages")
-    }
-
-    private var titleBar: some View {
-        Button {
-            isShowingActivity = true
-        } label: {
-            HStack(spacing: 8) {
-                Image("penny")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 24, height: 24)
-
-                Text("Penny")
-                    .font(.headline)
-
-                StatusIndicator(
-                    color: viewModel.client.connectionColor,
-                    statusText: viewModel.client.statusText,
-                    isActive: hasAgentActivity
-                )
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .contentShape(Capsule())
+            Label("Show new messages", systemImage: "message.badge")
+                .font(.subheadline.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .glassEffect(.regular, in: .capsule)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Penny activity")
-        .accessibilityValue(viewModel.client.statusText)
-    }
-
-    private var hasAgentActivity: Bool {
-        viewModel.client.isTyping || !viewModel.client.agentProgressRuns.isEmpty
+        .padding(.bottom, 12)
+        .accessibilityLabel("Show new messages")
     }
 
     private var composer: some View {
@@ -637,7 +547,7 @@ private extension MessageView {
     }
 
     var messageListTopPadding: CGFloat {
-        12
+        12 + shellContentTopClearance
     }
 
     func shouldScrollToMessage(_ id: Int) -> Bool {
@@ -699,7 +609,9 @@ private extension MessageView {
 
     func messageActionStack(for context: MessageActionContext, in containerSize: CGSize) -> some View {
         let stackWidth = actionProxyWidth(for: context, in: containerSize)
-        let estimatedMenuHeight: CGFloat = context.message.runID == nil ? 112 : 168
+        // Menu rows: Reply/Copy/Agent activity (3), plus View prompts when
+        // the message carries a run — two heights.
+        let estimatedMenuHeight: CGFloat = context.message.runID == nil ? 168 : 224
         let stackSpacing: CGFloat = 10
         let availableStackHeight = max(1, containerSize.height - 32)
         let maximumProxyHeight = max(44, availableStackHeight - estimatedMenuHeight - stackSpacing)
@@ -829,10 +741,18 @@ private extension MessageView {
                 Button {
                     dismissMessageActions()
                     isComposerFocused = false
-                    browserDestination = BrowserDestination(runID: runID)
+                    shellOpenPrompts(runID)
                 } label: {
                     menuButtonRow(title: "View prompts", systemImage: "text.bubble")
                 }
+            }
+
+            Divider().padding(.leading, 48)
+            Button {
+                dismissMessageActions()
+                isShowingActivity = true
+            } label: {
+                menuButtonRow(title: "Agent activity", systemImage: "waveform.path")
             }
         }
         .buttonStyle(.plain)
@@ -879,11 +799,6 @@ private extension MessageView {
         activeMessageContext = nil
         messageContextScale = 1
     }
-}
-
-private struct BrowserDestination: Identifiable {
-    let id = UUID()
-    let runID: String?
 }
 
 private struct MessageActionContext: Identifiable {
@@ -1021,30 +936,6 @@ private struct EmptyMessageFilterView: View {
         case .collector:
             return "No collector messages"
         }
-    }
-}
-
-private struct StatusIndicator: View {
-    let color: Color
-    let statusText: String
-    let isActive: Bool
-
-    var body: some View {
-        TimelineView(.animation) { timeline in
-            Circle()
-                .fill(color)
-                .frame(width: size(at: timeline.date), height: size(at: timeline.date))
-                .animation(.easeInOut(duration: 0.18), value: isActive)
-        }
-        .frame(width: 13, height: 13)
-        .accessibilityLabel(statusText)
-    }
-
-    private func size(at date: Date) -> CGFloat {
-        guard isActive else { return 9 }
-        let elapsedTime = date.timeIntervalSinceReferenceDate
-        let progress = (sin(elapsedTime * 4.6) + 1) / 2
-        return 9 + (progress * 3)
     }
 }
 

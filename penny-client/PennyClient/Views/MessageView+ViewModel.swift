@@ -91,7 +91,6 @@ extension MessageView {
 
         var client = PennyWebSocketClient()
         var draftMessage = ""
-        var isShowingSettings = false
         var hasHiddenNewMessages = false
         var replyMessage: ChatMessage?
         var selectedMessageLayout: MessageLayout = .message

@@ -32,10 +32,10 @@ import PennyServices
                 if let storyID = Self.activeStoryID {
                     StoryRootView(storyID: storyID)
                 } else {
-                    MessageView()
+                    AppShellView()
                 }
                 #else
-                MessageView()
+                AppShellView()
                 #endif
             }
         }

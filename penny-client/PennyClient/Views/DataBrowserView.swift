@@ -1,72 +1,32 @@
 import SwiftUI
 import PennyServices
 
-struct DataBrowserView: View {
-    let client: PennyService
-    @State private var model: DataBrowserViewModel
-
-    init(client: PennyService, runID: String? = nil) {
-        self.client = client
-        _model = State(initialValue: DataBrowserViewModel(runID: runID) { try await client.dataBrowser.read($0) })
-    }
-
-    var body: some View {
-        DataBrowserContent(model: model, reconnect: client.reconnect)
-            .onAppear { model.updateConnection(client.canSend) }
-            .onChange(of: client.canSend) { _, connected in model.updateConnection(connected) }
-            .onChange(of: client.browserMemoryRevision) { _, _ in
-                if model.tab == .memories { model.scheduleRefresh() }
-            }
-            .onChange(of: client.browserRunRevision) { _, _ in
-                if model.tab == .prompts || model.selection != nil { model.scheduleRefresh() }
-            }
-            .onDisappear { model.stop() }
-    }
-}
-
-struct DataBrowserContent: View {
-    @Environment(\.dismiss) private var dismiss
+/// The Memory tab's content under the app shell (#3037): today's memories
+/// list and its pushed detail in one navigation stack whose path is the
+/// model's selection. The shell owns the model's lifecycle and connection
+/// handling; this view only renders it. Interim content — the redesign of
+/// this page has its own ticket.
+struct DataBrowserMemoriesView: View {
     @Bindable var model: DataBrowserViewModel
     let reconnect: () -> Void
+    @Environment(\.shellContentTopClearance) private var contentTopClearance
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Picker("Browse", selection: $model.tab) {
-                    ForEach(DataBrowserViewModel.Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                Button("Close", systemImage: "xmark") { dismiss() }
-                    .labelStyle(.iconOnly)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .buttonStyle(.borderless)
-            }
-            .padding()
-            if !model.isOnline {
-                Label("Disconnected — reconnect to load data", systemImage: "wifi.slash")
-                    .font(.callout)
-                    .padding(.horizontal)
-                Button("Reconnect", action: reconnect)
-            }
-            if model.tab == .memories {
-                memoriesNavigation
-            } else {
-                NavigationStack { promptsList }
-            }
-        }
-        .background(Color(.systemGroupedBackground))
-        .frame(idealWidth: 600, idealHeight: 720)
-        .onChange(of: model.context) { _, _ in model.contextChanged() }
-    }
-
-    private var memoriesNavigation: some View {
         NavigationStack(path: Binding(
             get: { model.selection.map { [$0] } ?? [] },
             set: { model.selection = $0.last }
         )) {
             memoriesList
                 .navigationDestination(for: String.self) { name in memoryDetail(name) }
+                .navigationBarBackButtonHidden(true)
+                .toolbar(.hidden, for: .navigationBar)
         }
+        .contentMargins(.top, contentTopClearance, for: .scrollContent)
+        .overlay(alignment: .top) {
+            DataBrowserOfflineBanner(model: model, reconnect: reconnect)
+                .padding(.top, contentTopClearance)
+        }
+        .onChange(of: model.context) { _, _ in model.contextChanged() }
     }
 
     private var memoriesList: some View {
@@ -88,7 +48,7 @@ struct DataBrowserContent: View {
         .navigationTitle("Memories")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.memoryQuery, prompt: "Search memories and entries")
-        .toolbar { refreshButton }
+        .refreshable { model.refresh() }
     }
 
     private func memoryDetail(_ name: String) -> some View {
@@ -109,7 +69,9 @@ struct DataBrowserContent: View {
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.detailQuery, prompt: "Search entries")
-        .toolbar { refreshButton }
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .refreshable { model.refresh() }
     }
 
     @ViewBuilder
@@ -159,6 +121,41 @@ struct DataBrowserContent: View {
         }
     }
 
+    @ViewBuilder
+    private func status(_ slot: DataBrowserViewModel.Slot, retry: (() -> Void)? = nil) -> some View {
+        if model.loading.contains(slot) || (slot == model.visibleSlot && model.isDebouncing) { ProgressView("Loading…") }
+        if let error = model.errors[slot] {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(error).foregroundStyle(.red)
+                Button("Retry", action: retry ?? model.refresh).disabled(!model.isOnline)
+            }
+        }
+    }
+}
+
+/// The Prompts tab's content under the app shell (#3037): today's prompt
+/// log list, including a message's linked run. The shell owns the model's
+/// lifecycle and connection handling; this view only renders it. Interim
+/// content — the redesign of this page has its own ticket.
+struct DataBrowserPromptsView: View {
+    @Bindable var model: DataBrowserViewModel
+    let reconnect: () -> Void
+    @Environment(\.shellContentTopClearance) private var contentTopClearance
+
+    var body: some View {
+        NavigationStack {
+            promptsList
+                .navigationBarBackButtonHidden(true)
+                .toolbar(.hidden, for: .navigationBar)
+        }
+        .contentMargins(.top, contentTopClearance, for: .scrollContent)
+        .overlay(alignment: .top) {
+            DataBrowserOfflineBanner(model: model, reconnect: reconnect)
+                .padding(.top, contentTopClearance)
+        }
+        .onChange(of: model.context) { _, _ in model.contextChanged() }
+    }
+
     @ViewBuilder private var promptsList: some View {
         if model.linkedRunID == nil {
             promptResults.searchable(text: $model.promptQuery, prompt: "Search prompts")
@@ -186,7 +183,7 @@ struct DataBrowserContent: View {
         }
         .navigationTitle("Prompts")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { refreshButton }
+        .refreshable { model.refresh() }
     }
 
     private var promptFilters: some View {
@@ -198,15 +195,6 @@ struct DataBrowserContent: View {
         }
     }
 
-    private var refreshButton: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            Button("Refresh", systemImage: "arrow.clockwise", action: model.refresh)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .disabled(!model.isOnline || model.loading.contains(model.visibleSlot))
-        }
-    }
-
     @ViewBuilder
     private func status(_ slot: DataBrowserViewModel.Slot, retry: (() -> Void)? = nil) -> some View {
         if model.loading.contains(slot) || (slot == model.visibleSlot && model.isDebouncing) { ProgressView("Loading…") }
@@ -214,6 +202,22 @@ struct DataBrowserContent: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(error).foregroundStyle(.red)
                 Button("Retry", action: retry ?? model.refresh).disabled(!model.isOnline)
+            }
+        }
+    }
+}
+
+/// The disconnected banner both browser tabs show under the nav row.
+private struct DataBrowserOfflineBanner: View {
+    @Bindable var model: DataBrowserViewModel
+    let reconnect: () -> Void
+
+    var body: some View {
+        if !model.isOnline {
+            VStack(spacing: 8) {
+                Label("Disconnected — reconnect to load data", systemImage: "wifi.slash")
+                    .font(.callout)
+                Button("Reconnect", action: reconnect)
             }
         }
     }

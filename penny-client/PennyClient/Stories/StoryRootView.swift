@@ -1,5 +1,6 @@
 #if DEBUG
 import SwiftUI
+import PennyDesign
 import PennyServices
 
 /// Renders one screen from fixtures, chosen by `-PennyStory <id>` (#2965).
@@ -10,15 +11,66 @@ struct StoryRootView: View {
     var body: some View {
         switch storyID {
         case .chatEmpty:
-            MessageView(viewModel: StoryFixtures.chatViewModel(messages: []))
+            AppShellView(chatViewModel: StoryFixtures.chatViewModel(messages: []))
         case .chatConversation:
-            MessageView(viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages))
+            AppShellView(chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages))
         case .chatWorking:
-            MessageView(viewModel: StoryFixtures.workingViewModel())
+            AppShellView(chatViewModel: StoryFixtures.workingViewModel())
         case .chatDisconnected:
-            MessageView(viewModel: StoryFixtures.disconnectedViewModel())
-        case .sheetSettings:
-            MessageView(viewModel: StoryFixtures.settingsOpenViewModel())
+            AppShellView(chatViewModel: StoryFixtures.disconnectedViewModel())
+        case .shellMemory:
+            AppShellView(
+                initialTab: .memory,
+                chatViewModel: StoryFixtures.chatViewModel(messages: []),
+                browserModel: DataBrowserFixtures.model()
+            )
+        case .shellMemoryDetail:
+            AppShellView(
+                initialTab: .memory,
+                chatViewModel: StoryFixtures.chatViewModel(messages: []),
+                browserModel: DataBrowserFixtures.model(selection: "price-watch")
+            )
+        case .shellMemoryActivity:
+            AppShellView(
+                initialTab: .memory,
+                chatViewModel: StoryFixtures.chatViewModel(messages: []),
+                browserModel: DataBrowserFixtures.model(selection: "price-watch", panel: .activity)
+            )
+        case .shellMemoryConfig:
+            AppShellView(
+                initialTab: .memory,
+                chatViewModel: StoryFixtures.chatViewModel(messages: []),
+                browserModel: DataBrowserFixtures.model(selection: "price-watch", panel: .config)
+            )
+        case .shellPrompts:
+            AppShellView(
+                initialTab: .prompts,
+                chatViewModel: StoryFixtures.chatViewModel(messages: []),
+                browserModel: DataBrowserFixtures.model(tab: .prompts)
+            )
+        case .shellPromptsExpanded:
+            AppShellView(
+                initialTab: .prompts,
+                chatViewModel: StoryFixtures.chatViewModel(messages: []),
+                browserModel: DataBrowserFixtures.model(
+                    tab: .prompts,
+                    expanded: ["run:preview-worked", "prompt:preview-worked:1", "prompt:preview-worked:1:turn:1"]
+                )
+            )
+        case .shellPromptsExpandedChat:
+            AppShellView(
+                initialTab: .prompts,
+                chatViewModel: StoryFixtures.chatViewModel(messages: []),
+                browserModel: DataBrowserFixtures.model(
+                    tab: .prompts,
+                    expanded: ["run:preview-chat", "prompt:preview-chat:1", "prompt:preview-chat:2", "prompt:preview-chat:2:turn:1"]
+                )
+            )
+        case .shellSettings:
+            AppShellView(
+                initialTab: .settings,
+                chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages)
+            )
         case .sheetSearch:
             MessageView(viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages), isShowingSearchStory: true)
         case .sheetActivity:
@@ -28,26 +80,6 @@ struct StoryRootView: View {
                 viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages),
                 presentedCardMessage: StoryFixtures.conversationMessages[1]
             )
-        case .dataBrowserMemories:
-            DataBrowserStoryView(model: DataBrowserFixtures.model())
-        case .dataBrowserEntries:
-            DataBrowserStoryView(model: DataBrowserFixtures.model(selection: "price-watch"))
-        case .dataBrowserActivity:
-            DataBrowserStoryView(model: DataBrowserFixtures.model(selection: "price-watch", panel: .activity))
-        case .dataBrowserConfig:
-            DataBrowserStoryView(model: DataBrowserFixtures.model(selection: "price-watch", panel: .config))
-        case .dataBrowserPrompts:
-            DataBrowserStoryView(model: DataBrowserFixtures.model(tab: .prompts))
-        case .dataBrowserPromptExpanded:
-            DataBrowserStoryView(model: DataBrowserFixtures.model(
-                tab: .prompts,
-                expanded: ["run:preview-worked", "prompt:preview-worked:1", "prompt:preview-worked:1:turn:1"]
-            ))
-        case .dataBrowserPromptExpandedChat:
-            DataBrowserStoryView(model: DataBrowserFixtures.model(
-                tab: .prompts,
-                expanded: ["run:preview-chat", "prompt:preview-chat:1", "prompt:preview-chat:2", "prompt:preview-chat:2:turn:1"]
-            ))
         case .kitTopTabBar:
             KitTopTabBarStory()
         case .kitPageHeader:
@@ -59,19 +91,6 @@ struct StoryRootView: View {
         case .kitCodeBlock:
             KitCodeBlockStory()
         }
-    }
-}
-
-/// Mirrors `DataBrowserPreview` in `DataBrowserPreviews.swift` — the same
-/// fixture-backed wrapper around `DataBrowserContent`, reused here instead of
-/// duplicated, since that one stays `private` to its preview file.
-private struct DataBrowserStoryView: View {
-    @State var model: DataBrowserViewModel
-
-    var body: some View {
-        DataBrowserContent(model: model, reconnect: {})
-            .onAppear { model.updateConnection(true) }
-            .onDisappear { model.stop() }
     }
 }
 #endif

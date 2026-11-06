@@ -5,11 +5,12 @@
 For task execution, use [`../docs/penny-client-agent-task-workflow.md`](../docs/penny-client-agent-task-workflow.md). For reviewing Swift/iOS pull requests, use [`../docs/penny-client-pr-review-guide.md`](../docs/penny-client-pr-review-guide.md) together with this file.
 
 ## Project Context
-PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The main app entry point and chat UI live in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
+PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The app shell — the centred glass tab capsule over every screen — lives in `PennyClient/PennyClient/Views/AppShellView.swift`; the chat UI lives in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
 Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode tools for reading, editing, diagnostics, and builds.
 
 ## Important Files
-- `PennyClient/PennyClient/Views/MessageView.swift`: Main chat screen, toolbar, composer, message rows.
+- `PennyClient/PennyClient/Views/AppShellView.swift`: The app shell — tab capsule, search circle, back circle, top fade.
+- `PennyClient/PennyClient/Views/MessageView.swift`: Main chat screen, composer, message rows.
 - `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`: Message screen view model.
 - `PennyClient/PennyClient/Views/SettingsView.swift`: Editable connection settings.
 - `PennyClient/PennyServices/Package.swift`: Local Swift package boundary for the service layer.
@@ -84,13 +85,11 @@ SwiftUI presentation and view-model behavior in the app target; import
 ## UI Patterns
 Use SwiftUI and the Observation framework. Avoid Combine unless there is a concrete need.
 The chat UI uses:
+- the app shell (`AppShellView`): one centred glass tab capsule at the top plus a search circle; pushed pages keep the capsule and add a glass back circle — no traditional navigation bar or bottom tab bar
 - `NavigationStack`
-- a custom toolbar title with the Penny image, title, and status dot
-- a settings sheet from the gear icon
 - a bottom overlay composer with keyboard-aware offset
 - split Markdown text blocks for incoming messages
 - attachment images inside incoming message bubbles
-Keep toolbar icons borderless/plain unless a visible Liquid Glass control is intentionally requested.
 
 ## Logging
 Use `LogService`/`OSLogService` instead of `print`, `NSLog`, or direct `os_log` calls. Choose the level intentionally (`debug`, `info`, `notice`, `warning`, `error`, `fault`, `critical`) and keep dynamic values private by default unless the value is known non-sensitive operational metadata. `OSLogService` prefixes messages with a UTC ISO-8601 timestamp.

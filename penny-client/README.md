@@ -11,7 +11,8 @@ touching `penny-client/`.
 While Penny works, a left-aligned progress bubble sizes itself to its text and wraps
 long labels. It shows `Working • Step 1`, then `Working • Step 1: Reading example.com`
 when a tool starts. Step labels omit the maximum step budget in both the chat and
-the activity sheet. Tap the Penny header to see the active steps and tools.
+the activity sheet. Long-press a message and choose **Agent activity** to see the
+active steps and tools.
 
 Settings → Image Attachments controls automatic images for the entire iOS channel:
 cited-page images, same-site images, and broader related images. All switches start
@@ -22,11 +23,14 @@ new replies; existing messages and the History attachment option are unchanged.
 An older server that does not expose all four switches shows disabled controls.
 
 
-The top-left memories button opens a read-only data browser (iPad popover, iPhone
-sheet). Memories are grouped into Collections, Logs, and Archived; each has Entries,
+Navigation is one centred glass tab capsule at the top (Chat, Memory, Prompts,
+Settings) with a search circle; pushed pages keep the capsule and add a glass back
+circle. The Memory and Prompts tabs host the read-only data browser (previously a
+ Memories/Prompts sheet off the chat's memories button). Memories are grouped into
+Collections, Logs, and Archived; each has Entries,
 Activity, and read-only Config panels. Prompts shows all agent runs with filters and
 expandable run → prompt → turn details. The previous Insights and Memory Management
-screens have been removed. Global settings remain under the gear button.
+screens have been removed. Global settings live on the Settings tab.
 
 The browser reads the current memory contract, including `schedule` (RRULE) and
 notification status (`published` on the wire). Deploy the accompanying iOS server
