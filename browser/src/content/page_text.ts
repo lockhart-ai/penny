@@ -69,10 +69,11 @@ export const MIN_CONTENT_LENGTH = 200;
 const NON_CONTENT_SELECTOR = 'script, style, noscript, template, [hidden], [aria-hidden="true"]';
 
 /** Links this page offers to other pages.  A same-document fragment goes
- *  nowhere new, so it is not an index entry. */
-const INDEX_LINK_SELECTOR = 'a[href]:not([href^="#"])';
+ *  nowhere new, so it is not an index entry.  Exported for the link-thumbnail
+ *  capture (#3068), which iterates exactly the links the index reads. */
+export const INDEX_LINK_SELECTOR = 'a[href]:not([href^="#"])';
 
-const WEB_URL = /^https?:\/\//;
+export const WEB_URL = /^https?:\/\//;
 const WHITESPACE_RUN = /\s+/g;
 const WHITESPACE = /\s+/;
 
@@ -236,6 +237,8 @@ function countWords(text: string): number {
   return trimmed === "" ? 0 : trimmed.split(WHITESPACE).length;
 }
 
-function normalize(text: string): string {
+/** Whitespace runs collapsed to single spaces, ends trimmed — the normalising
+ *  the index line's label gets (#3068 shares it for the thumbnail's title). */
+export function normalize(text: string): string {
   return text.replace(WHITESPACE_RUN, " ").trim();
 }

@@ -1,0 +1,130 @@
+<!doctype html>
+<!--
+  A synthetic section front whose story cards carry the thumbnail shapes the
+  capture pass (#3068) has to tell apart.
+
+  Everything here is invented (gazette.example, fictional stories).  What makes
+  it the shape under test, rather than the words:
+
+    * a card whose <img> carries a plain, present src
+    * a card whose <img> carries a srcset — the largest candidate is the
+      picture, not the 320w default the src names
+    * a lazy card whose src is a 1x1 data URI and whose real picture sits in
+      data-src
+    * a lazy card whose src is a named spacer and whose real picture sits in
+      data-srcset — the largest candidate again
+    * three cards sharing one masthead image — a site logo, dropped wholesale
+    * a card whose only image is a 16x16 icon — known tiny, dropped
+    * a text-only card — no picture, no entry
+    * a card whose picture only a meta tag names
+    * a second card linking the same address as the first — the first card's
+      picture wins
+-->
+<html lang="en">
+  <head>
+    <title>The Gazette — Valley Desk</title>
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Sections">
+        <a href="/valley">Valley</a>
+        <a href="/coast">Coast</a>
+        <a href="/letters">Letters</a>
+      </nav>
+    </header>
+
+    <main>
+      <!-- 1. plain src -->
+      <article class="card">
+        <a href="/stories/first-frost-sets-in">
+          <img src="https://gazette.example/imgs/first-frost.jpg" alt="">
+          <h2>First frost sets in across the valley</h2>
+        </a>
+      </article>
+
+      <!-- 2. srcset — the 1280w candidate is the picture -->
+      <article class="card">
+        <a href="/stories/tram-works-finish-early">
+          <img
+            src="https://gazette.example/imgs/tram-small.jpg"
+            srcset="https://gazette.example/imgs/tram-small.jpg 320w, https://gazette.example/imgs/tram-large.jpg 1280w, https://gazette.example/imgs/tram-medium.jpg 640w"
+            alt="">
+          <h2>Tram works finish two weeks early</h2>
+        </a>
+      </article>
+
+      <!-- 3. lazy — 1x1 data URI in src, real picture in data-src -->
+      <article class="card">
+        <a href="/stories/lighthouse-keeper-retires">
+          <img
+            src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+            data-src="https://gazette.example/imgs/lighthouse.jpg"
+            alt="">
+          <h2>Lighthouse keeper retires after forty winters</h2>
+        </a>
+      </article>
+
+      <!-- 4. lazy — named spacer in src, real picture in data-srcset -->
+      <article class="card">
+        <a href="/stories/riverside-market-moves-to-the-quay">
+          <img
+            src="https://gazette.example/static/spacer.gif"
+            data-srcset="https://gazette.example/imgs/market-480.jpg 480w, https://gazette.example/imgs/market-960.jpg 960w"
+            alt="">
+          <h2>Riverside market moves to the old quay</h2>
+        </a>
+      </article>
+
+      <!-- 5, 6, 7. three cards sharing one masthead image -->
+      <article class="card">
+        <a href="/stories/tidal-pool-reopens">
+          <img src="https://gazette.example/static/masthead.png" alt="">
+          <h3>Tidal pool reopens after the repairs</h3>
+        </a>
+      </article>
+      <article class="card">
+        <a href="/stories/night-buses-run-hourly">
+          <img src="https://gazette.example/static/masthead.png" alt="">
+          <h3>Night buses run hourly again</h3>
+        </a>
+      </article>
+      <article class="card">
+        <a href="/stories/chandlery-marks-a-century">
+          <img src="https://gazette.example/static/masthead.png" alt="">
+          <h3>Chandlery on the quay marks a century</h3>
+        </a>
+      </article>
+
+      <!-- 8. known-tiny icon -->
+      <article class="card">
+        <a href="/stories/weather-brief">
+          <img src="https://gazette.example/icons/cloud-16.png" width="16" height="16" alt="">
+          <h3>Weather brief: showers, then clear</h3>
+        </a>
+      </article>
+
+      <!-- 9. text-only card -->
+      <article class="card">
+        <a href="/stories/an-editorial-note">
+          <h3>An editorial note on the year ahead</h3>
+        </a>
+      </article>
+
+      <!-- 10. the picture only a meta tag names -->
+      <article class="card">
+        <a href="/stories/northern-lights-reviewed">
+          <h3>Northern Lights, reviewed</h3>
+        </a>
+        <meta property="og:image" content="https://gazette.example/imgs/northern-lights.jpg">
+      </article>
+
+      <!-- 11. duplicate link — the first card's picture wins -->
+      <article class="card">
+        <a href="/stories/first-frost-sets-in">
+          <img src="https://gazette.example/imgs/frost-alt.jpg" alt="">
+          <h3>First frost sets in across the valley</h3>
+        </a>
+      </article>
+    </main>
+  </body>
+</html>
