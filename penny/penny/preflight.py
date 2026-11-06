@@ -67,6 +67,7 @@ class PreflightCheck(StrEnum):
     BROWSER_ADDON = "browser-addon"
     PRIMARY_CHANNEL = "primary-channel"
     RAW_TEMPLATE_TRANSPORT = "raw-template-transport"
+    SKIP_CACHE_STORE = "skip-cache-store"
 
 
 _STATUS_ICON: dict[CheckStatus, str] = {
@@ -178,6 +179,7 @@ class Preflight:
             await self._check_image_model(),
             self._check_browser_addon(),
             self._check_primary_channel(),
+            self._check_skip_cache_store(),
         ]
         return PreflightReport(results=[result for result in candidates if result is not None])
 
@@ -414,6 +416,25 @@ class Preflight:
                 f"primary is {configured!r} — notifications may be misrouted.",
             )
         return self._ok(name, f"proactive sends route to the configured {configured!r} channel.")
+
+    def _check_skip_cache_store(self) -> CheckResult:
+        """Names the `skip_cache_store` setting's state (#3080) — a config-state
+        report, never a warn: off is the legitimate default (an endpoint that
+        has never heard of the field is never sent it; eval runs on OpenRouter
+        leave it off), on means the micro-context draws ask the model server not
+        to cache their one-off prompts."""
+        name = PreflightCheck.SKIP_CACHE_STORE
+        if self.config.llm_skip_cache_store_supported:
+            return self._ok(
+                name,
+                "LLM_SKIP_CACHE_STORE_SUPPORTED is on — micro-context draws ask the "
+                "model server not to store their one-off prompts in its prefix cache.",
+            )
+        return self._ok(
+            name,
+            "LLM_SKIP_CACHE_STORE_SUPPORTED is off — micro-context prompts are stored "
+            "in the model server's prefix cache as usual.",
+        )
 
     # ── Result builders ──────────────────────────────────────────────────
 

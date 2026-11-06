@@ -320,6 +320,114 @@ class TestExplicitSamplingSettings:
         }
 
 
+class TestSkipCacheStore:
+    """A micro-context draw asks the model server not to store its one-off
+    prompt in the prefix cache (#3080). The per-call intent rides as a
+    parameter, and the field reaches the wire on BOTH transports only when the
+    endpoint actually knows it (``LLM_SKIP_CACHE_STORE_SUPPORTED``) — an
+    endpoint that has never heard of the field is never sent it."""
+
+    @pytest.mark.asyncio
+    async def test_a_supported_endpoint_chat_call_carries_it(self, monkeypatch) -> None:
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            skip_cache_store_supported=True,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            skip_cache_store=True,
+        )
+        await client.close()
+
+        assert sent["extra_body"]["skip_cache_store"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_supported_endpoint_raw_template_call_carries_it(
+        self, monkeypatch, db: Database
+    ) -> None:
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            skip_cache_store_supported=True,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            skip_cache_store=True,
+        )
+        await client.close()
+
+        assert captured["extra_body"]["skip_cache_store"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_endpoint_is_never_sent_the_field(self, monkeypatch) -> None:
+        """The flag-off default (every eval run on OpenRouter) must never see a
+        field its providers may reject — even when a caller states the intent."""
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            skip_cache_store=True,
+        )
+        await client.close()
+
+        assert "skip_cache_store" not in sent["extra_body"]
+
+    @pytest.mark.asyncio
+    async def test_calls_that_do_not_ask_send_nothing_new(self, monkeypatch) -> None:
+        """Chat and collector calls never carry the field — even on a client
+        whose endpoint supports it (their prompts are the reusable prefixes the
+        cache exists for)."""
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            skip_cache_store_supported=True,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
+        await client.close()
+
+        assert "skip_cache_store" not in sent["extra_body"]
+
+
 class TestTokenBudgetResolution:
     """``token_budget_for`` (#2474) maps a call kind's ``agent_name`` onto its own
     configured cap through the same ``RuntimeParams`` lookup chain every other

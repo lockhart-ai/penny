@@ -194,6 +194,8 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_embedding_api_key": os.getenv("LLM_EMBEDDING_API_KEY"),
         "llm_decision_model": os.getenv("LLM_DECISION_MODEL"),
         "llm_decision_api_url": os.getenv("LLM_DECISION_API_URL"),
+        "llm_skip_cache_store_supported": os.getenv("LLM_SKIP_CACHE_STORE_SUPPORTED", "").lower()
+        in ("1", "true", "yes"),
         "image_api_url": os.getenv("LLM_IMAGE_API_URL", "http://host.docker.internal:8765"),
         "image_width": int(os.getenv("IMAGE_WIDTH", "768")),
         "image_height": int(os.getenv("IMAGE_HEIGHT", "768")),
@@ -287,6 +289,12 @@ class Config:
     # the construction site, never silently.
     llm_decision_model: str | None = None
     llm_decision_api_url: str | None = None  # Defaults to the embedding endpoint's host
+    # Whether the chat endpoint accepts a top-level `skip_cache_store` request field
+    # (LLM_SKIP_CACHE_STORE_SUPPORTED). When on, a micro-context draw may ask the
+    # model server not to store its one-off prompt in the prefix cache. Off by
+    # default: endpoints that don't know the field must never be sent it (eval runs
+    # on OpenRouter leave it off — a provider there may reject unknown fields).
+    llm_skip_cache_store_supported: bool = False
     # Which upstream to PIN when the chat endpoint is a routing gateway serving one model
     # from several providers. A hard pin, fallbacks off: every call goes to exactly this
     # provider, and which provider answered is still recorded per call.

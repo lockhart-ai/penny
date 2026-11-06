@@ -172,6 +172,25 @@ async def test_all_green(monkeypatch, test_config):
 
 
 @pytest.mark.asyncio
+async def test_skip_cache_store_names_the_setting(monkeypatch, make_config):
+    """#3080: the preflight names ``LLM_SKIP_CACHE_STORE_SUPPORTED``'s state
+    either way — a config report, never a warn (off is the legitimate default:
+    an endpoint that has never heard of the field is never sent it)."""
+    off_report = await _build_preflight(monkeypatch, make_config()).run()
+    off = next(r for r in off_report.results if r.name is PreflightCheck.SKIP_CACHE_STORE)
+    assert off.status is CheckStatus.OK
+    assert "off" in off.detail
+
+    on_report = await _build_preflight(
+        monkeypatch, make_config(llm_skip_cache_store_supported=True)
+    ).run()
+    on = next(r for r in on_report.results if r.name is PreflightCheck.SKIP_CACHE_STORE)
+    assert on.status is CheckStatus.OK
+    assert "on" in on.detail
+    assert "LLM_SKIP_CACHE_STORE_SUPPORTED is on" in on.detail
+
+
+@pytest.mark.asyncio
 async def test_llm_endpoint_unreachable_hard_fails(monkeypatch, test_config):
     """An unreachable LLM endpoint is a hard failure with an actionable message."""
     preflight = _build_preflight(

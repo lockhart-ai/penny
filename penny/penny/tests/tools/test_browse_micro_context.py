@@ -474,6 +474,127 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     assert "read as its list of links" not in sent_messages[1]["content"]
 
 
+# ── Integration: a draw asks not to be cached (#3080) ─────────────────────────
+
+
+def _chat_completion(content: str) -> SimpleNamespace:
+    """A minimal chat-completions-shaped response — what the SDK hands the chat
+    transport back, enough for ``_parse_response`` to read a plain-text reply
+    and for the call's own ``promptlog`` row to dump the raw completion."""
+    message = SimpleNamespace(role="assistant", content=content, tool_calls=None, model_extra=None)
+
+    def model_dump() -> dict:
+        return {
+            "model": "test-model",
+            "choices": [{"message": {"role": "assistant", "content": content}}],
+        }
+
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        model="test-model",
+        model_extra=None,
+        model_dump=model_dump,
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_draw_asks_not_to_be_cached(tmp_path, monkeypatch):
+    """#3080: on an endpoint that supports the field (the flag on), the browse
+    extract draw's request carries ``skip_cache_store: true`` — a one-off page
+    prompt is never reused, so the model server is asked not to store it where
+    it would evict the reusable chat/collector prefixes."""
+    db = _make_db(tmp_path)
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.0,
+        skip_cache_store_supported=True,
+    )
+    sent: list[dict] = []
+
+    async def capture(**kwargs):
+        sent.append(kwargs)
+        return _chat_completion(_EXTRACTED_VALUE)
+
+    monkeypatch.setattr(client.client.chat.completions, "create", capture)
+    tool = _extract_tool(db, client)
+
+    dispatched_link = CallLink.top("chat-run-1").for_tool_call("call-browse-1")
+    result = await tool.run(
+        dispatched_link, items=[BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.success is True
+    assert len(sent) == 1  # one draw, one request
+    assert sent[0]["extra_body"]["skip_cache_store"] is True
+
+
+@pytest.mark.asyncio
+async def test_synthesize_draw_asks_not_to_be_cached(tmp_path, monkeypatch):
+    """#3080: the synthesize draw states the same intent — its numbered-hits
+    prompt is one-off too."""
+    db = _make_db(tmp_path)
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.0,
+        skip_cache_store_supported=True,
+    )
+    sent: list[dict] = []
+
+    async def capture(**kwargs):
+        sent.append(kwargs)
+        return _chat_completion("Items 1 and 2 both name a current bid in zorkmids.")
+
+    monkeypatch.setattr(client.client.chat.completions, "create", capture)
+
+    result = await MicroContext(model_client=client, db=db).synthesize(
+        "1. Lot 42 — current bid 275 zorkmids\n2. Lot 99 — current bid 512 zorkmids",
+        "what did the two lots have in common",
+        call_link=CallLink.top("chat-run-1"),
+    )
+
+    assert result.outcome is MicroExtractOutcome.EXTRACTED
+    assert len(sent) == 1  # one draw, one request
+    assert sent[0]["extra_body"]["skip_cache_store"] is True
+
+
+@pytest.mark.asyncio
+async def test_with_the_flag_off_the_draw_sends_nothing_new(tmp_path, monkeypatch):
+    """#3080: with ``LLM_SKIP_CACHE_STORE_SUPPORTED`` off (the default — every
+    eval run on OpenRouter), the draw's request is byte-identical to before:
+    an endpoint that has never heard of the field is never sent it."""
+    db = _make_db(tmp_path)
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.0,
+    )
+    sent: list[dict] = []
+
+    async def capture(**kwargs):
+        sent.append(kwargs)
+        return _chat_completion(_EXTRACTED_VALUE)
+
+    monkeypatch.setattr(client.client.chat.completions, "create", capture)
+    tool = _extract_tool(db, client)
+
+    dispatched_link = CallLink.top("chat-run-1").for_tool_call("call-browse-1")
+    result = await tool.run(
+        dispatched_link, items=[BrowseItem(query=_PAGE_URL, looking_for=_INSTRUCTION)]
+    )
+
+    assert result.success is True
+    assert len(sent) == 1
+    assert "skip_cache_store" not in sent[0]["extra_body"]
+
+
 @pytest.mark.asyncio
 async def test_extract_link_list_reading_reaches_the_model_end_to_end(tmp_path, mock_llm):
     """#2388: the browser's own reading mark travels through ``BrowsePage`` →
