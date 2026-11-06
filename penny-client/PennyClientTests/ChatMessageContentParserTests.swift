@@ -196,4 +196,46 @@ struct ChatMessageContentParserTests {
         }
         return false
     }
+
+    // MARK: Inline segments (#3045) — a highlighted or bold run must stay
+    // in the same flowing paragraph as its neighbours, never force a line
+    // break at the run boundary.
+
+    @Test func highlightingAMidSentenceWordKeepsOneInlineSegment() {
+        let text = ChatMessageContentParser.markdownText(from: "The 9:30 ferry has space — want me to book it?")
+        let highlighted = ChatMessageContentParser.highlighted(text, query: "ferry", isCurrentMatch: false)
+
+        let segments = ChatMessageContentParser.inlineSegments(in: highlighted)
+
+        #expect(segments.count == 1)
+        guard case .text(let merged) = segments[0] else {
+            Issue.record("Expected a single merged text segment")
+            return
+        }
+        #expect(String(merged.characters) == "The 9:30 ferry has space — want me to book it?")
+    }
+
+    @Test func boldMarkdownMidSentenceAlsoKeepsOneInlineSegment() {
+        let text = ChatMessageContentParser.markdownText(from: "The **bold** word stays in the same sentence.")
+
+        let segments = ChatMessageContentParser.inlineSegments(in: text)
+
+        #expect(segments.count == 1)
+    }
+
+    @Test func aLinkStillBreaksTextIntoSeparateSegments() {
+        // A raw pasted URL compacts to its host as the link's display text
+        // (`markdownTextWithCompactedRawLinks`) — the shape that renders as
+        // a tappable compact link, not merged into the surrounding text.
+        let text = ChatMessageContentParser.markdownText(from: "See https://example.com for details.")
+
+        let segments = ChatMessageContentParser.inlineSegments(in: text)
+
+        #expect(segments.count == 3)
+        guard case .text = segments[0], case .link(_, let url) = segments[1], case .text = segments[2] else {
+            Issue.record("Expected text, link, text")
+            return
+        }
+        #expect(url.host == "example.com")
+    }
 }

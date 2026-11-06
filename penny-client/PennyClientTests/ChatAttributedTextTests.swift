@@ -52,6 +52,25 @@ struct ChatAttributedTextTests {
         #expect(renderedHeight(paragraph, width: width, textSize: textSize) >= expectedHeight - 1)
     }
 
+    /// Find-in-chat (#3045): highlighting one word partway through a
+    /// sentence must only recolour that run, never split the sentence onto
+    /// its own forced line — the regression this guards is a break right
+    /// after the highlighted word, with the bubble narrowing to match
+    /// (`ChatAttributedTextLine` turning each attribute run into its own
+    /// flow-layout block instead of keeping the paragraph's runs merged).
+    @Test(arguments: [CGFloat(200), 280, 360], [DynamicTypeSize.large, .accessibility3])
+    func highlightingAMidSentenceWordDoesNotAddALineBreak(width: CGFloat, textSize: DynamicTypeSize) {
+        let sentence = "The 9:30 ferry has space — want me to book it?"
+        let plainHeight = renderedHeight(sentence, width: width, textSize: textSize)
+
+        let highlightedText = ChatMessageContentParser.highlighted(
+            ChatMessageContentParser.markdownText(from: sentence), query: "ferry", isCurrentMatch: false
+        )
+        let highlightedHeight = renderedHeight(highlightedText, width: width, textSize: textSize)
+
+        #expect(abs(highlightedHeight - plainHeight) < 1)
+    }
+
     @Test func preservesEmptyLinesAroundCompactLinks() {
         let line = "https://store.example.com."
         let title = "**Extra Perks:** Bonus content."
@@ -63,7 +82,11 @@ struct ChatAttributedTextTests {
     }
 
     private func renderedHeight(_ markdown: String, width: CGFloat, textSize: DynamicTypeSize = .large) -> CGFloat {
-        let content = ChatAttributedText(attributedText: ChatMessageContentParser.markdownText(from: markdown))
+        renderedHeight(ChatMessageContentParser.markdownText(from: markdown), width: width, textSize: textSize)
+    }
+
+    private func renderedHeight(_ attributedText: AttributedString, width: CGFloat, textSize: DynamicTypeSize = .large) -> CGFloat {
+        let content = ChatAttributedText(attributedText: attributedText)
             .font(.body)
             .environment(\.dynamicTypeSize, textSize)
         let host = UIHostingController(rootView: content)

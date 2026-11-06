@@ -379,7 +379,9 @@ enum StoryFixtures {
 
     /// Find-in-chat's story conversation (#3045): three plain-text
     /// bubbles — no table, no reply-quote — all three containing "ferry",
-    /// so the highlight shows cleanly on both bubble colours.
+    /// so the highlight shows cleanly on both bubble colours. Penny's
+    /// reply carries her flair image, like every other story's — the app
+    /// never sends one of her replies without one.
     static var findInChatMessages: [ChatMessage] {
         let now = Date()
         func at(_ secondsAgo: TimeInterval) -> Date { now.addingTimeInterval(-secondsAgo) }
@@ -393,7 +395,7 @@ enum StoryFixtures {
             ChatMessage(
                 id: 102, serverID: 102, createdAt: at(150),
                 content: "The 9:30 ferry has space — want me to book it?",
-                sourceHint: nil, imageAttachments: [], isOutgoing: false
+                sourceHint: nil, imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
             ),
             ChatMessage(
                 id: 103, serverID: 103, createdAt: at(60),
