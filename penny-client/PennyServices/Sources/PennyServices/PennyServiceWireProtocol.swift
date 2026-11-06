@@ -5,7 +5,7 @@ public typealias PennyWebSocketClient = PennyService
 
 enum ClientMessage: Encodable {
     case register(RegisterPayload)
-    case message(content: String)
+    case message(content: String, images: [String]?)
     case testNotification
     case pullMessages(limit: Int)
     case historyRequest(limit: Int, before: String?, channelTypes: [String]?, includeAttachments: Bool, countOnly: Bool)
@@ -64,9 +64,10 @@ enum ClientMessage: Encodable {
             try container.encodeIfPresent(payload.apnsToken, forKey: .apnsToken)
             try container.encode(payload.apnsEnvironment, forKey: .apnsEnvironment)
             try container.encode(payload.appVersion, forKey: .appVersion)
-        case .message(let content):
+        case .message(let content, let images):
             try container.encode("message", forKey: .type)
             try container.encode(content, forKey: .content)
+            try container.encodeIfPresent(images, forKey: .images)
         case .testNotification:
             try container.encode("test_notification", forKey: .type)
         case .pullMessages(let limit):
@@ -308,6 +309,7 @@ enum ClientMessage: Encodable {
         case apnsEnvironment = "apns_environment"
         case appVersion = "app_version"
         case content
+        case images
         case limit
         case before
         case channelTypes = "channel_types"

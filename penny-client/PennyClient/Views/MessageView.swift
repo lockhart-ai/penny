@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PennyDesign
 import PennyServices
 
 struct MessageView: View {
@@ -43,14 +44,11 @@ struct MessageView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                chatScrollView
-            }
-            .background(Color(.systemGroupedBackground).ignoresSafeArea())
-            .safeAreaInset(edge: .bottom) {
-                composer
-            }
-            .navigationBarTitleDisplayMode(.inline)
+            chatScrollView
+                .safeAreaInset(edge: .bottom) {
+                    composer
+                }
+                .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $isShowingActivity) {
                 AgentActivityView(client: viewModel.client)
@@ -109,10 +107,10 @@ struct MessageView: View {
                         TypingRow(status: typingIndicatorStatus, isFadingOut: isTypingIndicatorFadingOut)
                     }
 
-                    bottomSpacer
-                }
+                    bottomSpacer                }
                 .padding(.horizontal, MessageLayout.message.horizontalPadding)
                 .padding(.top, messageListTopPadding)
+                .padding(.bottom, Tokens.composerFadeBleed)
             }
             .background {
                 GeometryReader { geometry in
@@ -125,6 +123,16 @@ struct MessageView: View {
             }
             .coordinateSpace(name: messageScrollCoordinateSpace)
             .scrollDismissesKeyboard(.interactively)
+            // The dissolve ramp: content scrolling out at the composer's
+            // edge fades into the page background over the same gap the
+            // last message keeps below it.
+            .overlay(alignment: .bottom) {
+                BottomFade(
+                    background: Color(.systemGroupedBackground),
+                    height: Tokens.composerFadeBleed,
+                    opaqueThrough: 0
+                )
+            }
             .overlay(alignment: .bottom) {
                 if viewModel.hasHiddenNewMessages {
                     showNewMessagesPill
@@ -227,53 +235,35 @@ struct MessageView: View {
                 .glassEffect(.regular, in: .capsule)
         }
         .buttonStyle(.plain)
-        .padding(.bottom, 12)
+        .padding(.bottom, Tokens.composerFadeBleed)
         .accessibilityLabel("Show new messages")
     }
 
+    /// The composer as a bottom safe-area inset: the scroll content clamps
+    /// above it, the field's glass never has chat content behind it, and it
+    /// rides the keyboard. The page background behind it is opaque, so the
+    /// glass reads clean; the dissolve into it happens in the scroll view's
+    /// own bottom ramp.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let replyMessage = viewModel.replyMessage {
                 replyPreview(for: replyMessage)
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField(
-                    viewModel.composerPresentation.placeholder,
-                    text: $viewModel.draftMessage,
-                    axis: .vertical
-                )
-                    .textFieldStyle(.plain)
-                    .font(.body)
-                    .lineLimit(1...5)
-                    .submitLabel(.send)
-                    .focused($isComposerFocused)
-                    .onSubmit(viewModel.sendDraft)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                    .glassEffect(
-                        .regular.tint(viewModel.composerPresentation.tint),
-                        in: .capsule
-                    )
-                    .animation(
-                        .easeInOut(duration: 0.2),
-                        value: viewModel.client.conversationState
-                    )
-
-                Button(action: viewModel.sendDraft) {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                .disabled(viewModel.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !viewModel.client.canSend)
-                .accessibilityLabel("Send")
-            }
+            Composer(
+                text: $viewModel.draftMessage,
+                placeholder: viewModel.composerPresentation.placeholder,
+                tint: viewModel.composerPresentation.tint,
+                pendingImage: viewModel.pendingImage,
+                canSend: viewModel.client.canSend,
+                isFocused: $isComposerFocused,
+                onSend: { viewModel.sendDraft() },
+                onImagePicked: { viewModel.pendingImage = $0 },
+                onRemovePendingImage: { viewModel.pendingImage = nil }
+            )
+            .animation(.easeInOut(duration: 0.2), value: viewModel.client.conversationState)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.clear)
+        .background(Color(.systemGroupedBackground))
     }
 
     private func replyPreview(for message: ChatMessage) -> some View {

@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import UIKit
 import PennyServices
 
 /// Contrived fixture data for story mode (#2965) — never real user content.
@@ -46,6 +47,37 @@ enum StoryFixtures {
     /// story (#3046).
     static func collectorsBadgeViewModel() -> MessageView.ViewModel {
         chatViewModel(messages: conversationMessages, backgroundRunCount: 2)
+    }
+
+    /// The composer typing story (#3039): a draft with no photo — the send
+    /// arrow shows inside the field, the `+` beside it.
+    static func composerTypingViewModel() -> MessageView.ViewModel {
+        let viewModel = chatViewModel(messages: conversationMessages)
+        viewModel.draftMessage = "Perfect. And what's the weather for the crossing?"
+        return viewModel
+    }
+
+    /// The composer photo-pending story (#3039): the `chat-pending` screen —
+    /// a photo's thumbnail above the text line in the field, send arrow on.
+    static func composerPhotoViewModel() -> MessageView.ViewModel {
+        let viewModel = chatViewModel(messages: conversationMessages)
+        viewModel.draftMessage = "What's this bird?"
+        viewModel.pendingImage = pendingPhoto
+        return viewModel
+    }
+
+    /// A solid-colour placeholder photo for the pending state — rendered
+    /// here, since the composer's pending image is a `UIImage`, not a data
+    /// URL like the bubbles' attachments.
+    private static var pendingPhoto: UIImage {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 500))
+        return renderer.image { context in
+            UIColor(red: 0.72, green: 0.78, blue: 0.80, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
+            UIColor(red: 0.23, green: 0.36, blue: 0.30, alpha: 1).setFill()
+            context.fill(CGRect(x: 40, y: 160, width: 260, height: 200))
+            context.fill(CGRect(x: 360, y: 200, width: 220, height: 160))
+        }
     }
 
     /// Three steps with different tools, the last one unfinished — the run
