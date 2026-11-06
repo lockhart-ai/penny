@@ -20,19 +20,27 @@ struct DatabaseServiceTests {
             """)
         let database = DatabaseService()
         database.setupForTesting(connection: connection)
-        #expect(connection.userVersion == 7)
+        #expect(connection.userVersion == 8)
         #expect(database.loadMessages().first?.content == "Legacy message")
         #expect(database.loadMessages().first?.runID == nil)
+        #expect(database.loadMessages().first?.toolCalls == nil)
+        #expect(database.loadMessages().first?.durationMs == nil)
         let message = ChatMessage(id: 2, serverID: 2, createdAt: .now, content: "Linked reply", sourceHint: "Chat",
-                                  runID: "fixture-run", imageAttachments: [], isOutgoing: false)
+                                  runID: "fixture-run", toolCalls: 3, durationMs: 4300,
+                                  imageAttachments: [], isOutgoing: false)
         database.save(message: MessageModel(message: message))
         let loaded = try #require(database.loadMessages().first { $0.id == 2 })
-        #expect(ChatMessage(model: loaded).runID == "fixture-run")
+        let roundTripped = ChatMessage(model: loaded)
+        #expect(roundTripped.runID == "fixture-run")
+        #expect(roundTripped.toolCalls == 3)
+        #expect(roundTripped.durationMs == 4300)
         connection.userVersion = 6 // An interrupted migration may have already added the column.
         database.setupForTesting(connection: connection)
-        #expect(connection.userVersion == 7)
+        #expect(connection.userVersion == 8)
         #expect(database.loadMessages().count == 2)
         #expect(database.loadMessages().last?.runID == "fixture-run")
+        #expect(database.loadMessages().last?.toolCalls == 3)
+        #expect(database.loadMessages().last?.durationMs == 4300)
     }
 
     @Test func savesAndLoadsMessagesIncludingAttachments() {

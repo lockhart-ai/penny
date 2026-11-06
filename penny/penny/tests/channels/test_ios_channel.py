@@ -1158,6 +1158,26 @@ async def test_sent_message_embedding_and_run_reach_pull_and_history_wire_record
         },
     )
 
+    # The producing runs' prompt rows: one with two tool calls, one with none —
+    # the rollup the wire records carry (#3041). Logged before the reply so the
+    # reply's timestamp lands after each run's structural start.
+    db.messages.log_prompt(
+        model="test-model",
+        messages=[],
+        response={"choices": [{"message": {"tool_calls": [{"id": "a"}, {"id": "b"}]}}]},
+        agent_name="chat",
+        run_id="fixture-run",
+        duration_ms=500,
+    )
+    db.messages.log_prompt(
+        model="test-model",
+        messages=[],
+        response={},
+        agent_name="chat",
+        run_id="quiet-run",
+        duration_ms=300,
+    )
+
     await channel.send_response(
         "ios-keychain-id",
         "embedded outgoing message",
@@ -1166,20 +1186,48 @@ async def test_sent_message_embedding_and_run_reach_pull_and_history_wire_record
         run_id="fixture-run",
         mechanism=author if author != "chat" else None,
     )
+    await channel.send_response(
+        "ios-keychain-id",
+        "reply from a run with no tool calls",
+        parent_id=None,
+        author=author,
+        run_id="quiet-run",
+        mechanism=author if author != "chat" else None,
+    )
+    await channel.send_response(
+        "ios-keychain-id",
+        "reply with no run",
+        parent_id=None,
+        author=author,
+        mechanism=author if author != "chat" else None,
+    )
 
     await channel._handle_pull(server_ws, {"type": IOS_MSG_TYPE_PULL}, "ios-keychain-id")
-    pull_record = ws.sent[-1]["messages"][0]
+    pull_by_run = {record.get("run_id"): record for record in ws.sent[-1]["messages"]}
+    pull_record = pull_by_run["fixture-run"]
     assert pull_record["embedding"] == "AACAPwAAAD8AAIC/"
     assert pull_record["run_id"] == "fixture-run"
+    assert pull_record["tool_calls"] == 2
+    assert pull_record["duration_ms"] is not None and pull_record["duration_ms"] >= 0
+    assert pull_by_run["quiet-run"]["tool_calls"] == 0
+    assert pull_by_run["quiet-run"]["duration_ms"] is not None
+    assert "tool_calls" not in pull_by_run[None]
+    assert "duration_ms" not in pull_by_run[None]
 
     await channel._handle_history(
         server_ws,
-        {"type": IOS_MSG_TYPE_HISTORY, "limit": 1},
+        {"type": IOS_MSG_TYPE_HISTORY, "limit": 3},
         "ios-keychain-id",
     )
-    history_record = ws.sent[-1]["messages"][0]
+    history_by_run = {record.get("run_id"): record for record in ws.sent[-1]["messages"]}
+    history_record = history_by_run["fixture-run"]
     assert history_record["embedding"] == "AACAPwAAAD8AAIC/"
     assert history_record["run_id"] == "fixture-run"
+    assert history_record["tool_calls"] == 2
+    assert history_record["duration_ms"] is not None and history_record["duration_ms"] >= 0
+    assert history_by_run["quiet-run"]["tool_calls"] == 0
+    assert "tool_calls" not in history_by_run[None]
+    assert "duration_ms" not in history_by_run[None]
 
 
 @pytest.mark.asyncio

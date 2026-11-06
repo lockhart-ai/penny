@@ -147,6 +147,19 @@ class RunActivity(BaseModel):
     call_count: int
 
 
+class RunSendStats(NamedTuple):
+    """What the iOS wire record needs about the run that produced a reply (#3041):
+    the number of tool calls the run made across its own prompt rows, and the
+    run's structural start — the earliest ``timestamp - duration_ms`` across
+    those rows, the same reading ``_run_window`` gives the run record. The
+    channel derives the reply's duration from this start to the message's own
+    timestamp; only runs the caller names are returned (a message with no run
+    gets no entry)."""
+
+    tool_calls: int
+    started_at: datetime
+
+
 class ChatFailureActivity(BaseModel):
     """One chat turn that needed the honest-fallback machinery, at rollup altitude,
     for the self-state header's recent-activity block (#2355 part D).
@@ -1754,6 +1767,34 @@ class MessageStore:
                     .order_by(col(PromptLog.timestamp).asc())
                 ).all()
             )
+
+    def run_send_stats(self, run_ids: set[str]) -> dict[str, RunSendStats]:
+        """The tool-call count and structural start of each named run (#3041) —
+        what the iOS channel stamps on the wire record of a reply the run
+        produced.  One grouped query for a whole page of runs (the same
+        ``_group_runs`` batch the activity block reads), never one per run;
+        rollups read only light columns (``response``, ``timestamp``,
+        ``duration_ms``) and come back through ``_count_run_tool_calls``.
+
+        A run made no tool calls still returns ``tool_calls = 0``; an id with no
+        prompt rows is absent from the result, so its message carries no stats.
+        """
+        if not run_ids:
+            return {}
+        with self._session() as session:
+            grouped = self._group_runs(session, list(run_ids))
+        stats: dict[str, RunSendStats] = {}
+        for run_id, prompts in grouped.items():
+            if not prompts:
+                continue
+            started_at = min(
+                prompt.timestamp - timedelta(milliseconds=prompt.duration_ms or 0)
+                for prompt in prompts
+            )
+            stats[run_id] = RunSendStats(
+                tool_calls=_count_run_tool_calls(prompts), started_at=started_at
+            )
+        return stats
 
     def delivered_text_for_run(self, run_id: str) -> str | None:
         """The text actually delivered to the user because of this run, or
