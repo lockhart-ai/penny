@@ -1,6 +1,7 @@
 """Integration tests for Agent context building (conversation, profile, page hint, sentiment)."""
 
 import json
+from datetime import timedelta
 
 import pytest
 from sqlmodel import Session, col, select
@@ -12,28 +13,34 @@ from penny.llm.models import LlmMessage
 from penny.tests.conftest import TEST_SENDER
 from penny.tools.link_handles import HandleTable
 
-# ── History window size — the pure grow/cut function (#2756) ────────────
+# ── History window size — the pure session-window function (#3077) ──────
 
 
 @pytest.mark.parametrize(
-    "total_user_turns, window, expected",
+    "session_turns, total_user_turns, window, max_turns, expected",
     [
-        (1, 5, 1),  # fewer turns than the window — show everything so far
-        (5, 5, 5),  # exactly the window — nothing to cut yet
-        (6, 5, 6),  # growing
-        (9, 5, 9),  # the growth ceiling (2 * 5 - 1)
-        (10, 5, 5),  # the cut — back to the window
-        (11, 5, 6),  # growth resumes after the cut
-        (4, 2, 2),  # a cut at a small window (2 * 2 = 4)
-        (3, 2, 3),  # growth at a small window (2 * 2 - 1 = 3)
+        (1, 1, 5, 20, 1),  # fewer turns than the window — show everything so far
+        (5, 5, 5, 20, 5),  # exactly the window — nothing to cut yet
+        (0, 10, 5, 20, 5),  # the session's first turn — the cut back to the window
+        (1, 11, 5, 20, 6),  # growth resumes, one exchange per turn
+        (15, 30, 5, 20, 20),  # the growth ceiling — the cap itself (5 + 15 % 16)
+        (16, 31, 5, 20, 5),  # past the cap — the cut back to the window
+        (31, 46, 5, 20, 20),  # the cap again, one full cycle later (5 + 31 % 16)
+        (2, 6, 5, 20, 6),  # a small history — everything fits under the cap
+        (2, 5, 2, 4, 4),  # a small window reaching its small cap (2 + 2 % 3)
+        (3, 6, 2, 4, 2),  # the cap cut at a small window (2 + 3 % 3)
     ],
 )
-def test_history_window_size_is_a_pure_grow_cut_function(total_user_turns, window, expected):
-    """``Agent._history_window_size`` is a pure function of the TRUE turn
-    count and the configured window (#2756) — no stored cursor, so the same
-    inputs always give the same answer, and consecutive turns (M, M+1) never
+def test_history_window_size_is_a_pure_function_of_the_session(
+    session_turns, total_user_turns, window, max_turns, expected
+):
+    """``Agent._history_window_size`` is a pure function of the session
+    anchor (#3077) — no stored cursor, so the same state always gives the
+    same answer, and consecutive turns within a session (M, M+1) never
     disagree about a turn already in the window."""
-    assert Agent._history_window_size(total_user_turns, window) == expected
+    assert (
+        Agent._history_window_size(session_turns, total_user_turns, window, max_turns) == expected
+    )
 
 
 @pytest.mark.asyncio
@@ -56,6 +63,12 @@ async def test_count_user_turns_is_uncapped_by_the_message_context_limit(
             )
 
         assert penny.db.messages.count_user_turns(TEST_SENDER) == 5
+
+        # The session anchor (#3077) reads the same uncapped count, and — no
+        # idle gap among the five — puts them all in one session.
+        anchor = penny.db.messages.session_anchor(TEST_SENDER, 1800)
+        assert anchor.total_user_turns == 5
+        assert anchor.session_turns == 5
 
 
 # ── Conversation building ────────────────────────────────────────────────
@@ -218,18 +231,19 @@ async def test_conversation_carries_the_replies_and_their_run_ids(
 
 
 @pytest.mark.asyncio
-async def test_conversation_window_grows_then_cuts_back(
+async def test_conversation_window_grows_within_a_session_as_a_prefix_extension(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """The history window grows by one exchange per turn from
-    CHAT_HISTORY_TURNS up to twice that minus one, then cuts back (#2756;
-    previously a flat last-N, #2746) — most turns extend the prior turn's
-    history (an append-only prefix) rather than replacing it outright."""
-    config = make_config()  # default window: 5
+    """Within a session the history window grows by one exchange per turn and
+    never cuts (#3077; previously grew to 2N-1 and cut back about one turn in
+    five, #2756) — every turn's history is a strict prefix-extension of the
+    previous turn's, an append-only prefix that reuses the cached prompt
+    prefix instead of rebuilding it."""
+    config = make_config()  # default window: 5, session cap: 20
 
     async with running_penny(config) as penny:
-        sizes: list[int] = []
-        for n in range(1, 12):  # 11 exchanges — through one full grow/cut cycle
+        previous: list[str] = []
+        for n in range(1, 12):  # 11 exchanges — one session, no cut anywhere
             user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
                 TEST_SENDER,
@@ -243,17 +257,70 @@ async def test_conversation_window_grows_then_cuts_back(
                 recipient=TEST_SENDER,
             )
             conversation = penny.chat_agent._build_conversation(TEST_SENDER)
-            sizes.append(len(conversation) // 2)  # user turns kept, each with its reply
+            contents = [turn.content for turn in conversation]
+            # The new turn's history is the previous turn's, plus this
+            # exchange — never a replacement.
+            assert contents == [*previous, f"user message {n}", f"reply {n}"]
+            previous = contents
 
-        # Grows 1..5 (nothing to trim yet), then 6,7,8,9 (up to 2*5-1), then
-        # cuts to 5 at the 10th turn, then grows again to 6 at the 11th.
-        assert sizes == [1, 2, 3, 4, 5, 6, 7, 8, 9, 5, 6]
+        assert len(previous) == 22  # all 11 exchanges, each with its reply
 
-        # At the 9th turn (window size 9, its maximum before the cut), the
-        # oldest kept turn is turn 1 — everything so far.
-        conversation = penny.chat_agent._build_conversation(TEST_SENDER)  # after turn 11
-        # The 11th turn's window (size 6) keeps turns 6-11.
+
+@pytest.mark.asyncio
+async def test_conversation_cuts_back_to_the_window_after_an_idle_gap(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """The first user message after an idle gap of at least
+    CHAT_SESSION_IDLE_SECONDS starts a new session (#3077): the window cuts
+    to the last CHAT_HISTORY_TURNS exchanges — the only cut an active
+    conversation ever sees.  Before that message, the eight exchanges are
+    still one (growing) session and the window keeps them all."""
+    config = make_config()  # default window: 5, idle: 1800s
+
+    async with running_penny(config) as penny:
+        stale = penny.db.clock.now() - timedelta(hours=1)
+        for n in range(1, 9):
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+                timestamp=stale,
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+                timestamp=stale,
+            )
+        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        assert len(conversation) == 16  # one session — everything kept
+
+        # The ninth exchange lands an hour later: a new session, the window
+        # cuts to the last 5 exchanges plus the session's own first one.
+        user_id = penny.db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            TEST_SENDER,
+            "user message 9",
+        )
+        penny.db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            penny.config.signal_number,
+            "reply 9",
+            parent_id=user_id,
+            recipient=TEST_SENDER,
+        )
+        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        # The cut dropped exchanges 1-3; the window is the last 5 pre-session
+        # exchanges plus the new session's own first one (its turn is now
+        # logged, so the build sees session_turns=1 — the live turn itself
+        # saw the flat 5).
         assert [turn.content for turn in conversation] == [
+            "user message 4",
+            "reply 4",
+            "user message 5",
+            "reply 5",
             "user message 6",
             "reply 6",
             "user message 7",
@@ -262,25 +329,72 @@ async def test_conversation_window_grows_then_cuts_back(
             "reply 8",
             "user message 9",
             "reply 9",
-            "user message 10",
-            "reply 10",
-            "user message 11",
-            "reply 11",
         ]
+
+
+@pytest.mark.asyncio
+async def test_conversation_cuts_once_at_the_session_cap(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """A session whose history passes CHAT_SESSION_MAX_TURNS cuts back to
+    CHAT_HISTORY_TURNS once and grows again (#3077) — a marathon stays
+    bounded while cuts stay rare (every cap − window + 1 turns, not every
+    window turns)."""
+    config = make_config(chat_session_max_turns=8)  # window 5, cap 8 — a cycle of 4
+
+    async with running_penny(config) as penny:
+        sizes: list[int] = []
+        for n in range(1, 14):  # one session of 13 exchanges
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+            )
+            conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+            sizes.append(len(conversation) // 2)
+
+        # Grows one per turn to the cap (8 at the 11th), cuts once at the 12th
+        # (8 stored turns — one past the cap), grows again — a cut every 4
+        # turns at this small cap, never every 5 like the old grow/cut.
+        assert sizes == [1, 2, 3, 4, 5, 6, 7, 5, 6, 7, 8, 5, 6]
 
 
 @pytest.mark.asyncio
 async def test_conversation_window_follows_config_value(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """CHAT_HISTORY_TURNS is a runtime config param: a changed value changes the
-    window on the next build.  Four exchanges at a window of 2 land exactly on
-    a cut point (2 * 2 = 4), so this also pins the grow/cut formula's cut case,
-    not just its growth case (#2756)."""
+    """CHAT_HISTORY_TURNS is a runtime config param: a changed value changes
+    the window on the next build.  Six exchanges an hour old, then two fresh
+    ones: the fresh pair starts a session, whose window is 2 — the last two
+    pre-session exchanges plus the session's own two, not the default 5
+    (#3077, the cut at a session's first turn)."""
     config = make_config(chat_history_turns=2)
 
     async with running_penny(config) as penny:
-        for n in range(1, 5):
+        stale = penny.db.clock.now() - timedelta(hours=1)
+        for n in range(1, 7):
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+                timestamp=stale,
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+                timestamp=stale,
+            )
+        for n in (7, 8):
             user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
                 TEST_SENDER,
@@ -296,10 +410,14 @@ async def test_conversation_window_follows_config_value(
 
         conversation = penny.chat_agent._build_conversation(TEST_SENDER)
         assert [turn.content for turn in conversation] == [
-            "user message 3",
-            "reply 3",
-            "user message 4",
-            "reply 4",
+            "user message 5",
+            "reply 5",
+            "user message 6",
+            "reply 6",
+            "user message 7",
+            "reply 7",
+            "user message 8",
+            "reply 8",
         ]
 
 
@@ -307,12 +425,11 @@ async def test_conversation_window_follows_config_value(
 async def test_thread_history_grows_then_cuts_back(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """A quote-reply's thread history follows the same grow/cut window
-    (#2756; previously a flat last-N cap, #2746).  The thread path has no
-    cheap global turn count of its own, so it anchors on the fetched thread's
-    own user-turn count (a short-chain approximation, flagged in the PR) —
-    exact here since the chain (8 exchanges) never approaches its own
-    20-message fetch cap."""
+    """A quote-reply's thread history follows the same session-window rule
+    (#3077, its own-count fallback: a thread chain has no session of its
+    own — ruled so on the issue).  The chain (8 exchanges) stays under both
+    the window's growth and its own 20-message fetch cap, so the window
+    keeps it all."""
     config = make_config()  # default window: 5
 
     async with running_penny(config) as penny:
@@ -333,7 +450,7 @@ async def test_thread_history_grows_then_cuts_back(
             )
 
         thread_history = penny.chat_agent.get_history(TEST_SENDER, thread_parent_id=previous_id)
-        # 8 exchanges is within the window's growth (5..9) — everything so far.
+        # 8 exchanges is within the window's growth (5 upward, cap 20) — everything so far.
         assert [turn.content for turn in thread_history] == [
             "user message 1",
             "reply 1",

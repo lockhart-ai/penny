@@ -1,8 +1,10 @@
 """ConversationMap — the deterministic map of the conversation older than the
 history window (#2752, reworked #2982).
 
-The history window is ``CHAT_HISTORY_TURNS`` exchanges, growing to twice that
-minus one before cutting back (#2756/#2757) — so anything older than its own
+The history window is every exchange since the current session began — cut
+back to ``CHAT_HISTORY_TURNS`` at the session's first turn and again at the
+``CHAT_SESSION_MAX_TURNS`` cap (#3077; previously grew to twice that minus one
+before cutting back, #2756/#2757) — so anything older than its own
 FIRST exchange is out of sight unless she searches her logs.  Full-text recall
 of her own replies failed before on three counts — size (about 6k tokens
 re-read every turn), fixation (showing her own past prose makes her copy it,
@@ -82,6 +84,7 @@ from typing import TYPE_CHECKING
 
 from penny.agents.base import Agent
 from penny.constants import ChatPromptType, PennyConstants
+from penny.database.message_store import SessionAnchor
 from penny.datetime_utils import stored_as_utc, user_timezone_name, zone_or_utc
 
 if TYPE_CHECKING:
@@ -280,31 +283,39 @@ class ConversationMap:
         self, items: list[_Exchange | _Notification]
     ) -> list[_Exchange | _Notification]:
         """Everything in the horizon before the history window's own first
-        exchange — computed by the SAME grow/cut function the history itself
-        is built from (``Agent._history_window_size``), anchored on the SAME
-        uncapped turn count (``MessageStore.count_user_turns``, #2756) the
-        history's own grow/cut cycle reads.  One shared function, so the map
-        and the history can never disagree about where the window starts.
+        exchange — computed by the SAME function the history itself is built
+        from (``Agent._history_window_size``), anchored on the SAME session
+        anchor (``MessageStore.session_anchor``, #3077) the history's own
+        size is computed from.  One shared function, so the map and the
+        history can never disagree about where the window starts.
 
         The slice runs to the window's first USER exchange (#2982): a
         notification rides the map exactly when it has left the history —
         notifications sit between user turns in the send order, so the
         boundary is that exchange's position, not a count of items.
 
-        The window grows from ``CHAT_HISTORY_TURNS`` to twice that minus one
-        before cutting back to the window — so its FIRST exchange stays fixed
-        through the whole growth phase and only moves at a cut turn.  That is
-        the only turn this boundary moves: between cuts, the map changes only
-        by the one item that ages out at its end (#2757)."""
+        The window keeps every exchange since the current session began and
+        cuts back only at the session's first turn or at the
+        ``CHAT_SESSION_MAX_TURNS`` cap (#3077) — so its FIRST exchange stays
+        fixed between cuts and moves only at one.  That is the only turn this
+        boundary moves: between cuts, the map changes only by the one item
+        that ages out at its end (#2757)."""
         window = int(self.runtime.CHAT_HISTORY_TURNS)
         if window <= 0 or not items:
             return []
-        total_user_turns = (
-            self.db.messages.count_user_turns(self.user)
-            if self.user
-            else sum(1 for item in items if isinstance(item, _Exchange))
+        if self.user:
+            anchor = self.db.messages.session_anchor(
+                self.user, int(self.runtime.CHAT_SESSION_IDLE_SECONDS)
+            )
+        else:
+            count = sum(1 for item in items if isinstance(item, _Exchange))
+            anchor = SessionAnchor(total_user_turns=count, session_turns=count)
+        size = Agent._history_window_size(
+            anchor.session_turns,
+            anchor.total_user_turns,
+            window,
+            int(self.runtime.CHAT_SESSION_MAX_TURNS),
         )
-        size = Agent._history_window_size(total_user_turns, window)
         if size <= 0:
             return []
         user_positions = [index for index, item in enumerate(items) if isinstance(item, _Exchange)]

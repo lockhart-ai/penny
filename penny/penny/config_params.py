@@ -174,11 +174,14 @@ ConfigParam(
     key="MESSAGE_CONTEXT_LIMIT",
     description=(
         "Raw recent-conversation messages fetched as the pool behind the chat "
-        "history window (HISTORY_WINDOW_TURNS user turns are then kept). Set "
-        "well above the window so multi-message replies never starve it."
+        "history window (the window can hold CHAT_SESSION_MAX_TURNS user turns "
+        "with their replies). Set well above the window so multi-message "
+        "replies never starve it. Default raised from 60 to 120 with the "
+        "session window (#3077) — a full session of 20 exchanges with "
+        "multi-message replies can outgrow 60 rows."
     ),
     type=int,
-    default=60,
+    default=120,
     validator=_validate_positive_int,
     group=GROUP_CHAT,
 )
@@ -187,14 +190,46 @@ ConfigParam(
     key="CHAT_HISTORY_TURNS",
     description=(
         "How many recent exchanges a chat turn sees as conversation history — "
-        "N of the user's turns, each with its reply. The window grows by one "
-        "exchange per turn from N up to 2N-1, then cuts back to N, so most "
-        "turns extend the prior turn's history rather than replacing it "
-        "(#2756). Older turns stay reachable through log_read, find, and the "
-        "self-state's recent activity."
+        "N of the user's turns, each with its reply. The window keeps every "
+        "exchange since the current session began (CHAT_SESSION_IDLE_SECONDS) "
+        "and cuts back to N only at the session's first turn or at "
+        "CHAT_SESSION_MAX_TURNS (#3077; previously grew from N to 2N-1 and "
+        "cut back every N turns, #2756). Older turns stay reachable through "
+        "log_read, find, and the self-state's recent activity."
     ),
     type=int,
     default=5,
+    validator=_validate_positive_int,
+    group=GROUP_CHAT,
+)
+
+ConfigParam(
+    key="CHAT_SESSION_IDLE_SECONDS",
+    description=(
+        "The idle gap that starts a new chat session (#3077): the first user "
+        "message after this many seconds without one. The history window "
+        "keeps every exchange since the session began and cuts back to "
+        "CHAT_HISTORY_TURNS at the session's first turn — the only cut an "
+        "active conversation sees, so its cached prompt prefix survives "
+        "turn after turn."
+    ),
+    type=int,
+    default=1800,
+    validator=_validate_positive_int,
+    group=GROUP_CHAT,
+)
+
+ConfigParam(
+    key="CHAT_SESSION_MAX_TURNS",
+    description=(
+        "The history window's cap within one chat session (#3077), 4× "
+        "CHAT_HISTORY_TURNS by value — a static default that does not follow "
+        "a changed CHAT_HISTORY_TURNS. A session whose history passes it cuts "
+        "back to CHAT_HISTORY_TURNS once and grows again, so a marathon "
+        "session stays bounded while cuts stay rare."
+    ),
+    type=int,
+    default=20,
     validator=_validate_positive_int,
     group=GROUP_CHAT,
 )

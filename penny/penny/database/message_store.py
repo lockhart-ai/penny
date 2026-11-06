@@ -283,6 +283,25 @@ class ExchangeSides(NamedTuple):
         return "\n".join(part for part in (user_text, reply_text) if part)
 
 
+class SessionAnchor(BaseModel):
+    """The two counts the history window's size is a pure function of (#3077).
+
+    ``total_user_turns`` is what ``count_user_turns`` returns — the anchor
+    #2756 introduced.  ``session_turns`` is how many of the NEWEST user turns
+    belong to the CURRENT session: consecutive turns with no gap of at least
+    the session idle threshold between their stored timestamps.  The live turn
+    is not among them (it is logged in ``_finish_turn`` only after the run) —
+    a zero means the live message is itself the session's first turn, which
+    is exactly when the window cuts.
+
+    Computed from stored timestamps against stored timestamps — no clock read
+    anywhere — so every render of the same state gives the same session, and
+    the same window (the cache invariant)."""
+
+    total_user_turns: int
+    session_turns: int
+
+
 class MessageStore:
     """Manages MessageLog, PromptLog, and CommandLog records.
 
@@ -857,7 +876,7 @@ class MessageStore:
         Same filters as ``count_user_turns`` (incoming, non-reaction, no run id
         — joined messages render inside their run's own history, #2985), so the
         boundary the related-exchanges retrieval reads is anchored on exactly
-        the turns the history window's own grow/cut cycle counts."""
+        the turns the history window's own trim keeps."""
         with self._session() as session:
             return session.exec(
                 select(MessageLog)
@@ -1068,8 +1087,9 @@ class MessageStore:
         """Total incoming (non-reaction) messages ever sent by ``sender`` —
         UNCAPPED, unlike ``get_messages_since``'s own fetch (#2756).
 
-        This is the stable anchor ``Agent._trim_history_window``'s grow/cut
-        cycle is a pure function of: it increases by exactly one per real new
+        This is half of the stable anchor (``session_anchor``, #3077) that
+        ``Agent._trim_history_window``'s window size is a pure function of: it
+        increases by exactly one per real new
         user turn, forever, so the same window math gives the same answer on
         consecutive turns.  A count read off the capped raw pool instead would
         stop advancing (and silently reindex, since the pool's oldest member
@@ -1090,6 +1110,45 @@ class MessageStore:
                     col(MessageLog.run_id).is_(None),
                 )
             ).one()
+
+    def session_anchor(self, sender: str, idle_seconds: int) -> SessionAnchor:
+        """The total user-turn count plus how many of the newest belong to the
+        current session (#3077) — the pair the window's size is a pure
+        function of.
+
+        Same filters as ``count_user_turns`` (incoming, non-reaction, no run
+        id — joined messages render inside their run's own history, #2985), so
+        the session is counted over exactly the turns the window renders.  A
+        session is the newest run of consecutive turns with no gap of at least
+        ``idle_seconds`` between stored timestamps: the scan walks newest
+        first and stops at the first such gap.  With no gap in the whole
+        history, everything is one session.  Timestamps are compared against
+        timestamps — never against a clock — so the same stored state always
+        yields the same session.
+        """
+        with self._session() as session:
+            timestamps = list(
+                session.exec(
+                    select(MessageLog.timestamp)
+                    .where(
+                        MessageLog.sender == sender,
+                        MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                        MessageLog.is_reaction == False,  # noqa: E712
+                        col(MessageLog.run_id).is_(None),
+                    )
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
+                ).all()
+            )
+        idle = timedelta(seconds=idle_seconds)
+        session_turns = 1
+        for newer, older in zip(timestamps, timestamps[1:], strict=False):
+            if newer - older >= idle:
+                break
+            session_turns += 1
+        return SessionAnchor(
+            total_user_turns=len(timestamps),
+            session_turns=min(session_turns, len(timestamps)),
+        )
 
     def recent_direct_messages(self, since: datetime, limit: int) -> list[MessageLog]:
         """The conversation's DIRECT messages since a horizon, oldest first (#2752).

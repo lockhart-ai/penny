@@ -462,10 +462,14 @@ _PLAN_LIVE = (
 )
 _PLAN_AT = datetime(2026, 10, 12, 14, 5)
 
-# Enough newer filler exchanges that the plan sits past the history window's
-# own grow/cut boundary at any window size (the window never keeps more than
-# 2 * CHAT_HISTORY_TURNS - 1 exchanges).
+# Enough newer filler exchanges that the plan sits past the history window.
+# The first five are an hour old and the rest are fresh, so the CURRENT
+# session holds six fillers: the session window (5 + 6 session turns) keeps
+# everything but the plan — an unbroken filler run would hold the plan inside
+# the window forever, since a session's window always covers the session's
+# own turns plus the window's worth of pre-session ones (#3077).
 _FILLER_COUNT = 11
+_FILLER_STALE = 5
 _FILLER_USERS = (
     "what time is the bake sale on saturday?",
     "we should settle the house rules debate at game night sometime.",
@@ -508,8 +512,9 @@ def _seed_filler_exchanges(db) -> None:
     for index in range(_FILLER_COUNT):
         user_text = _FILLER_USERS[index % len(_FILLER_USERS)]
         reply_text = _FILLER_REPLIES[index % len(_FILLER_REPLIES)]
+        stale = db.clock.now() - timedelta(hours=1) if index < _FILLER_STALE else None
         ask_id = db.messages.log_message(
-            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, user_text
+            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, user_text, timestamp=stale
         )
         reply_id = db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
@@ -517,6 +522,7 @@ def _seed_filler_exchanges(db) -> None:
             reply_text,
             parent_id=ask_id,
             recipient=TEST_SENDER,
+            timestamp=stale,
         )
         assert ask_id is not None and reply_id is not None
         db.messages.set_exchange_embedding(
@@ -645,10 +651,17 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
         )
         seeded.append((user_text, reply_text, ask_id, reply_id))
     # Newer exchanges push all four past the history window — logged WITHOUT
-    # exchange vectors, so they are not candidates of their own.
+    # exchange vectors, so they are not candidates of their own.  The first
+    # five are an hour old (same split as ``_seed_filler_exchanges``): the
+    # current session holds six fillers, so the session window keeps the four
+    # ranked exchanges out (#3077).
     for index in range(11):
+        stale = db.clock.now() - timedelta(hours=1) if index < _FILLER_STALE else None
         ask_id = db.messages.log_message(
-            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, f"window filler {index}"
+            PennyConstants.MessageDirection.INCOMING,
+            TEST_SENDER,
+            f"window filler {index}",
+            timestamp=stale,
         )
         db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
@@ -656,6 +669,7 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
             f"the filler reply number {index}.",
             parent_id=ask_id,
             recipient=TEST_SENDER,
+            timestamp=stale,
         )
     agent = _render_agent(db, config)
 
@@ -988,7 +1002,7 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
     exactly one new exchange — never a changed message, link handle numbers
     included (#2756).  A URL planted in the first reply keeps the same handle
     number on every later turn, right up to the cut that drops it."""
-    config = make_config(chat_history_turns=2)  # window grows 2 -> 3, cuts at 4
+    config = make_config(chat_history_turns=2, chat_session_max_turns=3)  # cuts at 4
 
     async with running_penny(config) as penny:
         renders: list[list[str]] = []
@@ -1058,7 +1072,7 @@ async def test_the_conversation_map_within_the_static_prefix_is_stable_except_on
     new collection each time).  That rebuild is covered on its own in
     ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``;
     this test's one claim is about the map, so it reads only the map."""
-    config = make_config(chat_history_turns=2)  # window grows 2 -> 3, cuts at 4
+    config = make_config(chat_history_turns=2, chat_session_max_turns=3)  # cuts at 4 and 6
 
     async with running_penny(config) as penny:
         statics: list[str] = []
