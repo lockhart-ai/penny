@@ -133,10 +133,10 @@ public struct MessageBubble<Content: View>: View {
         .background(
             RoundedRectangle(cornerRadius: Tokens.bubbleCorner, style: .continuous)
                 .fill(Color(.systemBackground))
-                .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+                .shadow(color: .black.opacity(Tokens.bubbleShadowOpacity), radius: Tokens.bubbleShadowRadius, y: Tokens.bubbleShadowY)
                 .overlay(
                     RoundedRectangle(cornerRadius: Tokens.bubbleCorner, style: .continuous)
-                        .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 0.5)
+                        .strokeBorder(Color(.separator).opacity(0.5), lineWidth: Tokens.bubbleHairline)
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: Tokens.bubbleCorner, style: .continuous))
@@ -164,7 +164,7 @@ public struct MessageBubble<Content: View>: View {
                 }
                 .frame(width: imageBubbleWidth)
             } else {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: Tokens.bubbleQuoteGap) {
                     if let quote {
                         UserQuoteBlock(author: quoteAuthor, quoted: quote)
                     }
@@ -264,10 +264,6 @@ public struct MessageMeta: View {
 /// blue fill, a 3pt white leading bar, the author bold caption, then the
 /// quoted line. Only user bubbles quote; Penny's never do.
 public struct UserQuoteBlock: View {
-    private static let barWidth: CGFloat = 3
-    private static let blockPadding: CGFloat = 8
-    private static let blockCorner: CGFloat = 10
-
     public let author: String
     public let quoted: String
 
@@ -277,11 +273,11 @@ public struct UserQuoteBlock: View {
     }
 
     public var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+        HStack(alignment: .top, spacing: Tokens.quoteBarTextGap) {
+            RoundedRectangle(cornerRadius: Tokens.quoteBarCorner, style: .continuous)
                 .fill(Color.white)
-                .frame(width: Self.barWidth)
-            VStack(alignment: .leading, spacing: 1) {
+                .frame(width: Tokens.quoteBarWidth)
+            VStack(alignment: .leading, spacing: Tokens.quoteLineGap) {
                 Text(author)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.white)
@@ -291,8 +287,8 @@ public struct UserQuoteBlock: View {
                     .lineLimit(1)
             }
         }
-        .padding(Self.blockPadding)
+        .padding(Tokens.quoteBlockPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.2), in: RoundedRectangle(cornerRadius: Self.blockCorner, style: .continuous))
+        .background(Color.white.opacity(0.2), in: RoundedRectangle(cornerRadius: Tokens.quoteBlockCorner, style: .continuous))
     }
 }
