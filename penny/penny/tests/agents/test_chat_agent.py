@@ -700,6 +700,111 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
     )
 
 
+# ── Related exchanges vs the conversation map's own lines (#3085) ──────────
+
+_MAP_ASK = "garden job plan — read the weather log first, then recent messages"
+_MAP_REPLY = "yes, the garden job will read the weather log first, then your messages."
+_MAP_LIVE = "go ahead with the garden job plan — weather log first?"
+
+
+def _map_exchange(
+    db, index: int, *, embed: bool = False, at: datetime | None = None
+) -> tuple[int, int]:
+    """One outcome-bearing exchange — never collapse fodder on the
+    conversation map, so it renders its own one-to-one line (or folds with
+    its day, same as any other).  Only the target exchange (``embed=True``)
+    carries an exchange vector, so it is the sole related-exchanges
+    candidate and nothing else in the seeded run can score."""
+    run_id = f"map-exchange-{index}"
+    ask = _MAP_ASK if embed else f"a recorded-outcome ask, number {index}"
+    reply = _MAP_REPLY if embed else f"a recorded-outcome reply, number {index}."
+    ask_id = db.messages.log_message(
+        PennyConstants.MessageDirection.INCOMING, TEST_SENDER, ask, timestamp=at
+    )
+    reply_id = db.messages.log_message(
+        PennyConstants.MessageDirection.OUTGOING,
+        "penny",
+        reply,
+        parent_id=ask_id,
+        run_id=run_id,
+        recipient=TEST_SENDER,
+        timestamp=at,
+    )
+    assert ask_id is not None and reply_id is not None
+    db.memories.create_collection(f"garden-notes-{index}", "Notes.", created_by_run_id=run_id)
+    require_memory(db, f"garden-notes-{index}").write_rule_decided(
+        [EntryInput(key=f"note-{index}", content=f"note-{index} — recorded.")],
+        author="penny",
+        run_id=run_id,
+    )
+    if embed:
+        db.messages.set_exchange_embedding(
+            reply_id, serialize_embedding(deterministic_embed(f"{ask}\n{reply}"))
+        )
+    return ask_id, reply_id
+
+
+@pytest.mark.asyncio
+async def test_related_exchange_on_a_map_line_renders_her_reply_alone(db, make_config):
+    """A match whose user words the conversation map ALREADY shows, whole, on
+    its own one-to-one line (#3085) drops its own ``User:`` side here —
+    Penny's reply is the half the map never carries, so only it renders."""
+    config = make_config(
+        chat_history_turns=2, chat_session_max_turns=3, related_exchanges_min_similarity=0.1
+    )
+    ask_id, reply_id = _map_exchange(db, 0, embed=True)
+    for index in range(1, 5):
+        _map_exchange(db, index)
+    # Sanity: the exchange really is on the map's own one-to-one line.
+    map_ids = ConversationMap(db, TEST_SENDER, config.runtime).one_to_one_user_ids()
+    assert ask_id in map_ids
+    agent = _render_agent(db, config)
+
+    section = await agent._related_exchanges_section(
+        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+    )
+
+    assert section is not None
+    assert f'User: "{_MAP_ASK}"' not in section
+    assert f'Penny: "{_MAP_REPLY}"' in section
+    assert f"(messages {ask_id}, reply {reply_id})" in section
+
+
+@pytest.mark.asyncio
+async def test_related_exchange_on_a_folded_day_renders_both_sides(db, make_config):
+    """A match whose user words sit on a FOLDED day (#3085) — the map
+    collapsed that day's lines away, so it never carries this exchange's
+    words whole — renders both sides, exactly as before the map existed."""
+    config = make_config(
+        chat_history_turns=2,
+        chat_session_max_turns=3,
+        chat_session_idle_seconds=7 * 24 * 3600,
+        chat_map_max_lines=5,
+        related_exchanges_min_similarity=0.1,
+    )
+    ask_id = reply_id = None
+    for index in range(8):  # window=2: older than it = indices 0-5 (#3056's own math)
+        embed = index == 0
+        a_id, r_id = _map_exchange(
+            db, index, embed=embed, at=db.clock.now() - timedelta(days=1) if index < 5 else None
+        )
+        if embed:
+            ask_id, reply_id = a_id, r_id
+    assert ask_id is not None and reply_id is not None
+    # Sanity: the exchange's day folded, so it carries no one-to-one line.
+    map_ids = ConversationMap(db, TEST_SENDER, config.runtime).one_to_one_user_ids()
+    assert ask_id not in map_ids
+    agent = _render_agent(db, config)
+
+    section = await agent._related_exchanges_section(
+        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+    )
+
+    assert section is not None
+    assert f'User: "{_MAP_ASK}"' in section
+    assert f'Penny: "{_MAP_REPLY}"' in section
+
+
 def _wire_call(call_id: str, name: str, arguments: dict) -> dict:
     """One tool call as the wire/log stores it — ``arguments`` as a JSON string,
     the shape ``LoggedToolCall.from_function`` decodes."""

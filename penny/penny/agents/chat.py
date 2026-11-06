@@ -845,7 +845,12 @@ class ChatAgent(Agent):
         (#3010).  Keyed to the user's own words: an ordinary user turn only — a
         delivery turn's trigger is the framework's notification, never the user
         asking, so no retrieval runs for one.  Embeds the live message once,
-        here, so every later loop step reads the section this computed."""
+        here, so every later loop step reads the section this computed.
+
+        Builds the conversation map's own one-to-one line ids (#3085,
+        ``ConversationMap.one_to_one_user_ids``) once, here, and hands them to
+        ``RelatedExchanges`` so a match whose user words the map already shows
+        whole never renders them a second time."""
         if prompt_type is not ChatPromptType.USER_MESSAGE:
             return None
         if not prompt.strip():
@@ -855,11 +860,15 @@ class ChatAgent(Agent):
         except LlmError as error:
             logger.warning("Related-exchanges retrieval skipped — embed failed: %s", error)
             return None
+        map_one_to_one_ids = ConversationMap(
+            self.db, sender, self.config.runtime
+        ).one_to_one_user_ids()
         rendered = RelatedExchanges(
             self.db,
             sender,
             self.config.runtime,
             vectors[0],
+            map_one_to_one_ids,
         ).render()
         if not rendered:
             return None

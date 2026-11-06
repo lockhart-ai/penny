@@ -74,6 +74,10 @@ Reachability: each line carries its absolute time, so the full text of any
 exchange is one anchored read away — ``log_read`` with the ``day`` the line's
 date names, on the log the closing line points at.  An autonomous line's own
 anchor is ``(run <id>)``, read by ``run_get`` verbatim.
+
+:meth:`ConversationMap.one_to_one_user_ids` (#3085) names which exchanges this
+turn's map already carries whole, as their OWN line — ``RelatedExchanges``
+reads it so a match the map already shows never renders its user side twice.
 """
 
 from __future__ import annotations
@@ -176,14 +180,17 @@ def map_horizon_start(db: Database, runtime: RuntimeParams) -> datetime:
 class _Exchange:
     """One user turn with the reply it drew — the map's unit of grouping.
 
-    ``user_at`` is the turn's own instant (the line's time anchor); ``run_ids``
-    are the reply rows' run ids, the join to every recorded outcome; ``reply``
-    is the reply text whole, read only for the short-exchange length, never
-    rendered."""
+    ``user_at`` is the turn's own instant (the line's time anchor); ``user_ids``
+    are the user rows' own ids — the join ``RelatedExchanges`` (#3085) uses to
+    tell whether a match it is about to render whole is already carried, word
+    for word, by this exchange's own map line; ``run_ids`` are the reply rows'
+    run ids, the join to every recorded outcome; ``reply`` is the reply text
+    whole, read only for the short-exchange length, never rendered."""
 
     user: str
     reply: str
     user_at: datetime
+    user_ids: tuple[int, ...]
     run_ids: tuple[str, ...]
 
 
@@ -232,9 +239,35 @@ class ConversationMap:
         items = self._older_than_window(self._in_horizon())
         if not items:
             return ""
-        lines = self._collapse_short(items)
-        lines = self._collapse_at_ceiling(lines)
+        lines = self._lines(items)
         return "\n".join([self.HEADER, *(line.text for line in lines), self._anchor()])
+
+    def one_to_one_user_ids(self) -> frozenset[int]:
+        """The user-row ids of every exchange this turn's map renders as its
+        OWN one-to-one line — the user's words already whole on a line of
+        their own, through the SAME pipeline :meth:`render` runs (the horizon
+        read, the older-than-window slice, both collapses), never a second
+        guess at where the window or the horizon falls (#3085).
+
+        A lone short exchange still counts — its line is its own, even
+        collapse-eligible.  A RANGED short-collapse line (several exchanges on
+        one line), a folded day, and a notification line never do: none of
+        them carries any one exchange's own words whole, so ``_Line.user_ids``
+        is empty on all three.  ``RelatedExchanges`` reads this set to decide
+        whether a match it would otherwise render whole is already carried,
+        word for word, by the map — never by re-deriving the window itself."""
+        items = self._older_than_window(self._in_horizon())
+        if not items:
+            return frozenset()
+        return frozenset(user_id for line in self._lines(items) for user_id in line.user_ids)
+
+    def _lines(self, items: list[_Exchange | _Notification]) -> list[ConversationMap._Line]:
+        """The rendered lines for the horizon's items already sliced to the
+        window boundary — both collapses applied, shared by :meth:`render`
+        and :meth:`one_to_one_user_ids` so neither ever runs the horizon or
+        window math on its own."""
+        lines = self._collapse_short(items)
+        return self._collapse_at_ceiling(lines)
 
     # ── The exchanges ────────────────────────────────────────────────────────
 
@@ -276,11 +309,12 @@ class ConversationMap:
 
     def _exchange(self, user_rows: list[MessageLog], reply_rows: list[MessageLog]) -> _Exchange:
         """One exchange from its rows: merged user text, merged reply, the turn's
-        own instant, and the reply rows' run ids."""
+        own instant, the user rows' own ids, and the reply rows' run ids."""
         return _Exchange(
             user="\n".join(row.content for row in user_rows),
             reply="\n".join(row.content for row in reply_rows),
             user_at=user_rows[0].timestamp,
+            user_ids=tuple(row.id for row in user_rows if row.id is not None),
             run_ids=tuple(row.run_id for row in reply_rows if row.run_id is not None),
         )
 
@@ -387,12 +421,19 @@ class ConversationMap:
     class _Line:
         """One rendered line plus what the boundings need to reason about it:
         its local date (the ceiling collapses whole days), that day's ISO form
-        (the collapse line's read anchor), and how many exchanges it covers."""
+        (the collapse line's read anchor), and how many exchanges it covers.
+
+        ``user_ids`` is non-empty on exactly the lines that carry ONE
+        exchange's own words whole — an ordinary exchange line or a lone
+        short-exchange collapse (#3085) — never on a ranged short-collapse
+        line, a folded day, or a notification line, none of which renders any
+        one exchange's user words in full."""
 
         text: str
         date: str
         date_iso: str
         exchanges: int
+        user_ids: tuple[int, ...] = ()
 
     def _item_line(self, item: _Exchange | _Notification) -> ConversationMap._Line:
         """One line for one horizon item, of whichever kind it is."""
@@ -413,6 +454,7 @@ class ConversationMap:
             date=date,
             date_iso=date_iso,
             exchanges=1,
+            user_ids=exchange.user_ids,
         )
 
     def _notification_line(self, note: _Notification) -> ConversationMap._Line:

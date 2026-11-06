@@ -364,7 +364,7 @@ def test_the_map_and_the_related_exchanges_share_one_boundary(db) -> None:
     for index in range(5):  # one session, cap 3: window = 2 + 5 % 2 = 3
         _outcome_exchange(db, index)
 
-    boundary = RelatedExchanges(db, TEST_SENDER, RuntimeParams(db), [0.0])._boundary()
+    boundary = RelatedExchanges(db, TEST_SENDER, RuntimeParams(db), [0.0], frozenset())._boundary()
     assert boundary is not None and boundary.content == "exchange ask 2"
 
     lines = _content_lines(_map(db).render())
@@ -417,6 +417,47 @@ def test_consecutive_short_exchanges_collapse_into_one_ranged_line(db) -> None:
     # The outcome-bearing exchange renders its own full line — collapse fodder
     # is the outcome-less ones.
     assert "a real ask that needs doing properly today" in rendered
+
+
+# ── The one-to-one ids (#3085) ──────────────────────────────────────────────
+
+
+def test_one_to_one_user_ids_names_exchanges_with_their_own_line(db) -> None:
+    """``one_to_one_user_ids()`` runs the SAME pipeline ``render()`` runs: a
+    lone line — outcome-bearing or a lone short exchange — carries its user
+    id, while a RANGED short-collapse line and a notification line carry
+    none, since neither shows one exchange's own words whole."""
+    run_id = "a" * 32
+    _write_entry(db, "list-0", "key-0", run_id)
+    _exchange(db, "a real ask with a recorded outcome", "did it — saved.", run_id=run_id)
+    outcome_ids = _last_ids(db, 2)
+
+    _exchange(db, "hi", "hey")  # a lone short exchange, between two non-short ones
+    lone_short_ids = _last_ids(db, 2)
+
+    _long_exchange(db, 0)  # breaks it from the run below — never collapse fodder
+    break_ids = _last_ids(db, 2)
+
+    for index in range(3):
+        _exchange(db, f"quick hello {index}", f"quick answer {index}")
+    collapsed_ids = _last_ids(db, 6)
+
+    report_run = "c" * 32
+    _autonomous_send(db, "morning-brief", report_run, prompt_type=ChatPromptType.JOB_REPORT)
+
+    _filler(db, 20)  # comfortably past the default window's grow/cut cycle
+
+    map_ = _map(db)
+    rendered = map_.render()
+    assert '"hi"' in rendered  # sanity: the lone short exchange kept its own line
+    assert "3 short messages" in rendered  # sanity: the run collapsed
+    assert "morning-brief" in rendered  # sanity: the notification rendered
+
+    one_to_one = map_.one_to_one_user_ids()
+    assert outcome_ids[0] in one_to_one
+    assert lone_short_ids[0] in one_to_one
+    assert break_ids[0] in one_to_one
+    assert not (one_to_one & set(collapsed_ids))
 
 
 # ── The ceiling ──────────────────────────────────────────────────────────────

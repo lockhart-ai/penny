@@ -450,7 +450,9 @@ async def test_the_map_stops_one_exchange_before_the_historys_first(
 
         # The related-exchanges boundary is the same row the history's first
         # kept exchange holds — one boundary, three readers.
-        boundary = RelatedExchanges(penny.db, TEST_SENDER, penny.config.runtime, [0.0])._boundary()
+        boundary = RelatedExchanges(
+            penny.db, TEST_SENDER, penny.config.runtime, [0.0], frozenset()
+        )._boundary()
         assert boundary is not None and boundary.content == "user message 4"
 
 

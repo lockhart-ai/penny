@@ -804,6 +804,54 @@ def test_self_state_store_map_names_search_only_when_named(db):
     assert "- plain-feed (log) — plain notes\n" in actual
 
 
+def test_self_state_store_map_drops_a_live_jobs_duplicate_description(db):
+    """The store map's description drops when it is the SAME text, whitespace
+    aside, as a LIVE job's own ``extraction_prompt`` (#3085) — the Jobs
+    section's hung instructions line already shows it.  A distinct
+    description always stays."""
+    prompt = "read   the   weather page\nand note the forecast."
+    with Session(db.engine) as session:
+        _add_collection(
+            session,
+            "weather-watch",
+            description="read the weather page and note the forecast.",  # same, ws aside
+            extraction_prompt=prompt,
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_collection(
+            session,
+            "garden-notes",
+            description="notes about the garden's own progress",  # distinct text
+            extraction_prompt="log the garden job's progress each week.",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert "\n- weather-watch (collection)\n" in actual  # the clause dropped entirely
+    assert "- garden-notes (collection) — notes about the garden's own progress\n" in actual
+
+
+def test_self_state_memory_map_line_keeps_an_archived_rows_own_description() -> None:
+    """``_memory_map_line`` never drops an ARCHIVED row's description, even
+    when it is the same text as its own ``extraction_prompt`` (#3085): an
+    archived row's job line is gone from the Jobs section (it keeps only its
+    ``archived <when>`` stamp), so there is nowhere else this text would
+    otherwise appear."""
+    prompt = "read the weather page and note the forecast."
+    row = MemoryRow(
+        name="old-watch",
+        type="collection",
+        description=prompt,
+        extraction_prompt=prompt,
+        archived=True,
+        created_at=_t(6),
+        updated_at=_t(6),
+    )
+    assert SelfStateHeader._memory_map_line(row) == f"- old-watch (collection) — {prompt}"
+
+
 def test_self_state_archived_line_names_a_collection_and_a_log(db):
     """The store map's compact archived line (#2288, "one compact line naming
     them") names BOTH an archived collection and an archived log, by name —
