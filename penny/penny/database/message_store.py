@@ -1503,7 +1503,7 @@ class MessageStore:
         """Stamp the run's numbered link table (#2717) — number → URL, as JSON —
         onto the last prompt row for ``run_id``.
 
-        Links travel as handles: the logged turns carry ``[n]``, while the
+        Links travel as handles: the logged turns carry ``{link n}``, while the
         artefacts built from the run (stored entries, the outgoing reply) carry
         the expanded real URLs.  Stamping the table beside the trailing turns
         keeps the record whole however the run ended, and gives the eval

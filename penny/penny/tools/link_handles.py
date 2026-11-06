@@ -1,19 +1,26 @@
-"""Link handles — a run's numbered link table (#2717).
+"""Link handles — a run's numbered link table (#2717, token form #3074).
 
-Links travel as numbered handles end to end: the model reads ``[12]`` instead of
-a URL and writes ``[12]`` back, and Python expands the handle when a message is
-finalised, so the model never types a URL.  Measured on 7 logged page reads
+Links travel as typed tokens end to end: the model reads ``{link 101}`` instead of
+a URL and writes ``{link 101}`` back, and Python expands the token when a message
+is finalised, so the model never types a URL.  Measured on 7 logged page reads
 (gemma, thinking off): reader input dropped 42%, and no link that wasn't on the
-page and no handle that didn't exist ever appeared in a draw.
+page and no handle that didn't exist ever appeared in a draw.  The token form and
+the 101+ numbering are the #3074 fix for the prod write step: a stored entry's
+rendered ``[1] <full url>`` pair taught "number + URL" and a bare bracketed number
+read as a footnote, so the cycle wrote a wrong source address; with entries
+rendered ``{link 118}`` alone and numbering starting at 101, the same step wrote
+the right page 12/12.
 
 One :class:`HandleTable` per run — a chat turn, a collector cycle, or a job-report
 delivery turn — owned by Python and passed as an explicit parameter, never ambient
 state.  It is assigned on first sight: the first time a URL is rendered to the
-model it gets the next number, and the same URL keeps its number for the whole
-run, so a handle the model read from one tool result is the same number it cites
-back.
+model it gets the next number (from :data:`PennyConstants.HANDLE_FIRST_NUMBER`),
+and the same URL keeps its number for the whole run, so a handle the model read
+from one tool result is the same number it cites back.  Because numbering starts
+at 101, a small bracketed number in a reply is prose by construction, never a
+failed citation.
 
-Handles are a RENDERING.  Stored state keeps real URLs: memory entries are
+Tokens are a RENDERING.  Stored state keeps real URLs: memory entries are
 expanded back to their URLs before they are written (``collection_write``), and
 the browse-results log stores the un-converted sections.  Conversion happens only
 at each seam where the model READS — page sections, search results, history,
@@ -21,8 +28,8 @@ memory read renders, the job-report render.
 
 The table is mutable only by registration (a URL's number never changes once
 assigned); everything else is a pure read.  An empty table is honest: it means
-this run rendered no handles, so no citation can dangle and no prose ``[12]``
-is ever mistaken for one.
+this run rendered no handles, so no citation can dangle and no prose ``{link
+12}`` is ever mistaken for one.
 """
 
 from __future__ import annotations
@@ -30,6 +37,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from urllib.parse import urlparse
+
+from penny.constants import PennyConstants
 
 # A markdown link ``[text](url)`` — the form the page reader renders links in.
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
@@ -39,7 +48,7 @@ _IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 # A bare URL anywhere in the text — the run of non-space characters a scheme
 # opens.  The stored-digest path is why this exists: a collector entry reads
 # ``Headline text - https://www.example.com/news/story-9.7387777``, and a URL
-# the model READS must arrive as a handle or the next turn retypes it.
+# the model READS must arrive as a token or the next turn retypes it.
 _BARE_URL_RE = re.compile(r"https?://[^\s]+")
 # Marks that, at a bare URL's END, belong to the prose around it rather than to
 # the address — a sentence's full stop, a comma, emphasis — and the closers
@@ -49,39 +58,29 @@ _BARE_URL_RE = re.compile(r"https?://[^\s]+")
 # validator applies to a reply's URLs, declared here for the bare pass.
 _PROSE_TAIL_MARKS = ".,;:!?*_"
 _PAIR_CLOSER = {")": "(", "]": "[", "}": "{"}
-# A handle citation — five forms: bare ``[12]``; the ``[text][12]`` form the
-# page reader itself renders; the two hybrids a model composes when it
-# treats the handle as a markdown link — ``[12](https://site.example)`` (the
-# number as link text, a site root it knows as the target — the stored-digest
-# sample that stored ``story-url(site-root)``) and ``[text](12)`` (the number
-# written as the target); and a list form ``[4, 6]`` citing several handles in
-# one bracket.  The handle IS the address, so a parenthesized or
-# bracketed rest glued to a citation is part of the citation and expands away
-# with it.  ``[12]`` alone is ambiguous with prose ("[12] people said"), so
-# expansion rewrites only numbers the table actually holds, and the dangling
-# check only fires while the table holds at least one link.
+# A handle citation (#3074) — two forms, both in the shared grammar
+# (``PennyConstants.HANDLE_TOKEN_RE``): the bare token ``{link 12}``, and the
+# labelled form the page reader itself renders for a markdown link,
+# ``[text] {link 12}``.  The handle IS the address, so a labelled citation
+# carries its text beside the token and expands back to a markdown link.  A
+# bare bracketed number (``[12]``, ``{12}``) matches neither form — it is plain
+# text, and the old bracket hybrids are gone with the numbering that starts at
+# 101: no token the model is ever shown can carry a number that low.
 _HANDLE_RE = re.compile(
-    r"\[([^\]]*)\]\[(\d+)\]"
-    r"|\[(\d+)\]\(([^)]*)\)"
-    r"|\[([^\]]+)\]\((\d+)\)"
-    r"|\[(\d+(?:,\s*\d+)+)\]"
-    r"|\[(\d+)\]"
+    r"\[([^\]\[]+)\] ?\{link (\d+)\}"
+    r"|\{link (\d+)\}"
 )
-_MULTI_CITATION_SEPARATOR = ", "
 # A browse section's own header line — the page's address (or an error's failed
 # one) after the header text.  Looked up, never registered (#2735): the page
-# itself takes no number, so its first content link keeps the next one.
+# itself takes no number from the header, so its first content link keeps the
+# next one.
 _BROWSE_HEADER_URL_RE = re.compile(r"^(## browse(?: error| dropped)?: )(https?://\S+)\s*$")
 
 
-def _cited_numbers(match: re.Match) -> list[int]:
-    """All handle numbers a citation form cites — a list of numbers, one for
-    single citation forms, multiple for the list form ``[4, 6]``."""
-    text, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = match.groups()
-    if multi_numbers is not None:
-        return [int(n) for n in multi_numbers.split(",")]
-    num = int(next(g for g in (linked, hybrid_num, target_num, bare) if g is not None))
-    return [num]
+def _cited_number(match: re.Match) -> int:
+    """The one handle number a citation form cites."""
+    _label, labelled, bare = match.groups()
+    return int(labelled if labelled is not None else bare)
 
 
 def _registrable_domain(url: str) -> str:
@@ -112,23 +111,33 @@ def normalise_link_address(url: str) -> str:
     return url
 
 
-# The one plain line rendered where handles appear.  It states the number's
+def _plain(number: int) -> str:
+    """The bare token ``{link n}`` — the render a stored entry's own source
+    line takes (#3074): the token ALONE, never a token+URL pair.  The pair is
+    what taught a cycle to write "number + URL" and offered ``[1]`` as an
+    example; the token-only render is the arm the prod replay measured at
+    12/12."""
+    return f"{PennyConstants.LINK_TOKEN_PREFIX}{number}{PennyConstants.HANDLE_TOKEN_CLOSE}"
+
+
+# The one plain line rendered where handles appear.  It states the token's
 # COMPLETENESS, not just the form: a stored-digest sample read "[2]" as a
 # reference without the address the ask demanded and browsed one site root
 # eighteen times hunting for literal URLs that the write-side expansion would
-# have supplied — the state never told her the number carries the address.
+# have supplied — the state never told her the token carries the address.
 PAGE_CITATION_LINE = (
-    "Links on this page are numbered, like [12]. The number is the link "
-    "itself: when your message is sent or an entry is stored, [12] becomes "
-    "the full address. So write [12] wherever the link belongs, and never "
+    "Links on this page carry tokens, like {link 101}. The token is the link "
+    "itself: when your message is sent or an entry is stored, {link 101} becomes "
+    "the full address. So write {link 101} wherever the link belongs, and never "
     "look for the address."
 )
 # The same line for seams that are not a page: history, memory read renders,
 # the job-report render.
 CITATION_LINE = (
-    "Links are numbered, like [12]. The number is the link itself: when your "
-    "message is sent or an entry is stored, [12] becomes the full address. So "
-    "write [12] wherever the link belongs, and never look for the address."
+    "Links carry tokens, like {link 101}. The token is the link itself: when "
+    "your message is sent or an entry is stored, {link 101} becomes the full "
+    "address. So write {link 101} wherever the link belongs, and never look for "
+    "the address."
 )
 
 
@@ -145,16 +154,17 @@ class HandleTable:
         self._titles: dict[int, str] = {}
 
     def __bool__(self) -> bool:
-        """Whether any link has been rendered as a handle this run."""
+        """Whether any link has been rendered as a token this run."""
         return bool(self._by_number)
 
     def __len__(self) -> int:
-        """How many links this run has rendered as handles — the growth a render
+        """How many links this run has rendered as tokens — the growth a render
         reads to decide whether its own citation line is new information."""
         return len(self._by_number)
 
     def register(self, url: str, *, title: str | None = None) -> int:
-        """The handle for ``url`` — assigned on first sight, stable after.
+        """The number ``url``'s token carries — assigned on first sight, stable
+        after, starting at :data:`PennyConstants.HANDLE_FIRST_NUMBER` (#3074).
 
         ``title`` backfills the handle's title the first time one is known —
         a URL is often registered before its page is read (the pick-time
@@ -167,89 +177,39 @@ class HandleTable:
             if title and existing not in self._titles:
                 self._titles[existing] = title
             return existing
-        number = len(self._by_number) + 1
+        number = len(self._by_number) + PennyConstants.HANDLE_FIRST_NUMBER
         self._by_number[number] = url
         self._by_url[url] = number
         if title:
             self._titles[number] = title
         return number
 
+    def plain(self, number: int) -> str:
+        """The bare token ``{link n}`` — the public form of :func:`_plain`, for
+        render sites that hold a number and no context of their own."""
+        return _plain(number)
+
     def _describe(self, number: int) -> str:
-        """``[n]`` with its registrable domain, and its page title when one is
-        known, beside it — the render that makes a bare handle legible as a
+        """``{link n}`` with its registrable domain, and its page title when one
+        is known, beside it — the render that makes a bare token legible as a
         real address rather than an opaque reference worth resolving (#2832):
-        ``[1] store.steampowered.com`` or, once a title is known,
-        ``[1] store.steampowered.com — Big Pharma``. The full path never
-        renders, so nothing invites copying one out by hand."""
+        ``{link 101} store.steampowered.com`` or, once a title is known,
+        ``{link 101} store.steampowered.com — Big Pharma``. The full path never
+        renders, so nothing invites copying one out by hand.  A number the
+        table does not hold renders as the bare token, so a render can never
+        invent a domain."""
         url = self._by_number.get(number)
         if url is None:
-            return f"[{number}]"
+            return _plain(number)
         domain = _registrable_domain(url)
         title = self._titles.get(number)
-        return f"[{number}] {domain} — {title}" if title else f"[{number}] {domain}"
-
-    def _describe_full(self, number: int) -> str:
-        """``[n]`` with its FULL address beside it — the render for the shape
-        where the link IS the whole answer (#2832 arm C): a stored entry's own
-        ``Source:`` line, and a page reader's answer that is entirely a link.
-        Everywhere else a bare handle renders (a page body, a browse header),
-        the number plus domain stays as ``_describe`` already has it."""
-        url = self._by_number.get(number)
-        return f"[{number}] {url}" if url is not None else f"[{number}]"
-
-    def annotate(self, text: str) -> str:
-        """``text`` described by its FULL address when ``text``, in its
-        entirety, IS one handle citation — the shape a page reader's answer
-        takes when the one fact asked for is a link (#2832 arm C): a bare
-        ``[1]`` with nothing else around it IS the answer, so it carries the
-        real address rather than a domain that still reads as partial. Text
-        that carries anything besides the citation — a sentence, a second
-        fact — is left exactly as it is: this names what a BARE answer stands
-        for, it is not a second citation form stacked onto normal prose."""
-        match = _HANDLE_RE.fullmatch(text.strip())
-        if match is None:
-            return text
-        described = (self._describe_full(number) for number in _cited_numbers(match))
-        return _MULTI_CITATION_SEPARATOR.join(described)
-
-    def convert_entry(self, text: str) -> str:
-        """``text`` with every link replaced by its handle, FULL-address form
-        — a stored entry's own render (#2832 arm C): the citation on an
-        entry's ``Source:`` line IS the fact the ask wants, so a bare or
-        self-referential link shows its full address beside the number
-        instead of just the domain.  A LABELLED markdown link keeps its
-        ordinary ``[text][n]`` form unchanged — it already carries readable
-        text, so this only touches the shape where the link is the whole
-        value."""
-        text = _IMAGE_RE.sub("", text)
-        text = _MARKDOWN_LINK_RE.sub(self._link_sub_full, text)
-        return _BARE_URL_RE.sub(self._bare_sub_full, text)
-
-    def _link_sub_full(self, match: re.Match) -> str:
-        label, url = match.group(1), match.group(2)
-        # Registering here (not only in the bare pass below) keeps "assigned
-        # on first sight" true in text order even for the collapsed branch,
-        # which defers its own text to that bare pass rather than describing
-        # the url twice (#2832 arm C) — register() is idempotent, so the bare
-        # pass re-registering the same url is a no-op that returns this
-        # number back.
-        number = self.register(url)
-        if not label.strip() or label.strip() == url:
-            return url
-        return f"[{self._convert_bare(label)}][{number}]"
-
-    def _bare_sub_full(self, match: re.Match) -> str:
-        url = normalise_link_address(match.group(0))
-        if not url:
-            return match.group(0)
-        number = self.register(url)
-        return f"{self._describe_full(number)}{match.group(0)[len(url) :]}"
+        return f"{_plain(number)} {domain} — {title}" if title else f"{_plain(number)} {domain}"
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[int, str]) -> HandleTable:
         """A table rebuilt from a recorded ``{number: url}`` mapping — the shape
         ``mapping`` snapshots and the run record stores.  The harness expands a
-        run's given text through the run's own recorded table, so a handle the
+        run's given text through the run's own recorded table, so a token the
         model read from one surface expands to the URL it stood for."""
         table = cls()
         for number, url in sorted(mapping.items()):
@@ -264,20 +224,47 @@ class HandleTable:
         return dict(self._by_number)
 
     def url_for(self, number: int) -> str | None:
-        """The URL a handle stands for, or ``None`` when it dangles."""
+        """The URL a token stands for, or ``None`` when it dangles."""
         return self._by_number.get(number)
 
+    def convert_entry(self, text: str) -> str:
+        """``text`` with every link replaced by its bare token — a stored
+        entry's own render (#3074): the citation on an entry's ``Source:`` line
+        renders as the token ALONE, never a token+URL pair.  A LABELLED
+        markdown link keeps its readable text beside the token — ``[text]
+        {link n}`` — since the text is not the URL; only the shape where the
+        link is the whole value collapses to the bare token."""
+        text = _IMAGE_RE.sub("", text)
+        text = _MARKDOWN_LINK_RE.sub(self._entry_link_sub, text)
+        return _BARE_URL_RE.sub(self._entry_bare_sub, text)
+
+    def _entry_link_sub(self, match: re.Match) -> str:
+        label, url = match.group(1), match.group(2)
+        number = self.register(url)
+        if not label.strip() or label.strip() == url:
+            return _plain(number)
+        return f"[{self._convert_bare(label)}] {_plain(number)}"
+
+    def _entry_bare_sub(self, match: re.Match) -> str:
+        url = normalise_link_address(match.group(0))
+        if not url:
+            return match.group(0)
+        number = self.register(url)
+        return f"{_plain(number)}{match.group(0)[len(url) :]}"
+
     def convert(self, text: str) -> str:
-        """``text`` with every link replaced by its handle — the model-facing form.
+        """``text`` with every link replaced by its token — the model-facing form.
 
         Images are dropped first (an image is not a link the model can cite);
-        then every markdown ``[text](url)`` becomes ``[text][n]``, and every bare
-        ``http(s)://`` URL that remains becomes ``[n]`` — anywhere in a line,
-        not only standing alone, with the prose punctuation it ran into (a
-        sentence's full stop, a closing paren the URL never opened) left around
-        the handle.  A URL already inside a markdown link's ``(...)`` is gone
-        with that link before the bare pass runs, so nothing double-converts.
-        Every URL converted is registered, so the numbers are the run's."""
+        then every markdown ``[text](url)`` becomes ``[text] {link n}`` — or,
+        when the link's text is empty or its own URL, the token described with
+        its domain (#2832) — and every bare ``http(s)://`` URL that remains
+        becomes ``{link n} domain``, anywhere in a line, not only standing
+        alone, with the prose punctuation it ran into (a sentence's full stop,
+        a closing paren the URL never opened) left around the token.  A URL
+        already inside a markdown link's ``(...)`` is gone with that link
+        before the bare pass runs, so nothing double-converts.  Every URL
+        converted is registered, so the numbers are the run's."""
         text = _IMAGE_RE.sub("", text)
         text = _MARKDOWN_LINK_RE.sub(self._link_sub, text)
         return self._convert_bare(text)
@@ -286,73 +273,63 @@ class HandleTable:
         """One browse section (a ``## browse …:`` header plus its body) in the
         model-facing form.  The header shows the page as the model gave it
         (#2735): the address it typed stays written out, and a page it cited by
-        number comes back as the handle it already holds.  The page itself never
-        takes a NEW number — one would sit where the page's first content link
-        belongs, and the model pairs what it reads in order, so a headline's
-        link lands on its neighbour.  Only links found INSIDE the page content
-        get handles."""
+        number comes back as the token it already holds.  The page itself never
+        takes a NEW number from the header — one would sit where the page's
+        first content link belongs, and the model pairs what it reads in order,
+        so a headline's link lands on its neighbour.  Only links found INSIDE
+        the page content get tokens from the body pass (a page fetched whole is
+        registered at extract time, with its title)."""
         header, _, body = section.partition("\n")
         converted = _BROWSE_HEADER_URL_RE.sub(self._header_sub, header)
         return f"{converted}\n{self.convert(body)}" if body else converted
 
     def expand(self, text: str) -> str:
-        """``text`` with every handle the table holds replaced by its URL — the
+        """``text`` with every token the table holds replaced by its URL — the
         form a message is finalised in, so the conversation record keeps real
-        URLs.  A ``[text][n]`` citation keeps its text as a markdown link; a
-        bare ``[n]`` becomes the bare URL.  A handle not in the table is left
-        exactly as written (the validator rejects it before sending)."""
+        URLs.  A ``[text] {link n}`` citation keeps its text as a markdown
+        link; a bare ``{link n}`` becomes the bare URL.  A token not in the
+        table is left exactly as written (the validator rejects it before
+        sending)."""
         return _HANDLE_RE.sub(self._expand_sub, text)
 
     def dangling(self, text: str) -> list[int]:
-        """The handle numbers ``text`` cites that the table does not hold, in
-        order, without repeats.  Every citation form counts — including the
-        hybrids, where the number stands in the brackets or the target alike,
-        and every number in a list form.  Empty while the table itself is empty
-        — with no links rendered, a bracketed number is prose, not a failed
-        citation."""
+        """The token numbers ``text`` cites that the table does not hold, in
+        order, without repeats.  Both citation forms count — the labelled form
+        and the bare token.  Empty while the table itself is empty — with no
+        links rendered, a bracketed number is prose, not a failed citation."""
         if not self._by_number:
             return []
         seen: list[int] = []
         for match in _HANDLE_RE.finditer(text):
-            for number in _cited_numbers(match):
-                if number not in self._by_number and number not in seen:
-                    seen.append(number)
+            number = _cited_number(match)
+            if number not in self._by_number and number not in seen:
+                seen.append(number)
         return seen
 
     def dangling_note(self, numbers: list[int]) -> str:
-        """The honest rejection a dangling citation draws: which handles don't
+        """The honest rejection a dangling citation draws: which tokens don't
         exist and which do — the action-space fact the re-draw works from."""
-        cited = ", ".join(f"[{n}]" for n in numbers)
+        cited = ", ".join(_plain(n) for n in numbers)
         if self._by_number:
             low, high = min(self._by_number), max(self._by_number)
             return (
-                f"There is no link {cited} in this turn; the links you have are [{low}]–[{high}]."
+                f"There is no link {cited} in this turn; the links you have are "
+                f"{_plain(low)}–{_plain(high)}."
             )
         return f"There is no link {cited} in this turn; there are no numbered links."
 
     def drop_citations(self, text: str, numbers: list[int]) -> str:
         """``text`` with every citation of a number in ``numbers`` removed — the
-        repair for a handle still dangling after the hallucinated-URL
+        repair for a token still dangling after the hallucinated-URL
         validator's one retry (#2721): the model gets no second nudge, so the
         still-bad citation is dropped instead of reaching the user.  A labelled
-        form (``[text][n]``, ``[text](n)``) keeps its text; an unlabelled one
-        (``[n]``, ``[n](target)``) drops outright; a list form (``[4, 6]``)
-        keeps whichever numbers aren't in ``numbers``."""
+        form (``[text] {link n}``) keeps its text; a bare one drops outright."""
         bad = set(numbers)
 
         def sub(match: re.Match) -> str:
-            text_label, linked, hybrid_num, _target, label, target_num, multi_numbers, bare = (
-                match.groups()
-            )
-            if multi_numbers is not None:
-                kept = [n.strip() for n in multi_numbers.split(",") if int(n.strip()) not in bad]
-                return f"[{', '.join(kept)}]" if kept else ""
-            if linked is not None:
-                return text_label if int(linked) in bad else match.group(0)
-            if target_num is not None:
-                return label if int(target_num) in bad else match.group(0)
-            num = hybrid_num if hybrid_num is not None else bare
-            return "" if int(num) in bad else match.group(0)
+            if _cited_number(match) not in bad:
+                return match.group(0)
+            return match.group(1) or ""
 
         return _HANDLE_RE.sub(sub, text)
 
@@ -362,15 +339,16 @@ class HandleTable:
         label, url = match.group(1), match.group(2)
         number = self.register(url)
         if not label.strip() or label.strip() == url:
-            # An empty label, or a link whose text is its own URL — the handle
+            # An empty label, or a link whose text is its own URL — the token
             # alone, described (#2832): the URL must not survive as readable
-            # text, but the handle on its own carries nothing to trust either.
+            # text, but the bare token on its own carries nothing to trust
+            # either, so the domain beside it names what the link IS.
             return self._describe(number)
-        return f"[{self._convert_bare(label)}][{number}]"
+        return f"[{self._convert_bare(label)}] {_plain(number)}"
 
     def _convert_bare(self, text: str) -> str:
         """The bare-URL pass over ``text`` — every scheme-opening run becomes its
-        handle, with prose tail marks left around it."""
+        token, with prose tail marks left around it."""
         return _BARE_URL_RE.sub(self._bare_sub, text)
 
     def _bare_sub(self, match: re.Match) -> str:
@@ -383,41 +361,12 @@ class HandleTable:
     def _header_sub(self, match: re.Match) -> str:
         prefix, url = match.group(1), match.group(2)
         number = self._by_url.get(url)
-        # A page the model cited by number already has its handle; one it asked
+        # A page the model cited by number already has its token; one it asked
         # for by address stays written out.  Never a new registration.
         return f"{prefix}{self._describe(number)}" if number is not None else match.group(0)
 
-    def _expand_list(self, match: re.Match) -> str:
-        """Expand a list-form citation ``[4, 6]`` to its held URLs joined by
-        the separator, or leave it unchanged when none are held."""
-        expanded_parts = []
-        has_any_held = False
-        for num in _cited_numbers(match):
-            url = self._by_number.get(num)
-            if url is not None:
-                expanded_parts.append(url)
-                has_any_held = True
-            else:
-                expanded_parts.append(f"[{num}]")
-        if not has_any_held:
-            return match.group(0)
-        return _MULTI_CITATION_SEPARATOR.join(expanded_parts)
-
     def _expand_sub(self, match: re.Match) -> str:
-        text, linked, hybrid_num, _hybrid_target, label, target_num, multi_numbers, bare = (
-            match.groups()
-        )
-        if multi_numbers is not None:
-            return self._expand_list(match)
-        if hybrid_num is not None:
-            # ``[12](target)`` — the whole citation expands to the URL: the
-            # handle is the address, and a target glued after it (a site root
-            # the model knew) must not survive beside the expansion.
-            return self._by_number.get(int(hybrid_num)) or match.group(0)
-        if target_num is not None:
-            # ``[text](12)`` — the number written as the target; same rule.
-            return self._by_number.get(int(target_num)) or match.group(0)
-        url = self._by_number.get(int(linked or bare))
+        url = self._by_number.get(_cited_number(match))
         if url is None:
             return match.group(0)
-        return f"[{text}]({url})" if text else url
+        return f"[{match.group(1)}]({url})" if match.group(1) else url

@@ -58,7 +58,7 @@ _NONE_CRITERION = "none of these results is likely to carry it"
 # with criteria that name the two things an extract can say (found it / the
 # page does not have it).  The first cut asked "does this extract carry any of
 # what was looked for?" — on the measured failing state (looking for an adult
-# ticket price, the extract answering "[1] — no current price for an adult
+# ticket price, the extract answering "{link 101} — no current price for an adult
 # ticket on the page.") the small decision model answered YES at 0.69: it keyed
 # on the words the two texts share, not on what the extract says.  This wording
 # answers no at 0.98 on that state and holds all four replayed controls (a

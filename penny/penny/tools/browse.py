@@ -65,9 +65,9 @@ class BrowseChannelUnavailableError(Exception):
 
 _URL_PATTERN = re.compile(r"^https?://")
 
-# A query that is nothing but a link citation (#2717) — read as the URL its
+# A query that is nothing but a link token (#2717, #3074) — read as the URL its
 # handle stands for, never searched for literally.
-_HANDLE_QUERY_RE = re.compile(r"^\[(\d+)\]$")
+_HANDLE_QUERY_RE = re.compile(r"^\{link (\d+)\}$")
 
 # A bare host, with no scheme and no spaces, optionally carrying a path
 # (#2804): ``example.com``, ``www.example.co.uk``, ``example.com/news/world``.
@@ -309,7 +309,7 @@ def _render_search_list(query: str, results: list[tuple[str, str]], handles: Han
     renders as its handle (#2717): the model opens one by citing the number back
     in a follow-up query, never by retyping the URL."""
     listed = "\n".join(
-        f"{number}. {title} [{handles.register(url)}]"
+        f"{number}. {title} {handles.plain(handles.register(url))}"
         for number, (title, url) in enumerate(results, 1)
     )
     instruction = Prompt.SEARCH_RESULT_INSTRUCTION.format(query=query)
@@ -461,7 +461,7 @@ class BrowseTool(Tool):
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "A search, a link number like [4], or a URL.",
+                                "description": "A search, a link token like {link 101}, or a URL.",
                             },
                             "looking_for": {
                                 "type": "string",
@@ -698,13 +698,13 @@ class BrowseTool(Tool):
     ) -> tuple[list[tuple[BrowseItem, str]], list[BrowseItem]]:
         """Split the requested items into what dispatches and what dangles.
 
-        A bare-citation query (``"[12]"``) dispatches as the URL its handle
+        A bare-token query (``"{link 101}"``) dispatches as the URL its handle
         stands for; a bare domain (#2804, e.g. ``"example.com"``) dispatches as
-        ``https://example.com``; anything else dispatches as itself.  A
-        citation the run's table does not hold returns in the dangling list, to
+        ``https://example.com``; anything else dispatches as itself.  A token
+        the run's table does not hold returns in the dangling list, to
         be refused with the honest note naming the links that DO exist —
-        searched for literally, a ``"[12]"`` would be a garbage query about the
-        number 12."""
+        searched for literally, a ``"{link 12}"`` would be a garbage query about
+        the number 12."""
         resolved: list[tuple[BrowseItem, str]] = []
         dangling: list[BrowseItem] = []
         for item in items:
@@ -909,14 +909,14 @@ class BrowseTool(Tool):
         outage = False
         for number in ranked[: PennyConstants.BROWSE_MAX_PICKED_READS]:
             url = results[number - 1][1]
-            # The run itself cites the page it is about to open: the handle is
+            # The run itself cites the page it is about to open: the token is
             # assigned at pick time, before the fetch, so the page's section
             # header carries the number the table already holds (#2735's
             # "as it was cited" arm — the run is the one doing the citing), and
             # the model reads a stable anchor for the page its value came from.
             # The page's number precedes its content links, so none of theirs is
             # displaced; the echo inside the value stays gone (#2740).
-            opened.append(f"[{self._handles.register(url)}]")
+            opened.append(self._handles.plain(self._handles.register(url)))
             try:
                 page = await self._read_page(url)
             except BrowseChannelUnavailableError:
@@ -1011,12 +1011,10 @@ class BrowseTool(Tool):
             return f"{failure}{links}", ""
         text = self._cap_extract(micro.value, handle_clause)
         # The answer MAY be, in its entirety, the one fact the page gave as a
-        # handle (#2832) — "the official store link" extracted straight off
-        # the page as a bare ``[1]``.  Annotated for the render only; the
-        # returned ``text`` stays the plain value the fall-through and the
-        # carry question read.
-        displayed = self._handles.annotate(text)
-        return _EXTRACT_SUCCESS.format(instruction=instruction, value=displayed), text
+        # token (#2832) — "the official store link" extracted straight off the
+        # page as a bare ``{link 101}``.  It renders exactly as it stands now
+        # (#3074): the token is the address, so nothing is added beside it.
+        return _EXTRACT_SUCCESS.format(instruction=instruction, value=text), text
 
     @staticmethod
     def _cap_extract(value: str, handle_clause: str) -> str:

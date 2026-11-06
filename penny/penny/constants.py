@@ -603,17 +603,34 @@ class PennyConstants:
     # trace (#1560).  Single source of truth: ``GenerateImageTool`` formats with
     # it and ``render_run_calls`` parses it back, so the two can't drift.
     GENERATED_IMAGE_RESULT_PREFIX = "Generated image #"
+    # The shared token grammar (#3074): every token the model reads and writes
+    # back — a numbered link, a generated image — is ``{<type> <id>}``.  The two
+    # types share the one shape so neither drifts from the grammar the model
+    # learns; the per-type prefixes below are built off it, and the matching
+    # regex covers both.  A bare bracketed number (``[1]``, ``{1}``) is plain
+    # text, never a token: only the typed form parses.
+    HANDLE_TOKEN_OPEN = "{"
+    HANDLE_TOKEN_CLOSE = "}"
+    HANDLE_TOKEN_RE = re.compile(r"\{(link|image) (\d+)\}")
+    # A link handle's numbering starts at 101 per run (#3074): no citation the
+    # model ever reads can be below 101, which is what makes a small bracketed
+    # number read as prose rather than as a link worth resolving.
+    HANDLE_FIRST_NUMBER = 101
+    LINK_TOKEN_PREFIX = "{link "
+    IMAGE_TOKEN_PREFIX = "{image "
+
     # The token a ``generate_image`` result hands the model to put in her reply
-    # (#3033): the bracket form names the stored media row's id.  The result
-    # names it, egress strips every occurrence from the wire text (the image
-    # itself still attaches through ``generated_media_ids`` — and a token for an
-    # id the turn didn't generate is stripped too, so it never reaches the user
-    # as text), and the stored reply keeps it as she wrote it (#2722), so a
-    # later turn's history shows she handed the image over.  Form and matching
-    # regex live here so the tool, the egress strip and the eval case cannot
-    # drift; the optional leading space keeps a strip from gluing words together.
-    GENERATED_IMAGE_TOKEN_PREFIX = "[image "
-    GENERATED_IMAGE_TOKEN_SUFFIX = "]"
+    # (#3033, form from #3074): the token names the stored media row's id.  The
+    # result names it, egress strips every occurrence from the wire text (the
+    # image itself still attaches through ``generated_media_ids`` — and a token
+    # for an id the turn didn't generate is stripped too, so it never reaches
+    # the user as text), and the stored reply keeps it as she wrote it (#2722),
+    # so a later turn's history shows she handed the image over.  Form and
+    # matching regex live here so the tool, the egress strip and the eval case
+    # cannot drift; the optional leading space keeps a strip from gluing words
+    # together.
+    GENERATED_IMAGE_TOKEN_PREFIX = IMAGE_TOKEN_PREFIX
+    GENERATED_IMAGE_TOKEN_SUFFIX = HANDLE_TOKEN_CLOSE
     GENERATED_IMAGE_TOKEN_RE = re.compile(
         r" ?"
         + re.escape(GENERATED_IMAGE_TOKEN_PREFIX)

@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def strip_image_tokens(text: str) -> str:
-    """``text`` with every ``[image <id>]`` token removed (#3033) — the client-facing
+    """``text`` with every ``{image <id>}`` token removed (#3033, form #3074) — the client-facing
     form of stored outgoing content.
 
     The token never reaches a user as text, whatever id it names: the image itself
@@ -627,7 +627,7 @@ class MessageChannel(ABC):
         ``(message_id, external_id)``.
         """
         # An image token (#3033) never reaches the user as text: the wire form is
-        # stripped of every ``[image <id>]``, whatever id it names — the image
+        # stripped of every ``{image <id>}`` token, whatever id it names — the image
         # itself attaches through ``attachments``/``media_ids``, and the stored
         # ``content`` keeps the token so a later turn's history shows she handed
         # it over (#2722).  Applied here, the one funnel every send passes

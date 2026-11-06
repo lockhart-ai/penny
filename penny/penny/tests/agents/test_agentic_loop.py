@@ -2583,8 +2583,8 @@ class TestSearchResultParsing:
         rendered = _render_search_list("artemis mission", results, HandleTable())
         assert 'You searched for "artemis mission"' in rendered
         assert "titles and link numbers only" in rendered
-        assert "1. NASA Article [1]" in rendered
-        assert "2. Space.com Article [2]" in rendered
+        assert "1. NASA Article {link 101}" in rendered
+        assert "2. Space.com Article {link 102}" in rendered
         assert "https://www.nasa.gov" not in rendered
         assert "Some snippet text" not in rendered
 
@@ -4326,13 +4326,13 @@ class TestResponseValidators:
         table = HandleTable()
         for i in range(1, 25):
             table.register(f"https://source.example/page-{i}")
-        cited = _text_response("Read all about it, see [27].")
+        cited = _text_response("Read all about it, see {link 127}.")
         dangling = HallucinatedUrlValidator().check(
             cited, _ctx(source_text="some source", handles=table)
         )
         assert isinstance(dangling, Retry) and dangling.condition == ConditionKey.HALLUCINATED_URLS
         # A citation the table holds proceeds — even with no raw URL in the source.
-        ok_cite = _text_response("Read all about it, see [3].")
+        ok_cite = _text_response("Read all about it, see {link 103}.")
         assert isinstance(
             HallucinatedUrlValidator().check(
                 ok_cite, _ctx(source_text="some source", handles=table)
@@ -4412,23 +4412,23 @@ class TestResponseValidators:
             )
             assert isinstance(outcome, Retry), form
 
-    def test_hallucinated_url_validator_accepts_a_stored_entrys_full_address(self):
-        """#2832 arm C: a stored entry's ``Source:`` line renders its FULL
-        address beside the number (``HandleTable.convert_entry``), not just
-        the domain — so when that render becomes the tool result the model
-        was shown, a reply that copies the address out verbatim is sourced,
-        the same way any other URL the model was shown already is (#2159).
-        An address never shown this way — invented, or merely sharing the
-        entry's domain — is still caught."""
+    def test_hallucinated_url_validator_accepts_a_stored_entrys_token(self):
+        """A stored entry's ``Source:`` line renders its token ALONE
+        (``HandleTable.convert_entry``, #3074) — so when that render becomes
+        the tool result the model was shown, a reply that cites the token is
+        held by the table (not dangling) and proceeds.  An address the render
+        never showed — invented, or the entry's own URL typed outright — is
+        still caught by the raw-URL branch, which is what keeps the model
+        writing tokens rather than retyped addresses."""
         table = HandleTable()
         entry_url = "https://store.steampowered.com/app/376620/Big_Pharma/"
         rendered_entry = table.convert_entry(
             "Title: Big Pharma\nSummary: a factory tycoon.\nSource: " + entry_url
         )
-        assert rendered_entry.endswith(f"Source: [1] {entry_url}")
+        assert rendered_entry.endswith("Source: {link 101}")
         source_text = f"1. key='Big Pharma' {rendered_entry}"
 
-        shown = _text_response(f"Here's the store page: {entry_url}")
+        shown = _text_response("Here's the store page: {link 101}.")
         outcome = HallucinatedUrlValidator().check(
             shown, _ctx(source_text=source_text, handles=table)
         )
@@ -4472,7 +4472,7 @@ class TestResponseValidators:
         # Still-dangling handle → Repair: the citation is gone, its text kept.
         table = HandleTable()
         table.register("https://source.example/page-1")
-        dangling_resp = _text_response("Read about it, see [text][27].")
+        dangling_resp = _text_response("Read about it, see [text] {link 127}.")
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="penny.validation.response_validators"):
             outcome = HallucinatedUrlValidator().check(
@@ -4480,13 +4480,13 @@ class TestResponseValidators:
             )
         assert isinstance(outcome, Repair)
         repaired_content = outcome.response.message.content
-        assert "[27]" not in repaired_content
+        assert "{link 127}" not in repaired_content
         assert "Read about it, see text." in repaired_content
         assert repaired_content.endswith(PennyResponse.LINK_DROPPED_NOTICE)
         assert any("Dropped dangling link handle" in r.message for r in caplog.records)
 
         # A clean second draft — nothing still bad — proceeds untouched.
-        clean = _text_response("Read about it, see [1].")
+        clean = _text_response("Read about it, see {link 101}.")
         assert isinstance(
             HallucinatedUrlValidator().check(
                 clean, _ctx(source_text="some source", handles=table, retried=retried)
@@ -4511,7 +4511,8 @@ class TestResponseValidators:
         table = HandleTable()
         table.register("https://source.example/page-1")
         both = _text_response(
-            "Read about it, see [text][27]. Also check https://made-up.example/other for more."
+            "Read about it, see [text] {link 127}. Also check "
+            "https://made-up.example/other for more."
         )
         with caplog.at_level(logging.WARNING, logger="penny.validation.response_validators"):
             outcome = HallucinatedUrlValidator().check(
@@ -4524,7 +4525,7 @@ class TestResponseValidators:
             )
         assert isinstance(outcome, Repair)
         repaired_content = outcome.response.message.content
-        assert "[27]" not in repaired_content
+        assert "{link 127}" not in repaired_content
         assert "https://made-up.example/other" not in repaired_content
         assert "Read about it, see text. Also check  for more." in repaired_content
         assert repaired_content.endswith(PennyResponse.LINK_DROPPED_NOTICE)
@@ -4662,7 +4663,9 @@ class TestInterimProseRejectionReason:
         table = HandleTable()
         table.register("https://source.example/page-1")
         reason = interim_prose_rejection_reason(
-            "Let me pull up [27] for you.", _ctx(source_text="some source", handles=table), set()
+            "Let me pull up {link 127} for you.",
+            _ctx(source_text="some source", handles=table),
+            set(),
         )
         assert reason == "dangling link handle"
 

@@ -1894,7 +1894,9 @@ class TestCollectionWritesAndReads:
         result = await write.execute(
             CallLink.new_top(),
             collection="likes",
-            entries=[{"key": "dark roast", "content": "loves dark roast — [the roaster][1]"}],
+            entries=[
+                {"key": "dark roast", "content": "loves dark roast — [the roaster] {link 101}"}
+            ],
         )
         assert result.mutated is True
         # The STORE keeps the real URL; the read render converts it back to a
@@ -1904,7 +1906,7 @@ class TestCollectionWritesAndReads:
         get = await CollectionGetTool(db).execute(
             CallLink.new_top(), collection="likes", key="dark roast"
         )
-        assert "[the roaster][1]" in get.message
+        assert "[the roaster] {link 101}" in get.message
         assert "https://roasts.example/dark" not in get.message
 
         # A citation the run's table does NOT hold refuses that entry alone
@@ -1914,15 +1916,15 @@ class TestCollectionWritesAndReads:
             CallLink.new_top(),
             collection="likes",
             entries=[
-                {"key": "espresso", "content": "raves about the crema [2]"},
-                {"key": "light roast", "content": "likes light roast — [the roaster][1]"},
+                {"key": "espresso", "content": "raves about the crema {link 999}"},
+                {"key": "light roast", "content": "likes light roast — [the roaster] {link 101}"},
                 {"key": "instant", "content": "keeps instant in the cupboard"},
             ],
         )
         assert result.mutated is True
         assert result.message.startswith(
-            "'espresso' was not written: There is no link [2] in this turn; "
-            "the links you have are [1]–[1].\n"
+            "'espresso' was not written: There is no link {link 999} in this turn; "
+            "the links you have are {link 101}–{link 101}.\n"
         )
         assert "Wrote 2 entries to 'likes'" in result.message
         stored = require_memory(db, "likes")
@@ -1937,16 +1939,16 @@ class TestCollectionWritesAndReads:
             CallLink.new_top(),
             collection="likes",
             entries=[
-                {"key": "espresso", "content": "raves about the crema [2]"},
-                {"key": "pour over", "content": "brews pour over at [3]"},
+                {"key": "espresso", "content": "raves about the crema {link 999}"},
+                {"key": "pour over", "content": "brews pour over at {link 103}"},
             ],
         )
         assert result.success is False and result.mutated is False
         assert result.message == (
-            "'espresso' was not written: There is no link [2] in this turn; "
-            "the links you have are [1]–[1].\n"
-            "'pour over' was not written: There is no link [3] in this turn; "
-            "the links you have are [1]–[1]."
+            "'espresso' was not written: There is no link {link 999} in this turn; "
+            "the links you have are {link 101}–{link 101}.\n"
+            "'pour over' was not written: There is no link {link 103} in this turn; "
+            "the links you have are {link 101}–{link 101}."
         )
         assert stored.get("espresso") == []
 

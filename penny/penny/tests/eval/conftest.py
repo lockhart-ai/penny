@@ -2627,8 +2627,9 @@ def given_to_the_model(db: Database, handles: HandleTable | None = None) -> eval
     #2203 measured: a NAME is sourced by anything the round was handed, a NUMBER only by what
     was stated to it.  ``read_given`` draws that line where the turns still have their roles.
 
-    Links travel as handles (#2717): the logged turns carry ``[n]``, while the artefacts a
-    provenance claim reads — stored entries, the outgoing reply — carry the real URLs Python
+    Links travel as handles (#2717): the logged turns carry ``{link n}`` (#3074),
+    while the artefacts a provenance claim reads — stored entries, the outgoing reply —
+    carry the real URLs Python
     expanded at write/send time.  So the given is expanded back through the run's OWN recorded
     table (``promptlog.link_handles``, stamped at run close): the URL was given, as its
     handle, and what she stored traces to it.  ``handles`` is a driver-held table for a path
@@ -2655,7 +2656,7 @@ def _stored_reply(db: Database) -> str:
 
     ``_drive_turns`` reads the wire text back off the mock server, which is the
     channel-converted form the user saw; egress strips from that form what the
-    record keeps (an ``[image <id>]`` token, #2722), so a claim over what she
+    record keeps (an ``{image <id>}`` token, #2722), so a claim over what she
     WROTE reads this join instead.  The sample database is hermetic, so every
     OUTGOING row is this turn's; the order is the rows' own timestamps, the same
     order the wire join reads the sends back in.

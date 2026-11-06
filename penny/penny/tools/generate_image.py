@@ -14,8 +14,8 @@ exactly that row at egress (see the image side-channel design in
 describes it — never a stale, embedding-nearest one.  The row is still stored
 with an embedding of the description, so the drawn image joins the
 nearest-image pool (``MediaStore.select_image``) for *future* replies.  The
-tool returns a text result naming what it drew and the ``[image <id>]``
-token (#3033) to put in her reply — egress strips the token from the wire text
+tool returns a text result naming what it drew and the ``{image <id>}``
+token (#3033, form #3074) to put in her reply — egress strips the token from the wire text
 (the image attaches by id regardless) and the stored reply keeps it (#2722).
 """
 
@@ -55,7 +55,7 @@ class GenerateImageTool(Tool):
         "Generate an image from a text description.  Use this when the user asks "
         "you to draw, paint, sketch, or make a picture/image of something.  Pass "
         "the full visual description as `description`.  The call makes the image "
-        "and returns; put the `[image <id>]` token its result names into your "
+        "and returns; put the `{image <id>}` token its result names into your "
         "reply to hand the image to the user, and describe what you drew."
     )
     parameters = {

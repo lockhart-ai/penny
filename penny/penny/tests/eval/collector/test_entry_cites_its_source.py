@@ -231,7 +231,9 @@ VOICES = (
             f"Check {_ARTICLE_URL} for what's new and put a brief item on it in "
             f"'{_CONTAINER}', with its source page."
         ),
-        intro="The comet rounded the sun last month and is now swinging back through the inner sky.",
+        intro=(
+            "The comet rounded the sun last month and is now swinging back through the inner sky."
+        ),
         notes_header="Finder notes\n",
         notes=(
             "The field holds two bright stars that make pointing easy in binoculars.\n"
@@ -257,9 +259,7 @@ VOICES = (
     ),
     Voice(
         name="save-short-item",
-        program=(
-            f"Read {_ARTICLE_URL} and save a short item to '{_CONTAINER}', source included."
-        ),
+        program=(f"Read {_ARTICLE_URL} and save a short item to '{_CONTAINER}', source included."),
         intro="The brightness trend has made the comet a regular on this month's observing lists.",
         notes_header="Observing window\n",
         notes=(
@@ -332,7 +332,7 @@ def _assert_the_digest_world(db: Database, voice: Voice) -> None:
     )
 
     held = collection_entries(db, _CONTAINER)
-    assert held == {key: content for key, content in _SEED_ENTRIES}, (
+    assert held == dict(_SEED_ENTRIES), (
         f"the cycle must start from exactly the two seeded entries; it holds {held}"
     )
     for _, content in _SEED_ENTRIES:

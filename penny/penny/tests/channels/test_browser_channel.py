@@ -448,7 +448,7 @@ class TestBrowseTool:
         assert result.success is True
         # The read page's own URL stands in its body too, so it holds the handle that
         # URL was given; the failed fetch's address stays written out (#2735).
-        assert PennyConstants.BROWSE_PAGE_HEADER + "[1]" in result.message
+        assert PennyConstants.BROWSE_PAGE_HEADER + "{link 101}" in result.message
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://bad.com" in result.message
 
     @pytest.mark.asyncio
@@ -591,9 +591,9 @@ class TestBrowseTool:
         assert result.success is True
         assert request_fn.call_count == 3
         # The handle names its domain and title (#2832), not the raw address.
-        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[1] a.com — Ex" in result.message
-        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[3] b.com — Ex" in result.message
-        assert f"{PennyConstants.BROWSE_PAGE_HEADER}[4] c.com — Ex" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}{{link 101}} a.com — Ex" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}{{link 103}} b.com — Ex" in result.message
+        assert f"{PennyConstants.BROWSE_PAGE_HEADER}{{link 104}} c.com — Ex" in result.message
         assert f"{PennyConstants.BROWSE_PAGE_HEADER}https://d.com" not in result.message
         assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
         assert "beyond the 3-per-call total" in result.message

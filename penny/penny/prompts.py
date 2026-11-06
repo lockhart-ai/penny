@@ -89,7 +89,7 @@ class Prompt:
         "from earlier in the conversation.\n\n"
         "How to use the browse tool:\n"
         "One browse call runs a whole lookup: pass items, each a search, a link "
-        "number like [4], or a URL, and each with what it is looking for in plain "
+        "token like {link 101}, or a URL, and each with what it is looking for in plain "
         'language — that is the whole specification ("the opening hours" or '
         '"anything the page says about refunds" are complete asks). A search is '
         "picked and read inside the same call, so you get back what the pages say, "
@@ -99,8 +99,8 @@ class Prompt:
         "Let the answer come from the pages you read — every fact, name, and "
         "detail in your response must come from the pages you read or your "
         "memory.\n\n"
-        "Links are numbered, like [3]. When you reference something from a page, "
-        "cite its number in brackets — never an address. The links that exist "
+        "Links carry tokens, like {link 101}. When you reference something from a page, "
+        "cite its token — never an address. The links that exist "
         "are the ones you were shown, in this turn's pages or in your own "
         "stored entries.\n\n"
         "When the user changes topics, just go with it.\n\n"
@@ -123,7 +123,7 @@ class Prompt:
         "3. Then give the answer.\n"
         "On a plain reply with no tool calls, skip the recap and just respond.\n\n"
         "Always include specific details (specs, dates, prices) and at least one "
-        "source link (its number in brackets) so the user can follow up."
+        "source link (its token, like {link 101}) so the user can follow up."
     )
 
     # The whole chat prompt (#2455 naive baseline): there is no conversation machine
