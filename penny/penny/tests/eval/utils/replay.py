@@ -92,7 +92,12 @@ system-prompt replacement or append, a ``last_system_append`` to the request's L
 system message — the per-turn dynamic one (#3008), a ``last_tool_result`` replacing
 the request's LAST tool message — the tool result the model reacts to, a swapped
 message, thinking on or
-off), every
+off, and — applied FIRST, before any of those (#3058) — ``substitutions``: a list
+of ``{pattern, replacement}`` regex pairs rewritten into EVERY message's text
+content (its reasoning/thinking text included), every tool call's arguments
+string, and the tools' JSON text, so a
+notation that appears throughout a request (a link-handle format, say) can be
+re-rendered wholesale per arm), every
 arm is re-rendered through the byte-identity check for ``raw_template`` rows, and all
 arms go through the SAME resolved roster entry in one SDK session. The recipe holds
 the provider lock for the whole run and resolves the roster once for all arms — the
@@ -106,8 +111,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import copy
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -118,7 +125,7 @@ from typing import Any
 
 import httpx
 import openai
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 from sqlmodel import Session
 
 # Import order workaround: ``penny.database`` and ``penny.agents`` import each
@@ -383,6 +390,18 @@ async def _replay_verbatim_request(
         )
 
 
+class Substitution(BaseModel):
+    """One entry of a variant's ``substitutions`` list (#3058) — ``pattern`` (a
+    Python regex) replaced by ``replacement`` (a ``re.sub`` repl string, so
+    backreferences like ``\\1`` work). Unknown keys are refused, like the
+    variant's own."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pattern: str
+    replacement: str
+
+
 class ReplayVariant(BaseModel):
     """One named arm of an A/B replay (#3001) — named transforms of ONE stored
     request, everything left unset riding as recorded. ``name`` is the arm's
@@ -394,6 +413,13 @@ class ReplayVariant(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    # Regex substitutions applied FIRST (#3058), in list order, to every
+    # message's text content (its reasoning/thinking text included), every tool
+    # call's arguments string, and the tools' JSON text — the lever for a
+    # notation that appears throughout a request (e.g. re-rendering every link
+    # handle in a new format). A pattern that is not a valid regex refuses the
+    # arm at validation, and with it the spec.
+    substitutions: list[Substitution] = Field(default_factory=list)
     # Replaces the system message's content (the prompt A/B's usual lever).
     system_prompt: str | None = None
     # Appended after the recorded system content (a follow-up instruction A/B),
@@ -416,10 +442,76 @@ class ReplayVariant(BaseModel):
     # The reasoning channel on or off; None keeps the recorded state.
     thinking: bool | None = None
 
+    @field_validator("substitutions")
+    @classmethod
+    def _patterns_compile(cls, value: list[Substitution]) -> list[Substitution]:
+        """Every pattern compiles — an invalid regex refuses the arm (and with it
+        the whole spec) before anything is loaded or sent, as every other spec
+        error does."""
+        for substitution in value:
+            try:
+                re.compile(substitution.pattern)
+            except re.error as error:
+                raise ValueError(
+                    f"invalid substitution regex {substitution.pattern!r}: {error}"
+                ) from error
+        return value
+
 
 # The A/B spec file validates as a WHOLE list, so one bad entry refuses the run
 # before anything is loaded or sent (the roster's own fail-fast shape).
 _VARIANT_SPEC_ADAPTER = TypeAdapter(list[ReplayVariant])
+
+
+def _substituted_text(text: str, subs: Sequence[tuple[re.Pattern[str], str]]) -> str:
+    """One text through every substitution in list order (#3058)."""
+    for regex, replacement in subs:
+        text = regex.sub(replacement, text)
+    return text
+
+
+def _substituted_call(call: dict, subs: Sequence[tuple[re.Pattern[str], str]]) -> dict:
+    """One tool call's deep copy with its arguments string substituted — a deep
+    copy so the loaded row's own call dict is never mutated (the variants share
+    the loaded messages, and a shallow copy would leak one arm's rewrite into
+    the next)."""
+    call = copy.deepcopy(call)
+    arguments = (call.get("function") or {}).get("arguments")
+    if isinstance(arguments, str):
+        call["function"]["arguments"] = _substituted_text(arguments, subs)
+    return call
+
+
+def _substituted_messages_and_tools(
+    messages: list[dict], tools: list[dict] | None, variant: ReplayVariant
+) -> tuple[list[dict], list[dict] | None]:
+    """The variant's substitutions applied (#3058) — BEFORE any other transform,
+    in list order, to every message's text content (the ``reasoning``/
+    ``thinking`` field included — on a raw_template row it renders into the
+    prompt and quotes the very notation an arm re-renders), every tool call's
+    arguments string, and the tools' JSON text (each tool schema goes through
+    its JSON dump, so a substitution reaches every string field of every
+    schema). Returns the inputs unchanged when the arm names none."""
+    if not variant.substitutions:
+        return messages, tools
+    subs = [(re.compile(sub.pattern), sub.replacement) for sub in variant.substitutions]
+    rebuilt = []
+    for message in messages:
+        message = dict(message)
+        if isinstance(message.get("content"), str):
+            message["content"] = _substituted_text(message["content"], subs)
+        if isinstance(message.get("reasoning"), str):
+            message["reasoning"] = _substituted_text(message["reasoning"], subs)
+        if isinstance(message.get("thinking"), str):
+            message["thinking"] = _substituted_text(message["thinking"], subs)
+        if message.get("tool_calls"):
+            message["tool_calls"] = [
+                _substituted_call(call, subs) for call in message["tool_calls"]
+            ]
+        rebuilt.append(message)
+    if tools is not None:
+        tools = json.loads(_substituted_text(json.dumps(tools), subs))
+    return rebuilt, tools
 
 
 def _transformed_messages(messages: list[dict], variant: ReplayVariant) -> list[dict]:
@@ -514,7 +606,8 @@ def _variant_bodies(
     transformed messages through ``render_prompt`` — gated by the byte-identity
     check, which proves the re-render pipeline is faithful before any variant's
     render is trusted; a chat row transforms the stored body's own ``messages``
-    (the exact wire bytes, nothing to re-derive)."""
+    (the exact wire bytes, nothing to re-derive). A variant's substitutions
+    (#3058) run FIRST, on the messages and the tools, before any other transform."""
     transport = sent_request["transport"]
     base = sent_request["body"]
     bodies: dict[str, dict] = {}
@@ -523,9 +616,14 @@ def _variant_bodies(
         recorded = _recorded_thinking(messages, tools, base["prompt"])
         for variant in variants:
             thinking = variant.thinking if variant.thinking is not None else recorded
+            subbed_messages, subbed_tools = _substituted_messages_and_tools(
+                messages, tools, variant
+            )
             body = dict(base)
             body["prompt"] = raw_template.render_prompt(
-                _transformed_messages(messages, variant), tools, thinking_enabled=thinking
+                _transformed_messages(subbed_messages, variant),
+                subbed_tools,
+                thinking_enabled=thinking,
             )
             bodies[variant.name] = body
         return bodies
@@ -535,7 +633,12 @@ def _variant_bodies(
             if variant.thinking is not None
             else dict(base)
         )
-        body["messages"] = _transformed_messages(body.get("messages") or [], variant)
+        subbed_messages, subbed_tools = _substituted_messages_and_tools(
+            body.get("messages") or [], body.get("tools"), variant
+        )
+        body["messages"] = _transformed_messages(subbed_messages, variant)
+        if subbed_tools is not None:
+            body["tools"] = subbed_tools
         bodies[variant.name] = body
     return bodies
 
@@ -1182,7 +1285,8 @@ def _variants_from_spec(spec_json: str) -> list[ReplayVariant]:
     except ValidationError as error:
         raise SystemExit(
             "the variants spec is not a list of "
-            '{"name": ..., "system_prompt"?: ..., "system_prompt_append"?: ..., '
+            '{"name": ..., "substitutions"?: [{"pattern": ..., "replacement": ...}], '
+            '"system_prompt"?: ..., "system_prompt_append"?: ..., '
             '"last_system_append"?: ..., "last_tool_result"?: ..., '
             '"user_message"?: ..., "thinking"?: ...} entries: '
             f"{error}\nAn entry with no transform is the baseline arm."
