@@ -147,7 +147,7 @@ class RunActivity(BaseModel):
     call_count: int
 
 
-class RunSendStats(NamedTuple):
+class RunSendStats(BaseModel):
     """What the iOS wire record needs about the run that produced a reply (#3041):
     the number of tool calls the run made across its own prompt rows, and the
     run's structural start — the earliest ``timestamp - duration_ms`` across

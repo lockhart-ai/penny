@@ -1404,7 +1404,7 @@ def _outbox_record(
     row: IosOutboxItem,
     message: MessageLog | None = None,
     *,
-    run_stats: dict[str, RunSendStats] | None = None,
+    run_stats: dict[str, RunSendStats],
 ) -> IosOutboxRecord:
     tool_calls, duration_ms = _run_stats_fields(message, run_stats)
     return IosOutboxRecord(
@@ -1430,7 +1430,7 @@ def _history_record(
     row: tuple[MessageLog, Device | None, IosOutboxItem | None],
     *,
     include_attachments: bool = True,
-    run_stats: dict[str, RunSendStats] | None = None,
+    run_stats: dict[str, RunSendStats],
 ) -> IosOutboxRecord:
     message, device, outbox = row
     if outbox is not None and (outbox.source_hint or outbox.source_name):
@@ -1474,14 +1474,14 @@ def _history_record(
 
 
 def _run_stats_fields(
-    message: MessageLog | None, run_stats: dict[str, RunSendStats] | None
+    message: MessageLog | None, run_stats: dict[str, RunSendStats]
 ) -> tuple[int | None, int | None]:
     """The producing run's tool-call count and start→reply wall time (#3041).
 
     ``None, None`` when the message has no run — or its run left no prompt rows
     (a run the ledger never saw) — so the fields drop off the wire entirely.
     """
-    if message is None or message.run_id is None or run_stats is None:
+    if message is None or message.run_id is None:
         return None, None
     stats = run_stats.get(message.run_id)
     if stats is None:
