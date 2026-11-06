@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 141
+        assert count == 142
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 141
+        assert count1 == 142
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 140 migrations
-        assert count == 140
+        # 0001 is skipped; the rest run = 141 migrations
+        assert count == 141
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 141  # all migrations applied
+        assert count == 142  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -354,6 +354,59 @@ class TestMigrate:
         conn.commit()
         rows = conn.execute("SELECT url, image_url, title FROM link_thumbnail").fetchall()
         assert rows == [("https://example.com/story", "https://example.com/story.jpg", "The story")]
+        conn.close()
+
+    def test_0142_adds_message_attachment(self, tmp_path):
+        """Migration 0142 creates the ``message_attachment`` table (#3084) —
+        one row per photo on an incoming message, keyed by a foreign key to
+        ``messagelog`` (never a blob column on the hot table) — and is a no-op
+        on a fresh ``create_tables()`` DB, which the model already provisions."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0142_add_message_attachment.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0142", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(message_attachment)").fetchall()
+        }
+        assert columns == {"id", "message_id", "position", "data_uri", "created_at"}
+        pk = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info(message_attachment)").fetchall()
+            if row[5]
+        ]
+        assert pk == ["id"]
+        indexes = {
+            row[1] for row in conn.execute("PRAGMA index_list(message_attachment)").fetchall()
+        }
+        assert "ix_message_attachment_message_id" in indexes
+        # Idempotent: a second pass over the same DB changes nothing.
+        mod.up(conn)
+        conn.execute(
+            "INSERT INTO message_attachment (message_id, position, data_uri, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (1, 0, "data:image/jpeg;base64,AAAA", "2026-11-06T00:00:00+00:00"),
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT message_id, position, data_uri FROM message_attachment"
+        ).fetchall()
+        assert rows == [(1, 0, "data:image/jpeg;base64,AAAA")]
         conn.close()
 
     def test_0138_adds_send_queue_kind(self, tmp_path):

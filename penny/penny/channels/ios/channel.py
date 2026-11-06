@@ -100,6 +100,7 @@ from penny.channels.ios.models import (
     IosStatus,
     IosTestNotification,
     IosTyping,
+    validate_incoming_images,
 )
 from penny.channels.permission_manager import PermissionManager
 from penny.channels.turns import TurnRegistry
@@ -319,7 +320,7 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return None
         if msg_type == IOS_MSG_TYPE_MESSAGE:
-            await self._handle_chat_message(data, device_identifier)
+            await self._handle_chat_message(ws, data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_TEST_NOTIFICATION:
             await self._handle_test_notification(data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_EMBEDDING_REQUEST:
@@ -944,18 +945,31 @@ class IosChannel(MessageChannel):
         """Send a raw JSON-compatible payload."""
         await self._deliver_text(ws, json.dumps(payload))
 
-    async def _handle_chat_message(self, data: dict, device_identifier: str) -> None:
-        """Forward an iOS user message through the shared channel pipeline."""
+    async def _handle_chat_message(
+        self, ws: ServerConnection, data: dict, device_identifier: str
+    ) -> None:
+        """Forward an iOS user message through the shared channel pipeline.
+
+        A malformed frame or a photo-attachment violation (#3084) is answered
+        with the named ``status`` error on the connection that sent it — never a
+        silent drop — and the message is not forwarded.
+        """
         try:
             msg = IosIncomingMessage(**data)
         except ValidationError:
+            await self._send_ws(ws, IosStatus(error="invalid_message"))
             return
-        await self.handle_message(
-            {
-                "ios_sender": device_identifier,
-                "content": msg.content,
-            }
-        )
+        image_error = validate_incoming_images(msg.images)
+        if image_error is not None:
+            await self._send_ws(ws, IosStatus(error=image_error))
+            return
+        envelope: dict = {
+            "ios_sender": device_identifier,
+            "content": msg.content,
+        }
+        if msg.images:
+            envelope["images"] = msg.images
+        await self.handle_message(envelope)
 
     async def _handle_test_notification(self, data: dict, device_identifier: str) -> None:
         """Force a diagnostic APNs notification for the registered device."""
@@ -1010,6 +1024,14 @@ class IosChannel(MessageChannel):
         proportional to the page size."""
         run_ids = {message.run_id for message in messages if message.run_id is not None}
         return self._db.messages.run_send_stats(run_ids)
+
+    def _page_attachments(self, messages: Iterable[MessageLog]) -> dict[int, list[str]]:
+        """One batched read of a page's incoming rows' photo attachments (#3084),
+        keyed by message id in position order — the store query is per PAGE,
+        never per message, mirroring ``_run_send_stats``.  Rows with no
+        attachments are absent."""
+        message_ids = [message.id for message in messages if message.id is not None]
+        return self._db.messages.attachments_for_message_ids(message_ids)
 
     async def _handle_pull(self, ws: ServerConnection, data: dict, device_identifier: str) -> None:
         """Return unacknowledged outbox messages."""
@@ -1067,9 +1089,17 @@ class IosChannel(MessageChannel):
             limit=request.limit,
         )
         run_stats = self._run_send_stats(message for message, _, _ in rows)
+        page_attachments = (
+            self._page_attachments(message for message, _, _ in rows)
+            if request.include_attachments
+            else {}
+        )
         records = [
             _history_record(
-                row, include_attachments=request.include_attachments, run_stats=run_stats
+                row,
+                include_attachments=request.include_attachments,
+                run_stats=run_stats,
+                page_attachments=page_attachments,
             )
             for row in rows
         ]
@@ -1112,16 +1142,22 @@ class IosChannel(MessageChannel):
             self._connections.pop(device_identifier, None)
 
     def extract_message(self, raw_data: dict) -> IncomingMessage | None:
-        """Extract a message from iOS WebSocket data."""
+        """Extract a message from iOS WebSocket data.
+
+        A message may be photos alone (#3084) — empty ``content`` with a
+        non-empty ``images`` list is a message, like Signal's.
+        """
         sender = raw_data.get("ios_sender")
         content = raw_data.get("content", "").strip()
-        if not sender or not content:
+        images = raw_data.get("images") or []
+        if not sender or (not content and not images):
             return None
         return IncomingMessage(
             sender=sender,
             content=content,
             channel_type=ChannelType.IOS,
             device_identifier=sender,
+            images=images,
         )
 
     async def _send_raw(
@@ -1431,6 +1467,7 @@ def _history_record(
     *,
     include_attachments: bool = True,
     run_stats: dict[str, RunSendStats],
+    page_attachments: dict[int, list[str]],
 ) -> IosOutboxRecord:
     message, device, outbox = row
     if outbox is not None and (outbox.source_hint or outbox.source_name):
@@ -1454,7 +1491,13 @@ def _history_record(
         created_at=message.timestamp.isoformat(),
         content=_client_content(message.content),
         attachments=(
-            _decode_outbox_attachments(outbox) if include_attachments and outbox is not None else []
+            (
+                _decode_outbox_attachments(outbox)
+                if outbox is not None
+                else page_attachments.get(_required_message_id(message), [])
+            )
+            if include_attachments
+            else []
         ),
         source_type=source_type,
         source_name=source_name,
@@ -1495,18 +1538,25 @@ def _encode_embedding(embedding: bytes | None) -> str | None:
     return base64.b64encode(embedding).decode("ascii") if embedding is not None else None
 
 
-def _decode_outbox_attachments(row: IosOutboxItem) -> list[str]:
-    """Recover the inline attachment payload retained by an outbox row."""
-    if not row.attachments_json:
+def _decode_attachments_json(raw: str | None, context: str) -> list[str]:
+    """Decode a stored JSON attachment list, tolerating a malformed one."""
+    if not raw:
         return []
     try:
-        attachments = json.loads(row.attachments_json)
+        attachments = json.loads(raw)
     except TypeError, ValueError:
-        logger.warning("Ignoring malformed iOS outbox attachments (outbox_id=%s)", row.id)
+        logger.warning("Ignoring malformed %s", context)
         return []
     if not isinstance(attachments, list):
         return []
     return [attachment for attachment in attachments if isinstance(attachment, str)]
+
+
+def _decode_outbox_attachments(row: IosOutboxItem) -> list[str]:
+    """Recover the inline attachment payload retained by an outbox row."""
+    return _decode_attachments_json(
+        row.attachments_json, f"iOS outbox attachments (outbox_id={row.id})"
+    )
 
 
 def _encode_history_cursor(

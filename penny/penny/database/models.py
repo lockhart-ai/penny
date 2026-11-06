@@ -628,6 +628,27 @@ class IosOutboxItem(SQLModel, table=True):
     acked_at: datetime | None = Field(default=None, index=True)
 
 
+class MessageAttachment(SQLModel, table=True):
+    """One photo attachment on an incoming message row (#3084).
+
+    The base pipeline writes one row per photo when it logs the message, in
+    ``position`` order; the iOS history read serves them back so the sending
+    app renders the user's photo in their own bubble after a sync.  A separate
+    table keyed by a foreign key — never a blob column on ``messagelog``,
+    which every history-window/conversation-map/``find`` read scans — so
+    attachments load only where a reader asks for them, one batched query per
+    history page.
+    """
+
+    __tablename__ = "message_attachment"
+
+    id: int | None = Field(default=None, primary_key=True)
+    message_id: int = Field(foreign_key="messagelog.id", index=True)
+    position: int
+    data_uri: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class Media(SQLModel, table=True):
     """Binary media (images) captured while browsing or drawn on request.
 

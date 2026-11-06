@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+
 from pydantic import BaseModel, Field
 
 IOS_MSG_TYPE_ACK = "ack_messages"
@@ -23,6 +26,20 @@ IOS_RESP_TYPE_TYPING = "typing"
 IOS_RESP_TYPE_AGENT_PROGRESS = "agent_progress"
 IOS_RESP_TYPE_CONVERSATION_STATE = "conversation_state"
 
+# Photo-attachment limits a ``message`` frame's ``images`` must satisfy (#3084).
+# The app downscales before sending (JPEG, long edge ≤ 2048 px); these are the
+# server-side backstop, enforced with an honest ``status`` error frame rather
+# than a silent drop.
+IOS_INCOMING_MAX_IMAGES = 4
+IOS_INCOMING_IMAGE_MAX_BYTES = 6 * 1024 * 1024
+IOS_INCOMING_IMAGE_MIME_TYPES = ("image/jpeg", "image/png")
+
+# The error codes a violating message frame is answered with.
+IOS_IMAGE_ERROR_TOO_MANY = "too_many_images"
+IOS_IMAGE_ERROR_TYPE = "unsupported_image_type"
+IOS_IMAGE_ERROR_SIZE = "image_too_large"
+IOS_IMAGE_ERROR_UNDECODABLE = "undecodable_image"
+
 
 class IosRegister(BaseModel):
     """Register or refresh an iOS device connection."""
@@ -42,6 +59,35 @@ class IosIncomingMessage(BaseModel):
 
     type: str = IOS_MSG_TYPE_MESSAGE
     content: str
+    # Photo attachments as data URIs (#3084) — may carry the message alone, with
+    # empty ``content``. Validated against the channel limits (above) before the
+    # message is forwarded anywhere.
+    images: list[str] = Field(default_factory=list)
+
+
+def validate_incoming_images(images: list[str]) -> str | None:
+    """The error code for the first photo-attachment rule a message's ``images``
+    violate (#3084), or ``None`` when every image is acceptable.
+
+    Checked in ``_handle_chat_message`` — after the frame parses — so the
+    connection gets a named ``status`` error instead of a silent drop. Each
+    image must be a ``data:image/<allowed>;base64,`` URI whose decoded payload
+    fits ``IOS_INCOMING_IMAGE_MAX_BYTES``.
+    """
+    if len(images) > IOS_INCOMING_MAX_IMAGES:
+        return IOS_IMAGE_ERROR_TOO_MANY
+    for uri in images:
+        header, sep, encoded = uri.partition(";base64,")
+        mime = header[len("data:") :] if header.startswith("data:") else None
+        if not sep or mime not in IOS_INCOMING_IMAGE_MIME_TYPES:
+            return IOS_IMAGE_ERROR_TYPE
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except binascii.Error, ValueError:
+            return IOS_IMAGE_ERROR_UNDECODABLE
+        if len(data) > IOS_INCOMING_IMAGE_MAX_BYTES:
+            return IOS_IMAGE_ERROR_SIZE
+    return None
 
 
 class IosTestNotification(BaseModel):
