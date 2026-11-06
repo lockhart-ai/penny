@@ -12,13 +12,16 @@ import json
 import sqlite3
 import zlib
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from penny.llm import raw_template
 from penny.llm.models import PromptTransport
 from penny.tests.eval.utils.replay import (
     ReplayVariant,
+    Substitution,
     _variants_from_spec,
     replay_variants,
 )
@@ -39,6 +42,64 @@ _MESSAGES = [
 # roster entry's own hard pin, fallbacks off.
 _PIN = {"order": ["SomeCloud"], "allow_fallbacks": False}
 
+# A request whose every text surface carries a link-handle notation (#3058): the
+# system instructions describe the format, her own tool call cites a handle in its
+# arguments string, and the tool result repeats one — the shapes a substitution has
+# to reach. The tool schemas carry the format description too.
+_SUB_MESSAGES: list[dict[str, Any]] = [
+    {"role": "system", "content": "Links on this page look like [12]."},
+    {"role": "user", "content": "Run your cycle."},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "browse", "arguments": '{"url": "[18]"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call-1", "content": "Read [18] — the story page."},
+]
+
+_SUB_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "browse",
+            "description": "Read a numbered page like [12].",
+            "parameters": {
+                "type": "object",
+                "properties": {"url": {"type": "string", "description": "the handle"}},
+                "required": ["url"],
+            },
+        },
+    }
+]
+
+# The same request re-rendered in the `{link N}` format, written out by hand — the
+# expected bytes a `{pattern: "[N]" → "{link N}"}` substitution must produce, used
+# for whole-render assertions.
+_CURLY_MESSAGES: list[dict[str, Any]] = [
+    {"role": "system", "content": "Links on this page look like {link 12}."},
+    {"role": "user", "content": "Run your cycle."},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "browse", "arguments": '{"url": "{link 18}"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call-1", "content": "Read {link 18} — the story page."},
+]
+
+_CURLY_TOOLS = json.loads(json.dumps(_SUB_TOOLS).replace("[12]", "{link 12}"))
+
 
 def _install_roster(monkeypatch, roster: str = _EVAL_MODELS) -> None:
     monkeypatch.setenv("EVAL_MODELS", roster)
@@ -46,7 +107,7 @@ def _install_roster(monkeypatch, roster: str = _EVAL_MODELS) -> None:
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
 
 
-def _write_row(tmp_path, transport: str, body: dict, messages=None) -> str:
+def _write_row(tmp_path, transport: str, body: dict, messages=None, tools=None) -> str:
     """A throwaway promptlog DB holding ONE row whose ``request`` column carries the
     zlib-compressed SentRequest, exactly what ``_load_request`` reads back."""
     db_path = str(tmp_path / "promptlog.db")
@@ -65,9 +126,10 @@ def _write_row(tmp_path, transport: str, body: dict, messages=None) -> str:
         }
         connection.execute(
             "INSERT INTO promptlog (id, messages, tools, agent_name, run_target, request) "
-            "VALUES (1, ?, NULL, 'chat', 'test', ?)",
+            "VALUES (1, ?, ?, 'chat', 'test', ?)",
             (
                 json.dumps(messages if messages is not None else _MESSAGES),
+                json.dumps(tools) if tools else None,
                 zlib.compress(json.dumps(sent).encode()),
             ),
         )
@@ -289,6 +351,104 @@ class TestEveryArmCarriesTheSameResolvedTarget:
         assert len(captures) == 1  # the refused arm sent nothing
 
 
+class TestSubstitutionsRewriteTheWholeRequest:
+    """The ``substitutions`` field (#3058): regex pairs applied FIRST, in list
+    order, across every text surface of the request — the lever for re-rendering
+    a notation (a link-handle format) that appears throughout it."""
+
+    async def test_every_text_surface_is_rewritten(self, tmp_path, monkeypatch, captures) -> None:
+        """System, tool-result, tool-call-arguments text and the tool schemas all
+        go through the substitutions — and the loaded row itself is left
+        untouched, so a second arm starts from the recorded bytes."""
+        _install_roster(monkeypatch)
+        messages = [dict(message) for message in _SUB_MESSAGES]
+        body = {"model": "old-model", "messages": messages, "tools": _SUB_TOOLS}
+        db_path = _write_row(
+            tmp_path, PromptTransport.CHAT.value, body, messages=messages, tools=_SUB_TOOLS
+        )
+        await replay_variants(
+            1,
+            [
+                ReplayVariant(
+                    name="curly",
+                    substitutions=[Substitution(pattern=r"\[(\d+)\]", replacement="{link \\1}")],
+                )
+            ],
+            1,
+            db_path=db_path,
+            api_url="http://fake/v1",
+            api_key="key",
+        )
+        sent = captures[0]
+        assert sent["messages"][0]["content"] == "Links on this page look like {link 12}."
+        assert sent["messages"][3]["content"] == "Read {link 18} — the story page."
+        arguments = json.loads(sent["messages"][2]["tool_calls"][0]["function"]["arguments"])
+        assert arguments == {"url": "{link 18}"}
+        assert "[12]" not in json.dumps(sent["tools"])
+        assert sent["tools"][0]["function"]["description"] == "Read a numbered page like {link 12}."
+        # the loaded row's own text is untouched — the rewrite never mutates it
+        assert messages[3]["content"] == "Read [18] — the story page."
+        assert messages[2]["tool_calls"][0]["function"]["arguments"] == '{"url": "[18]"}'
+
+    async def test_entries_apply_in_list_order(self, tmp_path, monkeypatch, captures) -> None:
+        """Two entries compose in list order — handle to bracketed-link to curly —
+        so the same entries reversed stop one step short."""
+        _install_roster(monkeypatch)
+        body = {"model": "old-model", "messages": _SUB_MESSAGES, "tools": _SUB_TOOLS}
+        db_path = _write_row(
+            tmp_path, PromptTransport.CHAT.value, body, messages=_SUB_MESSAGES, tools=_SUB_TOOLS
+        )
+        handle_to_bracket = Substitution(pattern=r"\[(\d+)\]", replacement="[link \\1]")
+        bracket_to_curly = Substitution(pattern=r"\[link (\d+)\]", replacement="{link \\1}")
+        await replay_variants(
+            1,
+            [
+                ReplayVariant(
+                    name="forward",
+                    substitutions=[handle_to_bracket, bracket_to_curly],
+                ),
+                ReplayVariant(
+                    name="reversed",
+                    substitutions=[bracket_to_curly, handle_to_bracket],
+                ),
+            ],
+            1,
+            db_path=db_path,
+            api_url="http://fake/v1",
+            api_key="key",
+        )
+        forward, reversed_arm = captures[0], captures[1]
+        assert forward["messages"][0]["content"] == "Links on this page look like {link 12}."
+        assert reversed_arm["messages"][0]["content"] == "Links on this page look like [link 12]."
+
+    async def test_substitutions_run_before_the_other_transforms(
+        self, tmp_path, monkeypatch, captures
+    ) -> None:
+        """The substitutions rewrite the STORED text first; the other transforms
+        then apply on top, so an arm's own replacement text rides verbatim — it
+        is the arm's chosen wording, not recorded text to rewrite."""
+        _install_roster(monkeypatch)
+        body = {"model": "old-model", "messages": _SUB_MESSAGES}
+        db_path = _write_row(tmp_path, PromptTransport.CHAT.value, body, messages=_SUB_MESSAGES)
+        await replay_variants(
+            1,
+            [
+                ReplayVariant(
+                    name="both",
+                    substitutions=[Substitution(pattern=r"\[(\d+)\]", replacement="{link \\1}")],
+                    user_message="Say [7] now.",
+                )
+            ],
+            1,
+            db_path=db_path,
+            api_url="http://fake/v1",
+            api_key="key",
+        )
+        sent = captures[0]["messages"]
+        assert sent[0]["content"] == "Links on this page look like {link 12}."
+        assert sent[1]["content"] == "Say [7] now."
+
+
 class TestTheByteIdentityCheck:
     async def test_a_transformed_raw_row_re_renders_from_the_matching_state(
         self, tmp_path, monkeypatch, captures
@@ -315,6 +475,38 @@ class TestTheByteIdentityCheck:
         )
         assert sent["prompt"] == expected
         assert sent["model"] == "vendor/model-a"
+
+    async def test_a_substituted_raw_row_re_renders_substituted_bytes(
+        self, tmp_path, monkeypatch, captures
+    ) -> None:
+        """On a raw_template row the substitutions rewrite the messages and the
+        tools before the re-render, so the sent prompt is the hand-written
+        substituted render — the byte-identity check still gates the pipeline."""
+        _install_roster(monkeypatch)
+        prompt = raw_template.render_prompt(_SUB_MESSAGES, _SUB_TOOLS, thinking_enabled=True)
+        body = {"model": "old-model", "prompt": prompt}
+        db_path = _write_row(
+            tmp_path,
+            PromptTransport.RAW_TEMPLATE.value,
+            body,
+            messages=_SUB_MESSAGES,
+            tools=_SUB_TOOLS,
+        )
+        await replay_variants(
+            1,
+            [
+                ReplayVariant(
+                    name="curly",
+                    substitutions=[Substitution(pattern=r"\[(\d+)\]", replacement="{link \\1}")],
+                )
+            ],
+            1,
+            db_path=db_path,
+            api_url="http://fake/v1",
+            api_key="key",
+        )
+        expected = raw_template.render_prompt(_CURLY_MESSAGES, _CURLY_TOOLS, thinking_enabled=True)
+        assert captures[0]["prompt"] == expected
 
     async def test_an_unfaithful_re_render_is_refused(
         self, tmp_path, monkeypatch, captures
@@ -389,7 +581,38 @@ class TestTheSpecIsValidatedAsAWhole:
                     {"name": "more", "system_prompt_append": "One more rule."},
                     {"name": "dynamic", "last_system_append": "One more per-turn note."},
                     {"name": "off", "thinking": False},
+                    {
+                        "name": "curly",
+                        "substitutions": [{"pattern": r"\[(\d+)\]", "replacement": "{link \\1}"}],
+                    },
                 ]
             )
         )
-        assert [variant.name for variant in variants] == ["baseline", "more", "dynamic", "off"]
+        assert [variant.name for variant in variants] == [
+            "baseline",
+            "more",
+            "dynamic",
+            "off",
+            "curly",
+        ]
+
+    def test_a_bad_regex_refuses_the_spec(self) -> None:
+        with pytest.raises(SystemExit, match="invalid substitution regex"):
+            _variants_from_spec(
+                json.dumps(
+                    [
+                        {
+                            "name": "a",
+                            "substitutions": [
+                                {"pattern": "[unclosed", "replacement": "x"},
+                            ],
+                        }
+                    ]
+                )
+            )
+
+    def test_a_bad_regex_refuses_the_arm_at_construction(self) -> None:
+        with pytest.raises(ValidationError, match="invalid substitution regex"):
+            ReplayVariant(
+                name="a", substitutions=[Substitution(pattern="[unclosed", replacement="x")]
+            )
