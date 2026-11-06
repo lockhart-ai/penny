@@ -146,6 +146,7 @@ public struct Composer: View {
             .padding(.trailing, Tokens.composerFieldTrailingInset)
             .padding(.bottom, pendingImage == nil ? 0 : Tokens.composerPendingInset)
         }
+        .glassEffect(fieldGlass, in: fieldShape)
         .animation(.easeInOut(duration: 0.2), value: hasDraft)
     }
 
