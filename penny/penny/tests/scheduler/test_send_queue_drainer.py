@@ -520,6 +520,7 @@ class _GatedLlm(LlmClient):
         run_target: str | None = None,
         token_budget: int | None = None,
         thinking_enabled: bool = True,
+        skip_cache_store: bool = False,
     ) -> LlmResponse:
         await self.release.wait()
         return LlmResponse(

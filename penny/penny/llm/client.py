@@ -108,6 +108,18 @@ THINKING_OFF_BODY = {
     "chat_template_kwargs": {"enable_thinking": False},
 }
 
+# Ask the model server not to STORE this call's prompt in its prefix cache (#3080).
+# A top-level body field on the local oMLX fork (``skip_cache_store: true``); the
+# request still READS cached prefixes, it just never writes its own — so a one-off
+# micro-context page prompt stops evicting the reusable chat/collector prefixes.
+# Only ever sent when the ENDPOINT knows the field: ``LlmClient`` carries the
+# endpoint-level switch (``LLM_SKIP_CACHE_STORE_SUPPORTED``, a constructor param
+# like the provider pin) and the caller states the per-call intent, so an endpoint
+# that has never heard of the field is never sent it. Rides the same
+# ``extra_body`` passthrough as the pin and ``top_k`` (:meth:`_provider_pin_extra_body`,
+# :meth:`_with_sampling_top_k`) — never a second, competing passthrough.
+SKIP_CACHE_STORE_FIELD = "skip_cache_store"
+
 # Ask for embedding vectors as plain floats rather than the SDK's base64 default.
 # Not every backend accepts base64: Google AI Studio refuses it outright ("embeddings do
 # not support base64 encoding_format"), and the failure is the quiet kind — the write path
@@ -419,6 +431,7 @@ class LlmClient:
         provider_pin: ProviderPin | None = None,
         runtime: RuntimeParams | None = None,
         extra_headers: dict[str, str] | None = None,
+        skip_cache_store_supported: bool = False,
     ):
         self.api_url = api_url.rstrip("/")
         self.model = model
@@ -427,6 +440,11 @@ class LlmClient:
         self.retry_delay = retry_delay
         self.api_key = api_key
         self.provider_pin = provider_pin
+        # Whether THIS endpoint accepts the top-level ``skip_cache_store`` body
+        # field (#3080) — an endpoint property, like the provider pin: the local
+        # oMLX fork knows it, a random OpenRouter provider may reject it. Read by
+        # :meth:`_skip_cache_store_extra_body`, never by a caller directly.
+        self._skip_cache_store_supported = skip_cache_store_supported
         # The deployment's ONE ``RuntimeParams`` (#2474) — not a fresh instance built
         # from ``db`` alone, which would carry the DB tier but never the env tier (the
         # env overrides are collected once, in ``Config.load()``, into this exact
@@ -500,6 +518,7 @@ class LlmClient:
         run_target: str | None = None,
         token_budget: int | None = None,
         thinking_enabled: bool = True,
+        skip_cache_store: bool = False,
     ) -> LlmResponse:
         """Generate a chat completion with optional tool calling.
 
@@ -551,6 +570,15 @@ class LlmClient:
         it yet — it exists for the follow-up issues that give a capped call a second,
         reasoning-off attempt to answer with what it has.
 
+        ``skip_cache_store`` (#3080) is the per-call intent to have the model
+        server NOT store this prompt in its prefix cache — the micro-context
+        draws set it (a one-off page prompt is never reused, so storing it only
+        evicts the reusable chat/collector prefixes); every other caller leaves
+        it ``False``. Intent alone is not enough: the field rides the wire only
+        when this endpoint actually knows it
+        (``LLM_SKIP_CACHE_STORE_SUPPORTED`` / :meth:`_skip_cache_store_extra_body`),
+        and the request still READS cached prefixes — it just never writes its own.
+
         Reads top to bottom as the call's own table of contents: resolve this
         call's ids and announce it, run the retry loop, then log however it
         ended.
@@ -570,7 +598,13 @@ class LlmClient:
         messages_snapshot = [message.to_log_dict() for message in messages]
         try:
             response, raw, thinking_loop_cut, sent_request = await self._chat_attempts(
-                messages_snapshot, tools, format, token_budget, thinking_enabled, transport
+                messages_snapshot,
+                tools,
+                format,
+                token_budget,
+                thinking_enabled,
+                skip_cache_store,
+                transport,
             )
         except asyncio.CancelledError:
             # No attempt's own ``SentRequest`` is known here: a cancellation can land
@@ -979,6 +1013,7 @@ class LlmClient:
         format: dict | str | None,
         token_budget: int | None,
         thinking_enabled: bool,
+        skip_cache_store: bool,
         transport: PromptTransport,
     ) -> tuple[LlmResponse, _RawCompletion, _ThinkingLoopCutLog | None, SentRequest]:
         """The retry loop over individual network attempts.
@@ -1004,7 +1039,14 @@ class LlmClient:
         for attempt in range(self.max_retries):
             try:
                 result = await self._attempt_chat_request(
-                    messages, tools, format, token_budget, thinking_enabled, attempt, transport
+                    messages,
+                    tools,
+                    format,
+                    token_budget,
+                    thinking_enabled,
+                    skip_cache_store,
+                    attempt,
+                    transport,
                 )
             except _AttemptFailedError as failure:
                 last_error = await self._handle_attempt_failure(attempt, failure)
@@ -1057,6 +1099,7 @@ class LlmClient:
         format: dict | str | None,
         token_budget: int | None,
         thinking_enabled: bool,
+        skip_cache_store: bool,
         attempt: int,
         transport: PromptTransport,
     ) -> _ChatAttemptResult:
@@ -1080,7 +1123,7 @@ class LlmClient:
         thinking_loop_cut: _ThinkingLoopCutLog | None = None
         if transport is PromptTransport.RAW_TEMPLATE:
             draw = await self._send_raw_template_request(
-                translated_messages, tools, token_budget, thinking_enabled
+                translated_messages, tools, token_budget, thinking_enabled, skip_cache_store
             )
             raw = draw.raw
             thinking_loop_cut = draw.cut
@@ -1105,7 +1148,7 @@ class LlmClient:
                 raise _RawTemplateParseError(error, raw, sent_request) from error
         else:
             kwargs = self._build_chat_kwargs(
-                translated_messages, tools, format, token_budget, thinking_enabled
+                translated_messages, tools, format, token_budget, thinking_enabled, skip_cache_store
             )
             sent_request = SentRequest(
                 transport=PromptTransport.CHAT,
@@ -1136,6 +1179,7 @@ class LlmClient:
         tools: list[dict] | None,
         token_budget: int | None,
         thinking_enabled: bool,
+        skip_cache_store: bool,
     ) -> _RawTemplateDraw:
         """Render the vendored template and STREAM the result as a raw
         completion (#2829, streamed since #2842): streaming lets a looping
@@ -1159,7 +1203,9 @@ class LlmClient:
         """
         translated_tools = self._translate_tools(tools) if tools else None
         prompt = raw_template.render_prompt(messages, translated_tools, thinking_enabled)
-        stream, sent_request = await self._create_raw_completion(prompt, token_budget)
+        stream, sent_request = await self._create_raw_completion(
+            prompt, token_budget, skip_cache_store
+        )
         outcome = await self._stream_consumption(
             stream, tracker=thinking_loop.ThoughtStreamTracker(), sent_request=sent_request
         )
@@ -1173,7 +1219,7 @@ class LlmClient:
             )
         continuation_prompt = prompt + outcome.cut.continuation_suffix()
         continuation_stream, continuation_sent_request = await self._create_raw_completion(
-            continuation_prompt, token_budget
+            continuation_prompt, token_budget, skip_cache_store
         )
         continuation = await self._stream_consumption(
             continuation_stream,
@@ -1197,7 +1243,7 @@ class LlmClient:
         )
 
     async def _create_raw_completion(
-        self, prompt: str, token_budget: int | None
+        self, prompt: str, token_budget: int | None, skip_cache_store: bool
     ) -> tuple[openai.AsyncStream[openai.types.completion.Completion], SentRequest]:
         """One streaming raw-completions request (#2842) — the provider pin
         rides the same ``extra_body`` passthrough as the chat transport
@@ -1219,7 +1265,12 @@ class LlmClient:
             "stream_options": {"include_usage": True},
             "stop": list(raw_template.STOP_SEQUENCES),
             **self._sampling_kwargs(),
-            "extra_body": self._with_sampling_top_k(self._provider_pin_extra_body()),
+            "extra_body": self._with_sampling_top_k(
+                {
+                    **self._provider_pin_extra_body(),
+                    **self._skip_cache_store_extra_body(skip_cache_store),
+                }
+            ),
         }
         if token_budget is not None:
             kwargs["max_tokens"] = token_budget
@@ -1349,6 +1400,17 @@ class LlmClient:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
         return extra_body
 
+    def _skip_cache_store_extra_body(self, skip_cache_store: bool) -> dict[str, Any]:
+        """The skip-cache-store request's own ``extra_body`` fragment (#3080) —
+        the ONE place that decides whether the field rides, so the chat and the
+        raw-template transport can never drift apart on it. Empty unless the
+        caller stated the intent AND this endpoint supports the field: an
+        endpoint that has never heard of it is never sent it. The request still
+        READS cached prefixes; it just never writes its own."""
+        if skip_cache_store and self._skip_cache_store_supported:
+            return {SKIP_CACHE_STORE_FIELD: True}
+        return {}
+
     @staticmethod
     def _sampling_kwargs() -> dict[str, Any]:
         """Explicit sampling settings sent on every model call (#2877) —
@@ -1477,6 +1539,7 @@ class LlmClient:
             call_link=call_link,
             agent_name=agent_name,
             prompt_type=prompt_type,
+            skip_cache_store=False,
         )
 
     # ── Embeddings ───────────────────────────────────────────────────────
@@ -1693,6 +1756,7 @@ class LlmClient:
         format: dict | str | None,
         token_budget: int | None = None,
         thinking_enabled: bool = True,
+        skip_cache_store: bool = False,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
         # The provider pin rides the same passthrough, added only when one was
@@ -1714,6 +1778,7 @@ class LlmClient:
         )
         if self.provider_pin is not None:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
+        extra_body.update(self._skip_cache_store_extra_body(skip_cache_store))
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,

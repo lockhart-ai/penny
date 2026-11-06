@@ -372,7 +372,15 @@ class MicroContext:
         would get an identical second call for nothing, so the guard is
         ``not retried_cut and thinking_enabled``.  At most once per draw either
         way: a retry that is itself cut is used as-is, an honest escape rather
-        than an unbounded loop."""
+        than an unbounded loop.
+
+        Every draw — retries included — states ``skip_cache_store=True``
+        (#3080): this prompt is one-off (a page, a batch of hits — never
+        reused), so the model server is asked not to store it in its prefix
+        cache, where it would only push out the reusable chat/collector
+        prefixes.  Whether the field actually rides the wire is the client's
+        endpoint gate (``LLM_SKIP_CACHE_STORE_SUPPORTED``), decided in one
+        place there; with the flag off this intent sends nothing new."""
         draw_link = call_link.child()
         runtime = self._model_client.runtime
         token_budget = token_budget_for(
@@ -389,6 +397,7 @@ class MicroContext:
                 run_target=run_target,
                 token_budget=token_budget,
                 thinking_enabled=thinking_enabled,
+                skip_cache_store=True,
             )
             if (
                 response.finish_reason == PennyConstants.FINISH_REASON_LENGTH
@@ -411,6 +420,7 @@ class MicroContext:
                     run_target=run_target,
                     token_budget=token_budget,
                     thinking_enabled=False,
+                    skip_cache_store=True,
                 )
             text = response.content or ""
             condition = self._poison_condition(text)

@@ -119,6 +119,7 @@ class MockLlmClient:
         run_target: str | None = None,
         token_budget: int | None = None,
         thinking_enabled: bool = True,
+        skip_cache_store: bool = False,
     ) -> LlmResponse:
         """Mock chat() call.
 
@@ -155,6 +156,11 @@ class MockLlmClient:
             "parent_tool_call_id": call_link.parent_tool_call_id,
             "token_budget": token_budget,
             "thinking_enabled": thinking_enabled,
+            # #3080: the per-call intent, recorded like ``thinking_enabled`` so a
+            # test asserting on what the caller asked for sees exactly what
+            # production would have passed (the endpoint gate lives on the real
+            # client, below this mock's boundary).
+            "skip_cache_store": skip_cache_store,
         }
         # A browse micro-context call (#1588/#1570 — extract is required, so EVERY
         # browse routes page content through one): answer deterministically with the
