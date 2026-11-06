@@ -20,11 +20,17 @@ from penny.llm.embeddings import deserialize_embedding
 
 logger = logging.getLogger(__name__)
 
+# Trailing prose punctuation stripped from a URL on either side of an egress
+# match — egress extraction (``channels.base``) strips the same set off every
+# URL a message cites, so both sides of a match agree however it was written
+# (#3064).  Defined here, the lower-level module, and imported by egress.
+URL_TRAILING_PUNCTUATION = ".,;:!?()<>]}>'\""
+
 
 def _normalize_url(url: str) -> str:
     """Lower-case and strip trailing punctuation so a URL written into a message
     matches the captured ``source_url`` of the same page."""
-    return url.rstrip(".,);:'\"<>").lower()
+    return url.rstrip(URL_TRAILING_PUNCTUATION).lower()
 
 
 def _domain(url: str) -> str:
@@ -124,30 +130,30 @@ class MediaStore:
         """Pick the image to attach to an egress message, most-relevant first.
 
         ``urls`` are the links the message itself contains (Penny cites her
-        source), ``embedding`` is the message text's vector.  Three tiers:
+        source), ``embedding`` is the message text's vector.  Two tiers:
 
         1. **Exact URL** — the message links a page we captured an image from:
            attach that page's own image (newest capture).  Deterministic — it
-           *is* the right image.
-        2. **Same domain** — the message links a site we have images from but not
-           that exact page: the embedding-nearest image from that domain.
-           Deterministic.
-        3. **No source linked** — embedding-nearest over everything, but a uniform
-           random pick among the top-K so a centroid "magnet" image can't repeat
-           on consecutive messages (jitter applies *only* to this fallback).
+           *is* the right image.  A cited page with no capture gets one at send
+           time — the channel fetches the page's preview image (which
+           ``uncaptured_cited_url`` names) and stores it here first — so this
+           tier fires for pages she cites without ever browsing (#3064).
+        2. **No captured source linked** — embedding-nearest over everything,
+           but a uniform random pick among the top-K so a centroid "magnet"
+           image can't repeat on consecutive messages (jitter applies *only*
+           to this fallback).
 
-        The optional channel policy excludes disabled categories before matching.
-        Returns None when automatic images are off or no eligible image qualifies.
+        A same-domain image is no longer a tier of its own (#3064): it competes
+        in the fallback like any other image.  The optional channel policy still
+        excludes disabled categories before matching, so a policy with
+        ``same_site`` off cannot be fallen through to.  Returns None when
+        automatic images are off or no eligible image qualifies.
         """
         policy = policy or ImageSelectionPolicy()
         if not policy.automatic:
             return None
         rows = [row for row in self._candidates() if policy.allows(row, urls)]
-        chosen = (
-            self._cited_page_image(rows, urls)
-            or self._cited_domain_image(rows, urls, embedding)
-            or self._jittered_nearest(rows, embedding)
-        )
+        chosen = self._cited_page_image(rows, urls) or self._jittered_nearest(rows, embedding)
         return self.get(chosen) if chosen is not None else None
 
     def _candidates(self) -> list[_Candidate]:
@@ -167,6 +173,21 @@ class MediaStore:
             if row[0] is not None
         ]
 
+    def uncaptured_cited_url(self, urls: list[str]) -> str | None:
+        """The first URL the message cites that we hold no captured image for —
+        the one the channel fetches a preview image for at send time (#3064).
+
+        None when every cited page already has a capture (or the message cites
+        no URL at all), so no fetch is attempted.
+        """
+        if not urls:
+            return None
+        captured = {_normalize_url(row.source_url) for row in self._candidates()}
+        for url in urls:
+            if _normalize_url(url) not in captured:
+                return url
+        return None
+
     def _cited_page_image(self, rows: list[_Candidate], urls: list[str]) -> int | None:
         """Tier 1: the newest image captured from a page the message links."""
         linked = {_normalize_url(url) for url in urls}
@@ -176,19 +197,6 @@ class MediaStore:
         best = max(matches, key=lambda row: row.created_at)
         logger.debug("Matched media %d by exact cited URL", best.id)
         return best.id
-
-    def _cited_domain_image(
-        self, rows: list[_Candidate], urls: list[str], embedding: list[float] | None
-    ) -> int | None:
-        """Tier 2: embedding-nearest image from a domain the message links."""
-        if embedding is None:
-            return None
-        domains = {_domain(url) for url in urls} - {""}
-        scoped = [row for row in rows if row.vector and _domain(row.source_url) in domains]
-        best_id = self._nearest_id(embedding, scoped, top_k=1)
-        if best_id is not None:
-            logger.debug("Matched media %d by cited domain", best_id)
-        return best_id
 
     def _jittered_nearest(
         self, rows: list[_Candidate], embedding: list[float] | None
@@ -212,7 +220,3 @@ class MediaStore:
             top_k=len(rows) or 1,
             threshold=-1.0,
         )
-
-    def _nearest_id(self, embedding: list[float], rows: list[_Candidate], top_k: int) -> int | None:
-        scored = self._scored(embedding, rows)
-        return scored[0][0] if scored else None

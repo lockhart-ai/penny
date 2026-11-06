@@ -38,7 +38,7 @@ def test_each_candidate_keeps_its_strongest_category(
         assert match.id == media_id
 
 
-def test_enabled_lower_categories_still_match_and_generated_media_can_be_reused(db):
+def test_enabled_lower_categories_still_match_and_generated_media_can_be_reused(db, monkeypatch):
     cited = db.media.put(b"cited", "image/png", source_url="https://site.test/p")
     same = db.media.put(
         b"same",
@@ -46,17 +46,29 @@ def test_enabled_lower_categories_still_match_and_generated_media_can_be_reused(
         source_url="https://site.test/other",
         embedding=serialize_embedding([1.0, 0.0]),
     )
-    generated = db.media.put(b"drawn", "image/png", embedding=serialize_embedding([1.0, 0.0]))
+    generated = db.media.put(b"drawn", "image/png", embedding=serialize_embedding([0.5, 0.5]))
     urls = ["https://site.test/p"]
+    # The fallback's jitter is pinned to the nearest pick so each pool's winner
+    # is determinate.
+    monkeypatch.setattr("penny.database.media_store.random.choice", lambda pool: pool[0])
     match = db.media.select_image(urls, None)
     assert match is not None and match.id == cited
     assert db.media.select_image(urls, None, policy=ImageSelectionPolicy(cited_page=False)) is None
+    # The same-domain tier is gone (#3064): with the exact tier off, the nearest
+    # ALLOWED image wins outright — and a same-domain row whose category is off
+    # cannot fall through to the fallback.
     match = db.media.select_image(urls, [1.0, 0.0], policy=ImageSelectionPolicy(cited_page=False))
     assert match is not None and match.id == same
     match = db.media.select_image(
         urls, [1.0, 0.0], policy=ImageSelectionPolicy(cited_page=False, same_site=False)
     )
     assert match is not None and match.id == generated
+    match = db.media.select_image(
+        urls,
+        [1.0, 0.0],
+        policy=ImageSelectionPolicy(cited_page=False, same_site=False, related=False),
+    )
+    assert match is None
     assert (
         db.media.select_image(urls, [1.0, 0.0], policy=ImageSelectionPolicy(automatic=False))
         is None

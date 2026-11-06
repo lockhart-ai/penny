@@ -1528,16 +1528,19 @@ class TestMediaStore:
         match = db.media.select_image(["https://cited.test/p"], None)
         assert match is not None and match.id == cited
 
-    def test_select_image_prefers_cited_domain_nearest(self, db):
-        """Tier 2: the message links a page on a domain we have images from (but
-        not that exact page) — pick the embedding-nearest image of that domain,
-        not the globally nearest off-domain image."""
-        self._put(db, b"far", "https://site.test/a", [0.0, 1.0])
-        near = self._put(db, b"near", "https://site.test/b", [0.9, 0.1])
-        self._put(db, b"offdomain", "https://elsewhere.test/z", [1.0, 0.0])  # global nearest
+    def test_select_image_no_same_domain_tier_nearest_over_everything(self, db, monkeypatch):
+        """The same-domain tier is gone (#3064): a cited page with no capture of
+        its own does NOT pull the nearest image of its domain — the plain
+        embedding-nearest image over everything wins, whatever site it came
+        from.  (The channel fetches the cited page's own preview image before
+        this ladder runs; that's the egress tests' subject.)  The jitter is
+        pinned to the nearest pick so the winner is determinate."""
+        self._put(db, b"samedomain", "https://site.test/a", [0.7, 0.7])
+        offdomain = self._put(db, b"offdomain", "https://elsewhere.test/z", [1.0, 0.0])
+        monkeypatch.setattr("penny.database.media_store.random.choice", lambda pool: pool[0])
         match = db.media.select_image(["https://site.test/c"], [1.0, 0.0])
         assert match is not None
-        assert match.id == near
+        assert match.id == offdomain
 
     def test_select_image_jitters_among_top_k_when_no_url(self, db, monkeypatch):
         """Tier 3: no cited URL — pick uniformly at random among the top-K nearest
