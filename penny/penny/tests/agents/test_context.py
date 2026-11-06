@@ -7,6 +7,8 @@ import pytest
 from sqlmodel import Session, col, select
 
 from penny.agents.base import Agent
+from penny.agents.conversation_map import ConversationMap
+from penny.agents.related_exchanges import RelatedExchanges
 from penny.constants import PennyConstants
 from penny.database.models import MessageLog, PromptLog
 from penny.llm.models import LlmMessage
@@ -56,10 +58,19 @@ async def test_count_user_turns_is_uncapped_by_the_message_context_limit(
 
     async with running_penny(config) as penny:
         for n in range(1, 6):  # five user turns — two more than the raw cap
-            penny.db.messages.log_message(
+            user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
                 TEST_SENDER,
                 f"user message {n}",
+            )
+            # A reply each, so every exchange is CLOSED — an open live turn
+            # would sit outside the anchor's counts (#3077).
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
             )
 
         assert penny.db.messages.count_user_turns(TEST_SENDER) == 5
@@ -69,6 +80,7 @@ async def test_count_user_turns_is_uncapped_by_the_message_context_limit(
         anchor = penny.db.messages.session_anchor(TEST_SENDER, 1800)
         assert anchor.total_user_turns == 5
         assert anchor.session_turns == 5
+        assert anchor.live_turn_open is False
 
 
 # ── Conversation building ────────────────────────────────────────────────
@@ -364,6 +376,82 @@ async def test_conversation_cuts_once_at_the_session_cap(
         # (8 stored turns — one past the cap), grows again — a cut every 4
         # turns at this small cap, never every 5 like the old grow/cut.
         assert sizes == [1, 2, 3, 4, 5, 6, 7, 5, 6, 7, 8, 5, 6]
+
+
+@pytest.mark.asyncio
+async def test_the_map_stops_one_exchange_before_the_historys_first(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """With the live user turn already logged (the prod build the #3077
+    boundary audit read writes the incoming row before its run), the map's
+    last 1:1 exchange line is never the history's first exchange: the shared
+    anchor counts CLOSED exchanges only, so the open live turn occupies none
+    of the window's slots — not in the history (it rides the prompt's end as
+    the live turn), not on the map, and not inside the related-exchanges
+    boundary — and the map stops exactly one exchange before the history's
+    own first."""
+    config = make_config()
+
+    async with running_penny(config) as penny:
+        stale = penny.db.clock.now() - timedelta(hours=1)
+        for n in range(1, 9):  # an older session
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+                timestamp=stale,
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+                timestamp=stale,
+            )
+        for n in (9, 10):  # a fresh session, closed
+            user_id = penny.db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                TEST_SENDER,
+                f"user message {n}",
+            )
+            penny.db.messages.log_message(
+                PennyConstants.MessageDirection.OUTGOING,
+                penny.config.signal_number,
+                f"reply {n}",
+                parent_id=user_id,
+                recipient=TEST_SENDER,
+            )
+        # The live turn, already logged — run-less, its reply not yet sent.
+        penny.db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, "user message 11"
+        )
+
+        anchor = penny.db.messages.session_anchor(TEST_SENDER, 1800)
+        assert anchor.live_turn_open is True
+        assert anchor.total_user_turns == 10  # the open live turn is not counted
+
+        # The history: the open live turn is NOT history — the closed window
+        # (5 + 2 session turns = 7) keeps user message 4 through 10.
+        history = penny.chat_agent.get_history(TEST_SENDER)
+        user_turns = [turn.content for turn in history if turn.role == "user"]
+        assert user_turns == [f"user message {n}" for n in range(4, 11)]
+        assert "user message 11" not in user_turns
+
+        # The map, rendered as the chat agent renders it: it stops one
+        # exchange before the history's first — the three oldest outcome-less
+        # exchanges collapse into one ranged line, and user message 4 (the
+        # history's own first) is nowhere on the map.
+        static = await penny.chat_agent._build_system_prompt(TEST_SENDER)
+        map_start = static.find(ConversationMap.HEADER)
+        map_lines = static[map_start:].split("\n")[1:-1]
+        assert "3 short messages" in map_lines[-1]
+        assert not any("user message 4" in line for line in map_lines)
+
+        # The related-exchanges boundary is the same row the history's first
+        # kept exchange holds — one boundary, three readers.
+        boundary = RelatedExchanges(penny.db, TEST_SENDER, penny.config.runtime, [0.0])._boundary()
+        assert boundary is not None and boundary.content == "user message 4"
 
 
 @pytest.mark.asyncio

@@ -287,7 +287,11 @@ class ConversationMap:
         from (``Agent._history_window_size``), anchored on the SAME session
         anchor (``MessageStore.session_anchor``, #3077) the history's own
         size is computed from.  One shared function, so the map and the
-        history can never disagree about where the window starts.
+        history can never disagree about where the window starts — the map
+        stops exactly one exchange before the history's own first: the open
+        live turn's exchange (its reply has not followed it) occupies none of
+        the window's slots, here or in the history's own trim (#3077's
+        boundary fix).
 
         The slice runs to the window's first USER exchange (#2982): a
         notification rides the map exactly when it has left the history —
@@ -309,7 +313,16 @@ class ConversationMap:
             )
         else:
             count = sum(1 for item in items if isinstance(item, _Exchange))
-            anchor = SessionAnchor(total_user_turns=count, session_turns=count)
+            anchor = SessionAnchor(
+                total_user_turns=count, session_turns=count, live_turn_open=False
+            )
+        if anchor.live_turn_open and items and isinstance(items[-1], _Exchange):
+            # The open live turn's exchange (its reply has not followed it —
+            # that is the mark the anchor read) is the live message's own, not
+            # a past one: it must not occupy one of the window's slots here
+            # either, or the map's boundary lands one exchange older than the
+            # history's own first and the two disagree by one (#3077).
+            items = items[:-1]
         size = Agent._history_window_size(
             anchor.session_turns,
             anchor.total_user_turns,

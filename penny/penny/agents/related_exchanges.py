@@ -117,7 +117,9 @@ class RelatedExchanges:
         Computed by the SAME function the history and the map are built from
         (``Agent._history_window_size``, over the SAME ``session_anchor``
         #3077 shares), so the retrieval can never show an exchange the window
-        already carries."""
+        already carries — the boundary is exactly the history's own oldest
+        kept exchange, and when the live turn's row is open in the store the
+        read skips it (#3077's boundary fix)."""
         window = int(self.runtime.CHAT_HISTORY_TURNS)
         if window <= 0:
             return None
@@ -132,7 +134,13 @@ class RelatedExchanges:
         )
         if size <= 0:
             return None
-        return self.db.messages.user_turn_at_offset(self.user, size - 1)
+        # The anchor counts CLOSED exchanges (#3077): when the live turn's row
+        # is open in the store, it is the newest run-less incoming row and the
+        # boundary read must skip it — one exchange further back — so the
+        # scored pool is exactly what the window has dropped, never an
+        # exchange the history still carries.
+        offset = size - 1 + (1 if anchor.live_turn_open else 0)
+        return self.db.messages.user_turn_at_offset(self.user, offset)
 
     # ── The matches ──────────────────────────────────────────────────────────
 

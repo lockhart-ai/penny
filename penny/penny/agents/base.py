@@ -2690,6 +2690,13 @@ class Agent:
         present).  The anchor's counts only ever grow by one per real user
         turn, so the same window math applies forever.
 
+        The anchor counts CLOSED exchanges: when the live user turn's row is
+        open in the store (some flows write it before its run), it is dropped
+        from the built conversation — it rides the prompt's end as the live
+        turn, never as a history turn, and occupies none of the window's
+        slots (#3077's boundary fix: the map, the history and related
+        exchanges agree on exactly one boundary).
+
         Each outgoing reply carries the run id it was logged under (#2630), so
         a reply a real tool call backed renders that call and its result ahead
         of the words, in ``_build_messages`` (#2915/#2888) — the fix for the
@@ -2733,6 +2740,15 @@ class Agent:
             anchor = self.db.messages.session_anchor(
                 sender, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
             )
+            if anchor.live_turn_open:
+                # The open live turn — the live user message whose row some
+                # flows write before its run (#3077) — is not history: it
+                # rides the prompt's end as the live turn, so a trailing
+                # user turn here would render it twice and occupy one of the
+                # window's slots.  The anchor already excludes it from both
+                # counts.
+                while conversation and conversation[-1].role == MessageRole.USER:
+                    conversation.pop()
             conversation = self._trim_history_window(conversation, anchor)
             if conversation:
                 logger.debug("Built conversation (%d turns)", len(conversation))
@@ -2776,7 +2792,9 @@ class Agent:
         max_turns = int(self.config.runtime.CHAT_SESSION_MAX_TURNS)
         if anchor is None:
             count = sum(1 for turn in history if turn.role == MessageRole.USER)
-            anchor = SessionAnchor(total_user_turns=count, session_turns=count)
+            anchor = SessionAnchor(
+                total_user_turns=count, session_turns=count, live_turn_open=False
+            )
         size = self._history_window_size(
             anchor.session_turns, anchor.total_user_turns, window, max_turns
         )
