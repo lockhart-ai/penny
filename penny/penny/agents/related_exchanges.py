@@ -17,9 +17,9 @@ because the user's later message often refers to the plan by a pronoun ("do
 those") while the plan's words sit in her reply.
 
 What is excluded and why: exchanges INSIDE the history window are already
-visible, so the boundary is the same grow/cut function the history and the
-conversation map share (``Agent._history_window_size`` over the uncapped
-``count_user_turns`` anchor).  Exchanges shown as map lines are included — the
+visible, so the boundary is the same function the history and the conversation
+map share (``Agent._history_window_size`` over the shared ``session_anchor``,
+#3077).  Exchanges shown as map lines are included — the
 map carries only the user's own words, so her half of the exchange is nowhere.
 No retrieval runs for a system-notification trigger: the section is keyed to
 the user's own words, and a delivery turn's trigger is the framework's.
@@ -114,18 +114,33 @@ class RelatedExchanges:
         """The history window's own oldest kept user turn — the exchange rows
         before it in send order are exactly the ones the window has dropped.
 
-        Computed by the SAME grow/cut function the history and the map are
-        built from (``Agent._history_window_size``, over the uncapped
-        ``count_user_turns`` anchor), so the retrieval can never show an
-        exchange the window already carries."""
+        Computed by the SAME function the history and the map are built from
+        (``Agent._history_window_size``, over the SAME ``session_anchor``
+        #3077 shares), so the retrieval can never show an exchange the window
+        already carries — the boundary is exactly the history's own oldest
+        kept exchange, and when the live turn's row is open in the store the
+        read skips it (#3077's boundary fix)."""
         window = int(self.runtime.CHAT_HISTORY_TURNS)
         if window <= 0:
             return None
-        total_user_turns = self.db.messages.count_user_turns(self.user)
-        size = Agent._history_window_size(total_user_turns, window)
+        anchor = self.db.messages.session_anchor(
+            self.user, int(self.runtime.CHAT_SESSION_IDLE_SECONDS)
+        )
+        size = Agent._history_window_size(
+            anchor.session_turns,
+            anchor.total_user_turns,
+            window,
+            int(self.runtime.CHAT_SESSION_MAX_TURNS),
+        )
         if size <= 0:
             return None
-        return self.db.messages.user_turn_at_offset(self.user, size - 1)
+        # The anchor counts CLOSED exchanges (#3077): when the live turn's row
+        # is open in the store, it is the newest run-less incoming row and the
+        # boundary read must skip it — one exchange further back — so the
+        # scored pool is exactly what the window has dropped, never an
+        # exchange the history still carries.
+        offset = size - 1 + (1 if anchor.live_turn_open else 0)
+        return self.db.messages.user_turn_at_offset(self.user, offset)
 
     # ── The matches ──────────────────────────────────────────────────────────
 

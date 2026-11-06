@@ -284,6 +284,32 @@ class ExchangeSides(NamedTuple):
         return "\n".join(part for part in (user_text, reply_text) if part)
 
 
+class SessionAnchor(BaseModel):
+    """The two counts the history window's size is a pure function of (#3077),
+    over CLOSED exchanges.
+
+    ``total_user_turns`` is the uncapped incoming count (#2756) minus the open
+    live turn, when one is in the store: on the flows where the live user
+    message's row is written BEFORE its run (the prod build the #3077 boundary
+    audit read), that row is the live turn itself — the live message also
+    rides the prompt's end as the live turn — so it must occupy none of the
+    window's slots.  ``live_turn_open`` marks its presence: the store's newest
+    non-reaction row is a run-less incoming one, meaning no reply has followed
+    the newest exchange.  ``session_turns`` counts the CLOSED turns of the
+    newest session: consecutive closed turns with no gap of at least the
+    session idle threshold between their stored timestamps.  A zero means the
+    live message is itself the session's first turn, which is exactly when
+    the window cuts.
+
+    Computed from stored timestamps against stored timestamps — no clock read
+    anywhere — so every render of the same state gives the same session, and
+    the same window (the cache invariant)."""
+
+    total_user_turns: int
+    session_turns: int
+    live_turn_open: bool
+
+
 class MessageStore:
     """Manages MessageLog, PromptLog, and CommandLog records.
 
@@ -902,7 +928,7 @@ class MessageStore:
         Same filters as ``count_user_turns`` (incoming, non-reaction, no run id
         — joined messages render inside their run's own history, #2985), so the
         boundary the related-exchanges retrieval reads is anchored on exactly
-        the turns the history window's own grow/cut cycle counts."""
+        the turns the history window's own trim keeps."""
         with self._session() as session:
             return session.exec(
                 select(MessageLog)
@@ -1113,8 +1139,9 @@ class MessageStore:
         """Total incoming (non-reaction) messages ever sent by ``sender`` —
         UNCAPPED, unlike ``get_messages_since``'s own fetch (#2756).
 
-        This is the stable anchor ``Agent._trim_history_window``'s grow/cut
-        cycle is a pure function of: it increases by exactly one per real new
+        This is half of the stable anchor (``session_anchor``, #3077) that
+        ``Agent._trim_history_window``'s window size is a pure function of: it
+        increases by exactly one per real new
         user turn, forever, so the same window math gives the same answer on
         consecutive turns.  A count read off the capped raw pool instead would
         stop advancing (and silently reindex, since the pool's oldest member
@@ -1135,6 +1162,70 @@ class MessageStore:
                     col(MessageLog.run_id).is_(None),
                 )
             ).one()
+
+    def session_anchor(self, sender: str, idle_seconds: int) -> SessionAnchor:
+        """The closed-exchange counts the window's size is a pure function of
+        (#3077): the total user-turn count, how many of the newest belong to
+        the current session, and whether the live turn is open.
+
+        Same filters as ``count_user_turns`` (incoming, non-reaction, no run
+        id — joined messages render inside their run's own history, #2985), so
+        the session is counted over exactly the turns the window renders.  A
+        session is the newest run of consecutive turns with no gap of at least
+        ``idle_seconds`` between stored timestamps: the scan walks newest
+        first and stops at the first such gap.  With no gap in the whole
+        history, everything is one session.
+
+        The OPEN live turn is excluded from both counts: when the store's
+        newest non-reaction row is a run-less incoming one, no reply has
+        followed the newest exchange — the live user message whose row some
+        flows write before its run — and it must occupy none of the window's
+        slots, wherever each reader sits relative to the row's write.
+
+        Timestamps are compared against timestamps — never against a clock —
+        so the same stored state always yields the same session.
+        """
+        with self._session() as session:
+            timestamps = list(
+                session.exec(
+                    select(MessageLog.timestamp)
+                    .where(
+                        MessageLog.sender == sender,
+                        MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                        MessageLog.is_reaction == False,  # noqa: E712
+                        col(MessageLog.run_id).is_(None),
+                    )
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
+                ).all()
+            )
+            newest_outgoing = session.exec(
+                select(MessageLog.timestamp)
+                .where(
+                    MessageLog.recipient == sender,
+                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+                .limit(1)
+            ).first()
+        idle = timedelta(seconds=idle_seconds)
+        session_turns = 1
+        for newer, older in zip(timestamps, timestamps[1:], strict=False):
+            if newer - older >= idle:
+                break
+            session_turns += 1
+        live_turn_open = bool(timestamps) and (
+            newest_outgoing is None or timestamps[0] > newest_outgoing
+        )
+        total = len(timestamps) - (1 if live_turn_open else 0)
+        # The scan counts the open live turn too (it is the newest row) — the
+        # closed session count drops it again.
+        session_turns = max(session_turns - (1 if live_turn_open else 0), 0)
+        return SessionAnchor(
+            total_user_turns=total,
+            session_turns=session_turns,
+            live_turn_open=live_turn_open,
+        )
 
     def recent_direct_messages(self, since: datetime, limit: int) -> list[MessageLog]:
         """The conversation's DIRECT messages since a horizon, oldest first (#2752).

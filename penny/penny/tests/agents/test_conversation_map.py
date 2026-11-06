@@ -20,6 +20,7 @@ from sqlmodel import col, update
 
 from penny.agents.base import Agent
 from penny.agents.conversation_map import MESSAGE_POOL, USER_CLIP_CHARS, ConversationMap
+from penny.agents.related_exchanges import RelatedExchanges
 from penny.config_params import RuntimeParams
 from penny.constants import (
     ChatPromptType,
@@ -289,16 +290,19 @@ def test_the_map_is_byte_identical_across_two_non_cut_turns(db) -> None:
     """Between two turns neither of which is a cut, the history window's own
     first exchange doesn't move (``Agent._history_window_size``), so the set of
     exchanges the map covers doesn't change either — the map renders
-    BYTE-IDENTICAL, not merely a growing prefix (#2757)."""
+    BYTE-IDENTICAL, not merely a growing prefix (#2757).  The cap sits one
+    above the window, so the session alternates between window and window+1
+    without ever cutting."""
     db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
     for index in range(4):  # total=4 is the state right after a cut: older=2
         _outcome_exchange(db, index)
-    assert Agent._history_window_size(4, 2) == 2  # sanity: older = 4 - 2 = 2
+    assert Agent._history_window_size(4, 4, 2, 3) == 2  # sanity: older = 4 - 2 = 2
     before = _map(db).render()
     assert len(_content_lines(before)) == 2
 
     _outcome_exchange(db, 4)  # total=5 — still growing, same 2 older exchanges
-    assert Agent._history_window_size(5, 2) == 3  # older = 5 - 3 = 2, unchanged
+    assert Agent._history_window_size(5, 5, 2, 3) == 3  # older = 5 - 3 = 2, unchanged
     after = _map(db).render()
 
     assert after == before
@@ -307,17 +311,20 @@ def test_the_map_is_byte_identical_across_two_non_cut_turns(db) -> None:
 def test_the_map_grows_by_the_exchanges_that_left_on_a_cut_turn(db) -> None:
     """On a cut turn — the one turn the history window's own first exchange
     moves — the map gains exactly the exchanges the history dropped, whole, at
-    its end; every earlier line stays byte-identical (#2757)."""
+    its end; every earlier line stays byte-identical (#2757).  The cap drives
+    the cut: the session passes ``CHAT_SESSION_MAX_TURNS`` on the 6th turn of
+    a two-exchange window (#3077)."""
     db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
     for index in range(5):  # total=5: growing, older=2 (exchanges 0, 1)
         _outcome_exchange(db, index)
-    assert Agent._history_window_size(5, 2) == 3
+    assert Agent._history_window_size(5, 5, 2, 3) == 3
     before = _map(db).render()
     before_lines = _content_lines(before)
     assert len(before_lines) == 2
 
-    _outcome_exchange(db, 5)  # total=6 — the cut: window drops back to 2
-    assert Agent._history_window_size(6, 2) == 2  # older = 6 - 2 = 4
+    _outcome_exchange(db, 5)  # total=6 — the cap cut: window drops back to 2
+    assert Agent._history_window_size(6, 6, 2, 3) == 2  # older = 6 - 2 = 4
     after = _map(db).render()
     after_lines = _content_lines(after)
 
@@ -332,17 +339,38 @@ def test_the_map_grows_by_the_notifications_that_left_on_a_cut_turn(db) -> None:
     ahead of it: the slice runs to the window's first USER exchange, so a
     notification that precedes it rides the map (#2982)."""
     db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
     _outcome_exchange(db, 0)
     _autonomous_send(db, "old-job", "7" * 32, prompt_type=ChatPromptType.JOB_REPORT)
     for index in range(1, 5):
         _outcome_exchange(db, index)
     # total=5 user turns: growing, window=3, older = exchanges 0-1 + the
     # notification between them.
-    assert Agent._history_window_size(5, 2) == 3
+    assert Agent._history_window_size(5, 5, 2, 3) == 3
     rendered = _map(db).render()
     lines = _content_lines(rendered)
     assert len(lines) == 3
     assert "old-job" in lines[1]
+
+
+def test_the_map_and_the_related_exchanges_share_one_boundary(db) -> None:
+    """The map's older-than set and the related-exchanges boundary are
+    computed from the SAME session anchor (#3077): the newest exchange the map
+    shows is exactly the one whose user turn the related-exchanges boundary
+    row holds — the history's own oldest kept user turn.  One anchor, so the
+    three readers can never disagree about where the window starts."""
+    db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
+    for index in range(5):  # one session, cap 3: window = 2 + 5 % 2 = 3
+        _outcome_exchange(db, index)
+
+    boundary = RelatedExchanges(db, TEST_SENDER, RuntimeParams(db), [0.0])._boundary()
+    assert boundary is not None and boundary.content == "exchange ask 2"
+
+    lines = _content_lines(_map(db).render())
+    assert len(lines) == 2  # the exchanges older than the window's first kept turn
+    assert "exchange ask 0" in lines[0]
+    assert "exchange ask 1" in lines[1]
 
 
 def test_an_empty_map_renders_nothing(db) -> None:
@@ -400,6 +428,11 @@ def test_past_the_ceiling_the_oldest_whole_day_collapses(db) -> None:
     line naming its log_read read, and the map lands under the ceiling
     without a single exchange trimmed line-by-line."""
     db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
+    # The backdated days read as gaps, so the session idle threshold is raised
+    # past them: one session over everything, and the cap-3 cycle lands the
+    # window back at 2 exactly as a flat window would (#3077).
+    db.config.set("CHAT_SESSION_IDLE_SECONDS", str(7 * 24 * 3600), "test")
     for index in range(8):  # window=2: older = 8 - 2 = 6 (exchanges 0-5)
         run_id = f"{index:032x}"
         _write_entry(db, f"list-{index}", f"key-{index}", run_id)
@@ -407,7 +440,7 @@ def test_past_the_ceiling_the_oldest_whole_day_collapses(db) -> None:
         ids = _last_ids(db, 2)
         if index < 5:
             _backdate(db, ids, 1.0)  # the oldest five: yesterday
-    assert Agent._history_window_size(8, 2) == 2  # sanity: older = 8 - 2 = 6
+    assert Agent._history_window_size(8, 8, 2, 3) == 2  # sanity: older = 8 - 2 = 6
     db.config.set("CHAT_MAP_MAX_LINES", "5", "test ceiling")
 
     rendered = _map(db).render()
@@ -429,6 +462,11 @@ def test_the_fold_folds_the_oldest_unfolded_day_and_terminates(db) -> None:
     again would change nothing, and the pre-fix loop spanned forever on it
     (#3014).  The render returns, with that next day folded too."""
     db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
+    # The backdated days read as gaps, so the session idle threshold is raised
+    # past them — one session, and the cap-3 cycle lands the window back at 2
+    # exactly as a flat window would (#3077).
+    db.config.set("CHAT_SESSION_IDLE_SECONDS", str(7 * 24 * 3600), "test")
     db.config.set("CHAT_MAP_MAX_LINES", "3", "test ceiling")
     db.config.set("CHAT_MAP_DAYS", "4", "test horizon")
     for index in range(10):
@@ -460,6 +498,11 @@ def test_only_the_newest_day_over_the_ceiling_stops_the_fold(db) -> None:
     untouched (#3014).  The pre-fix loop spanned forever re-folding the
     already-folded oldest day."""
     db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
+    # The backdated days read as gaps, so the session idle threshold is raised
+    # past them — one session, and the cap-3 cycle lands the window back at 2
+    # exactly as a flat window would (#3077).
+    db.config.set("CHAT_SESSION_IDLE_SECONDS", str(7 * 24 * 3600), "test")
     db.config.set("CHAT_MAP_MAX_LINES", "3", "test ceiling")
     db.config.set("CHAT_MAP_DAYS", "4", "test horizon")
     for index in range(8):
@@ -489,6 +532,10 @@ def test_a_folded_day_over_the_pool_keeps_its_true_count(db) -> None:
     renders instead of shrinking turn by turn (#3056, the prod Nov 5 churn
     that busted the cached prefix at the map)."""
     db.config.set("CHAT_HISTORY_TURNS", "2", "test")
+    db.config.set("CHAT_SESSION_MAX_TURNS", "3", "test")
+    # The window must stay smaller than the session for day B to ride the map
+    # beside day A — with the default cap it swallows day B whole, leaving one
+    # over-ceiling day the fold correctly never folds (#3077).
     db.config.set("CHAT_MAP_DAYS", "4", "test horizon")
     db.config.set("CHAT_MAP_MAX_LINES", "50", "test ceiling")
     # Each exchange is 2 rows, so this day holds more rows than the pool — the
@@ -531,9 +578,10 @@ def test_the_horizon_reads_the_databases_clock_not_the_machines(tmp_path) -> Non
     far_past = datetime(2020, 3, 15, 14, 0, tzinfo=UTC)
     db = migrated_db(str(tmp_path / "t.db"), clock=PinnedClock(far_past))
 
-    # Seed well past the window's own grow/cut ceiling (2 * CHAT_HISTORY_TURNS - 1)
-    # so several exchanges are unambiguously older than the window, whatever
-    # phase of the cycle the total count lands on.
+    # Seed well past the window so several exchanges are unambiguously older
+    # than it — the session cap sits AT the window, so the size stays flat at
+    # the window for any total past it (#3077).
+    db.config.set("CHAT_SESSION_MAX_TURNS", "5", "test")
     window_size = int(RuntimeParams(db).CHAT_HISTORY_TURNS)
     for index in range(3 * window_size):
         _exchange(db, f"old question {index}", f"old answer {index}")

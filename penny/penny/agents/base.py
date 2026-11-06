@@ -33,6 +33,7 @@ from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory.identity import CollectionNameDecider, EntryDecider, WriteDecisionCache
 from penny.database.memory.objects import run_tool_history
+from penny.database.message_store import SessionAnchor
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
 from penny.llm.call_link import CallLink
@@ -2659,9 +2660,11 @@ class Agent:
         Fetches a raw pool of recent messages (``MESSAGE_CONTEXT_LIMIT``, no
         time boundary), merges consecutive INCOMING messages with newlines
         into one turn (two rapid-fire human texts with no reply between
-        them), then trims to the history window — ``CHAT_HISTORY_TURNS``
-        user turns growing to twice that minus one before cutting back
-        (#2756; previously a flat last-N, #2746).
+        them), then trims to the history window — every exchange since the
+        current session began, cut back only at the session's first turn or
+        at the ``CHAT_SESSION_MAX_TURNS`` cap (#3077; previously grew to
+        twice ``CHAT_HISTORY_TURNS`` minus one before cutting back, #2756;
+        a flat last-N before that, #2746).
 
         Consecutive OUTGOING rows are never merged (#2974 — previously
         text-concatenated the same way, which is what let an autonomous
@@ -2677,16 +2680,22 @@ class Agent:
         trigger — separates them, so an ordinary multi-part reply looks the
         same as it always has.
 
-        ``total_user_turns`` is read separately from the capped raw pool
-        (``MessageStore.count_user_turns``, #2756) — the anchor the
-        grow/cut cycle is computed against.  The raw pool's own turn count
-        would stop advancing (and silently reindex) once a conversation
-        outgrows ``MESSAGE_CONTEXT_LIMIT``, since that fetch keeps only the
-        MOST RECENT ``limit`` incoming messages and drops its oldest member
-        every time a new one arrives; anchoring to that count would freeze
-        the window on an old cut point instead of tracking the present. The
-        uncapped count only ever grows by one per real user turn, so the
-        same window math applies forever.
+        The window's size comes from the session anchor read off the store
+        (``MessageStore.session_anchor``, #3077), computed from stored
+        timestamps only — the same state the raw pool was fetched from, so
+        the pool's own turn count can never influence the window (the raw
+        pool keeps only the MOST RECENT ``limit`` incoming messages and drops
+        its oldest member every time a new one arrives; anchoring to it would
+        freeze the window on an old cut point instead of tracking the
+        present).  The anchor's counts only ever grow by one per real user
+        turn, so the same window math applies forever.
+
+        The anchor counts CLOSED exchanges: when the live user turn's row is
+        open in the store (some flows write it before its run), it is dropped
+        from the built conversation — it rides the prompt's end as the live
+        turn, never as a history turn, and occupies none of the window's
+        slots (#3077's boundary fix: the map, the history and related
+        exchanges agree on exactly one boundary).
 
         Each outgoing reply carries the run id it was logged under (#2630), so
         a reply a real tool call backed renders that call and its result ahead
@@ -2728,8 +2737,19 @@ class Agent:
                     )
                 else:
                     conversation.append(HistoryTurn(role, msg.content, run_id, mechanism))
-            total_user_turns = self.db.messages.count_user_turns(sender)
-            conversation = self._trim_history_window(conversation, total_user_turns)
+            anchor = self.db.messages.session_anchor(
+                sender, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+            )
+            if anchor.live_turn_open:
+                # The open live turn — the live user message whose row some
+                # flows write before its run (#3077) — is not history: it
+                # rides the prompt's end as the live turn, so a trailing
+                # user turn here would render it twice and occupy one of the
+                # window's slots.  The anchor already excludes it from both
+                # counts.
+                while conversation and conversation[-1].role == MessageRole.USER:
+                    conversation.pop()
+            conversation = self._trim_history_window(conversation, anchor)
             if conversation:
                 logger.debug("Built conversation (%d turns)", len(conversation))
         except Exception:
@@ -2737,11 +2757,13 @@ class Agent:
         return conversation
 
     def _trim_history_window(
-        self, history: list[HistoryTurn], total_user_turns: int | None = None
+        self, history: list[HistoryTurn], anchor: SessionAnchor | None = None
     ) -> list[HistoryTurn]:
-        """Keep the most recent user turns, with their replies — growing from
-        ``CHAT_HISTORY_TURNS`` to twice that minus one, then cutting back
-        (#2756; previously a flat last-N, #2746).
+        """Keep the most recent user turns, with their replies — every exchange
+        since the current session began, cut back only at the session's first
+        turn or at the ``CHAT_SESSION_MAX_TURNS`` cap (#3077; previously grew
+        to twice the window minus one and cut back about one turn in five,
+        #2756; a flat last-N before that, #2746).
 
         Both the standard window (``_build_conversation``) and a quote-reply's
         thread history (``ChatAgent.get_history``) pass through here.  A user
@@ -2749,26 +2771,33 @@ class Agent:
         kept user turn onward stays, so the replies in between and any
         autonomous sends after the last user message ride along.
 
-        ``total_user_turns`` is the STABLE anchor the grow/cut cycle is a pure
-        function of (``_history_window_size``) — the caller's own count,
-        unaffected by any cap on ``history`` itself, so the SAME turns get the
-        SAME window turn over turn (an append-only prefix extension) until a
-        cut is due, never a window that silently drifts because the fetch
-        that built ``history`` was capped.  ``None`` (the thread-history
-        caller, whose chain has no cheap global count of its own — flagged in
-        the PR as a smaller, short-chain approximation) falls back to
-        ``history``'s own user-turn count, which is exact as long as the
+        ``anchor`` is the STABLE pair the size is a pure function of
+        (``_history_window_size``) — the caller's own read
+        (``MessageStore.session_anchor``), unaffected by any cap on
+        ``history`` itself, so the SAME turns get the SAME window turn over
+        turn (an append-only prefix extension) until a cut is due, never a
+        window that silently drifts because the fetch that built ``history``
+        was capped.  ``None`` (the thread-history caller, whose chain has no
+        session of its own — left as its own smaller, short-chain
+        approximation, ruled so on #3077) falls back to ``history``'s own
+        user-turn count read as both counts, which is exact as long as the
         thread itself never exceeds its own fetch cap.
 
         Slices by POSITION only, same as before #2915 — each entry still
         carries exactly one ``MessageLog`` row's worth of history (talk-only
-        or not), so the grow/cut math never sees the turn-call expansion
+        or not), so the window math never sees the turn-call expansion
         ``_build_messages`` does afterwards.
         """
         window = int(self.config.runtime.CHAT_HISTORY_TURNS)
-        if total_user_turns is None:
-            total_user_turns = sum(1 for turn in history if turn.role == MessageRole.USER)
-        size = self._history_window_size(total_user_turns, window)
+        max_turns = int(self.config.runtime.CHAT_SESSION_MAX_TURNS)
+        if anchor is None:
+            count = sum(1 for turn in history if turn.role == MessageRole.USER)
+            anchor = SessionAnchor(
+                total_user_turns=count, session_turns=count, live_turn_open=False
+            )
+        size = self._history_window_size(
+            anchor.session_turns, anchor.total_user_turns, window, max_turns
+        )
         seen = 0
         for start in range(len(history) - 1, -1, -1):
             if history[start].role == MessageRole.USER:
@@ -2778,16 +2807,28 @@ class Agent:
         return history
 
     @staticmethod
-    def _history_window_size(total_user_turns: int, window: int) -> int:
+    def _history_window_size(
+        session_turns: int, total_user_turns: int, window: int, max_turns: int
+    ) -> int:
         """How many of the most recent user turns to keep — a pure function of
-        the TRUE total (#2756), so two consecutive turns agree with no stored
-        cursor: growing by one per new turn from ``window`` up to
-        ``2 * window - 1``, then cutting back to ``window`` and growing again.
-        Fewer turns than ``window`` exist yet: keep them all (nothing to cut).
+        the session anchor (#3077; previously of the bare total alone, #2756),
+        so two consecutive turns agree with no stored cursor.
+
+        The window keeps every exchange since the current SESSION began: it
+        grows by one per new turn from ``window``, cutting back to ``window``
+        only at the session's first turn (``session_turns == 0`` — the live
+        message starts one) and again once the cap ``max_turns`` is passed,
+        after which it grows again and cuts at the cap once every
+        ``max_turns - window + 1`` turns.  Between cuts the window is an
+        append-only prefix extension of the previous turn's, so the cached
+        prompt prefix is reused turn after turn instead of being rebuilt about
+        one turn in five (#2756's grow/cut did).  Fewer turns than ``window``
+        exist yet: keep them all (nothing to cut).
         """
         if total_user_turns <= window:
             return total_user_turns
-        return window + ((total_user_turns - window) % window)
+        cycle = max(max_turns - window, 0) + 1
+        return min(total_user_turns, window + (max(session_turns, 0) % cycle))
 
     # ── Utilities ────────────────────────────────────────────────────────
 
