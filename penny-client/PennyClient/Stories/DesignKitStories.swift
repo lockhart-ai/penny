@@ -30,10 +30,10 @@ struct KitStoryAvatar: View {
 struct KitTopTabBarStory: View {
     var body: some View {
         VStack(spacing: Tokens.margin) {
-            TopTabBar(selected: .prompts, promptsBadge: 3) {
+            TopTabBar(selected: .prompts, promptsBadge: 3, onSelect: { _ in }) {
                 KitStoryAvatar()
             }
-            TopTabBar(selected: .chat) {
+            TopTabBar(selected: .chat, onSelect: { _ in }) {
                 KitStoryAvatar()
             }
             HStack(spacing: Tokens.margin) {

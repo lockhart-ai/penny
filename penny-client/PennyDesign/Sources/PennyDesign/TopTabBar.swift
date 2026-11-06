@@ -26,7 +26,7 @@ public struct TopTabBar<Avatar: View>: View {
     public init(
         selected: TopTab,
         promptsBadge: Int = 0,
-        onSelect: @escaping (TopTab) -> Void = { _ in },
+        onSelect: @escaping (TopTab) -> Void,
         @ViewBuilder chatAvatar: () -> Avatar
     ) {
         self.selected = selected
