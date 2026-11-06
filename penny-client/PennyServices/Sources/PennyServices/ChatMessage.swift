@@ -211,8 +211,22 @@ public struct ChatMessage: Identifiable {
         isOutgoing = model.isOutgoing
     }
 
-    public static func local(id: Int, content: String) -> ChatMessage {
-        ChatMessage(id: id, serverID: nil, createdAt: .now, content: content, sourceHint: nil, imageAttachments: [], isOutgoing: true, embedding: nil)
+    public static func local(id: Int, content: String, imageDataURLs: [String] = []) -> ChatMessage {
+        let images = imageDataURLs.compactMap { dataURL -> ImageAttachment? in
+            guard let data = DataURLDecoder.decode(dataURL), let image = UIImage(data: data) else { return nil }
+            return ImageAttachment(image: image)
+        }
+        return ChatMessage(
+            id: id,
+            serverID: nil,
+            createdAt: .now,
+            content: content,
+            sourceHint: nil,
+            imageAttachmentDataURLs: imageDataURLs,
+            imageAttachments: images,
+            isOutgoing: true,
+            embedding: nil
+        )
     }
 
     static func remote(_ message: ServerChatMessage) -> ChatMessage {

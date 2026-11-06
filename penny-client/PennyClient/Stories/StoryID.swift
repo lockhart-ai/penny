@@ -9,6 +9,8 @@ enum StoryID: String, CaseIterable {
     case chatWorking
     case chatDisconnected
     case chatCollectorsBadge
+    case chatComposerTyping
+    case chatComposerPhoto
     case shellMemory
     case shellMemoryDetail
     case shellMemoryActivity

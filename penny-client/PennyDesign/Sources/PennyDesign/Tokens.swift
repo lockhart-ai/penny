@@ -118,6 +118,31 @@ public enum Tokens {
     /// (the field fills the row at `composerControlHeight`). The canvas
     /// margins below derive their 12pt / 8pt gaps from this.
     public static let composerGlassInset: CGFloat = 18
+    /// The glass field's inner paddings and corner: the text line sits this
+    /// far inside the capsule's leading/trailing edges, and a field holding
+    /// a pending photo rounds at `composerFieldCorner` instead of the capsule.
+    public static let composerFieldLeadingInset: CGFloat = 14
+    public static let composerFieldTrailingInset: CGFloat = 10
+    public static let composerFieldCorner: CGFloat = 22
+    /// The send arrow's glyph size inside the field, and the `+` attach
+    /// button's glyph box inside its glass circle.
+    public static let composerSendGlyphSize: CGFloat = 22
+    public static let composerAttachGlyphFrame: CGFloat = 32
+    /// A pending photo's thumbnail inside the field: `composerPendingThumbWidth`
+    /// wide, cropped to the attach mock's 16:10 box, rounded, with the small
+    /// glass xmark (`composerPendingXFrame`) at its top-trailing corner,
+    /// nudged `composerPendingXInset` outside the corner.
+    public static let composerPendingThumbWidth: CGFloat = 56
+    public static let composerPendingThumbHeight: CGFloat = 35
+    public static let composerPendingThumbCorner: CGFloat = 8
+    public static let composerPendingInset: CGFloat = 10
+    public static let composerPendingXFrame: CGFloat = 20
+    public static let composerPendingXGlyph: CGFloat = 9
+    public static let composerPendingXInset: CGFloat = 4
+    /// The bottom fade's dissolve ramp above the composer — the gap the
+    /// chat's content keeps below its last message, so the last message's
+    /// edge sits exactly where the fade clears.
+    public static let composerFadeBleed: CGFloat = lastMessageComposerGap
     /// The five metric columns' fixed widths, so values line up card to card.
     /// Sized to fit the run card's text column (card interior minus tile,
     /// spacing and chevron — measured at 284pt) with no overflow: the

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Testing
+import UIKit
 @testable import PennyClient
 @testable import PennyServices
 
@@ -330,6 +331,50 @@ struct MessageViewModelTests {
         #expect(client.messages.isEmpty)
     }
 
+    @Test func sendDraftSendsPendingPhotoWithTheMessageAndClearsIt() async throws {
+        let database = configuredDatabase()
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs())
+        let viewModel = MessageView.ViewModel(client: client)
+        viewModel.draftMessage = "  What's this bird?  "
+        viewModel.pendingImage = solidTestImage()
+
+        viewModel.sendDraft()
+
+        #expect(viewModel.draftMessage.isEmpty)
+        #expect(viewModel.pendingImage == nil)
+        let sent = try #require(client.messages.last)
+        #expect(sent.content == "What's this bird?")
+        #expect(sent.imageAttachments.count == 1)
+        #expect(sent.imageAttachmentDataURLs.count == 1)
+        #expect(sent.imageAttachmentDataURLs.first?.hasPrefix("data:image/jpeg;base64,") == true)
+        #expect(database.loadMessages().last?.imageAttachmentDataURLs.count == 1)
+    }
+
+    @Test func sendDraftSendsImageOnlyMessage() async throws {
+        let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
+        let viewModel = MessageView.ViewModel(client: client)
+        viewModel.draftMessage = "   "
+        viewModel.pendingImage = solidTestImage()
+
+        viewModel.sendDraft()
+
+        let sent = try #require(client.messages.last)
+        #expect(sent.content.isEmpty)
+        #expect(sent.imageAttachments.count == 1)
+        #expect(viewModel.pendingImage == nil)
+    }
+
+    @Test func sendDraftWithEmptyDraftAndNoPhotoSendsNothing() {
+        let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
+        let viewModel = MessageView.ViewModel(client: client)
+        viewModel.draftMessage = "   "
+
+        viewModel.sendDraft()
+
+        #expect(client.messages.isEmpty)
+        #expect(viewModel.draftMessage == "   ")
+    }
+
     @Test func visibleLiveMessagesSetBadgeInsteadOfScrollingWhenReadingHistory() async {
         let database = configuredDatabase()
         saveNumberedMessages(in: database, ids: 1...2)
@@ -504,6 +549,18 @@ private func saveFilterFixture(in database: DatabaseService) {
 private func saveNumberedMessages(in database: DatabaseService, ids: ClosedRange<Int>) {
     for id in ids {
         database.save(message: testMessage(id: id, content: "Message \(id)"))
+    }
+}
+
+/// A solid-colour photo for the composer's pending-image tests (#3039).
+@MainActor
+private func solidTestImage() -> UIImage {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 80), format: format)
+    return renderer.image { context in
+        UIColor.systemTeal.setFill()
+        context.fill(CGRect(x: 0, y: 0, width: 120, height: 80))
     }
 }
 

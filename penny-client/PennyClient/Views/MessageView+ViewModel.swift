@@ -91,6 +91,9 @@ extension MessageView {
 
         var client = PennyWebSocketClient()
         var draftMessage = ""
+        /// The photo picked in the composer, waiting to ride the next send —
+        /// shown as the field's thumbnail, removed by its glass ✕.
+        var pendingImage: UIImage?
         var hasHiddenNewMessages = false
         var replyMessage: ChatMessage?
         var selectedMessageLayout: MessageLayout = .message
@@ -309,15 +312,17 @@ extension MessageView {
 
         func sendDraft() {
             let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedMessage.isEmpty else { return }
+            let pendingPhoto = pendingImage
+            guard !trimmedMessage.isEmpty || pendingPhoto != nil else { return }
 
             let messageToSend = replyMessage.map { replyContent(for: trimmedMessage, replyingTo: $0) } ?? trimmedMessage
             draftMessage = ""
+            pendingImage = nil
             replyMessage = nil
             if selectedMessageFilter != .all {
                 selectedMessageFilter = .all
             }
-            client.sendMessage(messageToSend)
+            client.sendMessage(messageToSend, images: pendingPhoto.map { [$0] })
             requestScrollToBottom()
         }
 

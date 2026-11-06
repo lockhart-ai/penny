@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import UIKit
 import PennyServices
 
 /// Contrived fixture data for story mode (#2965) — never real user content.
@@ -46,6 +47,60 @@ enum StoryFixtures {
     /// story (#3046).
     static func collectorsBadgeViewModel() -> MessageView.ViewModel {
         chatViewModel(messages: conversationMessages, backgroundRunCount: 2)
+    }
+
+    /// The composer typing story (#3039): a draft with no photo — the send
+    /// arrow shows inside the field, the `+` beside it.
+    static func composerTypingViewModel() -> MessageView.ViewModel {
+        let viewModel = chatViewModel(messages: conversationMessages)
+        viewModel.draftMessage = "Perfect. And what's the weather for the crossing?"
+        return viewModel
+    }
+
+    /// The composer photo-pending story (#3039): the `chat-pending` screen —
+    /// a photo's thumbnail above the text line in the field, send arrow on.
+    static func composerPhotoViewModel() -> MessageView.ViewModel {
+        let viewModel = chatViewModel(messages: conversationMessages)
+        viewModel.draftMessage = "What's this bird?"
+        viewModel.pendingImage = pendingPhoto
+        return viewModel
+    }
+
+    /// A rendered placeholder photo for the pending state — a gradient sky
+    /// over a stylised bird on a branch, so the composer's thumbnail reads
+    /// as a photo, not a grey block. Rendered here, since the composer's
+    /// pending image is a `UIImage`, not a data URL like the bubbles'
+    /// attachments.
+    private static var pendingPhoto: UIImage {
+        let size = CGSize(width: 800, height: 500)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { context in
+            context.cgContext.drawLinearGradient(
+                CGGradient(
+                    colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                    colors: [
+                        UIColor(red: 0.98, green: 0.84, blue: 0.62, alpha: 1).cgColor,
+                        UIColor(red: 0.55, green: 0.72, blue: 0.83, alpha: 1).cgColor
+                    ] as CFArray,
+                    locations: [0, 1]
+                )!,
+                start: .zero,
+                end: CGPoint(x: 0, y: size.height),
+                options: []
+            )
+            // A branch across the lower third.
+            UIColor(red: 0.36, green: 0.25, blue: 0.17, alpha: 1).setFill()
+            context.fill(CGRect(x: 60, y: 360, width: 700, height: 18))
+            // The bird: a robin's breast and wing, dark head, on the branch.
+            UIColor(red: 0.35, green: 0.55, blue: 0.75, alpha: 1).setFill()
+            context.fill(CGRect(x: 320, y: 250, width: 170, height: 120))
+            UIColor(red: 0.86, green: 0.48, blue: 0.28, alpha: 1).setFill()
+            context.fill(CGRect(x: 330, y: 300, width: 150, height: 70))
+            UIColor(red: 0.16, green: 0.20, blue: 0.26, alpha: 1).setFill()
+            context.fill(CGRect(x: 470, y: 240, width: 70, height: 60))
+            // A tail.
+            context.fill(CGRect(x: 280, y: 270, width: 50, height: 40))
+        }
     }
 
     /// Three steps with different tools, the last one unfinished — the run

@@ -47,6 +47,12 @@ public final class PennyService {
     @ObservationIgnored private var historyPageIsNewest = false
     @ObservationIgnored private var embeddingContinuations: [String: CheckedContinuation<Data, Error>] = [:]
     @ObservationIgnored private var pendingResponseTimings: [String: [PendingResponseTiming]] = [:]
+    /// The local message still carrying images the server hasn't answered
+    /// for: set when an image message goes out, consumed by the next server
+    /// error frame, which posts the delivery-failure notice into the chat
+    /// (`reportImageDeliveryFailure`) instead of leaving the failure to
+    /// `lastError` alone.
+    @ObservationIgnored private var pendingImageMessageID: Int?
 
     @ObservationIgnored public private(set) lazy var dataBrowser = DataBrowserClient { [weak self] data in
         guard let self, self.canSend else { throw DataBrowserError.disconnected }
@@ -341,12 +347,46 @@ extension PennyService {
         historicalMessagesHandler = nil
     }
 
-    public func sendMessage(_ content: String) {
-        let message = ChatMessage.local(id: nextLocalMessageID(), content: content)
+    public func sendMessage(_ content: String, images: [UIImage]? = nil) {
+        let preparedImages = (images ?? []).map { ($0, OutgoingImage.dataURL(for: $0)) }
+        let imageDataURLs = preparedImages.compactMap(\.1)
+        let droppedCount = preparedImages.count - imageDataURLs.count
+        if droppedCount > 0 {
+            logger.error("Dropped \(droppedCount) outgoing image(s) that failed to encode", privacy: .public)
+        }
+
+        let message = ChatMessage.local(id: nextLocalMessageID(), content: content, imageDataURLs: imageDataURLs)
         messages.append(message)
         databaseService.save(message: MessageModel(message: message))
         publishLiveMessages([message])
-        send(.message(content: content))
+        send(.message(content: content, images: imageDataURLs.isEmpty ? nil : imageDataURLs))
+        if !imageDataURLs.isEmpty {
+            pendingImageMessageID = message.id
+        }
+    }
+
+    /// The chat notice's prefix when a message with photos fails server-side
+    /// — the server's own error text follows it verbatim.
+    static let imageDeliveryFailureNoticePrefix = "Message failed: "
+
+    /// A server error frame while a message with photos is unanswered
+    /// becomes an honest notice in the chat — a local, non-persisted message
+    /// — rather than only surfacing as `lastError`. The pending marker is
+    /// consumed once, so one notice posts per failed image message.
+    private func reportImageDeliveryFailure(_ error: String?) {
+        guard let error, pendingImageMessageID != nil else { return }
+        pendingImageMessageID = nil
+        let notice = ChatMessage(
+            id: nextLocalMessageID(),
+            serverID: nil,
+            createdAt: .now,
+            content: Self.imageDeliveryFailureNoticePrefix + error,
+            sourceHint: nil,
+            imageAttachments: [],
+            isOutgoing: false
+        )
+        messages.append(notice)
+        publishLiveMessages([notice])
     }
 
     public func sendTestNotification() {
@@ -575,6 +615,7 @@ extension PennyService {
         case .status(let payload):
             isConnected = payload.connected
             lastError = payload.error
+            reportImageDeliveryFailure(payload.error)
             if historySyncing, let error = payload.error {
                 historyResponseContinuation?.yield(.error(error))
             }
