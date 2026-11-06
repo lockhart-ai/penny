@@ -634,11 +634,13 @@ class Media(SQLModel, table=True):
     The browse tool stores each page's image here with its source URL, page
     title, and an embedding of that metadata.  At channel egress the outgoing
     message text is embedded and ``MediaStore.select_image`` attaches the most
-    relevant image (cited URL → domain → jittered nearest), with no model
-    involvement.  A ``generate_image`` row is delivered deterministically by id
-    to its *own* reply (``send_response(media_ids=...)``) — never fuzzy-matched
-    for that reply — but carries an embedding of its description so it joins
-    the nearest-image pool for future replies.
+    relevant image in two tiers (the cited page's own capture — fetched at
+    send time from its og:image when none was stored — then a jittered
+    embedding-nearest pick), with no model involvement (#3064).  A
+    ``generate_image`` row is delivered deterministically by id to its *own*
+    reply (``send_response(media_ids=...)``) — never fuzzy-matched for that
+    reply — but carries an embedding of its description so it joins the
+    nearest-image pool for future replies.
     """
 
     __tablename__ = "media"

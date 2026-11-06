@@ -1,16 +1,27 @@
 """Integration tests for Signal channel."""
 
+import asyncio
+import base64
 import time
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
+from sqlmodel import Session, select
 
 from penny.channels.signal import SignalChannel
 from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType
 from penny.database import Database
+from penny.database.models import Media
 from penny.llm import LlmClient
+from penny.llm.embeddings import serialize_embedding
 from penny.tests.conftest import NULL_SANDBOX_RUNNER, TEST_SENDER
+
+
+def _all_media(db: Database) -> list[Media]:
+    with Session(db.engine) as session:
+        return list(session.exec(select(Media)).all())
 
 
 @pytest.mark.asyncio
@@ -858,6 +869,178 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
         TEST_SENDER, "tell me about ex", parent_id=None, author="penny", media_ids=[999999]
     )
     assert signal_server.outgoing_messages[-1].get("base64_attachments") == [expected]
+
+    await channel.close()
+
+
+def _media_egress_channel(test_config, db):
+    """A SignalChannel on the mock LLM, wired for egress media tests (#3064)."""
+    from typing import Any, cast
+
+    from penny.agents import ChatAgent
+    from penny.channels.turns import TurnRegistry
+    from penny.prompts import Prompt
+    from penny.tests.mocks.llm_patches import MockLlmClient
+
+    client = LlmClient(
+        api_url=test_config.llm_api_url,
+        model=test_config.llm_model,
+        db=db,
+        max_retries=test_config.llm_max_retries,
+        retry_delay=test_config.llm_retry_delay,
+    )
+    message_agent = ChatAgent(
+        system_prompt=Prompt.CONVERSATION_PROMPT,
+        model_client=client,
+        embedding_model_client=client,
+        tools=[],
+        db=db,
+        config=test_config,
+        collector=NULL_SANDBOX_RUNNER,
+    )
+    channel = SignalChannel(
+        api_url=test_config.signal_api_url,
+        phone_number=test_config.signal_number or "+15551234567",
+        message_agent=message_agent,
+        db=db,
+        turn_registry=TurnRegistry(),
+    )
+    # The default mock embeds deterministically per text (deterministic_embed).
+    channel._embedding_model_client = cast(Any, MockLlmClient())
+    return channel
+
+
+def _mock_cited_page_http(monkeypatch, handler) -> None:
+    """Point the cited-page preview fetch at a ``httpx.MockTransport`` — the
+    HTTP boundary mocked, the rest of egress running for real (#3064)."""
+    from penny.channels import base as base_module
+
+    monkeypatch.setattr(
+        base_module,
+        "_cited_page_http_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True),
+    )
+
+
+def _story_page_html() -> str:
+    """The HTML a cited story page returns: og:title + a site-relative og:image."""
+    return (
+        "<html><head>"
+        '<meta property="og:title" content="The Story">'
+        '<meta property="og:image" content="/preview.jpg">'
+        "</head><body></body></html>"
+    )
+
+
+def _story_site_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/preview.jpg":
+        return httpx.Response(
+            200, content=b"fetched-preview", headers={"content-type": "image/png"}
+        )
+    return httpx.Response(
+        200, content=_story_page_html(), headers={"content-type": "text/html; charset=utf-8"}
+    )
+
+
+def _data_uri(raw: bytes, mime: str = "image/png") -> str:
+    return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+
+@pytest.mark.asyncio
+async def test_send_response_cited_capture_attaches_with_no_fetch(
+    signal_server, db, test_config, mock_llm, monkeypatch
+):
+    """A cited page we hold a capture for attaches its own image through egress —
+    with the URL's trailing comma stripped before matching — and no preview
+    fetch is attempted for it: no second media row is stored (#3064)."""
+    channel = _media_egress_channel(test_config, db)
+    db.media.put(b"captured-story", "image/png", source_url="https://news.test/story/2026-11-04/")
+    _mock_cited_page_http(monkeypatch, _story_site_handler)
+
+    await channel.send_response(
+        TEST_SENDER,
+        "great story https://news.test/story/2026-11-04/, worth your time",
+        parent_id=None,
+        author="penny",
+    )
+
+    sent = signal_server.outgoing_messages[-1]
+    assert sent.get("base64_attachments") == [_data_uri(b"captured-story")]
+    # The fetch never ran — the one captured row is all the store holds.
+    assert [row.source_url for row in _all_media(db)] == ["https://news.test/story/2026-11-04/"]
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_send_response_fetches_cited_page_preview_image(
+    signal_server, db, test_config, mock_llm, monkeypatch
+):
+    """A cited page with no capture gets its og:image fetched at send time,
+    absolutized, stored like a browse capture (URL-keyed, titled, embedded), and
+    attached to the reply (#3064)."""
+    channel = _media_egress_channel(test_config, db)
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return _story_site_handler(request)
+
+    _mock_cited_page_http(monkeypatch, handler)
+
+    await channel.send_response(
+        TEST_SENDER,
+        "worth a read https://news.test/story/2026-11-04/ today",
+        parent_id=None,
+        author="penny",
+    )
+
+    sent = signal_server.outgoing_messages[-1]
+    assert sent.get("base64_attachments") == [_data_uri(b"fetched-preview")]
+    rows = _all_media(db)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.source_url == "https://news.test/story/2026-11-04/"
+    assert row.title == "The Story"
+    assert row.data == b"fetched-preview"
+    assert row.embedding is not None
+    # The site-relative og:image was absolutized against the page URL.
+    assert "https://news.test/preview.jpg" in requested
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_send_response_cited_preview_fetch_failure_falls_through_to_nearest(
+    signal_server, db, test_config, mock_llm, monkeypatch
+):
+    """A failed or timed-out preview fetch falls through to the nearest image,
+    unchanged — every reply still gets one, and the send never waits past the
+    one bounded timeout (#3064)."""
+    from penny.tests.mocks.llm_patches import deterministic_embed
+
+    channel = _media_egress_channel(test_config, db)
+    reply = "wild story https://fresh.test/a"
+    db.media.put(b"nearest", "image/png", embedding=serialize_embedding(deterministic_embed(reply)))
+    _mock_cited_page_http(monkeypatch, lambda request: httpx.Response(500))
+
+    await channel.send_response(TEST_SENDER, reply, parent_id=None, author="penny")
+    assert signal_server.outgoing_messages[-1].get("base64_attachments") == [_data_uri(b"nearest")]
+
+    # A fetch that overstays its bound falls through the same way: the whole
+    # operation is cancelled at the (here shortened) timeout constant.
+    from penny.channels import base as base_module
+
+    async def slow_handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(1.0)
+        return _story_site_handler(request)
+
+    monkeypatch.setattr(base_module, "_CITED_PAGE_FETCH_TIMEOUT", 0.05)
+    _mock_cited_page_http(monkeypatch, slow_handler)
+    await channel.send_response(
+        TEST_SENDER, "wild story https://fresh.test/b", parent_id=None, author="penny"
+    )
+    assert signal_server.outgoing_messages[-1].get("base64_attachments") == [_data_uri(b"nearest")]
 
     await channel.close()
 

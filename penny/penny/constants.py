@@ -540,11 +540,12 @@ class PennyConstants:
     BROWSE_RETRY_DELAY = 1.0
     BROWSE_REQUEST_TIMEOUT = 30.0
 
-    # Egress image matching (side-channel media attach).  When an outgoing message
-    # links no source page, we fall back to embedding-nearest and pick uniformly
-    # at random among the top-K so a centroid "magnet" image can't repeat on
-    # consecutive messages.  Exact-URL and same-domain matches are deterministic
-    # (the cited page's own image is the right one) — jitter applies only here.
+    # Egress image matching (side-channel media attach).  Two tiers (#3064): the
+    # exact-URL tier attaches the cited page's own image — deterministic, the
+    # right one (a cited page with no capture gets one fetched at send time);
+    # otherwise we fall back to embedding-nearest and pick uniformly at random
+    # among the top-K so a centroid "magnet" image can't repeat on consecutive
+    # messages — jitter applies only here.
     MEDIA_MATCH_JITTER_TOPK = 5
 
     # Image normalization (#2780) — the cap/budget ``penny.image_utils.normalize_image``
