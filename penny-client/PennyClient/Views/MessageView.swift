@@ -207,9 +207,10 @@ struct MessageView: View {
         case .working:
             if let dockRun = viewModel.dockRun {
                 LiveDock(
-                    items: dockRun.liveDockItems,
+                    items: viewModel.dockStreamItems,
                     step: dockRun.steps.last?.number ?? 1,
-                    startedAt: dockRun.startedAt
+                    startedAt: dockRun.startedAt,
+                    permission: viewModel.dockPermission
                 ) {
                     ChatTabAvatar()
                 }

@@ -62,6 +62,20 @@ enum StoryFixtures {
         chatViewModel(messages: conversationMessages, workingSteps: longWorkingSteps, workingElapsedSeconds: 22)
     }
 
+    /// The live dock with a pending permission row (#3044, `chat-permission`):
+    /// the same mid-turn steps as `workingViewModel()`, plus a pending
+    /// `permissionPrompt` — the dock's trailing row asking to read a domain,
+    /// with Deny and Allow.
+    static func workingWithPermissionViewModel() -> MessageView.ViewModel {
+        let client = PennyService.storyInstance(
+            messages: conversationMessages,
+            workingSteps: workingSteps,
+            workingElapsedSeconds: 8,
+            pendingPermissionDomain: "example.com"
+        )
+        return MessageView.ViewModel(client: client)
+    }
+
     /// The live dock mid-morph (#3042, `chat-resolving`): the working run
     /// is still in `agentProgressRuns` (so the dock has content to render),
     /// and the reply it is becoming has already arrived as the newest

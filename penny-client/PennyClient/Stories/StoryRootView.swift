@@ -22,6 +22,8 @@ struct StoryRootView: View {
             AppShellView(chatViewModel: StoryFixtures.workingViewModel())
         case .chatWorkingLong:
             AppShellView(chatViewModel: StoryFixtures.workingLongViewModel())
+        case .chatPermission:
+            AppShellView(chatViewModel: StoryFixtures.workingWithPermissionViewModel())
         case .chatResolving:
             AppShellView(chatViewModel: StoryFixtures.resolvingViewModel(), dockResolveProgress: 0.5)
         case .chatDisconnected:

@@ -9,6 +9,7 @@ enum StoryID: String, CaseIterable {
     case chatWorkingStart
     case chatWorking
     case chatWorkingLong
+    case chatPermission
     case chatResolving
     case chatDisconnected
     case chatCollectorsBadge

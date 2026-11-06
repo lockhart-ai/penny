@@ -141,6 +141,10 @@ extension MessageView {
         /// while `dockPhase == .resolving` with a match — `nil` during the
         /// plain fade-out of a run that ended with nothing to show for it.
         var resolvingMessageID: Int?
+        /// A permission request the dock itself just answered (#3044,
+        /// `MessageView+Permission.swift`) — lives only as long as this
+        /// run's dock, cleared below with the rest of its state.
+        var resolvedPermissionItem: LiveDockItem?
 
         @ObservationIgnored private var dockPendingTask: Task<Void, Never>?
         @ObservationIgnored private let messagePageSize: Int
@@ -246,6 +250,7 @@ extension MessageView {
             dockPhase = .hidden
             dockRun = nil
             resolvingMessageID = nil
+            resolvedPermissionItem = nil
         }
 
         /// Story mode only (#2965): freezes the dock mid-morph, pointed at

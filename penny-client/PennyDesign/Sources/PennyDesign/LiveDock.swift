@@ -24,6 +24,67 @@ public struct LiveDockItem: Identifiable {
     }
 }
 
+/// A pending permission ask at the end of the stream (#3044): what Penny
+/// wants, why, and the Deny / Allow glass buttons — the dock's one
+/// interactive row. The caller supplies `onAllow`/`onDeny` rather than this
+/// component sending anything itself, the same seam `LiveDock`'s own
+/// deferred stop control will eventually use.
+public struct LiveDockPermission {
+    public let domain: String
+    public let reason: String
+    public let onAllow: () -> Void
+    public let onDeny: () -> Void
+
+    public init(domain: String, reason: String, onAllow: @escaping () -> Void, onDeny: @escaping () -> Void) {
+        self.domain = domain
+        self.reason = reason
+        self.onAllow = onAllow
+        self.onDeny = onDeny
+    }
+}
+
+private struct LiveDockPermissionRow: View {
+    let permission: LiveDockPermission
+
+    var body: some View {
+        HStack(spacing: 8) {
+            IconRow(textStyle: .subheadline, weight: .regular, spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(Color(.systemGray3))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: Tokens.iconColumn, alignment: .center)
+                .accessibilityHidden(true)
+            } content: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Penny wants to read \(permission.domain)")
+                        .font(.subheadline)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.7)
+                    Text(permission.reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Button("Deny", action: permission.onDeny)
+                .buttonStyle(.glass)
+                .font(.caption.weight(.semibold))
+            Button("Allow", action: permission.onAllow)
+                .buttonStyle(.glassProminent)
+                .font(.caption.weight(.semibold))
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct LiveDockRow: View {
     let item: LiveDockItem
 
@@ -74,7 +135,8 @@ private struct LiveDockRow: View {
 /// The live dock (#3042): no collapsed state. A header (the app's own
 /// avatar with the blue progress ring · "Working · Step n · t s", optional
 /// "· n queued") over a chronological stream of thinking chunks and tool
-/// rows, oldest at the top. It grows to fit its content up to 40% of the
+/// rows, oldest at the top, with an optional pending permission row (#3044)
+/// last — the newest thing in the stream. It grows to fit its content up to 40% of the
 /// screen height (`Tokens.dockScreenCapFraction`); past that the body
 /// scrolls internally, pinned to the newest item, with a soft fade at the
 /// top edge. It sits in the conversation's flow on rainbow-edged glass —
@@ -97,6 +159,10 @@ public struct LiveDock<Avatar: View>: View {
     public let step: Int
     public let startedAt: Date
     public var queued: Int = 0
+    /// A pending permission ask (#3044), shown as the stream's trailing
+    /// row — the newest thing in the dock, same as any other item that just
+    /// arrived. `nil` renders nothing extra.
+    public var permission: LiveDockPermission? = nil
     @ViewBuilder public var avatar: () -> Avatar
 
     public init(
@@ -104,12 +170,14 @@ public struct LiveDock<Avatar: View>: View {
         step: Int,
         startedAt: Date,
         queued: Int = 0,
+        permission: LiveDockPermission? = nil,
         @ViewBuilder avatar: @escaping () -> Avatar
     ) {
         self.items = items
         self.step = step
         self.startedAt = startedAt
         self.queued = queued
+        self.permission = permission
         self.avatar = avatar
     }
 
@@ -195,6 +263,9 @@ public struct LiveDock<Avatar: View>: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(items) { LiveDockRow(item: $0) }
+                    if let permission {
+                        LiveDockPermissionRow(permission: permission)
+                    }
                     Color.clear.frame(height: 1).id(bottomMarker)
                 }
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height },
