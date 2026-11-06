@@ -25,6 +25,7 @@ import pytest
 from sqlmodel import Session
 
 from penny.agents.chat import ChatAgent
+from penny.agents.conversation_map import map_horizon_start
 from penny.agents.self_state import SelfStateHeader
 from penny.config import Config
 from penny.config_params import RuntimeParams
@@ -436,7 +437,12 @@ def test_self_state_kitchen_sink_render(db):
     # news-digest's already-passed occurrence as due and price-watch's/reminder's
     # later ones as still ahead, on every run, not on whenever the suite happens to run.
     db.clock = PinnedClock(starts_at=_t(9, 21))
-    actual = SelfStateHeader(db, USER).render()
+    # The REAL production horizon (#3079), not a value that always shows
+    # everything — so this direct construction matches
+    # ``test_full_chat_system_prompt_composition``'s real-agent-composition
+    # render of the identical fixture byte-for-byte.
+    horizon = map_horizon_start(db, RuntimeParams(db))
+    actual = SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=horizon).render()
     assert actual == _KITCHEN_SINK
 
 
@@ -473,7 +479,7 @@ def test_self_state_schedule_mechanism_render(db):
     # A fixed clock (#2895), at the fixtures' own creation moment — strictly before
     # both rows' first occurrence, so neither reads as due yet.
     db.clock = PinnedClock(starts_at=_t(6))
-    assert SelfStateHeader(db, USER).render() == _SCHEDULE_MECH
+    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now()).render() == _SCHEDULE_MECH
 
 
 # ── 1c. The last-run line states WHY a cycle started when it did (#2862) ──
@@ -481,15 +487,18 @@ def test_self_state_schedule_mechanism_render(db):
 
 def test_last_run_line_on_time_stays_byte_identical(db):
     """An ON-TIME run's last-run line renders exactly as it always has — this
-    clause rides the per-turn ``### Job status`` line (#3055), so an on-time
-    run must never grow a tail."""
+    clause rides the merged Jobs line (#3089; previously a separate per-turn
+    ``### Job status`` line, #3055), so an on-time run must never grow a tail."""
     stamp = RunOutcomeStamp(
         outcome="worked",
         finished_at=_t(13, 32),
         due_at=_t(13, 30),
         dispatch_reason="on_time",
     )
-    assert SelfStateHeader(db, None)._last_run(stamp) == "last run WORKED 2026-07-11 13:32 UTC"
+    assert (
+        SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(stamp)
+        == "last run WORKED 2026-07-11 13:32 UTC"
+    )
 
 
 def test_last_run_line_catch_up_across_a_restart_appends_the_reason(db):
@@ -503,7 +512,7 @@ def test_last_run_line_catch_up_across_a_restart_appends_the_reason(db):
         due_at=_t(13, 30),
         dispatch_reason="catch_up_offline",
     )
-    assert SelfStateHeader(db, USER)._last_run(stamp) == (
+    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(stamp) == (
         "last run WORKED 2026-07-11 23:12 UTC, catching up a missed run: "
         "Penny was offline at 09:30 AM EDT"
     )
@@ -518,7 +527,7 @@ def test_last_run_line_retry_appends_the_attempt(db):
         dispatch_reason="retry_failed",
         dispatch_attempt=2,
     )
-    assert SelfStateHeader(db, USER)._last_run(stamp) == (
+    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(stamp) == (
         "last run WORKED 2026-07-11 13:35 UTC, retrying after a failed attempt (attempt 2)"
     )
 
@@ -527,14 +536,17 @@ def test_last_run_line_with_no_dispatch_stamp_is_unchanged(db):
     """A run logged before #2862 carries no dispatch stamp — the line renders
     exactly as it always did, no tail guessed."""
     stamp = RunOutcomeStamp(outcome="worked", finished_at=_t(9, 32))
-    assert SelfStateHeader(db, None)._last_run(stamp) == "last run WORKED 2026-07-11 09:32 UTC"
+    assert (
+        SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(stamp)
+        == "last run WORKED 2026-07-11 09:32 UTC"
+    )
 
 
 # ── 2. Empty state — a fresh deployment ───────────────────────────────────
 
 
 def test_self_state_empty_render(db):
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _EMPTY
 
 
@@ -550,11 +562,17 @@ def test_self_state_renders_the_mute_state_in_both_directions(db):
     decision cannot disagree."""
     sender = "+15550000001"
 
-    assert SelfStateHeader.NOTIFICATIONS_ON in SelfStateHeader(db, sender).render()
-    assert SelfStateHeader.NOTIFICATIONS_MUTED not in SelfStateHeader(db, sender).render()
+    assert (
+        SelfStateHeader.NOTIFICATIONS_ON
+        in SelfStateHeader(db, sender, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
+    )
+    assert (
+        SelfStateHeader.NOTIFICATIONS_MUTED
+        not in SelfStateHeader(db, sender, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
+    )
 
     db.users.set_muted(sender)
-    muted = SelfStateHeader(db, sender).render()
+    muted = SelfStateHeader(db, sender, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert SelfStateHeader.NOTIFICATIONS_MUTED in muted
     assert SelfStateHeader.NOTIFICATIONS_ON not in muted
     # It says WHICH channel is paused — a mute silences the jobs, never the replies, and
@@ -563,7 +581,10 @@ def test_self_state_renders_the_mute_state_in_both_directions(db):
     assert "replies to the user's own messages are unaffected" in muted
 
     db.users.set_unmuted(sender)
-    assert SelfStateHeader.NOTIFICATIONS_ON in SelfStateHeader(db, sender).render()
+    assert (
+        SelfStateHeader.NOTIFICATIONS_ON
+        in SelfStateHeader(db, sender, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
+    )
 
 
 # ── 3. Budget overflow — the cap line is visible ──────────────────────────
@@ -595,7 +616,7 @@ def test_self_state_activity_overflow_render(db):
     # ``last_collected_at`` is always due by the time anything renders it (its first
     # occurrence is its own creation moment), on this clock or any other.
     db.clock = PinnedClock(starts_at=_t(9, PennyConstants.SELF_STATE_ACTIVITY_LIMIT))
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _OVERFLOW
 
 
@@ -628,7 +649,7 @@ def test_self_state_archived_heavy_render(db):
     # A fixed clock (#2895), after the last archive timestamp — ``live-watch`` has no
     # ``last_collected_at``, so it is always due by the time anything renders it.
     db.clock = PinnedClock(starts_at=_t(9))
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _ARCHIVED_HEAVY
 
 
@@ -655,7 +676,7 @@ def test_self_state_job_instructions_first_sentence_over_cap(db):
             updated_at=_t(6),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     # Should render with "the rest is cut" not "0 more sentences cut"
     assert "the rest is cut" in actual
     assert "0 more sentences cut" not in actual
@@ -675,7 +696,7 @@ def test_self_state_job_instructions_url_with_trailing_punctuation(db):
             updated_at=_t(6),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     # The URL should appear without the trailing period
     assert "reads https://example.com —" in actual
     assert "reads https://example.com. —" not in actual
@@ -739,7 +760,7 @@ def test_self_state_job_instructions_line_shapes(db):
     # scheduled jobs has a ``last_collected_at``, so all are always due by the time
     # anything renders them.
     db.clock = PinnedClock(starts_at=_t(6))
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _INSTRUCTION_SHAPES
 
 
@@ -762,7 +783,7 @@ def test_self_state_mechanisms_render_past_the_old_twelve_row_cap(db):
                 updated_at=_t(6),
             )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     mechanisms = actual.split("### Jobs\n", 1)[1].split("\n\n", 1)[0]
     rows = [line for line in mechanisms.splitlines() if line.startswith("- ")]
     assert len(rows) == 15
@@ -782,7 +803,7 @@ def test_self_state_store_map_renders_past_the_old_twenty_row_cap(db):
                 updated_at=_t(6),
             )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     store_map = actual.split("### Your memory\n", 1)[1].split("\n\n", 1)[0]
     rows = [line for line in store_map.splitlines() if line.startswith("- ")]
     assert len(rows) == 25
@@ -797,11 +818,12 @@ def test_self_state_store_map_names_search_only_when_named(db):
         _add_log(session, "raw-feed", "raw fetched pages", when=_t(6), search_only_when_named=True)
         _add_log(session, "plain-feed", "plain notes", when=_t(6))
         session.commit()
-    actual = SelfStateHeader(db, None).render()
-    # No entry count on the map line (#3055 — counts ride `### Memory sizes`); the
-    # suffix names the retrieval exclusion mark (#2956).
-    assert "- raw-feed (log) — raw fetched pages — searched only when named" in actual
-    assert "- plain-feed (log) — plain notes\n" in actual
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
+    # The entry count rides the SAME line now (#3089 — previously a separate
+    # per-turn `### Memory sizes` line, #3055); the suffix names the
+    # retrieval exclusion mark (#2956).
+    assert "- raw-feed (log) 0 entries — raw fetched pages — searched only when named" in actual
+    assert "- plain-feed (log) 0 entries — plain notes\n" in actual
 
 
 def test_self_state_store_map_drops_a_live_jobs_duplicate_description(db):
@@ -870,7 +892,7 @@ def test_self_state_archived_line_names_a_collection_and_a_log(db):
         )
         _add_log(session, "old-trips", "old trip logs", when=_t(6), archived=True)
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert "archived: `old-trips`, `recipe-box`" in actual
 
 
@@ -886,7 +908,7 @@ def test_self_state_no_archived_line_when_nothing_archived(db):
             updated_at=_t(6),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert "archived:" not in actual
 
 
@@ -953,7 +975,7 @@ def test_activity_run_lines_every_rendered_outcome(db):
             finished_at=_t(9, 53),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _RUN_OUTCOME_MATRIX
 
 
@@ -1050,7 +1072,7 @@ def test_activity_run_lines_carry_writes(db):
             finished_at=_t(9, 10),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _RUN_WRITES
 
 
@@ -1081,7 +1103,7 @@ def test_activity_run_line_multiple_collections(db):
             session, memory_name="dislikes", key="rain", run_id="d4dualrun", when=_t(9, 41)
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _RUN_WRITES_MULTI_COLLECTION
 
 
@@ -1109,7 +1131,7 @@ def test_activity_excludes_cancelled_and_chat_runs(db):
             finished_at=_t(9, 30),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert "ff66cancel" not in actual
     assert "99chatturn" not in actual
     assert actual == _EXCLUSION_RENDER
@@ -1137,7 +1159,7 @@ def test_activity_failed_chat_turn_renders_its_cause_and_run_id(db):
             finished_at=_t(9, 30),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert (
         "run cc88failed · 2026-07-11 09:50 UTC · "
         "chat turn failed: the turn captured no routine to learn"
@@ -1152,7 +1174,7 @@ def test_activity_mutation_lines_changed_fields_matrix(db):
     """Every action × actor cell with a changed-fields detail: the multi-field
     'changed a, b' tail, user-run rows naming their run id, system rows none."""
     _seed_mutation_matrix(db, detail_factory=_changed_fields_detail)
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _MUTATION_CHANGED_FIELDS_MATRIX
 
 
@@ -1160,7 +1182,7 @@ def test_activity_mutation_lines_note_matrix(db):
     """Every action × actor cell with a cause-note detail (the system-archive
     policy-reason shape, e.g. a max_runs retire)."""
     _seed_mutation_matrix(db, detail_factory=_note_detail)
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _MUTATION_NOTE_MATRIX
 
 
@@ -1168,7 +1190,7 @@ def test_activity_mutation_lines_no_detail_matrix(db):
     """Every action × actor cell with NO detail payload: the bare line — no
     tail, no dash."""
     _seed_mutation_matrix(db, detail_factory=_no_detail)
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert actual == _MUTATION_BARE_MATRIX
 
 
@@ -1200,7 +1222,7 @@ def test_activity_emission_lines_and_exclusions(db):
             sent_at=_t(9, 20),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     assert "you got it!" not in actual
     assert actual == _EMISSION_MATRIX
 
@@ -1231,13 +1253,14 @@ def test_emission_line_carries_its_run_anchor(db):
 
 
 def test_dynamic_emission_lines_stop_at_the_map_horizon(db):
-    """The model-facing dynamic render keeps an emission line ONLY for a send
-    older than the conversation map's horizon (#3079): a send just inside it is
+    """The session-state render keeps an emission line ONLY for a send older
+    than the conversation map's horizon (#3079): a send just inside it is
     covered by the history window (still recent) or the map (once it has left
     the window), so its line drops; a send older than the horizon is shown
-    nowhere else and keeps its short ``sent · …`` line.  The horizon is passed
-    in exactly as ``ChatAgent._dynamic_system_section`` passes it — the map's
-    own ``map_horizon_start`` — so this test pins the cutoff behaviour, not the
+    nowhere else and keeps its short ``sent · …`` line.  The horizon is a
+    REQUIRED constructor parameter, passed in exactly as
+    ``ChatAgent._session_state_section`` passes it — the map's own
+    ``map_horizon_start`` — so this test pins the cutoff behaviour, not the
     horizon arithmetic (that is the conversation map's tests')."""
     # Naive UTC, the storage convention — `map_horizon_start` returns naive too.
     horizon = datetime(2026, 7, 9, 0, 0)
@@ -1257,7 +1280,7 @@ def test_dynamic_emission_lines_stop_at_the_map_horizon(db):
             sent_at=datetime(2026, 7, 9, 12, 0),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render_dynamic(horizon)
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=horizon).render()
     assert actual == _DYNAMIC_EMISSION_HORIZON_MATRIX
 
 
@@ -1315,22 +1338,23 @@ def _seed_mutation_matrix(db: Database, *, detail_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_full_chat_system_prompt_composition(db, tmp_path):
-    """The whole chat request's system side (#2745; Jobs + the store map moved
-    into the static message, #2814): the STATIC message — Identity + the
-    standing rules (the instruction part, right after the voice) + Instructions
-    + Jobs + Your memory (``SelfStateHeader.render_static()``) + the
-    conversation map (#2752, empty here since the kitchen sink logs no
-    messages), the prefix the server reuses across turns — and the DYNAMIC
-    message — the clock, then the rest of the self-state header
-    (``render_dynamic()``: job status, recent activity, memory sizes, about the
-    user, pointers).  The
-    rules render in the static message, not the header: where she reads
-    instructions rather than state.  The speculative recall / profile /
-    inventory are gone."""
+    """The whole chat request's system side (#3089): the LEADING message —
+    Identity + the standing rules (the instruction part, right after the
+    voice) + Instructions, the prefix the server reuses across every
+    session — the ONE session-state message
+    (``_session_state_section``: ``SelfStateHeader.render()`` + the
+    conversation map, #2752, empty here since the kitchen sink logs no
+    messages) — and the per-turn DYNAMIC message, which is just the clock
+    (page hint and related exchanges both absent here).  The rules render in
+    the leading message, not the header: where she reads instructions rather
+    than state.  The speculative recall / profile / inventory are gone."""
     _seed_kitchen_sink(db)
     # A fixed clock (#2895) — same instant and same reasoning as
     # ``test_self_state_kitchen_sink_render``, since this renders the identical
-    # fixture through the chat agent's own composition instead.
+    # fixture through the chat agent's own composition instead.  The kitchen
+    # sink seeds no INCOMING message, so there is no session yet:
+    # ``_session_as_of`` falls back to this same pinned clock, matching what
+    # the old ``self.db.clock.now()`` read gave the live job-status line.
     db.clock = PinnedClock(starts_at=_t(9, 21))
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
@@ -1347,18 +1371,18 @@ async def test_full_chat_system_prompt_composition(db, tmp_path):
     )
     agent._pending_page_context = None
     agent._current_user = USER
-    static = await agent._build_system_prompt(USER)
-    expected_static = (
+    leading = await agent._build_system_prompt(USER)
+    expected_leading = (
         f"## Identity\n{Prompt.PENNY_IDENTITY}\n\n"
         f"{_STANDING_RULES_INSTRUCTION}\n\n"
-        f"## Instructions\n{Prompt.CONVERSATION_PROMPT}\n\n"
-        f"{_KITCHEN_SINK_STATIC}"
+        f"## Instructions\n{Prompt.CONVERSATION_PROMPT}"
     )
-    assert static == expected_static
+    assert leading == expected_leading
+    session_state = agent._session_state_section(USER)
+    assert session_state == _KITCHEN_SINK
     dynamic = agent._dynamic_system_section()
-    clock_line, _, state = dynamic.partition("\n\n")
-    assert clock_line.startswith("Current date and time: "), clock_line
-    assert state == _KITCHEN_SINK_DYNAMIC
+    assert dynamic.startswith("Current date and time: "), dynamic
+    assert "\n\n" not in dynamic
 
 
 # ── Frozen render literals (filled from the captured actual) ──────────────
@@ -1379,123 +1403,40 @@ _KITCHEN_SINK = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- news-digest — active · every hour (rule: `FREQ=HOURLY`) · notify: off\n"
+    "- news-digest — active · every hour (rule: `FREQ=HOURLY`) · notify: off · next run due "
+    "now — it runs at the next idle window · last run FAILED 2026-07-11 08:00 UTC\n"
     '  "1. read the feed"\n'
-    "- old-watch — archived 2026-07-11 08:30 UTC\n"
+    "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
     "- price-watch — active · every 6 hours (rule: `FREQ=HOURLY;INTERVAL=6`) · notify: on · "
-    "expires Sunday, July 19, 2026 at 08:00 PM EDT\n"
+    "expires Sunday, July 19, 2026 at 08:00 PM EDT · next run Saturday, July 11, 2026 at "
+    "08:00 AM EDT · last run WORKED 2026-07-11 09:14 UTC\n"
     '  "1. browse the page"\n'
     "- reminder — active · once, at Saturday, July 11, 2026 at 08:00 AM EDT, then it retires "
-    "(rule: `DTSTART:20260711T120000Z FREQ=DAILY;COUNT=1`) · notify: off · one-shot\n"
+    "(rule: `DTSTART:20260711T120000Z FREQ=DAILY;COUNT=1`) · notify: off · one-shot · next "
+    "run Saturday, July 11, 2026 at 08:00 AM EDT · no runs yet\n"
     '  "1. remind"\n'
-    "\n"
-    "### Job status\n"
-    "- news-digest — next run due now — it runs at the next idle window · last run FAILED "
-    "2026-07-11 08:00 UTC\n"
-    "- old-watch — no runs yet\n"
-    "- price-watch — next run Saturday, July 11, 2026 at 08:00 AM EDT · last run WORKED "
-    "2026-07-11 09:14 UTC\n"
-    "- reminder — next run Saturday, July 11, 2026 at 08:00 AM EDT · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "change · 2026-07-11 09:20 UTC · price-watch updated by user-run (run 66aa0099) — "
     "changed schedule\n"
     "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · wrote 'aurora "
     "deck 2 price' → `price-watch`\n"
-    "sent · 2026-07-11 09:05 UTC · price-watch\n"
+    # The price-watch emission (sent 2026-07-11 09:05) is INSIDE the
+    # conversation map's horizon at the pinned clock (#3079/#3089): the send
+    # is covered by history or the map, so its line is dropped here — there
+    # is no longer a separate no-cutoff legacy render to show it on.
     "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 of 1)\n"
     "run 88d14e5f · 2026-07-11 08:00 UTC · news-digest → FAILED (2 calls)\n"
     "\n"
     "### Your memory\n"
-    "- chat-log (log) — shared conversation log\n"
-    "- favorites (collection) — things the user likes\n"
-    "- news-digest (collection) — gather headlines\n"
-    "- price-watch (collection) — watch a product price\n"
-    "- reminder (collection) — one-off reminder\n"
-    "- rules (collection) — Standing instructions the user has given: things to always or "
-    "never do\n"
+    "- chat-log (log) 0 entries — shared conversation log\n"
+    "- favorites (collection) 2 entries — things the user likes\n"
+    "- news-digest (collection) 0 entries — gather headlines\n"
+    "- price-watch (collection) 1 entries — watch a product price\n"
+    "- reminder (collection) 0 entries — one-off reminder\n"
+    "- rules (collection) 2 entries — Standing instructions the user has given: things to "
+    "always or never do\n"
     "archived: `old-watch`\n"
-    "\n"
-    "### Memory sizes\n"
-    "- chat-log 0 entries\n"
-    "- favorites 2 entries\n"
-    "- news-digest 0 entries\n"
-    "- price-watch 1 entries\n"
-    "- reminder 0 entries\n"
-    "- rules 2 entries\n"
-    "\n"
-    "### About the user\n"
-    "- name: Alex\n"
-    "- timezone: America/New_York\n"
-    "- location: New York, USA\n"
-    "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
-    "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
-    "entry, or something said in the conversation."
-)
-
-# _KITCHEN_SINK split in two (#2814; the volatile clauses moved to the dynamic
-# message's own sections, #3055): the Jobs + Your memory slice that rides
-# ``SelfStateHeader.render_static()`` (the cached static prefix), and the
-# Header + Job status + Recent activity + Memory sizes + About the user + pointers
-# slice that stays on ``render_dynamic()`` (the per-turn message) — captured
-# actuals of the same fixture, so the two halves can never silently drift from
-# the whole-render literal above.
-_KITCHEN_SINK_STATIC = (
-    "### Jobs\n"
-    "notifications: on — proactive task notifications are delivered\n"
-    "- news-digest — active · every hour (rule: `FREQ=HOURLY`) · notify: off\n"
-    '  "1. read the feed"\n'
-    "- old-watch — archived 2026-07-11 08:30 UTC\n"
-    "- price-watch — active · every 6 hours (rule: `FREQ=HOURLY;INTERVAL=6`) · notify: on · "
-    "expires Sunday, July 19, 2026 at 08:00 PM EDT\n"
-    '  "1. browse the page"\n'
-    "- reminder — active · once, at Saturday, July 11, 2026 at 08:00 AM EDT, then it retires "
-    "(rule: `DTSTART:20260711T120000Z FREQ=DAILY;COUNT=1`) · notify: off · one-shot\n"
-    '  "1. remind"\n'
-    "\n"
-    "### Your memory\n"
-    "- chat-log (log) — shared conversation log\n"
-    "- favorites (collection) — things the user likes\n"
-    "- news-digest (collection) — gather headlines\n"
-    "- price-watch (collection) — watch a product price\n"
-    "- reminder (collection) — one-off reminder\n"
-    "- rules (collection) — Standing instructions the user has given: things to always or "
-    "never do\n"
-    "archived: `old-watch`"
-)
-
-_KITCHEN_SINK_DYNAMIC = (
-    "## Penny's current state\n"
-    "\n"
-    "### Job status\n"
-    "- news-digest — next run due now — it runs at the next idle window · last run FAILED "
-    "2026-07-11 08:00 UTC\n"
-    "- old-watch — no runs yet\n"
-    "- price-watch — next run Saturday, July 11, 2026 at 08:00 AM EDT · last run WORKED "
-    "2026-07-11 09:14 UTC\n"
-    "- reminder — next run Saturday, July 11, 2026 at 08:00 AM EDT · no runs yet\n"
-    "\n"
-    "### Recent activity\n"
-    "change · 2026-07-11 09:20 UTC · price-watch updated by user-run (run 66aa0099) — "
-    "changed schedule\n"
-    "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · wrote 'aurora "
-    "deck 2 price' → `price-watch`\n"
-    # The price-watch emission (sent 2026-07-11 09:05) is INSIDE the map horizon
-    # at the pinned clock (#3079) — the send is covered by history/map, so its
-    # line drops from the model-facing dynamic render.  The whole-render literal
-    # above still shows it: the legacy render applies no cutoff.
-    "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 of 1)\n"
-    "run 88d14e5f · 2026-07-11 08:00 UTC · news-digest → FAILED (2 calls)\n"
-    "\n"
-    "### Memory sizes\n"
-    "- chat-log 0 entries\n"
-    "- favorites 2 entries\n"
-    "- news-digest 0 entries\n"
-    "- price-watch 1 entries\n"
-    "- reminder 0 entries\n"
-    "- rules 2 entries\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -1514,26 +1455,20 @@ _SCHEDULE_MECH = (
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
     "- one-off — active · once, at Saturday, July 11, 2026 at 05:00 AM EDT, then it retires "
-    "(rule: `DTSTART:20260711T090000Z FREQ=DAILY;COUNT=1`) · notify: off · one-shot\n"
+    "(rule: `DTSTART:20260711T090000Z FREQ=DAILY;COUNT=1`) · notify: off · one-shot · next "
+    "run Saturday, July 11, 2026 at 05:00 AM EDT · no runs yet\n"
     '  "1. check it."\n'
     "- twice-daily — active · every day at 08:00 AM and 08:00 PM (rule: "
-    "`FREQ=DAILY;BYHOUR=8,20`) · notify: off\n"
+    "`FREQ=DAILY;BYHOUR=8,20`) · notify: off · next run Saturday, July 11, 2026 at 08:00 AM "
+    "EDT · no runs yet\n"
     '  "1. check the peak."\n'
-    "\n"
-    "### Job status\n"
-    "- one-off — next run Saturday, July 11, 2026 at 05:00 AM EDT · no runs yet\n"
-    "- twice-daily — next run Saturday, July 11, 2026 at 08:00 AM EDT · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "(no recent activity)\n"
     "\n"
     "### Your memory\n"
-    "- one-off (collection) — check it once, at nine\n"
-    "- twice-daily (collection) — check the peak morning and evening\n"
-    "\n"
-    "### Memory sizes\n"
-    "- one-off 0 entries\n"
-    "- twice-daily 0 entries\n"
+    "- one-off (collection) 0 entries — check it once, at nine\n"
+    "- twice-daily (collection) 0 entries — check the peak morning and evening\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -1574,12 +1509,9 @@ _OVERFLOW = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- watcher — active · every hour (rule: `FREQ=HOURLY`) · notify: off\n"
+    "- watcher — active · every hour (rule: `FREQ=HOURLY`) · notify: off · next run due "
+    "now — it runs at the next idle window · last run WORKED 2026-07-11 09:08 UTC\n"
     '  "1. go"\n'
-    "\n"
-    "### Job status\n"
-    "- watcher — next run due now — it runs at the next idle window · last run WORKED "
-    "2026-07-11 09:08 UTC\n"
     "\n"
     "### Recent activity\n"
     "run run08 · 2026-07-11 09:08 UTC · watcher → WORKED (1 call)\n"
@@ -1593,10 +1525,7 @@ _OVERFLOW = (
     "+ older activity — run_list{<source>}\n"
     "\n"
     "### Your memory\n"
-    "- watcher (collection) — a watcher\n"
-    "\n"
-    "### Memory sizes\n"
-    "- watcher 0 entries\n"
+    "- watcher (collection) 0 entries — a watcher\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1612,27 +1541,19 @@ _ARCHIVED_HEAVY = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- live-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off\n"
+    "- live-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off · next run due "
+    "now — it runs at the next idle window · no runs yet\n"
     '  "1. go"\n'
-    "- retired-0 — archived 2026-07-11 08:00 UTC\n"
-    "- retired-1 — archived 2026-07-11 08:01 UTC\n"
-    "- retired-2 — archived 2026-07-11 08:02 UTC\n"
-    "\n"
-    "### Job status\n"
-    "- live-watch — next run due now — it runs at the next idle window · no runs yet\n"
-    "- retired-0 — no runs yet\n"
-    "- retired-1 — no runs yet\n"
-    "- retired-2 — no runs yet\n"
+    "- retired-0 — archived 2026-07-11 08:00 UTC · no runs yet\n"
+    "- retired-1 — archived 2026-07-11 08:01 UTC · no runs yet\n"
+    "- retired-2 — archived 2026-07-11 08:02 UTC · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "(no recent activity)\n"
     "\n"
     "### Your memory\n"
-    "- live-watch (collection) — still running\n"
+    "- live-watch (collection) 0 entries — still running\n"
     "archived: `retired-0`, `retired-1`, `retired-2`\n"
-    "\n"
-    "### Memory sizes\n"
-    "- live-watch 0 entries\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1649,35 +1570,27 @@ _INSTRUCTION_SHAPES = (
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- feed-check — active · every hour (rule: `FREQ=HOURLY`) · notify: off\n"
+    "- feed-check — active · every hour (rule: `FREQ=HOURLY`) · notify: off · next run due "
+    "now — it runs at the next idle window · no runs yet\n"
     '  reads https://harborferries.example/feed — "1. read '
     'https://harborferries.example/feed each morning and write the headlines."\n'
-    "- harbour-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off\n"
+    "- harbour-watch — active · every hour (rule: `FREQ=HOURLY`) · notify: off · next run "
+    "due now — it runs at the next idle window · no runs yet\n"
     '  reads https://harborferries.example/seasonal-sailings — "1. read the harbour notice '
     "board each morning before the first sailing. (2 more sentences cut — "
     "memory_get{'harbour-watch'} shows the whole prompt)\"\n"
-    "- plain-note — active · every hour (rule: `FREQ=HOURLY`) · notify: off\n"
+    "- plain-note — active · every hour (rule: `FREQ=HOURLY`) · notify: off · next run due "
+    "now — it runs at the next idle window · no runs yet\n"
     '  "1. count the boats in the harbour."\n'
-    "\n"
-    "### Job status\n"
-    "- feed-check — next run due now — it runs at the next idle window · no runs yet\n"
-    "- harbour-watch — next run due now — it runs at the next idle window · no runs yet\n"
-    "- plain-note — next run due now — it runs at the next idle window · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "(no recent activity)\n"
     "\n"
     "### Your memory\n"
-    "- feed-check (collection) — check the feed\n"
-    "- harbour-watch (collection) — watch the harbour notices\n"
-    "- keepsakes (collection) — things worth keeping\n"
-    "- plain-note (collection) — count the boats\n"
-    "\n"
-    "### Memory sizes\n"
-    "- feed-check 0 entries\n"
-    "- harbour-watch 0 entries\n"
-    "- keepsakes 0 entries\n"
-    "- plain-note 0 entries\n"
+    "- feed-check (collection) 0 entries — check the feed\n"
+    "- harbour-watch (collection) 0 entries — watch the harbour notices\n"
+    "- keepsakes (collection) 0 entries — things worth keeping\n"
+    "- plain-note (collection) 0 entries — count the boats\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1735,16 +1648,10 @@ _RUN_WRITES = (
     "run c3newsrun · 2026-07-11 09:10 UTC · news-digest → WORKED (1 call)\n"
     "\n"
     "### Your memory\n"
-    "- board-games (collection) — games to try\n"
-    "- knowledge (collection) — web-page facts\n"
-    "- news-digest (collection) — gather headlines\n"
-    "- watchlist (collection) — pages watched\n"
-    "\n"
-    "### Memory sizes\n"
-    "- board-games 3 entries\n"
-    "- knowledge 1 entries\n"
-    "- news-digest 0 entries\n"
-    "- watchlist 2 entries\n"
+    "- board-games (collection) 3 entries — games to try\n"
+    "- knowledge (collection) 1 entries — web-page facts\n"
+    "- news-digest (collection) 0 entries — gather headlines\n"
+    "- watchlist (collection) 2 entries — pages watched\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1767,12 +1674,8 @@ _RUN_WRITES_MULTI_COLLECTION = (
     "`dislikes` · wrote 'hiking' → `likes`\n"
     "\n"
     "### Your memory\n"
-    "- dislikes (collection) — things disliked\n"
-    "- likes (collection) — things liked\n"
-    "\n"
-    "### Memory sizes\n"
-    "- dislikes 1 entries\n"
-    "- likes 1 entries\n"
+    "- dislikes (collection) 1 entries — things disliked\n"
+    "- likes (collection) 1 entries — things liked\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
@@ -1907,14 +1810,21 @@ _EMISSION_MATRIX = (
     "something said in the conversation."
 )
 
-# The model-facing dynamic render at a horizon of 2026-07-09 local midnight:
-# the 2026-07-08 send (older) keeps its line, the 2026-07-09 send (inside the
+# The session-state render at a horizon of 2026-07-09 local midnight: the
+# 2026-07-08 send (older) keeps its line, the 2026-07-09 send (inside the
 # horizon) drops — covered by history or the map (#3079).
 _DYNAMIC_EMISSION_HORIZON_MATRIX = (
     "## Penny's current state\n"
     "\n"
+    "### Jobs\n"
+    "notifications: on — proactive task notifications are delivered\n"
+    "(no jobs yet)\n"
+    "\n"
     "### Recent activity\n"
     "sent · 2026-07-08 12:00 UTC · old-watch\n"
+    "\n"
+    "### Your memory\n"
+    "(no stores yet)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"

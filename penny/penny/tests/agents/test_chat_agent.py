@@ -130,42 +130,49 @@ async def test_basic_message_flow(
         tool_messages = [m for m in messages if m.get("role") == "tool"]
         assert len(tool_messages) >= 1, "Second request should include tool result"
 
-        # Full system-prompt structure assertion, over BOTH system messages
-        # (#2745): the static one (identity + instructions — the reused prefix,
-        # byte-identical across turns) and the dynamic one (the clock + Penny's
-        # current state).  Per-entry timestamps are normalised to a placeholder
-        # so the verbatim assertion stays stable across runs without freezing
-        # the clock.
+        # Full system-prompt structure assertion, over ALL THREE system messages
+        # (#3089): the LEADING one (identity + instructions — the reused prefix
+        # across every session), the SESSION-STATE one (Jobs + Your memory +
+        # Recent activity + About the user, bounded to the session's own
+        # start — everything seeded here landed before this turn's session
+        # began, so it all renders), and the per-turn DYNAMIC one (just the
+        # clock — there's no page and no related exchange on a first-ever
+        # turn).  Per-entry timestamps are normalised to a placeholder so the
+        # verbatim assertion stays stable across runs without freezing the
+        # clock.
         system_messages = [m for m in first_request["messages"] if m.get("role") == "system"]
-        assert len(system_messages) == 2, (
-            "Expected the static and the dynamic system messages (#2745), "
-            f"got {len(system_messages)}"
+        assert len(system_messages) == 3, (
+            "Expected the leading, session-state, and dynamic system messages "
+            f"(#3089), got {len(system_messages)}"
         )
-        static_text = system_messages[0]["content"]
-        assert static_text == _BASIC_FLOW_STATIC_EXPECTED, (
-            f"Static system message mismatch:\n{static_text!r}"
+        leading_text = system_messages[0]["content"]
+        assert leading_text == _BASIC_FLOW_LEADING_EXPECTED, (
+            f"Leading system message mismatch:\n{leading_text!r}"
         )
-        dynamic_text = system_messages[1]["content"]
-        lines = dynamic_text.split("\n")
-        # The date/time anchor opens the DYNAMIC message, and it is rendered in
-        # the user's PROFILE timezone, never a bare UTC — otherwise the model
-        # reasons from a UTC clock under a non-UTC profile and, for the hours
-        # around local midnight, from the wrong calendar day.  The zone is read
-        # off the profile row rather than restated here, so the fixture's
-        # timezone and the expectation cannot drift apart.  The collector side
-        # of the same shared renderer (``datetime_utils.current_datetime_line``)
-        # is pinned in test_collector.py.
+        session_state_text = system_messages[1]["content"]
+        session_state_text = re.sub(
+            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", session_state_text
+        )
+        assert session_state_text == _BASIC_FLOW_SESSION_STATE_EXPECTED, (
+            f"Session-state system message mismatch:\n{session_state_text!r}"
+        )
+        dynamic_text = system_messages[2]["content"]
+        # The date/time anchor is the WHOLE dynamic message on a first-ever
+        # turn (no page, no related exchange), rendered in the user's PROFILE
+        # timezone, never a bare UTC — otherwise the model reasons from a UTC
+        # clock under a non-UTC profile and, for the hours around local
+        # midnight, from the wrong calendar day.  The zone is read off the
+        # profile row rather than restated here, so the fixture's timezone and
+        # the expectation cannot drift apart.  The collector side of the same
+        # shared renderer (``datetime_utils.current_datetime_line``) is pinned
+        # in test_collector.py.
         profile = penny.db.users.get_info(TEST_SENDER)
         assert profile is not None, "The test user profile should exist"
         local_abbrev = datetime.now(ZoneInfo(profile.timezone)).strftime("%Z")
-        assert lines[0].startswith("Current date and time: ")
-        assert lines[0].endswith(f" {local_abbrev}"), lines[0]
-        assert "UTC" not in lines[0], lines[0]
-        state_text = "\n".join(lines[1:])
-        state_text = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", state_text)
-        assert state_text == _BASIC_FLOW_STATE_EXPECTED, (
-            f"Dynamic system message mismatch:\n{state_text!r}"
-        )
+        assert dynamic_text.startswith("Current date and time: ")
+        assert dynamic_text.endswith(f" {local_abbrev}"), dynamic_text
+        assert "UTC" not in dynamic_text, dynamic_text
+        assert "\n" not in dynamic_text
 
         # Verify typing indicators were sent
         assert len(signal_server.typing_events) >= 1, "Should have sent typing indicator"
@@ -203,30 +210,41 @@ async def test_basic_message_flow(
         assert all(e.author == "chat" for e in browse_entries)
 
 
-# ── 1a. The static/dynamic system split (#2745; Jobs + store map moved
-#        into the static prefix, #2814) ──────────────
+# ── 1a. Leading / session-state / dynamic (#3089; previously static/dynamic
+#        only, #2745/#2814) ──────────────
+
+
+def _seed_closed_exchange(db, *, when: datetime) -> None:
+    """One CLOSED user/reply pair, so ``MessageStore.session_anchor`` has a
+    real session to anchor ``as_of`` on — without one, ``_session_as_of``
+    falls back to the live clock on every call, and the byte-identical-
+    within-a-session claim below would hold only by accident."""
+    ask_id = db.messages.log_message(
+        PennyConstants.MessageDirection.INCOMING, TEST_SENDER, "hi", timestamp=when
+    )
+    db.messages.log_message(
+        PennyConstants.MessageDirection.OUTGOING,
+        "penny",
+        "hey!",
+        parent_id=ask_id,
+        recipient=TEST_SENDER,
+        timestamp=when,
+    )
 
 
 @pytest.mark.asyncio
-async def test_static_system_prefix_byte_identical_across_a_clock_only_change(
+async def test_leading_system_prompt_never_changes_with_clock_jobs_or_activity(
     db, test_config, monkeypatch
 ):
-    """The FIRST system message is the prefix the model server reuses across
-    turns (#2745), so the clock alone — the one thing guaranteed to differ on
-    literally every turn — may never leak into it.  Two renders a clock apart,
-    with no registry change in between, must produce a byte-identical first
-    message, while the dynamic message DID move (so the guard cannot pass
-    vacuously).  The companion case, where the registry DOES change between
-    renders, is ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``
-    below — #2814 moved Jobs and the store map INTO this prefix, so a
-    registry change now correctly changes it, which this test must not claim.
-
-    The dynamic message sits right BEFORE the user's own turn (#2756) — the
-    one mid-conversation system placement prod's patched oMLX and OpenRouter
-    both render in place (see ``Agent._build_messages``).  No messages are
-    logged to ``db`` here, so the conversation map (#2752, appended to the end
-    of the static message) renders empty on both turns — ``agent.config`` is
-    still required because the map is constructed unconditionally."""
+    """The FIRST system message — identity, standing rules, instructions — is
+    the prefix the model server reuses across EVERY session (#3089; Jobs, the
+    store map, and the conversation map all moved OUT into their own
+    once-per-session message, previously #2814), so nothing that varies —
+    not the clock, not a new job, not a new collection, not an activity event
+    — may leak into it.  The companion claim, that the SESSION-STATE message
+    changes only at a new session, is
+    ``test_session_state_message_byte_identical_within_a_session_across_a_clock_run_and_write``
+    below."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent.config = test_config
@@ -241,119 +259,51 @@ async def test_static_system_prefix_byte_identical_across_a_clock_only_change(
             return self._when
 
     monkeypatch.setattr(db, "clock", _FixedClock(datetime(2026, 1, 1, 12, 0, tzinfo=UTC)))
-    first = agent._build_messages("hi", None, await agent._build_system_prompt(TEST_SENDER))
+    first = await agent._build_system_prompt(TEST_SENDER)
 
     monkeypatch.setattr(db, "clock", _FixedClock(datetime(2026, 1, 1, 12, 5, tzinfo=UTC)))
-    second = agent._build_messages("hi", None, await agent._build_system_prompt(TEST_SENDER))
-
-    # Static leading, dynamic state next, user LAST — no history, so
-    # nothing sits between the static message and the dynamic one.
-    assert [m.role for m in first] == ["system", "system", "user"]
-    assert [m.role for m in second] == ["system", "system", "user"]
-    # The reused prefix: byte-identical across a shifted clock alone.
-    assert second[0].content == first[0].content
-    # The user turn (now last) is unaffected by either change.
-    assert first[-1].content == "hi"
-    assert second[-1].content == "hi"
-    # The dynamic message (now second) carries the clock and moved between the renders.
-    assert first[1].content.startswith("Current date and time: ")
-    assert second[1].content != first[1].content
-
-
-@pytest.mark.asyncio
-async def test_static_system_prefix_rebuilds_when_a_job_or_collection_changes(db, test_config):
-    """#2814: Jobs and the store map now ride the static prefix, as pure renders
-    of the registry alone — so, unlike the clock, a job or a collection actually
-    changing between two renders correctly changes this message, and the new
-    job/collection is visible in it.  This is the honest-and-rare rebuild the
-    issue accepts, the same bet the conversation map already makes for a cut
-    turn — it is NOT byte-identical the way a clock-only change must be (the
-    companion test above)."""
-    agent = ChatAgent.__new__(ChatAgent)
-    agent.db = db
-    agent.config = test_config
-    agent._pending_page_context = None
-    agent._current_user = TEST_SENDER
-
-    first = await agent._build_system_prompt(TEST_SENDER)
     db.memories.create_collection("late-addition", "created between the two renders")
-    second = await agent._build_system_prompt(TEST_SENDER)
-
-    assert second != first
-    assert "late-addition" not in first
-    assert "late-addition" in second
-    # Everything ahead of Jobs/the store map (identity, standing rules,
-    # instructions) is untouched by the new collection.
-    assert second.split("### Jobs", 1)[0] == first.split("### Jobs", 1)[0]
-
-
-@pytest.mark.asyncio
-async def test_static_system_prefix_unaffected_by_an_activity_only_change(db, test_config):
-    """The mirror-image claim (#2814): an event that belongs to Recent activity
-    alone — a delivered autonomous send, with no job created or collection
-    mutated — must NOT touch the static prefix, while it DOES change the
-    dynamic message, which is where Recent activity actually lives.
-
-    A mechanism-tagged outgoing message is exactly the case that moves the
-    registry's OWN ``penny-messages`` count (``MemoryStore.entry_counts()``
-    reads it straight off ``messagelog``, with no mechanism filter) without
-    touching any job or collection — the near-miss #2814 almost shipped with:
-    the store map's live count for ``penny-messages`` would otherwise have
-    ticked on every ordinary turn, since every reply is an outgoing message.
-    The fix is that the five system-log facades (``PennyConstants.SYSTEM_LOGS``)
-    render their name and scope with NO live count (``_memory_map_line``), so
-    this send moves the count but not anything the static prefix shows."""
-    agent = ChatAgent.__new__(ChatAgent)
-    agent.db = db
-    agent.config = test_config
-    agent._pending_page_context = None
-    agent._current_user = TEST_SENDER
-
-    static_before = await agent._build_system_prompt(TEST_SENDER)
-    dynamic_before = agent._dynamic_system_section()
-
     db.messages.log_message(
         PennyConstants.MessageDirection.OUTGOING,
         "penny",
         "heads up, done!",
         recipient=TEST_SENDER,
         mechanism="a-mechanism",
-        # Older than the conversation map's horizon (#3079): only a send the
-        # history window and the map do NOT carry still renders an emission
-        # line, and this is the event class the test needs — an activity-only
-        # change with no job or collection behind it.  A send inside the
-        # horizon is covered by history/map and lands nowhere in the prompt.
-        timestamp=datetime.now(UTC) - timedelta(days=3),
     )
+    second = await agent._build_system_prompt(TEST_SENDER)
 
-    static_after = await agent._build_system_prompt(TEST_SENDER)
-    dynamic_after = agent._dynamic_system_section()
+    assert second == first
+    assert "late-addition" not in first
+    assert "Current date and time" not in first
 
-    assert static_after == static_before
-    assert dynamic_after != dynamic_before
-    # The dynamic message's `### Recent activity` shows the send as one short
-    # `sent · …` line naming its mechanism (#3079) — the send's own text is one
-    # `run_get` hop away, never quoted here.
-    assert "a-mechanism" in dynamic_after
-    assert "heads up, done!" not in dynamic_after
+    messages = agent._build_messages("hi", None, first)
+    # Leading, dynamic state next, user LAST — no history, and no
+    # session-state message (``agent._session_state`` is never set outside
+    # ``_dispatch_turn``, exactly as before).
+    assert [m.role for m in messages] == ["system", "system", "user"]
+    assert messages[1].content.startswith("Current date and time: ")
+    assert messages[-1].content == "hi"
 
 
 @pytest.mark.asyncio
-async def test_static_system_prefix_survives_a_job_run_and_a_write(db, test_config, monkeypatch):
-    """The cache invariant (#3055): a job RUN and a job WRITE — the two events
-    that used to rebuild the static prefix on nearly every turn (the last-run
-    stamp and the written store's entry count rode its Jobs and Your memory
-    sections) — must leave the static leading system message BYTE-IDENTICAL,
-    while the per-turn dynamic message carries the new state: the run's
-    ``### Job status`` line and the written store's ``### Memory sizes`` count.
-    A job or a collection CHANGING — a user or config action — still correctly
-    rebuilds the prefix; that companion case is
-    ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``."""
+async def test_session_state_message_byte_identical_within_a_session_across_a_clock_run_and_write(
+    db, test_config, monkeypatch
+):
+    """The cache invariant (#3089; previously #3055's weaker claim about the
+    dynamic message): Jobs, Your memory, Recent activity and About the user
+    now ride ONE session-state message, bounded by the session's own start
+    (``ChatAgent._session_as_of``) — so a clock shift, a job run, and a job
+    write, all happening AFTER the session began, leave it BYTE-IDENTICAL.
+    The companion case, a NEW session (an idle rotation), is
+    ``test_session_state_message_rebuilds_only_at_a_new_session`` below."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent.config = test_config
     agent._pending_page_context = None
     agent._current_user = TEST_SENDER
+
+    session_start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    _seed_closed_exchange(db, when=session_start)
 
     with Session(db.engine) as session:
         session.add(
@@ -378,12 +328,21 @@ async def test_static_system_prefix_survives_a_job_run_and_a_write(db, test_conf
         )
         session.commit()
 
-    static_before = await agent._build_system_prompt(TEST_SENDER)
-    dynamic_before = agent._dynamic_system_section()
+    class _FixedClock:
+        def __init__(self, when: datetime) -> None:
+            self._when = when
 
-    # Between the two turns: the job's cycle ran (a completed collector run in
-    # the promptlog — the ledger row the last-run stamp reads) and wrote one
-    # entry (the write that used to tick the store map's count).
+        def now(self) -> datetime:
+            return self._when
+
+    monkeypatch.setattr(db, "clock", _FixedClock(session_start))
+    before = agent._session_state_section(TEST_SENDER)
+
+    # All within the SAME session (no idle gap past CHAT_SESSION_IDLE_SECONDS):
+    # the clock moves, the job's cycle runs (a completed collector run in the
+    # promptlog — the ledger row the last-run stamp used to read live), and it
+    # writes one entry (the write that used to tick the store map's count).
+    monkeypatch.setattr(db, "clock", _FixedClock(session_start + timedelta(minutes=30)))
     run_id = "run-cache-invariant"
     with Session(db.engine) as session:
         session.add(
@@ -395,7 +354,7 @@ async def test_static_system_prefix_survives_a_job_run_and_a_write(db, test_conf
                 run_id=run_id,
                 run_outcome="worked",
                 run_target="hourly-watch",
-                timestamp=datetime(2026, 1, 1, 12, 30, tzinfo=UTC),
+                timestamp=session_start + timedelta(minutes=30),
             )
         )
         session.add(
@@ -404,24 +363,63 @@ async def test_static_system_prefix_survives_a_job_run_and_a_write(db, test_conf
                 key="first finding",
                 content="value for first finding",
                 author="collector",
-                created_at=datetime(2026, 1, 1, 12, 30, tzinfo=UTC),
+                created_at=session_start + timedelta(minutes=30),
                 created_by_run_id=run_id,
                 last_written_by_run_id=run_id,
             )
         )
         session.commit()
 
-    static_after = await agent._build_system_prompt(TEST_SENDER)
-    dynamic_after = agent._dynamic_system_section()
+    after = agent._session_state_section(TEST_SENDER)
 
-    # The reused prefix: byte-identical across a run and a write.
-    assert static_after == static_before
-    # The volatile facts still render — in the per-turn dynamic message.
-    assert dynamic_after != dynamic_before
-    assert "### Job status" in dynamic_after
-    assert "- hourly-watch — " in dynamic_after
-    assert "last run WORKED 2026-01-01 12:30 UTC" in dynamic_after
-    assert "- watched 1 entries" in dynamic_after
+    assert after == before
+    assert "hourly-watch" not in before
+    assert "last run WORKED" not in before
+    assert "- watched 1 entries" not in before
+
+
+@pytest.mark.asyncio
+async def test_session_state_message_rebuilds_only_at_a_new_session(db, test_config, monkeypatch):
+    """A job or collection created or archived mid-session neither appears nor
+    disappears until the next idle rotation (the code owner's ruling, #3089):
+    the create/archive call is already in history as a tool result, so
+    nothing is hidden.  Once a NEW session starts — an idle gap past
+    ``CHAT_SESSION_IDLE_SECONDS`` — ``_session_as_of`` reads a new instant and
+    the message correctly rebuilds."""
+    agent = ChatAgent.__new__(ChatAgent)
+    agent.db = db
+    agent.config = test_config
+    agent._pending_page_context = None
+    agent._current_user = TEST_SENDER
+
+    class _FixedClock:
+        def __init__(self, when: datetime) -> None:
+            self._when = when
+
+        def now(self) -> datetime:
+            return self._when
+
+    session_start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    _seed_closed_exchange(db, when=session_start)
+    monkeypatch.setattr(db, "clock", _FixedClock(session_start))
+    first = agent._session_state_section(TEST_SENDER)
+
+    # Still mid-session: a new collection appears nowhere yet.
+    db.memories.create_collection("late-addition", "created mid-session")
+    still_mid_session = agent._session_state_section(TEST_SENDER)
+    assert still_mid_session == first
+    assert "late-addition" not in still_mid_session
+
+    # A new session — the idle gap past the default CHAT_SESSION_IDLE_SECONDS
+    # (1800s) — makes a NEW closed exchange its own session's first turn.
+    idle_seconds = int(agent.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+    new_session_start = session_start + timedelta(seconds=idle_seconds + 60)
+    _seed_closed_exchange(db, when=new_session_start)
+    monkeypatch.setattr(db, "clock", _FixedClock(new_session_start))
+    rebuilt = agent._session_state_section(TEST_SENDER)
+
+    assert rebuilt != first
+    assert "late-addition" in rebuilt
 
 
 @pytest.mark.asyncio
@@ -1248,24 +1246,23 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
 
 
 @pytest.mark.asyncio
-async def test_the_conversation_map_within_the_static_prefix_is_stable_except_on_a_cut_turn(
+async def test_the_conversation_map_within_the_session_state_message_is_stable_except_on_a_cut_turn(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """The conversation map rides the END of the static leading message
-    (#2752/#2757), appended by ``_build_system_prompt``.  Across two turns
-    neither of which is a cut, the exchanges older than the history window
-    don't change, so the map is byte-identical; on a cut turn it gains
-    exactly the exchanges the history dropped, whole, at the map's end, with
-    every earlier line unchanged.
+    """The conversation map rides the END of the session-state message
+    (#3089; previously the static leading message, #2752/#2757), appended by
+    ``_session_state_section``.  Across two turns neither of which is a cut,
+    the exchanges older than the history window don't change, so the map is
+    byte-identical; on a cut turn it gains exactly the exchanges the history
+    dropped, whole, at the map's end, with every earlier line unchanged.
 
-    This test scopes every comparison to the map's own SUFFIX of the static
-    message (``map_suffix``), not the whole static string: each loop
-    iteration also creates a fresh collection and writes to it, which — since
-    #2814 moved Jobs and the store map into this same static prefix — makes
-    THAT part of the message legitimately differ every single turn here (a
-    new collection each time).  That rebuild is covered on its own in
-    ``test_static_system_prefix_rebuilds_when_a_job_or_collection_changes``;
-    this test's one claim is about the map, so it reads only the map."""
+    This test scopes every comparison to the map's own SUFFIX of the
+    session-state message (``map_suffix``), not the whole string: each loop
+    iteration also creates a fresh collection and writes to it — Jobs and
+    the store map ride the SAME message now, and since #3089 bounds them to
+    the session's own start, every turn here (one continuous session, no
+    idle gap) sees the SAME Jobs/store-map content regardless, which this
+    test does not need to reason about since it reads only the map."""
     config = make_config(chat_history_turns=2, chat_session_max_turns=3)  # cuts at 4 and 6
 
     async with running_penny(config) as penny:
@@ -1291,12 +1288,12 @@ async def test_the_conversation_map_within_the_static_prefix_is_stable_except_on
                 recipient=TEST_SENDER,
                 run_id=run_id,
             )
-            statics.append(await penny.chat_agent._build_system_prompt(TEST_SENDER))
+            statics.append(penny.chat_agent._session_state_section(TEST_SENDER) or "")
 
         def map_suffix(static: str) -> str:
             """The map's own header-through-end slice, or "" when absent —
-            everything Jobs/the store map/instructions ahead of it is cut
-            away, since only THIS slice is under test here."""
+            everything Jobs/the store map ahead of it is cut away, since only
+            THIS slice is under test here."""
             return static[start:] if (start := static.find(ConversationMap.HEADER)) != -1 else ""
 
         def map_lines(static: str) -> list[str]:
@@ -2573,7 +2570,7 @@ async def test_startup_records_changelog_entries_once(
         assert len(changelog.read_all()) == len(entries)
 
 
-_BASIC_FLOW_STATIC_EXPECTED = (
+_BASIC_FLOW_LEADING_EXPECTED = (
     "## Identity\n"
     "You are Penny. You and the user are friends who text regularly. This is "
     "mid-conversation — not a fresh chat.\n"
@@ -2665,11 +2662,25 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "On a plain reply with no tool calls, skip the recap and just respond.\n"
     "\n"
     "Always include specific details (specs, dates, prices) and at least one source "
-    "link (its token, like {link 101}) so the user can follow up.\n"
+    "link (its token, like {link 101}) so the user can follow up."
+)
+
+# The ONE session-state system message (#3089; previously split across the
+# static message's Jobs/Your memory, #2814, and the dynamic message's Recent
+# activity/Memory sizes/About the user, #3055) — Jobs and Your memory each
+# carry their live clauses on the SAME line as their registry ones now.
+_BASIC_FLOW_SESSION_STATE_EXPECTED = (
+    "## Penny's current state\n"
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"
     "(no jobs yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
+    "change · YYYY-MM-DD HH:MM UTC · old-facts created by user-run\n"
+    "change · YYYY-MM-DD HH:MM UTC · secrets created by user-run\n"
+    "change · YYYY-MM-DD HH:MM UTC · playlists created by user-run\n"
     "\n"
     "### Your memory\n"
     "- browse-results (log) — Every browse-tool fetch result — searched only when named\n"
@@ -2678,36 +2689,15 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "- collector-runs (log) — One entry per Collector cycle: the target + its "
     "generated structural record (outcome, counts, tool trace)\n"
     "- penny-messages (log) — Every outgoing Penny reply\n"
-    "- playlists (collection) — favorite playlists\n"
-    "- rules (collection) — Standing instructions the user has given: things "
+    "- playlists (collection) 1 entries — favorite playlists\n"
+    "- rules (collection) 0 entries — Standing instructions the user has given: things "
     "to always or never do\n"
     "- run-health (log) — One line per run: cost, discards, tool errors, and what was "
     "sent — chat and every job\n"
-    "- secrets (collection) — hidden\n"
-    "- tips (log) — useful tips\n"
+    "- secrets (collection) 1 entries — hidden\n"
+    "- tips (log) 1 entries — useful tips\n"
     "- user-messages (log) — Every incoming user message\n"
-    "archived: `old-facts`"
-)
-
-# The dynamic system message's state header, everything after the clock line —
-# the leading "\n" is the blank line that separated it from the clock.  Jobs
-# and the store map moved into the STATIC message above (#2814) — this is
-# what's left: recent activity, then about the user.
-_BASIC_FLOW_STATE_EXPECTED = (
-    "\n"
-    "## Penny's current state\n"
-    "\n"
-    "### Recent activity\n"
-    "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
-    "change · YYYY-MM-DD HH:MM UTC · old-facts created by user-run\n"
-    "change · YYYY-MM-DD HH:MM UTC · secrets created by user-run\n"
-    "change · YYYY-MM-DD HH:MM UTC · playlists created by user-run\n"
-    "\n"
-    "### Memory sizes\n"
-    "- playlists 1 entries\n"
-    "- rules 0 entries\n"
-    "- secrets 1 entries\n"
-    "- tips 1 entries\n"
+    "archived: `old-facts`\n"
     "\n"
     "### About the user\n"
     "- name: Test User\n"
