@@ -857,11 +857,11 @@ def test_self_state_store_map_drops_a_live_jobs_duplicate_description(db):
             updated_at=_t(6),
         )
         session.commit()
-    actual = SelfStateHeader(db, None).render()
+    actual = SelfStateHeader(db, None, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
     store_map = actual.split("### Your memory\n", 1)[1].split("\n\n", 1)[0]
     assert store_map == (
-        "- garden-notes (collection) — notes about the garden's own progress\n"
-        "- weather-watch (collection)"
+        "- garden-notes (collection) 0 entries — notes about the garden's own progress\n"
+        "- weather-watch (collection) 0 entries"
     )
 
 
@@ -881,7 +881,9 @@ def test_self_state_memory_map_line_keeps_an_archived_rows_own_description() -> 
         created_at=_t(6),
         updated_at=_t(6),
     )
-    assert SelfStateHeader._memory_map_line(row) == f"- old-watch (collection) — {prompt}"
+    assert (
+        SelfStateHeader._memory_map_line(row, 0) == f"- old-watch (collection) 0 entries — {prompt}"
+    )
 
 
 def test_self_state_archived_line_names_a_collection_and_a_log(db):
