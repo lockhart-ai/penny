@@ -500,7 +500,9 @@ def _premise() -> Preparer:
         assert row is not None
         assert row.extraction_prompt == _STRAY_PROMPT
         assert row.schedule is None
-        rendered = SelfStateHeader(db, TEST_SENDER, as_of=db.clock.now()).render()
+        rendered = SelfStateHeader(
+            db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
+        ).render()
         assert "more sentence" in rendered and f"memory_get{{'{RULES}'}}" in rendered, (
             f"`{RULES}`'s stray prompt must render CUT, naming the memory_get hop:\n{rendered}"
         )

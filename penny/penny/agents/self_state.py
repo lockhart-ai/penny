@@ -102,6 +102,7 @@ from penny.datetime_utils import (
     format_log_timestamp,
     format_user_clock_time,
     format_user_timestamp,
+    stored_as_utc,
     user_timezone_name,
 )
 from penny.tools.collection_instantiation import describe_next_run, describe_schedule_rule
@@ -455,7 +456,12 @@ class SelfStateHeader:
         events.extend(
             (emission.sent_at, self._emission_line(emission))
             for emission in self.db.messages.recent_emissions(fetch, as_of=self.as_of)
-            if emission.sent_at < map_horizon
+            # Both normalised through ``stored_as_utc`` (#3089): ``sent_at``
+            # comes back naive from storage, ``map_horizon`` may be naive
+            # (``map_horizon_start``'s own convention) or aware depending on
+            # the caller, so a bare ``<`` risks the same mismatch ``list_all``
+            # hit.
+            if stored_as_utc(emission.sent_at) < stored_as_utc(map_horizon)
         )
         events.extend(
             (failure.finished_at, self._chat_failure_line(failure))

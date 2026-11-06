@@ -459,8 +459,8 @@ class TestExchangeWindowBoundary:
         state message is bounded by — is the SAME session's oldest CLOSED
         turn, over the identical ``timestamps`` the counts above are read
         from, so it can never disagree with ``session_turns``."""
-        first = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-        second = datetime(2026, 1, 1, 12, 5, tzinfo=UTC)
+        first = datetime(2026, 1, 1, 12, 0)
+        second = datetime(2026, 1, 1, 12, 5)
         self._seed_exchange(db, "first ask", "first reply", first)
         self._seed_exchange(db, "second ask", "second reply", second)
 
@@ -474,9 +474,9 @@ class TestExchangeWindowBoundary:
         """The open live turn (no reply yet) is dropped from BOTH the counts
         and ``session_started_at`` — asking for it must never read it back as
         the session's own start."""
-        first = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        first = datetime(2026, 1, 1, 12, 0)
         self._seed_exchange(db, "first ask", "first reply", first)
-        live_at = datetime(2026, 1, 1, 12, 5, tzinfo=UTC)
+        live_at = datetime(2026, 1, 1, 12, 5)
         db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING, self.USER, "live ask", timestamp=live_at
         )
@@ -498,7 +498,7 @@ class TestExchangeWindowBoundary:
         one (the docstring's own named case) — ``session_started_at`` falls
         back to that live turn's own timestamp, the only instant available:
         nothing from DURING this turn can have landed in the store yet."""
-        stale = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        stale = datetime(2026, 1, 1, 12, 0)
         self._seed_exchange(db, "stale ask", "stale reply", stale)
         live_at = stale + timedelta(seconds=3600)  # past the 1800s idle gap
         db.messages.log_message(

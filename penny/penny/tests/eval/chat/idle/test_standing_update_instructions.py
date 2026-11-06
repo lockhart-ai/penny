@@ -1064,7 +1064,9 @@ def _probe_world(penny: Penny) -> None:
         f"the registry must start with one scheduled job, it holds {scheduled}"
     )
     assert not db.users.is_muted(TEST_SENDER), "notifications must start on"
-    header = SelfStateHeader(db, TEST_SENDER, as_of=db.clock.now()).render()
+    header = SelfStateHeader(
+        db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
+    ).render()
     assert "notify: on" in header and "WORKED" in header, (
         f"the header must render the job's switch and this morning's worked run:\n{header}"
     )

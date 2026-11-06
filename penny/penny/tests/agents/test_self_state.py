@@ -479,7 +479,10 @@ def test_self_state_schedule_mechanism_render(db):
     # A fixed clock (#2895), at the fixtures' own creation moment — strictly before
     # both rows' first occurrence, so neither reads as due yet.
     db.clock = PinnedClock(starts_at=_t(6))
-    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now()).render() == _SCHEDULE_MECH
+    assert (
+        SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
+        == _SCHEDULE_MECH
+    )
 
 
 # ── 1c. The last-run line states WHY a cycle started when it did (#2862) ──
@@ -512,7 +515,9 @@ def test_last_run_line_catch_up_across_a_restart_appends_the_reason(db):
         due_at=_t(13, 30),
         dispatch_reason="catch_up_offline",
     )
-    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(stamp) == (
+    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(
+        stamp
+    ) == (
         "last run WORKED 2026-07-11 23:12 UTC, catching up a missed run: "
         "Penny was offline at 09:30 AM EDT"
     )
@@ -527,9 +532,9 @@ def test_last_run_line_retry_appends_the_attempt(db):
         dispatch_reason="retry_failed",
         dispatch_attempt=2,
     )
-    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(stamp) == (
-        "last run WORKED 2026-07-11 13:35 UTC, retrying after a failed attempt (attempt 2)"
-    )
+    assert SelfStateHeader(db, USER, as_of=db.clock.now(), map_horizon=db.clock.now())._last_run(
+        stamp
+    ) == ("last run WORKED 2026-07-11 13:35 UTC, retrying after a failed attempt (attempt 2)")
 
 
 def test_last_run_line_with_no_dispatch_stamp_is_unchanged(db):
@@ -568,7 +573,9 @@ def test_self_state_renders_the_mute_state_in_both_directions(db):
     )
     assert (
         SelfStateHeader.NOTIFICATIONS_MUTED
-        not in SelfStateHeader(db, sender, as_of=db.clock.now(), map_horizon=db.clock.now()).render()
+        not in SelfStateHeader(
+            db, sender, as_of=db.clock.now(), map_horizon=db.clock.now()
+        ).render()
     )
 
     db.users.set_muted(sender)

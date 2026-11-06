@@ -63,7 +63,7 @@ from penny.database.mutation_store import (
     cancelled_sends_note,
 )
 from penny.database.send_queue_store import SendQueueStore
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import format_log_timestamp, stored_as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -552,15 +552,26 @@ class MemoryStore:
         excluded entirely (it doesn't exist yet, as of that instant); a row
         archived AFTER ``as_of`` renders as still active (the archive hasn't
         happened yet, as of that instant) — both read off the row's own
-        ``created_at``/``updated_at``, never a second history table."""
+        ``created_at``/``updated_at``, never a second history table.
+
+        Filtered in PYTHON, never a SQL ``WHERE created_at <= :as_of``: a
+        migration-seeded row's ``created_at`` was written as a raw ISO string
+        (``datetime.isoformat()``, "T" separator, explicit offset) while an
+        ORM-written row's is SQLAlchemy's own naive format — SQLite has no
+        native datetime type, so it compares both as TEXT, and the two
+        spellings don't sort consistently against each other for the same
+        real instant.  Parsing each through SQLModel first (which this query
+        already does) and comparing parsed ``datetime`` objects sidesteps the
+        spelling entirely."""
         with self._session() as session:
-            query = select(MemoryRow).order_by(MemoryRow.name)
-            if as_of is not None:
-                query = query.where(col(MemoryRow.created_at) <= as_of)
-            rows = list(session.exec(query).all())
+            rows = list(session.exec(select(MemoryRow).order_by(MemoryRow.name)).all())
         if as_of is None:
             return rows
-        return [self._as_of(row, as_of) for row in rows]
+        return [
+            self._as_of(row, as_of)
+            for row in rows
+            if stored_as_utc(row.created_at) <= stored_as_utc(as_of)
+        ]
 
     @staticmethod
     def _as_of(row: MemoryRow, as_of: datetime) -> MemoryRow:
@@ -568,8 +579,12 @@ class MemoryStore:
         archived after that instant reads as still active — the one field this
         table can reconstruct a point in time for, since ``updated_at`` is the
         row's only change stamp.  A copy, never a mutation of the session's own
-        loaded instance."""
-        if row.archived and row.updated_at > as_of:
+        loaded instance.
+
+        Both sides normalised through ``stored_as_utc`` before comparing (see
+        ``list_all``'s own docstring on the naive/aware and string-spelling
+        hazards a bare ``>`` would hit)."""
+        if row.archived and stored_as_utc(row.updated_at) > stored_as_utc(as_of):
             return row.model_copy(update={"archived": False})
         return row
 

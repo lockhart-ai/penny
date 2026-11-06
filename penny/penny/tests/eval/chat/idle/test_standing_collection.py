@@ -480,7 +480,9 @@ def _assert_the_row_renders(db: Database, case: _OperationCase) -> None:
     asserting different words for one state; a world that stopped carrying the lever would
     make every sample measure the model's guesswork rather than its reading, and would do
     so silently."""
-    rendered = SelfStateHeader(db, TEST_SENDER, as_of=db.clock.now()).render()
+    rendered = SelfStateHeader(
+        db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
+    ).render()
     rows = {job.container: _mechanism_row(rendered, job.container) for job in case.jobs}
     missing = sorted(container for container, row in rows.items() if row is None)
     assert not missing, f"{missing} must each render as a mechanism:\n{rendered}"
@@ -1082,7 +1084,9 @@ def _assert_the_long_prompt_renders_cut(db: Database, container: str) -> None:
     schedule clause: the cut note names the ``memory_get`` hop, and a world whose prompt
     rendered whole would measure the model's restraint rather than the gap the failure
     lived in."""
-    rendered = SelfStateHeader(db, TEST_SENDER, as_of=db.clock.now()).render()
+    rendered = SelfStateHeader(
+        db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
+    ).render()
     assert f"more sentences cut — memory_get{{'{container}'}} shows the whole prompt" in rendered, (
         f"{container}'s prompt must render cut in the self-state:\n{rendered}"
     )

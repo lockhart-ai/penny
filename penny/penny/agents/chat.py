@@ -26,7 +26,7 @@ from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.database.memory.identity import WriteDecisionCache
-from penny.datetime_utils import current_datetime_line
+from penny.datetime_utils import current_datetime_line, stored_as_utc
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.notification import (

@@ -372,50 +372,59 @@ async def test_session_state_message_byte_identical_within_a_session_across_a_cl
 
     after = agent._session_state_section(TEST_SENDER)
 
+    # Byte-identical across the run and the write — the cache invariant.
     assert after == before
-    assert "hourly-watch" not in before
-    assert "last run WORKED" not in before
-    assert "- watched 1 entries" not in before
+    # Both pre-existing rows show (created before the session began); the
+    # run that completed and the entry that was written DURING the session
+    # are exactly what stay invisible until the next rotation (#3089) — the
+    # tool result that made them is what carries the news meanwhile.
+    assert "hourly-watch" in after
+    assert "- watched" in after
+    assert "last run WORKED" not in after
+    assert "- watched 1 entries" not in after
 
 
 @pytest.mark.asyncio
-async def test_session_state_message_rebuilds_only_at_a_new_session(db, test_config, monkeypatch):
+async def test_session_state_message_rebuilds_only_at_a_new_session(db, test_config):
     """A job or collection created or archived mid-session neither appears nor
     disappears until the next idle rotation (the code owner's ruling, #3089):
     the create/archive call is already in history as a tool result, so
     nothing is hidden.  Once a NEW session starts — an idle gap past
     ``CHAT_SESSION_IDLE_SECONDS`` — ``_session_as_of`` reads a new instant and
-    the message correctly rebuilds."""
+    the message correctly rebuilds.
+
+    Anchored on the REAL clock throughout, never a monkeypatched one:
+    ``MemoryRow.created_at``'s own default factory is a bare
+    ``datetime.now(UTC)`` call (never ``db.clock``), so "late-addition"'s
+    creation time is always real wall-clock time regardless of what ``db.clock``
+    is set to — the session boundaries below are chosen relative to it instead
+    of fighting it."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent.config = test_config
     agent._pending_page_context = None
     agent._current_user = TEST_SENDER
 
-    class _FixedClock:
-        def __init__(self, when: datetime) -> None:
-            self._when = when
-
-        def now(self) -> datetime:
-            return self._when
-
-    session_start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    # A session that began well before "now" — comfortably before
+    # "late-addition" will be created at the real wall-clock instant below.
+    session_start = datetime.now(UTC) - timedelta(hours=2)
     _seed_closed_exchange(db, when=session_start)
-    monkeypatch.setattr(db, "clock", _FixedClock(session_start))
     first = agent._session_state_section(TEST_SENDER)
 
-    # Still mid-session: a new collection appears nowhere yet.
+    # Still mid-session (no new incoming row, so the anchor is unchanged): a
+    # new collection, created at real "now", appears nowhere yet.
     db.memories.create_collection("late-addition", "created mid-session")
     still_mid_session = agent._session_state_section(TEST_SENDER)
     assert still_mid_session == first
     assert "late-addition" not in still_mid_session
 
-    # A new session — the idle gap past the default CHAT_SESSION_IDLE_SECONDS
-    # (1800s) — makes a NEW closed exchange its own session's first turn.
+    # A new session — an idle gap past CHAT_SESSION_IDLE_SECONDS, anchored
+    # far enough past real "now" that it is also past "late-addition"'s own
+    # creation instant — makes a NEW closed exchange its own session's first
+    # turn, and the collection is now visible.
     idle_seconds = int(agent.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-    new_session_start = session_start + timedelta(seconds=idle_seconds + 60)
+    new_session_start = datetime.now(UTC) + timedelta(seconds=idle_seconds + 60)
     _seed_closed_exchange(db, when=new_session_start)
-    monkeypatch.setattr(db, "clock", _FixedClock(new_session_start))
     rebuilt = agent._session_state_section(TEST_SENDER)
 
     assert rebuilt != first
