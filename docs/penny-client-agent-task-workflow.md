@@ -85,7 +85,7 @@ Do not claim tests passed when only a generic build or a partial compile complet
 
 ## 6. Review the diff
 
-Before committing, run the checklist in [`penny-client-pr-review-guide.md`](penny-client-pr-review-guide.md). At minimum verify:
+Before committing, run the checklist in [`penny-client-pr-review-guide.md`](penny-client-pr-review-guide.md) **in full** — every section, including "Hard-won patterns (Swift/iOS)" — against the diff, not just the few items below. At minimum verify:
 
 - no unrelated files or generated artifacts;
 - no new warnings or SwiftLint violations;
@@ -99,14 +99,17 @@ Re-run the relevant gate after any code change made during review.
 
 ## 7. Publish and shepherd
 
-Follow the kitten SOP in [`docs/agent-task-workflow.md`](agent-task-workflow.md) for commit, push, the draft PR, CI, and the privacy gate. The PR body should include:
+Follow the kitten SOP in [`docs/agent-task-workflow.md`](agent-task-workflow.md) for commit, push, the draft PR, CI, and the privacy gate. Before opening the PR, review the whole diff against the whole client review guide one more time — not just the sections that look relevant. The PR body should include:
 
 - the user-visible and internal behavior change;
 - the protocol/server impact, if any;
 - the exact client gate and Xcode version used;
 - any simulator or signing limitation;
 - focused test evidence;
-- a clear note when local verification was build-only and CI remains the test gate.
+- a clear note when local verification was build-only and CI remains the test gate;
+- a statement that the diff was reviewed against the whole [`penny-client-pr-review-guide.md`](penny-client-pr-review-guide.md), and a list of any item it could not meet and why (an empty list if none).
+
+Found a new unhealthy pattern while working? Add it to "Hard-won patterns (Swift/iOS)" in the same PR as the fix, not a follow-up.
 
 Stay with the PR through CI and review. A PennyClient PR is not complete while checks are red, review threads are unresolved, or a terminal PR's worktree remains orphaned.
 
