@@ -265,12 +265,6 @@ DEPLOY_LOG ?= $(CURDIR)/data/penny/logs/deploy-loop.log
 # The child's own stdout/stderr (detached from the terminal, #2971) — appended,
 # next to the loop's own log above.
 DEPLOY_RUN_LOG ?= $(CURDIR)/data/penny/logs/deploy-run.log
-# The git pathspecs a new commit must touch for prod-watch to build and restart
-# Penny (#3049) — the Penny server: penny/ outside its tests and *.md,
-# similarity/, github_api/, docker-compose.yml. Must match the script's own
-# default (scripts/deploy-loop.sh carries the same list for runs not started
-# through make).
-DEPLOY_RUNTIME_PATHS ?= penny :(exclude)penny/penny/tests/ :(exclude)*.md similarity github_api docker-compose.yml
 
 prod-watch:
 	DEPLOY_INTERVAL="$(DEPLOY_INTERVAL)" \
@@ -281,7 +275,6 @@ prod-watch:
 	DEPLOY_IDLE_CMD="$(DEPLOY_IDLE_CMD)" \
 	DEPLOY_LOG="$(DEPLOY_LOG)" \
 	DEPLOY_RUN_LOG="$(DEPLOY_RUN_LOG)" \
-	DEPLOY_RUNTIME_PATHS="$(DEPLOY_RUNTIME_PATHS)" \
 	./scripts/deploy-loop.sh
 
 # Renders the launchd plist template with this checkout's absolute paths filled in

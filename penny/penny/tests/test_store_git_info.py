@@ -1,13 +1,15 @@
-"""Tests for `scripts/store_git_info.sh` (#2891, reworked by #2973): the
-host-side script `up`/`prod`/`prod-ios` call before building, which snapshots
-Penny's changelog commit window into the build-context file. Run the same way
-the Makefile recipes run it — against a real, throwaway git repo — not a
-description of it (the same approach `test_prune.py`/`test_provider_lock.py`
-take for their own shell helpers).
+"""Tests for `scripts/store_git_info.sh` (#2891, reworked by #2973, runtime-path
+scoped by #3063): the host-side script `up`/`prod`/`prod-ios` call before
+building, which snapshots Penny's changelog commit window into the
+build-context file. Run the same way the Makefile recipes run it — against a
+real, throwaway git repo — not a description of it (the same approach
+`test_prune.py`/`test_provider_lock.py` take for their own shell helpers).
 
-There is no cursor any more (#2973): the script always writes the newest N raw
-commits, oldest first, and WHICH of those are hers to record is decided by
-Penny herself at startup (`select_new_entries` — the log is the cursor).
+There is no cursor any more (#2973): the script always writes the newest N
+commits touching the shared runtime-path rule (scripts/runtime-paths, read off
+the script's own directory), oldest first, and WHICH of those are hers to
+record is decided by Penny herself at startup (`select_new_entries` — the log
+is the cursor).
 
 Needs `git` on PATH to build that temp repo and exercise the real `git log`
 call the script makes — the Dockerfile installs it for exactly this. A missing
@@ -24,6 +26,10 @@ import subprocess
 import pytest
 
 _SCRIPT = pathlib.Path("scripts") / "store_git_info.sh"
+
+# The path the fixture's `_commit` writes to: a runtime path under the shared
+# rule's `penny` include, so a fixture commit is one the script snapshots.
+_RUNTIME_FILE = pathlib.Path("penny") / "penny" / "file.txt"
 
 # Exercised at a smaller override here so a test repo needs only a handful of
 # commits, never restated as a hidden assumption the script could drift away
@@ -67,8 +73,19 @@ def _init_repo(repo: pathlib.Path) -> None:
 
 def _commit(repo: pathlib.Path, subject: str, body: str = "") -> str:
     """One commit carrying ``subject`` as its title and, if given, ``body``
-    (which may itself be multi-line) as its message body; returns its hash."""
-    (repo / "file.txt").write_text(subject + body)
+    (which may itself be multi-line) as its message body, touching the
+    fixture's runtime path; returns its hash."""
+    return _commit_file(repo, _RUNTIME_FILE, subject + body, subject, body)
+
+
+def _commit_file(
+    repo: pathlib.Path, relpath: pathlib.Path, content: str, subject: str, body: str = ""
+) -> str:
+    """One commit whose ONLY change is ``relpath`` — the runtime-path tests
+    (#3063) need commits touching one specific path, not the fixture's own."""
+    target = repo / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
     _git(repo, "add", "-A")
     args = ["commit", "-q", "-m", subject]
     if body:
@@ -77,10 +94,24 @@ def _commit(repo: pathlib.Path, subject: str, body: str = "") -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
+def _hashes(commits_file: pathlib.Path) -> list[str]:
+    """Each record's commit hash, in order — how the runtime-path test names
+    WHICH commits the snapshot kept."""
+    content = commits_file.read_text()
+    if not content:
+        return []
+    hashes: list[str] = []
+    for record in content.split("\x1e"):
+        record = record.lstrip("\n")  # git's own between-commit separator only
+        if record:
+            hashes.append(record.split("\x1f", 1)[0])
+    return hashes
+
+
 def _records(commits_file: pathlib.Path) -> list[tuple[str, str]]:
     """Each record's ``(subject, body)`` pair, read the same way
     ``parse_commit_log`` splits them (``\x1e`` between records, ``\x1f``
-    between fields) — the hash itself isn't this test's concern
+    between fields) — the hash itself isn't these tests' concern
     (``parse_commit_log`` reads it for real, with its own unit tests)."""
     content = commits_file.read_text()
     if not content:
@@ -125,24 +156,58 @@ def _run_script(
 
 
 def test_snapshot_is_the_newest_n_commits_oldest_first(tmp_path: pathlib.Path) -> None:
-    """The window is always the newest N raw commits, oldest first — never the
-    whole repo history. There is no cursor and no mode: every build gets the
-    same fixed window, and Penny's own startup selection cuts it against the
-    log."""
+    """The window is always the newest N runtime commits, oldest first — never
+    the whole repo history. There is no cursor and no mode: every build gets
+    the same fixed window, and Penny's own startup selection cuts it against
+    the log."""
     _require_git()
     repo = tmp_path / "repo"
     _init_repo(repo)
     _commit(repo, "feat(penny): first (#1)")
-    _commit(repo, "docs: not penny-scope, still counted as one raw commit (#2)")
+    _commit(repo, "chore(ci): any title counts as one runtime commit (#2)")
     _commit(repo, "fix(penny): second (#3)")
     commits_file = tmp_path / "commits.txt"
 
     _run_script(repo, commits_file=commits_file, snapshot=2)
 
     assert _titles(commits_file) == [
-        "docs: not penny-scope, still counted as one raw commit (#2)",
+        "chore(ci): any title counts as one runtime commit (#2)",
         "fix(penny): second (#3)",
     ]
+
+
+def test_only_runtime_touching_commits_are_snapshotted(tmp_path: pathlib.Path) -> None:
+    """(#3063) The snapshot holds only commits touching the shared
+    runtime-path rule (`scripts/runtime-paths`), whatever their title: a
+    Markdown file under penny/ and a commit to penny's own test suite are
+    dropped by the rule's own `:(exclude)` lines, a docs/ commit by the
+    includes, while a penny/penny/ commit — here titled like a CI chore to
+    prove the title plays no part — is kept."""
+    _require_git()
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, pathlib.Path("docs") / "notes.md", "docs", "docs: a note (#1)")
+    _commit_file(
+        repo, pathlib.Path("penny") / "penny" / "README.md", "md", "docs(penny): a readme (#2)"
+    )
+    _commit_file(
+        repo,
+        pathlib.Path("penny") / "penny" / "tests" / "test_x.py",
+        "t",
+        "test(eval): a case (#3)",
+    )
+    kept = _commit_file(
+        repo,
+        pathlib.Path("penny") / "penny" / "tools" / "new_tool.py",
+        "x",
+        "chore(ci): the one that counts (#4)",
+    )
+    commits_file = tmp_path / "commits.txt"
+
+    _run_script(repo, commits_file=commits_file)
+
+    assert _hashes(commits_file) == [kept]
+    assert _titles(commits_file) == ["chore(ci): the one that counts (#4)"]
 
 
 def test_no_flag_bounds_the_window_when_the_repo_is_bigger(tmp_path: pathlib.Path) -> None:

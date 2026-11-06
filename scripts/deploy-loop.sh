@@ -76,18 +76,31 @@ if [ -z "$DEPLOY_IMAGE_COMMIT_CMD" ]; then
     DEPLOY_IMAGE_COMMIT_CMD='docker image inspect penny:prod --format {{.Config.Labels.git_commit}}'
 fi
 # The git pathspecs a new commit must touch to be worth building and
-# redeploying (#3049): the prod container is built from ./penny (penny/Dockerfile)
-# and mounts ./similarity and ./github_api read-only (docker-compose.yml), so
-# those — with docker-compose.yml itself — are what Penny runs; everything else
-# (browser/, penny-client/, docs/, scripts/, .github/, image_server/, the
-# Makefile) doesn't. The excludes drop penny's own test suite and Markdown from
-# the penny/ include. The value word-splits UNSQUOTED at the diff call site
-# (runtime_paths_changed), so it must carry no quotes of its own — the same
-# constraint DEPLOY_IDLE_CMD's and DEPLOY_IMAGE_COMMIT_CMD's defaults carry; the
-# `*.md` glob stays literal there because the call site turns globbing off.
+# redeploying (#3049): the default is read off the shared runtime-path rule
+# (scripts/runtime-paths, #3063) — the same file scripts/store_git_info.sh
+# logs the changelog snapshot from, so a commit is announced in her changelog
+# exactly when it changes the runtime that would be restarted. The file sits
+# next to this script (resolved off $0), so the launchd plist's absolute
+# invocation finds it as well as `make prod-watch` does. DEPLOY_RUNTIME_PATHS
+# overrides the file (a test narrows the rule to its own fixture's paths).
+# The value word-splits UNSQUOTED at the diff call site (runtime_paths_changed),
+# so it must carry no quotes of its own — the same constraint DEPLOY_IDLE_CMD's
+# and DEPLOY_IMAGE_COMMIT_CMD's defaults carry; the `*.md` glob stays literal
+# there because the call site turns globbing off.
 DEPLOY_RUNTIME_PATHS="${DEPLOY_RUNTIME_PATHS:-}"
 if [ -z "$DEPLOY_RUNTIME_PATHS" ]; then
-    DEPLOY_RUNTIME_PATHS='penny :(exclude)penny/penny/tests/ :(exclude)*.md similarity github_api docker-compose.yml'
+    paths_file="$(dirname "$0")/runtime-paths"
+    if [ ! -f "$paths_file" ]; then
+        echo "deploy-loop: cannot read the shared runtime-path rule ($paths_file)" >&2
+        exit 1
+    fi
+    # One pathspec per line, '#' comments and blank lines ignored, joined into
+    # the one word-split string the diff call site consumes.
+    DEPLOY_RUNTIME_PATHS="$(awk '{sub(/#.*$/, ""); gsub(/[ \t]/, ""); if (NF) print}' "$paths_file" | paste -s -d' ' -)"
+    if [ -z "$DEPLOY_RUNTIME_PATHS" ]; then
+        echo "deploy-loop: $paths_file lists no paths" >&2
+        exit 1
+    fi
 fi
 
 # fetch_and_fast_forward's return codes: it ADVANCED HEAD to origin (the only

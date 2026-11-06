@@ -26,6 +26,9 @@ services:
       # The changelog's commit-range script (`up`/`prod`/`prod-ios` call it on the HOST,
       # #2891) is the same kind of shell file a test drives from inside the container.
       - ./scripts/store_git_info.sh:/penny/scripts/store_git_info.sh:ro
+      # The shared runtime-path rule (#3063) — both scripts above read it as the one
+      # definition of Penny's runtime, and their tests drive them against the real file.
+      - ./scripts/runtime-paths:/penny/scripts/runtime-paths:ro
       # The auto-deploy loop (#2955, `make prod-watch`) is the same kind of shell file its
       # own test drives from inside the container.
       - ./scripts/deploy-loop.sh:/penny/scripts/deploy-loop.sh:ro
