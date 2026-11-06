@@ -31,12 +31,6 @@ enum StoryFixtures {
         chatViewModel(messages: conversationMessages, isConnected: false)
     }
 
-    static func settingsOpenViewModel() -> MessageView.ViewModel {
-        let viewModel = chatViewModel(messages: conversationMessages)
-        viewModel.isShowingSettings = true
-        return viewModel
-    }
-
     /// Three steps with different tools, the last one unfinished — the run
     /// "Penny is working" stories show as still in progress.
     static var workingSteps: [StoryWorkingStep] {

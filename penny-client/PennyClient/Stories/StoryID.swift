@@ -7,17 +7,17 @@ enum StoryID: String, CaseIterable {
     case chatConversation
     case chatWorking
     case chatDisconnected
-    case sheetSettings
+    case shellMemory
+    case shellMemoryDetail
+    case shellMemoryActivity
+    case shellMemoryConfig
+    case shellPrompts
+    case shellPromptsExpanded
+    case shellPromptsExpandedChat
+    case shellSettings
     case sheetSearch
     case sheetActivity
     case sheetCardDetail
-    case dataBrowserMemories
-    case dataBrowserEntries
-    case dataBrowserActivity
-    case dataBrowserConfig
-    case dataBrowserPrompts
-    case dataBrowserPromptExpanded
-    case dataBrowserPromptExpandedChat
     case kitTopTabBar
     case kitPageHeader
     case kitListRows

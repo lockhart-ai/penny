@@ -233,7 +233,8 @@ make client-check     # Build the iOS client + run PennyClientTests on a simulat
 
 ### iOS data browser
 
-PennyClient's top-left memories button presents a read-only Memories/Prompts browser.
+PennyClient's Memory and Prompts tabs (in the centred glass tab capsule of
+`AppShellView`) present the read-only Memories/Prompts browser.
 Memory details separate Entries, Activity, and Config; collector activity shares the
 expandable run/prompt/turn cards with global Prompts. `DataBrowserClient` owns
 correlated reads and cancellation in PennyServices; presentation state belongs to

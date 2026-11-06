@@ -54,6 +54,7 @@ public enum Tokens {
     public static let dockComposerGap: CGFloat = 8      // dock bottom → composer top
     public static let dockChromeGap: CGFloat = 8        // dock top → chrome row bottom (.top placement)
     public static let topFadeBleed: CGFloat = 36        // chrome row bottom → top fade fully clear
+    public static let chromeTopGap: CGFloat = 2         // safe-area top → nav row top (measured off chat.png)
     public static let lastMessageComposerGap: CGFloat = 12
     public static let capsuleContentGap: CGFloat = 12   // capsule bottom → first content
     public static let iconColumn: CGFloat = 38          // dock/stream icon column
