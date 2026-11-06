@@ -2297,3 +2297,50 @@ class TestRawTemplateTransport:
         client.disable_raw_template_transport("chat-wraps raw completions")
         assert not client.raw_template_enabled
         await client.close()
+
+
+class TestPrewarm:
+    """``LlmClient.prewarm()`` (#3078) — the chat pre-warm's own send path:
+    the raw-template transport, ``max_tokens=1``, and nothing logged."""
+
+    @pytest.mark.asyncio
+    async def test_prewarm_sends_max_tokens_one_over_the_raw_path_and_logs_nothing(
+        self, monkeypatch, db: Database
+    ) -> None:
+        captured: dict = {}
+
+        async def chat_create(**kwargs):
+            raise AssertionError("prewarm must never reach the chat-completions transport")
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion(
+                "whatever the model drew — discarded either way",
+                usage={"prompt_tokens": 4200, "completion_tokens": 1},
+            )
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", chat_create)
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+
+        timing = await client.prewarm(
+            [
+                LlmMessage(role="system", content="leading system message"),
+                LlmMessage(role="system", content="session-state message"),
+            ],
+            tools=None,
+        )
+        await client.close()
+
+        assert captured["max_tokens"] == 1
+        assert timing.prompt_tokens == 4200
+
+        with db.get_session() as session:
+            rows = session.exec(select(PromptLog)).all()
+        assert rows == []

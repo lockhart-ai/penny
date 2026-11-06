@@ -26,6 +26,7 @@ from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.database.memory.identity import WriteDecisionCache
+from penny.database.message_store import SessionAnchor
 from penny.datetime_utils import current_datetime_line, stored_as_utc
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
@@ -611,6 +612,15 @@ class ChatAgent(Agent):
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
+        # The session anchor (#3078) — read ONCE here, off whatever the store
+        # already holds (this turn's own live row may already be stored, on
+        # the flows that write it before their run), and passed explicitly to
+        # both reads below instead of each re-reading it. The chat pre-warm's
+        # own anchor (``MessageStore.anchor_for_arrival``) is the sibling read
+        # for a turn that has not arrived yet.
+        anchor = self.db.messages.session_anchor(
+            sender, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+        )
         # The related earlier exchanges (#3010) — computed once per turn here,
         # where the live message's own embedding happens, and read by
         # ``_dynamic_system_section`` on every loop step.  A delivery turn's
@@ -620,14 +630,14 @@ class ChatAgent(Agent):
         # The once-per-session state message (#3089) — computed once per turn
         # here too, read by ``_build_messages`` to insert right after the
         # leading system message.
-        self._session_state = self._session_state_section(sender)
+        self._session_state = self._session_state_section(sender, anchor)
         # One numbered link table per turn (#2717) — created here, beside the run
         # identity, and passed to the history render, the tool surface and the
         # loop alike; the reply is expanded through it before it is returned.
         table = handles if handles is not None else HandleTable()
         try:
             self._current_message = prompt
-            history = self.get_history(sender, thread_parent_id=thread_parent_id)
+            history = self.get_history(sender, thread_parent_id=thread_parent_id, anchor=anchor)
             # Past replies are stored with real URLs — converted to this turn's
             # handles here, so a URL the model READS always arrives as a handle
             # (#2717).  User turns are the user's own words and stay as typed.
@@ -684,6 +694,52 @@ class ChatAgent(Agent):
 
     # ── Message building ────────────────────────────────────────────────
 
+    def _build_session_prefix_messages(
+        self,
+        history: list[HistoryTurn] | None,
+        system_prompt: str | None,
+        session_state: str | None,
+    ) -> list[LlmMessage]:
+        """The reused PREFIX half (#3078): the leading system message, the
+        once-per-session state message, and history — the SAME method the
+        real turn (``_build_messages`` below) and the chat pre-warm both call.
+
+        A DIFFERENT NAME from the base ``Agent._build_prefix_messages`` on
+        purpose — not an override of it (which would need the SAME
+        signature; a required third parameter here would violate the
+        Liskov substitution rule the base class's own internal call relies
+        on): this method calls ``super()._build_prefix_messages`` itself and
+        is never reached polymorphically through ``Agent._build_messages``.
+
+        ``session_state`` is a REQUIRED, explicit parameter rather than an
+        implicit read of ``self._session_state`` — the pre-warm computes its
+        own text (off its own, possibly-rotated anchor) and passes it here
+        directly, never touching ``self`` at all, so nothing races a
+        foreground turn's own ``self._session_state`` (#3078). The real
+        turn passes its own value the same way, from ``_build_messages``.
+
+        ``super()._build_prefix_messages`` returns ``[system][…history]``
+        (#2756) — the leading system message, which carries the tool
+        schemas right behind it (``raw_template.render_prompt``), then the
+        growing history. ``session_state`` is inserted right after index 0
+        and before any history, so the shape is
+        ``[system][session-state][…history]``: a SECOND leading system
+        message, confirmed (#3089) to render as its OWN system turn on
+        gemma's raw-template transport (the one every provider — prod's
+        oMLX and OpenRouter alike — renders from, #2829), with no tool
+        re-declaration, regardless of what sits on either side of it. Only
+        the degraded chat-completions FALLBACK (used when the
+        raw-template faithfulness check fails) merges two leading system
+        messages into one before rendering — oMLX's own request
+        normalisation, confirmed by reading ``omlx/api/utils.py``'s
+        ``prepare_system_messages_for_template`` — which loses the cache
+        boundary between them but not the content (joined with a blank
+        line), and only on that named degraded path."""
+        messages = super()._build_prefix_messages(history, system_prompt)
+        if session_state:
+            messages.insert(1, LlmMessage(role=MessageRole.SYSTEM, content=session_state))
+        return messages
+
     def _build_messages(
         self,
         prompt: str,
@@ -695,33 +751,20 @@ class ChatAgent(Agent):
         """Build messages, inserting the session-state message and injecting
         page context as a synthetic tools result.
 
-        ``super()`` returns ``[system][…history, state, live]`` (#2756 — the
-        per-turn state system message right BEFORE the live turn's own USER
-        message — the ordinary ask's own words, or a delivery turn's prefixed
-        trigger, #2974).  The once-per-session state message (#3089,
-        ``self._session_state``) is inserted right after index 0 — the leading
-        system message, which carries the tool schemas right behind it
-        (``raw_template.render_prompt``) — and before any history, so the
-        final shape is ``[system][session-state][…history, state, live]``:
-        a SECOND leading system message, confirmed (#3089) to render as its
-        OWN system turn on gemma's raw-template transport (the one every
-        provider — prod's oMLX and OpenRouter alike — renders from, #2829),
-        with no tool re-declaration, regardless of what sits on either side
-        of it.  Only the degraded chat-completions FALLBACK (used when the
-        raw-template faithfulness check fails) merges two leading system
-        messages into one before rendering — oMLX's own request
-        normalisation, confirmed by reading ``omlx/api/utils.py``'s
-        ``prepare_system_messages_for_template`` — which loses the cache
-        boundary between them but not the content (joined with a blank
-        line), and only on that named degraded path.  The synthetic
-        page-context assistant-call + tool-result appended below land AFTER
-        everything, so the full shape is
-        ``[system][session-state][…state][live][assistant][tool]``.  Page
-        context only ever rides an ordinary turn in practice — a delivery
-        turn never carries one."""
-        messages = super()._build_messages(prompt, history, system_prompt, images=images)
-        if self._session_state:
-            messages.insert(1, LlmMessage(role=MessageRole.SYSTEM, content=self._session_state))
+        Composes the reused prefix (``_build_session_prefix_messages`` above,
+        passed THIS turn's own ``self._session_state`` explicitly — never
+        read implicitly inside it) with the per-turn dynamic system message
+        and the live turn (#2756). The synthetic page-context assistant-call
+        + tool-result appended below land AFTER everything, so the full
+        shape is
+        ``[system][session-state][…history][state][live][assistant][tool]``.
+        Page context only ever rides an ordinary turn in practice — a
+        delivery turn never carries one."""
+        messages = self._build_session_prefix_messages(history, system_prompt, self._session_state)
+        dynamic = self._dynamic_system_section(handles=handles)
+        if dynamic:
+            messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
+        messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
         if self._pending_page_context:
             self._inject_page_context(
                 messages,
@@ -839,7 +882,9 @@ class ChatAgent(Agent):
             if section
         )
 
-    def _session_state_section(self, user: str | None) -> str | None:
+    def _session_state_section(
+        self, user: str | None, anchor: SessionAnchor | None = None
+    ) -> str | None:
         """Jobs + Your memory + Recent activity + About the user
         (``SelfStateHeader.render``) + the conversation map — the ONE
         session-state system message (#3089), inserted by ``_build_messages``
@@ -850,6 +895,12 @@ class ChatAgent(Agent):
         as a tool result or a delivery turn in history, so repeating it here
         would be the duplication #3089 rules out.  Only an idle rotation (a
         NEW session, a new ``as_of``) changes what this says.
+
+        ``anchor`` (#3078) lets a caller that already read the session anchor
+        (``_dispatch_turn``, which reads it ONCE and passes it here and to
+        ``get_history`` rather than each re-reading it) hand it straight
+        through.  ``None`` — every direct test call, unchanged — computes it
+        the same way this always has.
 
         ``None`` for a caller with no user (there's no session to bound
         against, and no store map worth showing without one) — a delivery
@@ -866,13 +917,29 @@ class ChatAgent(Agent):
         reads its one-to-one line ids off, never a second map."""
         if user is None:
             return None
-        as_of = self._session_as_of(user)
+        if anchor is None:
+            anchor = self.db.messages.session_anchor(
+                user, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+            )
+        return self._render_session_state(user, anchor, self._conversation_map_for(user))
+
+    def _render_session_state(
+        self, user: str, anchor: SessionAnchor, conversation_map: ConversationMap
+    ) -> str | None:
+        """The session-state text for an explicit anchor and map (#3078) — the
+        ONE render (``SelfStateHeader`` + ``ConversationMap``) both
+        ``_session_state_section`` above (passing THIS turn's own cached
+        ``_conversation_map_for`` instance) and the chat pre-warm (passing a
+        fresh, local one — ``ConversationMap`` caches nothing itself, so a
+        fresh instance renders byte-identical text; only the INSTANCE isn't
+        shared, never the data) call, so there is no second renderer."""
+        as_of = self._session_as_of(anchor)
         map_horizon = map_horizon_start(self.db, self.config.runtime)
         return "\n\n".join(
             section
             for section in [
                 SelfStateHeader(self.db, user, as_of, map_horizon=map_horizon).render(),
-                self._conversation_map_for(user).render(),
+                conversation_map.render(),
             ]
             if section
         )
@@ -889,15 +956,16 @@ class ChatAgent(Agent):
             self._conversation_map = ConversationMap(self.db, user, self.config.runtime)
         return self._conversation_map
 
-    def _session_as_of(self, user: str) -> datetime:
+    def _session_as_of(self, anchor: SessionAnchor) -> datetime:
         """The instant every once-per-session section is bounded by (#3089):
-        the current session's own first turn, read off
-        ``MessageStore.session_anchor`` (#3077) — the SAME anchor
-        ``ConversationMap`` and the history window each read independently of
-        this call, the established pattern for a value every renderer derives
-        from the same stored state rather than shares as one object.  Falls
-        back to the live clock only when the store holds no turn at all yet
-        (``session_started_at`` is ``None``) — there is nothing earlier to
+        the current session's own first turn — ``anchor.session_started_at``,
+        a pure read of the CALLER's own anchor (#3078: never a second
+        ``MessageStore.session_anchor``/``anchor_for_arrival`` read here, so
+        the session-state message and the history window — and, for the chat
+        pre-warm, its own hypothetical "if the next turn arrived now" —
+        always agree on the same anchor their caller already read once).
+        Falls back to the live clock only when the store holds no turn at all
+        yet (``session_started_at`` is ``None``) — there is nothing earlier to
         freeze against on the very first turn ever.
 
         Always timezone-AWARE (``stored_as_utc``): ``session_started_at`` is
@@ -907,9 +975,6 @@ class ChatAgent(Agent):
         list_all``'s ``row.updated_at`` check, ``describe_next_run``'s
         ``now``) compares two aware values, never a naive one against an
         aware one."""
-        anchor = self.db.messages.session_anchor(
-            user, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-        )
         return stored_as_utc(anchor.session_started_at or self.db.clock.now())
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
@@ -973,21 +1038,85 @@ class ChatAgent(Agent):
         return f"### Current Browser Page\n{context.title}\n{context.url}"
 
     def get_history(
-        self, user: str, thread_parent_id: int | None = None
+        self,
+        user: str,
+        thread_parent_id: int | None = None,
+        anchor: SessionAnchor | None = None,
     ) -> list[HistoryTurn] | None:
         """Recent conversation messages for chat continuity.
 
         When a quote-reply's thread parent is known (resolved by the channel
         from the quote's own anchor, never re-guessed here), walks that
         specific thread, capped like the standard window — the last
-        ``CHAT_HISTORY_TURNS`` user turns with their replies (#2746).
+        ``CHAT_HISTORY_TURNS`` user turns with their replies (#2746), with
+        NO anchor (ruled on #3077: a quote-reply's chain has no session of
+        its own, so it keeps its own smaller, short-chain approximation).
         Falls back to the standard recent-message window.
+
+        ``anchor`` (#3078) lets a caller that already read the session
+        anchor (``_dispatch_turn``, once, shared with
+        ``_session_state_section``) hand it straight through to
+        ``_build_conversation`` instead of a second read.  ``None`` — every
+        direct test call, unchanged — computes it the same way this always
+        has.
         """
         if thread_parent_id is not None:
             thread_history = self.db.messages.get_thread_history(thread_parent_id)
             if thread_history:
                 return self._trim_history_window(thread_history)
-        return self._build_conversation(user)
+        if anchor is None:
+            anchor = self.db.messages.session_anchor(
+                user, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+            )
+        return self._build_conversation(user, anchor)
+
+    # ── Chat pre-warm (#3078) ────────────────────────────────────────────
+
+    async def build_prewarm_prefix(
+        self, user: str, idle_seconds: int, now: datetime
+    ) -> tuple[list[LlmMessage], list[dict]]:
+        """The next chat turn's rendered PREFIX — the leading system message,
+        the session-state message, and history — built through the exact
+        render methods a real turn's own ``_build_messages`` uses (#3078),
+        for the chat pre-warm's background task.
+
+        Touches NO shared agent state: a fresh, local ``ConversationMap``
+        (never ``self._conversation_map_for``), a pure ``get_tools()`` read
+        for the tool schemas (never ``self._install_tools`` /
+        ``self._tool_registry``), and no write to ``self._session_state`` /
+        ``self._related_exchanges`` / ``self._current_message`` anywhere.  A
+        foreground turn starting mid-build and this call racing it can
+        never corrupt either one's state — there is nothing of this call's
+        own left lying on ``self`` to corrupt.
+
+        ``now`` is the one clock read: the anchor is "the next turn's own,
+        if it arrived at ``now``" (``MessageStore.anchor_for_arrival``),
+        which structurally comes back already rotated once the idle gap has
+        passed — no separate rotated/mid-session branch anywhere here.
+
+        Excludes the per-turn dynamic system message and the live turn on
+        purpose (the caller renders only up to here): those differ every
+        turn and sit after the cache boundary, so warming them would warm
+        nothing reusable.
+        """
+        anchor = self.db.messages.anchor_for_arrival(user, idle_seconds, now)
+        session_state = self._render_session_state(
+            user, anchor, ConversationMap(self.db, user, self.config.runtime)
+        )
+        history = self._build_conversation(user, anchor)
+        system_prompt = await self._build_system_prompt(user)
+        messages = self._build_session_prefix_messages(history, system_prompt, session_state)
+        return messages, self._tool_schemas()
+
+    def _tool_schemas(self) -> list[dict]:
+        """The chat pre-warm's own read of the tool-schema block (#3078) — a
+        PURE function over ``get_tools()``, never ``_install_tools`` (which
+        writes ``self._tool_registry``, shared agent state a background warm
+        must never touch while a foreground turn might be installing its
+        own). The same per-tool conversion (``Tool.to_ollama_tool()``) a real
+        turn's own ``self._tool_registry.get_ollama_tools()`` uses after
+        ``_install_tools`` — just never written anywhere."""
+        return [tool.to_ollama_tool() for tool in self.get_tools()]
 
     # ── Memory description embedding ──────────────────────────────────────
 

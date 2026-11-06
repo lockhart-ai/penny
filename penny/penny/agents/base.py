@@ -2392,18 +2392,29 @@ class Agent:
         carries them: a past turn reads only its text.  (Only ordinary turns
         pass images — a delivery turn never carries an attachment of its own.)
         """
-        effective = system_prompt or self.system_prompt
-
-        messages = [LlmMessage(role=MessageRole.SYSTEM, content=effective)]
-        if history:
-            for turn in history:
-                messages.extend(self._expand_history_turn(turn))
-
+        messages = self._build_prefix_messages(history, system_prompt)
         dynamic = self._dynamic_system_section(handles=handles)
         if dynamic:
             messages.append(LlmMessage(role=MessageRole.SYSTEM, content=dynamic))
 
         messages.append(LlmMessage(role=MessageRole.USER, content=prompt, images=images or None))
+        return messages
+
+    def _build_prefix_messages(
+        self, history: list[HistoryTurn] | None, system_prompt: str | None
+    ) -> list[LlmMessage]:
+        """The reused PREFIX half of :meth:`_build_messages` (#3078, split out
+        so the chat pre-warm renders the exact same bytes through the exact
+        same method, never a second copy): the leading system message plus
+        the growing, append-only history — everything a server-side prefix
+        cache reuses turn to turn. The per-turn dynamic message and the live
+        turn (below, in :meth:`_build_messages`) differ every turn and sit
+        after the cache boundary, so they are never part of this half."""
+        effective = system_prompt or self.system_prompt
+        messages = [LlmMessage(role=MessageRole.SYSTEM, content=effective)]
+        if history:
+            for turn in history:
+                messages.extend(self._expand_history_turn(turn))
         return messages
 
     def _expand_history_turn(self, turn: HistoryTurn) -> list[LlmMessage]:
@@ -2654,8 +2665,14 @@ class Agent:
             lines.append(f"- {memory.name} ({memory.type}, {count} entries) — {memory.description}")
         return "\n".join(lines)
 
-    def _build_conversation(self, sender: str) -> list[HistoryTurn]:
+    def _build_conversation(self, sender: str, anchor: SessionAnchor) -> list[HistoryTurn]:
         """Build conversation history as strict user/assistant alternation.
+
+        ``anchor`` (#3078) is REQUIRED — the caller's own single read of the
+        session anchor (``MessageStore.session_anchor`` for a real turn,
+        whose live row may already be stored; ``MessageStore.anchor_for_arrival``
+        for the chat pre-warm's hypothetical "if the next turn arrived now"),
+        shared with the session-state section instead of each re-reading it.
 
         Fetches a raw pool of recent messages (``MESSAGE_CONTEXT_LIMIT``, no
         time boundary), merges consecutive INCOMING messages with newlines
@@ -2737,9 +2754,6 @@ class Agent:
                     )
                 else:
                     conversation.append(HistoryTurn(role, msg.content, run_id, mechanism))
-            anchor = self.db.messages.session_anchor(
-                sender, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-            )
             if anchor.live_turn_open:
                 # The open live turn — the live user message whose row some
                 # flows write before its run (#3077) — is not history: it

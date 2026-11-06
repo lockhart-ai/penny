@@ -1173,21 +1173,55 @@ class MessageStore:
 
         Same filters as ``count_user_turns`` (incoming, non-reaction, no run
         id — joined messages render inside their run's own history, #2985), so
-        the session is counted over exactly the turns the window renders.  A
-        session is the newest run of consecutive turns with no gap of at least
-        ``idle_seconds`` between stored timestamps: the scan walks newest
-        first and stops at the first such gap.  With no gap in the whole
-        history, everything is one session.
+        the session is counted over exactly the turns the window renders.
 
-        The OPEN live turn is excluded from both counts: when the store's
-        newest non-reaction row is a run-less incoming one, no reply has
-        followed the newest exchange — the live user message whose row some
-        flows write before its run — and it must occupy none of the window's
-        slots, wherever each reader sits relative to the row's write.
-
-        Timestamps are compared against timestamps — never against a clock —
-        so the same stored state always yields the same session.
+        Reads whatever is ALREADY stored (the live turn's own row included,
+        on the flows that write it before its run) and hands the timestamps to
+        :meth:`_anchor_from_timestamps` (#3078) — the pure rule every reader of
+        an anchor shares. :meth:`anchor_for_arrival` is the sibling read for a
+        turn that has not arrived yet.
         """
+        timestamps, newest_outgoing = self._incoming_timestamps(sender)
+        return self._anchor_from_timestamps(timestamps, newest_outgoing, idle_seconds)
+
+    def anchor_for_arrival(
+        self, sender: str, idle_seconds: int, arrives_at: datetime
+    ) -> SessionAnchor:
+        """The anchor the NEXT turn would see if it arrived at ``arrives_at``
+        (#3078) — the chat pre-warm's own read, used to render the prefix the
+        next real turn will have before it exists.
+
+        Runs the SAME pure rule as :meth:`session_anchor`
+        (:meth:`_anchor_from_timestamps`), with ``arrives_at`` put in front of
+        the stored timestamps as the open live turn — so whether the gap since
+        the newest stored turn already clears ``idle_seconds`` (a rotation),
+        the ``CHAT_SESSION_MAX_TURNS`` cap, and ``session_started_at`` all come
+        out of the existing rule, structurally, with no separate "has this
+        rotated?" flag anywhere.
+
+        Only correct when nothing is ALREADY open in the store — the chat
+        pre-warm's own precondition (it only runs while no chat turn is in
+        progress). A real turn's own anchor keeps reading :meth:`session_anchor`
+        unmodified, since its live row may already be stored.
+
+        ``arrives_at`` is stripped to naive (#3078) before it joins the
+        stored timestamps: a stored column round-trips naive (naive IS UTC,
+        the same convention every other reader of a stored stamp follows),
+        while the caller's own clock read (``Clock.now()``) is aware — mixing
+        the two would raise subtracting them in :meth:`_anchor_from_timestamps`.
+        """
+        timestamps, newest_outgoing = self._incoming_timestamps(sender)
+        naive_arrival = arrives_at.replace(tzinfo=None) if arrives_at.tzinfo else arrives_at
+        return self._anchor_from_timestamps(
+            [naive_arrival, *timestamps], newest_outgoing, idle_seconds
+        )
+
+    def _incoming_timestamps(self, sender: str) -> tuple[list[datetime], datetime | None]:
+        """The DB read :meth:`session_anchor` and :meth:`anchor_for_arrival` share
+        (#3078): every stored incoming, non-reaction, run-less timestamp for
+        ``sender`` (newest first — joined messages render inside their own run's
+        history, #2985, so they are excluded here too), and the newest outgoing
+        reply's own timestamp (``None`` with no reply yet)."""
         with self._session() as session:
             timestamps = list(
                 session.exec(
@@ -1211,6 +1245,27 @@ class MessageStore:
                 .order_by(*_NEWEST_MESSAGE_FIRST)
                 .limit(1)
             ).first()
+        return timestamps, newest_outgoing
+
+    @staticmethod
+    def _anchor_from_timestamps(
+        timestamps: list[datetime], newest_outgoing: datetime | None, idle_seconds: int
+    ) -> SessionAnchor:
+        """The pure rule (#3077, split out for #3078): a session is the newest
+        run of consecutive turns with no gap of at least ``idle_seconds``
+        between stored timestamps — the scan walks newest first and stops at
+        the first such gap. With no gap in the whole history, everything is
+        one session.
+
+        The OPEN live turn — ``timestamps[0]`` is newer than the newest reply —
+        is excluded from both counts: it must occupy none of the window's
+        slots, wherever each reader sits relative to the row's write.
+
+        Timestamps are compared against timestamps — never against a clock —
+        so the same ``timestamps`` always yields the same session, whether
+        they came from the store as-is (:meth:`session_anchor`) or with a
+        hypothetical arrival prepended (:meth:`anchor_for_arrival`).
+        """
         idle = timedelta(seconds=idle_seconds)
         session_turns = 1
         for newer, older in zip(timestamps, timestamps[1:], strict=False):
@@ -1228,7 +1283,9 @@ class MessageStore:
             total_user_turns=total,
             session_turns=session_turns,
             live_turn_open=live_turn_open,
-            session_started_at=self._session_started_at(timestamps, session_turns, live_turn_open),
+            session_started_at=MessageStore._session_started_at(
+                timestamps, session_turns, live_turn_open
+            ),
         )
 
     @staticmethod

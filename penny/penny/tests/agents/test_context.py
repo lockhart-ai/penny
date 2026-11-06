@@ -15,6 +15,16 @@ from penny.llm.models import LlmMessage
 from penny.tests.conftest import TEST_SENDER
 from penny.tools.link_handles import HandleTable
 
+
+def _current_session_anchor(penny, sender: str = TEST_SENDER):
+    """The anchor ``_build_conversation`` now takes explicitly (#3078, so the
+    real turn and the chat pre-warm share one read) — computed the same way
+    ``ChatAgent._dispatch_turn`` does, for a test building conversation
+    history directly rather than through a live turn."""
+    idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+    return penny.db.messages.session_anchor(sender, idle_seconds)
+
+
 # ── History window size — the pure session-window function (#3077) ──────
 
 
@@ -107,7 +117,9 @@ async def test_conversation_builds_user_assistant_turns(
             recipient=TEST_SENDER,
         )
 
-        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        conversation = penny.chat_agent._build_conversation(
+            TEST_SENDER, _current_session_anchor(penny)
+        )
         assert len(conversation) == 2
         assert conversation[0][0] == "user"
         assert "hello penny" in conversation[0][1]
@@ -156,7 +168,9 @@ async def test_conversation_merges_consecutive_user_turns_only(
             recipient=TEST_SENDER,
         )
 
-        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        conversation = penny.chat_agent._build_conversation(
+            TEST_SENDER, _current_session_anchor(penny)
+        )
         # One merged user turn, then "response" and "proactive thought" as
         # two SEPARATE assistant turns.
         assert len(conversation) == 3
@@ -227,7 +241,9 @@ async def test_conversation_carries_the_replies_and_their_run_ids(
         )
         assert autonomous_id is not None
 
-        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        conversation = penny.chat_agent._build_conversation(
+            TEST_SENDER, _current_session_anchor(penny)
+        )
         assistant_turns = [turn.content for turn in conversation if turn.role == "assistant"]
         assert assistant_turns == [
             # The browse read a page, so the reply-side URL fallback had a source
@@ -268,7 +284,9 @@ async def test_conversation_window_grows_within_a_session_as_a_prefix_extension(
                 parent_id=user_id,
                 recipient=TEST_SENDER,
             )
-            conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+            conversation = penny.chat_agent._build_conversation(
+                TEST_SENDER, _current_session_anchor(penny)
+            )
             contents = [turn.content for turn in conversation]
             # The new turn's history is the previous turn's, plus this
             # exchange — never a replacement.
@@ -306,7 +324,9 @@ async def test_conversation_cuts_back_to_the_window_after_an_idle_gap(
                 recipient=TEST_SENDER,
                 timestamp=stale,
             )
-        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        conversation = penny.chat_agent._build_conversation(
+            TEST_SENDER, _current_session_anchor(penny)
+        )
         assert len(conversation) == 16  # one session — everything kept
 
         # The ninth exchange lands an hour later: a new session, the window
@@ -323,7 +343,9 @@ async def test_conversation_cuts_back_to_the_window_after_an_idle_gap(
             parent_id=user_id,
             recipient=TEST_SENDER,
         )
-        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        conversation = penny.chat_agent._build_conversation(
+            TEST_SENDER, _current_session_anchor(penny)
+        )
         # The cut dropped exchanges 1-3; the window is the last 5 pre-session
         # exchanges plus the new session's own first one (its turn is now
         # logged, so the build sees session_turns=1 — the live turn itself
@@ -369,7 +391,9 @@ async def test_conversation_cuts_once_at_the_session_cap(
                 parent_id=user_id,
                 recipient=TEST_SENDER,
             )
-            conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+            conversation = penny.chat_agent._build_conversation(
+                TEST_SENDER, _current_session_anchor(penny)
+            )
             sizes.append(len(conversation) // 2)
 
         # Grows one per turn to the cap (8 at the 11th), cuts once at the 12th
@@ -500,7 +524,9 @@ async def test_conversation_window_follows_config_value(
                 recipient=TEST_SENDER,
             )
 
-        conversation = penny.chat_agent._build_conversation(TEST_SENDER)
+        conversation = penny.chat_agent._build_conversation(
+            TEST_SENDER, _current_session_anchor(penny)
+        )
         assert [turn.content for turn in conversation] == [
             "user message 5",
             "reply 5",
