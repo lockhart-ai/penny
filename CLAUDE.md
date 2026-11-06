@@ -205,11 +205,15 @@ make prod             # Deploy penny (no dev override)
 make prod-stop        # Stop prod's containers — the one definition of stopping prod;
                       # prod-run and the deploy loop's shutdown (#3015) both use it
 make prod-watch       # Auto-deploy loop (#2955): watches origin/main, fast-forwards and
-                      # redeploys through prod-build/prod-run as new commits land; a
-                      # successful build restarts Penny only once she has been idle for
-                      # DEPLOY_IDLE_SECONDS (default 600, read off the newest
-                      # promptlog/messagelog timestamps by scripts/penny-idle.sh, #3026);
-                      # stopping it (Ctrl+C/TERM) also stops Penny's containers (prod-stop, #3015)
+                      # redeploys through prod-build/prod-run as new commits land; only
+                      # commits touching the Penny server build and restart her
+                      # (DEPLOY_RUNTIME_PATHS, #3049 — default penny/ outside its tests
+                      # and *.md, similarity/, github_api/, docker-compose.yml; other
+                      # commits just advance the checkout); a successful build restarts
+                      # Penny only once she has been idle for DEPLOY_IDLE_SECONDS
+                      # (default 600, read off the newest promptlog/messagelog
+                      # timestamps by scripts/penny-idle.sh, #3026); stopping it
+                      # (Ctrl+C/TERM) also stops Penny's containers (prod-stop, #3015)
 make kill             # Tear down containers and remove local images
 make clean-project-images # Remove this compose project's built images + anon volumes (alias target of kill)
 make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes
