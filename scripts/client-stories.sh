@@ -60,7 +60,11 @@ xcrun simctl install "$UDID" "$APP_PATH"
 for story_id in $STORY_IDS; do
     echo "client-stories: $story_id"
     xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -PennyStory "$story_id" >/dev/null
-    sleep 2
+    # 4s, not 2s (#3042): the live dock's heavier stories (a full stream plus
+    # a long conversation underneath) take longer than simpler screens to lay
+    # out their first frame — at 2s the screenshot still caught the launch
+    # screen, not the story, with no error of any kind to say so.
+    sleep 4
     xcrun simctl io "$UDID" screenshot "$OUTPUT_DIR/$story_id.png" >/dev/null
 done
 

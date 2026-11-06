@@ -1,4 +1,5 @@
 import Foundation
+import PennyDesign
 import SwiftUI
 import Testing
 import UIKit
@@ -8,64 +9,110 @@ import UIKit
 @Suite(.serialized)
 @MainActor
 struct MessageViewModelTests {
-    @Test func progressStatusKeepsStepWhileToolsChangeAndOmitsMaximum() {
+    /// The live dock's stream (#3042): each step's thinking (if the server
+    /// sent one) before its tool rows, oldest step first, and a tool row
+    /// reads "running" only while its step is the run's last — never a
+    /// per-tool flag the wire protocol has no event for.
+    @Test func liveDockItemsOrderThinkingThenToolsAndMarkOnlyTheLastStepRunning() {
         var run = AgentProgressRunItem(id: "progress", agent: "chat", scope: .foreground)
-        #expect(run.currentStatus == "Penny is working")
-
         run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
-        #expect(run.currentStatus == "Working • Step 1")
-
+        run.steps[0].thinking = "Checking the forecast."
         run.steps[0].tools.append(AgentProgressToolItem(name: "browse", arguments: [
             "queries": .array([.string("https://www.example.com/article")])
         ]))
-        #expect(run.currentStatus == "Working • Step 1: Reading example.com")
-
-        run.steps[0].tools.append(AgentProgressToolItem(name: "search_emails", arguments: [:]))
-        #expect(run.currentStatus == "Working • Step 1: Searching emails")
-
         run.steps.append(AgentProgressStepItem(number: 2, maxSteps: nil))
-        #expect(run.currentStatus == "Working • Step 2")
-    }
+        run.steps[1].tools.append(AgentProgressToolItem(name: "search_emails", arguments: [:]))
 
-    @Test func progressStatusFormatsSearchesAndUnknownTools() {
-        var run = AgentProgressRunItem(id: "progress", agent: "chat", scope: .foreground)
-        run.steps.append(AgentProgressStepItem(number: 3, maxSteps: 20, tools: [
-            AgentProgressToolItem(name: "browse", arguments: ["queries": .array([.string("sample query")])])
-        ]))
-        #expect(run.currentStatus == "Working • Step 3: Searching \"sample query\"")
+        let items = run.liveDockItems
+        #expect(items.count == 3)
 
-        run.steps[0].tools = [AgentProgressToolItem(name: "custom_tool", arguments: [:])]
-        #expect(run.currentStatus == "Working • Step 3: Using custom_tool")
-    }
-
-    @Test func typingRowWrapsLongStatusAndSupportsLargerText() throws {
-        let status = "Working • Step 1: Searching \"a longer query that wraps onto multiple lines\""
-        let regular = ImageRenderer(content: TypingRow(status: status, isFadingOut: false))
-        regular.proposedSize = ProposedViewSize(width: 280, height: nil)
-        let regularImage = try #require(regular.uiImage)
-
-        let wide = ImageRenderer(content: TypingRow(status: status, isFadingOut: false))
-        wide.proposedSize = ProposedViewSize(width: 600, height: nil)
-        let wideImage = try #require(wide.uiImage)
-        #expect(regularImage.size.height > wideImage.size.height)
-
-        let large = ImageRenderer(content: TypingRow(status: status, isFadingOut: false).dynamicTypeSize(.accessibility3))
-        large.proposedSize = ProposedViewSize(width: 280, height: nil)
-        let largeImage = try #require(large.uiImage)
-        #expect(largeImage.size.width == 280)
-        #expect(largeImage.size.height > regularImage.size.height)
-
-        let preview = ImageRenderer(content: VStack(spacing: 12) {
-            TypingRow(status: "Working • Step 1", isFadingOut: false)
-            TypingRow(status: "Working • Step 1: Reading example.com", isFadingOut: false)
-            TypingRow(status: status, isFadingOut: false)
+        guard case .thinking(let thinkingText) = items[0].kind else {
+            Issue.record("expected the first item to be the step's thinking")
+            return
         }
-        .padding()
-        .background(Color(.systemGroupedBackground))
-        .environment(\.colorScheme, .light))
-        preview.proposedSize = ProposedViewSize(width: 360, height: nil)
-        let previewData = try #require(preview.uiImage?.pngData())
-        try previewData.write(to: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("progress-layouts.png"))
+        #expect(thinkingText == "Checking the forecast.")
+
+        guard case .tool(_, let firstLabel, let firstRunning) = items[1].kind else {
+            Issue.record("expected the second item to be step 1's tool")
+            return
+        }
+        #expect(firstLabel == "Read example.com")
+        #expect(firstRunning == false)
+
+        guard case .tool(_, let secondLabel, let secondRunning) = items[2].kind else {
+            Issue.record("expected the third item to be step 2's tool")
+            return
+        }
+        #expect(secondLabel == "Searched emails")
+        #expect(secondRunning)
+    }
+
+    /// The generic default (#3042) humanises a tool this switch has no
+    /// bespoke case for and appends its first string argument — the
+    /// behaviour an unreleased plugin tool gets, never "not covered".
+    @Test func liveDockPresentationFormatsSearchesAndTheGenericDefault() {
+        let search = AgentProgressToolItem(name: "browse", arguments: ["queries": .array([.string("sample query")])])
+        #expect(liveDockPresentation(for: search).label == "Searched \"sample query\"")
+
+        let noArguments = AgentProgressToolItem(name: "custom_tool", arguments: [:])
+        #expect(liveDockPresentation(for: noArguments).label == "Custom tool")
+
+        let withArgument = AgentProgressToolItem(name: "check_availability", arguments: ["date": .string("2026-11-10")])
+        #expect(liveDockPresentation(for: withArgument).label == "Check availability · 2026-11-10")
+
+        let withURLArgument = AgentProgressToolItem(name: "read_page", arguments: ["url": .string("https://ipma.pt/en/otempo/")])
+        #expect(liveDockPresentation(for: withURLArgument).label == "Read page · ipma.pt")
+    }
+
+    /// The dock clears on completion (#3042): a foreground run with no
+    /// reply shows it, and once the run disappears with nothing to morph
+    /// into, the grace window runs out and the dock goes back to hidden.
+    @Test func syncDockShowsTheLiveRunAndClearsAfterTheGraceWindowWithNoReply() async {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        var run = AgentProgressRunItem(id: "run-1", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+
+        viewModel.syncDock()
+        #expect(viewModel.dockPhase == .working)
+        #expect(viewModel.dockRun?.id == "run-1")
+
+        viewModel.client.agentProgressRuns.removeValue(forKey: "run-1")
+        viewModel.syncDock()
+        #expect(viewModel.dockPhase == .working, "stays working through the grace window, not hidden instantly")
+
+        try? await Task.sleep(for: .milliseconds(1_700))
+        #expect(viewModel.dockPhase == .hidden)
+        #expect(viewModel.dockRun == nil)
+    }
+
+    /// A reply carrying the dock's own run id starts the resolve morph
+    /// immediately — never waiting on `run_finished` — and the dock clears
+    /// once the morph's duration elapses (#3042).
+    @Test func beginResolvingIfMatchedStartsTheMorphThenClearsTheDock() async {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        var run = AgentProgressRunItem(id: "run-2", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        let unrelatedReply = ChatMessage(
+            id: 98, serverID: 98, createdAt: Date(), content: "Unrelated.",
+            sourceHint: nil, runID: "some-other-run", imageAttachments: [], isOutgoing: false
+        )
+        let reply = ChatMessage(
+            id: 99, serverID: 99, createdAt: Date(), content: "Done.",
+            sourceHint: nil, runID: "run-2", imageAttachments: [], isOutgoing: false
+        )
+        viewModel.beginResolvingIfMatched(appendedMessages: [unrelatedReply, reply])
+
+        #expect(viewModel.dockPhase == .resolving)
+        #expect(viewModel.resolvingMessageID == 99)
+
+        try? await Task.sleep(for: .milliseconds(500))
+        #expect(viewModel.dockPhase == .hidden)
+        #expect(viewModel.dockRun == nil)
+        #expect(viewModel.resolvingMessageID == nil)
     }
 
     @Test func messageLayoutDefaultsToCurrentMessageStyle() {
@@ -434,19 +481,19 @@ struct MessageViewModelTests {
         #expect(viewModel.displayedMessages.map(\.content) == ["Schedule update"])
     }
 
-    @Test func typingIndicatorVisibilityReflectsSelectedFilter() {
+    @Test func liveDockVisibilityReflectsSelectedFilter() {
         let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
 
-        #expect(viewModel.shouldShowTypingIndicator)
+        #expect(viewModel.shouldShowLiveDock)
 
         viewModel.selectedMessageFilter = .chat
-        #expect(viewModel.shouldShowTypingIndicator)
+        #expect(viewModel.shouldShowLiveDock)
 
         viewModel.selectedMessageFilter = .penny
-        #expect(viewModel.shouldShowTypingIndicator == false)
+        #expect(viewModel.shouldShowLiveDock == false)
 
         viewModel.selectedMessageFilter = .collector
-        #expect(viewModel.shouldShowTypingIndicator == false)
+        #expect(viewModel.shouldShowLiveDock == false)
     }
 
     @Test func searchHistoryDefaultsToCompactAndLoadsSelectedFilter() async {

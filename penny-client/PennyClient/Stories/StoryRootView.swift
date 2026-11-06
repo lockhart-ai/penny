@@ -16,8 +16,14 @@ struct StoryRootView: View {
             AppShellView(chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages))
         case .chatBubbles:
             AppShellView(chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.bubbleMessages))
+        case .chatWorkingStart:
+            AppShellView(chatViewModel: StoryFixtures.workingStartViewModel())
         case .chatWorking:
             AppShellView(chatViewModel: StoryFixtures.workingViewModel())
+        case .chatWorkingLong:
+            AppShellView(chatViewModel: StoryFixtures.workingLongViewModel())
+        case .chatResolving:
+            AppShellView(chatViewModel: StoryFixtures.resolvingViewModel(), dockResolveProgress: 0.5)
         case .chatDisconnected:
             AppShellView(chatViewModel: StoryFixtures.disconnectedViewModel())
         case .chatCollectorsBadge:
@@ -81,8 +87,6 @@ struct StoryRootView: View {
             )
         case .sheetSearch:
             MessageView(viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages), isShowingSearchStory: true)
-        case .sheetActivity:
-            MessageView(viewModel: StoryFixtures.workingViewModel(), isShowingActivity: true)
         case .sheetCardDetail:
             MessageView(
                 viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages),
