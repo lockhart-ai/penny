@@ -69,7 +69,7 @@ enum StoryFixtures {
     /// fixed point instead of animating it, so the shot is reproducible.
     static func resolvingViewModel() -> MessageView.ViewModel {
         chatViewModel(
-            messages: bubbleMessages + [resolvingReplyMessage],
+            messages: bubbleMessages + [resolvingUserQuestion, resolvingReplyMessage],
             workingSteps: workingSteps,
             workingElapsedSeconds: 8
         )
@@ -175,12 +175,24 @@ enum StoryFixtures {
         ]
     }
 
+    /// The question the mid-morph story's dock is answering (#3042,
+    /// `chat-resolving`) — sits directly above the dock/reply slot, same as
+    /// the working stories' user question, so the reply reads as an answer
+    /// to something shown rather than to the collector digest above it.
+    static var resolvingUserQuestion: ChatMessage {
+        ChatMessage(
+            id: 18, serverID: 18, createdAt: Date().addingTimeInterval(-20),
+            content: "Can you check the ferry times for this weekend?",
+            sourceHint: nil, imageAttachments: [], isOutgoing: true
+        )
+    }
+
     /// The reply the mid-morph story's dock is becoming (#3042,
     /// `chat-resolving`) — carries the working run's own story id so it
     /// reads as the run's own output, same as the bubble story's replies.
     static var resolvingReplyMessage: ChatMessage {
         ChatMessage(
-            id: 18, serverID: 18, createdAt: Date(),
+            id: 19, serverID: 19, createdAt: Date(),
             content: "Found three sailings this weekend — cheapest is Friday morning, before the fare bump.",
             sourceHint: nil, runID: "story-run",
             toolCalls: 3, durationMs: 8_000,
