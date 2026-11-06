@@ -73,13 +73,27 @@ class BrowserIncoming(BaseModel):
     page_context: PageContext | None = None
 
 
+class LinkThumbnail(BaseModel):
+    """One link card's own thumbnail, captured by the extension at read time
+    (#3068): the link's address exactly as the link index writes it, the card's
+    image (absolute, never a data URI), and the label the index line carries."""
+
+    url: str
+    image_url: str
+    title: str
+
+
 class BrowserToolResponse(BaseModel):
     """A tool execution result from the browser extension.
 
     ``reading`` (#2388) is the extension's own article/link-list mark for a
     ``browse_url`` read.  ``None`` when the extension never sent it — an older
     extension — which the channel treats as the ARTICLE default, logged rather than
-    silent (see ``BrowserChannel._handle_tool_response``)."""
+    silent (see ``BrowserChannel._handle_tool_response``).
+
+    ``link_thumbnails`` (#3068) pairs each link a front-page read cites with
+    that link's own card image; ``[]`` when the read captured none, and the
+    same when an older extension sent none at all."""
 
     type: str
     request_id: str
@@ -87,6 +101,7 @@ class BrowserToolResponse(BaseModel):
     error: str | None = None
     image: str | None = None
     reading: PageReading | None = None
+    link_thumbnails: list[LinkThumbnail] = []
 
 
 class BrowserOutgoing(BaseModel):

@@ -6,7 +6,9 @@
  * Bundled with esbuild (not compiled by tsc) since content scripts can't use imports.
  */
 
+import type { LinkThumbnail } from "../protocol.js";
 import { readPage } from "./page_text.js";
+import { captureLinkThumbnails } from "./link_thumbnails.js";
 
 const MAX_CHARS = 50_000;
 
@@ -22,6 +24,10 @@ interface PageData {
   // the shape is duplicated rather than imported, same as every other field here).
   reading: "article" | "link_list";
   image: string;
+  // Each link card's own thumbnail address (#3068) — captured off the live
+  // document on every read, carried unchanged onto the wire as the tool
+  // response's `link_thumbnails`.
+  link_thumbnails: LinkThumbnail[];
   ready: boolean;
   extracted: boolean;
 }
@@ -79,6 +85,7 @@ function extract(): PageData {
       text: "",
       reading: "article",
       image: "",
+      link_thumbnails: [],
       ready: false,
       extracted: false,
     };
@@ -95,6 +102,10 @@ function extract(): PageData {
     text: (page?.text ?? "").slice(0, MAX_CHARS),
     reading: page?.reading ?? "article",
     image: extractMetaImage(),
+    // Captured off the live document on every read — a page whose index
+    // reading lost still offers its cards' pictures (a reply citing one of
+    // its links can use that link's own image, #3068).
+    link_thumbnails: captureLinkThumbnails(document),
     ready: true,
     extracted: page !== null,
   };

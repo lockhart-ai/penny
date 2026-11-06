@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 
 from penny.channels.base import IncomingMessage
 from penny.channels.browser.channel import BrowserChannel, ConnectionInfo, PendingToolRequest
+from penny.channels.browser.models import BrowserToolResponse, LinkThumbnail
 from penny.channels.turns import TurnRegistry
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
@@ -1083,7 +1084,9 @@ class TestBrowserRegister:
     async def test_tool_response_reading_mark_reaches_send_tool_request(self, db):
         """The extension's own reading mark (#2388) rides the real ``tool_response``
         message through ``_handle_tool_response`` into ``send_tool_request``'s
-        result — never guessed by the server from the text's shape."""
+        result — never guessed by the server from the text's shape.  The same
+        message's ``link_thumbnails`` (#3068) parses into typed entries alongside
+        it, and an older extension's missing key parses as []."""
         channel = BrowserChannel(
             host="localhost",
             port=9999,
@@ -1126,6 +1129,34 @@ class TestBrowserRegister:
         asyncio.create_task(fake_tool_response())
         result = await channel.send_tool_request("browse_url", {"url": "https://example.com"})
         assert result == ("page content here", None, PageReading.LINK_LIST)
+
+        # #3068: the same message shape carrying ``link_thumbnails`` parses
+        # into typed entries (the read above tolerates it on the real path);
+        # an older extension's response without the key parses as [].
+        parsed = BrowserToolResponse.model_validate(
+            {
+                "type": "tool_response",
+                "request_id": "resp-1",
+                "result": "page content here",
+                "reading": "link_list",
+                "link_thumbnails": [
+                    {
+                        "url": "https://example.com/story",
+                        "image_url": "https://example.com/story.jpg",
+                        "title": "The story",
+                    }
+                ],
+            }
+        )
+        assert parsed.link_thumbnails == [
+            LinkThumbnail(
+                url="https://example.com/story",
+                image_url="https://example.com/story.jpg",
+                title="The story",
+            )
+        ]
+        bare = BrowserToolResponse(type="tool_response", request_id="resp-2", result="page")
+        assert bare.link_thumbnails == []
 
     @pytest.mark.asyncio
     async def test_tool_response_missing_reading_defaults_to_article_and_logs(self, db, caplog):

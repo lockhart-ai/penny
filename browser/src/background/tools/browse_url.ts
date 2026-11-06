@@ -7,7 +7,7 @@
  * UnreadableUrlError at once — see unreadable.ts.
  */
 
-import { PageReading, TAB_LOAD_TIMEOUT_MS } from "../../protocol.js";
+import { type LinkThumbnail, PageReading, TAB_LOAD_TIMEOUT_MS } from "../../protocol.js";
 import { logStep } from "../ws_log.js";
 import { UnreadableUrlError, isUnreadableFailure } from "./unreadable.js";
 
@@ -21,6 +21,9 @@ interface PageData {
   text: string;
   reading: PageReading;
   image: string;
+  // Each link card's own thumbnail address (#3068) — captured by the content
+  // script, carried unchanged onto the tool response.
+  link_thumbnails: LinkThumbnail[];
   ready: boolean;
   extracted: boolean;
 }
@@ -280,6 +283,7 @@ interface BrowseResult {
   text: string;
   image: string;
   reading: PageReading;
+  link_thumbnails: LinkThumbnail[];
 }
 
 async function formatResult(data: PageData): Promise<BrowseResult> {
@@ -291,6 +295,9 @@ async function formatResult(data: PageData): Promise<BrowseResult> {
     text: `Title: ${data.title}\nURL: ${data.url}\n\n${data.text}`,
     image,
     reading: data.reading,
+    // An older content script's PageData carries no capture at all — same
+    // shape as the wire's absent mark: the server treats it as none.
+    link_thumbnails: data.link_thumbnails ?? [],
   };
 }
 

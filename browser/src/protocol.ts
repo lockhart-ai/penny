@@ -107,6 +107,23 @@ export interface WsOutgoingToolResponse {
   // Absent on a tool response that read no page (an error, or a tool other than
   // `browse_url`); the server treats a missing mark as ARTICLE, logged not silent.
   reading?: PageReading;
+  // Each link card's own thumbnail address (#3068) — captured by the content
+  // script's `captureLinkThumbnails` on a `browse_url` read, so a reply citing
+  // one of the page's links can get that link's own picture (the page's meta
+  // image is the front page's, not the article's).  Empty when the read
+  // captured none; absent on an older extension, which the server treats the
+  // same as empty.
+  link_thumbnails?: LinkThumbnail[];
+}
+
+/** One link's thumbnail, keyed by the link's own address.  `url` is exactly
+ *  the `anchor.href` the link index (`page_text.ts`) writes into the read, so
+ *  the server normalises both the same way; `image_url` is absolute and never
+ *  a data URI; `title` is the link label, normalised as the index line's. */
+export interface LinkThumbnail {
+  url: string;
+  image_url: string;
+  title: string;
 }
 
 export interface WsOutgoingHeartbeat {
