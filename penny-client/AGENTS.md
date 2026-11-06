@@ -4,6 +4,8 @@
 
 For task execution, use [`../docs/penny-client-agent-task-workflow.md`](../docs/penny-client-agent-task-workflow.md). For reviewing Swift/iOS pull requests, use [`../docs/penny-client-pr-review-guide.md`](../docs/penny-client-pr-review-guide.md) together with this file.
 
+Before opening a PR, review your own diff against the whole client review guide — including its "Hard-won patterns (Swift/iOS)" section — not just the parts that seem relevant. State in the PR body that you did this review, and list any item you could not meet and why (an empty list if none). If you find a new unhealthy pattern while working, add it to "Hard-won patterns (Swift/iOS)" in the same PR as the fix.
+
 ## Project Context
 PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The app shell — the centred glass tab capsule over every screen — lives in `PennyClient/PennyClient/Views/AppShellView.swift`; the chat UI lives in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
 Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode tools for reading, editing, diagnostics, and builds.
