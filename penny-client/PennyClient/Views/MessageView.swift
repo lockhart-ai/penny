@@ -48,6 +48,12 @@ struct MessageView: View {
                 .safeAreaInset(edge: .bottom) {
                     composer
                 }
+                // The page background, full-bleed: the scroll view's own
+                // background stops at its safe-area-adjusted bottom edge
+                // (the composer's inset plus the field glass's reservation),
+                // and without this the window shows through as a white band
+                // above the composer.
+                .background(Color(.systemGroupedBackground).ignoresSafeArea())
                 .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $isShowingActivity) {
@@ -126,13 +132,6 @@ struct MessageView: View {
             // The dissolve ramp: content scrolling out at the composer's
             // edge fades into the page background over the same gap the
             // last message keeps below it.
-            .overlay(alignment: .bottom) {
-                BottomFade(
-                    background: Color(.systemGroupedBackground),
-                    height: Tokens.composerFadeBleed,
-                    opaqueThrough: 0
-                )
-            }
             .overlay(alignment: .bottom) {
                 if viewModel.hasHiddenNewMessages {
                     showNewMessagesPill

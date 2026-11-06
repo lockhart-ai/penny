@@ -129,15 +129,15 @@ public enum Tokens {
     public static let composerSendGlyphSize: CGFloat = 22
     public static let composerAttachGlyphFrame: CGFloat = 32
     /// A pending photo's thumbnail inside the field: `composerPendingThumbWidth`
-    /// wide, cropped to the attach mock's 16:10 box, rounded, with the glass
-    /// xmark as a `composerPendingXFrame` circle riding its leading edge,
-    /// inset `composerPendingXInset` from it.
+    /// wide, cropped to the attach mock's 16:10 box, rounded, with the small
+    /// glass xmark (`composerPendingXFrame`) at its top-trailing corner,
+    /// nudged `composerPendingXInset` outside the corner.
     public static let composerPendingThumbWidth: CGFloat = 56
     public static let composerPendingThumbHeight: CGFloat = 35
     public static let composerPendingThumbCorner: CGFloat = 8
     public static let composerPendingInset: CGFloat = 10
-    public static let composerPendingXFrame: CGFloat = 28
-    public static let composerPendingXGlyph: CGFloat = 11
+    public static let composerPendingXFrame: CGFloat = 20
+    public static let composerPendingXGlyph: CGFloat = 9
     public static let composerPendingXInset: CGFloat = 4
     /// The bottom fade's dissolve ramp above the composer — the gap the
     /// chat's content keeps below its last message, so the last message's

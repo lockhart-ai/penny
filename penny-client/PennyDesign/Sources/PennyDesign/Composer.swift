@@ -146,7 +146,6 @@ public struct Composer: View {
             .padding(.trailing, Tokens.composerFieldTrailingInset)
             .padding(.bottom, pendingImage == nil ? 0 : Tokens.composerPendingInset)
         }
-        .glassEffect(fieldGlass, in: fieldShape)
         .animation(.easeInOut(duration: 0.2), value: hasDraft)
     }
 
@@ -160,8 +159,8 @@ public struct Composer: View {
     }
 
     /// A pending photo: 56pt wide, cropped to the attach mock's 16:10 box
-    /// and rounded, with the glass xmark as a circle riding its leading
-    /// edge, vertically centred — the `chat-pending` screen's mark.
+    /// and rounded, with the small glass xmark at its top-trailing corner,
+    /// nudged slightly outside it — the `chat-pending` screen's mark.
     private func pendingThumbnail(_ image: UIImage) -> some View {
         Image(uiImage: image)
             .resizable()
@@ -171,7 +170,7 @@ public struct Composer: View {
                 height: Tokens.composerPendingThumbHeight
             )
             .clipShape(RoundedRectangle(cornerRadius: Tokens.composerPendingThumbCorner, style: .continuous))
-            .overlay(alignment: .leading) {
+            .overlay(alignment: .topTrailing) {
                 Button {
                     onRemovePendingImage()
                 } label: {
@@ -185,7 +184,7 @@ public struct Composer: View {
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
-                .offset(x: Tokens.composerPendingXInset)
+                .offset(x: Tokens.composerPendingXInset, y: -Tokens.composerPendingXInset)
                 .accessibilityLabel("Remove photo")
             }
             .padding(.top, Tokens.composerPendingInset)

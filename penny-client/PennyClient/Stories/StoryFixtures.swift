@@ -66,17 +66,40 @@ enum StoryFixtures {
         return viewModel
     }
 
-    /// A solid-colour placeholder photo for the pending state — rendered
-    /// here, since the composer's pending image is a `UIImage`, not a data
-    /// URL like the bubbles' attachments.
+    /// A rendered placeholder photo for the pending state — a gradient sky
+    /// over a stylised bird on a branch, so the composer's thumbnail reads
+    /// as a photo, not a grey block. Rendered here, since the composer's
+    /// pending image is a `UIImage`, not a data URL like the bubbles'
+    /// attachments.
     private static var pendingPhoto: UIImage {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 500))
+        let size = CGSize(width: 800, height: 500)
+        let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { context in
-            UIColor(red: 0.72, green: 0.78, blue: 0.80, alpha: 1).setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
-            UIColor(red: 0.23, green: 0.36, blue: 0.30, alpha: 1).setFill()
-            context.fill(CGRect(x: 40, y: 160, width: 260, height: 200))
-            context.fill(CGRect(x: 360, y: 200, width: 220, height: 160))
+            context.cgContext.drawLinearGradient(
+                CGGradient(
+                    colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                    colors: [
+                        UIColor(red: 0.98, green: 0.84, blue: 0.62, alpha: 1).cgColor,
+                        UIColor(red: 0.55, green: 0.72, blue: 0.83, alpha: 1).cgColor
+                    ] as CFArray,
+                    locations: [0, 1]
+                )!,
+                start: .zero,
+                end: CGPoint(x: 0, y: size.height),
+                options: []
+            )
+            // A branch across the lower third.
+            UIColor(red: 0.36, green: 0.25, blue: 0.17, alpha: 1).setFill()
+            context.fill(CGRect(x: 60, y: 360, width: 700, height: 18))
+            // The bird: a robin's breast and wing, dark head, on the branch.
+            UIColor(red: 0.35, green: 0.55, blue: 0.75, alpha: 1).setFill()
+            context.fill(CGRect(x: 320, y: 250, width: 170, height: 120))
+            UIColor(red: 0.86, green: 0.48, blue: 0.28, alpha: 1).setFill()
+            context.fill(CGRect(x: 330, y: 300, width: 150, height: 70))
+            UIColor(red: 0.16, green: 0.20, blue: 0.26, alpha: 1).setFill()
+            context.fill(CGRect(x: 470, y: 240, width: 70, height: 60))
+            // A tail.
+            context.fill(CGRect(x: 280, y: 270, width: 50, height: 40))
         }
     }
 
