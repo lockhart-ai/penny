@@ -77,7 +77,7 @@ anchor is ``(run <id>)``, read by ``run_get`` verbatim.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
 from penny.agents.base import Agent
@@ -101,7 +101,9 @@ USER_CLIP_CHARS = 280
 SHORT_CHARS = 80
 # The bounded read the map's exchanges come from: the horizon's messages, capped.
 # Past it the horizon's OLDEST rows drop — the same once-a-day front loss the
-# date horizon itself has, never a mid-map churn.
+# date horizon itself has, never a mid-map churn.  A day folded past the cap
+# counts its true size off the store (`_day_item_count`), never off this read
+# (#3056).
 MESSAGE_POOL = 200
 # At most this many recorded outcomes (reads + writes + changes) render on one
 # line, with a "…" tail naming that more exist.
@@ -318,10 +320,19 @@ class ConversationMap:
         zone = self._zone()
         today = self.db.clock.now().astimezone(zone).date()
         days = max(int(self.runtime.CHAT_MAP_DAYS), 1)
-        start_local = datetime.combine(
-            today - timedelta(days=days - 1), datetime.min.time(), tzinfo=zone
+        return self._utc_day_bounds((today - timedelta(days=days - 1)).isoformat())[0]
+
+    def _utc_day_bounds(self, date_iso: str) -> tuple[datetime, datetime]:
+        """One local date's bounds ``[start, end)`` in stored (naive UTC)
+        time — the window a per-day count reads over."""
+        local_date = date.fromisoformat(date_iso)
+        zone = self._zone()
+        start_local = datetime.combine(local_date, datetime.min.time(), tzinfo=zone)
+        end_local = start_local + timedelta(days=1)
+        return (
+            start_local.astimezone(UTC).replace(tzinfo=None),
+            end_local.astimezone(UTC).replace(tzinfo=None),
         )
-        return start_local.astimezone(UTC).replace(tzinfo=None)
 
     def _zone(self) -> tzinfo:
         return zone_or_utc(user_timezone_name(self.db))
@@ -510,7 +521,12 @@ class ConversationMap:
         is never folded again — that pass would change nothing, so the loop
         would never end (#3014).  Never line-by-line: trimming the front one
         line per turn would break the cached prefix every turn, while a
-        whole-day line is fixed once rendered."""
+        whole-day line is fixed once rendered.
+
+        The fold line's count is the day's TRUE item count (``_day_item_count``)
+        — a pure function of the day (#3056), never of whatever part of it the
+        bounded ``MESSAGE_POOL`` read still holds, which shrinks turn by turn
+        on a day that outgrew the pool."""
         ceiling = int(self.runtime.CHAT_MAP_MAX_LINES)
         lines = list(lines)
         while len(lines) > ceiling:
@@ -524,7 +540,7 @@ class ConversationMap:
             if oldest_date is None:
                 break
             oldest_iso = next(line.date_iso for line in lines if line.date == oldest_date)
-            covered = sum(line.exchanges for line in lines if line.date == oldest_date)
+            covered = self._day_item_count(oldest_iso)
             fold = self._Line(
                 text=(
                     f"- {oldest_date} · {covered} {self.DAY_LINE_TAIL} — "
@@ -538,6 +554,16 @@ class ConversationMap:
             rest = [line for line in lines if line.date != oldest_date]
             lines = [*rest[:first], fold, *rest[first:]]
         return lines
+
+    def _day_item_count(self, date_iso: str) -> int:
+        """The day's true item count — ``db.messages.count_map_items`` over the
+        whole local day, not a sum off the bounded read (#3056): a day that
+        outgrew ``MESSAGE_POOL`` loses its OLDEST rows from the read as new
+        messages arrive, so a count read off the lines would shrink turn by
+        turn and bust the cached prefix at the fold line.  The store's own
+        definition is the row-level half of ``_in_horizon``'s grouping."""
+        since, until = self._utc_day_bounds(date_iso)
+        return self.db.messages.count_map_items(since=since, until=until)
 
     def _anchor(self) -> str:
         """The closing reads — FIXED text, never recomputed: it names the form
