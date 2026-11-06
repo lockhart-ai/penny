@@ -169,7 +169,7 @@ enum StoryFixtures {
             StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("moka pot coffee bean grind size")])], thinking: "Checking what grind size works best for a moka pot."),
             StoryWorkingStep(toolName: "memory_lookup", arguments: ["query": .string("coffee bean grind size notes")], thinking: "Worth checking what she's already noted about grind size."),
             StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("https://example.com/coffee-roasting-guide")])], thinking: "That roasting guide should have a sizing chart."),
-            StoryWorkingStep(toolName: "memory_lookup", arguments: ["query": .string("hand grinder price notes")], thinking: "She asked about grinder prices too — checking memory first."),
+            StoryWorkingStep(toolName: "memory_lookup", arguments: ["query": .string("hand grinder price notes")], thinking: "They asked about grinder prices too — checking memory first."),
             StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("comandante c40 price")])], thinking: "Worth a quick price check on the Comandante."),
             StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("https://example.com/grinder-comparison")])], thinking: "One more source before comparing the two.")
         ]
@@ -184,7 +184,7 @@ enum StoryFixtures {
             content: "Found three sailings this weekend — cheapest is Friday morning, before the fare bump.",
             sourceHint: nil, runID: "story-run",
             toolCalls: 3, durationMs: 8_000,
-            imageAttachments: [], isOutgoing: false
+            imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
         )
     }
 

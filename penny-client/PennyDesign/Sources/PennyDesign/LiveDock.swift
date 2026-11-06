@@ -78,11 +78,12 @@ private struct LiveDockRow: View {
 /// screen height (`Tokens.dockScreenCapFraction`); past that the body
 /// scrolls internally, pinned to the newest item, with a soft fade at the
 /// top edge. It sits in the conversation's flow on rainbow-edged glass —
-/// the last item, where Penny's reply will appear. The resolve morph is a
-/// plain crossfade (`contentOpacity`), not a shared glass identity: two
-/// views simultaneously claiming one `glassEffectID` is unsupported and
-/// crashes, and the dock's content and the bubble's are different shapes
-/// at different positions, not two frames of the same shape.
+/// the last item, where Penny's reply will appear. The caller drives the
+/// resolve morph from outside (a `matchedGeometryEffect` interpolating
+/// this frame into the reply bubble's, in the same flow slot) rather than
+/// this component fading its own content — a shared `glassEffectID` was
+/// tried first and dropped: two views simultaneously claiming one glass
+/// identity is unsupported and crashes.
 ///
 /// The avatar is handed in (`@ViewBuilder avatar`) — the same seam
 /// `TopTabBar` uses for the chat tab's icon: the kit sizes and rings
@@ -96,10 +97,6 @@ public struct LiveDock<Avatar: View>: View {
     public let step: Int
     public let startedAt: Date
     public var queued: Int = 0
-    /// Fades the dock's content during the resolve morph — the stream
-    /// fading out while the arriving reply fades in through its own,
-    /// separate arrival animation.
-    public var contentOpacity: Double?
     @ViewBuilder public var avatar: () -> Avatar
 
     public init(
@@ -107,14 +104,12 @@ public struct LiveDock<Avatar: View>: View {
         step: Int,
         startedAt: Date,
         queued: Int = 0,
-        contentOpacity: Double? = nil,
         @ViewBuilder avatar: @escaping () -> Avatar
     ) {
         self.items = items
         self.step = step
         self.startedAt = startedAt
         self.queued = queued
-        self.contentOpacity = contentOpacity
         self.avatar = avatar
     }
 
@@ -224,7 +219,6 @@ public struct LiveDock<Avatar: View>: View {
                 proxy.scrollTo(bottomMarker, anchor: .bottom)
             }
         }
-        .opacity(contentOpacity ?? 1)
     }
 }
 

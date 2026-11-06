@@ -213,7 +213,13 @@ extension MessageView {
             dockPendingTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(Tokens.dockResolveGraceSeconds))
                 guard let self, !Task.isCancelled, self.dockPhase == .working else { return }
-                self.finishDock()
+                // This is the dock just fading out with nothing to morph
+                // into, so it's animated here explicitly — unlike the later,
+                // purely-bookkeeping `finishDock()` after a resolve morph
+                // (the view has nothing left to visibly settle by then).
+                withAnimation(.easeInOut(duration: Tokens.dockMorphDuration)) {
+                    self.finishDock()
+                }
             }
         }
 
