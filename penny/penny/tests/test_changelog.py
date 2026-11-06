@@ -36,11 +36,12 @@ def _log(*records: str) -> str:
     return "\x1e".join(records)
 
 
-def test_parse_commit_log_keeps_feat_fix_perf_refactor_in_penny_scope():
-    """The four kept types, in the `penny` scope, each become an entry whose
-    PR number and text come straight off the commit title — never the hash,
-    and never the leading `type(scope):` prefix either (#2891) — when none
-    of them has a body to supply a first sentence instead."""
+def test_parse_commit_log_strips_the_conventional_prefix_from_the_title_fallback():
+    """Any conventional title (`feat`/`fix`/`perf`/`refactor` in the `penny`
+    scope among them) becomes an entry whose PR number and text come straight
+    off the commit title — never the hash, and never the leading
+    `type(scope):` prefix either (#2891) — when none of them has a body to
+    supply a first sentence instead."""
     log = _log(
         _record("aaa1111", "feat(penny): add a new way to save a note (#101)"),
         _record("bbb2222", "fix(penny): stop dropping a tool result (#102)"),
@@ -100,15 +101,37 @@ def test_parse_commit_log_falls_back_to_the_stripped_title_with_no_usable_body()
     assert entries == [ChangelogEntry(pr=2820, text="drop the per-tool reasoning argument")]
 
 
-def test_parse_commit_log_drops_other_types_and_scopes():
-    """`test`/`chore`/`docs` and every non-`penny` scope are dropped, along
-    with a merge commit or any record with no `(#N)` suffix to key on."""
+def test_parse_commit_log_keeps_every_pr_commit_whatever_its_type_or_scope():
+    """(#3063) There is no title-scope filter any more: the snapshot
+    (`scripts/store_git_info.sh` over `scripts/runtime-paths`) already holds
+    only commits that touch Penny's runtime, so every `type(scope):`
+    combination — and a bare title with no conventional prefix at all —
+    becomes an entry, the title fallback stripped of the prefix when there is
+    one."""
     log = _log(
         _record("aaa1111", "test(eval): port a chat case (#201)"),
         _record("bbb2222", "chore(ci): bump a pinned action (#202)"),
         _record("ccc3333", "docs(penny): note a design decision (#203)"),
         _record("ddd4444", "fix(harness): resolve a bare RUN on eval-report (#204)"),
         _record("eee5555", "fix(client): memory view crash (#205)"),
+        _record("hhh8888", "bump the embedding model dependency (#208)"),
+    )
+    entries = parse_commit_log(log)
+    assert entries == [
+        ChangelogEntry(pr=201, text="port a chat case"),
+        ChangelogEntry(pr=202, text="bump a pinned action"),
+        ChangelogEntry(pr=203, text="note a design decision"),
+        ChangelogEntry(pr=204, text="resolve a bare RUN on eval-report"),
+        ChangelogEntry(pr=205, text="memory view crash"),
+        ChangelogEntry(pr=208, text="bump the embedding model dependency"),
+    ]
+
+
+def test_parse_commit_log_drops_a_commit_with_no_pr_suffix():
+    """A commit whose title carries no `(#N)` suffix (a merge commit, a
+    hand-pushed commit) has no PR number to record the entry under — the
+    changelog log's cursor is keyed by PR (#2973) — so it is skipped."""
+    log = _log(
         _record("fff6666", "Merge branch 'main' into feature"),
         _record("ggg7777", "fix(penny): a commit with no PR suffix at all"),
     )

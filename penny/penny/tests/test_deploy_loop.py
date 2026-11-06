@@ -31,13 +31,21 @@ import time
 import pytest
 
 _SCRIPT = pathlib.Path("scripts") / "deploy-loop.sh"
-# The script's own default DEPLOY_RUNTIME_PATHS (#3049), spelled the way a test
-# passes it through. Duplicated here deliberately and pinned to the script (and
-# the Makefile's pass-through default) by test_non_runtime_commits below, so
-# the three copies cannot drift apart silently.
-_RUNTIME_PATHS_DEFAULT = (
-    "penny :(exclude)penny/penny/tests/ :(exclude)*.md similarity github_api docker-compose.yml"
+# The shared runtime-path rule (#3063): one git pathspec per line in
+# scripts/runtime-paths — the file both the deploy loop (its default
+# DEPLOY_RUNTIME_PATHS) and scripts/store_git_info.sh read. Pinned to the file
+# itself by test_runtime_paths_rule_is_the_one_shared_file below; spelled
+# joined-for-env where a test passes it as the override variable.
+_RUNTIME_PATHS_RULE = (
+    "penny",
+    ":(exclude)penny/penny/tests/",
+    ":(exclude)*.md",
+    "similarity",
+    "github_api",
+    "docker-compose.yml",
 )
+_RUNTIME_PATHS_JOINED = " ".join(_RUNTIME_PATHS_RULE)
+_SCRIPT_PATHS_FILE = pathlib.Path("scripts") / "runtime-paths"
 _IDLE_SCRIPT = pathlib.Path("scripts") / "penny-idle.sh"
 _MAKEFILE = pathlib.Path("Makefile")
 _COMPOSE_FILE = pathlib.Path("docker-compose.yml")
@@ -516,14 +524,14 @@ def test_ahead_clean_ff_able_rebuilds_and_restarts(tmp_path, repos):
 
 
 def test_non_runtime_commits_advance_head_without_building(tmp_path, repos):
-    """(#3049) With the script's REAL default runtime paths, commits touching
-    only docs or only penny's own test suite change nothing Penny runs: HEAD
-    still fast-forwards, but nothing is built and the running child is never
-    restarted — the whole burst of merges is judged by one diff from the
-    deployed commit to the new HEAD, and that diff is quiet."""
+    """(#3049) With the shared runtime-path rule as the override, commits
+    touching only docs or only penny's own test suite change nothing Penny
+    runs: HEAD still fast-forwards, but nothing is built and the running child
+    is never restarted — the whole burst of merges is judged by one diff from
+    the deployed commit to the new HEAD, and that diff is quiet."""
     origin, clone_dir, _first = repos
     dep = _start_deployment(
-        tmp_path, clone_dir, env_overrides={"DEPLOY_RUNTIME_PATHS": _RUNTIME_PATHS_DEFAULT}
+        tmp_path, clone_dir, env_overrides={"DEPLOY_RUNTIME_PATHS": _RUNTIME_PATHS_JOINED}
     )
     try:
         _commit_path(origin, "docs/notes.md", "docs", "docs: a note")
@@ -535,17 +543,71 @@ def test_non_runtime_commits_advance_head_without_building(tmp_path, repos):
         _wait_until(lambda: "no Penny server changes" in _read_or_empty(dep.deploy_log))
         assert not dep.build_log.exists(), "a non-runtime commit runs no build"
         assert _read_or_empty(dep.run_log).count("\n") == 1, "the child was never restarted"
+    finally:
+        _stop(dep.proc)
 
-        # The default lives in three places (the script's fallback, the Makefile's
-        # pass-through, this file's override above) — a static read pins them to
-        # one spelling, like the prod-tag test pins its three files.
-        script_text = pathlib.Path(_script_path()).read_text()
-        assert f"DEPLOY_RUNTIME_PATHS='{_RUNTIME_PATHS_DEFAULT}'" in script_text, (
-            "the script's own default pathspec list is the one the tests exercise"
+
+def test_runtime_paths_rule_is_the_one_shared_file():
+    """(#3063) The rule lives in scripts/runtime-paths alone: the file's
+    non-comment lines are exactly the runtime pathspec list, the deploy loop
+    reads it as its default (no inline copy of the list in the script), and
+    the Makefile no longer carries its own copy to pass through. A static
+    read — the loop's subprocess tests above cover the behaviour, with the
+    rule itself stubbed by the override variable."""
+    file_lines = [
+        stripped
+        for line in pathlib.Path(_repo_file(_SCRIPT_PATHS_FILE)).read_text().splitlines()
+        if (stripped := line.split("#", 1)[0].strip())
+    ]
+    assert file_lines == list(_RUNTIME_PATHS_RULE), (
+        "scripts/runtime-paths is the one definition of Penny's runtime paths"
+    )
+    script_text = pathlib.Path(_script_path()).read_text()
+    assert "runtime-paths" in script_text, (
+        "the deploy loop reads the shared file for its default DEPLOY_RUNTIME_PATHS"
+    )
+    assert _RUNTIME_PATHS_JOINED not in script_text, (
+        "the script carries no inline copy of the list to drift away from the file"
+    )
+    makefile_text = pathlib.Path(_repo_file(_MAKEFILE)).read_text()
+    assert "DEPLOY_RUNTIME_PATHS" not in makefile_text, (
+        "the Makefile carries no copy of the list either — the script's file read"
+        " is the default, and an environment override still reaches it"
+    )
+
+
+def test_default_runtime_paths_come_from_the_shared_file(tmp_path, repos):
+    """(#3063) With no DEPLOY_RUNTIME_PATHS override (the variable passed
+    empty, exactly what the script sees unset), the loop's default is read off
+    scripts/runtime-paths — so a commit touching a path the rule names builds
+    and restarts, and one touching none of them is skipped, with no list
+    configured anywhere in the environment. The clone carries the rule file
+    itself: in production the deploy checkout always does, since it is
+    committed."""
+    origin, clone_dir, _first = repos
+    (clone_dir / "scripts").mkdir()
+    (clone_dir / "scripts" / "runtime-paths").write_text(
+        pathlib.Path(_repo_file(_SCRIPT_PATHS_FILE)).read_text()
+    )
+    dep = _start_deployment(tmp_path, clone_dir, env_overrides={"DEPLOY_RUNTIME_PATHS": ""})
+    try:
+        docs_sha = _commit_path(origin, "docs/notes.md", "docs", "docs: a note")
+
+        _tick(dep.proc)
+
+        _wait_until(lambda: _git(clone_dir, "rev-parse", "HEAD") == docs_sha)
+        _wait_until(lambda: "no Penny server changes" in _read_or_empty(dep.deploy_log))
+        assert not dep.build_log.exists(), (
+            "a non-runtime commit runs no build under the file default"
         )
-        makefile_text = pathlib.Path(_repo_file(_MAKEFILE)).read_text()
-        assert _RUNTIME_PATHS_DEFAULT in makefile_text, (
-            "the Makefile's DEPLOY_RUNTIME_PATHS pass-through default matches"
+
+        second = _commit_path(
+            origin, "penny/penny/tools/new_tool.py", "x", "feat(penny): a tool (#2)"
+        )
+        _tick(dep.proc)
+        _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
+        assert f"built {second[:7]}" in _read_or_empty(dep.build_log), (
+            "a runtime commit deploys under the file default"
         )
     finally:
         _stop(dep.proc)
@@ -557,7 +619,7 @@ def test_runtime_commit_builds_and_restarts(tmp_path, repos):
     commit always did; the skip logic changes nothing on the runtime path."""
     origin, clone_dir, _first = repos
     dep = _start_deployment(
-        tmp_path, clone_dir, env_overrides={"DEPLOY_RUNTIME_PATHS": _RUNTIME_PATHS_DEFAULT}
+        tmp_path, clone_dir, env_overrides={"DEPLOY_RUNTIME_PATHS": _RUNTIME_PATHS_JOINED}
     )
     try:
         second = _commit_path(

@@ -1,0 +1,19 @@
+# The one rule for what counts as Penny's runtime (#3063): a commit touching
+# any of these git pathspecs is deployed by the auto-deploy loop
+# (scripts/deploy-loop.sh, `make prod-watch`) and announced in her `changelog`
+# (scripts/store_git_info.sh → penny.changelog) — restarting happens exactly
+# when the changelog announces, because both read this same file.
+#
+# One git pathspec per line; `#` starts a comment; blank lines are ignored.
+# The prod container is built from ./penny (penny/Dockerfile) and mounts
+# ./similarity and ./github_api read-only (docker-compose.yml), so those —
+# with docker-compose.yml itself — are what Penny runs; everything else
+# (browser/, penny-client/, docs/, scripts/, .github/, image_server/, the
+# Makefile) isn't. The excludes drop penny's own test suite and Markdown from
+# the penny/ include.
+penny
+:(exclude)penny/penny/tests/
+:(exclude)*.md
+similarity
+github_api
+docker-compose.yml

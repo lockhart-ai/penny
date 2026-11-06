@@ -167,11 +167,17 @@ docker-compose.override.yml     — Dev source volume overrides
 scripts/
   client-check.sh               — iOS client build + simulator test run (make client-check)
   eval-provider-lock.sh         — sourced by `make eval-remote`: one run at a time per pinned provider
+  runtime-paths                 — the one rule for what counts as Penny's runtime (#3063), one
+                                  git pathspec per line (`:(exclude)` lines included): read by
+                                  deploy-loop.sh as its default DEPLOY_RUNTIME_PATHS and by
+                                  store_git_info.sh for the changelog snapshot, so a commit is
+                                  announced in her `changelog` exactly when it is deployed
   deploy-loop.sh                — auto-deploy loop (#2955, `make prod-watch`): watches origin/main,
                                   fast-forwards and redeploys through `prod-build`/`prod-run` when it
                                   can, never resetting or checking out the tree; a failed build is
                                   remembered by HEAD's own advance (never retried, only the next new
-                                  commit); logs to data/penny/logs/deploy-loop.log
+                                  commit); restarts only on the shared runtime-path rule above;
+                                  logs to data/penny/logs/deploy-loop.log
   com.penny.deployloop.plist.template — launchd agent template for the loop; rendered by
                                   `make deploy-loop-plist`, never installed automatically
 .github/
@@ -207,9 +213,10 @@ make prod-stop        # Stop prod's containers — the one definition of stoppin
 make prod-watch       # Auto-deploy loop (#2955): watches origin/main, fast-forwards and
                       # redeploys through prod-build/prod-run as new commits land; only
                       # commits touching the Penny server build and restart her
-                      # (DEPLOY_RUNTIME_PATHS, #3049 — default penny/ outside its tests
-                      # and *.md, similarity/, github_api/, docker-compose.yml; other
-                      # commits just advance the checkout); a successful build restarts
+                      # (the shared rule scripts/runtime-paths, #3063 — the same
+                      # path rule scripts/store_git_info.sh snapshots the changelog
+                      # from, so a commit is announced exactly when it deploys;
+                      # other commits just advance the checkout); a successful build restarts
                       # Penny only once she has been idle for DEPLOY_IDLE_SECONDS
                       # (default 600, read off the newest promptlog/messagelog
                       # timestamps by scripts/penny-idle.sh, #3026); stopping it

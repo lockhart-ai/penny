@@ -19,9 +19,9 @@ installed) — so the host writes the RAW log only, with plain shell tools,
 and this module does the parsing entirely at RUNTIME, over whatever that
 file holds.
 
-The script writes a fixed bounded window — the newest few hundred raw
-commits, no cursor (#2973). No position or dedupe logic lives in Python
-here: whatever survives ``parse_commit_log``'s scope filter on that file IS
+The script writes a fixed bounded window — the newest few hundred commits
+touching the runtime paths, no cursor (#2973). No position or dedupe logic
+lives in Python here: whatever survives ``parse_commit_log`` on that file IS
 this deploy's candidate set — ``penny.changelog.record_new_entries`` decides
 by the ``changelog`` log itself (the log is the cursor) which of those to
 record, and records and announces that set as one, by construction.
@@ -38,6 +38,15 @@ falls back to the title itself, with its `type(scope):` prefix and trailing
 can mislead: a live sample read a `refactor(penny):` commit by `refactor`'s
 own real meaning, "same behaviour", and rationally concluded a tool-call
 argument removal had changed nothing for her).
+
+Since #3063 there is no title-scope filter here: WHICH commits reach this
+parser is decided by the shared runtime-path rule (`scripts/runtime-paths`
+— the snapshot logs only commits touching those paths, the same rule the
+deploy watcher restarts on), so every record in the dump is a runtime change
+whatever its `type(scope):`. What the title is still read for is the PR
+number — the `changelog` log's cursor is keyed by PR, so a commit whose
+title carries no trailing `(#N)` suffix (a merge commit, a hand-pushed
+commit) has nothing to be recorded under and is skipped.
 """
 
 from __future__ import annotations
@@ -57,16 +66,20 @@ COMMITS_PATH = Path(__file__).with_name("changelog_commits.txt")
 # can't separate records — ``scripts/store_git_info.sh``'s own
 # ``git log --pretty=format:'%H%x1f%s%x1f%b%x1e'``). ``<subject>`` is a
 # squash-merged PR's own conventional title with its trailing ``(#<pr>)``
-# GitHub appends. Kept types: `feat`/`fix`/`perf` are user-visible by
-# definition; `refactor` is kept too (#2891) — in this repo a "same
-# behaviour, different shape" change can still change what SHE sees (#2820
-# dropped a tool-call argument without changing what it did for the user).
-# Every other type (`test`/`chore`/`docs`) and every other scope
-# (`eval`/`harness`/`ci`/`client`/`browser`) is dropped: not hers to
-# announce.
+# GitHub appends. There is no title-scope filter any more (#3063): the
+# snapshot itself holds only commits touching the shared runtime-path rule,
+# so a record of any type or scope — or with no conventional prefix at all —
+# is hers to announce. The title is read only for the PR number (the
+# changelog log's cursor is keyed by PR — no suffix, no entry) and for the
+# title-fallback text.
 _RECORD_SEP = "\x1e"
 _FIELD_SEP = "\x1f"
-_SUBJECT_RE = re.compile(r"^(?:feat|fix|perf|refactor)\(penny\): (?P<rest>.+) \(#(?P<pr>\d+)\)$")
+_PR_SUFFIX_RE = re.compile(r"^(?P<title>.*) \(#(?P<pr>\d+)\)$")
+
+# A leading conventional-commit prefix on the title fallback —
+# ``feat(penny): ``, ``chore(ci): ``, a bare ``fix: `` — whatever the type or
+# scope (#3063): developer metadata the entry text is better without (#2891).
+_CONVENTIONAL_PREFIX_RE = re.compile(r"^[a-z]+(?:\([^)]*\))?: (?P<rest>.+)$")
 
 # A leading line of the body that's just an echo of ONE of the squashed
 # commits that made up the PR — the shape GitHub generated automatically
@@ -169,11 +182,13 @@ def parse_commit_log(text: str) -> list[ChangelogEntry]:
     — the only git/file plumbing around it (the script, ``load_commits``
     below) stays thin enough to need no test of its own.
 
-    A record whose subject doesn't match (a merge commit, a hand-written
-    commit with no PR suffix, any scope or type this changelog doesn't
-    carry) is silently skipped — not every commit is Penny's to announce.
-    Each kept record's text is its body's first sentence
-    (``first_body_sentence``) when it has one, else its title with the
+    Every record in the dump is a runtime commit — the snapshot is scoped by
+    the shared runtime-path rule (#3063) — so there is no title filter: a
+    record of any type or scope, or with no conventional prefix at all,
+    becomes an entry. A record with no trailing ``(#N)`` suffix is skipped:
+    the changelog log's cursor is keyed by PR number, so it has nothing to be
+    recorded under. Each kept record's text is its body's first sentence
+    (``first_body_sentence``) when it has one, else its title with any
     `type(scope):` prefix and the trailing `(#N)` stripped."""
     entries: list[ChangelogEntry] = []
     for record in text.split(_RECORD_SEP):
@@ -184,16 +199,20 @@ def parse_commit_log(text: str) -> list[ChangelogEntry]:
         if len(fields) < 2:
             continue
         _commit_hash, subject, body = (fields + [""])[:3]
-        match = _SUBJECT_RE.match(subject)
+        match = _PR_SUFFIX_RE.match(subject)
         if match is None:
             continue
-        entry_text = first_body_sentence(body) or match["rest"]
+        title = match["title"]
+        prefix = _CONVENTIONAL_PREFIX_RE.match(title)
+        entry_text = first_body_sentence(body) or (prefix["rest"] if prefix else title)
+        if not entry_text.strip():
+            continue  # a subject that is nothing but its (#N) suffix
         entries.append(ChangelogEntry(pr=int(match["pr"]), text=entry_text))
     return entries
 
 
 def load_commits(path: Path = COMMITS_PATH) -> list[ChangelogEntry]:
-    """Every penny-scope commit the generated window carries, oldest first —
+    """Every runtime commit the generated window carries, oldest first —
     empty when the file was never generated: a dev run via ``LOCAL=1 make
     check``, a bare ``pytest`` outside any make target, or a fresh worktree
     that hasn't run ``make up``/``prod``/``prod-ios`` yet. A missing file is
