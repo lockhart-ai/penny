@@ -11,7 +11,6 @@ shapes captured from the prompt log that must always match.
 from __future__ import annotations
 
 from penny.text_validity import (
-    call_as_text_tool_name,
     degenerate_reason,
     is_degenerate_run,
     is_degenerate_tool_name,
@@ -179,8 +178,7 @@ def test_is_embedded_call_as_text_never_flags_ordinary_prose_or_mentions():
 def test_is_embedded_call_as_text_never_flags_a_call_quoted_in_inline_code():
     """The prod leak (#2855): a rule proposal that QUOTES the calls it would make,
     each inside inline code, is a worked example — not a leak — so it must not be
-    discarded and rerolled.  ``call_as_text_tool_name`` must agree there is no
-    tool name to retry against."""
+    discarded and rerolled."""
     reply = (
         "Here's a rule for looking things up in memory:\n\n"
         "1. **Trigger:** the user asks where something is.\n"
@@ -189,7 +187,6 @@ def test_is_embedded_call_as_text_never_flags_a_call_quoted_in_inline_code():
         "Want me to save this as a rule?"
     )
     assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
 
 
 def test_is_embedded_call_as_text_still_flags_the_same_call_written_bare():
@@ -198,7 +195,6 @@ def test_is_embedded_call_as_text_still_flags_the_same_call_written_bare():
     into a blanket exemption."""
     reply = 'Let me check. find(query="Biscuit")'
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "find"
 
 
 def test_is_embedded_call_as_text_still_flags_a_call_inside_a_fenced_block():
@@ -206,7 +202,6 @@ def test_is_embedded_call_as_text_still_flags_a_call_inside_a_fenced_block():
     stripped — a call written there still leaks exactly as before."""
     reply = 'Here you go:\n\n```\nfind(query="Biscuit")\n```\n'
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "find"
 
 
 def test_is_embedded_call_as_text_catches_a_bare_brace_call():
@@ -219,7 +214,6 @@ def test_is_embedded_call_as_text_catches_a_bare_brace_call():
         "run_get{run: '0123456789abcdef0123456789abcdef'}"
     )
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "run_get"
 
 
 def test_is_embedded_call_as_text_catches_a_fenced_brace_call():
@@ -227,7 +221,6 @@ def test_is_embedded_call_as_text_catches_a_fenced_brace_call():
     like the paren form does."""
     reply = "Here you go:\n\n```\nrun_get{run: '0123456789abcdef0123456789abcdef'}\n```\n"
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "run_get"
 
 
 def test_is_embedded_call_as_text_never_flags_a_brace_call_quoted_in_inline_code():
@@ -235,7 +228,6 @@ def test_is_embedded_call_as_text_never_flags_a_brace_call_quoted_in_inline_code
     worked example quoted in inline code is a mention, not a leak."""
     reply = "**Tool call:** `run_get{run: '0123456789abcdef0123456789abcdef'}`"
     assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
 
 
 def test_is_embedded_call_as_text_catches_an_argless_brace_call():
@@ -244,7 +236,6 @@ def test_is_embedded_call_as_text_catches_an_argless_brace_call():
     argument name and ``:``."""
     reply = "All set — done{}"
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "done"
 
 
 def test_is_embedded_call_as_text_catches_a_positional_brace_call():
@@ -254,7 +245,6 @@ def test_is_embedded_call_as_text_catches_a_positional_brace_call():
     after the opening brace."""
     reply = "Let me look. log_read{'run-health'}"
     assert is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) == "log_read"
 
 
 def test_is_embedded_call_as_text_never_flags_a_positional_brace_call_in_inline_code():
@@ -262,7 +252,6 @@ def test_is_embedded_call_as_text_never_flags_a_positional_brace_call_in_inline_
     leak — the inline-code exemption (#2855) applies to this form too."""
     reply = "**Tool call:** `log_read{'run-health'}`"
     assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
 
 
 def test_is_embedded_call_as_text_never_flags_a_json_dict_naming_no_tool():
@@ -271,7 +260,6 @@ def test_is_embedded_call_as_text_never_flags_a_json_dict_naming_no_tool():
     leaked call."""
     reply = 'Sure, here\'s the config I used: {"retries": 3, "timeout": 10}'
     assert not is_embedded_call_as_text(reply, REGISTERED_TOOLS)
-    assert call_as_text_tool_name(reply, REGISTERED_TOOLS) is None
 
 
 def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():

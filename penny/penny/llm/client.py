@@ -598,16 +598,15 @@ class LlmClient:
             # kept as this call's logged response instead of the usual "no
             # response" `{}` (#2833), so what the model actually wrote survives
             # for diagnosis. The error the caller sees is a new
-            # `LlmToolParseError` carrying the draft — this wrapper never escapes here.
+            # `LlmToolParseError` — this wrapper never escapes here.
             #
             # Its own row is stamped TOOL_PARSE_ERROR (#2854) below, with the
             # thinking split off the raw text the same way a parsed draw's is
-            # (``raw_template.split_thought`` — no second parser). ``draft`` —
-            # the text left after that split, the call the model actually
-            # drafted — is carried on the error it raises, the only value this
-            # handler can hand the agent loop's own reroll: it is what shows
-            # the redraw what never ran.
-            thinking, draft = raw_template.split_thought(failure.raw.choices[0].text or "")
+            # (``raw_template.split_thought`` — no second parser). The reroll the
+            # agent loop answers this error with is blind (#3052): the draft is
+            # never shown back to the model, so nothing of it rides the error —
+            # the row keeps it for diagnosis.
+            thinking, _draft = raw_template.split_thought(failure.raw.choices[0].text or "")
             row_id = self._log_failed_call(
                 messages_snapshot,
                 tools,
@@ -627,9 +626,9 @@ class LlmClient:
             )
             if row_id is not None:
                 self._mark_tool_parse_error_discarded(row_id, str(failure.error))
-            raise LlmToolParseError(
-                str(failure.error), fault=failure.error.fault, draft=draft
-            ) from failure.__cause__
+            raise LlmToolParseError(str(failure.error), fault=failure.error.fault) from (
+                failure.__cause__
+            )
         except LlmError as error:
             outcome = (
                 CallOutcome.TIMED_OUT if isinstance(error, LlmTimeoutError) else CallOutcome.RAISED

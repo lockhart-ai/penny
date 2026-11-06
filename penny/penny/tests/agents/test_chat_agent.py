@@ -745,12 +745,11 @@ def test_the_trigger_is_found_past_a_discarded_or_rerolled_first_draw(db):
     """The run's chronologically FIRST row is never assumed clean (#2974): a
     draw rejected and rerolled still gets its own row, discard-stamped, but
     its ``messages`` column — written at send time — still carries the real
-    trigger, and that row answers.  A second row from the reroll (here, a
-    nudge-appended retry trailing on a USER note, which rides the same role
-    and — since #2871 — the same notification prefix the trigger does) exists
-    and is passed over: the walk takes the FIRST qualifying row, and the
-    trigger row precedes any note row a reroll appends, so the note is never
-    mistaken for the trigger."""
+    trigger, and that row answers.  A second row from the reroll exists — the
+    redraw is blind, so its messages are byte-identical to the first row's
+    (#3052) — and is passed over: the walk takes the FIRST qualifying row,
+    and the trigger row precedes it, so the reroll is never mistaken for the
+    trigger."""
     run_id = "job-report-run-reroll"
     trigger_text = (
         PennyConstants.SYSTEM_NOTIFICATION_PREFIX
@@ -764,21 +763,11 @@ def test_the_trigger_is_found_past_a_discarded_or_rerolled_first_draw(db):
     assert first_id is not None
     db.messages.mark_prompt_discarded(first_id, "degenerate_output")
 
-    reroll_messages = [
-        *first_messages,
-        first_response["choices"][0]["message"],
-        {
-            "role": "user",
-            "content": (
-                PennyConstants.SYSTEM_NOTIFICATION_PREFIX + Prompt.CALL_AS_TEXT_RETRY_NOTE_UNNAMED
-            ),
-        },
-    ]
     reroll_response = {
         "choices": [{"message": {"role": "assistant", "content": "Trail's closed this week."}}]
     }
     db.messages.log_prompt(
-        model="m", messages=reroll_messages, response=reroll_response, run_id=run_id
+        model="m", messages=first_messages, response=reroll_response, run_id=run_id
     )
 
     agent = ChatAgent.__new__(ChatAgent)
@@ -1969,11 +1958,11 @@ async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
 ):
     """A reply that leads with a line of prose and then a tool call serialized as
     JSON text (#2787 — seen in prod: "On it!" followed by a ``generate_image`` call
-    object) is discarded and re-rolled — shown the draft plus a note naming the tool
-    it never ran, not re-drawn blind (#2790: a model-choice shape, not a transport
-    artifact) — exactly like the whole-reply envelope :func:`is_call_as_text_bail`
-    already catches.  The draft must never reach the user, and the call it
-    describes must actually run on the next draw.
+    object) is discarded and re-rolled blind on the unchanged context (#3052) —
+    shown neither the draft nor a note naming the tool it never ran — exactly like
+    the whole-reply envelope :func:`is_call_as_text_bail` already catches.  The
+    draft must never reach the user, and the call it describes must actually run on
+    the next draw.
     """
     config = make_config()
     draft = (
@@ -2009,17 +1998,11 @@ async def test_call_written_as_text_after_prose_is_rerolled_not_sent(
         image_client.generate_image.assert_awaited_once()
         assert "sea turtle" in image_client.generate_image.await_args.kwargs["prompt"]
         assert len(mock_llm.requests) == 3
-        # The redraw is shown the draft plus a note about the discarded draft, as a
-        # prefixed system-notification turn (#2790, #2871) — not a blind re-roll.
+        # The redraw is drawn blind on the unchanged context (#3052) — byte-identical
+        # to the discarded draw's own request, no draft and no note appended.
         redraw = mock_llm.requests[1]["messages"]
-        assert redraw[:-2] == mock_llm.requests[0]["messages"]
-        draft_turn, note_turn = redraw[-2], redraw[-1]
-        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
-        assert note_turn["role"] == "user"
-        assert note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
-            + Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="generate_image")
-        )
+        assert redraw == mock_llm.requests[0]["messages"]
+        assert draft not in str(redraw)
 
         # The raw call-as-text never reached the user, in this reply or any other
         # the channel sent.
@@ -2043,7 +2026,8 @@ async def test_call_written_as_text_in_brace_form_is_rerolled_not_sent(
     model-facing call example to the brace form without teaching the
     call-as-text check to recognise it) is discarded and re-rolled exactly
     like the parenthesized textual syntax already is (see the test above) —
-    never reaching the user, with the retry note naming the tool.
+    never reaching the user, the redraw drawn blind on the unchanged context
+    (#3052).
 
     The draft is the prod leak verbatim, with the run id swapped: her
     thinking ended "Let's use run_get to investigate," her reply apologised
@@ -2070,19 +2054,12 @@ async def test_call_written_as_text_in_brace_form_is_rerolled_not_sent(
         )
         reply = await signal_server.wait_for_message_containing("all done", timeout=10.0)
 
-        # The redrawn step is shown the draft plus a note about the discarded draft,
-        # as a prefixed system-notification turn (#2790, #2871) — not a blind
-        # re-roll on the unchanged context.
+        # The redraw is drawn blind on the unchanged context (#3052) — byte-identical
+        # to the discarded draw's own request, no draft and no note appended.
         assert len(mock_llm.requests) == 2
         redraw = mock_llm.requests[1]["messages"]
-        assert redraw[:-2] == mock_llm.requests[0]["messages"]
-        draft_turn, note_turn = redraw[-2], redraw[-1]
-        assert draft_turn["role"] == "assistant" and draft_turn["content"] == draft
-        assert note_turn["role"] == "user"
-        assert note_turn["content"] == (
-            PennyConstants.SYSTEM_NOTIFICATION_PREFIX
-            + Prompt.CALL_AS_TEXT_RETRY_NOTE.format(tool="run_get")
-        )
+        assert redraw == mock_llm.requests[0]["messages"]
+        assert draft not in str(redraw)
 
         # The raw call-as-text never reached the user, in this reply or any
         # other the channel sent.

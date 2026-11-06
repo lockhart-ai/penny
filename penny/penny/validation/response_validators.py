@@ -331,9 +331,11 @@ class HallucinatedUrlValidator:
     the model answers from real sources.  No source text → nothing to check.
 
     The handle branch beside it (#2717): a link citation ``[n]`` the run's table
-    does not hold is rejected with a note naming which links DO exist — the model
-    cannot usually see a miscounted handle in its own draft (the number reads as
-    real to it), so the re-draw is shown the draft plus the note.  Links that came
+    does not hold is rejected and re-drawn.  The re-draw is blind like every other
+    (#3052): the discarded draft is never shown back, and the note that once
+    accompanied it (naming which links DO exist, #2717) retired with the measured
+    finding that a redraw shown its own draft imitates it — the loop logs the
+    summary and the draw's own ``promptlog`` row carries the draft.  Links that came
     through handles never reach the raw-URL check: the model cites ``[n]``, not an
     address, so the raw-URL branch only fires for a URL still typed outright.
 
@@ -355,9 +357,11 @@ class HallucinatedUrlValidator:
             return Proceed(response=response)
         if ConditionKey.HALLUCINATED_URLS not in ctx.retried:
             if dangling:
-                note = ctx.handles.dangling_note(dangling)
-                logger.warning("Dangling link handle(s): %s", note)
-                return Retry(condition=ConditionKey.HALLUCINATED_URLS, note=note)
+                # The log keeps the readable summary (which handles DO exist); the
+                # redraw never sees it (#3052) — the draw's own promptlog row carries
+                # the draft and the discard mark.
+                logger.warning("Dangling link handle(s): %s", ctx.handles.dangling_note(dangling))
+                return Retry(condition=ConditionKey.HALLUCINATED_URLS)
             logger.warning(
                 "Hallucinated URL(s): %s",
                 ", ".join(url[:80] for url in bad_urls),
