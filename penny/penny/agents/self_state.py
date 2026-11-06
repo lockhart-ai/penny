@@ -47,7 +47,11 @@ one guess-free tool call from the detail). Sections:
   content. Entry counts ride the per-turn ``### Memory sizes`` section (#3055):
   a count here moved on every job write — which is exactly what a cycle is — and
   kept the cached static prefix from ever being reused; the five system-log
-  facades (``PennyConstants.SYSTEM_LOGS``) never carried one (#2814).
+  facades (``PennyConstants.SYSTEM_LOGS``) never carried one (#2814).  A live
+  job's scope DROPS here when it is the same text, whitespace aside, as its own
+  ``extraction_prompt`` (#3085) — the Jobs section's hung instructions line
+  already shows it — never when the two are merely similar, and never on an
+  archived row.
   One compact trailing line names every ARCHIVED collection and log by
   name (``archived: `<name>`, …``), omitted entirely when nothing is archived — an
   archived row with no job has nowhere else in this header to appear, so this line
@@ -646,9 +650,38 @@ class SelfStateHeader:
         count (#3055): the count moved to the per-turn ``### Memory sizes``
         section, since a job's write is exactly what a cycle is and the count
         here kept the cached static prefix from ever being reused.  A
-        ``search_only_when_named`` row (#2956) carries the suffix naming it."""
+        ``search_only_when_named`` row (#2956) carries the suffix naming it.
+
+        The description clause drops when it DUPLICATES the row's own live job
+        (#3085): the Jobs section's hung instructions line already shows that
+        text, so the store map omits the clause entirely rather than repeating
+        it verbatim.  A distinct description — the ordinary case, since the
+        description is written for a reader browsing the store while the
+        prompt is the model's own instructions — always stays."""
         mark = SelfStateHeader.SEARCH_ONLY_WHEN_NAMED_SUFFIX if row.search_only_when_named else ""
+        if SelfStateHeader._duplicates_job_prompt(row):
+            return f"- {row.name} ({row.type}){mark}"
         return f"- {row.name} ({row.type}) — {row.description}{mark}"
+
+    @staticmethod
+    def _duplicates_job_prompt(row: MemoryRow) -> bool:
+        """Whether a LIVE job's description is the same text as its own
+        ``extraction_prompt``, whitespace normalised — a deterministic
+        equality, never a judgment call.  An archived row's job line is gone
+        from the Jobs section (it keeps only its ``archived <when>`` stamp),
+        so its own description never drops here even when it once matched."""
+        if row.extraction_prompt is None or row.archived:
+            return False
+        return SelfStateHeader._normalized_words(
+            row.description
+        ) == SelfStateHeader._normalized_words(row.extraction_prompt)
+
+    @staticmethod
+    def _normalized_words(text: str) -> str:
+        """Whitespace-collapsed text — the one normalisation the duplicate
+        check runs, so a prompt reformatted with different line breaks still
+        reads as the same text as its description."""
+        return " ".join(text.split())
 
     def _memory_sizes_section(self) -> str:
         """One line per counted store — ``- <name> <n> entries`` (#3055): the entry

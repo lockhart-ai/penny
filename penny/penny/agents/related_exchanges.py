@@ -19,10 +19,26 @@ those") while the plan's words sit in her reply.
 What is excluded and why: exchanges INSIDE the history window are already
 visible, so the boundary is the same function the history and the conversation
 map share (``Agent._history_window_size`` over the shared ``session_anchor``,
-#3077).  Exchanges shown as map lines are included — the
-map carries only the user's own words, so her half of the exchange is nowhere.
-No retrieval runs for a system-notification trigger: the section is keyed to
-the user's own words, and a delivery turn's trigger is the framework's.
+#3077).  Exchanges shown as map lines are still selected — the map carries only
+the user's own words, never Penny's reply, which is where an agreed plan
+lives — but a match whose user words the map ALREADY renders whole, on a line
+of their own, drops its own ``User:`` side here (#3085).  Two conditions, both
+required: (1) ``_block`` is handed the map's own ``ConversationMap.
+one_to_one_user_ids()`` set (``ChatAgent`` builds it once per turn, off the
+SAME ``ConversationMap`` instance the static prefix renders from — never a
+second map, never a re-derived horizon or window) and checks every one of the
+match's user-message ids is in it — the STRUCTURAL half: is this exchange a
+lone line at all, never a ranged short-collapse line, a folded day, or a
+notification line, none of which carries any one exchange's words; (2) that
+lone line must show the text WHOLE — ``ConversationMap.clips_whole(match.
+user)`` calls the map's own clip rule directly, so a text over
+``USER_CLIP_CHARS`` or carrying more than one line, which the map's line would
+cut to a head+tail excerpt or to its first line alone, still renders both
+sides here, because the map's version of it is not the same text.  Still
+within the history window, or failing either check, renders both sides,
+exactly as before.  No retrieval runs for a system-notification trigger: the
+section is keyed to the user's own words, and a delivery turn's trigger is the
+framework's.
 
 Both runtime bounds are config (``RELATED_EXCHANGES_MAX``,
 ``RELATED_EXCHANGES_MIN_SIMILARITY``).  No matches, no section: the quiet
@@ -36,6 +52,7 @@ from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING
 
 from penny.agents.base import Agent
+from penny.agents.conversation_map import ConversationMap
 from penny.constants import PennyConstants
 from penny.datetime_utils import stored_as_utc, user_timezone_name, zone_or_utc
 from penny.llm.embeddings import cosine_similarity, deserialize_embedding
@@ -68,7 +85,8 @@ class RelatedExchanges:
     off the same window math the map and the history share · the matches
     (``_select``/``_match_from``) score every older exchange vector and take
     the top few at or above the similarity floor · the block (``_block``)
-    renders one exchange whole, both sides clipped, ids and day anchor
+    renders one exchange's reply, and its user side too unless the
+    conversation map already carries it whole (#3085), ids and day anchor
     included."""
 
     HEADER = "## Related earlier exchanges"
@@ -89,11 +107,17 @@ class RelatedExchanges:
         user: str,
         runtime: RuntimeParams,
         live_embedding: list[float],
+        map_one_to_one_user_ids: frozenset[int],
     ) -> None:
         self.db = db
         self.user = user
         self.runtime = runtime
         self.live_embedding = live_embedding
+        # The conversation map's own one-to-one line ids (#3085,
+        # ``ConversationMap.one_to_one_user_ids``) — required, never derived
+        # here: this class never re-reads the map's horizon or window, it only
+        # asks whether a match's user ids are already in this set.
+        self.map_one_to_one_user_ids = map_one_to_one_user_ids
 
     def render(self) -> str:
         """The whole block — header, one block per selected exchange, oldest
@@ -185,8 +209,18 @@ class RelatedExchanges:
 
     def _block(self, match: _Match) -> str:
         """One exchange's block: the head (stamp, ids, the conversation map's
-        own day anchor, byte-for-byte its form), then both sides in quotes,
-        each clipped to ``SIDE_CHARS``."""
+        own day anchor, byte-for-byte its form), then its side(s) in quotes,
+        each clipped to ``SIDE_CHARS``.
+
+        The ``User:`` side drops only when BOTH hold (#3085): every one of
+        the match's user-message ids is already on one of the map's own
+        one-to-one lines (structural — this exchange is a lone line at all,
+        never a ranged short-collapse line, a folded day, or a notification
+        line), AND the map's own clip of the text is the text itself
+        (``ConversationMap.clips_whole`` — content: that lone line shows it
+        WHOLE, never a head+tail excerpt or a first-line-only cut).  Either
+        check failing renders both sides, exactly as before — nothing here is
+        a duplicate of anything the map actually shows."""
         ids = ", ".join(str(user_id) for user_id in match.user_ids)
         day = stored_as_utc(match.user_at).astimezone(self._zone()).date().isoformat()
         head = (
@@ -194,6 +228,12 @@ class RelatedExchanges:
             f"(messages {ids}, reply {match.reply_id}) — "
             f"{PennyConstants.USER_MESSAGES_DAY_ANCHOR.format(day=day)}"
         )
+        if (
+            match.user_ids
+            and all(user_id in self.map_one_to_one_user_ids for user_id in match.user_ids)
+            and ConversationMap.clips_whole(match.user)
+        ):
+            return f'{head}\nPenny: "{self._clip(match.reply)}"'
         return f'{head}\nUser: "{self._clip(match.user)}"\nPenny: "{self._clip(match.reply)}"'
 
     def _clip(self, text: str) -> str:
