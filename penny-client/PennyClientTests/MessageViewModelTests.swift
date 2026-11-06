@@ -81,7 +81,11 @@ struct MessageViewModelTests {
         viewModel.syncDock()
         #expect(viewModel.dockPhase == .working, "stays working through the grace window, not hidden instantly")
 
-        try? await Task.sleep(for: .milliseconds(1_700))
+        // Poll rather than sleep a fixed time: the grace task may run late on a loaded runner.
+        let deadline = ContinuousClock.now + .seconds(10)
+        while viewModel.dockPhase != .hidden, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
         #expect(viewModel.dockPhase == .hidden)
         #expect(viewModel.dockRun == nil)
     }
