@@ -317,6 +317,12 @@ async def test_static_system_prefix_unaffected_by_an_activity_only_change(db, te
         "heads up, done!",
         recipient=TEST_SENDER,
         mechanism="a-mechanism",
+        # Older than the conversation map's horizon (#3079): only a send the
+        # history window and the map do NOT carry still renders an emission
+        # line, and this is the event class the test needs — an activity-only
+        # change with no job or collection behind it.  A send inside the
+        # horizon is covered by history/map and lands nowhere in the prompt.
+        timestamp=datetime.now(UTC) - timedelta(days=3),
     )
 
     static_after = await agent._build_system_prompt(TEST_SENDER)
@@ -324,7 +330,11 @@ async def test_static_system_prefix_unaffected_by_an_activity_only_change(db, te
 
     assert static_after == static_before
     assert dynamic_after != dynamic_before
-    assert "heads up, done!" in dynamic_after
+    # The dynamic message's `### Recent activity` shows the send as one short
+    # `sent · …` line naming its mechanism (#3079) — the send's own text is one
+    # `run_get` hop away, never quoted here.
+    assert "a-mechanism" in dynamic_after
+    assert "heads up, done!" not in dynamic_after
 
 
 @pytest.mark.asyncio

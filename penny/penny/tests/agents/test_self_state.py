@@ -1122,10 +1122,11 @@ def test_activity_mutation_lines_no_detail_matrix(db):
 
 
 def test_activity_emission_lines_and_exclusions(db):
-    """Delivered autonomous sends (#1568) render as ``sent · …`` lines, interleaved
-    by time with a run: a body renders whole whatever its length — no cap (#2642) —
-    and a direct reply (no mechanism) seeded NEWER than an
-    emission is excluded (it is the conversation, not its complement)."""
+    """Delivered autonomous sends (#1568) render as short ``sent · …`` lines —
+    no quoted text (#3079): the message rides the history window while recent and
+    ``run_get{run <id>}`` reaches it after — interleaved by time with a run; a
+    direct reply (no mechanism) seeded NEWER than an emission is excluded (it is
+    the conversation, not its complement)."""
     with Session(db.engine) as session:
         _add_run(
             session,
@@ -1156,29 +1157,57 @@ def test_activity_emission_lines_and_exclusions(db):
 def test_emission_line_carries_its_run_anchor(db):
     """An emission's own ``run <id>`` anchor (#2974) renders the same way
     ``_run_line``/``_chat_failure_line`` already do — the one-hop ``run_get``
-    path to the send's own trigger once the exchange ages out of the history
-    window that renders the trigger in place.  A row with no run (``run_id``
+    path to the send's own trigger and text once the exchange ages out of the
+    history window that renders them in place.  A row with no run (``run_id``
     ``None``) renders the plain pre-#2974 shape — ``test_activity_emission_
     lines_and_exclusions`` above pins that unmarked case."""
     with_run = EmissionActivity(
         mechanism="trail-conditions",
         sent_at=_t(9, 5),
-        snippet="Your trail report run just finished.",
         run_id="run-trail-01",
     )
     assert SelfStateHeader._emission_line(with_run) == (
-        "sent · run run-trail-01 · 2026-07-11 09:05 UTC · trail-conditions — "
-        '"Your trail report run just finished."'
+        "sent · run run-trail-01 · 2026-07-11 09:05 UTC · trail-conditions"
     )
     no_run = EmissionActivity(
         mechanism="trail-conditions",
         sent_at=_t(9, 5),
-        snippet="Your trail report run just finished.",
         run_id=None,
     )
     assert SelfStateHeader._emission_line(no_run) == (
-        'sent · 2026-07-11 09:05 UTC · trail-conditions — "Your trail report run just finished."'
+        "sent · 2026-07-11 09:05 UTC · trail-conditions"
     )
+
+
+def test_dynamic_emission_lines_stop_at_the_map_horizon(db):
+    """The model-facing dynamic render keeps an emission line ONLY for a send
+    older than the conversation map's horizon (#3079): a send just inside it is
+    covered by the history window (still recent) or the map (once it has left
+    the window), so its line drops; a send older than the horizon is shown
+    nowhere else and keeps its short ``sent · …`` line.  The horizon is passed
+    in exactly as ``ChatAgent._dynamic_system_section`` passes it — the map's
+    own ``map_horizon_start`` — so this test pins the cutoff behaviour, not the
+    horizon arithmetic (that is the conversation map's tests')."""
+    # Naive UTC, the storage convention — `map_horizon_start` returns naive too.
+    horizon = datetime(2026, 7, 9, 0, 0)
+    with Session(db.engine) as session:
+        # OLDER than the horizon: shown nowhere else — the line stays.
+        _add_emission(
+            session,
+            mechanism="old-watch",
+            content="A digest from last week.",
+            sent_at=datetime(2026, 7, 8, 12, 0),
+        )
+        # Just INSIDE the horizon: history or the map carries it — no line.
+        _add_emission(
+            session,
+            mechanism="fresh-watch",
+            content="A digest from yesterday.",
+            sent_at=datetime(2026, 7, 9, 12, 0),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render_dynamic(horizon)
+    assert actual == _DYNAMIC_EMISSION_HORIZON_MATRIX
 
 
 _MATRIX_ACTIONS = [
@@ -1322,7 +1351,7 @@ _KITCHEN_SINK = (
     "changed schedule\n"
     "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · wrote 'aurora "
     "deck 2 price' → `price-watch`\n"
-    'sent · 2026-07-11 09:05 UTC · price-watch — "Heads up: the price dropped to $42!"\n'
+    "sent · 2026-07-11 09:05 UTC · price-watch\n"
     "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 of 1)\n"
     "run 88d14e5f · 2026-07-11 08:00 UTC · news-digest → FAILED (2 calls)\n"
     "\n"
@@ -1402,7 +1431,10 @@ _KITCHEN_SINK_DYNAMIC = (
     "changed schedule\n"
     "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · wrote 'aurora "
     "deck 2 price' → `price-watch`\n"
-    'sent · 2026-07-11 09:05 UTC · price-watch — "Heads up: the price dropped to $42!"\n'
+    # The price-watch emission (sent 2026-07-11 09:05) is INSIDE the map horizon
+    # at the pinned clock (#3079) — the send is covered by history/map, so its
+    # line drops from the model-facing dynamic render.  The whole-render literal
+    # above still shows it: the legacy render applies no cutoff.
     "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 of 1)\n"
     "run 88d14e5f · 2026-07-11 08:00 UTC · news-digest → FAILED (2 calls)\n"
     "\n"
@@ -1808,12 +1840,30 @@ _EMISSION_MATRIX = (
     "\n"
     "### Recent activity\n"
     "run rr11worked · 2026-07-11 09:50 UTC · alpha-watch → WORKED (2 calls)\n"
-    'sent · 2026-07-11 09:40 UTC · alpha-watch — "A short ping."\n'
-    'sent · 2026-07-11 09:20 UTC · beta-watch — "The morning digest is ready with '
-    "today's five top headlines for you to skim over coffee\"\n"
+    "sent · 2026-07-11 09:40 UTC · alpha-watch\n"
+    "sent · 2026-07-11 09:20 UTC · beta-watch\n"
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "change history, run_get{run <id>} for one run's tool calls, "
+    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "searches them all by meaning — a collection, a stored entry, or "
+    "something said in the conversation."
+)
+
+# The model-facing dynamic render at a horizon of 2026-07-09 local midnight:
+# the 2026-07-08 send (older) keeps its line, the 2026-07-09 send (inside the
+# horizon) drops — covered by history or the map (#3079).
+_DYNAMIC_EMISSION_HORIZON_MATRIX = (
+    "## Penny's current state\n"
+    "\n"
+    "### Recent activity\n"
+    "sent · 2026-07-08 12:00 UTC · old-watch\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"

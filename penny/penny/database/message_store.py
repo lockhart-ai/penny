@@ -198,25 +198,17 @@ class EmissionActivity(BaseModel):
     header's recent-activity block (#1568).
 
     ``mechanism`` is the bound collection whose cycle produced it (the
-    ``memory_get`` anchor); ``sent_at`` is when it went out; ``snippet`` is a
-    short, whitespace-collapsed excerpt of the content so the model sees *what* it
-    autonomously said, not only that it did.  ``run_id`` (#2974) is the SAME
-    ``run <id>`` anchor ``_run_line``/``_chat_failure_line`` already render \u2014 a
-    one-hop ``run_get(run <id>)`` to the run's own trigger, once this exchange
-    ages out of the history window that renders it in place.  Direct replies
-    (``mechanism`` NULL) are excluded \u2014 they are the conversation, not its
-    complement."""
+    ``memory_get`` anchor); ``sent_at`` is when it went out.  ``run_id`` (#2974)
+    is the SAME ``run <id>`` anchor ``_run_line``/``_chat_failure_line`` already
+    render \u2014 a one-hop ``run_get(run <id>)`` to the run's own trigger, once this
+    exchange ages out of the history window that renders it in place.  No content
+    rides the row (#3079): the send's text is in history while recent, and
+    ``run_get`` reaches it after.  Direct replies (``mechanism`` NULL) are
+    excluded \u2014 they are the conversation, not its complement."""
 
     mechanism: str
     sent_at: datetime
-    snippet: str
     run_id: str | None
-
-
-def _emission_snippet(content: str) -> str:
-    """The delivered autonomous send as one line — whitespace collapsed so a
-    multi-line body reads as one line, rendered whole (no cap, #2642)."""
-    return " ".join(content.split())
 
 
 def _compressed_request(request: dict | None) -> bytes | None:
@@ -2084,8 +2076,8 @@ class MessageStore:
 
         Only outgoing rows carrying a ``mechanism`` (an autonomous send that named
         its cause) qualify; a direct reply stamps NULL and is excluded (it is the
-        conversation, already in context).  The snippet is the whitespace-collapsed
-        head of the content."""
+        conversation, already in context).  No content is fetched (#3079): the
+        send's text is in history while recent, and ``run_get`` reaches it after."""
         if limit <= 0:
             return []
         with self._session() as session:
@@ -2102,7 +2094,6 @@ class MessageStore:
             EmissionActivity(
                 mechanism=row.mechanism,  # ty: ignore[invalid-argument-type]
                 sent_at=row.timestamp,
-                snippet=_emission_snippet(row.content),
                 run_id=row.run_id,
             )
             for row in rows
