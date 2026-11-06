@@ -41,7 +41,8 @@ public extension PennyService {
     static func storyInstance(
         messages: [ChatMessage],
         isConnected: Bool = false,
-        workingSteps: [StoryWorkingStep] = []
+        workingSteps: [StoryWorkingStep] = [],
+        backgroundRunCount: Int = 0
     ) -> PennyService {
         let databaseService = DatabaseService()
         databaseService.setupForTesting()
@@ -57,6 +58,9 @@ public extension PennyService {
             let run = makeWorkingRun(from: workingSteps)
             service.agentProgressRuns = [run.id: run]
         }
+        for run in makeBackgroundRuns(count: backgroundRunCount) {
+            service.agentProgressRuns[run.id] = run
+        }
         return service
     }
 
@@ -68,6 +72,15 @@ public extension PennyService {
             return stepItem
         }
         return run
+    }
+
+    /// `count` running background (collector) runs — the Prompts tab badge's
+    /// story fixture (#3046). Each is a bare run with no steps: the badge
+    /// only counts running background runs, it doesn't render their detail.
+    private static func makeBackgroundRuns(count: Int) -> [AgentProgressRunItem] {
+        (0..<count).map { index in
+            AgentProgressRunItem(id: "story-background-run-\(index)", agent: "collector", scope: .background)
+        }
     }
 }
 #endif

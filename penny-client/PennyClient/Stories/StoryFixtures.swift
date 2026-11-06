@@ -17,9 +17,15 @@ enum StoryFixtures {
     static func chatViewModel(
         messages: [ChatMessage],
         isConnected: Bool = true,
-        workingSteps: [StoryWorkingStep] = []
+        workingSteps: [StoryWorkingStep] = [],
+        backgroundRunCount: Int = 0
     ) -> MessageView.ViewModel {
-        let client = PennyService.storyInstance(messages: messages, isConnected: isConnected, workingSteps: workingSteps)
+        let client = PennyService.storyInstance(
+            messages: messages,
+            isConnected: isConnected,
+            workingSteps: workingSteps,
+            backgroundRunCount: backgroundRunCount
+        )
         return MessageView.ViewModel(client: client)
     }
 
@@ -29,6 +35,12 @@ enum StoryFixtures {
 
     static func disconnectedViewModel() -> MessageView.ViewModel {
         chatViewModel(messages: conversationMessages, isConnected: false)
+    }
+
+    /// Two collectors running in the background — the Prompts tab badge
+    /// story (#3046).
+    static func collectorsBadgeViewModel() -> MessageView.ViewModel {
+        chatViewModel(messages: conversationMessages, backgroundRunCount: 2)
     }
 
     /// Three steps with different tools, the last one unfinished — the run
