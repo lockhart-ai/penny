@@ -31,6 +31,13 @@ import time
 import pytest
 
 _SCRIPT = pathlib.Path("scripts") / "deploy-loop.sh"
+# The script's own default DEPLOY_RUNTIME_PATHS (#3049), spelled the way a test
+# passes it through. Duplicated here deliberately and pinned to the script (and
+# the Makefile's pass-through default) by test_non_runtime_commits below, so
+# the three copies cannot drift apart silently.
+_RUNTIME_PATHS_DEFAULT = (
+    "penny :(exclude)penny/penny/tests/ :(exclude)*.md similarity github_api docker-compose.yml"
+)
 _IDLE_SCRIPT = pathlib.Path("scripts") / "penny-idle.sh"
 _MAKEFILE = pathlib.Path("Makefile")
 _COMPOSE_FILE = pathlib.Path("docker-compose.yml")
@@ -75,6 +82,17 @@ def _init_repo(repo: pathlib.Path) -> None:
 
 def _commit(repo: pathlib.Path, message: str, content: str) -> str:
     (repo / "file.txt").write_text(content)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _commit_path(repo: pathlib.Path, relpath: str, content: str, message: str) -> str:
+    """Commits a change to one specific path — the runtime-path tests (#3049)
+    need commits whose ONLY change is a given file, not the fixture's file.txt."""
+    target = repo / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", message)
     return _git(repo, "rev-parse", "HEAD")
@@ -302,6 +320,7 @@ def _start_deployment(
     clone_dir: pathlib.Path,
     *,
     run_cmd: pathlib.Path | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> _Deployment:
     """Starts the loop against `clone_dir` with the standard build/run stubs
     (unless `run_cmd` names a different one, e.g. a crash stub), waits for the
@@ -352,6 +371,13 @@ def _start_deployment(
                 # comment in the script): the loop expands the command unquoted,
                 # where quote characters would arrive inside the word.
                 "DEPLOY_IMAGE_COMMIT_CMD": f"cat {built_file}",
+                # The runtime pathspec (#3049) narrowed to the fixture's own
+                # commit shape: the repos below commit `file.txt`, so with this
+                # a `file.txt` change is a "runtime" commit and anything else
+                # (e.g. a docs file) is a skip. The tests that exercise the
+                # script's real default pass their own value here.
+                "DEPLOY_RUNTIME_PATHS": "file.txt",
+                **(env_overrides or {}),
             },
             stdout=stdout_file.fileno(),
             stderr=stderr_file.fileno(),
@@ -485,6 +511,112 @@ def test_ahead_clean_ff_able_rebuilds_and_restarts(tmp_path, repos):
             "an up-to-date cycle runs no build"
         )
         assert _read_or_empty(dep.run_log).count("\n") == 2, "an up-to-date cycle never redeploys"
+    finally:
+        _stop(dep.proc)
+
+
+def test_non_runtime_commits_advance_head_without_building(tmp_path, repos):
+    """(#3049) With the script's REAL default runtime paths, commits touching
+    only docs or only penny's own test suite change nothing Penny runs: HEAD
+    still fast-forwards, but nothing is built and the running child is never
+    restarted — the whole burst of merges is judged by one diff from the
+    deployed commit to the new HEAD, and that diff is quiet."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(
+        tmp_path, clone_dir, env_overrides={"DEPLOY_RUNTIME_PATHS": _RUNTIME_PATHS_DEFAULT}
+    )
+    try:
+        _commit_path(origin, "docs/notes.md", "docs", "docs: a note")
+        tests_sha = _commit_path(origin, "penny/penny/tests/test_new_case.py", "t", "test: a case")
+
+        _tick(dep.proc)
+
+        _wait_until(lambda: _git(clone_dir, "rev-parse", "HEAD") == tests_sha)
+        _wait_until(lambda: "no Penny server changes" in _read_or_empty(dep.deploy_log))
+        assert not dep.build_log.exists(), "a non-runtime commit runs no build"
+        assert _read_or_empty(dep.run_log).count("\n") == 1, "the child was never restarted"
+
+        # The default lives in three places (the script's fallback, the Makefile's
+        # pass-through, this file's override above) — a static read pins them to
+        # one spelling, like the prod-tag test pins its three files.
+        script_text = pathlib.Path(_script_path()).read_text()
+        assert f"DEPLOY_RUNTIME_PATHS='{_RUNTIME_PATHS_DEFAULT}'" in script_text, (
+            "the script's own default pathspec list is the one the tests exercise"
+        )
+        makefile_text = pathlib.Path(_repo_file(_MAKEFILE)).read_text()
+        assert _RUNTIME_PATHS_DEFAULT in makefile_text, (
+            "the Makefile's DEPLOY_RUNTIME_PATHS pass-through default matches"
+        )
+    finally:
+        _stop(dep.proc)
+
+
+def test_runtime_commit_builds_and_restarts(tmp_path, repos):
+    """(#3049) A commit touching penny/penny/ outside its tests — the paths the
+    default runtime pathspec exists for — builds and restarts exactly as every
+    commit always did; the skip logic changes nothing on the runtime path."""
+    origin, clone_dir, _first = repos
+    dep = _start_deployment(
+        tmp_path, clone_dir, env_overrides={"DEPLOY_RUNTIME_PATHS": _RUNTIME_PATHS_DEFAULT}
+    )
+    try:
+        second = _commit_path(
+            origin, "penny/penny/tools/new_tool.py", "x", "feat(penny): a tool (#2)"
+        )
+
+        _tick(dep.proc)
+
+        _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
+        assert _git(clone_dir, "rev-parse", "HEAD") == second
+        assert f"built {second[:7]}" in _read_or_empty(dep.build_log)
+        assert dep.built_file.read_text().strip() == second[:7]
+    finally:
+        _stop(dep.proc)
+
+
+def test_skipped_commit_then_runtime_commit_deploys_against_the_deployed_commit(tmp_path, repos):
+    """(#3049) A docs-only commit is skipped; the next runtime commit deploys
+    even though a skip sits between it and the last deploy — its diff is taken
+    against the DEPLOYED commit, never a skipped HEAD, so nothing the skips sat
+    on top of is missed. And once it deploys, the deployed record moves to the
+    commit actually running: a further docs-only commit is judged against IT."""
+    origin, clone_dir, first = repos
+    dep = _start_deployment(tmp_path, clone_dir)
+    try:
+        first_short = _git(clone_dir, "rev-parse", "--short", "HEAD")
+        docs_sha = _commit_path(origin, "docs/notes.md", "docs", "docs: a note")
+
+        _tick(dep.proc)
+
+        _wait_until(
+            lambda: (
+                f"skip {docs_sha}: no Penny server changes since {first_short}"
+                in _read_or_empty(dep.deploy_log)
+            )
+        )
+        assert not dep.build_log.exists(), "the docs-only commit built nothing"
+        assert _read_or_empty(dep.run_log).count("\n") == 1
+
+        second = _commit(origin, "fix(penny): second (#2)", "B")
+        _tick(dep.proc)
+        _wait_until(lambda: _read_or_empty(dep.run_log).count("\n") >= 2)
+        assert f"built {second[:7]}" in _read_or_empty(dep.build_log), (
+            "the runtime commit deployed despite the skip between it and the deploy"
+        )
+        assert dep.built_file.read_text().strip() == second[:7]
+
+        # The deployed record advanced with the redeploy: the next docs-only
+        # commit is skipped against the commit now running, not the old build.
+        third_docs_sha = _commit_path(origin, "docs/more.md", "docs", "docs: another note")
+        _tick(dep.proc)
+        _wait_until(
+            lambda: (
+                f"skip {third_docs_sha}: no Penny server changes since {second[:7]}"
+                in _read_or_empty(dep.deploy_log)
+            )
+        )
+        assert _read_or_empty(dep.build_log).count("build ") == 1, "no further build ran"
+        assert _read_or_empty(dep.run_log).count("\n") == 2, "and no further restart"
     finally:
         _stop(dep.proc)
 

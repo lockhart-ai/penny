@@ -5,7 +5,11 @@
 # a deploy must not cut off a turn or a job run, so the old Penny keeps serving
 # while the wait polls DEPLOY_IDLE_CMD (default scripts/penny-idle.sh) and builds
 # any newer commit that lands meanwhile. The startup build path never waits —
-# Penny isn't running yet. Stopping the
+# Penny isn't running yet. A new commit restarts her only when it changes the
+# Penny server (#3049): the loop diffs the DEPLOYED commit (the build the running
+# Penny comes from, not just HEAD) against the new HEAD over DEPLOY_RUNTIME_PATHS
+# — a commit touching none of them just advances the checkout, logged as a skip.
+# Startup is unchanged. Stopping the
 # loop (TERM/INT, e.g. Ctrl+C on `make prod-watch`) also stops Penny: the shutdown
 # runs `DEPLOY_STOP_CMD` (default `make prod-stop`) after stopping the child (#3015).
 # Run by `make prod-watch`, or under launchd via the rendered
@@ -70,6 +74,20 @@ DEPLOY_CRASH_BACKOFF="${DEPLOY_CRASH_BACKOFF:-30}"
 DEPLOY_IMAGE_COMMIT_CMD="${DEPLOY_IMAGE_COMMIT_CMD:-}"
 if [ -z "$DEPLOY_IMAGE_COMMIT_CMD" ]; then
     DEPLOY_IMAGE_COMMIT_CMD='docker image inspect penny:prod --format {{.Config.Labels.git_commit}}'
+fi
+# The git pathspecs a new commit must touch to be worth building and
+# redeploying (#3049): the prod container is built from ./penny (penny/Dockerfile)
+# and mounts ./similarity and ./github_api read-only (docker-compose.yml), so
+# those — with docker-compose.yml itself — are what Penny runs; everything else
+# (browser/, penny-client/, docs/, scripts/, .github/, image_server/, the
+# Makefile) doesn't. The excludes drop penny's own test suite and Markdown from
+# the penny/ include. The value word-splits UNSQUOTED at the diff call site
+# (runtime_paths_changed), so it must carry no quotes of its own — the same
+# constraint DEPLOY_IDLE_CMD's and DEPLOY_IMAGE_COMMIT_CMD's defaults carry; the
+# `*.md` glob stays literal there because the call site turns globbing off.
+DEPLOY_RUNTIME_PATHS="${DEPLOY_RUNTIME_PATHS:-}"
+if [ -z "$DEPLOY_RUNTIME_PATHS" ]; then
+    DEPLOY_RUNTIME_PATHS='penny :(exclude)penny/penny/tests/ :(exclude)*.md similarity github_api docker-compose.yml'
 fi
 
 # fetch_and_fast_forward's return codes: it ADVANCED HEAD to origin (the only
@@ -221,10 +239,29 @@ fetch_and_fast_forward() {
 # an up-to-date cycle is a no-op (an ordinary idle cycle, every DEPLOY_INTERVAL).
 # Anything the fetch-and-ff skipped or found already present is already logged
 # with its reason; the current version keeps running, retried next cycle.
+#
+# Before building, the runtime-path check (#3049): the diff from $deployed — the
+# commit of the build the running Penny actually comes from, not the previous
+# HEAD — to the new HEAD decides whether she restarts at all. A commit touching
+# no runtime path just advances the checkout (logged as a skip); the NEXT commit
+# that does touch one is diffed against the same deployed commit, so nothing a
+# run of skips sits on top of is ever missed. An indeterminate diff (git itself
+# failed) builds anyway — a broken check must degrade to the old always-build
+# behaviour, never to silently never building.
 fetch_and_maybe_deploy() {
     fetch_and_fast_forward
     if [ "$?" -ne "$FF_ADVANCED" ]; then
         return
+    fi
+
+    runtime_paths_changed "$deployed" "$remote_head"
+    changed=$?
+    if [ "$changed" -eq 1 ]; then
+        log "skip $remote_head: no Penny server changes since $deployed"
+        return
+    fi
+    if [ "$changed" -eq 2 ]; then
+        log "runtime-path diff FAILED ($deployed..$remote_head) — building anyway"
     fi
 
     log "building $remote_head: $DEPLOY_BUILD_CMD"
@@ -242,6 +279,36 @@ fetch_and_maybe_deploy() {
     stop_child
     start_child
     log "redeployed $local_head -> $remote_head"
+    # The running Penny is now the image just built, so record ITS commit as the
+    # deployed one (#3049) — read off the same git_commit label the startup check
+    # reads, because the newest build that succeeded inside wait_for_idle can be
+    # newer than this cycle's own remote_head. Falling back to the cycle's head
+    # keeps the tracking alive if the label can't be read.
+    deployed="$($DEPLOY_IMAGE_COMMIT_CMD 2>/dev/null)"
+    deployed="${deployed:-$remote_head}"
+}
+
+# Whether the diff from $1 (the deployed commit) to $2 touches any runtime path
+# (#3049): exit 0 = it does, 1 = it doesn't (a docs/tests-only commit — skip the
+# build and restart), 2 = the diff itself failed (indeterminate — the caller
+# builds anyway rather than silently skipping on a broken check). `git diff
+# --quiet` answers the opposite way — 0 on no differences, 1 on differences —
+# so the statuses are inverted here, once, at the boundary. The pathspecs
+# word-split unquoted off $DEPLOY_RUNTIME_PATHS; `set -f` keeps the `*.md` in
+# :(exclude)*.md from globbing against the checkout — nothing matches a literal
+# :(exclude)… prefix, but the decision must not depend on that accident.
+runtime_paths_changed() {
+    set -f
+    git diff --quiet "$1" "$2" -- $DEPLOY_RUNTIME_PATHS 2>>"$DEPLOY_LOG"
+    local rc=$?
+    set +f
+    if [ "$rc" -eq 1 ]; then
+        return 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+        return 1
+    fi
+    return 2
 }
 
 # Waits for Penny to be idle before a successful build may restart her (#3026):
@@ -286,9 +353,17 @@ wait_for_idle() {
         fi
         fetch_and_fast_forward
         if [ "$?" -eq "$FF_ADVANCED" ]; then
-            log "newer commit $remote_head landed while waiting — building it: $DEPLOY_BUILD_CMD"
-            if ! $DEPLOY_BUILD_CMD >>"$DEPLOY_LOG" 2>&1; then
-                log "build FAILED at $remote_head while waiting — old Penny keeps running; keep waiting for idle"
+            # The same runtime-path check as the per-cycle deploy (#3049): a
+            # commit landing mid-wait that touches no runtime path adds nothing
+            # to the image being waited for — skip its build, keep waiting.
+            runtime_paths_changed "$deployed" "$remote_head"
+            if [ "$?" -eq 1 ]; then
+                log "skip $remote_head: no Penny server changes since $deployed"
+            else
+                log "newer commit $remote_head landed while waiting — building it: $DEPLOY_BUILD_CMD"
+                if ! $DEPLOY_BUILD_CMD >>"$DEPLOY_LOG" 2>&1; then
+                    log "build FAILED at $remote_head while waiting — old Penny keeps running; keep waiting for idle"
+                fi
             fi
         fi
         interruptible_sleep "$DEPLOY_IDLE_POLL"
@@ -334,6 +409,15 @@ startup_build_if_needed() {
 # whatever HEAD is, exactly as before.
 fetch_and_fast_forward || true
 startup_build_if_needed
+# From here on the loop tracks what's DEPLOYED (#3049): the commit of the build
+# the child below actually starts on — the image's own git_commit label, read
+# after the startup build so it names whatever that build produced (or the
+# previous image's commit if it failed, which is what would really be running).
+# If the label can't be read at all, HEAD is the honest fallback. An empty label
+# with no image means the diff decides against nothing sensible either way —
+# the startup build path above has already handled the "never built" case.
+deployed="$($DEPLOY_IMAGE_COMMIT_CMD 2>/dev/null)"
+deployed="${deployed:-$(git rev-parse --short HEAD)}"
 start_child
 last_check="$(date +%s)"
 while [ -z "$stopping" ]; do
