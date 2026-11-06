@@ -1617,6 +1617,8 @@ async def test_user_photo_message_history_record_carries_the_attachment(db):
     user_record = next(record for record in records if record["direction"] == "incoming")
     assert user_record["content"] == f"look at this {PennyConstants.IMAGE_HISTORY_MARKER}"
     assert user_record["attachments"] == [image_uri]
+    incoming_id = user_record["message_id"]
+    assert db.messages.attachments_for_message_ids([incoming_id]) == {incoming_id: [image_uri]}
 
     await channel._handle_history(
         cast(Any, ws),
@@ -1626,3 +1628,17 @@ async def test_user_photo_message_history_record_carries_the_attachment(db):
     skipped = ws.sent[-1]["messages"]
     user_record = next(record for record in skipped if record["direction"] == "incoming")
     assert user_record["attachments"] == []
+
+
+@pytest.mark.asyncio
+async def test_attachments_for_message_ids_reads_a_batch_in_position_order(db):
+    """One message's photos come back in position order, and messages with no
+    attachments are simply absent from the batched read (#3084)."""
+    with_photo = db.messages.log_message("incoming", "user", "with photo")
+    without_photo = db.messages.log_message("incoming", "user", "text only")
+    first, second = _jpeg_data_uri(b"one"), _jpeg_data_uri(b"two")
+    db.messages.log_attachments(with_photo, [first, second])
+
+    attachments = db.messages.attachments_for_message_ids([with_photo, without_photo])
+
+    assert attachments == {with_photo: [first, second]}

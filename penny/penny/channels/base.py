@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
 import mimetypes
 import re
@@ -238,19 +237,6 @@ def _logged_incoming_content(message: IncomingMessage) -> str:
     if message.images:
         content = f"{content} {PennyConstants.IMAGE_HISTORY_MARKER}".strip()
     return content
-
-
-def _logged_incoming_attachments(message: IncomingMessage) -> str | None:
-    """The conversation-record form of an incoming message's attachments (#3084):
-    the image data URIs themselves, JSON-encoded on the row, so a channel whose
-    history surface reads it back (iOS) can render the user's photo in their own
-    bubble after a sync.  The marker in ``_logged_incoming_content`` stays what
-    the MODEL reads — history for the model never resends the image; this is the
-    record-side companion for the sending client.  ``None`` for a text-only
-    message."""
-    if not message.images:
-        return None
-    return json.dumps(message.images)
 
 
 class ProgressTracker(ABC):
@@ -1222,7 +1208,7 @@ class MessageChannel(ABC):
         own recall."""
         for queued in joined:
             embedding = await self._embed_message(queued.logged_content)
-            self._db.messages.log_message(
+            row_id = self._db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
                 queued.user_sender,
                 queued.logged_content,
@@ -1231,15 +1217,15 @@ class MessageChannel(ABC):
                 embedding=serialize_embedding(embedding) if embedding is not None else None,
                 run_id=run_id,
                 timestamp=queued.received_at,
-                attachments_json=_logged_incoming_attachments(queued.message),
             )
+            self._write_attachments(row_id, queued.message)
 
     async def _log_abandoned_message(self, queued: QueuedTurnMessage) -> None:
         """Log a queued message the dying series never reached a turn with (#2985) —
         the record keeps every incoming message, whatever happened to it.  No run
         stamp: nothing answered for it."""
         embedding = await self._embed_message(queued.logged_content)
-        self._db.messages.log_message(
+        row_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             queued.user_sender,
             queued.logged_content,
@@ -1247,23 +1233,23 @@ class MessageChannel(ABC):
             device_id=queued.device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
             timestamp=queued.received_at,
-            attachments_json=_logged_incoming_attachments(queued.message),
         )
+        self._write_attachments(row_id, queued.message)
 
     async def _handle_profile_required(
         self, message: IncomingMessage, user_sender: str, device_id: int | None
     ) -> None:
         """Log the message but redirect the user to profile setup."""
         embedding = await self._embed_message(message.content)
-        self._db.messages.log_message(
+        row_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             user_sender,
             message.content,
             signal_timestamp=message.signal_timestamp,
             device_id=device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
-            attachments_json=_logged_incoming_attachments(message),
         )
+        self._write_attachments(row_id, message)
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
     def _resolve_quoted_parent_row(self, message: IncomingMessage) -> MessageLog | None:
@@ -1363,6 +1349,18 @@ class MessageChannel(ABC):
                 message.sender, PennyResponse.FACTS_TURN_FAILED_AFTER_REPLY, response.tool_calls
             )
 
+    def _write_attachments(self, message_id: int | None, message: IncomingMessage) -> None:
+        """Write a just-logged incoming row's photo attachments (#3084) — the
+        record-side companion of ``_logged_incoming_content``'s marker: the
+        model's history keeps the marker, while these rows (keyed to the
+        message row, never a blob column on ``messagelog``) are what a
+        channel-serving history read (iOS) gets back, so the sending app
+        renders the user's photo in their own bubble after a sync.  A no-op
+        for a text-only message or a row that failed to log."""
+        if message_id is None or not message.images:
+            return
+        self._db.messages.log_attachments(message_id, message.images)
+
     async def _finish_turn(
         self,
         message: IncomingMessage,
@@ -1394,12 +1392,12 @@ class MessageChannel(ABC):
             if incoming_embedding is not None
             else None,
             timestamp=received_at,
-            attachments_json=_logged_incoming_attachments(message),
         )
         # Link the spawning message to any mechanism this run created, now that the
         # message has an id (#1566) — matched by the unique per-turn run id.
         if incoming_id is not None:
             self._db.memories.link_source_message(run_id, incoming_id)
+        self._write_attachments(incoming_id, message)
         await self._deliver_agent_response(
             message, user_sender, response, incoming_id, progress, self._message_agent.name, run_id
         )

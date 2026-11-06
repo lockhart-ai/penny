@@ -21,6 +21,7 @@ from penny.database.models import (
     CommandLog,
     Device,
     IosOutboxItem,
+    MessageAttachment,
     MessageLog,
     PromptLog,
 )
@@ -470,7 +471,6 @@ class MessageStore:
         mechanism: str | None = None,
         run_id: str | None = None,
         timestamp: datetime | None = None,
-        attachments_json: str | None = None,
     ) -> int | None:
         """Log a user message or agent response. Returns the message ID or None.
 
@@ -495,11 +495,6 @@ class MessageStore:
         time the turn actually STARTED keeps it ordered ahead of anything the turn
         sends, instead of a write-time stamp from after the turn.
 
-        ``attachments_json`` (#3084) carries an incoming message's photo
-        attachments as the JSON list of data URIs the pipeline was given —
-        served back on the iOS wire so the sending app renders the photo after
-        a history sync.  ``None`` for every text-only row.
-
         The record keeps an outgoing message's text as the model wrote it
         (#2722) — the channel conversion is a send-time concern, so no
         formatting is stripped here."""
@@ -519,7 +514,6 @@ class MessageStore:
                     mechanism=mechanism,
                     run_id=run_id,
                     timestamp=timestamp if timestamp is not None else self._clock.now(),
-                    attachments_json=attachments_json,
                 )
                 session.add(log)
                 session.commit()
@@ -529,6 +523,50 @@ class MessageStore:
         except Exception as e:
             logger.error("Failed to log message: %s", e)
             return None
+
+    def log_attachments(self, message_id: int, data_uris: list[str]) -> None:
+        """Write one logged message's photo attachments as ordered rows (#3084).
+
+        Called by the base pipeline right after the message row exists — the
+        rows key to ``messagelog`` by foreign key, in ``position`` order.
+        A failure is logged, never raised: the record's text (the
+        ``[sent a photo]`` marker) stands either way, and a missing attachment
+        row only costs the sending client its photo after a sync.
+        """
+        if not data_uris:
+            return
+        try:
+            with self._session() as session:
+                for position, data_uri in enumerate(data_uris):
+                    session.add(
+                        MessageAttachment(
+                            message_id=message_id, position=position, data_uri=data_uri
+                        )
+                    )
+                session.commit()
+        except Exception as e:
+            logger.error("Failed to log attachments for message %d: %s", message_id, e)
+
+    def attachments_for_message_ids(self, message_ids: Sequence[int]) -> dict[int, list[str]]:
+        """The photo attachments of the named messages, keyed by message id in
+        ``position`` order (#3084) — ONE query for a whole batch (an iOS history
+        page), never one per message; only rows that carry attachments appear.
+        """
+        ids = [message_id for message_id in message_ids if message_id is not None]
+        if not ids:
+            return {}
+        with self._session() as session:
+            rows = list(
+                session.exec(
+                    select(MessageAttachment)
+                    .where(col(MessageAttachment.message_id).in_(ids))
+                    .order_by(col(MessageAttachment.message_id), col(MessageAttachment.position))
+                ).all()
+            )
+        attachments: dict[int, list[str]] = {}
+        for row in rows:
+            attachments.setdefault(row.message_id, []).append(row.data_uri)
+        return attachments
 
     def log_prompt(
         self,

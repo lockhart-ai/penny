@@ -1025,6 +1025,14 @@ class IosChannel(MessageChannel):
         run_ids = {message.run_id for message in messages if message.run_id is not None}
         return self._db.messages.run_send_stats(run_ids)
 
+    def _page_attachments(self, messages: Iterable[MessageLog]) -> dict[int, list[str]]:
+        """One batched read of a page's incoming rows' photo attachments (#3084),
+        keyed by message id in position order — the store query is per PAGE,
+        never per message, mirroring ``_run_send_stats``.  Rows with no
+        attachments are absent."""
+        message_ids = [message.id for message in messages if message.id is not None]
+        return self._db.messages.attachments_for_message_ids(message_ids)
+
     async def _handle_pull(self, ws: ServerConnection, data: dict, device_identifier: str) -> None:
         """Return unacknowledged outbox messages."""
         try:
@@ -1081,9 +1089,17 @@ class IosChannel(MessageChannel):
             limit=request.limit,
         )
         run_stats = self._run_send_stats(message for message, _, _ in rows)
+        page_attachments = (
+            self._page_attachments(message for message, _, _ in rows)
+            if request.include_attachments
+            else {}
+        )
         records = [
             _history_record(
-                row, include_attachments=request.include_attachments, run_stats=run_stats
+                row,
+                include_attachments=request.include_attachments,
+                run_stats=run_stats,
+                page_attachments=page_attachments,
             )
             for row in rows
         ]
@@ -1451,6 +1467,7 @@ def _history_record(
     *,
     include_attachments: bool = True,
     run_stats: dict[str, RunSendStats],
+    page_attachments: dict[int, list[str]],
 ) -> IosOutboxRecord:
     message, device, outbox = row
     if outbox is not None and (outbox.source_hint or outbox.source_name):
@@ -1477,7 +1494,7 @@ def _history_record(
             (
                 _decode_outbox_attachments(outbox)
                 if outbox is not None
-                else _decode_message_attachments(message)
+                else page_attachments.get(_required_message_id(message), [])
             )
             if include_attachments
             else []
@@ -1539,15 +1556,6 @@ def _decode_outbox_attachments(row: IosOutboxItem) -> list[str]:
     """Recover the inline attachment payload retained by an outbox row."""
     return _decode_attachments_json(
         row.attachments_json, f"iOS outbox attachments (outbox_id={row.id})"
-    )
-
-
-def _decode_message_attachments(message: MessageLog) -> list[str]:
-    """Recover the attachments an incoming message's record carries (#3084) —
-    the user's own photos, served back so the app renders them in the bubble
-    after a history sync."""
-    return _decode_attachments_json(
-        message.attachments_json, f"iOS message attachments (message_id={message.id})"
     )
 
 
