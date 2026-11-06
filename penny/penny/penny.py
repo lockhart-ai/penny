@@ -45,6 +45,7 @@ from penny.preflight import Preflight, PreflightError, PreflightReport
 from penny.responses import PennyResponse
 from penny.scheduler import (
     BackgroundScheduler,
+    ChatPrewarmTask,
     PeriodicSchedule,
     Schedule,
 )
@@ -373,7 +374,8 @@ class Penny:
         self.collector._on_tool_start_factory = browser_ch.make_background_tool_callback
 
     def _init_scheduler(self, config: Config) -> None:
-        """Create background scheduler — send-queue drainer + collector dispatcher.
+        """Create background scheduler — send-queue drainer, collector
+        dispatcher, chat pre-warm.
 
         The Collector is a single idle-gated schedule that ticks fast
         (COLLECTOR_TICK_INTERVAL).  Each tick it picks the most-overdue
@@ -385,6 +387,15 @@ class Penny:
         pause in conversation is not long enough to start a cycle that the next
         message would only restart. A user-requested "run it now" dispatches the
         collector directly (``Collector.run_for``) and never goes through this gate.
+
+        The chat pre-warm (#3078) is LAST — the lowest priority, behind the
+        collector's own schedule — and gated on ``CHAT_PREWARM_IDLE_SECONDS``:
+        once the user has been idle that long (and nothing else was due this
+        tick), it sends the next chat turn's rendered prefix to the model
+        server once, so the server's prefix cache is warm before the real
+        turn arrives. A foreground message starting mid-warm cancels it
+        through the scheduler's own existing foreground-priority cancel —
+        no new mechanism, the same one the collector's own cycles already use.
         """
         schedules: list[Schedule] = [
             # Drain before the collector so a queued message is delivered
@@ -399,6 +410,16 @@ class Penny:
                 agent=self.collector,
                 interval=lambda: config.runtime.COLLECTOR_TICK_INTERVAL,
                 idle_threshold=lambda: config.runtime.COLLECTOR_IDLE_SECONDS,
+            ),
+            PeriodicSchedule(
+                agent=ChatPrewarmTask(
+                    chat_agent=self.chat_agent,
+                    model_client=self.model_client,
+                    cycle_gate=self.collector,
+                    runtime=config.runtime,
+                ),
+                interval=lambda: PennyConstants.CHAT_PREWARM_RECHECK_INTERVAL,
+                idle_threshold=lambda: config.runtime.CHAT_PREWARM_IDLE_SECONDS,
             ),
         ]
         self.scheduler = BackgroundScheduler(

@@ -84,6 +84,7 @@ penny/
     base.py           — BackgroundScheduler + Schedule ABC
     schedules.py      — PeriodicSchedule implementation
     send_queue_drainer.py — `SendQueueDrainer`: delivers queued autonomous messages on the send cooldown, by origin lane (#1939); composes a composing row's message on one chat-agent delivery turn before delivering it (#2656) — the row's own `kind` (#2975) names the fact set: a `report` row composes a `JobReport`/`handle_job_report` (or, for a SANDBOX-origin row (#2964), a `SandboxReport`/`handle_sandbox_report` on the cooldown-skipping lane), a `job_retired`/`job_failed` row composes the autonomous job event's fact set through `handle_job_event_report`
+    chat_prewarm.py   — `ChatPrewarmTask` (#3078): the lowest-priority idle schedule — sends the next chat turn's rendered prefix (leading + session-state + history, via `ChatAgent.build_prewarm_prefix`) to the model server once, `max_tokens=1`, discarded, through `LlmClient.prewarm` (a separate method from `chat()`, no `promptlog` row, no call-started publish); gated on `CHAT_PREWARM_IDLE_SECONDS`, never while `Collector.is_cycle_running()` (the `CycleGate` protocol, duck-typed like `SandboxRunner`), never twice for the same `(prefix hash, newest promptlog timestamp)` key; touches no shared agent state, so a foreground turn starting mid-warm cancels it through the scheduler's existing `notify_foreground_start()` with no new plumbing
   commands/
     __init__.py       — create_command_registry() factory
     base.py           — Command ABC, CommandRegistry

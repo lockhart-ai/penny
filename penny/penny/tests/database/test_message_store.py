@@ -510,3 +510,52 @@ class TestExchangeWindowBoundary:
         assert anchor.session_turns == 0
         assert anchor.live_turn_open is True
         assert anchor.session_started_at == live_at
+
+    def test_anchor_for_arrival_matches_session_anchor_mid_session(self, db):
+        """#3078: with nothing open yet, asking for the anchor a turn would see
+        if it arrived right now — still well inside the idle gap — agrees with
+        ``session_anchor`` read on the closed turns alone: the synthetic
+        arrival's own "open turn" bookkeeping cancels out exactly like a real
+        open turn's does."""
+        first = datetime(2026, 1, 1, 12, 0)
+        second = datetime(2026, 1, 1, 12, 5)
+        self._seed_exchange(db, "first ask", "first reply", first)
+        self._seed_exchange(db, "second ask", "second reply", second)
+        # The second reply lands one minute after its own ask (``_seed_exchange``);
+        # 30s after that is still well inside the 1800s idle gap.
+        arrives_at = second + timedelta(minutes=1, seconds=30)
+
+        anchor = db.messages.anchor_for_arrival(self.USER, 1800, arrives_at)
+
+        assert anchor.session_turns == 2
+        assert anchor.total_user_turns == 2
+        assert anchor.live_turn_open is True
+        assert anchor.session_started_at == first
+
+    def test_anchor_for_arrival_rotates_once_the_idle_gap_has_passed(self, db):
+        """#3078: once the gap since the newest stored turn already clears
+        ``idle_seconds``, the anchor for an arrival at ``now`` comes back
+        rotated (``session_turns == 0``) — the SAME structural rule
+        ``session_anchor`` uses for an already-open live turn, not a second
+        "has this rotated?" flag."""
+        stale = datetime(2026, 1, 1, 12, 0)
+        self._seed_exchange(db, "stale ask", "stale reply", stale)
+        arrives_at = stale + timedelta(seconds=3600)  # past the 1800s idle gap
+
+        anchor = db.messages.anchor_for_arrival(self.USER, 1800, arrives_at)
+
+        assert anchor.session_turns == 0
+        assert anchor.live_turn_open is True
+        assert anchor.total_user_turns == 1
+        assert anchor.session_started_at == arrives_at
+
+    def test_anchor_for_arrival_with_no_turns_at_all(self, db):
+        """No stored turn at all — the arrival itself is the session's first,
+        same shape as a real first-ever turn."""
+        arrives_at = datetime(2026, 1, 1, 12, 0)
+
+        anchor = db.messages.anchor_for_arrival(self.USER, 1800, arrives_at)
+
+        assert anchor.session_turns == 0
+        assert anchor.total_user_turns == 0
+        assert anchor.session_started_at == arrives_at

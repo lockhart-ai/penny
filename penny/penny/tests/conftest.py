@@ -109,6 +109,11 @@ DEFAULT_TEST_RUNTIME_OVERRIDES: dict[str, int | float] = {
     # Bump every background-agent interval past any test timeout so the
     # scheduler never fires them mid-test.
     "COLLECTOR_TICK_INTERVAL": 99999.0,
+    # The chat pre-warm's own idle threshold (#3078) — bumped the same way, so
+    # an unrelated scheduler-driven test never has its background LLM client
+    # replaced by a surprise pre-warm call. A test exercising the warm itself
+    # overrides this low via ``make_config(chat_prewarm_idle_seconds=...)``.
+    "CHAT_PREWARM_IDLE_SECONDS": 99999.0,
 }
 
 

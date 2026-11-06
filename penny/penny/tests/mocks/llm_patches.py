@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from penny.llm.call_link import CallLink
-from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction, UsageTiming
 
 # Dimension of the deterministic default embedding.  The embedding model is a
 # required prerequisite, so every test constructs an embedding client and the
@@ -73,6 +73,15 @@ class MockLlmClient:
         # Browse micro-context calls answered by the built-in intercept — kept off
         # ``requests`` so per-call-count assertions in flow tests stay stable.
         self.micro_requests: list[dict] = []
+        # The chat pre-warm's own calls (#3078) — kept off ``requests`` for the
+        # same reason ``micro_requests`` is: a background warm firing during an
+        # unrelated test must never perturb an ordinal/count-based assertion on
+        # a real chat/tool-call flow.
+        self.prewarm_requests: list[dict] = []
+        # Mirrors the real ``LlmClient.raw_template_enabled`` (#2829) — the
+        # pre-warm's own gate; a test exercising the "transport is off" skip
+        # sets this ``False``.
+        self.raw_template_enabled = True
 
     def set_response_handler(
         self,
@@ -208,6 +217,19 @@ class MockLlmClient:
             agent_name=agent_name,
             prompt_type=prompt_type,
         )
+
+    async def prewarm(self, messages: list[LlmMessage], tools: list[dict] | None) -> UsageTiming:
+        """Mock prewarm() call (#3078) — matches the real client's signature:
+        no ``call_link``, nothing logged. Recorded on ``prewarm_requests``
+        only, never on ``requests`` (see ``__init__``)."""
+        dict_messages = [
+            message.to_log_dict() if isinstance(message, LlmMessage) else message
+            for message in messages
+        ]
+        self.prewarm_requests.append(
+            {"model": self.model, "messages": dict_messages, "tools": tools}
+        )
+        return UsageTiming(prompt_tokens=100, completion_tokens=1, cached_tokens=0)
 
     def set_embed_handler(
         self, handler: Callable[[str, str | list[str]], list[list[float]]]

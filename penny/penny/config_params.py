@@ -359,6 +359,22 @@ ConfigParam(
 )
 
 ConfigParam(
+    key="CHAT_PREWARM_IDLE_SECONDS",
+    description=(
+        "Seconds of silence before Penny pre-warms the next chat turn's rendered "
+        "prompt prefix on the model server (#3078) — sent once, with max_tokens=1 "
+        "and the output discarded, so the first message after a quiet spell starts "
+        "warm instead of paying a full prefill. Its own idle requirement (#2779), "
+        "checked the same way IDLE_SECONDS/COLLECTOR_IDLE_SECONDS are; never while "
+        "a collector cycle is running, and never twice for the same rendered prefix."
+    ),
+    type=float,
+    default=120.0,
+    validator=_validate_positive_float,
+    group=GROUP_BACKGROUND,
+)
+
+ConfigParam(
     key="EMBEDDING_BACKFILL_BATCH_LIMIT",
     description="Max items per embedding backfill cycle on startup",
     type=int,

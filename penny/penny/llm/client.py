@@ -120,6 +120,11 @@ THINKING_OFF_BODY = {
 # :meth:`_with_sampling_top_k`) — never a second, competing passthrough.
 SKIP_CACHE_STORE_FIELD = "skip_cache_store"
 
+# The chat pre-warm's own token budget (#3078): one token is enough to make the
+# server process and cache the whole rendered prefix, and the draw is discarded
+# either way — a real answer is never wanted here.
+PREWARM_TOKEN_BUDGET = 1
+
 # Ask for embedding vectors as plain floats rather than the SDK's base64 default.
 # Not every backend accepts base64: Google AI Studio refuses it outright ("embeddings do
 # not support base64 encoding_format"), and the failure is the quiet kind — the write path
@@ -711,6 +716,41 @@ class LlmClient:
             transport,
             sent_request,
         )
+
+    async def prewarm(self, messages: list[LlmMessage], tools: list[dict] | None) -> UsageTiming:
+        """Send the next chat turn's rendered PREFIX through the model server
+        once, with ``max_tokens=1`` and the output discarded, so the server's
+        prefix cache is primed before the real turn arrives (#3078).
+
+        Renders through :meth:`_send_raw_template_request`'s own request
+        building — the SAME render + transport code ``chat()``'s raw-template
+        branch calls below, never a second copy — so the bytes sent here are
+        byte-identical to what the real next turn's own prefix will be. Only
+        ``token_budget`` differs (forced to ``PREWARM_TOKEN_BUDGET``); thinking
+        stays ON (the real turn's own shape — ``chat()``'s always-on default)
+        and ``skip_cache_store`` stays ``False``, since the opposite ask would
+        tell the server NOT to store this prompt, defeating the point.
+
+        Writes NO ``promptlog`` row and publishes NO call-started event —
+        nothing about this call is recorded anywhere: it is cache plumbing,
+        not an interaction. ``chat()`` is untouched by this method; the two
+        never share a code path beyond the request-building they both call.
+
+        Only ever reached when :attr:`raw_template_enabled` is true — the
+        caller's own check (the scheduler task), so a deployment with no
+        vendored chat template, or one whose raw-faithfulness check has
+        disabled that transport, never calls this at all.
+        """
+        messages_snapshot = [message.to_log_dict() for message in messages]
+        translated_messages = self._translate_messages(messages_snapshot)
+        draw = await self._send_raw_template_request(
+            translated_messages,
+            tools,
+            PREWARM_TOKEN_BUDGET,
+            thinking_enabled=True,
+            skip_cache_store=False,
+        )
+        return usage_timing_from_response(draw.raw.model_dump())
 
     def _resolve_transport(
         self, messages: list[LlmMessage], format: dict | str | None
