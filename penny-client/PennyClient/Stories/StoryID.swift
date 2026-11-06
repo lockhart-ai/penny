@@ -11,6 +11,8 @@ enum StoryID: String, CaseIterable {
     case chatWorkingLong
     case chatPermission
     case chatResolving
+    case chatQueued
+    case chatQueuedTwo
     case chatDisconnected
     case chatCollectorsBadge
     case chatComposerTyping

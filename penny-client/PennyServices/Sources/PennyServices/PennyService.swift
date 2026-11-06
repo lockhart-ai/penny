@@ -350,7 +350,11 @@ extension PennyService {
         historicalMessagesHandler = nil
     }
 
-    public func sendMessage(_ content: String, images: [UIImage]? = nil) {
+    /// Returns the sent message's id (#3043) — the one other callers need
+    /// to track its queued-bubble styling against, since it's assigned
+    /// here and nowhere earlier.
+    @discardableResult
+    public func sendMessage(_ content: String, images: [UIImage]? = nil) -> Int {
         let preparedImages = (images ?? []).map { ($0, OutgoingImage.dataURL(for: $0)) }
         let imageDataURLs = preparedImages.compactMap(\.1)
         let droppedCount = preparedImages.count - imageDataURLs.count
@@ -366,6 +370,7 @@ extension PennyService {
         if !imageDataURLs.isEmpty {
             pendingImageMessageID = message.id
         }
+        return message.id
     }
 
     /// The chat notice's prefix when a message with photos fails server-side

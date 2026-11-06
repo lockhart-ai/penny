@@ -146,6 +146,22 @@ extension MessageView {
         /// run's dock, cleared below with the rest of its state.
         var resolvedPermissionItem: LiveDockItem?
 
+        // MARK: Queued messages (#3043)
+        /// Ids of messages sent while `dockPhase == .working` — the
+        /// server's turn inbox (#2985) holds a message that arrives
+        /// mid-turn and injects it into the running turn after its
+        /// current tool step, rather than starting a second turn, so the
+        /// message is sent immediately (never held back here) and only
+        /// shown in the queued bubble style until that injection shows up
+        /// as the run's next step. Tracked by id only — nothing persisted,
+        /// since after a relaunch it is simply a sent message.
+        var queuedMessageIDs: Set<Int> = []
+        /// Each queued id's run step count at the moment it was sent
+        /// (`MessageView+Queue.swift`) — the mark clears once the run's
+        /// step count exceeds this, meaning a `step_started` after the
+        /// send arrived (the server picked the message up).
+        @ObservationIgnored var queuedMessageStepBaselines: [Int: Int] = [:]
+
         @ObservationIgnored private var dockPendingTask: Task<Void, Never>?
         @ObservationIgnored private let messagePageSize: Int
         @ObservationIgnored private var nextOlderCursor: MessagePageCursor?
@@ -199,6 +215,7 @@ extension MessageView {
             }
             dockPendingTask?.cancel()
             dockRun = run
+            clearQueuedMarksOnStepAdvance()
             if dockPhase != .working {
                 dockPhase = .working
             }
@@ -212,6 +229,7 @@ extension MessageView {
         /// morph still starts, or the run ended with nothing to show for
         /// it and the dock just fades out.
         private func handleForegroundRunEnded() {
+            clearQueuedMarksOnRunEnd()
             guard dockPhase == .working, dockRun != nil else { return }
             dockPendingTask?.cancel()
             dockPendingTask = Task { [weak self] in
@@ -233,6 +251,7 @@ extension MessageView {
         func beginResolvingIfMatched(appendedMessages: [ChatMessage]) {
             guard let dockRun, dockPhase != .hidden else { return }
             guard let reply = appendedMessages.first(where: { $0.runID == dockRun.id && !$0.isOutgoing }) else { return }
+            clearQueuedMarksOnRunEnd()
             dockPendingTask?.cancel()
             resolvingMessageID = reply.id
             dockPhase = .resolving
@@ -448,7 +467,18 @@ extension MessageView {
             if selectedMessageFilter != .all {
                 selectedMessageFilter = .all
             }
-            client.sendMessage(messageToSend, images: pendingPhoto.map { [$0] })
+            // Always sent immediately (#3043, #2985): a message arriving
+            // mid-turn joins the server's turn inbox and is injected into
+            // the running turn, never queued client-side. The sent id is
+            // marked for the queued bubble style while the dock is busy —
+            // `dockPhase`/`dockRun` are read BEFORE the send so a run that
+            // ends in the same synchronous call never leaves a stale mark.
+            let wasWorking = dockPhase == .working
+            let runStepCountAtSend = dockRun?.steps.count ?? 0
+            let sentMessageID = client.sendMessage(messageToSend, images: pendingPhoto.map { [$0] })
+            if wasWorking {
+                markMessageAsQueued(sentMessageID, runStepCountAtSend: runStepCountAtSend)
+            }
             requestScrollToBottom()
         }
 

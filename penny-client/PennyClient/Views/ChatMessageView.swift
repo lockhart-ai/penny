@@ -14,10 +14,15 @@ import PennyServices
 struct ChatMessageView: View {
     let message: ChatMessage
     let layout: MessageView.MessageLayout
+    /// Whether this is a message sent while Penny is working (#3043) —
+    /// renders at `Tokens.queuedBubbleOpacity` with "🕒 Queued" standing
+    /// in for the real time, until the view model clears the mark.
+    let isQueued: Bool
 
-    init(message: ChatMessage, layout: MessageView.MessageLayout) {
+    init(message: ChatMessage, layout: MessageView.MessageLayout, isQueued: Bool = false) {
         self.message = message
         self.layout = layout
+        self.isQueued = isQueued
     }
 
     private var messageContentBlocks: [ChatMessageContentBlock] {
@@ -86,7 +91,9 @@ struct ChatMessageView: View {
     /// carries one (`ChatReplyContentParser` reads it back out of the
     /// message's own text); Penny's bubbles never show a quote. A
     /// collector or notification message names its source as the metadata
-    /// line's first segment; chat replies carry no source.
+    /// line's first segment; chat replies carry no source. `isQueued`
+    /// (#3043) overrides the time with "🕒 Queued" and fades the whole
+    /// bubble — the message itself is unchanged, already sent.
     private var messageRow: some View {
         MessageBubble(
             role: message.isOutgoing ? .user : .penny,
@@ -94,7 +101,7 @@ struct ChatMessageView: View {
             quote: message.isOutgoing ? replyContent?.summary : nil,
             quoteAuthor: replyContent?.author ?? "Penny",
             fillsWidth: hasTableBlock,
-            time: message.displayTime,
+            time: isQueued ? "🕒 Queued" : message.displayTime,
             source: message.isOutgoing ? nil : message.sourceHint,
             tools: message.toolCalls,
             duration: Self.durationLabel(message.durationMs)
@@ -148,6 +155,7 @@ struct ChatMessageView: View {
         switch layout {
         case .message:
             messageRow
+                .opacity(isQueued ? Tokens.queuedBubbleOpacity : 1)
         case .compact:
             compactCard
         case .media:
