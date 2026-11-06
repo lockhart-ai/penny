@@ -177,10 +177,7 @@ public struct ListRow: View {
                 pill
             }
             if case .running = trailing {
-                Image(systemName: "ellipsis")
-                    .symbolEffect(.variableColor.iterative)
-                    .foregroundStyle(.blue)
-                    .font(.footnote)
+                RunningEllipsis()
             }
             Spacer(minLength: 8)
             switch trailing {

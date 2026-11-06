@@ -6,7 +6,10 @@ enum StoryID: String, CaseIterable {
     case chatEmpty
     case chatConversation
     case chatBubbles
+    case chatWorkingStart
     case chatWorking
+    case chatWorkingLong
+    case chatResolving
     case chatDisconnected
     case chatCollectorsBadge
     case chatComposerTyping
@@ -20,7 +23,6 @@ enum StoryID: String, CaseIterable {
     case shellPromptsExpandedChat
     case shellSettings
     case sheetSearch
-    case sheetActivity
     case sheetCardDetail
     case kitTopTabBar
     case kitPageHeader

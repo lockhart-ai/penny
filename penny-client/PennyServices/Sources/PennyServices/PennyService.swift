@@ -23,6 +23,9 @@ public struct AgentProgressRunItem: Identifiable {
     public let agent: String
     public let scope: AgentProgressScope
     public var steps: [AgentProgressStepItem] = []
+    /// When the run started (#3042) — the live dock's "t s" elapsed-time
+    /// header, ticked by a `TimelineView` rather than read once.
+    public var startedAt: Date = Date()
 }
 
 @MainActor

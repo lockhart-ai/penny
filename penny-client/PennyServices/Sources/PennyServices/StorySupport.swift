@@ -24,12 +24,22 @@ private final class NullWebSocketTransport: WebSocketTransport {
 /// realistic multi-step activity without constructing `AgentProgressToolItem`
 /// directly (its initializer stays internal).
 public struct StoryWorkingStep {
-    let toolName: String
+    let toolName: String?
     let arguments: [String: AgentProgressValue]
+    /// The step's reasoning (#3040), shown in the live dock (#3042) as the
+    /// italic line above the step's tool row(s). `nil` renders no thinking
+    /// line for that step, matching a server frame with no `thinking` field.
+    let thinking: String?
 
-    public init(toolName: String, arguments: [String: AgentProgressValue] = [:]) {
+    /// `toolName` is optional so a story can describe a step whose
+    /// thinking arrived with no tool call yet — the live dock's very first
+    /// frame (#3042, `chat-working-start`): a step with thinking and no
+    /// tool renders only the thinking line, the same as a real in-flight
+    /// step the server hasn't sent `tools_started` for yet.
+    public init(toolName: String? = nil, arguments: [String: AgentProgressValue] = [:], thinking: String? = nil) {
         self.toolName = toolName
         self.arguments = arguments
+        self.thinking = thinking
     }
 }
 
@@ -42,6 +52,7 @@ public extension PennyService {
         messages: [ChatMessage],
         isConnected: Bool = false,
         workingSteps: [StoryWorkingStep] = [],
+        workingElapsedSeconds: Int = 0,
         backgroundRunCount: Int = 0
     ) -> PennyService {
         let databaseService = DatabaseService()
@@ -55,7 +66,7 @@ public extension PennyService {
         service.isRegistered = isConnected
         if !workingSteps.isEmpty {
             service.isTyping = true
-            let run = makeWorkingRun(from: workingSteps)
+            let run = makeWorkingRun(from: workingSteps, elapsedSeconds: workingElapsedSeconds)
             service.agentProgressRuns = [run.id: run]
         }
         for run in makeBackgroundRuns(count: backgroundRunCount) {
@@ -64,11 +75,18 @@ public extension PennyService {
         return service
     }
 
-    private static func makeWorkingRun(from workingSteps: [StoryWorkingStep]) -> AgentProgressRunItem {
+    /// `elapsedSeconds` backdates `startedAt` so the live dock's header
+    /// reads a fixed "t s" at render time (#3042) — a story is screenshotted
+    /// moments after this runs, so a `startedAt` of "now" would read ~0 s.
+    private static func makeWorkingRun(from workingSteps: [StoryWorkingStep], elapsedSeconds: Int) -> AgentProgressRunItem {
         var run = AgentProgressRunItem(id: "story-run", agent: "chat", scope: .foreground)
+        run.startedAt = Date().addingTimeInterval(-Double(elapsedSeconds))
         run.steps = workingSteps.enumerated().map { index, step in
             var stepItem = AgentProgressStepItem(number: index + 1, maxSteps: 20)
-            stepItem.tools = [AgentProgressToolItem(name: step.toolName, arguments: step.arguments)]
+            if let toolName = step.toolName {
+                stepItem.tools = [AgentProgressToolItem(name: toolName, arguments: step.arguments)]
+            }
+            stepItem.thinking = step.thinking
             return stepItem
         }
         return run

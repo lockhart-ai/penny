@@ -24,19 +24,55 @@ enum StoryFixtures {
         messages: [ChatMessage],
         isConnected: Bool = true,
         workingSteps: [StoryWorkingStep] = [],
+        workingElapsedSeconds: Int = 0,
         backgroundRunCount: Int = 0
     ) -> MessageView.ViewModel {
         let client = PennyService.storyInstance(
             messages: messages,
             isConnected: isConnected,
             workingSteps: workingSteps,
+            workingElapsedSeconds: workingElapsedSeconds,
             backgroundRunCount: backgroundRunCount
         )
         return MessageView.ViewModel(client: client)
     }
 
+    /// The live dock just started (#3042, `chat-working-start`): one step,
+    /// its thinking already in but no tool call yet — the dock's very first
+    /// visible frame.
+    static func workingStartViewModel() -> MessageView.ViewModel {
+        chatViewModel(
+            messages: conversationMessages,
+            workingSteps: [StoryWorkingStep(thinking: "Checking what roasts are back in stock this week.")],
+            workingElapsedSeconds: 2
+        )
+    }
+
+    /// The live dock mid-turn (#3042, `chat-working`): three steps, each
+    /// with its own thinking line before its tool row, the last still
+    /// running.
     static func workingViewModel() -> MessageView.ViewModel {
-        chatViewModel(messages: conversationMessages, workingSteps: workingSteps)
+        chatViewModel(messages: conversationMessages, workingSteps: workingSteps, workingElapsedSeconds: 8)
+    }
+
+    /// The live dock at its 40%-of-screen cap (#3042, `chat-working-long`):
+    /// enough steps that the stream scrolls internally, pinned to the
+    /// newest item, with the top fade showing.
+    static func workingLongViewModel() -> MessageView.ViewModel {
+        chatViewModel(messages: conversationMessages, workingSteps: longWorkingSteps, workingElapsedSeconds: 22)
+    }
+
+    /// The live dock mid-morph (#3042, `chat-resolving`): the working run
+    /// is still in `agentProgressRuns` (so the dock has content to render),
+    /// and the reply it is becoming has already arrived as the newest
+    /// message. `MessageView(dockResolveProgress:)` freezes the morph at a
+    /// fixed point instead of animating it, so the shot is reproducible.
+    static func resolvingViewModel() -> MessageView.ViewModel {
+        chatViewModel(
+            messages: bubbleMessages + [resolvingUserQuestion, resolvingReplyMessage],
+            workingSteps: workingSteps,
+            workingElapsedSeconds: 8
+        )
     }
 
     static func disconnectedViewModel() -> MessageView.ViewModel {
@@ -104,13 +140,64 @@ enum StoryFixtures {
     }
 
     /// Three steps with different tools, the last one unfinished — the run
-    /// "Penny is working" stories show as still in progress.
+    /// "Penny is working" stories show as still in progress. Each carries
+    /// its own thinking line, the live dock's stream shape (#3042).
     static var workingSteps: [StoryWorkingStep] {
         [
-            StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("moka pot coffee bean grind size")])]),
-            StoryWorkingStep(toolName: "memory_lookup", arguments: ["query": .string("coffee bean grind size notes")]),
-            StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("https://example.com/coffee-roasting-guide")])])
+            StoryWorkingStep(
+                toolName: "browse",
+                arguments: ["queries": .array([.string("moka pot coffee bean grind size")])],
+                thinking: "Checking what grind size works best for a moka pot."
+            ),
+            StoryWorkingStep(
+                toolName: "memory_lookup",
+                arguments: ["query": .string("coffee bean grind size notes")],
+                thinking: "Worth checking what she's already noted about grind size."
+            ),
+            StoryWorkingStep(
+                toolName: "browse",
+                arguments: ["queries": .array([.string("https://example.com/coffee-roasting-guide")])],
+                thinking: "That roasting guide should have a sizing chart."
+            )
         ]
+    }
+
+    /// Enough steps to push the live dock past its 40%-of-screen cap
+    /// (#3042, `chat-working-long`) — the internal scroll and the top fade.
+    static var longWorkingSteps: [StoryWorkingStep] {
+        [
+            StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("moka pot coffee bean grind size")])], thinking: "Checking what grind size works best for a moka pot."),
+            StoryWorkingStep(toolName: "memory_lookup", arguments: ["query": .string("coffee bean grind size notes")], thinking: "Worth checking what she's already noted about grind size."),
+            StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("https://example.com/coffee-roasting-guide")])], thinking: "That roasting guide should have a sizing chart."),
+            StoryWorkingStep(toolName: "memory_lookup", arguments: ["query": .string("hand grinder price notes")], thinking: "They asked about grinder prices too — checking memory first."),
+            StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("comandante c40 price")])], thinking: "Worth a quick price check on the Comandante."),
+            StoryWorkingStep(toolName: "browse", arguments: ["queries": .array([.string("https://example.com/grinder-comparison")])], thinking: "One more source before comparing the two.")
+        ]
+    }
+
+    /// The question the mid-morph story's dock is answering (#3042,
+    /// `chat-resolving`) — sits directly above the dock/reply slot, same as
+    /// the working stories' user question, so the reply reads as an answer
+    /// to something shown rather than to the collector digest above it.
+    static var resolvingUserQuestion: ChatMessage {
+        ChatMessage(
+            id: 18, serverID: 18, createdAt: Date().addingTimeInterval(-20),
+            content: "Can you check the ferry times for this weekend?",
+            sourceHint: nil, imageAttachments: [], isOutgoing: true
+        )
+    }
+
+    /// The reply the mid-morph story's dock is becoming (#3042,
+    /// `chat-resolving`) — carries the working run's own story id so it
+    /// reads as the run's own output, same as the bubble story's replies.
+    static var resolvingReplyMessage: ChatMessage {
+        ChatMessage(
+            id: 19, serverID: 19, createdAt: Date(),
+            content: "Found three sailings this weekend — cheapest is Friday morning, before the fare bump.",
+            sourceHint: nil, runID: "story-run",
+            toolCalls: 3, durationMs: 8_000,
+            imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
+        )
     }
 
     /// A mixed conversation about brewing coffee: markdown emphasis, a link,

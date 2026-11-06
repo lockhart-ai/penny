@@ -8,38 +8,46 @@ struct MessageView: View {
     @Environment(\.shellContentTopClearance) private var shellContentTopClearance
     @Environment(\.shellOpenPrompts) private var shellOpenPrompts
     @State private var viewModel: ViewModel
-    @State private var isShowingActivity: Bool
     @State private var presentedCardMessage: ChatMessage?
     @State private var isShowingSearchStory: Bool
     @State private var messageFrames: [Int: CGRect] = [:]
     @State private var messageScrollFrames: [Int: CGRect] = [:]
     @State private var keyboardSettledScrollTask: Task<Void, Never>?
-    @State private var typingIndicatorStatus = "Penny is typing"
-    @State private var isTypingIndicatorVisible = false
-    @State private var isTypingIndicatorFadingOut = false
-    @State private var typingIndicatorFadeTask: Task<Void, Never>?
     @State private var arrivalAnimatedMessageIDs: Set<Int> = []
     @State private var pendingIncomingAutoScrollMessageID: Int?
     @State private var lastTopScrolledMessageID: Int?
     @State private var chatViewportFrame: CGRect = .zero
     @FocusState private var isComposerFocused: Bool
 
-    /// `isShowingActivity`, `presentedCardMessage`, and `isShowingSearchStory`
-    /// only exist so story mode (#2965) can open the activity sheet, the card
-    /// detail sheet, or the search screen already presented over the chat
-    /// story. They default to today's behaviour, so `MessageView()` is
-    /// unchanged, and `isShowingSearchStory` is a seam separate from the real
-    /// `NavigationLink` search entry point below — it never changes that path.
+    // MARK: Live dock (#3042)
+    /// The matched-geometry identity shared by the dock and the one
+    /// message it resolves into, so the dock's frame interpolates into the
+    /// reply bubble's frame in the same flow slot rather than the two
+    /// appearing in different places. A `Namespace` only exists on a View,
+    /// so this is the one piece of dock state that can't live on the view
+    /// model with the rest.
+    @Namespace private var dockNamespace
+    private let dockGeometryID = "dock-resolve"
+    /// Story mode only (#2965): freezes the dock mid-morph at a fixed
+    /// opacity instead of animating it, so the transition is screenshottable.
+    private let storyDockResolveProgress: Double?
+
+    /// `presentedCardMessage` and `isShowingSearchStory` only exist so story
+    /// mode (#2965) can open the card detail sheet or the search screen
+    /// already presented over the chat story. They default to today's
+    /// behaviour, so `MessageView()` is unchanged, and `isShowingSearchStory`
+    /// is a seam separate from the real `NavigationLink` search entry point
+    /// below — it never changes that path.
     init(
         viewModel: ViewModel? = nil,
-        isShowingActivity: Bool = false,
         presentedCardMessage: ChatMessage? = nil,
-        isShowingSearchStory: Bool = false
+        isShowingSearchStory: Bool = false,
+        dockResolveProgress: Double? = nil
     ) {
         _viewModel = State(initialValue: viewModel ?? ViewModel())
-        _isShowingActivity = State(initialValue: isShowingActivity)
         _presentedCardMessage = State(initialValue: presentedCardMessage)
         _isShowingSearchStory = State(initialValue: isShowingSearchStory)
+        storyDockResolveProgress = dockResolveProgress
     }
 
     var body: some View {
@@ -56,9 +64,6 @@ struct MessageView: View {
                 .background(Color(.systemGroupedBackground).ignoresSafeArea())
                 .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
-            .sheet(isPresented: $isShowingActivity) {
-                AgentActivityView(client: viewModel.client)
-            }
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
             }
@@ -80,6 +85,12 @@ struct MessageView: View {
         }
         .task {
             await viewModel.connect()
+            // Story mode only (#2965): applied after `connect()` loads the
+            // fixture messages, so the frozen resolve snapshot has a real
+            // message to point at — see the matching note in `.onAppear`.
+            if storyDockResolveProgress != nil {
+                viewModel.applyStoryDockResolveSnapshot()
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
@@ -89,7 +100,6 @@ struct MessageView: View {
         }
         .onDisappear {
             keyboardSettledScrollTask?.cancel()
-            typingIndicatorFadeTask?.cancel()
         }
     }
 
@@ -109,11 +119,12 @@ struct MessageView: View {
                         }
                     }
 
-                    if isTypingIndicatorVisible && viewModel.shouldShowTypingIndicator {
-                        TypingRow(status: typingIndicatorStatus, isFadingOut: isTypingIndicatorFadingOut)
+                    if viewModel.dockPhase != .hidden, viewModel.shouldShowLiveDock {
+                        dockSlot
                     }
 
-                    bottomSpacer                }
+                    bottomSpacer
+                }
                 .padding(.horizontal, MessageLayout.message.horizontalPadding)
                 .padding(.top, messageListTopPadding)
                 .padding(.bottom, Tokens.composerFadeBleed)
@@ -138,17 +149,23 @@ struct MessageView: View {
                 }
             }
             .onAppear {
-                updateTypingIndicator(isTyping: viewModel.client.isTyping)
                 scheduleScrollToBottom(with: proxy, animated: false)
-            }
-            .onChange(of: viewModel.client.isTyping) { _, isTyping in
-                updateTypingIndicator(isTyping: isTyping)
-                if viewModel.isAtBottom {
-                    scheduleScrollToBottom(with: proxy, shouldSettleLayout: false)
+                // `onChange(of:)` only fires on a later change, never for
+                // the value a view already holds on its first appearance —
+                // a run already in `agentProgressRuns` before the view
+                // exists (restoring into an active run; every story fixture)
+                // needs this explicit sync, or the dock never shows at all.
+                // The resolving-snapshot story is the one exception: it
+                // also needs `displayedMessages`, which `connect()` loads
+                // asynchronously — applying it here would race that load
+                // and resolve to no message at all, so it waits for the
+                // `.task` below instead.
+                if storyDockResolveProgress == nil {
+                    viewModel.syncDock()
                 }
             }
-            .onChange(of: viewModel.client.foregroundProgress?.currentStatus) { _, status in
-                updateTypingIndicatorStatus(status)
+            .onChange(of: viewModel.foregroundProgressVersion) { _, _ in
+                viewModel.syncDock()
             }
             .onChange(of: viewModel.displayedMessages.map(\.id)) { previousIDs, currentIDs in
                 let previousPendingMessageID = pendingIncomingAutoScrollMessageID
@@ -167,35 +184,76 @@ struct MessageView: View {
         }
     }
 
-    private func updateTypingIndicator(isTyping: Bool) {
-        typingIndicatorFadeTask?.cancel()
-
-        if isTyping {
-            typingIndicatorStatus = currentTypingStatus
-            isTypingIndicatorVisible = true
-            withAnimation(.easeOut(duration: 0.16)) {
-                isTypingIndicatorFadingOut = false
+    /// The one flow slot the dock and its resolve occupy — never two
+    /// places at once. `.working` shows the dock; `.resolving` shows the
+    /// message it's becoming, IN THE SAME SLOT, both tagged with the same
+    /// `matchedGeometryEffect` id so the dock's frame interpolates into the
+    /// bubble's frame rather than the bubble appearing somewhere else
+    /// while the dock separately fades at the bottom. That interpolation
+    /// only runs inside the explicit `withAnimation` at the one call site
+    /// that starts a resolve (`prepareArrivalAnimations`) — not a blanket
+    /// `.animation(value:)` here, so the later, purely-bookkeeping
+    /// `.resolving → .hidden` cleanup (the grid has already resumed
+    /// showing this message by then) never re-animates anything.
+    ///
+    /// `matchedGeometryEffect` interpolates geometry only, never a shared
+    /// glass identity — the fix for the crash a shared `glassEffectID`
+    /// caused when two views claimed one identity simultaneously.
+    @ViewBuilder
+    private var dockSlot: some View {
+        switch viewModel.dockPhase {
+        case .hidden:
+            EmptyView()
+        case .working:
+            if let dockRun = viewModel.dockRun {
+                LiveDock(
+                    items: dockRun.liveDockItems,
+                    step: dockRun.steps.last?.number ?? 1,
+                    startedAt: dockRun.startedAt
+                ) {
+                    ChatTabAvatar()
+                }
+                .matchedGeometryEffect(id: dockGeometryID, in: dockNamespace)
+                .transition(.opacity)
             }
-            return
-        }
-
-        guard isTypingIndicatorVisible else { return }
-
-        withAnimation(.easeOut(duration: 0.35)) {
-            isTypingIndicatorFadingOut = true
-        }
-
-        typingIndicatorFadeTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            isTypingIndicatorVisible = false
-            isTypingIndicatorFadingOut = false
+        case .resolving:
+            resolvingSlotContent
         }
     }
 
-    private func updateTypingIndicatorStatus(_ status: String?) {
-        guard viewModel.client.isTyping else { return }
-        typingIndicatorStatus = status ?? "Penny is typing"
+    /// Story mode only (#2965): a live `matchedGeometryEffect` interpolation
+    /// can't be paused at a reproducible instant for a screenshot, so the
+    /// frozen story instead blends the dock and the reply at fixed,
+    /// complementary opacities, both in this same slot (never one above
+    /// the other) — `dockResolveProgress` is the only path into this branch.
+    @ViewBuilder
+    private var resolvingSlotContent: some View {
+        if let progress = storyDockResolveProgress, let dockRun = viewModel.dockRun, let message = resolvingMessage {
+            ZStack(alignment: .topLeading) {
+                LiveDock(
+                    items: dockRun.liveDockItems,
+                    step: dockRun.steps.last?.number ?? 1,
+                    startedAt: dockRun.startedAt
+                ) {
+                    ChatTabAvatar()
+                }
+                .opacity(1 - progress)
+                messageGridCell(message, layout: .message, onTap: nil)
+                    .opacity(progress)
+            }
+        } else if let message = resolvingMessage {
+            messageGridCell(message, layout: .message, onTap: nil)
+                .matchedGeometryEffect(id: dockGeometryID, in: dockNamespace)
+                .transition(.opacity)
+        }
+    }
+
+    /// The message the dock is resolving into, looked up from
+    /// `displayedMessages` by id — `messageGridRows` excludes this same
+    /// message from the normal grid while it's showing here instead.
+    private var resolvingMessage: ChatMessage? {
+        guard let id = viewModel.resolvingMessageID else { return nil }
+        return viewModel.displayedMessages.first(where: { $0.id == id })
     }
 
     private func prepareArrivalAnimations(previousIDs: [Int], currentIDs: [Int]) {
@@ -204,17 +262,15 @@ struct MessageView: View {
         guard !appendedIDs.isEmpty else { return }
 
         let appendedIDSet = Set(appendedIDs)
-        let incomingIDs = viewModel.displayedMessages
-            .filter { appendedIDSet.contains($0.id) && !$0.isOutgoing }
-            .map(\.id)
+        let appendedMessages = viewModel.displayedMessages.filter { appendedIDSet.contains($0.id) }
+        let incomingIDs = appendedMessages.filter { !$0.isOutgoing }.map(\.id)
         guard !incomingIDs.isEmpty else { return }
 
         arrivalAnimatedMessageIDs.formUnion(incomingIDs)
         pendingIncomingAutoScrollMessageID = incomingIDs.last
-    }
-
-    private var currentTypingStatus: String {
-        viewModel.client.foregroundProgress?.currentStatus ?? "Penny is typing"
+        withAnimation(.easeInOut(duration: Tokens.dockMorphDuration)) {
+            viewModel.beginResolvingIfMatched(appendedMessages: appendedMessages)
+        }
     }
 
     /// The old toolbar's "show new messages" button, kept reachable as a
@@ -391,10 +447,25 @@ private extension MessageView {
 
     func messageGridRows(for layout: MessageLayout) -> [MessageGridRow] {
         let columnCount = layout.columnCount
-        return stride(from: 0, to: viewModel.displayedMessages.count, by: columnCount).map { startIndex in
-            let endIndex = min(startIndex + columnCount, viewModel.displayedMessages.count)
-            return MessageGridRow(messages: Array(viewModel.displayedMessages[startIndex..<endIndex]))
+        let messages = gridMessages
+        return stride(from: 0, to: messages.count, by: columnCount).map { startIndex in
+            let endIndex = min(startIndex + columnCount, messages.count)
+            return MessageGridRow(messages: Array(messages[startIndex..<endIndex]))
         }
+    }
+
+    /// The messages the normal grid draws — every one of `displayedMessages`
+    /// except, while the dock is resolving into it, the one message its
+    /// slot is showing instead (#3042): drawing it in both places at once
+    /// would duplicate it. Only excluded when the dock is actually visible
+    /// (`shouldShowLiveDock`) — on a filter where the dock never shows, the
+    /// message belongs in the grid as normal, not nowhere.
+    var gridMessages: [ChatMessage] {
+        guard viewModel.dockPhase == .resolving, viewModel.shouldShowLiveDock,
+              let resolvingID = viewModel.resolvingMessageID else {
+            return viewModel.displayedMessages
+        }
+        return viewModel.displayedMessages.filter { $0.id != resolvingID }
     }
 
     @ViewBuilder
@@ -563,10 +634,10 @@ private extension MessageView {
         }
     }
 
-    /// The system long-press menu (#3038): Reply, Copy, View steps (when
-    /// the message carries a run), and Agent activity — which stays
-    /// reachable until the live dock (#3042) replaces it. Replaces the
-    /// custom overlay menu.
+    /// The system long-press menu (#3038): Reply, Copy, and View steps (when
+    /// the message carries a run). Replaces the custom overlay menu; its
+    /// "Agent activity" item retired with the typing row and the activity
+    /// sheet (#3042) — the live dock replaces what it showed.
     @ViewBuilder
     func messageContextMenu(for message: ChatMessage) -> some View {
         Button {
@@ -594,12 +665,6 @@ private extension MessageView {
             } label: {
                 Label("View steps", systemImage: "text.bubble")
             }
-        }
-
-        Button {
-            isShowingActivity = true
-        } label: {
-            Label("Agent activity", systemImage: "waveform.path")
         }
     }
 }
@@ -746,184 +811,6 @@ private struct IncomingMessageArrivalModifier: ViewModifier {
     }
 }
 
-struct TypingRow: View {
-    let status: String
-    let isFadingOut: Bool
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 6) {
-            Text(status)
-                .id(status)
-                .font(.subheadline)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity)
-            TypingDots()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .opacity(isFadingOut ? 0 : 1)
-        .animation(.easeInOut(duration: 0.14), value: status)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(status)
-    }
-}
-
-private struct TypingDots: View {
-    private let dotCount = 3
-    private let cycleDuration = 0.9
-    private let dotDelay = 0.16
-    private let jumpDuration = 0.36
-
-    var body: some View {
-        TimelineView(.animation) { timeline in
-            let elapsedTime = timeline.date.timeIntervalSinceReferenceDate
-
-            HStack(spacing: 3) {
-                ForEach(0..<dotCount, id: \.self) { index in
-                    let progress = dotProgress(elapsedTime: elapsedTime, index: index)
-
-                    Circle()
-                        .fill(Color.secondary)
-                        .frame(width: 5, height: 5)
-                        .offset(y: -4 * sin(progress * .pi))
-                        .opacity(0.45 + (0.35 * sin(progress * .pi)))
-                }
-            }
-        }
-        .frame(width: 21, height: 12)
-        .accessibilityHidden(true)
-    }
-
-    private func dotProgress(elapsedTime: TimeInterval, index: Int) -> Double {
-        let delayedTime = elapsedTime - (Double(index) * dotDelay)
-        let cycleTime = delayedTime.truncatingRemainder(dividingBy: cycleDuration)
-        let normalizedCycleTime = cycleTime < 0 ? cycleTime + cycleDuration : cycleTime
-
-        guard normalizedCycleTime < jumpDuration else {
-            return 0
-        }
-
-        return normalizedCycleTime / jumpDuration
-    }
-}
-
-private struct AgentActivityView: View {
-    let client: PennyService
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Connection") {
-                    LabeledContent("Status", value: client.statusText)
-
-                    if let error = client.lastError {
-                        Text(error)
-                            .font(.subheadline)
-                            .foregroundStyle(.red)
-
-                        Button("Reconnect", systemImage: "arrow.clockwise") {
-                            client.reconnect()
-                        }
-                    }
-                }
-
-                if let foreground = client.foregroundProgress {
-                    Section("Current message") {
-                        progressRun(foreground)
-                    }
-                }
-
-                Section("Background work") {
-                    if client.backgroundProgressRuns.isEmpty {
-                        Text("Nothing is running")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(client.backgroundProgressRuns) { run in
-                            progressRun(run)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Agent activity")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-
-    @ViewBuilder
-    private func progressRun(_ run: AgentProgressRunItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(run.agent.capitalized)
-                .font(.headline)
-            ForEach(run.steps) { step in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Step \(step.number)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    ForEach(step.tools) { tool in
-                            Label(agentProgressToolLabel(tool), systemImage: "arrow.triangle.2.circlepath")
-                            .font(.subheadline)
-                    }
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-}
-
-extension AgentProgressRunItem {
-    var currentStatus: String {
-        guard let step = steps.last else { return "Penny is working" }
-        let status = "Working • Step \(step.number)"
-        if let tool = step.tools.last { return "\(status): \(agentProgressToolLabel(tool))" }
-        return status
-    }
-}
-
-private func agentProgressToolLabel(_ tool: AgentProgressToolItem) -> String {
-    switch tool.name {
-    case "browse":
-        if case .array(let queries)? = tool.arguments["queries"],
-           let query = queries.compactMap({ value in
-               if case .string(let string) = value { return string }
-               return nil
-           }).first {
-            return formattedURLHost(from: query).map { "Reading \($0)" } ?? "Searching \"\(query)\""
-        }
-        return "Looking up"
-    case "search_emails": return "Searching emails"
-    case "read_emails": return "Reading emails"
-    case "list_emails": return "Listing emails"
-    case "list_folders": return "Listing email folders"
-    case "draft_email": return "Drafting an email"
-    case "generate_image": return "Generating an image"
-    default:
-        if case .string(let detail)? = tool.arguments["detail"], let host = formattedURLHost(from: detail) {
-            return "Using \(tool.name) · \(host)"
-        }
-        return "Using \(tool.name)"
-    }
-}
-
-private func formattedURLHost(from string: String) -> String? {
-    guard let components = URLComponents(string: string), let host = components.host else { return nil }
-    return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-}
-
 #Preview {
     MessageView()
-}
-
-#Preview("Progress sizes") {
-    VStack(spacing: 12) {
-        TypingRow(status: "Working • Step 1", isFadingOut: false)
-        TypingRow(status: "Working • Step 1: Reading example.com", isFadingOut: false)
-        TypingRow(status: "Working • Step 2: Searching emails", isFadingOut: false)
-        TypingRow(status: "Working • Step 3: Searching \"a longer query that wraps onto multiple lines\"", isFadingOut: false)
-    }
-    .padding()
-    .background(Color(.systemGroupedBackground))
 }

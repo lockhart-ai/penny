@@ -15,6 +15,10 @@ struct AppShellView: View {
     /// opaque through.
     @State private var topInset: CGFloat = 0
 
+    /// Story mode only (#3042): passed straight through to the chat tab's
+    /// `MessageView`, freezing the live dock mid-morph.
+    private let dockResolveProgress: Double?
+
     /// `chatViewModel` and `browserModel` are injectable so story mode
     /// (#2965) can render any tab from fixtures; the defaults are the real
     /// app's — one chat view model, and the browser model reading through
@@ -22,7 +26,8 @@ struct AppShellView: View {
     init(
         initialTab: TopTab = .chat,
         chatViewModel: MessageView.ViewModel? = nil,
-        browserModel: DataBrowserViewModel? = nil
+        browserModel: DataBrowserViewModel? = nil,
+        dockResolveProgress: Double? = nil
     ) {
         let resolvedChatViewModel = chatViewModel ?? MessageView.ViewModel()
         _selected = State(initialValue: initialTab)
@@ -30,6 +35,7 @@ struct AppShellView: View {
         _browserModel = State(initialValue: browserModel ?? DataBrowserViewModel(runID: nil) {
             try await resolvedChatViewModel.client.dataBrowser.read($0)
         })
+        self.dockResolveProgress = dockResolveProgress
     }
 
     /// Where a tab's first content sits below the safe-area top: below the
@@ -78,7 +84,7 @@ struct AppShellView: View {
     private var tabContent: some View {
         switch selected {
         case .chat:
-            MessageView(viewModel: chatViewModel)
+            MessageView(viewModel: chatViewModel, dockResolveProgress: dockResolveProgress)
         case .memory:
             DataBrowserMemoriesView(model: browserModel, reconnect: chatViewModel.client.reconnect)
         case .prompts:

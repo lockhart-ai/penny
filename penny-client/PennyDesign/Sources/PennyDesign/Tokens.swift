@@ -105,6 +105,14 @@ public enum Tokens {
     public static let quoteBlockPadding: CGFloat = 8
     public static let quoteBlockCorner: CGFloat = 10
     public static let dockScreenCapFraction: CGFloat = 0.4
+    /// How long the live dock waits, once its run finishes with no reply
+    /// bubble carrying its run id yet, before it gives up on the morph and
+    /// just fades out (#3042) — a run that ends with nothing to show for it.
+    public static let dockResolveGraceSeconds: TimeInterval = 1.5
+    /// How long the resolve morph takes once a matching reply arrives
+    /// (#3042): the dock's content fades out and the reply bubble's own
+    /// arrival fades it in over this span, then the dock is removed.
+    public static let dockMorphDuration: TimeInterval = 0.4
     /// The composer's control height, shared by the `+` button and the
     /// message field's capsule so the row reads as one matched pair.
     public static let composerControlHeight: CGFloat = 47
@@ -333,3 +341,18 @@ public let pennyRainbow = AngularGradient(
     colors: [.blue, .purple, .pink, .orange, .blue],
     center: .center
 )
+
+/// The "still running" indicator — an animated blue ellipsis, footnote
+/// size. Shared by `ListRow`'s `.running` trailing item and the live
+/// dock's running tool rows (#3042), so the one definition serves both
+/// rather than each re-authoring the same symbol/effect/style chain.
+public struct RunningEllipsis: View {
+    public init() {}
+
+    public var body: some View {
+        Image(systemName: "ellipsis")
+            .symbolEffect(.variableColor.iterative)
+            .foregroundStyle(.blue)
+            .font(.footnote)
+    }
+}
