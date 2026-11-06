@@ -1,8 +1,11 @@
 """SelfStateHeader — Penny's operational self-state, rendered deterministically
-into the chat agent's system prompt (#1555).  Jobs and Your memory ride the
-STATIC prefix (``SelfStateHeader.render_static``); Job status, Recent activity,
-Memory sizes and About the user ride the per-turn DYNAMIC message
-(``render_dynamic``) — see #2814, #3055 and each method's own docstring below.
+into the chat agent's ONE session-state system message (#3089; previously
+split across a static and a per-turn dynamic message, #2814/#3055).  Every
+section is a pure function of rows AT OR BEFORE ``as_of`` — the session's own
+start (``ChatAgent._session_state_section``, read off
+``MessageStore.session_anchor``) — so the whole render is byte-identical turn
+to turn within one session; only an idle rotation, which reads a new
+``as_of``, changes what it says.  See each method's own docstring below.
 
 The ambient inversion: instead of *predicting* which of the user's stored content
 might be relevant this turn (speculative, usually unused, occasionally
@@ -18,13 +21,15 @@ index into everything else (every id it names — a collection, a run's target �
 one guess-free tool call from the detail). Sections:
 
 - **Active mechanisms** — EVERY collector, archived-inclusive, no cap (#2288): name,
-  status, cadence, end condition — the clauses that change only on a user or config
-  action. "what's running right now?" A live
-  job hangs a second, two-space-indented line under its row (#2495): the page it reads
-  (the first ``https?://`` URL in its prompt) and the instructions its cycles follow —
-  capped at a word-visible budget, with a note naming the ``memory_get`` hop to the
-  whole prompt, so what a job actually does is ambient and an ask that resembles a
-  running job can be answered by pointing at it.
+  status, cadence, end condition, THEN next run and last run (#3089 — merged onto
+  the same line; previously split across this section and a per-turn ``### Job
+  status`` one, #3055), all as of ``as_of``. "what's running right now, and when
+  did it last run?" A live job hangs a second, two-space-indented line under its
+  row (#2495): the page it reads (the first ``https?://`` URL in its prompt) and
+  the instructions its cycles follow — capped at a word-visible budget, with a
+  note naming the ``memory_get`` hop to the whole prompt, so what a job actually
+  does is ambient and an ask that resembles a running job can be answered by
+  pointing at it.
 - **Recent activity** — background runs, configuration mutations, and autonomous
   sends, interleaved in one time-ordered block at rollup altitude (one line each;
   one run's per-call detail is one ``run_get(run <id>)`` hop away). A run line
@@ -43,15 +48,14 @@ one guess-free tool call from the detail). Sections:
   turn failed: <reason>`` line, its typed ``run <id>`` the same ``run_get`` anchor
   every other activity line renders.
 - **Your memory** — the map of stores: EVERY live collection and log, no cap
-  (#2288), names + one-line scope — the index for an anchored lookup, never the
-  content. Entry counts ride the per-turn ``### Memory sizes`` section (#3055):
-  a count here moved on every job write — which is exactly what a cycle is — and
-  kept the cached static prefix from ever being reused; the five system-log
-  facades (``PennyConstants.SYSTEM_LOGS``) never carried one (#2814).  A live
-  job's scope DROPS here when it is the same text, whitespace aside, as its own
-  ``extraction_prompt`` (#3085) — the Jobs section's hung instructions line
-  already shows it — never when the two are merely similar, and never on an
-  archived row.
+  (#2288), names + entry count + one-line scope, ONE line each (#3089 — merged
+  with the old per-turn ``### Memory sizes`` section, #3055) — the index for an
+  anchored lookup, never the content; the five system-log facades
+  (``PennyConstants.SYSTEM_LOGS``) stay count-free (#2814).  A live job's
+  description DROPS here when it is the same text, whitespace aside, as its
+  own ``extraction_prompt`` (#3085) — the Jobs section's hung instructions
+  line already shows it — never when the two are merely similar, and never on
+  an archived row.
   One compact trailing line names every ARCHIVED collection and log by
   name (``archived: `<name>`, …``), omitted entirely when nothing is archived — an
   archived row with no job has nowhere else in this header to appear, so this line
@@ -98,6 +102,7 @@ from penny.datetime_utils import (
     format_log_timestamp,
     format_user_clock_time,
     format_user_timestamp,
+    stored_as_utc,
     user_timezone_name,
 )
 from penny.tools.collection_instantiation import describe_next_run, describe_schedule_rule
@@ -121,30 +126,22 @@ class SelfStateHeader:
     """Renders Penny's operational self-state from the registry + ledger.
 
     Constructed per chat turn and read purely — every method is a deterministic
-    projection of stored rows. Two sections — Jobs and Your memory — ride
-    ``ChatAgent``'s cached STATIC prefix (:meth:`render_static`, #2814): both are
-    pure renders of the registry's stable fields alone (schedule rule, ``notify``,
-    ``expires_at``, descriptions — never ``now``, never a live job state, never an
-    entry count, #3055, confirmed turn to turn by
-    ``test_static_system_prefix_survives_a_job_run_and_a_write``), so they are
-    byte-identical across turns unless a job or a collection actually CHANGED — a
-    user or config action, not a run — rare next to every turn, the same bet the
-    conversation map makes.  The rest — Job status (next run, last run, why it
-    ran), Recent activity (which churns on every run/mutation/emission), Memory
-    sizes and About the user — stay in the per-turn dynamic tail
-    (:meth:`render_dynamic`), since those genuinely can change every turn.
-    ``render()`` keeps the whole, historical, single-message shape (identical
-    output, unused by ``ChatAgent`` since #2814) for the many tests below that
-    assert on ``SelfStateHeader`` as a unit rather than on where its sections
-    land.
-    """
+    projection of stored rows AT OR BEFORE ``as_of`` (#3089, required — see
+    ``__init__``).  :meth:`render` is the one entry point: the whole
+    ``## Penny's current state`` block ChatAgent places in its own
+    once-per-session system message, right after the first system turn's tool
+    schemas and before the growing history (``ChatAgent._session_state_section``).
+    Because every read is bounded by the SAME ``as_of``, calling
+    :meth:`render` twice within one session — before and after a chat-side
+    write, a job run, or a mutation — returns byte-identical text: the write
+    itself is already visible, as a tool result in history, so showing it a
+    second time here would be the one thing #3089 rules out.  Only a NEW
+    ``as_of`` (an idle rotation) changes what this renders."""
 
     HEADER = "## Penny's current state"
     MECHANISMS_HEADER = "### Jobs"
-    JOB_STATUS_HEADER = "### Job status"
     ACTIVITY_HEADER = "### Recent activity"
     MAP_HEADER = "### Your memory"
-    MEMORY_SIZES_HEADER = "### Memory sizes"
     STANDING_RULES_HEADER = "### Standing rules"
     DURABLE_HEADER = "### About the user"
 
@@ -206,76 +203,48 @@ class SelfStateHeader:
         "something said in the conversation."
     )
 
-    def __init__(self, db: Database, user: str | None) -> None:
+    def __init__(
+        self, db: Database, user: str | None, as_of: datetime, *, map_horizon: datetime
+    ) -> None:
+        """``as_of`` (#3089) is REQUIRED — the one instant every section below is
+        bounded by, so the whole render is a pure function of rows at or before
+        that moment (never ``self.db.clock.now()``, never an in-process cache).
+        Passed in explicitly by the caller (the session's own start, read off
+        ``MessageStore.session_anchor`` — see ``ChatAgent._session_state_section``)
+        — never read from ambient state here.
+
+        ``map_horizon`` (#3079) is ALSO required — the conversation map's own
+        horizon cutoff (``conversation_map.map_horizon_start``): an autonomous
+        send inside it already rides the history window or the map, so Recent
+        activity drops its line there; only a send OLDER than the horizon still
+        renders one here."""
         self.db = db
         self.user = user
+        self.as_of = as_of
+        self.map_horizon = map_horizon
 
     # ── Summary ──────────────────────────────────────────────────────────────
 
     def render(self) -> str:
-        """The whole ``## Penny's current state`` block — a table of contents of
-        Penny's operational situation, each section a deterministic render.  A
-        section that has nothing to show renders nothing.  The standing rules do not
-        render here at all: with a rule standing they belong to the chat prompt's
-        instruction part (``standing_rules_instruction``), and with none the section
-        is omitted entirely (#2686) — the store map still names ``rules``.
+        """The whole ``## Penny's current state`` block — Penny's session-state
+        message (#3089): everything rides ONE render now, as of ``self.as_of``,
+        so the same session renders it byte-identical turn to turn — a job run,
+        a memory write, or a mutation that lands DURING the session changes
+        nothing here (its own tool result already carries the news); only an
+        idle rotation, which reads a new ``as_of``, changes what this says.
 
-        Kept for its many existing callers that test ``SelfStateHeader`` as a
-        self-contained unit (its own section-rendering logic — caps, cuts,
-        mute-state wording, …) rather than where a section lands in the chat
-        prompt.  ``ChatAgent`` itself no longer calls this: it calls
-        :meth:`render_static` and :meth:`render_dynamic` instead (#2814), so this
-        method's section order interleaves the two messages' sections rather than
-        matching either one — it is this class's own legacy whole-render, not a
-        third shape the model ever sees."""
+        Jobs and Your memory each carry their live clauses on the SAME line as
+        their registry ones now (#3089 — previously split across two messages,
+        #2814/#3055): one job listing, one memory listing, nothing shown twice.
+        The standing rules do not render here at all: with a rule standing they
+        belong to the chat prompt's instruction part
+        (``standing_rules_instruction``), and with none the section is omitted
+        entirely (#2686) — the store map still names ``rules``."""
         sections = [
             self.HEADER,
             self._mechanisms_section(),
-            self._job_status_section(),
-            # The legacy whole-render applies no horizon cutoff: it is this
-            # class's own test-facing shape, never a message the model reads —
-            # only :meth:`render_dynamic` rides the cutoff (#3079).
-            self._activity_section(None),
+            self._activity_section(self.map_horizon),
             self._memory_map_section(),
-            self._memory_sizes_section(),
-            self._durable_core_section(),
-            self.POINTERS,
-        ]
-        return "\n\n".join(section for section in sections if section)
-
-    def render_static(self) -> str:
-        """Jobs + Your memory — the two SLOW-CHANGING sections (#2814) that ride
-        ``ChatAgent``'s cached static system-prompt prefix instead of the per-turn
-        dynamic tail.  Both are pure renders of the registry alone — no activity,
-        no ``now``, and (#3055) no live job state and no entry counts, which moved
-        to :meth:`render_dynamic`'s ``### Job status`` and ``### Memory sizes``
-        sections — so this string is byte-identical turn to turn unless a job or a
-        collection actually changed, the same cache bet the conversation map makes
-        for the rest of the static message."""
-        sections = [self._mechanisms_section(), self._memory_map_section()]
-        return "\n\n".join(section for section in sections if section)
-
-    def render_dynamic(self, map_horizon: datetime) -> str:
-        """``## Penny's current state`` + Job status + Recent activity + Memory
-        sizes + About the user + the pointers line — what rides ``ChatAgent``'s
-        per-turn dynamic system message (#2814): the activity block churns on every
-        run/mutation/emission, so it can never be part of a cached prefix; since
-        #3055 the live job state (``### Job status``) and the per-store entry
-        counts (``### Memory sizes``) ride here too — they churn on every job run
-        and every job write, and were what kept the static prefix from ever being
-        reused.  The durable core and the pointers line are cheap enough to just
-        ride along beside them rather than earn their own split.
-
-        ``map_horizon`` is the conversation map's own horizon cutoff
-        (:func:`penny.agents.conversation_map.map_horizon_start`, #3079): an
-        autonomous send inside it is already rendered by the history window or
-        the map, so its emission line is dropped here — only a send OLDER than
-        the horizon still renders one."""
-        sections = [
-            self.HEADER,
-            self._job_status_section(),
-            self._activity_section(map_horizon),
-            self._memory_sizes_section(),
             self._durable_core_section(),
             self.POINTERS,
         ]
@@ -285,14 +254,15 @@ class SelfStateHeader:
 
     def _mechanisms_section(self) -> str:
         """The collectors — EVERY one, recency-first and archived-inclusive, each on
-        one line: status · cadence · notify · end condition (#1566 registry). No cap
-        (#2288): the ambient index is her own situation in full, not a sample of it.
-        The live job state — next run, last run, why it ran — moved to the per-turn
-        ``### Job status`` section (#3055), so every line here is a pure render of
-        the registry and the cached static prefix survives a job run."""
+        ONE line: status · cadence · notify · end condition · next run · last run
+        (#1566 registry, merged with its live state, #3089 — previously split
+        across this section and the per-turn ``### Job status`` one, #3055).  No
+        cap (#2288): the ambient index is her own situation in full, not a sample
+        of it.  Bounded by ``self.as_of`` throughout — see ``__init__``."""
         rows = self._mechanism_rows()
+        outcomes = self.db.messages.latest_run_outcomes(as_of=self.as_of)
         lines = [self.MECHANISMS_HEADER, self._notifications_line()]
-        lines.extend(self._mechanism_line(row) for row in rows)
+        lines.extend(self._mechanism_line(row, outcomes.get(row.name)) for row in rows)
         if not rows:
             lines.append(self.EMPTY_MECHANISMS)
         return "\n".join(lines)
@@ -313,18 +283,28 @@ class SelfStateHeader:
         """Every collector (a ``memory`` row with an ``extraction_prompt``), active
         and archived, sorted by name — ALL of them (#2288), so the order just needs
         to be deterministic regardless of seed timing (the inventory convention),
-        which keeps the whole-render assertion stable."""
-        rows = [row for row in self.db.memories.list_all() if row.extraction_prompt is not None]
+        which keeps the whole-render assertion stable.  Bounded by ``self.as_of``
+        (#3089): a collection created or archived mid-session neither appears nor
+        disappears until the next idle rotation — her own create/archive call is
+        in history as a tool result already, so nothing is hidden."""
+        rows = [
+            row
+            for row in self.db.memories.list_all(as_of=self.as_of)
+            if row.extraction_prompt is not None
+        ]
         rows.sort(key=lambda row: row.name)
         return rows
 
-    def _mechanism_line(self, row: MemoryRow) -> str:
-        """``- <name> — <status> · <cadence> · <notify> · <end>`` — the row's stable
-        clauses only (#3055): every clause here changes on a user or config action,
-        never on a run. The live job state — next run, last run, why it ran — moved
-        to the per-turn ``### Job status`` line. A live job's line hangs a second,
-        indented line under it (#2495) naming what it reads and follows; an archived
-        row or a prompt-less one renders exactly as before."""
+    def _mechanism_line(self, row: MemoryRow, stamp: RunOutcomeStamp | None) -> str:
+        """``- <name> — <status> · <cadence> · <notify> · <end> · <next run> ·
+        <last run>`` — one line, registry clauses then live ones (#3089): every
+        registry clause changes on a user or config action, never on a run; the
+        live clauses (next run, last run, why it ran) change on every cycle.
+        Merging them means the model never reads a job's name in two different
+        sections.  A live job's line hangs a second, indented line under it
+        (#2495) naming what it reads and follows; an archived row or a
+        prompt-less one renders exactly as before, with its last-run clause
+        appended (an archived row never shows a next run)."""
         if row.archived:
             parts = [f"archived {format_log_timestamp(row.updated_at)}"]
         else:
@@ -333,12 +313,20 @@ class SelfStateHeader:
                 self._cadence(row),
                 self._telling(row),
                 self._end_condition(row),
+                self._next_run(row),
             ]
+        parts.append(self._last_run(stamp))
         clauses = " · ".join(part for part in parts if part)
         line = f"- {row.name} — {clauses}"
         if not row.archived and row.extraction_prompt is not None:
             line = f"{line}\n{self._instructions_line(row)}"
         return line
+
+    def _next_run(self, row: MemoryRow) -> str:
+        """The live mechanism's next-occurrence clause, as of ``self.as_of`` —
+        never the live clock (#3089), so the once-per-session message says the
+        same thing turn to turn within one session."""
+        return describe_next_run(row, user_timezone_name(self.db), now=self.as_of)
 
     def _instructions_line(self, row: MemoryRow) -> str:
         """The hung second line under a live job's row (#2495) — the shared
@@ -363,10 +351,9 @@ class SelfStateHeader:
         code span (#2425) — #1857's display == invocation contract stays true (the
         model still reads the copyable form it would write back), it just no longer
         stands alone as the text a reply would echo.  Empty when the collection has no
-        schedule yet, so the mechanism line drops the clause.  Rule text ONLY
-        (#3055): the next-run clause moved to the per-turn ``### Job status`` line,
-        since it changes as the clock passes each occurrence or a run moves it — a
-        clock read here would rebuild the cached static prefix every turn."""
+        schedule yet, so the mechanism line drops the clause.  Rule text ONLY: the
+        next-run clause is its own sibling clause on the same line (``_next_run``,
+        #3089), since it needs the ``as_of`` bound this one doesn't."""
         return describe_schedule_rule(row, user_timezone_name(self.db))
 
     def _end_condition(self, row: MemoryRow) -> str:
@@ -389,10 +376,10 @@ class SelfStateHeader:
 
         Anything but an on-time run — catching up a missed run, a retry, or on
         demand — appends why, short (no repeat of the schedule, already on this
-        mechanism's own cadence clause).  This clause rides the per-turn dynamic
-        ``### Job status`` line since #3055 (it changed on every run, which kept the
-        cached static prefix from ever being reused when it rode the static Jobs
-        line)."""
+        mechanism's own cadence clause).  Reads ``stamp`` as of ``self.as_of``
+        (#3089) — the caller (``_mechanisms_section``) fetches it through
+        ``latest_run_outcomes(as_of=self.as_of)``, so a cycle that completes
+        mid-session doesn't move this clause until the next idle rotation."""
         if stamp is None:
             return "no runs yet"
         line = f"last run {stamp.outcome.upper()} {format_log_timestamp(stamp.finished_at)}"
@@ -414,48 +401,16 @@ class SelfStateHeader:
         )
         return dispatch_reason_clause(reason, due, stamp.dispatch_attempt)
 
-    # ── Job status (the live half of Jobs, per turn) ─────────────────────────
-
-    def _job_status_section(self) -> str:
-        """The LIVE job state — one line per mechanism, live or archived (#3055):
-        ``- <name> — next run <when or due now> · last run <OUTCOME> <when>[, why]``.
-        These are the volatile clauses the static Jobs line used to carry, moved
-        verbatim so the cached static prefix survives a job run: the next-run clause
-        moves whenever the clock passes an occurrence or a run fires, the last-run
-        stamp on every completed cycle.  An archived row renders only its last-run
-        clause (its ``archived <when>`` stamp stays on the static line); a row with
-        no schedule, a spent one, or no completed run drops the clause that says
-        nothing.  Omitted entirely when there are no mechanisms — the static
-        ``(no jobs yet)`` already says that."""
-        rows = self._mechanism_rows()
-        if not rows:
-            return ""
-        outcomes = self.db.messages.latest_run_outcomes()
-        lines = [self.JOB_STATUS_HEADER]
-        lines.extend(self._job_status_line(row, outcomes.get(row.name)) for row in rows)
-        return "\n".join(lines)
-
-    def _job_status_line(self, row: MemoryRow, stamp: RunOutcomeStamp | None) -> str:
-        """One ``### Job status`` line: ``- <name> — <next run> · <last run>`` —
-        whichever of the two volatile clauses this row has something to state."""
-        next_run = (
-            ""
-            if row.archived
-            else describe_next_run(row, user_timezone_name(self.db), now=self.db.clock.now())
-        )
-        parts = [next_run, self._last_run(stamp)]
-        return f"- {row.name} — {' · '.join(part for part in parts if part)}"
-
     # ── Recent activity ──────────────────────────────────────────────────────
 
-    def _activity_section(self, map_horizon: datetime | None) -> str:
+    def _activity_section(self, map_horizon: datetime) -> str:
         """Background runs, config mutations, and autonomous sends, interleaved
         newest-first at rollup altitude (one line each). Chat turns (direct replies)
         are excluded by construction — they're already the conversation; this is its
         complement (ledger, #1560; emissions, #1568).  ``map_horizon`` is the
         conversation map's own horizon cutoff (:func:`penny.agents.conversation_map.
-        map_horizon_start`, #3079), or ``None`` for the legacy whole-render, which
-        applies no cutoff — the model-facing dynamic render always passes one."""
+        map_horizon_start`, #3079) — REQUIRED, like ``self.as_of``; there is no
+        longer a legacy no-cutoff render (#3089 made ``render()`` the one shape)."""
         events = self._activity_events(map_horizon)
         limit = PennyConstants.SELF_STATE_ACTIVITY_LIMIT
         shown = events[:limit]
@@ -467,7 +422,7 @@ class SelfStateHeader:
             lines.append(self.MORE_ACTIVITY)
         return "\n".join(lines)
 
-    def _activity_events(self, map_horizon: datetime | None) -> list[tuple[datetime, str]]:
+    def _activity_events(self, map_horizon: datetime) -> list[tuple[datetime, str]]:
         """(timestamp, rendered line) for recent runs + mutations + emissions,
         newest first.
 
@@ -485,25 +440,32 @@ class SelfStateHeader:
 
         The runs' writes are joined once (``writes_by_run`` over the fetched run
         ids, #1641) rather than per line, so the writes clause stays one bounded
-        read."""
+        read.  Every source is bounded by ``self.as_of`` (#3089): an event that
+        lands mid-session shows up in history instead, not here, so the block
+        stays byte-identical turn to turn within one session."""
         fetch = PennyConstants.SELF_STATE_ACTIVITY_LIMIT + 1
-        runs = self.db.messages.recent_collector_runs(fetch)
+        runs = self.db.messages.recent_collector_runs(fetch, as_of=self.as_of)
         writes = self.db.memories.writes_by_run([run.run_id for run in runs])
         events: list[tuple[datetime, str]] = [
             (run.finished_at, self._run_line(run, writes.get(run.run_id, []))) for run in runs
         ]
         events.extend(
             (event.created_at, self._mutation_line(event))
-            for event in self.db.mutations.recent(fetch)
+            for event in self.db.mutations.recent(fetch, as_of=self.as_of)
         )
         events.extend(
             (emission.sent_at, self._emission_line(emission))
-            for emission in self.db.messages.recent_emissions(fetch)
-            if map_horizon is None or emission.sent_at < map_horizon
+            for emission in self.db.messages.recent_emissions(fetch, as_of=self.as_of)
+            # Both normalised through ``stored_as_utc`` (#3089): ``sent_at``
+            # comes back naive from storage, ``map_horizon`` may be naive
+            # (``map_horizon_start``'s own convention) or aware depending on
+            # the caller, so a bare ``<`` risks the same mismatch ``list_all``
+            # hit.
+            if stored_as_utc(emission.sent_at) < stored_as_utc(map_horizon)
         )
         events.extend(
             (failure.finished_at, self._chat_failure_line(failure))
-            for failure in self.db.messages.recent_failed_chat_turns(fetch)
+            for failure in self.db.messages.recent_failed_chat_turns(fetch, as_of=self.as_of)
         )
         events.sort(key=lambda event: event[0], reverse=True)
         return events
@@ -614,22 +576,18 @@ class SelfStateHeader:
 
     def _memory_map_section(self) -> str:
         """The index of readable stores — EVERY non-archived memory (collection or
-        log) by name, shape, and one-line scope. Names, never content: any user
-        fact is one anchored read away using a name shown here.  No cap (#2288) —
-        the live rows render in full, and the archived ones get their own compact
-        line below (``_archived_line``) rather than a count that hides them.
-
-        Entry counts render in the per-turn ``### Memory sizes`` section (#3055):
-        even though a user or job-owned store's count only moves on a real write,
-        that write is exactly what a job run is, so the count in THIS section —
-        which rides the cached static prefix (``render_static``, #2814) — kept the
-        prefix from surviving any cycle that wrote.  The five system-log facades
-        (``PennyConstants.SYSTEM_LOGS``) never carried a count here and keep none
-        (#2814); their NAME renders (the ``log_read`` anchor, n≤1 reachability)."""
-        rows = self.db.memories.list_all()
+        log) by name, shape, entry count, and one-line scope, ONE line each
+        (#3089 — previously split across this section and the per-turn
+        ``### Memory sizes`` one, #3055).  Names, never content: any user fact
+        is one anchored read away using a name shown here.  No cap (#2288) —
+        the live rows render in full, and the archived ones get their own
+        compact line below (``_archived_line``) rather than a count that hides
+        them.  Bounded by ``self.as_of`` throughout (#3089)."""
+        rows = self.db.memories.list_all(as_of=self.as_of)
         live = [row for row in rows if not row.archived]
+        counts = self.db.memories.entry_counts(as_of=self.as_of)
         lines = [self.MAP_HEADER]
-        lines.extend(self._memory_map_line(row) for row in live)
+        lines.extend(self._memory_map_line(row, counts.get(row.name, 0)) for row in live)
         if not live:
             lines.append(self.EMPTY_MAP)
         archived = self._archived_line(rows)
@@ -645,23 +603,26 @@ class SelfStateHeader:
     SEARCH_ONLY_WHEN_NAMED_SUFFIX = " — searched only when named"
 
     @staticmethod
-    def _memory_map_line(row: MemoryRow) -> str:
-        """One store-map row: ``- <name> (<type>) — <description>`` — no entry
-        count (#3055): the count moved to the per-turn ``### Memory sizes``
-        section, since a job's write is exactly what a cycle is and the count
-        here kept the cached static prefix from ever being reused.  A
+    def _memory_map_line(row: MemoryRow, count: int) -> str:
+        """One store-map row: ``- <name> (<type>) <n> entries — <description>``
+        (#3089 — the count merged in from the old ``### Memory sizes`` line).
+        The five system-log facades (``PennyConstants.SYSTEM_LOGS``) stay
+        count-free, exactly as before (#2814) — a message/run count there reads
+        as a store a job writes to, which none of the five are.  A
         ``search_only_when_named`` row (#2956) carries the suffix naming it.
 
         The description clause drops when it DUPLICATES the row's own live job
         (#3085): the Jobs section's hung instructions line already shows that
         text, so the store map omits the clause entirely rather than repeating
-        it verbatim.  A distinct description — the ordinary case, since the
-        description is written for a reader browsing the store while the
-        prompt is the model's own instructions — always stays."""
+        it verbatim — the count still renders.  A distinct description — the
+        ordinary case, since the description is written for a reader browsing
+        the store while the prompt is the model's own instructions — always
+        stays."""
         mark = SelfStateHeader.SEARCH_ONLY_WHEN_NAMED_SUFFIX if row.search_only_when_named else ""
+        sizing = "" if row.name in PennyConstants.SYSTEM_LOGS else f" {count} entries"
         if SelfStateHeader._duplicates_job_prompt(row):
-            return f"- {row.name} ({row.type}){mark}"
-        return f"- {row.name} ({row.type}) — {row.description}{mark}"
+            return f"- {row.name} ({row.type}){sizing}{mark}"
+        return f"- {row.name} ({row.type}){sizing} — {row.description}{mark}"
 
     @staticmethod
     def _duplicates_job_prompt(row: MemoryRow) -> bool:
@@ -683,22 +644,6 @@ class SelfStateHeader:
         reads as the same text as its description."""
         return " ".join(text.split())
 
-    def _memory_sizes_section(self) -> str:
-        """One line per counted store — ``- <name> <n> entries`` (#3055): the entry
-        counts the static store map used to render, moved to the per-turn dynamic
-        message, where a job's write no longer costs the cached prefix.  The same
-        set the map counted (non-archived, non-facade rows); the five system-log
-        facades (``PennyConstants.SYSTEM_LOGS``) stay count-free, exactly as the
-        map left them (#2814).  Omitted entirely when nothing is counted."""
-        rows = [row for row in self.db.memories.list_all() if not row.archived]
-        counted = [row for row in rows if row.name not in PennyConstants.SYSTEM_LOGS]
-        if not counted:
-            return ""
-        counts = self.db.memories.entry_counts()
-        lines = [self.MEMORY_SIZES_HEADER]
-        lines.extend(f"- {row.name} {counts.get(row.name, 0)} entries" for row in counted)
-        return "\n".join(lines)
-
     def _archived_line(self, rows: list[MemoryRow]) -> str:
         """One compact line naming every archived collection and log, by name
         (#2288). An archived
@@ -718,7 +663,12 @@ class SelfStateHeader:
     def _durable_core_section(self) -> str:
         """The small, stable set of deterministic user facts — name, timezone,
         location — so the personal tone survives without a lookup. These change
-        when the fact changes, never per message."""
+        when the fact changes, never per message.  NOT bounded by ``self.as_of``
+        (#3089): the row holds only the CURRENT value with no prior-value
+        history to reconstruct from (unlike a collection's ``archived`` flag,
+        which this class can read as of a past instant off ``updated_at``), and
+        a mid-session ``/profile`` edit is rare enough that showing the new
+        value a turn early is an honest trade against inventing a stale one."""
         lines = [self.DURABLE_HEADER]
         info = self.db.users.get_info(self.user) if self.user else None
         if info is None:

@@ -441,10 +441,12 @@ async def test_the_map_stops_one_exchange_before_the_historys_first(
         # The map, rendered as the chat agent renders it: it stops one
         # exchange before the history's first — the three oldest outcome-less
         # exchanges collapse into one ranged line, and user message 4 (the
-        # history's own first) is nowhere on the map.
-        static = await penny.chat_agent._build_system_prompt(TEST_SENDER)
-        map_start = static.find(ConversationMap.HEADER)
-        map_lines = static[map_start:].split("\n")[1:-1]
+        # history's own first) is nowhere on the map.  The map rides the
+        # session-state message now (#3089; previously the static leading
+        # one, #2752/#2757).
+        session_state = penny.chat_agent._session_state_section(TEST_SENDER) or ""
+        map_start = session_state.find(ConversationMap.HEADER)
+        map_lines = session_state[map_start:].split("\n")[1:-1]
         assert "3 short messages" in map_lines[-1]
         assert not any("user message 4" in line for line in map_lines)
 

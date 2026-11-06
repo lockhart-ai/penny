@@ -205,10 +205,13 @@ async def test_a_running_penny_tells_and_records_the_time_on_its_configs_clock(
             for message in mock_llm.requests[0]["messages"]
             if message["role"] == "system"
         ]
-        # The clock rides the DYNAMIC system message — the request's second
-        # system message, behind the static prompt (#2745).
-        assert len(system_texts) == 2, "expected the static and the dynamic system messages (#2745)"
-        assert system_texts[1].split("\n", 1)[0] == (
+        # The clock rides the per-turn DYNAMIC system message — the request's
+        # THIRD system message, behind the leading one and the session-state
+        # one (#3089; previously the second of two, #2745).
+        assert len(system_texts) == 3, (
+            "expected the leading, session-state, and dynamic system messages (#3089)"
+        )
+        assert system_texts[2].split("\n", 1)[0] == (
             "Current date and time: Wednesday, March 05, 2031 at 11:30 PM PST"
         )
 

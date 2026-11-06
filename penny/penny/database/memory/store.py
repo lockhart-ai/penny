@@ -63,7 +63,7 @@ from penny.database.mutation_store import (
     cancelled_sends_note,
 )
 from penny.database.send_queue_store import SendQueueStore
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import format_log_timestamp, stored_as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -541,11 +541,54 @@ class MemoryStore:
         with self._session() as session:
             return session.get(MemoryRow, slug(name))
 
-    def list_all(self) -> list[MemoryRow]:
-        with self._session() as session:
-            return list(session.exec(select(MemoryRow).order_by(MemoryRow.name)).all())
+    def list_all(self, as_of: datetime | None = None) -> list[MemoryRow]:
+        """Every memory row, name order.
 
-    def entry_counts(self) -> dict[str, int]:
+        ``as_of`` (#3089), when given, reconstructs the registry's own state at
+        that instant rather than now — the once-per-session state message's
+        bound, read by ``SelfStateHeader`` alone; every other caller (the
+        collector dispatcher, the memory tools, the iOS/browser channels) wants
+        the LIVE registry and leaves it unset.  A row created AFTER ``as_of`` is
+        excluded entirely (it doesn't exist yet, as of that instant); a row
+        archived AFTER ``as_of`` renders as still active (the archive hasn't
+        happened yet, as of that instant) — both read off the row's own
+        ``created_at``/``updated_at``, never a second history table.
+
+        Filtered in PYTHON, never a SQL ``WHERE created_at <= :as_of``: a
+        migration-seeded row's ``created_at`` was written as a raw ISO string
+        (``datetime.isoformat()``, "T" separator, explicit offset) while an
+        ORM-written row's is SQLAlchemy's own naive format — SQLite has no
+        native datetime type, so it compares both as TEXT, and the two
+        spellings don't sort consistently against each other for the same
+        real instant.  Parsing each through SQLModel first (which this query
+        already does) and comparing parsed ``datetime`` objects sidesteps the
+        spelling entirely."""
+        with self._session() as session:
+            rows = list(session.exec(select(MemoryRow).order_by(MemoryRow.name)).all())
+        if as_of is None:
+            return rows
+        return [
+            self._as_of(row, as_of)
+            for row in rows
+            if stored_as_utc(row.created_at) <= stored_as_utc(as_of)
+        ]
+
+    @staticmethod
+    def _as_of(row: MemoryRow, as_of: datetime) -> MemoryRow:
+        """``row``, with ``archived`` reconstructed as of ``as_of`` (#3089): a row
+        archived after that instant reads as still active — the one field this
+        table can reconstruct a point in time for, since ``updated_at`` is the
+        row's only change stamp.  A copy, never a mutation of the session's own
+        loaded instance.
+
+        Both sides normalised through ``stored_as_utc`` before comparing (see
+        ``list_all``'s own docstring on the naive/aware and string-spelling
+        hazards a bare ``>`` would hit)."""
+        if row.archived and stored_as_utc(row.updated_at) > stored_as_utc(as_of):
+            return row.model_copy(update={"archived": False})
+        return row
+
+    def entry_counts(self, as_of: datetime | None = None) -> dict[str, int]:
         """Return ``{memory_name: entry_count}`` for every memory in one pass.
 
         Powers the addon's Memories tab counts without N+1 round-trips.  The
@@ -553,34 +596,33 @@ class MemoryStore:
         their canonical tables (``messagelog`` / ``promptlog``), matching what
         a read of them returns.  Memories with zero entries are absent — callers
         default to 0.
-        """
+
+        ``as_of`` (#3089), when given, counts only what existed by that instant
+        — see ``list_all``."""
         with self._session() as session:
-            rows = session.exec(
-                select(MemoryEntry.memory_name, _count(MemoryEntry.id)).group_by(
-                    MemoryEntry.memory_name
-                )
-            ).all()
-            counts = dict(rows)
-            by_direction = dict(
-                session.exec(
-                    select(MessageLog.direction, _count(MessageLog.id))
-                    .where(col(MessageLog.is_reaction).is_(False))
-                    .group_by(MessageLog.direction)
-                ).all()
+            entry_query = select(MemoryEntry.memory_name, _count(MemoryEntry.id))
+            message_query = select(MessageLog.direction, _count(MessageLog.id)).where(
+                col(MessageLog.is_reaction).is_(False)
             )
-            run_count = session.exec(
-                select(_count(PromptLog.id)).where(
-                    col(PromptLog.run_outcome).isnot(None),
-                    col(PromptLog.run_target).isnot(None),
-                )
-            ).one()
+            run_query = select(_count(PromptLog.id)).where(
+                col(PromptLog.run_outcome).isnot(None),
+                col(PromptLog.run_target).isnot(None),
+            )
+            all_run_query = select(func.count(func.distinct(col(PromptLog.run_id)))).where(
+                col(PromptLog.run_id).isnot(None)
+            )
+            if as_of is not None:
+                entry_query = entry_query.where(col(MemoryEntry.created_at) <= as_of)
+                message_query = message_query.where(col(MessageLog.timestamp) <= as_of)
+                run_query = run_query.where(col(PromptLog.timestamp) <= as_of)
+                all_run_query = all_run_query.where(col(PromptLog.timestamp) <= as_of)
+            rows = session.exec(entry_query.group_by(MemoryEntry.memory_name)).all()
+            counts = dict(rows)
+            by_direction = dict(session.exec(message_query.group_by(MessageLog.direction)).all())
+            run_count = session.exec(run_query).one()
             # ``run-health`` (#2843) covers every run, not just stamped collector
             # completions — one distinct ``run_id``, chat or collector alike.
-            all_run_count = session.exec(
-                select(func.count(func.distinct(col(PromptLog.run_id)))).where(
-                    col(PromptLog.run_id).isnot(None)
-                )
-            ).one()
+            all_run_count = session.exec(all_run_query).one()
         for log_name, direction in _MESSAGE_LOG_DIRECTIONS.items():
             counts[log_name] = by_direction.get(direction, 0)
         counts[PennyConstants.MEMORY_COLLECTOR_RUNS_LOG] = run_count or 0

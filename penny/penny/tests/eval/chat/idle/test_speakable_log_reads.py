@@ -327,7 +327,9 @@ def _assert_unreachable_except_by_reading(db: Database, token: str) -> None:
             f"{row.name} carries {token!r} — the answer must not be reachable by reading a "
             "collection, or a sample that never looked back can state it"
         )
-    header = SelfStateHeader(db, TEST_SENDER).render()
+    header = SelfStateHeader(
+        db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
+    ).render()
     assert token not in fold_typography(header), (
         f"the self-state header carries {token!r} — the read the case is about would be "
         f"redundant and skipping it would be correct:\n{header}"
@@ -493,7 +495,9 @@ def assert_the_run_record_is_the_only_route(db: Database) -> None:
 
     Both halves were silently wrong once and went unnoticed through three full suites, which is
     why they are asserted per sample as well as pinned deterministically."""
-    header = SelfStateHeader(db, TEST_SENDER).render()
+    header = SelfStateHeader(
+        db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
+    ).render()
     for cycle in _SEEDED_CYCLES:
         if cycle.wrote is None:
             continue
@@ -761,7 +765,9 @@ def assert_the_failed_turn_record_is_the_only_route(db: Database) -> None:
             f"{row.name} carries {_FAILED_TURN_TOKEN!r} — the cause must not be reachable by "
             "reading a collection"
         )
-    header = SelfStateHeader(db, TEST_SENDER).render()
+    header = SelfStateHeader(
+        db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
+    ).render()
     assert _FAILED_TURN_TOKEN in fold_typography(header), (
         "the self-state header's activity line must carry the failed turn's own reason — "
         f"it did not:\n{header}"

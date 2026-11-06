@@ -121,7 +121,9 @@ def assert_mute_world(penny: Penny) -> None:
         f"{_MUTES}: the user must start unmuted, or the claim that this turn muted them is "
         "answered by the seed"
     )
-    rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+    rendered = SelfStateHeader(
+        penny.db, TEST_SENDER, as_of=penny.db.clock.now(), map_horizon=penny.db.clock.now()
+    ).render()
     assert SelfStateHeader.NOTIFICATIONS_ON in rendered, (
         f"{_MUTES}: the header must state {SelfStateHeader.NOTIFICATIONS_ON!r} — the turn "
         f"would otherwise be answered with nothing saying which way the switch is set:\n"
@@ -226,7 +228,9 @@ def assert_unmute_world(penny: Penny) -> None:
         f"{_UNMUTES}: the user must start MUTED, or the claim that they are not muted "
         "afterwards is true of a world nobody seeded"
     )
-    rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+    rendered = SelfStateHeader(
+        penny.db, TEST_SENDER, as_of=penny.db.clock.now(), map_horizon=penny.db.clock.now()
+    ).render()
     assert SelfStateHeader.NOTIFICATIONS_MUTED in rendered, (
         f"{_UNMUTES}: the header must state {SelfStateHeader.NOTIFICATIONS_MUTED!r} — the "
         f"turn would otherwise be asked to lift a mute nothing told it about:\n{rendered}"
@@ -313,7 +317,9 @@ def assert_no_fire_world(penny: Penny) -> None:
         f"{_NO_FIRE}: the user must start unmuted, or the claim that the switch did not move "
         "cannot tell a declined temptation from a world that was already quiet"
     )
-    rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+    rendered = SelfStateHeader(
+        penny.db, TEST_SENDER, as_of=penny.db.clock.now(), map_horizon=penny.db.clock.now()
+    ).render()
     assert SelfStateHeader.NOTIFICATIONS_ON in rendered, (
         f"{_NO_FIRE}: the header must state {SelfStateHeader.NOTIFICATIONS_ON!r} — a lever the "
         f"turn cannot see is one it cannot wrongly reach for:\n{rendered}"

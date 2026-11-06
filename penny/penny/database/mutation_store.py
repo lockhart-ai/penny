@@ -16,6 +16,7 @@ entity's current state; this only records the transitions that produced it.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 from sqlmodel import Session, col, select
@@ -266,23 +267,30 @@ class MutationStore:
                 priors.setdefault(prior.field, prior.value)
         return priors
 
-    def recent(self, limit: int) -> list[MutationEvent]:
+    def recent(self, limit: int, as_of: datetime | None = None) -> list[MutationEvent]:
         """The most recent mutations across ALL entities, newest first (#1555).
 
         The cross-entity stream the self-state header interleaves with recent
         runs into one time-ordered activity block — "what did you recently do?"
         over configuration changes.  ``history`` scopes to one entity; this one
-        spans every entity.  Ordered by ``created_at`` (never id)."""
+        spans every entity.  Ordered by ``created_at`` (never id).
+
+        ``as_of`` (#3089) excludes a mutation recorded AFTER that instant — the
+        once-per-session state message's own bound (see
+        ``MessageStore.recent_collector_runs``)."""
         if limit <= 0:
             return []
         with self._session() as session:
+            query = select(MutationEvent)
+            if as_of is not None:
+                query = query.where(col(MutationEvent.created_at) <= as_of)
             return list(
                 session.exec(
-                    select(MutationEvent)
                     # ``id`` breaks same-timestamp ties deterministically (newest
                     # id first = creation order) so the activity render is stable.
-                    .order_by(col(MutationEvent.created_at).desc(), col(MutationEvent.id).desc())
-                    .limit(limit)
+                    query.order_by(
+                        col(MutationEvent.created_at).desc(), col(MutationEvent.id).desc()
+                    ).limit(limit)
                 ).all()
             )
 

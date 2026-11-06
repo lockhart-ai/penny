@@ -26,7 +26,7 @@ from penny.changelog import ChangelogEntry, render_changelog_announcement
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants, RunOutcome
 from penny.database.memory.identity import WriteDecisionCache
-from penny.datetime_utils import current_datetime_line
+from penny.datetime_utils import current_datetime_line, stored_as_utc
 from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.notification import (
@@ -56,6 +56,8 @@ from penny.tools.notifications import NotificationsTool
 from penny.validation import ConditionKey
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from penny.llm.image_client import MfluxImageClient
 
 logger = logging.getLogger(__name__)
@@ -74,28 +76,34 @@ def _system_notification_trigger(facts: str) -> str:
 class ChatAgent(Agent):
     """Conversation-mode agent — handles user messages.
 
-    Two context mechanisms, kept independent:
+    Three context mechanisms, kept independent:
 
-    - Operational self-state → the DYNAMIC system message (#2756, previously
-      the second of two leading messages, #2745): a deterministic
-      ``SelfStateHeader`` (active mechanisms · recent activity · the store map
-      · durable user facts), rendered from the registry + ledger, never a
-      relevance guess.  The speculative user-content recall is gone (the
-      ambient inversion, #1555): user content is fetched on demand via the
-      tools the header's pointers name.
+    - Deploy-stable identity → the LEADING system message (#2745): Penny's
+      persona/voice, the user's standing rules, and her instructions — nothing
+      that changes except on a deploy or a config edit.
+    - Operational self-state → the ONE session-state system message (#3089,
+      previously split across the leading and a per-turn message, #2756/
+      #2814/#3055): a deterministic ``SelfStateHeader`` (active mechanisms ·
+      recent activity · the store map · durable user facts) plus the
+      **conversation map** (#2752), bounded by the session's own start
+      (``_session_as_of``) so it is byte-identical turn to turn within one
+      session — only an idle rotation rebuilds it.  The speculative
+      user-content recall is gone (the ambient inversion, #1555): user content
+      is fetched on demand via the tools the header's pointers name.
     - Chat turns → messages array as alternating user/assistant turns
       via ``_build_conversation`` and ``history=``.
 
-    The request is ``[static system][history][dynamic system][user]``
-    (#2756): the static message carries identity + the user's standing rules
-    + instructions + the **conversation map** (#2752) — one line per
-    exchange older than the history window, appended LAST so it never
-    disturbs anything ahead of it.  None of this changes between ordinary
-    turns (the map changes only on a cut turn, #2757), so the server reuses
-    it, along with the tool schemas rendered right after it; the growing,
-    append-only history follows it untouched — static + tools + history is
-    the reused prefix.  The dynamic message — the clock, the page hint and
-    the self-state header — sits right BEFORE the user's own turn: the one
+    The request is ``[leading system][session-state][history][dynamic
+    system][user]`` (#3089): the leading message carries identity + rules +
+    instructions, reused across every session; the tool schemas render right
+    after it (gemma4's raw template).  The session-state message — Jobs, Your
+    memory, Recent activity, About the user, the map — comes next, its own
+    system turn (confirmed #3089: the vendored template special-cases only the
+    very FIRST message for the tool-schema block, so a second leading system
+    message renders as its own turn with no tools re-declared), reused for
+    every turn of the same session; the growing, append-only history follows
+    it untouched.  The dynamic message — the clock, the page hint and the
+    related earlier exchanges — sits right BEFORE the user's own turn: the one
     MID-CONVERSATION system placement prod's patched oMLX and OpenRouter
     (eval) both render in place, so eval and prod read the same prompt (see
     ``Agent._build_messages``).  Every turn — image or not — runs the
@@ -113,14 +121,22 @@ class ChatAgent(Agent):
     # renders the section's quiet absence.
     _related_exchanges: str | None = None
     # This turn's ONE ``ConversationMap`` instance (#3085) — built lazily by
-    # whichever of ``_related_exchanges_section``/``_build_system_prompt`` runs
+    # whichever of ``_related_exchanges_section``/``_session_state_section`` runs
     # FIRST in ``_dispatch_turn`` (``_conversation_map_for``) and reused by the
-    # other, so the static prefix's own render() and the related-exchanges
-    # retrieval's one-to-one id set never run the horizon/window pipeline
-    # through two different instances.  Cleared with the rest of the per-turn
-    # state in ``_dispatch_turn``'s ``finally``; ``None`` on the class is the
-    # never-dispatched default, same shape as ``_related_exchanges`` above.
+    # other, so the session-state message's own render() and the
+    # related-exchanges retrieval's one-to-one id set never run the
+    # horizon/window pipeline through two different instances.  Cleared with
+    # the rest of the per-turn state in ``_dispatch_turn``'s ``finally``;
+    # ``None`` on the class is the never-dispatched default, same shape as
+    # ``_related_exchanges`` above.
     _conversation_map: ConversationMap | None = None
+    # The once-per-session state message (#3089) — Jobs + Your memory + Recent
+    # activity + About the user + the conversation map, rendered ONCE per turn
+    # in ``_dispatch_turn`` and read by ``_build_messages`` to insert as its own
+    # system message right after the leading system message's tool schemas and
+    # before the growing history.  Cleared with the rest of the per-turn state
+    # in its ``finally``; ``None`` on the class is the never-dispatched default.
+    _session_state: str | None = None
     # Chat's run-shape chain (base Agent's is empty).  Empty here too (#2455 naive
     # baseline / #2473): what a run wrote and what it configured are both delivered
     # earlier, straight onto the tool result the moment their call lands (see
@@ -601,6 +617,10 @@ class ChatAgent(Agent):
         # trigger is the framework's, never the user's words, so no retrieval
         # runs for one (``_related_exchanges_section`` gates on the prompt type).
         self._related_exchanges = await self._related_exchanges_section(prompt, sender, prompt_type)
+        # The once-per-session state message (#3089) — computed once per turn
+        # here too, read by ``_build_messages`` to insert right after the
+        # leading system message.
+        self._session_state = self._session_state_section(sender)
         # One numbered link table per turn (#2717) — created here, beside the run
         # identity, and passed to the history render, the tool surface and the
         # loop alike; the reply is expanded through it before it is returned.
@@ -649,6 +669,7 @@ class ChatAgent(Agent):
             self._current_message = None
             self._related_exchanges = None
             self._conversation_map = None
+            self._session_state = None
 
     def _record_turn_failure(self, run_id: str, reason: str) -> None:
         """Stamp a chat turn that needed the honest-fallback machinery (#2355 part
@@ -671,20 +692,36 @@ class ChatAgent(Agent):
         images: list[str] | None = None,
         handles: HandleTable | None = None,
     ) -> list[LlmMessage]:
-        """Build messages, injecting page context as a synthetic tools result.
+        """Build messages, inserting the session-state message and injecting
+        page context as a synthetic tools result.
 
-        ``super()`` ends the array ``[…history, state, live]`` (#2756 — the
-        state system message right BEFORE the live turn's own USER message —
-        the ordinary ask's own words, or a delivery turn's prefixed trigger,
-        #2974).  The synthetic page-context assistant-call + tool-result
-        appended below land AFTER that, so the full shape is
-        ``[…state][live][assistant][tool]`` — state between the history's
-        last entry and the live turn, the one mid-conversation placement
-        gemma's own raw-template transport renders in place regardless of
-        the role either side of it (see ``Agent._build_messages``'s
-        docstring).  Page context only ever rides an ordinary turn in
-        practice — a delivery turn never carries one."""
+        ``super()`` returns ``[system][…history, state, live]`` (#2756 — the
+        per-turn state system message right BEFORE the live turn's own USER
+        message — the ordinary ask's own words, or a delivery turn's prefixed
+        trigger, #2974).  The once-per-session state message (#3089,
+        ``self._session_state``) is inserted right after index 0 — the leading
+        system message, which carries the tool schemas right behind it
+        (``raw_template.render_prompt``) — and before any history, so the
+        final shape is ``[system][session-state][…history, state, live]``:
+        a SECOND leading system message, confirmed (#3089) to render as its
+        OWN system turn on gemma's raw-template transport (the one every
+        provider — prod's oMLX and OpenRouter alike — renders from, #2829),
+        with no tool re-declaration, regardless of what sits on either side
+        of it.  Only the degraded chat-completions FALLBACK (used when the
+        raw-template faithfulness check fails) merges two leading system
+        messages into one before rendering — oMLX's own request
+        normalisation, confirmed by reading ``omlx/api/utils.py``'s
+        ``prepare_system_messages_for_template`` — which loses the cache
+        boundary between them but not the content (joined with a blank
+        line), and only on that named degraded path.  The synthetic
+        page-context assistant-call + tool-result appended below land AFTER
+        everything, so the full shape is
+        ``[system][session-state][…state][live][assistant][tool]``.  Page
+        context only ever rides an ordinary turn in practice — a delivery
+        turn never carries one."""
         messages = super()._build_messages(prompt, history, system_prompt, images=images)
+        if self._session_state:
+            messages.insert(1, LlmMessage(role=MessageRole.SYSTEM, content=self._session_state))
         if self._pending_page_context:
             self._inject_page_context(
                 messages,
@@ -772,38 +809,19 @@ class ChatAgent(Agent):
         *,
         handles: HandleTable | None = None,
     ) -> str:
-        """Identity + standing rules + instructions + Jobs + the store map +
-        the conversation map — the LEADING, static system message (#2745;
-        reordered relative to history/state #2756; the map appended at its
-        end, #2752/#2757; Jobs and the store map moved in ahead of it, #2814).
+        """Identity + standing rules + instructions — the LEADING, DEPLOY-STABLE
+        system message (#2745; reordered relative to history/state #2756;
+        Jobs/the store map/the conversation map moved out into their own
+        once-per-session message, #3089 — previously carried here, #2814).
 
-        This message is the prefix the model server reuses across turns
-        (along with the tool schemas gemma4's renderer puts right after it),
-        so it carries only what changes RARELY between them, most-stable
-        first: Penny's persona/voice, then the user's standing rules — in the
+        This message is the prefix the model server reuses across EVERY
+        session (along with the tool schemas gemma4's renderer puts right
+        after it), so it carries only what changes on a deploy or a config
+        edit: Penny's persona/voice, then the user's standing rules — in the
         instruction part, right after the voice sections, where she reads
-        instructions — then the instructions, then **Jobs** and **Your
-        memory** (#2814, ``SelfStateHeader.render_static``) — both pure
-        renders of the registry alone (no activity, no clock), so this part
-        is byte-identical turn to turn unless a job or a collection actually
-        changed, which is the same honest-and-rare rebuild the conversation
-        map already accepts — then the **conversation map** (#2752): one line
-        per exchange older than the history window, the LAST thing in this
-        message so a line it grows at its own end never disturbs anything
-        ahead of it.  The map changes only on a cut turn — the one turn the
-        history window's own first exchange moves (#2757,
-        ``ConversationMap``/``Agent._history_window_size``) — so most turns
-        reuse this whole message byte-for-byte, Jobs/Your memory included.
-
-        Everything per-turn — the clock, the current browser page, and the
-        rest of the deterministic **self-state header** (recent activity ·
-        durable user facts, rendered from the registry (#1566) + ledger
-        (#1560), never a relevance guess) — rides the dynamic system message,
-        placed right before the user's own turn (#2756;
-        ``_dynamic_system_section``, ``SelfStateHeader.render_dynamic``).
-        Neither the map nor Jobs/Your memory ride there: all three change far
-        less often than the activity block does, so they belong in the reused
-        prefix, not beside what changes every turn.
+        instructions — then the instructions.  Nothing here changes on a job
+        run, a memory write, or even an idle rotation — only #3089's own
+        session-state message, right behind this one, does that.
 
         The ambient inversion (#1555): the chat prompt injects no
         **speculative user-content recall** at all.  User content is fetched on
@@ -817,7 +835,43 @@ class ChatAgent(Agent):
                 self._identity_section(),
                 standing_rules_instruction(self.db),
                 self._instructions_section(instructions),
-                SelfStateHeader(self.db, user).render_static(),
+            ]
+            if section
+        )
+
+    def _session_state_section(self, user: str | None) -> str | None:
+        """Jobs + Your memory + Recent activity + About the user
+        (``SelfStateHeader.render``) + the conversation map — the ONE
+        session-state system message (#3089), inserted by ``_build_messages``
+        right after the leading system message's tool schemas and before the
+        growing history.  Bounded by the session's own start
+        (``_session_as_of``), so it is byte-identical turn to turn within one
+        session — a chat-side write, a job run, or a mutation already shows up
+        as a tool result or a delivery turn in history, so repeating it here
+        would be the duplication #3089 rules out.  Only an idle rotation (a
+        NEW session, a new ``as_of``) changes what this says.
+
+        ``None`` for a caller with no user (there's no session to bound
+        against, and no store map worth showing without one) — a delivery
+        turn always has one (the primary sender), so this is never absent in
+        practice.
+
+        Recent activity's own emission cutoff (``map_horizon_start``, #3079)
+        reads the LIVE clock, same as the conversation map's own day-fold
+        does — the one narrow exception to the ``as_of`` bound above, shared
+        with and no wider than the map's own already-accepted day-rotation
+        (at most once a day, never mid-turn).  The conversation map itself is
+        THIS turn's one ``ConversationMap`` instance (#3085,
+        ``_conversation_map_for``), the same one ``_related_exchanges_section``
+        reads its one-to-one line ids off, never a second map."""
+        if user is None:
+            return None
+        as_of = self._session_as_of(user)
+        map_horizon = map_horizon_start(self.db, self.config.runtime)
+        return "\n\n".join(
+            section
+            for section in [
+                SelfStateHeader(self.db, user, as_of, map_horizon=map_horizon).render(),
                 self._conversation_map_for(user).render(),
             ]
             if section
@@ -835,26 +889,42 @@ class ChatAgent(Agent):
             self._conversation_map = ConversationMap(self.db, user, self.config.runtime)
         return self._conversation_map
 
+    def _session_as_of(self, user: str) -> datetime:
+        """The instant every once-per-session section is bounded by (#3089):
+        the current session's own first turn, read off
+        ``MessageStore.session_anchor`` (#3077) — the SAME anchor
+        ``ConversationMap`` and the history window each read independently of
+        this call, the established pattern for a value every renderer derives
+        from the same stored state rather than shares as one object.  Falls
+        back to the live clock only when the store holds no turn at all yet
+        (``session_started_at`` is ``None``) — there is nothing earlier to
+        freeze against on the very first turn ever.
+
+        Always timezone-AWARE (``stored_as_utc``): ``session_started_at`` is
+        read straight off a stored column (naive IS UTC, same convention
+        every other reader of a stored stamp follows), and ``Clock.now()`` is
+        already aware — so every comparison this bound feeds (``MemoryStore.
+        list_all``'s ``row.updated_at`` check, ``describe_next_run``'s
+        ``now``) compares two aware values, never a naive one against an
+        aware one."""
+        anchor = self.db.messages.session_anchor(
+            user, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+        )
+        return stored_as_utc(anchor.session_started_at or self.db.clock.now())
+
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
         """The per-turn system message's content, placed right BEFORE the
-        live user turn (#2756): the clock, the page hint, then the rest of
-        Penny's own state (recent activity · durable user facts ·
-        pointers, ``SelfStateHeader.render_dynamic``, #2814), then the
-        related earlier exchanges (#3010, computed once per turn in
+        live user turn (#2756): the clock, the page hint, then the related
+        earlier exchanges (#3010, computed once per turn in
         ``_dispatch_turn``) — in that order, everything that may change
-        between turns, none of it able to touch the reused static-system +
-        history prefix that precedes it."""
+        between turns, none of it able to touch the reused prefix (the
+        leading system message, the session-state message, and history) that
+        precedes it."""
         return "\n\n".join(
             section
             for section in [
                 current_datetime_line(self.db),
                 self._page_hint_section(),
-                # The activity block's emission cutoff is the map's own horizon
-                # (#3079) — one shared reader, so a send can never be dropped
-                # here while the map hasn't picked it up (or vice versa).
-                SelfStateHeader(self.db, self._current_user).render_dynamic(
-                    map_horizon_start(self.db, self.config.runtime)
-                ),
                 self._related_exchanges,
             ]
             if section

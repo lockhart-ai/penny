@@ -452,5 +452,61 @@ class TestExchangeWindowBoundary:
         db.messages.set_exchange_embedding(only_reply_id, b"vec")
         boundary = db.messages.user_turn_at_offset(self.USER, 0)
         assert boundary is not None
-
         assert db.messages.exchange_vectors_before(boundary) == []
+
+    def test_session_started_at_is_the_sessions_oldest_closed_turn(self, db):
+        """``session_started_at`` (#3089) — the instant the once-per-session
+        state message is bounded by — is the SAME session's oldest CLOSED
+        turn, over the identical ``timestamps`` the counts above are read
+        from, so it can never disagree with ``session_turns``."""
+        first = datetime(2026, 1, 1, 12, 0)
+        second = datetime(2026, 1, 1, 12, 5)
+        self._seed_exchange(db, "first ask", "first reply", first)
+        self._seed_exchange(db, "second ask", "second reply", second)
+
+        anchor = db.messages.session_anchor(self.USER, 1800)
+
+        assert anchor.session_turns == 2
+        assert anchor.live_turn_open is False
+        assert anchor.session_started_at == first
+
+    def test_session_started_at_excludes_the_open_live_turn(self, db):
+        """The open live turn (no reply yet) is dropped from BOTH the counts
+        and ``session_started_at`` — asking for it must never read it back as
+        the session's own start."""
+        first = datetime(2026, 1, 1, 12, 0)
+        self._seed_exchange(db, "first ask", "first reply", first)
+        live_at = datetime(2026, 1, 1, 12, 5)
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, self.USER, "live ask", timestamp=live_at
+        )
+
+        anchor = db.messages.session_anchor(self.USER, 1800)
+
+        assert anchor.live_turn_open is True
+        assert anchor.session_started_at == first
+
+    def test_session_started_at_is_none_with_no_turns_at_all(self, db):
+        """No incoming row at all → no session to anchor on — ``None``, never
+        a guessed instant."""
+        anchor = db.messages.session_anchor(self.USER, 1800)
+
+        assert anchor.session_started_at is None
+
+    def test_session_started_at_is_the_live_turn_when_it_opens_the_session(self, db):
+        """``session_turns == 0`` means the live turn IS the session's first
+        one (the docstring's own named case) — ``session_started_at`` falls
+        back to that live turn's own timestamp, the only instant available:
+        nothing from DURING this turn can have landed in the store yet."""
+        stale = datetime(2026, 1, 1, 12, 0)
+        self._seed_exchange(db, "stale ask", "stale reply", stale)
+        live_at = stale + timedelta(seconds=3600)  # past the 1800s idle gap
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, self.USER, "live ask", timestamp=live_at
+        )
+
+        anchor = db.messages.session_anchor(self.USER, 1800)
+
+        assert anchor.session_turns == 0
+        assert anchor.live_turn_open is True
+        assert anchor.session_started_at == live_at

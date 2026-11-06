@@ -295,11 +295,22 @@ class SessionAnchor(BaseModel):
 
     Computed from stored timestamps against stored timestamps — no clock read
     anywhere — so every render of the same state gives the same session, and
-    the same window (the cache invariant)."""
+    the same window (the cache invariant).
+
+    ``session_started_at`` (#3089) is the stored timestamp of the current
+    session's own oldest CLOSED turn — the one instant everything in the
+    once-per-session state message is bounded by, so a job run, a memory
+    write, or a mutation that lands DURING this session never changes what
+    that message says (it shows up instead as a tool result or a delivery
+    turn in history, never twice).  ``None`` only when there is no incoming
+    row at all (``session_anchor`` is never called before the live turn's
+    own row exists in practice); a caller building the once-per-session
+    message falls back to its own clock read for that one case."""
 
     total_user_turns: int
     session_turns: int
     live_turn_open: bool
+    session_started_at: datetime | None = None
 
 
 class MessageStore:
@@ -1217,7 +1228,28 @@ class MessageStore:
             total_user_turns=total,
             session_turns=session_turns,
             live_turn_open=live_turn_open,
+            session_started_at=self._session_started_at(timestamps, session_turns, live_turn_open),
         )
+
+    @staticmethod
+    def _session_started_at(
+        timestamps: list[datetime], session_turns: int, live_turn_open: bool
+    ) -> datetime | None:
+        """The oldest CLOSED turn's own stored timestamp (#3089) — the session's
+        first turn, over the SAME newest-first ``timestamps`` the counts above
+        are read from, so it can never disagree with them.
+
+        With no closed turn in the session at all (``session_turns == 0``,
+        which only happens when the live turn IS the session's first one),
+        the live turn's own timestamp is the bound: nothing from DURING this
+        turn can have landed in the store yet, so everything up to and
+        including the moment the user just wrote is the correct "as of"."""
+        if not timestamps:
+            return None
+        if session_turns == 0:
+            return timestamps[0]
+        oldest_idx = session_turns - 1 + (1 if live_turn_open else 0)
+        return timestamps[min(oldest_idx, len(timestamps) - 1)]
 
     def recent_direct_messages(self, since: datetime, limit: int) -> list[MessageLog]:
         """The conversation's DIRECT messages since a horizon, oldest first (#2752).
@@ -1976,7 +2008,7 @@ class MessageStore:
                 ).all()
             )
 
-    def recent_collector_runs(self, limit: int) -> list[RunActivity]:
+    def recent_collector_runs(self, limit: int, as_of: datetime | None = None) -> list[RunActivity]:
         """The most recent completed collector runs across ALL collections, newest
         first — the run half of the self-state header's activity block (#1555).
 
@@ -1994,35 +2026,40 @@ class MessageStore:
         outcome lands on exactly one prompt row (its last, via ``set_run_outcome``),
         so that row's timestamp is the finish time and one row = one run.  A second
         bounded query groups those runs' prompts to count their tool calls (the
-        rollup summary)."""
+        rollup summary).
+
+        ``as_of`` (#3089), when given, excludes a run that finished AFTER that
+        instant — the once-per-session state message's own bound, so a cycle
+        that completes mid-session doesn't change what the message says (its
+        own tool result already carries the news)."""
         if limit <= 0:
             return []
         with self._session() as session:
-            rows = session.exec(self._recent_collector_run_rows_query(limit)).all()
+            rows = session.exec(self._recent_collector_run_rows_query(limit, as_of)).all()
             run_ids = [run_id for run_id, _, _, _ in rows if run_id is not None]
             grouped = self._group_runs(session, run_ids) if run_ids else {}
         return self._run_activities(rows, grouped)
 
     @staticmethod
-    def _recent_collector_run_rows_query(limit: int) -> Any:
+    def _recent_collector_run_rows_query(limit: int, as_of: datetime | None = None) -> Any:
         """The newest-first completed-collector-run rows (run_id, target,
         outcome, finished_at), ``id`` breaking same-timestamp ties
         deterministically so the activity render is stable across runs."""
-        return (
-            select(
-                PromptLog.run_id,
-                PromptLog.run_target,
-                PromptLog.run_outcome,
-                PromptLog.timestamp,
-            )
-            .where(
-                col(PromptLog.run_outcome).isnot(None),
-                PromptLog.run_outcome != RunOutcome.CANCELLED.value,
-                PromptLog.run_outcome != RunOutcome.SANDBOX.value,
-                col(PromptLog.run_target).isnot(None),
-            )
-            .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
-            .limit(limit)
+        query = select(
+            PromptLog.run_id,
+            PromptLog.run_target,
+            PromptLog.run_outcome,
+            PromptLog.timestamp,
+        ).where(
+            col(PromptLog.run_outcome).isnot(None),
+            PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+            PromptLog.run_outcome != RunOutcome.SANDBOX.value,
+            col(PromptLog.run_target).isnot(None),
+        )
+        if as_of is not None:
+            query = query.where(col(PromptLog.timestamp) <= as_of)
+        return query.order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc()).limit(
+            limit
         )
 
     @staticmethod
@@ -2041,7 +2078,9 @@ class MessageStore:
             if run_id is not None and target is not None and outcome is not None
         ]
 
-    def recent_failed_chat_turns(self, limit: int) -> list[ChatFailureActivity]:
+    def recent_failed_chat_turns(
+        self, limit: int, as_of: datetime | None = None
+    ) -> list[ChatFailureActivity]:
         """The most recent chat turns stamped FAILED, newest first — the chat half
         of the self-state header's recent-activity block (#2355 part D).
 
@@ -2051,18 +2090,23 @@ class MessageStore:
         complement's business), so ``run_outcome = FAILED`` alone is the filter;
         ``run_target IS NULL`` is what tells a chat run apart from a collector's
         (which always stamps one), and is what keeps this query's rows out of
-        ``recent_collector_runs``'s own (which requires a target)."""
+        ``recent_collector_runs``'s own (which requires a target).
+
+        ``as_of`` (#3089) excludes a failure stamped AFTER that instant — see
+        ``recent_collector_runs``."""
         if limit <= 0:
             return []
         with self._session() as session:
+            query = select(PromptLog.run_id, PromptLog.run_reason, PromptLog.timestamp).where(
+                PromptLog.run_outcome == RunOutcome.FAILED.value,
+                col(PromptLog.run_target).is_(None),
+            )
+            if as_of is not None:
+                query = query.where(col(PromptLog.timestamp) <= as_of)
             rows = session.exec(
-                select(PromptLog.run_id, PromptLog.run_reason, PromptLog.timestamp)
-                .where(
-                    PromptLog.run_outcome == RunOutcome.FAILED.value,
-                    col(PromptLog.run_target).is_(None),
+                query.order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc()).limit(
+                    limit
                 )
-                .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
-                .limit(limit)
             ).all()
         return [
             ChatFailureActivity(run_id=run_id, reason=reason or "", finished_at=finished)
@@ -2070,26 +2114,27 @@ class MessageStore:
             if run_id is not None
         ]
 
-    def recent_emissions(self, limit: int) -> list[EmissionActivity]:
+    def recent_emissions(self, limit: int, as_of: datetime | None = None) -> list[EmissionActivity]:
         """The most recent delivered autonomous sends across ALL mechanisms, newest
         first — the emission half of the self-state header's activity block (#1568).
 
         Only outgoing rows carrying a ``mechanism`` (an autonomous send that named
         its cause) qualify; a direct reply stamps NULL and is excluded (it is the
         conversation, already in context).  No content is fetched (#3079): the
-        send's text is in history while recent, and ``run_get`` reaches it after."""
+        send's text is in history while recent, and ``run_get`` reaches it after.
+
+        ``as_of`` (#3089) excludes a send delivered AFTER that instant — see
+        ``recent_collector_runs``."""
         if limit <= 0:
             return []
         with self._session() as session:
-            rows = session.exec(
-                select(MessageLog)
-                .where(
-                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
-                    col(MessageLog.mechanism).isnot(None),
-                )
-                .order_by(*_NEWEST_MESSAGE_FIRST)
-                .limit(limit)
-            ).all()
+            query = select(MessageLog).where(
+                MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                col(MessageLog.mechanism).isnot(None),
+            )
+            if as_of is not None:
+                query = query.where(col(MessageLog.timestamp) <= as_of)
+            rows = session.exec(query.order_by(*_NEWEST_MESSAGE_FIRST).limit(limit)).all()
         return [
             EmissionActivity(
                 mechanism=row.mechanism,  # ty: ignore[invalid-argument-type]
@@ -2119,7 +2164,7 @@ class MessageStore:
                 .order_by(*_NEWEST_MESSAGE_FIRST)
             ).first()
 
-    def latest_run_outcomes(self) -> dict[str, RunOutcomeStamp]:
+    def latest_run_outcomes(self, as_of: datetime | None = None) -> dict[str, RunOutcomeStamp]:
         """Each collector's most recent completed run outcome + finish time, keyed
         by ``run_target`` — one grouped query (#1555) plus one fetch-by-id.
 
@@ -2132,22 +2177,24 @@ class MessageStore:
         ``select()`` overloads (capped at four) — ``run_outcome`` and the
         dispatch stamp alongside it (#2862) are read straight off the row
         ``get()`` returns.  Cancelled runs and sandbox previews (#2964) are excluded
-        so 'last run' reports the last real cycle, not a preemption or a preview."""
+        so 'last run' reports the last real cycle, not a preemption or a preview.
+
+        ``as_of`` (#3089) excludes a run that finished AFTER that instant — see
+        ``recent_collector_runs``."""
         with self._session() as session:
-            index = session.exec(
-                select(
-                    PromptLog.run_target,
-                    func.max(PromptLog.timestamp),
-                    func.max(PromptLog.id),
-                )
-                .where(
-                    col(PromptLog.run_outcome).isnot(None),
-                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
-                    PromptLog.run_outcome != RunOutcome.SANDBOX.value,
-                    col(PromptLog.run_target).isnot(None),
-                )
-                .group_by(PromptLog.run_target)
-            ).all()
+            query = select(
+                PromptLog.run_target,
+                func.max(PromptLog.timestamp),
+                func.max(PromptLog.id),
+            ).where(
+                col(PromptLog.run_outcome).isnot(None),
+                PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                PromptLog.run_outcome != RunOutcome.SANDBOX.value,
+                col(PromptLog.run_target).isnot(None),
+            )
+            if as_of is not None:
+                query = query.where(col(PromptLog.timestamp) <= as_of)
+            index = session.exec(query.group_by(PromptLog.run_target)).all()
             return self._stamps_for(session, index)
 
     @staticmethod
