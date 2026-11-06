@@ -495,6 +495,40 @@ struct PennyWebSocketClientTests {
         #expect(client.agentProgressRuns.isEmpty)
     }
 
+    /// The Prompts tab badge's source (#3046): `backgroundProgressRuns.count`
+    /// follows background-scope run_started/run_finished events, and a
+    /// missed finish (e.g. the socket drops mid-run) can't leave it stuck —
+    /// `disconnect()`, which every reconnect runs first, resets it.
+    @Test func backgroundProgressRunCountFollowsStartFinishAndResetsOnDisconnect() async {
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: configuredDatabase(),
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+
+        transport.emit("""
+        {"type":"agent_progress","event":"run_started","run_id":"bg-1","agent":"collector","scope":"background","tools":[]}
+        """)
+        transport.emit("""
+        {"type":"agent_progress","event":"run_started","run_id":"bg-2","agent":"collector","scope":"background","tools":[]}
+        """)
+        #expect(client.backgroundProgressRuns.count == 2)
+
+        transport.emit("""
+        {"type":"agent_progress","event":"run_finished","run_id":"bg-1","agent":"collector","scope":"background","outcome":"completed","tools":[]}
+        """)
+        #expect(client.backgroundProgressRuns.count == 1)
+
+        // bg-2's own run_finished never arrives (a dropped connection); the
+        // reconnect's disconnect() must still bring the count back to zero
+        // rather than leaving it stuck at 1.
+        client.disconnect()
+        #expect(client.backgroundProgressRuns.count == 0)
+    }
+
     @Test func typingPayloadUpdatesTypingState() async {
         let transport = MessagePagingMockTransport()
         let client = PennyWebSocketClient(

@@ -18,6 +18,8 @@ struct StoryRootView: View {
             AppShellView(chatViewModel: StoryFixtures.workingViewModel())
         case .chatDisconnected:
             AppShellView(chatViewModel: StoryFixtures.disconnectedViewModel())
+        case .chatCollectorsBadge:
+            AppShellView(chatViewModel: StoryFixtures.collectorsBadgeViewModel())
         case .shellMemory:
             AppShellView(
                 initialTab: .memory,

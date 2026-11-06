@@ -121,7 +121,10 @@ struct AppShellView: View {
         ZStack {
             HStack {
                 Spacer()
-                TopTabBar(selected: selected) { ChatTabAvatar() }
+                TopTabBar(
+                    selected: selected,
+                    promptsBadge: chatViewModel.client.backgroundProgressRuns.count
+                ) { ChatTabAvatar() }
                 Spacer()
             }
             HStack {
