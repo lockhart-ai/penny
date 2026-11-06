@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -13,6 +14,8 @@ import pytest
 import websockets
 
 from penny.agents.base import AgentProgressEvent
+from penny.agents.models import ControllerResponse
+from penny.channels.base import IncomingMessage
 from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsEnvironment, ApnsError
 from penny.channels.ios.channel import (
     PUSH_GREETING_TITLE,
@@ -22,15 +25,23 @@ from penny.channels.ios.channel import (
     _push_preview,
 )
 from penny.channels.ios.models import (
+    IOS_IMAGE_ERROR_SIZE,
+    IOS_IMAGE_ERROR_TOO_MANY,
+    IOS_IMAGE_ERROR_TYPE,
+    IOS_IMAGE_ERROR_UNDECODABLE,
+    IOS_INCOMING_IMAGE_MAX_BYTES,
+    IOS_INCOMING_MAX_IMAGES,
     IOS_MSG_TYPE_ACK,
     IOS_MSG_TYPE_EMBEDDING_REQUEST,
     IOS_MSG_TYPE_HISTORY,
+    IOS_MSG_TYPE_MESSAGE,
     IOS_MSG_TYPE_PULL,
     IOS_MSG_TYPE_REGISTER,
     IOS_MSG_TYPE_TEST_NOTIFICATION,
     IOS_RESP_TYPE_MESSAGES,
     IOS_RESP_TYPE_OUTBOX_CHANGED,
     IOS_RESP_TYPE_REGISTERED,
+    IOS_RESP_TYPE_STATUS,
 )
 from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType, PennyConstants
@@ -1023,7 +1034,9 @@ async def test_test_push_phrase_is_forwarded_as_an_ordinary_chat_message(db):
     channel.handle_message = AsyncMock()
 
     await channel._handle_chat_message(
-        {"type": "message", "content": "send me a test push"}, "ios-keychain-id"
+        cast(Any, FakeWs()),
+        {"type": "message", "content": "send me a test push"},
+        "ios-keychain-id",
     )
 
     assert apns.sent == []
@@ -1439,3 +1452,177 @@ async def test_message_run_detail_returns_complete_run_by_identity(db):
         "run_id": "missing-run",
         "run": None,
     }
+
+
+def _jpeg_data_uri(payload: bytes = b"fake-jpeg-bytes") -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(payload).decode()
+
+
+@pytest.mark.asyncio
+async def test_chat_message_with_one_image_reaches_the_pipeline(db):
+    """A photo message forwards its images in the shared pipeline envelope (#3084)."""
+    channel = _make_channel(db)
+    channel.handle_message = AsyncMock()
+    ws = FakeWs()
+    image_uri = _jpeg_data_uri()
+
+    await channel._handle_chat_message(
+        cast(Any, ws),
+        {"type": IOS_MSG_TYPE_MESSAGE, "content": "look at this", "images": [image_uri]},
+        "ios-keychain-id",
+    )
+
+    channel.handle_message.assert_awaited_once_with(
+        {"ios_sender": "ios-keychain-id", "content": "look at this", "images": [image_uri]}
+    )
+    assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_image_only_message_reaches_the_pipeline(db):
+    """Photos alone — empty content — are a message (#3084), like Signal's."""
+    channel = _make_channel(db)
+    channel.handle_message = AsyncMock()
+    ws = FakeWs()
+    image_uri = _jpeg_data_uri()
+
+    message = channel.extract_message(
+        {"ios_sender": "ios-keychain-id", "content": "", "images": [image_uri]}
+    )
+    assert message is not None
+    assert message.content == ""
+    assert message.images == [image_uri]
+
+    await channel._handle_chat_message(
+        cast(Any, ws),
+        {"type": IOS_MSG_TYPE_MESSAGE, "content": "", "images": [image_uri]},
+        "ios-keychain-id",
+    )
+    channel.handle_message.assert_awaited_once_with(
+        {"ios_sender": "ios-keychain-id", "content": "", "images": [image_uri]}
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_message_without_images_is_forwarded_unchanged(db):
+    """A text message from a client that sends no `images` keeps the old envelope."""
+    channel = _make_channel(db)
+    channel.handle_message = AsyncMock()
+    ws = FakeWs()
+
+    await channel._handle_chat_message(
+        cast(Any, ws), {"type": IOS_MSG_TYPE_MESSAGE, "content": "hello"}, "ios-keychain-id"
+    )
+
+    channel.handle_message.assert_awaited_once_with(
+        {"ios_sender": "ios-keychain-id", "content": "hello"}
+    )
+    assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_image_violations_get_an_error_frame_and_are_not_forwarded(db):
+    """Over the count, over the size, non-image and undecodable — each is answered
+    with a named status error on the sending connection, and nothing reaches the
+    pipeline (#3084)."""
+    channel = _make_channel(db)
+    channel.handle_message = AsyncMock()
+    ws = FakeWs()
+    too_large = (
+        "data:image/jpeg;base64,"
+        + base64.b64encode(b"x" * (IOS_INCOMING_IMAGE_MAX_BYTES + 1)).decode()
+    )
+    cases = [
+        (
+            {
+                "type": IOS_MSG_TYPE_MESSAGE,
+                "content": "hi",
+                "images": [_jpeg_data_uri()] * (IOS_INCOMING_MAX_IMAGES + 1),
+            },
+            IOS_IMAGE_ERROR_TOO_MANY,
+        ),
+        (
+            {"type": IOS_MSG_TYPE_MESSAGE, "content": "hi", "images": [too_large]},
+            IOS_IMAGE_ERROR_SIZE,
+        ),
+        (
+            {
+                "type": IOS_MSG_TYPE_MESSAGE,
+                "content": "hi",
+                "images": ["data:application/pdf;base64,AAAA"],
+            },
+            IOS_IMAGE_ERROR_TYPE,
+        ),
+        (
+            {
+                "type": IOS_MSG_TYPE_MESSAGE,
+                "content": "hi",
+                "images": ["data:image/jpeg;base64,not!base64"],
+            },
+            IOS_IMAGE_ERROR_UNDECODABLE,
+        ),
+        ({"type": IOS_MSG_TYPE_MESSAGE, "content": 5}, "invalid_message"),
+    ]
+
+    for payload, error in cases:
+        await channel._handle_chat_message(cast(Any, ws), payload, "ios-keychain-id")
+        assert ws.sent[-1] == {"type": IOS_RESP_TYPE_STATUS, "connected": True, "error": error}
+
+    channel.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_photo_message_history_record_carries_the_attachment(db):
+    """The stored record of a photo message serves the image back in `attachments`
+    so the app renders it in the user's bubble after a history sync (#3084), while
+    the model-facing content keeps the deterministic marker."""
+    channel = _make_channel(db)
+    channel._message_agent.name = "chat"
+    ws = FakeWs()
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    image_uri = _jpeg_data_uri()
+    message = IncomingMessage(
+        sender="ios-keychain-id",
+        content="look at this",
+        channel_type=ChannelType.IOS,
+        device_identifier="ios-keychain-id",
+        images=[image_uri],
+    )
+
+    await channel._finish_turn(
+        message,
+        "ios-keychain-id",
+        device.id,
+        ControllerResponse(answer="ok"),
+        "run-1",
+        None,
+        None,
+        datetime.now(UTC),
+    )
+
+    await channel._handle_history(
+        cast(Any, ws), {"type": IOS_MSG_TYPE_HISTORY, "limit": 50}, "ios-keychain-id"
+    )
+    records = ws.sent[-1]["messages"]
+    user_record = next(record for record in records if record["direction"] == "incoming")
+    assert user_record["content"] == f"look at this {PennyConstants.IMAGE_HISTORY_MARKER}"
+    assert user_record["attachments"] == [image_uri]
+
+    await channel._handle_history(
+        cast(Any, ws),
+        {"type": IOS_MSG_TYPE_HISTORY, "limit": 50, "include_attachments": False},
+        "ios-keychain-id",
+    )
+    skipped = ws.sent[-1]["messages"]
+    user_record = next(record for record in skipped if record["direction"] == "incoming")
+    assert user_record["attachments"] == []

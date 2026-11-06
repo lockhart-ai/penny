@@ -85,3 +85,7 @@ no thinking. Like the rest of `agent_progress` it is transient — sent only to
 connected iOS clients, never stored as a message; the prompt log holds the trace
 whole. The Swift `AgentProgressPayload` decodes it as an optional, so older servers
 (and older clients, which ignore the extra key) keep working.
+
+### iOS photos sent from the app
+
+The `message` frame carries an optional `images` list of `data:image/jpeg|png;base64,` URIs (#3084) — at most `IOS_INCOMING_MAX_IMAGES` (4) per message, `IOS_INCOMING_IMAGE_MAX_BYTES` (6 MB) decoded each; a violating or malformed frame is answered with a named `status` error (`too_many_images` / `unsupported_image_type` / `image_too_large` / `undecodable_image` / `invalid_message`) on that connection and never forwarded. Valid images pass into the shared pipeline's `IncomingMessage.images` (an image-only message — empty `content` — is a message); the stored row keeps the `[sent a photo]` marker for the model while its `attachments_json` serves the data URIs back on history records' `attachments`, so the app renders the user's own photo after a sync. Clients sending no `images` are unchanged.

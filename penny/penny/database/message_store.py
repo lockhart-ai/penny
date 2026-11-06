@@ -470,6 +470,7 @@ class MessageStore:
         mechanism: str | None = None,
         run_id: str | None = None,
         timestamp: datetime | None = None,
+        attachments_json: str | None = None,
     ) -> int | None:
         """Log a user message or agent response. Returns the message ID or None.
 
@@ -494,6 +495,11 @@ class MessageStore:
         time the turn actually STARTED keeps it ordered ahead of anything the turn
         sends, instead of a write-time stamp from after the turn.
 
+        ``attachments_json`` (#3084) carries an incoming message's photo
+        attachments as the JSON list of data URIs the pipeline was given —
+        served back on the iOS wire so the sending app renders the photo after
+        a history sync.  ``None`` for every text-only row.
+
         The record keeps an outgoing message's text as the model wrote it
         (#2722) — the channel conversion is a send-time concern, so no
         formatting is stripped here."""
@@ -513,6 +519,7 @@ class MessageStore:
                     mechanism=mechanism,
                     run_id=run_id,
                     timestamp=timestamp if timestamp is not None else self._clock.now(),
+                    attachments_json=attachments_json,
                 )
                 session.add(log)
                 session.commit()

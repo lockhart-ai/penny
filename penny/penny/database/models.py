@@ -224,6 +224,15 @@ class MessageLog(SQLModel, table=True):
     # row that missed it, reconstructing both sides off the run stamps
     # (``MessageStore.exchange_sides_for``).  NULL for every non-reply row.
     exchange_embedding: bytes | None = None
+    # The incoming message's photo attachments (#3084), as the JSON list of data
+    # URIs the pipeline was given.  The conversation record's own text keeps the
+    # deterministic marker where an image was (``_logged_incoming_content``) —
+    # history for the MODEL never resends the image — while the iOS wire serves
+    # this column back so the sending app renders the photo in its bubble after
+    # a sync.  Written by the base pipeline's incoming-log sites; NULL for every
+    # text-only row and for outgoing rows (whose attachments ride the iOS
+    # outbox).
+    attachments_json: str | None = None
 
     __table_args__ = (
         Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import mimetypes
 import re
@@ -237,6 +238,19 @@ def _logged_incoming_content(message: IncomingMessage) -> str:
     if message.images:
         content = f"{content} {PennyConstants.IMAGE_HISTORY_MARKER}".strip()
     return content
+
+
+def _logged_incoming_attachments(message: IncomingMessage) -> str | None:
+    """The conversation-record form of an incoming message's attachments (#3084):
+    the image data URIs themselves, JSON-encoded on the row, so a channel whose
+    history surface reads it back (iOS) can render the user's photo in their own
+    bubble after a sync.  The marker in ``_logged_incoming_content`` stays what
+    the MODEL reads — history for the model never resends the image; this is the
+    record-side companion for the sending client.  ``None`` for a text-only
+    message."""
+    if not message.images:
+        return None
+    return json.dumps(message.images)
 
 
 class ProgressTracker(ABC):
@@ -1217,6 +1231,7 @@ class MessageChannel(ABC):
                 embedding=serialize_embedding(embedding) if embedding is not None else None,
                 run_id=run_id,
                 timestamp=queued.received_at,
+                attachments_json=_logged_incoming_attachments(queued.message),
             )
 
     async def _log_abandoned_message(self, queued: QueuedTurnMessage) -> None:
@@ -1232,6 +1247,7 @@ class MessageChannel(ABC):
             device_id=queued.device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
             timestamp=queued.received_at,
+            attachments_json=_logged_incoming_attachments(queued.message),
         )
 
     async def _handle_profile_required(
@@ -1246,6 +1262,7 @@ class MessageChannel(ABC):
             signal_timestamp=message.signal_timestamp,
             device_id=device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
+            attachments_json=_logged_incoming_attachments(message),
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
@@ -1377,6 +1394,7 @@ class MessageChannel(ABC):
             if incoming_embedding is not None
             else None,
             timestamp=received_at,
+            attachments_json=_logged_incoming_attachments(message),
         )
         # Link the spawning message to any mechanism this run created, now that the
         # message has an id (#1566) — matched by the unique per-turn run id.
