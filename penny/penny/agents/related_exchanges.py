@@ -22,16 +22,22 @@ map share (``Agent._history_window_size`` over the shared ``session_anchor``,
 #3077).  Exchanges shown as map lines are still selected — the map carries only
 the user's own words, never Penny's reply, which is where an agreed plan
 lives — but a match whose user words the map ALREADY renders whole, on a line
-of their own, drops its own ``User:`` side here (#3085): ``_block`` is handed
-the map's own ``ConversationMap.one_to_one_user_ids()`` set (``ChatAgent``
-builds it once per turn, over the same ``ConversationMap`` pipeline the static
-prefix renders from — never re-deriving the horizon or the window itself) and
-shows Penny's reply alone when every one of the match's user-message ids is in
-that set.  A match whose user text sits on a ranged short-collapse line,
-inside a folded day, or still within the history window itself renders both
-sides, exactly as before — none of those surfaces carries the user's words
-whole.  No retrieval runs for a system-notification trigger: the section is
-keyed to the user's own words, and a delivery turn's trigger is the
+of their own, drops its own ``User:`` side here (#3085).  Two conditions, both
+required: (1) ``_block`` is handed the map's own ``ConversationMap.
+one_to_one_user_ids()`` set (``ChatAgent`` builds it once per turn, off the
+SAME ``ConversationMap`` instance the static prefix renders from — never a
+second map, never a re-derived horizon or window) and checks every one of the
+match's user-message ids is in it — the STRUCTURAL half: is this exchange a
+lone line at all, never a ranged short-collapse line, a folded day, or a
+notification line, none of which carries any one exchange's words; (2) that
+lone line must show the text WHOLE — ``ConversationMap.clips_whole(match.
+user)`` calls the map's own clip rule directly, so a text over
+``USER_CLIP_CHARS`` or carrying more than one line, which the map's line would
+cut to a head+tail excerpt or to its first line alone, still renders both
+sides here, because the map's version of it is not the same text.  Still
+within the history window, or failing either check, renders both sides,
+exactly as before.  No retrieval runs for a system-notification trigger: the
+section is keyed to the user's own words, and a delivery turn's trigger is the
 framework's.
 
 Both runtime bounds are config (``RELATED_EXCHANGES_MAX``,
@@ -46,6 +52,7 @@ from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING
 
 from penny.agents.base import Agent
+from penny.agents.conversation_map import ConversationMap
 from penny.constants import PennyConstants
 from penny.datetime_utils import stored_as_utc, user_timezone_name, zone_or_utc
 from penny.llm.embeddings import cosine_similarity, deserialize_embedding
@@ -205,13 +212,15 @@ class RelatedExchanges:
         own day anchor, byte-for-byte its form), then its side(s) in quotes,
         each clipped to ``SIDE_CHARS``.
 
-        When every one of the match's user-message ids is already on one of
-        the map's own one-to-one lines (#3085), the map carries the user's
-        words whole and this block renders Penny's reply alone — the half the
-        map never carries.  Otherwise both sides render, exactly as before: a
-        match on a ranged short-collapse line, inside a folded day, or still
-        within the history window has no line of its own that shows the
-        user's words whole, so nothing here is a duplicate."""
+        The ``User:`` side drops only when BOTH hold (#3085): every one of
+        the match's user-message ids is already on one of the map's own
+        one-to-one lines (structural — this exchange is a lone line at all,
+        never a ranged short-collapse line, a folded day, or a notification
+        line), AND the map's own clip of the text is the text itself
+        (``ConversationMap.clips_whole`` — content: that lone line shows it
+        WHOLE, never a head+tail excerpt or a first-line-only cut).  Either
+        check failing renders both sides, exactly as before — nothing here is
+        a duplicate of anything the map actually shows."""
         ids = ", ".join(str(user_id) for user_id in match.user_ids)
         day = stored_as_utc(match.user_at).astimezone(self._zone()).date().isoformat()
         head = (
@@ -219,8 +228,10 @@ class RelatedExchanges:
             f"(messages {ids}, reply {match.reply_id}) — "
             f"{PennyConstants.USER_MESSAGES_DAY_ANCHOR.format(day=day)}"
         )
-        if match.user_ids and all(
-            user_id in self.map_one_to_one_user_ids for user_id in match.user_ids
+        if (
+            match.user_ids
+            and all(user_id in self.map_one_to_one_user_ids for user_id in match.user_ids)
+            and ConversationMap.clips_whole(match.user)
         ):
             return f'{head}\nPenny: "{self._clip(match.reply)}"'
         return f'{head}\nUser: "{self._clip(match.user)}"\nPenny: "{self._clip(match.reply)}"'

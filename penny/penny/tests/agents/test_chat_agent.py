@@ -26,6 +26,7 @@ from penny.changelog import ChangelogEntry
 from penny.constants import ChatPromptType, MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MemoryEntry, MemoryRow, MessageLog, PromptLog
+from penny.datetime_utils import stored_as_utc, user_timezone_name, zone_or_utc
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
@@ -705,19 +706,38 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
 _MAP_ASK = "garden job plan — read the weather log first, then recent messages"
 _MAP_REPLY = "yes, the garden job will read the weather log first, then your messages."
 _MAP_LIVE = "go ahead with the garden job plan — weather log first?"
+# Two lines, each well under ``USER_CLIP_CHARS`` — the map's own clip keeps
+# only the first (``_clip`` splits on "\n" before measuring length), so this
+# text is a lone map line that is NOT shown whole: the boundary ``clips_whole``
+# exists to catch (#3085).
+_MAP_ASK_MULTILINE = (
+    "garden job plan — first line names the weather-log order\n"
+    "second line says to check the recent garden messages too"
+)
 
 
 def _map_exchange(
-    db, index: int, *, embed: bool = False, at: datetime | None = None
+    db,
+    index: int,
+    *,
+    at: datetime,
+    embed: bool = False,
+    ask: str | None = None,
+    reply: str | None = None,
 ) -> tuple[int, int]:
     """One outcome-bearing exchange — never collapse fodder on the
     conversation map, so it renders its own one-to-one line (or folds with
     its day, same as any other).  Only the target exchange (``embed=True``)
     carries an exchange vector, so it is the sole related-exchanges
-    candidate and nothing else in the seeded run can score."""
+    candidate and nothing else in the seeded run can score.  ``ask``/
+    ``reply`` default to the shared plan text when embedding, or override it
+    (e.g. the multi-line text above) — every other exchange gets its own
+    filler text so nothing collides."""
     run_id = f"map-exchange-{index}"
-    ask = _MAP_ASK if embed else f"a recorded-outcome ask, number {index}"
-    reply = _MAP_REPLY if embed else f"a recorded-outcome reply, number {index}."
+    if ask is None:
+        ask = _MAP_ASK if embed else f"a recorded-outcome ask, number {index}"
+    if reply is None:
+        reply = _MAP_REPLY if embed else f"a recorded-outcome reply, number {index}."
     ask_id = db.messages.log_message(
         PennyConstants.MessageDirection.INCOMING, TEST_SENDER, ask, timestamp=at
     )
@@ -744,6 +764,19 @@ def _map_exchange(
     return ask_id, reply_id
 
 
+def _map_stamp(db, at: datetime) -> str:
+    """The SAME absolute-time format every map/related-exchanges line renders
+    through, so a whole-literal assertion never hardcodes a date that quietly
+    rots as real time passes it (#3085)."""
+    return stored_as_utc(at).astimezone(zone_or_utc(user_timezone_name(db))).strftime("%b %d %H:%M")
+
+
+def _map_day(db, at: datetime) -> str:
+    """The SAME local-date anchor every map/related-exchanges line renders
+    through."""
+    return stored_as_utc(at).astimezone(zone_or_utc(user_timezone_name(db))).date().isoformat()
+
+
 @pytest.mark.asyncio
 async def test_related_exchange_on_a_map_line_renders_her_reply_alone(db, make_config):
     """A match whose user words the conversation map ALREADY shows, whole, on
@@ -752,22 +785,27 @@ async def test_related_exchange_on_a_map_line_renders_her_reply_alone(db, make_c
     config = make_config(
         chat_history_turns=2, chat_session_max_turns=3, related_exchanges_min_similarity=0.1
     )
-    ask_id, reply_id = _map_exchange(db, 0, embed=True)
+    now = db.clock.now()
+    ask_id, reply_id = _map_exchange(db, 0, at=now, embed=True)
     for index in range(1, 5):
-        _map_exchange(db, index)
-    # Sanity: the exchange really is on the map's own one-to-one line.
-    map_ids = ConversationMap(db, TEST_SENDER, config.runtime).one_to_one_user_ids()
-    assert ask_id in map_ids
+        _map_exchange(db, index, at=now)
+    # Sanity: the exchange is on the map's own one-to-one line, AND shown whole.
+    map_ = ConversationMap(db, TEST_SENDER, config.runtime)
+    assert ask_id in map_.one_to_one_user_ids()
+    assert ConversationMap.clips_whole(_MAP_ASK)
     agent = _render_agent(db, config)
 
     section = await agent._related_exchanges_section(
         _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
     )
 
-    assert section is not None
-    assert f'User: "{_MAP_ASK}"' not in section
-    assert f'Penny: "{_MAP_REPLY}"' in section
-    assert f"(messages {ask_id}, reply {reply_id})" in section
+    assert section == (
+        "## Related earlier exchanges\n\n"
+        f"Related earlier exchange · {_map_stamp(db, now)} "
+        f"(messages {ask_id}, reply {reply_id}) — "
+        f"log_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
+        f'Penny: "{_MAP_REPLY}"'
+    )
 
 
 @pytest.mark.asyncio
@@ -782,27 +820,68 @@ async def test_related_exchange_on_a_folded_day_renders_both_sides(db, make_conf
         chat_map_max_lines=5,
         related_exchanges_min_similarity=0.1,
     )
+    now = db.clock.now()
+    yesterday = now - timedelta(days=1)
     ask_id = reply_id = None
     for index in range(8):  # window=2: older than it = indices 0-5 (#3056's own math)
         embed = index == 0
-        a_id, r_id = _map_exchange(
-            db, index, embed=embed, at=db.clock.now() - timedelta(days=1) if index < 5 else None
-        )
+        a_id, r_id = _map_exchange(db, index, at=yesterday if index < 5 else now, embed=embed)
         if embed:
             ask_id, reply_id = a_id, r_id
     assert ask_id is not None and reply_id is not None
     # Sanity: the exchange's day folded, so it carries no one-to-one line.
-    map_ids = ConversationMap(db, TEST_SENDER, config.runtime).one_to_one_user_ids()
-    assert ask_id not in map_ids
+    map_ = ConversationMap(db, TEST_SENDER, config.runtime)
+    assert ask_id not in map_.one_to_one_user_ids()
     agent = _render_agent(db, config)
 
     section = await agent._related_exchanges_section(
         _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
     )
 
-    assert section is not None
-    assert f'User: "{_MAP_ASK}"' in section
-    assert f'Penny: "{_MAP_REPLY}"' in section
+    assert section == (
+        "## Related earlier exchanges\n\n"
+        f"Related earlier exchange · {_map_stamp(db, yesterday)} "
+        f"(messages {ask_id}, reply {reply_id}) — "
+        f"log_read{{'user-messages', day: '{_map_day(db, yesterday)}'}}\n"
+        f'User: "{_MAP_ASK}"\n'
+        f'Penny: "{_MAP_REPLY}"'
+    )
+
+
+@pytest.mark.asyncio
+async def test_related_exchange_longer_than_the_clip_keeps_both_sides(db, make_config):
+    """A match that IS a lone map line (#3085, structurally) still keeps both
+    sides when the map's own clip of its text is not the text itself — a
+    multi-line ask is cut to its first line there (the map never carries the
+    rest), the same as a text over ``USER_CLIP_CHARS`` is cut to a head+tail
+    excerpt.  Either way the lone line's content differs from the full text,
+    so this block never treats it as already shown whole."""
+    config = make_config(
+        chat_history_turns=2, chat_session_max_turns=3, related_exchanges_min_similarity=0.1
+    )
+    now = db.clock.now()
+    ask_id, reply_id = _map_exchange(db, 0, at=now, embed=True, ask=_MAP_ASK_MULTILINE)
+    for index in range(1, 5):
+        _map_exchange(db, index, at=now)
+    # Sanity: structurally its own line, but the map's clip cuts it to the
+    # first line alone — not the text itself.
+    map_ = ConversationMap(db, TEST_SENDER, config.runtime)
+    assert ask_id in map_.one_to_one_user_ids()
+    assert not ConversationMap.clips_whole(_MAP_ASK_MULTILINE)
+    agent = _render_agent(db, config)
+
+    section = await agent._related_exchanges_section(
+        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+    )
+
+    assert section == (
+        "## Related earlier exchanges\n\n"
+        f"Related earlier exchange · {_map_stamp(db, now)} "
+        f"(messages {ask_id}, reply {reply_id}) — "
+        f"log_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
+        f'User: "{_MAP_ASK_MULTILINE}"\n'
+        f'Penny: "{_MAP_REPLY}"'
+    )
 
 
 def _wire_call(call_id: str, name: str, arguments: dict) -> dict:

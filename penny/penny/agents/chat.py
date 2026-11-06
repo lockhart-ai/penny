@@ -112,6 +112,15 @@ class ChatAgent(Agent):
     # never-dispatched default, so an agent built outside ``_dispatch_turn``
     # renders the section's quiet absence.
     _related_exchanges: str | None = None
+    # This turn's ONE ``ConversationMap`` instance (#3085) — built lazily by
+    # whichever of ``_related_exchanges_section``/``_build_system_prompt`` runs
+    # FIRST in ``_dispatch_turn`` (``_conversation_map_for``) and reused by the
+    # other, so the static prefix's own render() and the related-exchanges
+    # retrieval's one-to-one id set never run the horizon/window pipeline
+    # through two different instances.  Cleared with the rest of the per-turn
+    # state in ``_dispatch_turn``'s ``finally``; ``None`` on the class is the
+    # never-dispatched default, same shape as ``_related_exchanges`` above.
+    _conversation_map: ConversationMap | None = None
     # Chat's run-shape chain (base Agent's is empty).  Empty here too (#2455 naive
     # baseline / #2473): what a run wrote and what it configured are both delivered
     # earlier, straight onto the tool result the moment their call lands (see
@@ -639,6 +648,7 @@ class ChatAgent(Agent):
             self._pending_page_context = None
             self._current_message = None
             self._related_exchanges = None
+            self._conversation_map = None
 
     def _record_turn_failure(self, run_id: str, reason: str) -> None:
         """Stamp a chat turn that needed the honest-fallback machinery (#2355 part
@@ -808,10 +818,22 @@ class ChatAgent(Agent):
                 standing_rules_instruction(self.db),
                 self._instructions_section(instructions),
                 SelfStateHeader(self.db, user).render_static(),
-                ConversationMap(self.db, user, self.config.runtime).render(),
+                self._conversation_map_for(user).render(),
             ]
             if section
         )
+
+    def _conversation_map_for(self, user: str | None) -> ConversationMap:
+        """This turn's ONE ``ConversationMap`` instance (#3085): built here on
+        first use and cached on ``self`` for the rest of the turn, so this
+        method and ``_related_exchanges_section`` — whichever runs first in
+        ``_dispatch_turn`` — never build two.  ``ConversationMap`` itself
+        caches nothing (every read is fresh off ``self.db``), so reusing the
+        instance across this turn's two reads, or across repeated calls in a
+        test, changes nothing about what either one returns."""
+        if self._conversation_map is None:
+            self._conversation_map = ConversationMap(self.db, user, self.config.runtime)
+        return self._conversation_map
 
     def _dynamic_system_section(self, handles: HandleTable | None = None) -> str:
         """The per-turn system message's content, placed right BEFORE the
@@ -847,10 +869,11 @@ class ChatAgent(Agent):
         asking, so no retrieval runs for one.  Embeds the live message once,
         here, so every later loop step reads the section this computed.
 
-        Builds the conversation map's own one-to-one line ids (#3085,
-        ``ConversationMap.one_to_one_user_ids``) once, here, and hands them to
-        ``RelatedExchanges`` so a match whose user words the map already shows
-        whole never renders them a second time."""
+        Reads the conversation map's own one-to-one line ids off THIS turn's
+        ONE ``ConversationMap`` instance (#3085, ``_conversation_map_for`` —
+        the same one ``_build_system_prompt`` renders from, never a second
+        map) and hands them to ``RelatedExchanges`` so a match whose user
+        words the map already shows whole never renders them a second time."""
         if prompt_type is not ChatPromptType.USER_MESSAGE:
             return None
         if not prompt.strip():
@@ -860,9 +883,7 @@ class ChatAgent(Agent):
         except LlmError as error:
             logger.warning("Related-exchanges retrieval skipped — embed failed: %s", error)
             return None
-        map_one_to_one_ids = ConversationMap(
-            self.db, sender, self.config.runtime
-        ).one_to_one_user_ids()
+        map_one_to_one_ids = self._conversation_map_for(sender).one_to_one_user_ids()
         rendered = RelatedExchanges(
             self.db,
             sender,

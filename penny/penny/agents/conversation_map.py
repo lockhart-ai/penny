@@ -480,10 +480,13 @@ class ConversationMap:
         local = stored_as_utc(at).astimezone(self._zone())
         return local.strftime("%b %d"), local.date().isoformat()
 
-    def _clip(self, text: str) -> str:
+    @staticmethod
+    def _clip(text: str) -> str:
         """The user's message, whole to ``USER_CLIP_CHARS``; a longer first
         line keeps its head and its tail around one " … " — conclusions often
-        come last (#2982)."""
+        come last (#2982).  A ``@staticmethod`` — it reads only its argument
+        and the module's own constants — so :meth:`clips_whole` (#3085) can
+        call it without an instance."""
         first_line = text.split("\n", 1)[0]
         if len(first_line) <= USER_CLIP_CHARS:
             return first_line
@@ -491,6 +494,21 @@ class ConversationMap:
         head_len = (budget + 1) // 2
         tail_len = budget - head_len
         return f"{first_line[:head_len]}{_CLIP_SEPARATOR}{first_line[-tail_len:]}"
+
+    @staticmethod
+    def clips_whole(text: str) -> bool:
+        """Whether this clip of ``text`` IS ``text``, unchanged — true exactly
+        when a lone map line carrying it shows it WHOLE, never a head+tail
+        excerpt that dropped its middle or a first-line-only cut that dropped
+        every line after it (#3085).  Calls :meth:`_clip`, the SAME rule every
+        map line renders through, so the two can never drift — never a
+        restated predicate ("single line, no more than N chars") that could
+        say something different.  ``RelatedExchanges`` is the one caller
+        outside this class: a match whose own text fails this check is not
+        shown whole anywhere on the map, even when its exchange sits on a line
+        of its own (``one_to_one_user_ids()`` is structural — IS there a lone
+        line — and says nothing about what that line's clip kept)."""
+        return ConversationMap._clip(text) == text
 
     def _outcome(self, exchange: _Exchange) -> str:
         """The exchange's recorded run: pages read, keyed writes, registry

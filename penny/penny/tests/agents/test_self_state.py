@@ -829,8 +829,11 @@ def test_self_state_store_map_drops_a_live_jobs_duplicate_description(db):
         )
         session.commit()
     actual = SelfStateHeader(db, None).render()
-    assert "\n- weather-watch (collection)\n" in actual  # the clause dropped entirely
-    assert "- garden-notes (collection) — notes about the garden's own progress\n" in actual
+    store_map = actual.split("### Your memory\n", 1)[1].split("\n\n", 1)[0]
+    assert store_map == (
+        "- garden-notes (collection) — notes about the garden's own progress\n"
+        "- weather-watch (collection)"
+    )
 
 
 def test_self_state_memory_map_line_keeps_an_archived_rows_own_description() -> None:
