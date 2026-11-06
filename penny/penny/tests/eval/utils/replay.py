@@ -94,7 +94,8 @@ the request's LAST tool message — the tool result the model reacts to, a swapp
 message, thinking on or
 off, and — applied FIRST, before any of those (#3058) — ``substitutions``: a list
 of ``{pattern, replacement}`` regex pairs rewritten into EVERY message's text
-content, every tool call's arguments string, and the tools' JSON text, so a
+content (its reasoning/thinking text included), every tool call's arguments
+string, and the tools' JSON text, so a
 notation that appears throughout a request (a link-handle format, say) can be
 re-rendered wholesale per arm), every
 arm is re-rendered through the byte-identity check for ``raw_template`` rows, and all
@@ -413,10 +414,11 @@ class ReplayVariant(BaseModel):
 
     name: str
     # Regex substitutions applied FIRST (#3058), in list order, to every
-    # message's text content, every tool call's arguments string, and the tools'
-    # JSON text — the lever for a notation that appears throughout a request
-    # (e.g. re-rendering every link handle in a new format). A pattern that is
-    # not a valid regex refuses the arm at validation, and with it the spec.
+    # message's text content (its reasoning/thinking text included), every tool
+    # call's arguments string, and the tools' JSON text — the lever for a
+    # notation that appears throughout a request (e.g. re-rendering every link
+    # handle in a new format). A pattern that is not a valid regex refuses the
+    # arm at validation, and with it the spec.
     substitutions: list[Substitution] = Field(default_factory=list)
     # Replaces the system message's content (the prompt A/B's usual lever).
     system_prompt: str | None = None
@@ -484,10 +486,12 @@ def _substituted_messages_and_tools(
     messages: list[dict], tools: list[dict] | None, variant: ReplayVariant
 ) -> tuple[list[dict], list[dict] | None]:
     """The variant's substitutions applied (#3058) — BEFORE any other transform,
-    in list order, to every message's text content, every tool call's arguments
-    string, and the tools' JSON text (each tool schema goes through its JSON
-    dump, so a substitution reaches every string field of every schema). Returns
-    the inputs unchanged when the arm names none."""
+    in list order, to every message's text content (the ``reasoning``/
+    ``thinking`` field included — on a raw_template row it renders into the
+    prompt and quotes the very notation an arm re-renders), every tool call's
+    arguments string, and the tools' JSON text (each tool schema goes through
+    its JSON dump, so a substitution reaches every string field of every
+    schema). Returns the inputs unchanged when the arm names none."""
     if not variant.substitutions:
         return messages, tools
     subs = [(re.compile(sub.pattern), sub.replacement) for sub in variant.substitutions]
@@ -496,6 +500,10 @@ def _substituted_messages_and_tools(
         message = dict(message)
         if isinstance(message.get("content"), str):
             message["content"] = _substituted_text(message["content"], subs)
+        if isinstance(message.get("reasoning"), str):
+            message["reasoning"] = _substituted_text(message["reasoning"], subs)
+        if isinstance(message.get("thinking"), str):
+            message["thinking"] = _substituted_text(message["thinking"], subs)
         if message.get("tool_calls"):
             message["tool_calls"] = [
                 _substituted_call(call, subs) for call in message["tool_calls"]

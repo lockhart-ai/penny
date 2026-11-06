@@ -52,6 +52,7 @@ _SUB_MESSAGES: list[dict[str, Any]] = [
     {
         "role": "assistant",
         "content": "",
+        "reasoning": "The result was numbered [18]; I will read it.",
         "tool_calls": [
             {
                 "id": "call-1",
@@ -87,6 +88,7 @@ _CURLY_MESSAGES: list[dict[str, Any]] = [
     {
         "role": "assistant",
         "content": "",
+        "reasoning": "The result was numbered {link 18}; I will read it.",
         "tool_calls": [
             {
                 "id": "call-1",
@@ -382,12 +384,16 @@ class TestSubstitutionsRewriteTheWholeRequest:
         sent = captures[0]
         assert sent["messages"][0]["content"] == "Links on this page look like {link 12}."
         assert sent["messages"][3]["content"] == "Read {link 18} — the story page."
+        assert (
+            sent["messages"][2]["reasoning"] == "The result was numbered {link 18}; I will read it."
+        )
         arguments = json.loads(sent["messages"][2]["tool_calls"][0]["function"]["arguments"])
         assert arguments == {"url": "{link 18}"}
         assert "[12]" not in json.dumps(sent["tools"])
         assert sent["tools"][0]["function"]["description"] == "Read a numbered page like {link 12}."
         # the loaded row's own text is untouched — the rewrite never mutates it
         assert messages[3]["content"] == "Read [18] — the story page."
+        assert messages[2]["reasoning"] == "The result was numbered [18]; I will read it."
         assert messages[2]["tool_calls"][0]["function"]["arguments"] == '{"url": "[18]"}'
 
     async def test_entries_apply_in_list_order(self, tmp_path, monkeypatch, captures) -> None:
