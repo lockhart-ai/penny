@@ -413,7 +413,9 @@ def test_page_context_injected_as_synthetic_tool_call():
     assert rendered[2]["tool_calls"][0]["id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
     assert rendered[2]["tool_calls"][0]["type"] == "function"
     assert rendered[2]["tool_calls"][0]["function"]["name"] == "browse"
-    assert json.loads(rendered[2]["tool_calls"][0]["function"]["arguments"])["queries"] == ["[1]"]
+    assert json.loads(rendered[2]["tool_calls"][0]["function"]["arguments"])["queries"] == [
+        "{link 101}"
+    ]
     # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the same
     # tagged first-person envelope every real tool result gets, but with BESPOKE
     # narration (#1485) naming this as the page the user is viewing — NOT BrowseTool's
@@ -433,7 +435,7 @@ def test_page_context_injected_as_synthetic_tool_call():
     assert "$49.99" in rendered[3]["content"]
     assert "Example Product Page" in rendered[3]["content"]
     assert "https://example.com/product" not in rendered[3]["content"]
-    assert "URL: [1]" in rendered[3]["content"]
+    assert "URL: {link 101}" in rendered[3]["content"]
 
 
 def test_page_context_not_injected_when_empty():

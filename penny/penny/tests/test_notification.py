@@ -161,11 +161,14 @@ def test_a_job_report_renders_entry_urls_as_handles():
     )
     handles = HandleTable()
     rendered = render_job_report(report, handles)
-    assert "- into `tech-news`, under `lead story`: Fusion milestone — [the report][1]" in rendered
+    assert (
+        "- into `tech-news`, under `lead story`: Fusion milestone — [the report] {link 101}"
+        in rendered
+    )
     assert "https://example.com/fusion-report" not in rendered
     assert CITATION_LINE in rendered
     # The same handle expands back to the URL on the reply that cites it.
-    assert handles.expand("See [1] for the report.") == (
+    assert handles.expand("See {link 101} for the report.") == (
         "See https://example.com/fusion-report for the report."
     )
     # No table → the entries render verbatim (the whole-render test's shape).

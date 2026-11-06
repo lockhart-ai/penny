@@ -1016,10 +1016,10 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
 
         # M=1,2: fewer turns than the window (2) — everything so far, growing.
         # The handle names its domain (#2832) beside the number.
-        assert renders[0] == ["user message 1", "reply 1 [1] example.com"]
+        assert renders[0] == ["user message 1", "reply 1 {link 101} example.com"]
         assert renders[1] == [
             "user message 1",
-            "reply 1 [1] example.com",
+            "reply 1 {link 101} example.com",
             "user message 2",
             "reply 2",
         ]
@@ -1028,7 +1028,7 @@ async def test_history_window_is_a_byte_identical_prefix_across_growing_turns(
         assert renders[2][: len(renders[1])] == renders[1]
         assert renders[2] == [
             "user message 1",
-            "reply 1 [1] example.com",
+            "reply 1 {link 101} example.com",
             "user message 2",
             "reply 2",
             "user message 3",
@@ -2005,7 +2005,7 @@ async def test_generate_image_reply_token_is_stripped_from_the_wire_kept_in_the_
                 {"description": "a teal origami dragon perched on a coffee mug"},
             )
         return mock_llm._make_text_response(
-            request, "here's your teal origami dragon!\n\n[image 999]\nenjoy"
+            request, "here's your teal origami dragon!\n\n{image 999}\nenjoy"
         )
 
     mock_llm.set_response_handler(handler)
@@ -2035,7 +2035,7 @@ async def test_generate_image_reply_token_is_stripped_from_the_wire_kept_in_the_
                     MessageLog.direction == PennyConstants.MessageDirection.OUTGOING
                 )
             ).all()
-        assert any("[image 999]" in row.content for row in outgoing)
+        assert any("{image 999}" in row.content for row in outgoing)
 
 
 @pytest.mark.asyncio
@@ -2424,8 +2424,8 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "conversation.\n"
     "\n"
     "How to use the browse tool:\n"
-    "One browse call runs a whole lookup: pass items, each a search, a link number like "
-    "[4], or a URL, and each with what it is looking for in plain language — that is the "
+    "One browse call runs a whole lookup: pass items, each a search, a link token like "
+    "{link 101}, or a URL, and each with what it is looking for in plain language — that is the "
     'whole specification ("the opening hours" or "anything the page says about refunds" '
     "are complete asks). A search is picked and read inside the same call, so you get "
     "back what the pages say, with a handle for every page you were given.\n"
@@ -2433,8 +2433,8 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "Let the answer come from the pages you read — every fact, name, and detail in your "
     "response must come from the pages you read or your memory.\n"
     "\n"
-    "Links are numbered, like [3]. When you reference something from a page, cite its "
-    "number in brackets — never an address. The links that exist are the ones you were "
+    "Links carry tokens, like {link 101}. When you reference something from a page, cite its "
+    "token — never an address. The links that exist are the ones you were "
     "shown, in this turn's pages or in your own stored entries.\n"
     "\n"
     "When the user changes topics, just go with it.\n"
@@ -2457,7 +2457,7 @@ _BASIC_FLOW_STATIC_EXPECTED = (
     "On a plain reply with no tool calls, skip the recap and just respond.\n"
     "\n"
     "Always include specific details (specs, dates, prices) and at least one source "
-    "link (its number in brackets) so the user can follow up.\n"
+    "link (its token, like {link 101}) so the user can follow up.\n"
     "\n"
     "### Jobs\n"
     "notifications: on — proactive task notifications are delivered\n"

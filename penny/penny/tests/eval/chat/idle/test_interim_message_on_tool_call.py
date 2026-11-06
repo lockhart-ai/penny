@@ -79,7 +79,7 @@ _CASE_ID = "challenged-fix-announces-and-calls"
 _RULE_KEY = "cite_sources_in_jobs"
 _RULE_TEXT = (
     "Any job that searches for or recommends something online should always include a "
-    "source link in brackets, like [1], for each item it finds."
+    "source link, like {link 101}, for each item it finds."
 )
 
 # ── The two jobs — real-word hobby genres, invented specifics, real names of the kind

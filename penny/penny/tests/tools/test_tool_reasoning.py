@@ -207,9 +207,9 @@ class TestGenerateImageToolHandlesItsOwnFailure:
         image_client.generate_image.assert_called_once()
 
     async def test_success_result_names_the_row_and_hands_over_the_token_whole(self, db: Database):
-        """The success result is pinned whole (#3033): what the model reads names the
-        stored media row's id, then the ``[image <id>]`` token to put in her reply —
-        the one legitimate way to place the image in the reply."""
+        """The success result is pinned whole (#3033, form #3074): what the model reads
+        names the stored media row's id, then the ``{image <id>}`` token to put in her
+        reply — the one legitimate way to place the image in the reply."""
         image_client = AsyncMock()
         image_client.generate_image.return_value = ONE_PX_PNG_B64
         embedding_client = AsyncMock()
@@ -224,7 +224,7 @@ class TestGenerateImageToolHandlesItsOwnFailure:
         assert result.message == (
             f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}{media_id} of: a red fox. "
             "The image is finished. Put "
-            f"[image {media_id}] in your reply to hand it to the user."
+            f"{{image {media_id}}} in your reply to hand it to the user."
         )
         assert result.media_id == media_id
 

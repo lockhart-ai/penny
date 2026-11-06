@@ -18,12 +18,15 @@ hallucinated-URL validator discarded. Its own thinking says why:
 > necessarily the log ID. I'll try `log_read('browse-results')` to see the
 > last entries and their IDs.
 
-A bare `[n]` beside a number with no domain or title reads as an opaque
-internal handle worth resolving, not as a citable link — so the model goes
+A bare `[n]` beside a number with no domain or title read as an opaque
+internal handle worth resolving, not as a citable link — so the model went
 looking for "the real" address instead of writing the number down. This case
 reproduces that shape, condensed to its smallest form: one already-stored
 entry whose `Source:` carries a link, one short prior exchange establishing
 that the last message about it had no link, and a follow-up asking for it.
+(The prod render predated the #3074 token grammar: a stored entry's source
+now renders as `{link 101}` alone, with numbering from 101 — the same
+no-address-to-copy state this case measures, under the token form.)
 
 **Real game, invented collection.** The real production turn named a real
 game on a real storefront; this world swaps in a DIFFERENT real game on the
@@ -254,13 +257,13 @@ def _reply_carries_the_stored_link(sample: SampleObservation, _world: World) -> 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_stored_link_number_is_cited_not_rebrowsed(chat_eval: ChatEval, model: str) -> None:
-    """A collection already holds an entry whose stored link renders as a bare
-    number; asked for that link a second time, Penny's reply carries the real
-    address rather than another round of searching."""
+    """A collection already holds an entry whose stored link renders as a
+    token; asked for that link a second time, Penny's reply carries the real
+    address it stands for rather than another round of searching."""
     cohort = await chat_eval(
         case_id="stored-link-number-cited",
         behaviour=(
-            "In the chat agent, when Penny already holds a numbered link for what "
+            "In the chat agent, when Penny already holds a link token for what "
             "the user is asking about, her reply carries the real address it "
             "stands for."
         ),

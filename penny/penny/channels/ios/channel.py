@@ -1429,7 +1429,7 @@ class IosChannel(MessageChannel):
 
 
 def _client_content(text: str) -> str:
-    """Stored content as a client sees it (#3033): the ``[image <id>]`` token is
+    """Stored content as a client sees it (#3033): the ``{image <id>}`` token is
     stripped — it never reaches a user as text; the image itself attaches to the
     live send (egress, ``MessageChannel._log_and_send``), and the record keeps
     the token for the model's history (#2722)."""

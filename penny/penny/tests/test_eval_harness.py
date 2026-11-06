@@ -3954,18 +3954,18 @@ def test_the_given_expands_through_the_runs_recorded_handle_table(db) -> None:
         db,
         run_id="r1",
         messages=[
-            {"role": "user", "content": "the headlines from [1] and [2]"},
+            {"role": "user", "content": "the headlines from {link 101} and {link 102}"},
             {"role": "assistant", "content": "", "tool_calls": []},
         ],
     )
     _log_prompt(
         db,
         run_id="r2",
-        messages=[{"role": "user", "content": "the other run saw [1] here"}],
+        messages=[{"role": "user", "content": "the other run saw {link 101} here"}],
     )
     # Stamped at run close, the way production does — after the rows exist.
     db.messages.set_run_link_handles(
-        "r1", {1: "https://news.example/story-1", 2: "https://news.example/story-2"}
+        "r1", {101: "https://news.example/story-1", 102: "https://news.example/story-2"}
     )
 
     given = given_to_the_model(db)
@@ -3973,7 +3973,7 @@ def test_the_given_expands_through_the_runs_recorded_handle_table(db) -> None:
     assert "https://news.example/story-1" in given.content
     assert "https://news.example/story-2" in given.content
     # r2's turn: no stamp on that run, so its handle stays a literal.
-    assert "[1]" in given.content
+    assert "{link 101}" in given.content
 
 
 def test_an_agent_turn_nothing_delivered_renders_as_an_aside_not_as_a_reply():

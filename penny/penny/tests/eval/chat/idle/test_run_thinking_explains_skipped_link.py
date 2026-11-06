@@ -61,7 +61,7 @@ _FAMILY = "run-thinking-explains-skipped-link"
 # A synthetic daily tech-news digest — invented collection, invented items — bound to
 # one already-completed collector run.  The run wrote all three of a day's items in one
 # entry; two carry a source link, the third does not, and only the run's OWN thinking
-# (never the entry, never the ask) says why: its one usable handle for that item, [18],
+# (never the entry, never the ask) says why: its one usable handle for that item, {link 118},
 # turned out to be a Quora thread sitting behind Quora's own sign-in wall.
 
 _COLLECTION = "daily_tech_roundup"
@@ -94,8 +94,8 @@ _RUN_THINKING = (
     "Let me look at what I've gathered for today's three items. The keyboard firmware "
     "item has a clean source, and the display driver item has a clean source too, so "
     "those two are easy to write up with their links. The mouse firmware item is "
-    "trickier: the only handle the page gave me for it is [18], listed as a forum "
-    "discussion. Looking at what's actually behind handle [18], though, it isn't a "
+    "trickier: the only token the page gave me for it is {link 118}, listed as a forum "
+    "discussion. Looking at what's actually behind token {link 118}, though, it isn't a "
     "readable article at all — it's a Quora thread, and all that loads is Quora's own "
     "sign-in wall asking me to log in before it will show the thread's content. I have "
     "no credentials to get past that wall, and there is no cached text behind it I can "
@@ -177,7 +177,7 @@ _WORLD = World(name="daily-tech-roundup-skipped-link", pages=(), keeps=(), exclu
 #
 # No wording may lend the failure's signature or its own answer: not the reason site,
 # not the handle number, not a near-synonym for the wall it hit.
-_LEAKS = (_REASON_SITE, "[18]", "sign-in", "sign in", "login", "wall")
+_LEAKS = (_REASON_SITE, "{link 118}", "sign-in", "sign in", "login", "wall")
 for _wording in (_ASK, *_ALSO_PHRASED):
     for _leak in _LEAKS:
         assert _leak.casefold() not in _wording.casefold(), (

@@ -23,7 +23,7 @@ that replaced it):
   to ALL 18 — every finding the cycle wrote must reach the user, not the 8 a budget
   happened to show.  (Claim change flagged for the code owner in the PR body.)
 * ``job-report-numbered-sources-become-links`` (#2807) — a cycle that wrote two
-  picks, each citing its own source by number (``Source: [1]`` / ``Source: [2]``).
+  picks, each citing its own source (``Source: {link 101}`` / ``Source: {link 102}``).
   Built from a verbatim prod replay (a daily-picks job's report, genericised to a
   different real topic): the delivered message cited neither number. The report
   render's own citation line (``link_handles.CITATION_LINE``) already says a number
@@ -206,9 +206,9 @@ async def test_notify_composer_names_one_ordinary_finding(
 # ── job-report-numbered-sources-become-links (#2807) ─────────────────────────────────────
 # A cycle that wrote one entry holding two picks, each citing its own source by a number
 # in the exact shape the report render leaves it: ``*Source: <url>*``, converted to a
-# handle (``[1]``/``[2]``) only when the report is rendered to the model.  Built from a
-# verbatim prod replay — a daily-picks job's report carried two sources as ``[1]`` and
-# ``[2]`` and the reply cited neither — genericised to a different real topic, with the
+# token (``{link 101}``/``{link 102}``) only when the report is rendered to the model.  Built from a
+# verbatim prod replay — a daily-picks job's report carried two sources as ``{link 101}`` and
+# ``{link 102}`` and the reply cited neither — genericised to a different real topic, with the
 # same shape: one entry, two picks, each ending in its own bare source URL.
 _SOURCE_LINKS_COLLECTION = "daily-jazz-picks"
 _HARD_BOP_URL = "https://en.wikipedia.org/wiki/Mingus_Ah_Um"

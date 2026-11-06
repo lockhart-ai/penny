@@ -706,7 +706,7 @@ class ChatAgent(Agent):
         # so the model cites the page — or re-reads it — by number.
         number = handles.register(page_context.url)
         page_content = (
-            f"Title: {page_context.title}\nURL: [{number}]\n\n"
+            f"Title: {page_context.title}\nURL: {handles.plain(number)}\n\n"
             f"{handles.convert(page_context.text)}\n\n{PAGE_CITATION_LINE}"
         )
 
@@ -723,7 +723,7 @@ class ChatAgent(Agent):
                         id=ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
                         function=LlmToolCallFunction(
                             name=BrowseTool.name,
-                            arguments={"queries": [f"[{number}]"]},
+                            arguments={"queries": [handles.plain(number)]},
                         ),
                     )
                 ],

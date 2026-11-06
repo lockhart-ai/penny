@@ -41,8 +41,9 @@ not a description of one, so "here you go!" is a complete answer and no reply to
 The reply is held only to provenance: every specific value in it traces to what she was given.
 
 **The handover case claims what the record holds, not the wire.**  The ``generate_image`` result
-hands her an ``[image <id>]`` token to put in her reply (#3033); egress strips the token from
-the wire text — the image attaches by id regardless — and the stored reply keeps it as she
+hands her an ``{image <id>}`` token to put in her reply (#3033, form #3074); egress
+strips the token from the wire text — the image attaches by id regardless — and the
+stored reply keeps it as she
 wrote it (#2722).  So this case's reply claims read ``stored_reply`` (the conversation record,
 "as she wrote it"), never ``reply`` (the wire, "as the user saw it"): the token is egress
 machinery, deterministic and mock-test-owned, and what the model decides is whether she put the
@@ -118,7 +119,7 @@ _GENERATE_IMAGE = "generate_image"
 # form naming the stored media row's id, spelled here rather than imported: the
 # case is the contract's wording of the form, and it must run on a tree that
 # predates the fix's own constants.
-_IMAGE_TOKEN_RE = re.compile(r"\[image (\d+)\]")
+_IMAGE_TOKEN_RE = re.compile(r"\{image (\d+)\}")
 
 
 def install_image_client(penny: Penny) -> None:
@@ -306,7 +307,14 @@ def _token_once(sample: SampleObservation, _world: World) -> Answer:
 # why).  The result names the one legitimate token, so any of these standing in
 # the reply is a wrong fact rather than a wording choice.  Matched folded —
 # ``{image}`` and ``{Image}`` are one form.
-_EXCLUDED_PLACEHOLDERS = ("{image}", "[image]", "[image attached]", "[image placeholder]", "![")
+_EXCLUDED_PLACEHOLDERS = (
+    "{image}",
+    "{image }",
+    "[image]",
+    "[image attached]",
+    "[image placeholder]",
+    "![",
+)
 
 
 def _no_other_placeholder(sample: SampleObservation, _world: World) -> Answer:
@@ -373,7 +381,7 @@ async def test_a_request_for_a_picture_hands_over_the_token(
     chat_eval: ChatEval, model: str
 ) -> None:
     """An empty media store, the image tool on the surface, and a request for one
-    picture — the result hands her the ``[image <id>]`` token to put in her reply
+    picture — the result hands her the ``{image <id>}`` token to put in her reply
     (#3033)."""
     cohort = await _drive(chat_eval, model, _HANDOVER)
     # STORE — the one drawn image, the token once, no other placeholder.

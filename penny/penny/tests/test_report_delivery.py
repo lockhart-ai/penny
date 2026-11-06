@@ -162,7 +162,7 @@ async def test_a_report_composes_through_one_chat_turn_and_delivers_once(db, tes
     # real URL before delivery, so the handle never reaches the hallucinated-URL
     # validator's raw-URL branch at all (#2721's repair is a different scenario: a
     # model that typed the URL out directly instead of citing it).
-    draft = "Hey! Cinder Drift just dropped — a hand-drawn metroidvania. [1]"
+    draft = "Hey! Cinder Drift just dropped — a hand-drawn metroidvania. {link 101}"
     reply = "Hey! Cinder Drift just dropped — a hand-drawn metroidvania. https://ex.example/cd"
     mock_llm.set_response_handler(_reply_handler(mock_llm, draft))
     drainer, channel = _make_delivery(db, test_config)
@@ -237,7 +237,7 @@ async def test_the_delivery_turn_reads_the_report_whole(db, test_config, mock_ll
         # domain beside it (#2717, #2832), and the one plain line telling the
         # model how to cite rides after the entries.
         "- into `indie-metroidvanias`, under `Cinder Drift`: Cinder Drift — a hand-drawn "
-        f"metroidvania. [1] ex.example\n{CITATION_LINE}"
+        f"metroidvania. {{link 101}} ex.example\n{CITATION_LINE}"
     )
 
 
