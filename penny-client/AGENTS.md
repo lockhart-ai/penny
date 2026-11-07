@@ -9,11 +9,11 @@ Before opening a PR, review your own diff against the whole client review guide 
 The first rule: use the framework as designed. Before building any UI, name the stock SwiftUI element for the job and use it with its stock placement and behaviour; never hide a system element to draw a lookalike over it (#3111). Composing our own element from Apple's components and materials is fine; faking what Apple renders or animates (glass, blur, fades, menus, transitions) is not.
 
 ## Project Context
-PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The app shell — the centred glass tab capsule over every screen — lives in `PennyClient/PennyClient/Views/AppShellView.swift`; the chat UI lives in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
+PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The app shell — one stock `NavigationStack` with a leading glass page menu (#3111) — lives in `PennyClient/PennyClient/Views/AppShellView.swift`; the chat UI lives in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
 Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode tools for reading, editing, diagnostics, and builds.
 
 ## Important Files
-- `PennyClient/PennyClient/Views/AppShellView.swift`: The app shell — tab capsule, search circle, back circle, top fade.
+- `PennyClient/PennyClient/Views/AppShellView.swift`: The app shell — one stock `NavigationStack`, the leading page menu, the centred Penny title, trailing search.
 - `PennyClient/PennyClient/Views/MessageView.swift`: Main chat screen, composer, message rows.
 - `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`: Message screen view model.
 - `PennyClient/PennyClient/Views/SettingsView.swift`: Editable connection settings.
@@ -90,7 +90,7 @@ SwiftUI presentation and view-model behavior in the app target; import
 ## UI Patterns
 Use SwiftUI and the Observation framework. Avoid Combine unless there is a concrete need.
 The chat UI uses:
-- the app shell (`AppShellView`): one centred glass tab capsule at the top plus a search circle; pushed pages keep the capsule and add a glass back circle — no traditional navigation bar or bottom tab bar
+- the app shell (`AppShellView`, #3111): one stock `NavigationStack` with a visible system bar — a leading glass page `Menu`, Penny's avatar and name centred, search trailing; a push (e.g. a memory's detail) gets the system back button — no bottom tab bar
 - `NavigationStack`
 - a bottom overlay composer with keyboard-aware offset
 - split Markdown text blocks for incoming messages

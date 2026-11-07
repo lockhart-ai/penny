@@ -147,8 +147,8 @@ private struct LiveDockRow: View {
 /// tried first and dropped: two views simultaneously claiming one glass
 /// identity is unsupported and crashes.
 ///
-/// The avatar is handed in (`@ViewBuilder avatar`) — the same seam
-/// `TopTabBar` uses for the chat tab's icon: the kit sizes and rings
+/// The avatar is handed in (`@ViewBuilder avatar`) — the same seam the
+/// shell's principal title uses for Penny's icon: the kit sizes and rings
 /// whatever the app hands it; the app owns the actual asset.
 ///
 /// There is no stop control here yet: cancelling a run has no message in

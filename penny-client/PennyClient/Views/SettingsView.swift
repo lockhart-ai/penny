@@ -13,205 +13,210 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                if let commitHash = AppBuildInfo.current.commitHash {
-                    Section("Build") {
-                        LabeledContent("Commit", value: commitHash)
-                    }
+        settingsForm
+    }
+
+    private var settingsForm: some View {
+        Form {
+            if let commitHash = AppBuildInfo.current.commitHash {
+                Section("Build") {
+                    LabeledContent("Commit", value: commitHash)
                 }
+            }
 
-                Section("Status") {
-                    LabeledContent("Connection", value: viewModel.client.statusText)
-                    LabeledContent("Pending", value: "\(viewModel.client.pendingCount)")
-                }
+            Section("Status") {
+                LabeledContent("Connection", value: viewModel.client.statusText)
+                LabeledContent("Pending", value: "\(viewModel.client.pendingCount)")
+            }
 
-                Section("Connection") {
-                    TextField("WebSocket URL", text: $viewModel.webSocketURL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
+            Section("Connection") {
+                TextField("WebSocket URL", text: $viewModel.webSocketURL)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
 
-                    LabeledContent("APNs Host", value: viewModel.apnsHost)
+                LabeledContent("APNs Host", value: viewModel.apnsHost)
 
-                    TextField("Username", text: $viewModel.username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                TextField("Username", text: $viewModel.username)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
 
-                    SecureField("Password", text: $viewModel.password)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                SecureField("Password", text: $viewModel.password)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
 
-                    LabeledContent("Test Notification") {
-                        Button("Send") {
-                            viewModel.sendTestNotification()
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(!viewModel.canSendTestNotification)
+                LabeledContent("Test Notification") {
+                    Button("Send") {
+                        viewModel.sendTestNotification()
                     }
+                    .buttonStyle(.borderless)
+                    .disabled(!viewModel.canSendTestNotification)
                 }
+            }
 
-                ImageAttachmentSettingsSection(viewModel: viewModel)
+            ImageAttachmentSettingsSection(viewModel: viewModel)
 
-                Section("History") {
-                    ForEach(HistoryChannel.allCases) { channel in
-                        Toggle(channel.title, isOn: Binding(
-                            get: { selectedHistoryChannels.contains(channel.rawValue) },
-                            set: { isSelected in
-                                if isSelected {
-                                    selectedHistoryChannels.insert(channel.rawValue)
-                                } else {
-                                    selectedHistoryChannels.remove(channel.rawValue)
-                                }
-                            }
-                        ))
-                        .disabled(viewModel.client.historySyncing)
-                    }
-
-                    Toggle("Include attachments", isOn: $includeHistoryAttachments)
-                        .disabled(viewModel.client.historySyncing)
-
-                    LabeledContent("History sync", value: viewModel.client.historyProgressText)
-
-                    HStack {
-                        Button {
-                            viewModel.startHistorySync(
-                                channelTypes: Array(selectedHistoryChannels).sorted(),
-                                includeAttachments: includeHistoryAttachments
-                            )
-                        } label: {
-                            Label(
-                                viewModel.client.historySyncing ? "Syncing History" : "Sync History",
-                                systemImage: viewModel.client.historySyncing
-                                    ? "arrow.triangle.2.circlepath"
-                                    : "clock.arrow.circlepath"
-                            )
-                        }
-                        .disabled(selectedHistoryChannels.isEmpty || viewModel.client.historySyncing)
-                        Spacer()
-                        Text(viewModel.client.historyStatus)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                #if DEBUG
-                Section("Developer") {
-                    Button(role: .destructive) {
-                        isShowingDeleteMessagesConfirmation = true
-                    } label: {
-                        Label("Delete All Local Messages", systemImage: "trash")
-                    }
-                }
-                #endif
-
-                if let prompt = viewModel.permissionPrompt {
-                    Section("Permission Request") {
-                        LabeledContent("Domain", value: prompt.domain)
-                        Text(prompt.url)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        HStack {
-                            Button {
-                                viewModel.decidePermissionPrompt(allowed: true)
-                            } label: {
-                                Label("Allow", systemImage: "checkmark")
-                            }
-
-                            Spacer()
-
-                            Button(role: .destructive) {
-                                viewModel.decidePermissionPrompt(allowed: false)
-                            } label: {
-                                Label("Block", systemImage: "xmark")
+            Section("History") {
+                ForEach(HistoryChannel.allCases) { channel in
+                    Toggle(channel.title, isOn: Binding(
+                        get: { selectedHistoryChannels.contains(channel.rawValue) },
+                        set: { isSelected in
+                            if isSelected {
+                                selectedHistoryChannels.insert(channel.rawValue)
+                            } else {
+                                selectedHistoryChannels.remove(channel.rawValue)
                             }
                         }
-                        .buttonStyle(.borderless)
-                    }
+                    ))
+                    .disabled(viewModel.client.historySyncing)
                 }
 
-                Section("Runtime Config") {
-                    if viewModel.runtimeConfigParams.isEmpty {
-                        ContentUnavailableView("No Config", systemImage: "slider.horizontal.3")
-                    } else {
-                        ForEach(viewModel.runtimeConfigParams) { param in
-                            RuntimeConfigRow(param: param, viewModel: viewModel)
-                        }
-                    }
-                }
+                Toggle("Include attachments", isOn: $includeHistoryAttachments)
+                    .disabled(viewModel.client.historySyncing)
 
-                Section("Domain Permissions") {
-                    HStack {
-                        TextField("Domain", text: $viewModel.domainDraft)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        Picker("Permission", selection: $viewModel.domainPermission) {
-                            Text("Allow").tag(DomainPermission.allowed)
-                            Text("Block").tag(DomainPermission.blocked)
-                        }
-                        .labelsHidden()
-                    }
+                LabeledContent("History sync", value: viewModel.client.historyProgressText)
 
+                HStack {
                     Button {
-                        viewModel.submitDomainPermission()
+                        viewModel.startHistorySync(
+                            channelTypes: Array(selectedHistoryChannels).sorted(),
+                            includeAttachments: includeHistoryAttachments
+                        )
                     } label: {
-                        Label("Save Domain", systemImage: "plus")
+                        Label(
+                            viewModel.client.historySyncing ? "Syncing History" : "Sync History",
+                            systemImage: viewModel.client.historySyncing
+                                ? "arrow.triangle.2.circlepath"
+                                : "clock.arrow.circlepath"
+                        )
                     }
-                    .disabled(!viewModel.canSubmitDomain)
+                    .disabled(selectedHistoryChannels.isEmpty || viewModel.client.historySyncing)
+                    Spacer()
+                    Text(viewModel.client.historyStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
-                    ForEach(viewModel.domainPermissions) { entry in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(entry.domain)
-                                Text(entry.permission.title)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button(role: .destructive) {
-                                viewModel.deleteDomain(entry)
-                            } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Delete domain")
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") {
-                        save()
-                    }
-                    .disabled(!viewModel.canSaveConnection)
-                }
-            }
-            .task {
-                viewModel.refresh()
-            }
             #if DEBUG
-            .confirmationDialog(
-                "Delete all local messages?",
-                isPresented: $isShowingDeleteMessagesConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button("Delete All Messages", role: .destructive) {
-                    viewModel.deleteAllMessages()
+            Section("Developer") {
+                Button(role: .destructive) {
+                    isShowingDeleteMessagesConfirmation = true
+                } label: {
+                    Label("Delete All Local Messages", systemImage: "trash")
                 }
-            } message: {
-                Text("This removes every message stored on this device. It does not delete messages from the server.")
             }
             #endif
+
+            if let prompt = viewModel.permissionPrompt {
+                Section("Permission Request") {
+                    LabeledContent("Domain", value: prompt.domain)
+                    Text(prompt.url)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button {
+                            viewModel.decidePermissionPrompt(allowed: true)
+                        } label: {
+                            Label("Allow", systemImage: "checkmark")
+                        }
+
+                        Spacer()
+
+                        Button(role: .destructive) {
+                            viewModel.decidePermissionPrompt(allowed: false)
+                        } label: {
+                            Label("Block", systemImage: "xmark")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            Section("Runtime Config") {
+                if viewModel.runtimeConfigParams.isEmpty {
+                    ContentUnavailableView("No Config", systemImage: "slider.horizontal.3")
+                } else {
+                    ForEach(viewModel.runtimeConfigParams) { param in
+                        RuntimeConfigRow(param: param, viewModel: viewModel)
+                    }
+                }
+            }
+
+            Section("Domain Permissions") {
+                HStack {
+                    TextField("Domain", text: $viewModel.domainDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Picker("Permission", selection: $viewModel.domainPermission) {
+                        Text("Allow").tag(DomainPermission.allowed)
+                        Text("Block").tag(DomainPermission.blocked)
+                    }
+                    .labelsHidden()
+                }
+
+                Button {
+                    viewModel.submitDomainPermission()
+                } label: {
+                    Label("Save Domain", systemImage: "plus")
+                }
+                .disabled(!viewModel.canSubmitDomain)
+
+                ForEach(viewModel.domainPermissions) { entry in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(entry.domain)
+                            Text(entry.permission.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            viewModel.deleteDomain(entry)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Delete domain")
+                    }
+                }
+            }
         }
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        // The shared shell toolbar's leading/trailing slots are the
+        // page menu and search (#3111), so Cancel/Save move to a
+        // stock bottom bar rather than fighting over the top one —
+        // the one deviation from the old row this page keeps; the
+        // Settings redesign (save-as-you-change) retires both buttons.
+        .toolbar {
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button("Cancel") {
+                    dismiss()
+                }
+                Spacer()
+                Button("Save") {
+                    save()
+                }
+                .disabled(!viewModel.canSaveConnection)
+            }
+        }
+        .task {
+            viewModel.refresh()
+        }
+        #if DEBUG
+        .confirmationDialog(
+            "Delete all local messages?",
+            isPresented: $isShowingDeleteMessagesConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All Messages", role: .destructive) {
+                viewModel.deleteAllMessages()
+            }
+        } message: {
+            Text("This removes every message stored on this device. It does not delete messages from the server.")
+        }
+        #endif
     }
 
     private func save() {

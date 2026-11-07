@@ -5,8 +5,12 @@ import PennyServices
 
 struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.shellContentTopClearance) private var shellContentTopClearance
     @Environment(\.shellOpenPrompts) private var shellOpenPrompts
+    /// The system search field's own active state (#3129) — read-only;
+    /// `viewModel.search.isSearching` follows it via `.onChange` below. A
+    /// custom `isPresented` `Binding` on `.searchable` is the wrong tool
+    /// for reading it — the environment key is the stock path.
+    @Environment(\.isSearching) private var isSearchFieldActive
     @State private var viewModel: ViewModel
     @State private var presentedCardMessage: ChatMessage?
     @State private var messageFrames: [Int: CGRect] = [:]
@@ -45,19 +49,16 @@ struct MessageView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            chatScrollView
-                .safeAreaInset(edge: .bottom) {
-                    composer
-                }
-                // The page background, full-bleed: the scroll view's own
-                // background stops at its safe-area-adjusted bottom edge
-                // (the composer's inset plus the field glass's reservation),
-                // and without this the window shows through as a white band
-                // above the composer.
-                .background(Color(.systemGroupedBackground).ignoresSafeArea())
-                .navigationBarTitleDisplayMode(.inline)
-            .toolbar(.hidden, for: .navigationBar)
+        chatScrollView
+            .safeAreaInset(edge: .bottom) {
+                composer
+            }
+            // The page background, full-bleed: the scroll view's own
+            // background stops at its safe-area-adjusted bottom edge
+            // (the composer's inset plus the field glass's reservation),
+            // and without this the window shows through as a white band
+            // above the composer.
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
             }
@@ -69,25 +70,48 @@ struct MessageView: View {
             .onPreferenceChange(ChatViewportFramePreferenceKey.self) { frame in
                 chatViewportFrame = frame
             }
-        }
-        .task {
-            await viewModel.connect()
-            // Story mode only (#2965): applied after `connect()` loads the
-            // fixture messages, so the frozen resolve snapshot has a real
-            // message to point at — see the matching note in `.onAppear`.
-            if storyDockResolveProgress != nil {
-                viewModel.applyStoryDockResolveSnapshot()
+            // Find-in-chat (#3045, #3129): the shell's shared
+            // `DefaultToolbarItem(kind: .search)` is the placement hint,
+            // but confirmed on this SDK it doesn't collapse to a trailing
+            // circle the way the approved mock shows — plain `.searchable`
+            // (with or without the hint, tested both) renders as an
+            // always-visible bar pinned to the screen's bottom, which sits
+            // directly on top of the composer. `.navigationBarDrawer
+            // (displayMode: .always)` is the stock placement that doesn't:
+            // an inline field under the title, not fighting the composer
+            // for the bottom of the screen — the same fallback the
+            // mockup's own exploration landed on for this exact
+            // DefaultToolbarItem-plus-.searchable combination. No counter,
+            // no up/down (the code owner approved highlights only); typing
+            // highlights matches in the bubbles below and scrolls to the
+            // newest one via `viewModel.search`'s existing state machine.
+            .searchable(text: $viewModel.search.query, placement: .navigationBarDrawer(displayMode: .always))
+            .onChange(of: isSearchFieldActive) { _, active in
+                if active {
+                    viewModel.search.open()
+                } else {
+                    viewModel.search.close()
+                }
             }
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background {
-                isComposerFocused = false
+            .task {
+                await viewModel.connect()
+                // Story mode only (#2965): applied after `connect()` loads
+                // the fixture messages, so the frozen resolve snapshot has
+                // a real message to point at — see the matching note in
+                // `.onAppear`.
+                if storyDockResolveProgress != nil {
+                    viewModel.applyStoryDockResolveSnapshot()
+                }
             }
-            viewModel.handleScenePhaseChange(newPhase)
-        }
-        .onDisappear {
-            keyboardSettledScrollTask?.cancel()
-        }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .background {
+                    isComposerFocused = false
+                }
+                viewModel.handleScenePhaseChange(newPhase)
+            }
+            .onDisappear {
+                keyboardSettledScrollTask?.cancel()
+            }
     }
 
     private var chatScrollView: some View {
@@ -607,7 +631,7 @@ private extension MessageView {
     }
 
     var messageListTopPadding: CGFloat {
-        12 + shellContentTopClearance
+        12
     }
 
     func shouldScrollToMessage(_ id: Int) -> Bool {

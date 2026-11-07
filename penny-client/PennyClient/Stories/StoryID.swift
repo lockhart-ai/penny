@@ -28,7 +28,6 @@ enum StoryID: String, CaseIterable {
     case chatSearch
     case chatSearchEmpty
     case sheetCardDetail
-    case kitTopTabBar
     case kitPageHeader
     case kitListRows
     case kitPillsTiles

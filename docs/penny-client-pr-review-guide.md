@@ -94,6 +94,7 @@ This list grows: whoever finds a new unhealthy pattern adds it here, in the same
 - [ ] **Two views never claim one `glassEffectID` at once.** SwiftUI crashes when two views share an id simultaneously (#3097); use `matchedGeometryEffect` instead when a geometry morph between views is needed.
 - [ ] **Display labels for tools are generic by default — never add tool-name special cases.** Tools are arbitrary and plugins add new ones at any time; a label keyed to a specific tool name silently stops working for every tool nobody enumerated.
 - [ ] **New wire fields are optional on the Swift side.** An older server that hasn't shipped the field yet must still decode cleanly — make the field `nil`-able so a missing value decodes instead of throwing (#3047, #3051).
+- [ ] **A `NavigationStack`'s toolbar is per screen, not inherited across a push.** Items a root view declares (a leading `Menu`, a trailing search item) don't carry onto a pushed `navigationDestination` unless that destination declares them again — and declaring a custom `.topBarLeading` item there *replaces* the automatic system back button rather than joining it (#3111). Shared chrome (a page switcher) belongs on the stack's root content only; a pushed page gets the system back button and whatever it declares itself.
 
 ### Tests
 

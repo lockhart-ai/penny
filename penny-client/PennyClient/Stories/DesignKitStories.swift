@@ -13,40 +13,6 @@ enum DesignKitStories {
     }
 }
 
-/// The chat tab's avatar for the kit stories: Penny's own image, circular —
-/// the app owns the `penny` asset, so the avatar view lives here, not in the
-/// kit (`TopTabBar` sizes and badges whatever it is handed).
-struct KitStoryAvatar: View {
-    var body: some View {
-        Image("penny")
-            .resizable()
-            .scaledToFill()
-            .clipShape(Circle())
-    }
-}
-
-/// The nav controls: the glass capsule with the avatar, a count badge, and
-/// the one glass circle shape (idle, dimmed).
-struct KitTopTabBarStory: View {
-    var body: some View {
-        VStack(spacing: Tokens.margin) {
-            TopTabBar(selected: .prompts, promptsBadge: 3, onSelect: { _ in }) {
-                KitStoryAvatar()
-            }
-            TopTabBar(selected: .chat, onSelect: { _ in }) {
-                KitStoryAvatar()
-            }
-            HStack(spacing: Tokens.margin) {
-                GlassCircle(symbol: "chevron.left")
-                GlassCircleButton(symbol: "magnifyingglass")
-                GlassCircle(symbol: "arrow.up.arrow.down", dimmed: true)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, Tokens.margin)
-        .background(DesignKitStories.pageBackground)
-    }
-}
 
 /// The page header and the section shapes: `PageTitle`, the grey
 /// `SectionHeader` above every white `SectionCard`, hairline dividers, and
