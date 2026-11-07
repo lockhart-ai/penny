@@ -2,7 +2,15 @@
 
 A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use it with the repository-wide PR review guide and [`penny-client/AGENTS.md`](../penny-client/AGENTS.md).
 
-## 1. Scope and architecture
+## 1. Use the framework as designed
+
+This is the primary rule; every other rule in this guide sits under it.
+
+- [ ] **Never rebuild an element iOS provides.** When SwiftUI has an element for the job, use it with its stock placement and behaviour: `TabView` (the bottom tab bar, `.badge`, the search role); `NavigationStack` with its visible bar, title, `.navigationSubtitle`, `.toolbar` items and the system back button; `List` with `Section`s; `Label`; `LabeledContent`; `.searchable`; `Menu` and `.contextMenu`; sheets; the system scroll-edge effect. A hand-built lookalike gets none of the system's glass, animation, accessibility or tap targets, and breaks in ways the stock element never does.
+- [ ] **Custom views only where no stock element exists** (for example, chat bubbles). The PR names the stock element it considered and why it can't do the job.
+- [ ] **Never hide a system element to draw a lookalike over it.** A hidden navigation bar still takes touches in its region: the hand-built top tab capsule and glass circles, floated over hidden bars, shipped with dead taps (#3111).
+
+## 2. Scope and architecture
 
 - [ ] The diff is limited to the requested PennyClient behavior.
 - [ ] Existing service, view-model, persistence, and protocol abstractions are reused instead of duplicated.
@@ -12,7 +20,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Service behavior and service-owned models live in `PennyServices`; SwiftUI presentation and view-model behavior remain in the app target.
 - [ ] Package resources, including the Metal search shader, are loaded through the package boundary and do not rely on the app bundle.
 
-## 2. SwiftUI and state
+## 3. SwiftUI and state
 
 - [ ] View code remains primarily declarative; business logic lives in the view model or service layer.
 - [ ] Observation state has one clear owner and does not create duplicate sources of truth.
@@ -22,7 +30,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Filtering, sorting, pagination, and “new messages” affordances preserve the reader's position.
 - [ ] Main-actor isolation is correct; expensive SQLite, decoding, or network work is not accidentally performed on the main actor.
 
-## 3. Concurrency and networking
+## 4. Concurrency and networking
 
 - [ ] Websocket sends and receives are safe under reconnect and concurrent event delivery.
 - [ ] Correlated responses cannot resume the wrong continuation or leave one hanging.
@@ -32,7 +40,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Request and response models use explicit coding keys and tolerate intentionally optional fields.
 - [ ] Wire-format changes are tested in both directions, including missing optional fields and unknown fields where relevant.
 
-## 4. Persistence and migrations
+## 5. Persistence and migrations
 
 - [ ] All message/database access goes through `DatabaseService` or the established store abstraction.
 - [ ] Database work uses isolated connections/queues appropriate to the service's concurrency model.
@@ -42,7 +50,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Schema changes are backward-compatible or include the required migration and upgrade test.
 - [ ] No user data is loaded or rewritten wholesale when a bounded query would suffice.
 
-## 5. Security, privacy, and configuration
+## 6. Security, privacy, and configuration
 
 - [ ] Credentials, pairing tokens, device secrets, APNs tokens, and websocket auth are never logged or committed.
 - [ ] `Prefs` and Keychain lookup precedence remains correct.
@@ -51,7 +59,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Generated Info.plist values are verified in the built app when configuration behavior changes.
 - [ ] Fixtures and test payloads contain synthetic data only.
 
-## 6. UI and accessibility
+## 7. UI and accessibility
 
 - [ ] Existing navigation, toolbar, composer, attachment, and status conventions are preserved.
 - [ ] Loading and error states are visible and recoverable.
@@ -59,7 +67,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Buttons are not accidentally made borderless/plain or visually ambiguous.
 - [ ] Layout is checked at narrow widths, large text sizes, empty states, and long content.
 
-## 7. Tests and verification
+## 8. Tests and verification
 
 - [ ] Focused tests cover the changed behavior and the most likely regression edge cases.
 - [ ] View-model tests cover state derivation and side effects, not only initial rendering.
@@ -74,7 +82,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] SwiftLint completes with zero warnings and zero errors for every affected target/file; existing warnings in touched code are fixed rather than waived.
 - [ ] Build warnings and SwiftLint output were reviewed; no warning is dismissed without an explicit project-level exception.
 
-## 8. Hard-won patterns (Swift/iOS)
+## 9. Hard-won patterns (Swift/iOS)
 
 This list grows: whoever finds a new unhealthy pattern adds it here, in the same PR as the fix.
 
@@ -108,7 +116,7 @@ This list grows: whoever finds a new unhealthy pattern adds it here, in the same
 - [ ] **Never hand-edit to debug.** A probe that replaces or comments out code to see what happens is reverted with `git restore`/`git checkout`, never retyped by hand — a hand "revert" once deleted the field's glass effect instead of restoring it (#3093).
 - [ ] **Client checks that use the simulator take turns.** `make client-check`, `client-stories`, and `client-ui-tests` run under the shared simulator lock when agents work in parallel — two runs fighting over the same simulator both fail.
 
-## 9. Review comments
+## 10. Review comments
 
 Prioritize comments in this order:
 
