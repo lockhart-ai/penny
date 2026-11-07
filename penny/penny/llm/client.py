@@ -120,6 +120,16 @@ THINKING_OFF_BODY = {
 # :meth:`_with_sampling_top_k`) — never a second, competing passthrough.
 SKIP_CACHE_STORE_FIELD = "skip_cache_store"
 
+# oMLX v0.7.3 ships its OWN per-request cache-store opt-out (#3134, upstream #4815) —
+# a HEADER, not a body field, so it rides the OpenAI SDK's own per-call
+# ``extra_headers`` option rather than ``extra_body``. Sent ALONGSIDE the legacy
+# ``SKIP_CACHE_STORE_FIELD`` body field during the switchover: the current local
+# fork ignores the header and v0.7.3 ignores the body field (both servers accept
+# extra fields/headers they don't recognise), so there is no gap whichever version
+# is live. A follow-up drops the body field once the server is cut over to v0.7.3.
+SKIP_CACHE_STORE_HEADER = "X-oMLX-Cache-Store"
+SKIP_CACHE_STORE_HEADER_OFF = "off"
+
 # The chat pre-warm's own token budget (#3078): one token is enough to make the
 # server process and cache the whole rendered prefix, and the draw is discarded
 # either way — a real answer is never wanted here.
@@ -364,6 +374,19 @@ class _ChatAttemptResult(NamedTuple):
     thinking_loop_cut: _ThinkingLoopCutLog | None = None
 
 
+class _SkipCacheStoreOptOut(NamedTuple):
+    """Both carriers of the skip-cache-store opt-out (#3134), built together so
+    the chat and the raw-template transport can never drift on either one.
+    ``body`` is the legacy ``SKIP_CACHE_STORE_FIELD`` passthrough (rides
+    ``extra_body``); ``headers`` already carries any configured
+    ``LLM_EXTRA_HEADERS`` merged in alongside ``SKIP_CACHE_STORE_HEADER`` — never
+    a bare override — so a transport's per-call ``extra_headers`` never drops
+    them. Both empty when the opt-out doesn't apply."""
+
+    body: dict[str, Any]
+    headers: dict[str, str]
+
+
 class _AttemptFailedError(Exception):
     """Internal-only (#2875): pairs whatever exception ends one attempt — an SDK
     error (``openai.NotFoundError``/``APITimeoutError``/``APIConnectionError``/
@@ -448,7 +471,7 @@ class LlmClient:
         # Whether THIS endpoint accepts the top-level ``skip_cache_store`` body
         # field (#3080) — an endpoint property, like the provider pin: the local
         # oMLX fork knows it, a random OpenRouter provider may reject it. Read by
-        # :meth:`_skip_cache_store_extra_body`, never by a caller directly.
+        # :meth:`_skip_cache_store_opt_out`, never by a caller directly.
         self._skip_cache_store_supported = skip_cache_store_supported
         # The deployment's ONE ``RuntimeParams`` (#2474) — not a fresh instance built
         # from ``db`` alone, which would carry the DB tier but never the env tier (the
@@ -471,6 +494,14 @@ class LlmClient:
         # rides on a ``SentRequest`` at all. Stamped on every call's own logged request
         # so a reader can tell which headers a call carried without exposing them.
         self._extra_header_names: list[str] = sorted(extra_headers) if extra_headers else []
+        # The actual configured VALUES (#3134) — unlike the names-only list above,
+        # kept so a per-call opt-out header (:meth:`_skip_cache_store_opt_out`) can
+        # be merged alongside them rather than silently overriding them on the SDK's
+        # per-call ``extra_headers`` option. Never logged itself — only ever read to
+        # build another header dict, never written to a ``SentRequest``.
+        self._configured_extra_headers: dict[str, str] = (
+            dict(extra_headers) if extra_headers else {}
+        )
         if extra_headers:
             client_kwargs["default_headers"] = dict(extra_headers)
         if timeout is not None:
@@ -581,7 +612,7 @@ class LlmClient:
         evicts the reusable chat/collector prefixes); every other caller leaves
         it ``False``. Intent alone is not enough: the field rides the wire only
         when this endpoint actually knows it
-        (``LLM_SKIP_CACHE_STORE_SUPPORTED`` / :meth:`_skip_cache_store_extra_body`),
+        (``LLM_SKIP_CACHE_STORE_SUPPORTED`` / :meth:`_skip_cache_store_opt_out`),
         and the request still READS cached prefixes — it just never writes its own.
 
         Reads top to bottom as the call's own table of contents: resolve this
@@ -1190,15 +1221,24 @@ class LlmClient:
             kwargs = self._build_chat_kwargs(
                 translated_messages, tools, format, token_budget, thinking_enabled, skip_cache_store
             )
+            # The opt-out's HEADERS (#3134) ride ``create()``'s own per-call
+            # ``extra_headers`` option, added separately from ``kwargs`` below —
+            # never folded into ``kwargs`` itself — so their values never land in
+            # the logged ``body`` (see ``_create_raw_completion``'s docstring for
+            # why, and ``_skip_cache_store_opt_out`` for why they still carry any
+            # configured ``LLM_EXTRA_HEADERS``).
+            opt_out_headers = self._skip_cache_store_opt_out(skip_cache_store).headers
             sent_request = SentRequest(
                 transport=PromptTransport.CHAT,
                 endpoint=self.api_url,
                 model=self.model,
                 body=kwargs,
-                header_names=self._extra_header_names,
+                header_names=sorted({*self._extra_header_names, *opt_out_headers}),
             )
             try:
-                raw = await self.client.chat.completions.create(**kwargs)
+                raw = await self.client.chat.completions.create(
+                    **kwargs, **({"extra_headers": opt_out_headers} if opt_out_headers else {})
+                )
             except Exception as error:
                 raise _AttemptFailedError(sent_request, error) from error
             if not raw.choices:
@@ -1293,11 +1333,17 @@ class LlmClient:
 
         Returns this request's own ``SentRequest`` alongside the stream (#2875) —
         built from the SAME ``kwargs`` handed to ``create()``, so nothing here is
-        re-derived from a wire shape a caller would otherwise have to rebuild. A
-        failure from ``create()`` itself is wrapped in ``_AttemptFailedError`` carrying
-        THIS request, constructed right here where both are in scope — the only
-        place this request exists, since ``create()`` never got to return it.
+        re-derived from a wire shape a caller would otherwise have to rebuild. The
+        one exception is the skip-cache-store opt-out's HEADERS (#3134): those ride
+        ``create()``'s own per-call ``extra_headers`` option, added separately from
+        ``kwargs``, so their values — which may carry whatever ``LLM_EXTRA_HEADERS``
+        was configured to — never land in the logged ``body`` (only their NAMES do,
+        on ``header_names``, same as every other extra header). A failure from
+        ``create()`` itself is wrapped in ``_AttemptFailedError`` carrying THIS
+        request, constructed right here where both are in scope — the only place
+        this request exists, since ``create()`` never got to return it.
         """
+        opt_out = self._skip_cache_store_opt_out(skip_cache_store)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
@@ -1308,7 +1354,7 @@ class LlmClient:
             "extra_body": self._with_sampling_top_k(
                 {
                     **self._provider_pin_extra_body(),
-                    **self._skip_cache_store_extra_body(skip_cache_store),
+                    **opt_out.body,
                 }
             ),
         }
@@ -1319,10 +1365,12 @@ class LlmClient:
             endpoint=self.api_url,
             model=self.model,
             body=kwargs,
-            header_names=self._extra_header_names,
+            header_names=sorted({*self._extra_header_names, *opt_out.headers}),
         )
         try:
-            stream = await self.client.completions.create(**kwargs)
+            stream = await self.client.completions.create(
+                **kwargs, **({"extra_headers": opt_out.headers} if opt_out.headers else {})
+            )
         except Exception as error:
             raise _AttemptFailedError(sent_request, error) from error
         return stream, sent_request
@@ -1440,16 +1488,28 @@ class LlmClient:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
         return extra_body
 
-    def _skip_cache_store_extra_body(self, skip_cache_store: bool) -> dict[str, Any]:
-        """The skip-cache-store request's own ``extra_body`` fragment (#3080) —
-        the ONE place that decides whether the field rides, so the chat and the
-        raw-template transport can never drift apart on it. Empty unless the
-        caller stated the intent AND this endpoint supports the field: an
-        endpoint that has never heard of it is never sent it. The request still
-        READS cached prefixes; it just never writes its own."""
-        if skip_cache_store and self._skip_cache_store_supported:
-            return {SKIP_CACHE_STORE_FIELD: True}
-        return {}
+    def _skip_cache_store_opt_out(self, skip_cache_store: bool) -> _SkipCacheStoreOptOut:
+        """The skip-cache-store request's own opt-out, on both its carriers
+        (#3080, #3134) — the ONE place that decides whether either rides, so
+        the chat and the raw-template transport can never drift apart on it.
+        Both empty unless the caller stated the intent AND this endpoint
+        supports the opt-out: an endpoint that has never heard of either form
+        is never sent either. Sends BOTH the legacy ``SKIP_CACHE_STORE_FIELD``
+        body field and oMLX v0.7.3's ``SKIP_CACHE_STORE_HEADER`` header during
+        the switchover — harmless either way, since each server version
+        ignores whichever form it doesn't know; a follow-up drops the body
+        field once the server is cut over. ``headers`` merges in any
+        configured ``LLM_EXTRA_HEADERS`` rather than replacing them, since this
+        dict rides a transport's per-call ``extra_headers`` option alongside
+        — never instead of — the client's own default headers. The request
+        still READS cached prefixes; it just never writes its own."""
+        if not (skip_cache_store and self._skip_cache_store_supported):
+            return _SkipCacheStoreOptOut(body={}, headers={})
+        headers = {
+            **self._configured_extra_headers,
+            SKIP_CACHE_STORE_HEADER: SKIP_CACHE_STORE_HEADER_OFF,
+        }
+        return _SkipCacheStoreOptOut(body={SKIP_CACHE_STORE_FIELD: True}, headers=headers)
 
     @staticmethod
     def _sampling_kwargs() -> dict[str, Any]:
@@ -1818,7 +1878,7 @@ class LlmClient:
         )
         if self.provider_pin is not None:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
-        extra_body.update(self._skip_cache_store_extra_body(skip_cache_store))
+        extra_body.update(self._skip_cache_store_opt_out(skip_cache_store).body)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
