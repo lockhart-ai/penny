@@ -664,6 +664,31 @@ class MessageAttachment(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class MessageDelivery(SQLModel, table=True):
+    """One attempt to reach one device with one outgoing ``messagelog`` row (#3137).
+
+    ``messagelog`` logs a reply/autonomous send exactly ONCE regardless of how
+    many devices it reaches — ``external_id`` is a single column and can hold
+    only one platform id, which stops working the moment a message fans out to
+    several channels, each minting its own.  This table is the delivery
+    record rule 1 asks for: one row per ``(message, device)`` attempt, written
+    by the primary send (``MessageChannel._log_and_send``) and by every
+    fan-out send (``ChannelManager.fan_out_outgoing``) alike, so "which clients
+    got it" is a read, never a reconstruction from scattered logs.  ``error``
+    is ``None`` on success; a failed attempt keeps its row rather than being
+    dropped, so a device that never got a message is visible, not silent.
+    """
+
+    __tablename__ = "message_delivery"
+
+    id: int | None = Field(default=None, primary_key=True)
+    message_id: int = Field(foreign_key="messagelog.id", index=True)
+    device_id: int = Field(foreign_key="device.id", index=True)
+    delivered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    external_id: str | None = None
+    error: str | None = None
+
+
 class Media(SQLModel, table=True):
     """Binary media (images) captured while browsing or drawn on request.
 

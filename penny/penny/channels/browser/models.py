@@ -38,6 +38,11 @@ BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST = "run_detail_request"
 
 # Outgoing message types (server → browser)
 BROWSER_RESP_TYPE_MESSAGE = "message"
+# A live-pushed cross-device USER message (#3137) — deliberately its own type,
+# never ``BROWSER_RESP_TYPE_MESSAGE``: an addon build that hasn't been taught
+# to render it yet drops an unknown type harmlessly, where reusing "message"
+# would make it render the user's own words as Penny's reply bubble.
+BROWSER_RESP_TYPE_INCOMING_MESSAGE = "incoming_message"
 BROWSER_RESP_TYPE_TYPING = "typing"
 BROWSER_RESP_TYPE_STATUS = "status"
 BROWSER_RESP_TYPE_TOOL_REQUEST = "tool_request"
@@ -113,12 +118,22 @@ class BrowserToolResponse(BaseModel):
 
 
 class BrowserOutgoing(BaseModel):
-    """A message sent to the browser extension."""
+    """A message sent to the browser extension.
+
+    ``direction``/``channel_type``/``device_label`` (#3137) are set only on a
+    live-pushed cross-device user message (a Signal/iOS/another-browser
+    message mirrored into this sidebar) — ``None`` on every other use of this
+    model (Penny's own replies, typing, status), so an addon build that
+    doesn't yet render them drops the fields harmlessly (no
+    ``extra="forbid"``) rather than breaking."""
 
     type: str
     content: str | None = None
     active: bool | None = None
     connected: bool | None = None
+    direction: str | None = None
+    channel_type: str | None = None
+    device_label: str | None = None
 
 
 class BrowserToolRequest(BaseModel):

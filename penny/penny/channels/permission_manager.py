@@ -123,12 +123,34 @@ class PermissionManager:
     # --- Prompt orchestration ---
 
     async def _prompt(self, domain: str, url: str) -> bool | None:
-        """Broadcast a prompt to all channels. First response wins."""
+        """Broadcast a prompt to all channels. First response wins.
+
+        When NO channel could even show the prompt (#1981 part 2 — every
+        channel raised, or none are registered), there is nobody left to
+        answer it: waiting out the full timeout only delays an outcome that
+        can never change, so this names the real cause in the log and skips
+        the wait.  The return value stays ``None`` either way (unanswered),
+        since ``check_domain`` has one message for "unanswered" today —
+        sharpening that message is a follow-up, not this fix.
+        """
         request_id = str(uuid.uuid4())
         future: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
         self._pending[request_id] = future
 
-        await self._channel_manager.broadcast_permission_prompt(request_id, domain, url)
+        shown = await self._channel_manager.broadcast_permission_prompt(request_id, domain, url)
+        if not shown:
+            logger.error(
+                "No channel could show the permission prompt for %s — treating as unanswered",
+                domain,
+            )
+            self._pending.pop(request_id, None)
+            # No answer either way (nobody could show it to answer) — the
+            # same resolution ``_resolution`` gives an ordinary unanswered
+            # prompt (``from_decision(None)``).
+            await self._channel_manager.broadcast_permission_dismiss(
+                request_id, PermissionResolution.TIMED_OUT
+            )
+            return None
 
         try:
             return await asyncio.wait_for(future, timeout=PennyConstants.PERMISSION_PROMPT_TIMEOUT)

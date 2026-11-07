@@ -164,6 +164,73 @@ async def test_ios_broadcast_keeps_null_memory_name(db):
     assert live.sent == [{"type": "memory_changed", "name": None}]
 
 
+@pytest.mark.asyncio
+async def test_incoming_message_from_another_channel_pushes_to_connected_ios_devices(db):
+    """#3137 rules 2/4: a Signal message is live-pushed to every connected
+    iOS device the moment it is logged — the cross-device catch-up the issue
+    exists for."""
+    channel = _make_channel(db)
+    device_a = FakeWs()
+    device_b = FakeWs()
+    signal_device = db.devices.register(
+        ChannelType.SIGNAL, "+15551234567", "Signal", is_default=True
+    )
+    assert signal_device.id is not None
+    # iOS device ids distinct from the Signal device's own — the exclusion
+    # below is keyed on device id, so a collision would hide the real bug.
+    channel._connections["device-a"] = IosConnectionInfo(
+        ws=cast(Any, device_a), device_id=signal_device.id + 1, identifier="device-a"
+    )
+    channel._connections["device-b"] = IosConnectionInfo(
+        ws=cast(Any, device_b), device_id=signal_device.id + 2, identifier="device-b"
+    )
+
+    before = asyncio.all_tasks()
+    message_id = db.messages.log_message(
+        PennyConstants.MessageDirection.INCOMING,
+        "+15551234567",
+        "hello from signal",
+        device_id=signal_device.id,
+    )
+    await _settle_broadcasts(before)
+
+    assert device_a.sent, "a connected iOS device gets the live push"
+    assert device_b.sent, "and so does a second connected iOS device"
+    record = device_a.sent[0]["messages"][0]
+    assert record["direction"] == PennyConstants.MessageDirection.INCOMING
+    assert record["channel_type"] == ChannelType.SIGNAL
+    assert record["message_id"] == message_id
+
+
+@pytest.mark.asyncio
+async def test_incoming_message_excludes_the_device_it_arrived_on(db):
+    """The device a user message arrived ON never gets it echoed back —
+    only every OTHER connected device does."""
+    channel = _make_channel(db)
+    origin = FakeWs()
+    other = FakeWs()
+    origin_device = db.devices.register(ChannelType.IOS, "device-origin", "iPhone A")
+    assert origin_device.id is not None
+    channel._connections["device-origin"] = IosConnectionInfo(
+        ws=cast(Any, origin), device_id=origin_device.id, identifier="device-origin"
+    )
+    channel._connections["device-other"] = IosConnectionInfo(
+        ws=cast(Any, other), device_id=origin_device.id + 1, identifier="device-other"
+    )
+
+    before = asyncio.all_tasks()
+    db.messages.log_message(
+        PennyConstants.MessageDirection.INCOMING,
+        "device-origin",
+        "typed on this very phone",
+        device_id=origin_device.id,
+    )
+    await _settle_broadcasts(before)
+
+    assert origin.sent == [], "the originating device already knows what it sent"
+    assert other.sent, "a second connected device still gets the push"
+
+
 def test_ios_broadcast_without_clients_needs_no_event_loop(db):
     channel = _make_channel(db)
 

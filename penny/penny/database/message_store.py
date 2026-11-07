@@ -23,6 +23,7 @@ from penny.database.models import (
     Device,
     IosOutboxItem,
     MessageAttachment,
+    MessageDelivery,
     MessageLog,
     PromptLog,
 )
@@ -334,9 +335,12 @@ class MessageStore:
     """Manages MessageLog, PromptLog, and CommandLog records.
 
     Table of contents, in file order: live step pub/sub for a connected addon
-    (``subscribe_*``/``publish_*``) · message logging (``log_message``,
+    (``subscribe_*``/``publish_*``, including ``subscribe_incoming_logged``,
+    #3137 — fired from ``log_message`` for every INCOMING row, consumed only by
+    the socket channels that can live-push it) · message logging (``log_message``,
     ``log_prompt``, ``log_command``) · message metadata
-    (``set_signal_timestamp``, ``set_external_id``) · embedding backfill
+    (``set_signal_timestamp``, ``set_external_id``, ``record_delivery`` — one
+    ``(message, device)`` delivery attempt, #3137) · embedding backfill
     (``messages_without_embeddings``, ``set_embedding``, the exchange-vector
     triple ``replies_without_exchange_embeddings``/``set_exchange_embedding``/
     ``exchange_sides_for``, ``user_turn_at_offset``, ``exchange_vectors_before``)
@@ -360,6 +364,12 @@ class MessageStore:
         # only the one built last silently taking over the other's.
         self._prompt_logged_listeners: list[Callable[[dict], None]] = []
         self._run_outcome_set_listeners: list[Callable[[str, str, str], None]] = []
+        # A just-logged INCOMING row (#3137) — subscribed only by the socket
+        # channels (iOS, browser) that can live-push it to every OTHER connected
+        # device of theirs.  Signal and Discord never subscribe: they have no
+        # live transport to push through and no way to post as the user, so a
+        # user message structurally never reaches them this way (rule 3).
+        self._incoming_logged_listeners: list[Callable[[MessageLog], None]] = []
         # Live step markers (#2439) — published ahead of any DB row, from
         # LlmClient.chat() and the tool dispatcher, so a connected addon can show
         # a running step before the logged record exists.  No channel subscribes
@@ -375,6 +385,16 @@ class MessageStore:
     def subscribe_run_outcome_set(self, listener: Callable[[str, str, str], None]) -> None:
         """Add a listener notified whenever a run's outcome is set."""
         self._run_outcome_set_listeners.append(listener)
+
+    def subscribe_incoming_logged(self, listener: Callable[[MessageLog], None]) -> None:
+        """Add a listener notified right after every INCOMING row is logged (#3137).
+
+        Fires at the moment the row is written — for the triggering message
+        that is only after its whole turn finishes (``_finish_turn`` logs it
+        last, #2371/#2837), so a live push through this hook lands close
+        together with the reply it answers, not the instant the user's
+        message arrives.  Accepted for this PR; see the PR body."""
+        self._incoming_logged_listeners.append(listener)
 
     def subscribe_call_started(self, listener: Callable[[CallStarted], None]) -> None:
         """Add a listener notified just before every model call is made (#2439)."""
@@ -404,6 +424,16 @@ class MessageStore:
                 listener(run_id, outcome, reason)
             except Exception:
                 logger.exception("A run-outcome-set listener failed")
+
+    def _publish_incoming_logged(self, row: MessageLog) -> None:
+        """Notify every subscriber of a just-logged incoming row; one raising
+        must not stop the rest, or the write that already landed before this
+        fires."""
+        for listener in tuple(self._incoming_logged_listeners):
+            try:
+                listener(row)
+            except Exception:
+                logger.exception("An incoming-logged listener failed")
 
     def publish_call_started(
         self,
@@ -565,10 +595,12 @@ class MessageStore:
                 session.commit()
                 session.refresh(log)
                 logger.debug("Logged %s message from %s (id=%d)", direction, sender, log.id)
-                return log.id
         except Exception as e:
             logger.error("Failed to log message: %s", e)
             return None
+        if direction == PennyConstants.MessageDirection.INCOMING:
+            self._publish_incoming_logged(log)
+        return log.id
 
     def log_attachments(self, message_id: int, data_uris: list[str]) -> None:
         """Write one logged message's photo attachments as ordered rows (#3084).
@@ -837,6 +869,33 @@ class MessageStore:
                     session.commit()
         except Exception as e:
             logger.error("Failed to set external_id: %s", e)
+
+    def record_delivery(
+        self, message_id: int, device_id: int, *, external_id: str | None, error: str | None
+    ) -> None:
+        """Record one attempt to reach one device with one outgoing row (#3137).
+
+        Written once per ``(message, device)`` pair — by the primary send
+        (``MessageChannel._log_and_send``) and by every fan-out send
+        (``ChannelManager.fan_out_outgoing``) alike — so "which clients got a
+        message" is a read off this table, never a reconstruction from
+        scattered per-channel logs.  ``error`` is ``None`` on success; a
+        failed attempt still gets a row, so a device that never received a
+        message is visible rather than silently absent."""
+        try:
+            with self._session() as session:
+                session.add(
+                    MessageDelivery(
+                        message_id=message_id,
+                        device_id=device_id,
+                        delivered_at=self._clock.now(),
+                        external_id=external_id,
+                        error=error,
+                    )
+                )
+                session.commit()
+        except Exception as e:
+            logger.error("Failed to record delivery for message %d: %s", message_id, e)
 
     # --- Embeddings (startup backfill) ---
 
