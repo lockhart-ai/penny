@@ -190,6 +190,21 @@ body {
   align-self: flex-start;
 }
 
+/* An incoming_message from another device (#3144) renders as the user's own
+   bubble, with a caption naming its device stacked under it, aligned to the
+   bubble's own edge. */
+
+.msg-row.user.captioned {
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.msg-caption {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 0 2px;
+}
+
 .avatar {
   width: 18px;
   height: 18px;

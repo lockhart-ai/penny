@@ -241,6 +241,13 @@ function connect(): void {
       sendCapabilities();
     } else if (data.type === WsIncomingType.Message) {
       broadcastToSidebar({ type: RuntimeMessageType.ChatMessage, content: data.content });
+    } else if (data.type === WsIncomingType.IncomingMessage) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.IncomingMessage,
+        content: data.content,
+        channel_type: data.channel_type,
+        device_label: data.device_label,
+      });
     } else if (data.type === WsIncomingType.Typing) {
       broadcastToSidebar({ type: RuntimeMessageType.Typing, active: data.active, content: data.content });
     } else if (data.type === WsIncomingType.ToolRequest) {

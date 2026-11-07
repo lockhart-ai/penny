@@ -18,6 +18,7 @@ import {
   TEXTAREA_LINE_HEIGHT,
   TEXTAREA_MAX_ROWS,
 } from "../protocol.js";
+import { deviceCaption, isOwnDevice } from "./incoming.js";
 import { hostnameOf, type TrailRow, parseTrail } from "./trail.js";
 
 // DOM refs (resolved after init)
@@ -34,12 +35,18 @@ const EMPTY_STATE_ID = "empty-state";
 let pendingPageRef: { title: string; url: string; image: string } | null = null;
 let currentPageImage = "";
 
+// This sidebar's own device label (#3144) — set once registered, read to
+// recognise an `incoming_message` echo of a message this very sidebar sent.
+let ownDeviceLabel = "";
+
 // --- Registration ---
 
 async function init(): Promise<void> {
   statusEl = document.getElementById("status")!;
   const stored = await browser.storage.local.get(STORAGE_KEY_DEVICE_LABEL);
-  if (stored[STORAGE_KEY_DEVICE_LABEL]) {
+  const label = stored[STORAGE_KEY_DEVICE_LABEL] as string | undefined;
+  if (label) {
+    ownDeviceLabel = label;
     showChat();
   } else {
     showRegister();
@@ -70,6 +77,7 @@ async function saveLabel(labelInput: HTMLInputElement): Promise<void> {
   if (!label) return;
 
   await browser.storage.local.set({ [STORAGE_KEY_DEVICE_LABEL]: label });
+  ownDeviceLabel = label;
   showChat();
 }
 
@@ -128,6 +136,10 @@ function handleBackgroundMessage(message: RuntimeMessage): void {
     }
     addMessage(content, MS.Penny);
     setInputEnabled(true);
+  } else if (message.type === RuntimeMessageType.IncomingMessage) {
+    if (!isOwnDevice(message.channel_type, message.device_label, ownDeviceLabel)) {
+      addMessage(message.content, MS.User, deviceCaption(message.channel_type, message.device_label));
+    }
   } else if (message.type === RuntimeMessageType.Typing) {
     setTyping(message.active, message.content);
   } else if (message.type === RuntimeMessageType.PermissionRequest) {
@@ -282,16 +294,16 @@ async function rehydrateHistory(): Promise<void> {
   const stored = await browser.storage.local.get(STORAGE_KEY_CHAT_HISTORY);
   const messages: StoredMessage[] = stored[STORAGE_KEY_CHAT_HISTORY] ?? [];
   for (const msg of messages) {
-    renderMessage(msg.text, msg.sender, false);
+    renderMessage(msg.text, msg.sender, false, msg.caption);
   }
   messagesEl.scrollTop = messagesEl.scrollHeight;
   updateEmptyState();
 }
 
-async function persistMessage(text: string, sender: MessageSender): Promise<void> {
+async function persistMessage(text: string, sender: MessageSender, caption?: string): Promise<void> {
   const stored = await browser.storage.local.get(STORAGE_KEY_CHAT_HISTORY);
   const messages: StoredMessage[] = stored[STORAGE_KEY_CHAT_HISTORY] ?? [];
-  messages.push({ text, sender });
+  messages.push(caption ? { text, sender, caption } : { text, sender });
   if (messages.length > MAX_STORED_MESSAGES) {
     messages.splice(0, messages.length - MAX_STORED_MESSAGES);
   }
@@ -300,9 +312,9 @@ async function persistMessage(text: string, sender: MessageSender): Promise<void
 
 // --- Chat UI ---
 
-function renderMessage(text: string, sender: MessageSender, animate = true): void {
+function renderMessage(text: string, sender: MessageSender, animate = true, caption?: string): void {
   const row = document.createElement("div");
-  row.className = `msg-row ${sender}`;
+  row.className = caption ? `msg-row ${sender} captioned` : `msg-row ${sender}`;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   if (sender === MS.Penny) {
@@ -313,6 +325,12 @@ function renderMessage(text: string, sender: MessageSender, animate = true): voi
   } else {
     bubble.textContent = text;
     row.append(bubble);
+  }
+  if (caption) {
+    const captionEl = document.createElement("div");
+    captionEl.className = "msg-caption";
+    captionEl.textContent = caption;
+    row.append(captionEl);
   }
   messagesEl.appendChild(row);
   updateEmptyState();
@@ -336,9 +354,9 @@ function scrollToMessage(div: HTMLElement): void {
   div.scrollIntoView({ block: fitsInView ? "end" : "start", behavior: "smooth" });
 }
 
-function addMessage(text: string, sender: MessageSender): void {
-  renderMessage(text, sender);
-  persistMessage(text, sender);
+function addMessage(text: string, sender: MessageSender, caption?: string): void {
+  renderMessage(text, sender, true, caption);
+  persistMessage(text, sender, caption);
 }
 
 function setStatus(state: ConnectionState): void {
