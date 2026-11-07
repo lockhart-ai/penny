@@ -6,11 +6,6 @@ import PennyServices
 struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.shellOpenPrompts) private var shellOpenPrompts
-    /// The system search field's own active state (#3129) — read-only;
-    /// `viewModel.search.isSearching` follows it via `.onChange` below. A
-    /// custom `isPresented` `Binding` on `.searchable` is the wrong tool
-    /// for reading it — the environment key is the stock path.
-    @Environment(\.isSearching) private var isSearchFieldActive
     @State private var viewModel: ViewModel
     @State private var presentedCardMessage: ChatMessage?
     @State private var messageFrames: [Int: CGRect] = [:]
@@ -50,8 +45,16 @@ struct MessageView: View {
 
     var body: some View {
         chatScrollView
+            // Hidden while search is active (#3150, the approved mock
+            // `.claude/mockups/shots/chat-search.png`): two stacked text
+            // fields — the composer and the floating search capsule — read
+            // badly, and the mock shows no composer during search at all,
+            // even before anything is typed. Reappears the instant search
+            // closes.
             .safeAreaInset(edge: .bottom) {
-                composer
+                if !viewModel.search.isSearching {
+                    composer
+                }
             }
             // The page background, full-bleed: the scroll view's own
             // background stops at its safe-area-adjusted bottom edge
@@ -59,6 +62,28 @@ struct MessageView: View {
             // and without this the window shows through as a white band
             // above the composer.
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
+            // Find-in-chat's bridge from the system's own search-active
+            // state to `viewModel.search` (#3045, #3129, #3150). A
+            // `@Environment(\.isSearching)` read directly on `MessageView`
+            // never updates: `MessageView`'s own `body` is evaluated
+            // against the environment it INHERITS from its ancestors, not
+            // the environment `.searchable` (applied to this same body's
+            // *return* value, below) establishes for its own subtree — so
+            // reading it here always saw `false`, and the "is searching"
+            // gate on `ChatSearchState.highlightQuery` never opened, no
+            // matter what was typed (confirmed: the query itself updated
+            // live via the text binding, but the environment mirror never
+            // moved). `SearchActivationBridge` is a real descendant of the
+            // `.searchable` call below (riding in as a `.background`,
+            // itself wrapped by `.searchable` further down the chain), so
+            // its own `@Environment(\.isSearching)` read is the correct one.
+            .background(SearchActivationBridge { active in
+                if active {
+                    viewModel.search.open()
+                } else {
+                    viewModel.search.close()
+                }
+            })
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
             }
@@ -70,29 +95,22 @@ struct MessageView: View {
             .onPreferenceChange(ChatViewportFramePreferenceKey.self) { frame in
                 chatViewportFrame = frame
             }
-            // Find-in-chat (#3045, #3129): the shell's shared
-            // `DefaultToolbarItem(kind: .search)` is the placement hint,
-            // but confirmed on this SDK it doesn't collapse to a trailing
-            // circle the way the approved mock shows — plain `.searchable`
-            // (with or without the hint, tested both) renders as an
-            // always-visible bar pinned to the screen's bottom, which sits
-            // directly on top of the composer. `.navigationBarDrawer
-            // (displayMode: .always)` is the stock placement that doesn't:
-            // an inline field under the title, not fighting the composer
-            // for the bottom of the screen — the same fallback the
-            // mockup's own exploration landed on for this exact
-            // DefaultToolbarItem-plus-.searchable combination. No counter,
-            // no up/down (the code owner approved highlights only); typing
-            // highlights matches in the bubbles below and scrolls to the
-            // newest one via `viewModel.search`'s existing state machine.
-            .searchable(text: $viewModel.search.query, placement: .navigationBarDrawer(displayMode: .always))
-            .onChange(of: isSearchFieldActive) { _, active in
-                if active {
-                    viewModel.search.open()
-                } else {
-                    viewModel.search.close()
-                }
-            }
+            // Find-in-chat (#3045, #3129, #3150): the shell's shared
+            // `DefaultToolbarItem(kind: .search)` is the trailing top-bar
+            // icon every page uses; it only collapses to that icon — instead
+            // of blanking the bar when tapped — with `.searchToolbarBehavior
+            // (.minimize)` alongside it (confirmed in the component gallery,
+            // `.claude/component-gallery/Gallery/Pages/SearchTopPage.swift`:
+            // all three of `.searchable`, `.searchToolbarBehavior(.minimize)`
+            // and the explicit `DefaultToolbarItem` are required together on
+            // this SDK). Expanding it doesn't dock the field into the title —
+            // it floats as a glass capsule just above the keyboard, with its
+            // own Close (X) button. No counter, no up/down (the code owner
+            // approved highlights only); typing highlights matches in the
+            // bubbles below and scrolls to the newest one via
+            // `viewModel.search`'s existing state machine.
+            .searchable(text: $viewModel.search.query, prompt: "Search")
+            .searchToolbarBehavior(.minimize)
             .task {
                 await viewModel.connect()
                 // Story mode only (#2965): applied after `connect()` loads
@@ -389,6 +407,23 @@ struct MessageView: View {
         .accessibilityLabel("Replying to \(viewModel.replySummary(for: message))")
     }
 
+}
+
+/// Reads the system's own `@Environment(\.isSearching)` from a genuine
+/// descendant of the `.searchable` call it rides alongside (#3150) — see
+/// the note at `MessageView.body`'s own `.background` call site for why a
+/// view that applies `.searchable` to its own output can't read this
+/// environment value on itself. Invisible; exists only to forward the
+/// value out through `onChange`.
+private struct SearchActivationBridge: View {
+    @Environment(\.isSearching) private var isSearching
+    let onChange: (Bool) -> Void
+
+    var body: some View {
+        Color.clear
+            .onAppear { onChange(isSearching) }
+            .onChange(of: isSearching) { _, active in onChange(active) }
+    }
 }
 
 private extension MessageView {

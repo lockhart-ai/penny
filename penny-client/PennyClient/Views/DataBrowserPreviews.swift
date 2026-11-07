@@ -19,8 +19,9 @@ enum DataBrowserFixtures {
 
     static func read(_ request: DataBrowserRequest) async throws -> DataBrowserResult {
         switch request {
-        case .memories:
-            return .memories(try [memory("price-watch"), memory("notes"), memory("messages", type: "log"), memory("archived-notes", archived: true)])
+        case .memories(let query):
+            let all = try [memory("price-watch"), memory("notes"), memory("messages", type: "log"), memory("archived-notes", archived: true)]
+            return .memories(filtered(all, by: query) { $0.name })
         case .detail(let name, _):
             let record = try memory(name, type: name == "messages" ? "log" : "collection", archived: name == "archived-notes")
             let entries: [JSONValue] = (1...3).map { index -> JSONValue in
@@ -44,9 +45,21 @@ enum DataBrowserFixtures {
             ]
             return .detail(try JSONDecoder().decode(MemoryDetail.self, from: JSONEncoder().encode(values)))
         case .run(let id): return .run(try runs().first { $0.runID == id })
-        case .prompts: return .prompts(try runs(), hasMore: false)
+        case .prompts(let agent, let query, _, _):
+            var matches = try runs()
+            if let agent, !agent.isEmpty { matches = matches.filter { $0.agentName.localizedCaseInsensitiveContains(agent) } }
+            return .prompts(filtered(matches, by: query) { $0.agentName }, hasMore: false)
         case .page: throw DataBrowserError.invalidResponse
         }
+    }
+
+    /// Filters a fixture list the way the real server's `query` parameter
+    /// does (#3150) — without this, the mock always returned everything
+    /// regardless of what was typed, so a UI test driving the real search
+    /// field through its trailing icon could never see a result change.
+    private static func filtered<Element>(_ elements: [Element], by query: String?, text: (Element) -> String) -> [Element] {
+        guard let query, !query.isEmpty else { return elements }
+        return elements.filter { text($0).localizedCaseInsensitiveContains(query) }
     }
 
     private static func memory(_ name: String, type: String = "collection", archived: Bool = false) throws -> MemoryRecord {

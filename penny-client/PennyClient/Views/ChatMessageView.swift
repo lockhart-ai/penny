@@ -136,6 +136,26 @@ struct ChatMessageView: View {
                 messageContent
             }
         }
+        // `.contain` first: without it, `.accessibilityIdentifier` broadcasts
+        // onto every leaf element inside the bubble (its text, time label,
+        // tool summary, …) instead of naming the row as one element — the
+        // same reasoning `AppShellView.content(for:)` documents for a page
+        // root.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AXID.chatMessageRow(message.id))
+        .accessibilityValue(searchHighlightAccessibilityValue)
+    }
+
+    /// A non-pixel signal that find-in-chat's highlight actually reached
+    /// this bubble (#3150) — the message's own text being on screen proves
+    /// nothing by itself, since it's there with or without a search (a UI
+    /// test asserting only that proved weak: it would pass even if
+    /// highlighting silently broke). Empty outside a match, so the common
+    /// case carries no extra accessibility noise.
+    private var searchHighlightAccessibilityValue: String {
+        guard let searchQuery, !searchQuery.isEmpty,
+              message.content.localizedCaseInsensitiveContains(searchQuery) else { return "" }
+        return isCurrentSearchMatch ? "highlighted-current" : "highlighted"
     }
 
     @ViewBuilder

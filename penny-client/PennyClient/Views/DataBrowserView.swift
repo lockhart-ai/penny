@@ -39,6 +39,10 @@ struct DataBrowserMemoriesView: View {
         .navigationTitle("Memories")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.memoryQuery, prompt: "Search memories and entries")
+        // #3150: minimizes the shell's shared trailing search icon into a
+        // tap target instead of a blank bar — see the note on
+        // `MessageView`'s own `.searchable` for the full recipe.
+        .searchToolbarBehavior(.minimize)
         .refreshable { model.refresh() }
     }
 
@@ -79,6 +83,15 @@ struct DataBrowserMemoryDetailView: View {
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.detailQuery, prompt: "Search entries")
+        // #3150: a pushed destination gets no toolbar items from the shell's
+        // own (AppShellView.pageToolbar isn't inherited by a
+        // `navigationDestination`'s content), so this page needs its own
+        // trailing search icon plus the same minimize behavior every other
+        // searchable page uses.
+        .searchToolbarBehavior(.minimize)
+        .toolbar {
+            DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
+        }
         .refreshable { model.refresh() }
         .accessibilityIdentifier(AXID.memoryDetailRoot)
     }
@@ -160,7 +173,12 @@ struct DataBrowserPromptsView: View {
 
     @ViewBuilder private var promptsList: some View {
         if model.linkedRunID == nil {
-            promptResults.searchable(text: $model.promptQuery, prompt: "Search prompts")
+            // #3150: same minimize behavior as Chat and Memory, so the
+            // shell's shared trailing search icon opens a field instead of
+            // blanking the bar.
+            promptResults
+                .searchable(text: $model.promptQuery, prompt: "Search prompts")
+                .searchToolbarBehavior(.minimize)
         } else {
             promptResults
         }

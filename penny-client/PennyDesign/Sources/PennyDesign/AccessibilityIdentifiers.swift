@@ -55,4 +55,11 @@ public enum AXID {
     public static func memoryRow(_ name: String) -> String { "memory.row.\(name)" }
     /// The root of a memory's pushed detail page.
     public static let memoryDetailRoot = "memory.detail.root"
+
+    /// A chat message row, keyed by its id (#3150) — its `.accessibilityValue`
+    /// carries find-in-chat's highlight state (`"highlighted-current"`,
+    /// `"highlighted"`, or empty), a non-pixel signal that typing in search
+    /// actually marked the matching bubble, not just that the message's own
+    /// text (always present, search or not) happened to be on screen.
+    public static func chatMessageRow(_ id: Int) -> String { "chat.message.row.\(id)" }
 }
