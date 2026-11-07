@@ -7,7 +7,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 This is the primary rule; every other rule in this guide sits under it.
 
 - [ ] **Never rebuild an element iOS provides.** When SwiftUI has an element for the job, use it with its stock placement and behaviour: `TabView` (the bottom tab bar, `.badge`, the search role); `NavigationStack` with its visible bar, title, `.navigationSubtitle`, `.toolbar` items and the system back button; `List` with `Section`s; `Label`; `LabeledContent`; `.searchable`; `Menu` and `.contextMenu`; sheets; the system scroll-edge effect. A hand-built lookalike gets none of the system's glass, animation, accessibility or tap targets, and breaks in ways the stock element never does.
-- [ ] **Custom views only where no stock element exists** (for example, chat bubbles). The PR names the stock element it considered and why it can't do the job.
+- [ ] **Custom views only when the code owner asks for one.** Whether a stock element fits is not an agent's call: if you think a custom view is needed, ask first. The PR names his request and the stock element considered. He has asked for: the chat message bubbles, the live dock, and the message field with its + attach button.
 - [ ] **Never hide a system element to draw a lookalike over it.** A hidden navigation bar still takes touches in its region: the hand-built top tab capsule and glass circles, floated over hidden bars, shipped with dead taps (#3111).
 
 ## 2. Scope and architecture

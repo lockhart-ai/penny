@@ -6,7 +6,7 @@ For task execution, use [`../docs/penny-client-agent-task-workflow.md`](../docs/
 
 Before opening a PR, review your own diff against the whole client review guide — including its "Hard-won patterns (Swift/iOS)" section — not just the parts that seem relevant. State in the PR body that you did this review, and list any item you could not meet and why (an empty list if none). If you find a new unhealthy pattern while working, add it to "Hard-won patterns (Swift/iOS)" in the same PR as the fix.
 
-The first rule: use the framework as designed. Before building any UI, name the stock SwiftUI element for the job and use it with its stock placement and behaviour; never hide a system element to draw a lookalike over it (#3111). A custom view is allowed only where no stock element exists, and the PR says why.
+The first rule: use the framework as designed. Before building any UI, name the stock SwiftUI element for the job and use it with its stock placement and behaviour; never hide a system element to draw a lookalike over it (#3111). A custom view is allowed only when the code owner has asked for one; if you think one is needed, ask first.
 
 ## Project Context
 PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The app shell — the centred glass tab capsule over every screen — lives in `PennyClient/PennyClient/Views/AppShellView.swift`; the chat UI lives in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
