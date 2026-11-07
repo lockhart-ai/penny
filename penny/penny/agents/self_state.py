@@ -27,7 +27,7 @@ one guess-free tool call from the detail). Sections:
   did it last run?" A live job hangs a second, two-space-indented line under its
   row (#2495): the page it reads (the first ``https?://`` URL in its prompt) and
   the instructions its cycles follow — capped at a word-visible budget, with a
-  note naming the ``memory_get`` hop to the whole prompt, so what a job actually
+  note naming the ``memory_info`` hop to the whole prompt, so what a job actually
   does is ambient and an ask that resembles a running job can be answered by
   pointing at it.
 - **Recent activity** — background runs, configuration mutations, and autonomous
@@ -35,7 +35,7 @@ one guess-free tool call from the detail). Sections:
   one run's per-call detail is one ``run_get(run <id>)`` hop away). A run line
   that wrote carries a ``· wrote '<key>' → `<collection>``` clause naming what it
   changed (from the #1560 ``last_written_by_run_id`` stamp, #1641), so a just-
-  written fact is 0 calls away and its full entry is one ``collection_list``
+  written fact is 0 calls away and its full entry is one ``memory_read``
   hop. The *complement* of the
   conversation — chat turns (direct replies) are already in context, so they're
   never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
@@ -85,7 +85,7 @@ it has left the window, so its line would repeat text shown elsewhere, and the
 cutoff is the map's own ``map_horizon_start`` so the two readers can never
 disagree.  No quoted text: ``run_get`` on the line's anchor reaches the send
 after; older sends carry the same provenance inline on
-every ``penny-messages`` read, and ``memory_get(<mechanism>)`` is the hop to
+every ``penny-messages`` read, and ``memory_info(<mechanism>)`` is the hop to
 the creating request (#1566).
 """
 
@@ -196,9 +196,9 @@ class SelfStateHeader:
     ARCHIVED_LABEL = "archived:"
 
     POINTERS = (
-        "To look deeper: memory_get{<name>} for a collection's full config and "
+        "To look deeper: memory_info{<name>} for a collection's full config and "
         "change history, run_get{run <id>} for one run's tool calls, "
-        "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+        "memory_read{<name>} reads a store's entries, and find{query: <text>} "
         "searches them all by meaning — a collection, a stored entry, or "
         "something said in the conversation."
     )
@@ -477,7 +477,7 @@ class SelfStateHeader:
         horizon (#3079): a send inside the horizon is already in the history
         window (its trigger and text ride there since #2979) or on the map once
         it has left the window, so this line exists exactly where neither surface
-        carries it. The mechanism is the ``memory_get`` anchor (its #1566 block
+        carries it. The mechanism is the ``memory_info`` anchor (its #1566 block
         names the creating request).
 
         No quoted text (#3079): the send's full message is one ``run_get`` on the
@@ -560,7 +560,7 @@ class SelfStateHeader:
         — the causing run id (present for a user-run mutation, absent for a system
         one) is a ``run_get(run <id>)`` anchor, single-sourced with that tool's
         parse (``RUN_EVENT_PREFIX``); the entity name resolves via
-        ``memory_get``/``find``, and the detail carries the changed
+        ``memory_info``/``find``, and the detail carries the changed
         fields."""
         parts = [
             f"change · {format_log_timestamp(event.created_at)} · "
@@ -698,7 +698,7 @@ def render_standing_rules(db: Database) -> str:
     reads exactly like the tool list the prompt carries two sections down, which is
     how one prod turn came to call a rule's key as a tool.  A rule is still one
     guess-free call to read or change: the section names the collection it renders,
-    and ``collection_keys``/``collection_list`` on ``rules`` read the keys and the
+    and ``memory_keys``/``memory_read`` on ``rules`` read the keys and the
     ``added`` stamps the render leaves out.
 
     With none — or no collection row at all — empty string (#2686): the section is

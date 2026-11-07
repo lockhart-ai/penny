@@ -19,7 +19,7 @@ auto-throttle to widen it — rate protection lives in the send cooldown,
 where it belongs.
 
 Readiness has a second gate beyond the schedule: a *log-driven* collection
-(one that reads a log via ``log_read``, leaving a read cursor) is skipped
+(one that reads a log via ``memory_read``, leaving a read cursor) is skipped
 without entering the model whenever every one of its live input logs is
 caught up — ``head <= last_read_at``.  The cursors a collection already
 holds are its declared inputs, so no spec is needed; a cursor whose log the
@@ -180,16 +180,15 @@ class Collector(BackgroundAgent):
     _RUNTIME_RULES_HEAD = "## Runtime rules (always apply)"
     _RUNTIME_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
-            "- Single batched `collection_write{entries: [...]}` per cycle — not one call "
-            "per entry.",
-            ("collection_write",),
+            "- Single batched `memory_write{entries: [...]}` per cycle — not one call per entry.",
+            ("memory_write",),
         ),
         (
-            "- To correct an entry: `collection_write` it under the key it is stored "
+            "- To correct an entry: `memory_write` it under the key it is stored "
             "under — the store keeps one value per key and replaces the stored content "
             "in place. If the entry should be removed instead: "
             "`collection_remove{key: <key>}`.",
-            ("collection_write", "collection_remove"),
+            ("memory_write", "collection_remove"),
         ),
         (
             "- Cite only what you actually browsed this cycle.  Never invent a URL to "
@@ -198,7 +197,7 @@ class Collector(BackgroundAgent):
         ),
         (
             "- Don't dedup manually — the store rejects duplicates on write automatically.",
-            ("collection_write",),
+            ("memory_write",),
         ),
     )
 
@@ -1625,7 +1624,7 @@ class Collector(BackgroundAgent):
 
         A cursor whose log is no longer named in the current ``extraction_prompt``
         was left behind by a since-dropped read (e.g. a migration that removed a
-        ``log_read``); it would lie about what the collection consumes, so it's
+        ``memory_read``); it would lie about what the collection consumes, so it's
         pruned here — an exact identifier match, deterministic, self-healing.
         """
         live: list[tuple[str, datetime]] = []

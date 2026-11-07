@@ -113,7 +113,7 @@ _CONTAINER_DESCRIPTION = "The asking price on the listing I'm watching, as it st
 
 # The calls the routine makes, in order — what the stored program must read back as under the
 # strict rendered dialect, and therefore what each cycle's tool surface is scoped to.
-_PROGRAM_CALLS = ("browse", "collection_write")
+_PROGRAM_CALLS = ("browse", "memory_write")
 
 # The job's cadence.  Stated because a configured collection has one, though the cycle is
 # driven through ``run_for``, which bypasses readiness.

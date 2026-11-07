@@ -266,7 +266,7 @@ def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():
     """The table remembers renames, never what EXISTS: a retired name whose replacement
     is not on the surface takes the string leg like any other miss, so a suggestion
     always names something callable (#1944)."""
-    assert suggest_tool_name("collection_metadata", frozenset({"memory_get"})) == ("memory_get")
+    assert suggest_tool_name("collection_metadata", frozenset({"memory_info"})) == ("memory_info")
     assert suggest_tool_name("collection_metadata", frozenset({"browse"})) is None
     assert suggest_tool_name("collection_writ", frozenset({"collection_write"})) == (
         "collection_write"

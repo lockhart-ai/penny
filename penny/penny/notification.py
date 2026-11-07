@@ -139,7 +139,7 @@ def render_job_report(report: JobReport, handles: HandleTable | None = None) -> 
     reads is pinned by a whole-render test rather than by whatever a live run happened
     to produce.  Every written entry renders FULL and in the order the cycle wrote
     them, with the key it is stored under: the key is the anchor a follow-up
-    (``collection_get``) needs, and the content is the payload the message is written
+    (``memory_get``) needs, and the content is the payload the message is written
     from.  Nothing is condensed and nothing is capped.
 
     ``handles`` is the delivery turn's own link table (#2717): a stored entry keeps
@@ -193,7 +193,7 @@ def build_job_report(
     the job itself decided to keep — rendering it alongside a kept entry told the
     delivery turn its message "covers every one" when it hadn't even read most of them.
     The exclusion is the memory's own kind (``PennyConstants.SYSTEM_LOGS`` — the same
-    mark the ``log_append`` gate already refuses a model write against), never a name
+    mark the ``memory_write`` gate already refuses a model write against), never a name
     this call invents.
 
     ``None`` when the collection has vanished between the enqueue and the compose —

@@ -3,7 +3,7 @@
 The contract is `docs/eval-case-design.md`.
 
 **Why this case exists.** `collection_sample` — a second tool whose only job was a uniform
-random draw over a collection — was retired and folded into `collection_list(order='random')`
+random draw over a collection — was retired and folded into `memory_read(order='random')`
 (#2812: no chat or collector call ever reached it in 444 measured prod tool calls, and the
 same read is now one argument on the tool that already reads a collection). A changed tool
 no case exercised before, so this is the new one: a chat ask for "one of my X, picked at
@@ -16,8 +16,8 @@ with; a pure read names nothing to write. PROVENANCE — every specific value in
 traces to something the turn was given, which is what catches a free-chosen cocktail that
 was never in the list standing in for a real draw.
 
-**What is NOT claimed, and why.** Which call reached the switch is a ROUTE — `collection_list`
-with `order='random'` is one path, `collection_list` read whole and picked over, or `find`,
+**What is NOT claimed, and why.** Which call reached the switch is a ROUTE — `memory_read`
+with `order='random'` is one path, `memory_read` read whole and picked over, or `find`,
 are others a plugin or a future tool could add — so `TOOL_SEQUENCE` is measured, never
 asserted. Nothing claims WHICH of the four cocktails the reply names: a uniform draw is
 Penny's own coin flip, not a value this case can state in advance (`docs/principles.md` §4.1).

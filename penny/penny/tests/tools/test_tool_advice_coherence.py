@@ -75,7 +75,7 @@ def _names_tool(text: str, name: str) -> bool:
 
 _PROGRAM = (
     "1. browse{queries: ['https://ex.example/t'], extract: 'the dawn sailing'}\n"
-    "2. collection_write{memory: 'ferry-departures', entries: [{'key': 'x'}]}"
+    "2. memory_write{memory: 'ferry-departures', entries: [{'key': 'x'}]}"
 )
 
 
@@ -201,12 +201,12 @@ def test_the_scanner_reads_the_real_message_sources():
     """A guard on the guard: the scan has to actually be reading text, since a scan that
     read nothing would pass every assertion here and enforce nothing.
 
-    ``collection_get`` is the canary — its miss guidance is the reference that
+    ``memory_get`` is the canary — its miss guidance is the reference that
     motivated the whole relation, and it lives in a module-level helper, so seeing it
     proves the class scan, the constant scan and the helper scan are all live."""
     vocabulary = _registered_tools()
-    get = vocabulary["collection_get"]
-    assert "collection_keys" in _referenced_tools(get, vocabulary)
+    get = vocabulary["memory_get"]
+    assert "memory_keys" in _referenced_tools(get, vocabulary)
     assert len(vocabulary) > 20, "the registry looks unpopulated — imports may be missing"
 
 

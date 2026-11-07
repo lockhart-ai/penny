@@ -1957,7 +1957,7 @@ class LlmClient:
     _QUERY_PATTERN = re.compile(r'"queries"\s*:\s*\[([^\]]*)', re.DOTALL)
     _QUOTED_STRING = re.compile(r'"([^"]+)"')
 
-    # Regex to extract key/content pairs from an entries array (collection_write tool).
+    # Regex to extract key/content pairs from an entries array (memory_write tool).
     # Handles both proper objects and unescaped-quote stringified objects where the
     # outer JSON itself is malformed (json.loads raises JSONDecodeError).
     _ENTRIES_SECTION_PATTERN = re.compile(r'"entries"\s*:\s*\[', re.DOTALL)
@@ -1965,7 +1965,13 @@ class LlmClient:
         r'"key"\s*:\s*"([^"]*)".*?"content"\s*:\s*"([^"]*)"',
         re.DOTALL,
     )
+    # ``memory_write``'s destination argument is ``memory`` (#3128, replacing
+    # ``collection_write``'s ``collection`` and ``log_append``'s ``log``) — tried
+    # first, with the two retired field names as a fallback in case a malformed
+    # draft still emits the pre-#3128 shape.
+    _MEMORY_FIELD_PATTERN = re.compile(r'"memory"\s*:\s*"([^"]+)"')
     _COLLECTION_FIELD_PATTERN = re.compile(r'"collection"\s*:\s*"([^"]+)"')
+    _LOG_FIELD_PATTERN = re.compile(r'"log"\s*:\s*"([^"]+)"')
 
     @staticmethod
     def _extract_malformed_arguments(raw: str) -> dict[str, Any]:
@@ -1973,7 +1979,7 @@ class LlmClient:
 
         Handles two known malformation patterns:
         - ``queries`` array (browse tool): items are plain strings.
-        - ``entries`` array (collection_write): items are objects whose inner
+        - ``entries`` array (memory_write): items are objects whose inner
           quotes are unescaped, making json.loads fail with JSONDecodeError.
           Key/content pairs are recovered via regex.
 
@@ -1986,16 +1992,20 @@ class LlmClient:
             if items:
                 return {"queries": items}
 
-        # collection_write tool: entries array of {key, content} objects
+        # memory_write tool: entries array of {key, content} objects
         entries_match = LlmClient._ENTRIES_SECTION_PATTERN.search(raw)
         if entries_match:
             pairs = LlmClient._ENTRY_KV_PATTERN.findall(raw[entries_match.end() :])
             entries = [{"key": k, "content": c} for k, c in pairs]
             if entries:
                 result: dict[str, Any] = {"entries": entries}
-                collection_match = LlmClient._COLLECTION_FIELD_PATTERN.search(raw)
-                if collection_match:
-                    result["collection"] = collection_match.group(1)
+                memory_match = (
+                    LlmClient._MEMORY_FIELD_PATTERN.search(raw)
+                    or LlmClient._COLLECTION_FIELD_PATTERN.search(raw)
+                    or LlmClient._LOG_FIELD_PATTERN.search(raw)
+                )
+                if memory_match:
+                    result["memory"] = memory_match.group(1)
                 return result
 
         return {}

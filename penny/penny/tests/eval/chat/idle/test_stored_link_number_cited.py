@@ -6,7 +6,7 @@ The contract is `docs/eval-case-design.md`.
 an entry carrying the game's store page as its `Source:` line; a notification
 about the find went out without a link; the user noticed and asked for it.
 Across the real run's many steps (its own run id's promptlog rows), the model
-never cited the handle its own `collection_list` read put in front of it
+never cited the handle its own `memory_read` read put in front of it
 (`Source: [209]`) — it searched the web five more times, at one point
 literally searching for the text `[1]`, and twice drafted a raw URL that the
 hallucinated-URL validator discarded. Its own thinking says why:
@@ -15,7 +15,7 @@ hallucinated-URL validator discarded. Its own thinking says why:
 > these as real URLs.
 
 > Okay, so `209` is an index/handle in the `browse-results` log, not
-> necessarily the log ID. I'll try `log_read('browse-results')` to see the
+> necessarily the log ID. I'll try `memory_read('browse-results')` to see the
 > last entries and their IDs.
 
 A bare `[n]` beside a number with no domain or title read as an opaque
@@ -47,7 +47,7 @@ host-and-path prefix of the store page the world (and the store) actually
 gave it. The store is read back: a read-only ask, nothing lands, nothing
 already held is disturbed.
 
-**What is NOT claimed:** which tool resolved it — `collection_list`, a fresh
+**What is NOT claimed:** which tool resolved it — `memory_read`, a fresh
 `browse`, or both — how many calls it took, or how she words the reply. Those
 are route and are measured as variance and cost, which is the whole point:
 the code owner's instruction for this kind of failure is that whether the

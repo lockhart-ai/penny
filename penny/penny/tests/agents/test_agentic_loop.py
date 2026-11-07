@@ -595,7 +595,7 @@ class TestRepeatCallGuard:
             if tool_call.tool == "collection_configure":
                 state["created"] = True
                 return ToolResult(message="Created collection widget-log", mutated=True)
-            if tool_call.tool == "collection_write":
+            if tool_call.tool == "memory_write":
                 if state["created"]:
                     return ToolResult(message="Wrote entry to widget-log", mutated=True)
                 return ToolResult(
@@ -609,9 +609,7 @@ class TestRepeatCallGuard:
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_tool_call_response(
-                    request, "collection_write", dict(write_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_write", dict(write_args))
             if count == 2:
                 return mock_llm._make_tool_call_response(
                     request, "collection_configure", {"collection": "widget-log"}
@@ -619,9 +617,7 @@ class TestRepeatCallGuard:
             if count == 3:
                 # Byte-identical to count 1 — normally blocked, but the create mutated
                 # since the failure, clearing the seen-calls cache, so the retry runs.
-                return mock_llm._make_tool_call_response(
-                    request, "collection_write", dict(write_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_write", dict(write_args))
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
@@ -631,7 +627,7 @@ class TestRepeatCallGuard:
         )
         assert response.answer == "done"
 
-        writes = [r for r in response.tool_calls if r.tool == "collection_write"]
+        writes = [r for r in response.tool_calls if r.tool == "memory_write"]
         # The retry EXECUTED (two write records), rather than being blocked (one).
         assert len(writes) == 2
         assert writes[0].failed is True
@@ -654,10 +650,10 @@ class TestRepeatCallGuard:
         state = {"written": False}
 
         async def execute(tool_call, call_link=None):
-            if tool_call.tool == "collection_write":
+            if tool_call.tool == "memory_write":
                 state["written"] = True
                 return ToolResult(message="Wrote entry to widget-log", mutated=True)
-            if tool_call.tool == "collection_list":
+            if tool_call.tool == "memory_read":
                 if state["written"]:
                     return ToolResult(message="1 entry: the value")
                 return ToolResult(
@@ -672,19 +668,13 @@ class TestRepeatCallGuard:
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_tool_call_response(
-                    request, "collection_list", dict(read_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_read", dict(read_args))
             if count == 2:
-                return mock_llm._make_tool_call_response(
-                    request, "collection_write", dict(write_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_write", dict(write_args))
             if count == 3:
                 # Byte-identical to count 1 — the write mutated since, clearing the cache,
                 # so the re-read RUNS instead of being blocked.
-                return mock_llm._make_tool_call_response(
-                    request, "collection_list", dict(read_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_read", dict(read_args))
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
@@ -694,7 +684,7 @@ class TestRepeatCallGuard:
         )
         assert response.answer == "done"
 
-        reads = [r for r in response.tool_calls if r.tool == "collection_list"]
+        reads = [r for r in response.tool_calls if r.tool == "memory_read"]
         # The re-read EXECUTED (two read records), rather than being blocked (one).
         assert len(reads) == 2
         assert reads[0].failed is True
@@ -714,7 +704,7 @@ class TestRepeatCallGuard:
         failure = "Memory widget-log not found — create it first"
 
         async def execute(tool_call, call_link=None):
-            if tool_call.tool == "collection_write":
+            if tool_call.tool == "memory_write":
                 return ToolResult(message=failure, success=False)
             return ToolResult(message="ok")
 
@@ -724,9 +714,7 @@ class TestRepeatCallGuard:
 
         def handler(request, count):
             if count <= 2:
-                return mock_llm._make_tool_call_response(
-                    request, "collection_write", dict(write_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_write", dict(write_args))
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
@@ -736,14 +724,14 @@ class TestRepeatCallGuard:
         )
         assert response.answer == "done"
 
-        writes = [r for r in response.tool_calls if r.tool == "collection_write"]
+        writes = [r for r in response.tool_calls if r.tool == "memory_write"]
         # No mutation intervened, so the identical retry was blocked — one write only.
         assert len(writes) == 1
 
         rejections = _tool_result_messages(mock_llm, "nothing was saved")
         assert rejections
         # Whole-render: OUTCOME-FIRST FAILED frame quoting the prior failure's first line.
-        assert rejections[0] == _failed_dedup_frame("collection_write", failure)
+        assert rejections[0] == _failed_dedup_frame("memory_write", failure)
 
         await agent.close()
 
@@ -758,7 +746,7 @@ class TestRepeatCallGuard:
         async def execute(tool_call, call_link=None):
             if tool_call.tool == "collection_configure":
                 return ToolResult(message="Created collection widget-log", mutated=True)
-            if tool_call.tool == "collection_write":
+            if tool_call.tool == "memory_write":
                 # The write keeps failing even after the create (a still-unmet precondition).
                 return ToolResult(message=failure, success=False)
             return ToolResult(message="ok")
@@ -769,23 +757,17 @@ class TestRepeatCallGuard:
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_tool_call_response(
-                    request, "collection_write", dict(write_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_write", dict(write_args))
             if count == 2:
                 return mock_llm._make_tool_call_response(
                     request, "collection_configure", {"collection": "widget-log"}
                 )
             if count == 3:
                 # Allowed retry (prior failed + create mutated) — runs, fails again.
-                return mock_llm._make_tool_call_response(
-                    request, "collection_write", dict(write_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_write", dict(write_args))
             if count == 4:
                 # Third identical attempt: prior (the retry) failed, NO mutation since → blocked.
-                return mock_llm._make_tool_call_response(
-                    request, "collection_write", dict(write_args)
-                )
+                return mock_llm._make_tool_call_response(request, "memory_write", dict(write_args))
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
@@ -795,14 +777,14 @@ class TestRepeatCallGuard:
         )
         assert response.answer == "done"
 
-        writes = [r for r in response.tool_calls if r.tool == "collection_write"]
+        writes = [r for r in response.tool_calls if r.tool == "memory_write"]
         # W1 and the allowed retry executed; the THIRD attempt was blocked — two records.
         assert len(writes) == 2
         assert all(w.failed for w in writes)
 
         rejections = _tool_result_messages(mock_llm, "nothing was saved")
         assert rejections
-        assert rejections[0] == _failed_dedup_frame("collection_write", failure)
+        assert rejections[0] == _failed_dedup_frame("memory_write", failure)
 
         await agent.close()
 

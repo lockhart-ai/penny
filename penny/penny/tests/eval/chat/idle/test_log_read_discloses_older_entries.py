@@ -2,7 +2,7 @@
 
 Mirrored one-to-one from a real promptlog row's full 39-message history: a chat turn
 where the user proposed storing the code changes they list at each restart as a log
-Penny could check back against. She called `log_read` on the `changelog` log, which
+Penny could check back against. She called `memory_read` on the `changelog` log, which
 held one entry inside the last-hour window and many more before it — and the result
 named only the one, with no word that anything else existed. Every sample reasoned
 from that single entry and told the user the log was "very sparse" or held "just the
@@ -450,7 +450,7 @@ def _seed(db: Database) -> None:
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_log_read_discloses_older_entries(chat_eval: ChatEval, model: str) -> None:
-    """In the chat agent, when `log_read` returns a log's recent window and earlier
+    """In the chat agent, when `memory_read` returns a log's recent window and earlier
     entries sit before it, Penny's account of the log carries the true older-entry
     count rather than reading the log as sparse or empty."""
     cohort = await chat_eval(

@@ -14,7 +14,7 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry, as_plan_result
 from penny.tools.browse import BrowseTool
 from penny.tools.link_handles import HandleTable
-from penny.tools.memory_tools import CollectionSetTool, DoneTool
+from penny.tools.memory_tools import CollectionSetTool, DoneTool, MemoryInfoTool
 from penny.tools.models import ToolArgs, ToolCall, ToolResult
 
 
@@ -206,19 +206,23 @@ class StubReadLatestTool(Tool):
         return "entries"
 
 
-class StubMemoryGetTool(Tool):
-    """Stub for memory_get — the tool the retired ``collection_metadata`` became."""
+class StubGenericTypoTool(Tool):
+    """A stub registered under a name that is NOT any real tool's name (#3128):
+    the global ``Tool._registry`` is keyed by name at class-definition time
+    (``Tool.__init_subclass__``), so a stub sharing a real tool's name silently
+    steals that tool's registry slot for every other test in the process —
+    this name is deliberately fictitious to stay collision-free."""
 
-    name = "memory_get"
-    description = "Return the metadata fields for a single memory"
+    name = "widget_get"
+    description = "Return the fields for a single widget"
     parameters = {
         "type": "object",
-        "properties": {"memory": {"type": "string", "description": "Memory name."}},
-        "required": ["memory"],
+        "properties": {"widget": {"type": "string", "description": "Widget name."}},
+        "required": ["widget"],
     }
 
     async def execute(self, call_link: CallLink, **kwargs):
-        return "metadata"
+        return "widget"
 
 
 class StubSkillGetTool(Tool):
@@ -259,6 +263,17 @@ def _real_collection_configure_tool(db: Database) -> CollectionSetTool:
     return CollectionSetTool(db, cast(Any, MockLlmClient()))
 
 
+def _real_memory_info_tool(db: Database) -> MemoryInfoTool:
+    """A real ``MemoryInfoTool``, not a same-named stub subclass — same reason as
+    ``_real_collection_configure_tool`` above (#2768, #3128): a ``name = "memory_info"``
+    stub here would re-clobber the GLOBAL ``Tool._registry`` slot the real tool claims
+    at import time (``Tool.__init_subclass__`` keys that registry by name for every
+    ``Tool`` subclass ever defined, test stubs included) — which is exactly the slot
+    the tool-advice-coherence scanner reads when it runs elsewhere in the same
+    process."""
+    return MemoryInfoTool(db)
+
+
 class TestToolNotFoundSuggestion:
     """Error message includes a 'did you mean' suggestion for close tool names."""
 
@@ -295,10 +310,11 @@ class TestToolNotFoundSuggestion:
         The measured miss: a chat turn guessed ``collection_metadata`` — retired by
         migration 0059 — and the string leg answered the character-nearest name, which
         shares the longer prefix but is a different tool entirely, while the one it
-        wanted was ``memory_get``.  Both are registered here, so the string leg's wrong
-        answer is available and the assertion is that meaning wins."""
+        wanted was ``memory_info`` (#3128: renamed from ``memory_get`` once that name
+        was reused by the entry-get read).  Both are registered here, so the string
+        leg's wrong answer is available and the assertion is that meaning wins."""
         registry = ToolRegistry()
-        registry.register(StubMemoryGetTool())
+        registry.register(_real_memory_info_tool(db))
         registry.register(_real_collection_configure_tool(db))
         executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
@@ -310,13 +326,14 @@ class TestToolNotFoundSuggestion:
         assert result.narration == (
             "You tried to use `collection_metadata` but there's no such tool."
         )
-        # Whole render: the suggestion leads the body, carrying memory_get's own
+        # Whole render: the suggestion leads the body, carrying memory_info's own
         # description (#2510), and the available list still names both tools — the
         # wrong answer is present as a choice and was not taken.
         assert result.message == (
-            "Did you mean 'memory_get'? "
-            "memory_get: Return the metadata fields for a single memory. "
-            "Available tools: memory_get, collection_configure. "
+            "Did you mean 'memory_info'? "
+            "memory_info: Return metadata for a memory: description, notify flag, "
+            "schedule, last collected timestamp, archived state, and prompt. "
+            "Available tools: memory_info, collection_configure. "
             "You must ONLY use the tools listed above."
         )
 
@@ -344,18 +361,18 @@ class TestToolNotFoundSuggestion:
         """The rename table is a first leg, not a replacement: a name nobody retired —
         an ordinary typo — still gets the nearest spelling (#1944)."""
         registry = ToolRegistry()
-        registry.register(StubMemoryGetTool())
+        registry.register(StubGenericTypoTool())
         executor = ToolExecutor(registry, timeout=30.0, forced_plan=False)
 
         result = await executor.execute(
-            ToolCall(tool="memory_gt", arguments={}), CallLink.new_top()
+            ToolCall(tool="widget_gt", arguments={}), CallLink.new_top()
         )
 
         assert result.success is False
         assert result.message == (
-            "Did you mean 'memory_get'? "
-            "memory_get: Return the metadata fields for a single memory. "
-            "Available tools: memory_get. "
+            "Did you mean 'widget_get'? "
+            "widget_get: Return the fields for a single widget. "
+            "Available tools: widget_get. "
             "You must ONLY use the tools listed above."
         )
 

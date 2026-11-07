@@ -428,7 +428,7 @@ def _rule_clock(when: datetime, first: datetime, zone: tzinfo) -> datetime:
 def render_schedule_clause(row: MemoryRow) -> str:
     """The mechanism's schedule rendered back VERBATIM — display form == invocation
     form (#1857): what a surface shows (the self-state mechanisms line,
-    ``memory_get``, the creation echo) is the stored rule itself, so it copies
+    ``memory_info``, the creation echo) is the stored rule itself, so it copies
     straight back as the ``schedule`` arg and round-trips to the same stored config.
     With one grammar there is nothing to re-derive at the render, which is the whole
     point of collapsing the union.  A two-line rule renders on ONE line with its
@@ -442,7 +442,7 @@ def render_schedule_clause(row: MemoryRow) -> str:
 
 
 # The honest labelled-schedule fallback for a row with no schedule (#1666) — matching
-# ``memory_get``'s ``schedule: none`` convention, so no surface emits a blank.
+# ``memory_info``'s ``schedule: none`` convention, so no surface emits a blank.
 _NO_SCHEDULE_CLAUSE = "none"
 
 
@@ -659,7 +659,7 @@ def _next_run_clause(
     on, read on the user's clock and rendered as a trailing clause — empty when the rule
     has no occurrence left (a spent ``COUNT=``, a passed ``UNTIL=``), so a retired
     schedule's render states no next run rather than a stale or invented one.  Also
-    empty for an ARCHIVED row: ``memory_get`` (unlike the self-state job line, which
+    empty for an ARCHIVED row: ``memory_info`` (unlike the self-state job line, which
     never reaches this for an archived row at all) renders the schedule clause on every
     row regardless of lifecycle, and an archived job has no next run whatever the rule
     alone would compute — it was archived for reasons the rule knows nothing about
@@ -1102,7 +1102,7 @@ def render_autocreate_placeholder_note(collection: str, description: str) -> str
     (#1556).  That surface can never render it — a scoped write is pinned to a
     collection that exists and never auto-creates — but the advice-coherence scan
     reads every string a tool's class can reach, so keeping the literal beside
-    ``collection_write`` would read as an off-surface instruction.  Beside the front
+    ``memory_write`` would read as an off-surface instruction.  Beside the front
     door it names, the render is only ever composed where the tool it points at is
     carried."""
     return (

@@ -78,12 +78,12 @@ def test_content_is_what_was_stated_and_the_frame_around_it_is_not() -> None:
     turns = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": _ASK},
-        _call("call-1", "collection_list"),
-        _result("call-1", "collection_list", read),
-        _call("call-2", "collection_get"),
-        _result("call-2", "collection_get", one),
-        _call("call-3", "log_read"),
-        _result("call-3", "log_read", log),
+        _call("call-1", "memory_read"),
+        _result("call-1", "memory_read", read),
+        _call("call-2", "memory_get"),
+        _result("call-2", "memory_get", one),
+        _call("call-3", "memory_read"),
+        _result("call-3", "memory_read", log),
     ]
 
     given = read_given(turns)
@@ -204,8 +204,8 @@ def test_the_conversation_maps_lines_are_given_its_header_and_anchor_are_not() -
         [
             ConversationMap.HEADER,
             map_line,
-            f"{ConversationMap.ANCHOR_PREFIX}log_read('user-messages', day='YYYY-MM-DD'), "
-            "log_read('penny-messages', day='YYYY-MM-DD')",
+            f"{ConversationMap.ANCHOR_PREFIX}memory_read('user-messages', day='YYYY-MM-DD'), "
+            "memory_read('penny-messages', day='YYYY-MM-DD')",
             "Current date and time: Wednesday, October 14, 2026 at 02:00 PM UTC",
         ]
     )

@@ -38,7 +38,7 @@ def job_summary_line(row: MemoryRow) -> str:
     anchor, so it renders whole no matter how the instructions are capped — and the
     instructions are the prompt's own words, whole when they fit the character
     budget, otherwise the first sentence cut at a word boundary with a note naming
-    the ``memory_get`` hop to the whole prompt.  The ``reads`` clause is omitted
+    the ``memory_info`` hop to the whole prompt.  The ``reads`` clause is omitted
     when the prompt names no page; the quoted instructions always render, so the
     line never disappears entirely.
 
@@ -70,7 +70,7 @@ def _instructions(row: MemoryRow) -> str:
     """The job's prompt as the instructions line shows it: whole when it fits the
     character budget (#2495), otherwise its first sentence — hard-cut at a word
     boundary inside the budget when even that sentence is longer — followed by a
-    note counting the sentences cut and naming the ``memory_get('<name>')`` hop to
+    note counting the sentences cut and naming the ``memory_info('<name>')`` hop to
     the whole prompt. Nothing is cut silently."""
     prompt = row.extraction_prompt or ""
     cap = PennyConstants.SELF_STATE_JOB_PROMPT_CHARS
@@ -86,11 +86,11 @@ def _instructions(row: MemoryRow) -> str:
     # When the FIRST sentence itself is cut (because it's longer than cap) and
     # it's the only sentence, say "the rest is cut". Otherwise, count additional sentences.
     if len(sentences) == 1 and first_was_longer_than_cap:
-        return f"{first} (the rest is cut — memory_get{{'{row.name}'}} shows the whole prompt)"
+        return f"{first} (the rest is cut — memory_info{{'{row.name}'}} shows the whole prompt)"
     else:
         noun = "sentence" if cut == 1 else "sentences"
         return (
-            f"{first} ({cut} more {noun} cut — memory_get{{'{row.name}'}} shows the whole prompt)"
+            f"{first} ({cut} more {noun} cut — memory_info{{'{row.name}'}} shows the whole prompt)"
         )
 
 

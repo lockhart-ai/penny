@@ -199,7 +199,7 @@ class EmissionActivity(BaseModel):
     header's recent-activity block (#1568).
 
     ``mechanism`` is the bound collection whose cycle produced it (the
-    ``memory_get`` anchor); ``sent_at`` is when it went out.  ``run_id`` (#2974)
+    ``memory_info`` anchor); ``sent_at`` is when it went out.  ``run_id`` (#2974)
     is the SAME ``run <id>`` anchor ``_run_line``/``_chat_failure_line`` already
     render \u2014 a one-hop ``run_get(run <id>)`` to the run's own trigger, once this
     exchange ages out of the history window that renders it in place.  No content

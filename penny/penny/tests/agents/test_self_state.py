@@ -666,7 +666,7 @@ def test_self_state_archived_heavy_render(db):
 # First, test for a sentence longer than the cap (single-sentence prompt)
 def test_self_state_job_instructions_first_sentence_over_cap(db):
     """When the FIRST sentence itself is cut because it's longer than the cap,
-    the note reads '(the rest is cut — memory_get{...} shows the whole prompt)'
+    the note reads '(the rest is cut — memory_info{...} shows the whole prompt)'
     instead of '(0 more sentences cut — ...)'."""
     # Create a prompt with a single sentence much longer than the cap
     # (no periods to avoid creating sentence boundaries)
@@ -714,7 +714,7 @@ def test_self_state_job_instructions_line_shapes(db):
     prompt names a page renders ``reads <first-url> — "<instructions>"``; a job whose
     prompt fits the character budget renders it whole with no cut note; a job whose
     prompt runs past the budget renders its first sentence plus the cut note, which
-    counts the sentences dropped and names the ``memory_get`` hop to the whole prompt —
+    counts the sentences dropped and names the ``memory_info`` hop to the whole prompt —
     while the ``reads`` clause still shows the page that dropped sentence named, since
     the URL is read off the FULL prompt; a prompt with no URL renders the quoted
     instructions alone; and an inert collection (no prompt) renders no second line at
@@ -1453,8 +1453,8 @@ _KITCHEN_SINK = (
     "- timezone: America/New_York\n"
     "- location: New York, USA\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
+    "To look deeper: memory_info{<name>} for a collection's full config and change history, "
+    "run_get{run <id>} for one run's tool calls, memory_read{<name>} reads a store's "
     "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
     "entry, or something said in the conversation."
 )
@@ -1485,8 +1485,8 @@ _SCHEDULE_MECH = (
     "- timezone: America/New_York\n"
     "- location: New York, USA\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
+    "To look deeper: memory_info{<name>} for a collection's full config and change history, "
+    "run_get{run <id>} for one run's tool calls, memory_read{<name>} reads a store's "
     "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
     "entry, or something said in the conversation."
 )
@@ -1507,9 +1507,9 @@ _EMPTY = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )
@@ -1540,8 +1540,8 @@ _OVERFLOW = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
+    "To look deeper: memory_info{<name>} for a collection's full config and change history, "
+    "run_get{run <id>} for one run's tool calls, memory_read{<name>} reads a store's "
     "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
     "entry, or something said in the conversation."
 )
@@ -1568,8 +1568,8 @@ _ARCHIVED_HEAVY = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
+    "To look deeper: memory_info{<name>} for a collection's full config and change history, "
+    "run_get{run <id>} for one run's tool calls, memory_read{<name>} reads a store's "
     "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
     "entry, or something said in the conversation."
 )
@@ -1588,7 +1588,7 @@ _INSTRUCTION_SHAPES = (
     "due now — it runs at the next idle window · no runs yet\n"
     '  reads https://harborferries.example/seasonal-sailings — "1. read the harbour notice '
     "board each morning before the first sailing. (2 more sentences cut — "
-    "memory_get{'harbour-watch'} shows the whole prompt)\"\n"
+    "memory_info{'harbour-watch'} shows the whole prompt)\"\n"
     "- plain-note — active · every hour (rule: `FREQ=HOURLY`) · notify: off · next run due "
     "now — it runs at the next idle window · no runs yet\n"
     '  "1. count the boats in the harbour."\n'
@@ -1605,8 +1605,8 @@ _INSTRUCTION_SHAPES = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
+    "To look deeper: memory_info{<name>} for a collection's full config and change history, "
+    "run_get{run <id>} for one run's tool calls, memory_read{<name>} reads a store's "
     "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
     "entry, or something said in the conversation."
 )
@@ -1634,9 +1634,9 @@ _RUN_OUTCOME_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )
@@ -1666,8 +1666,8 @@ _RUN_WRITES = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
+    "To look deeper: memory_info{<name>} for a collection's full config and change history, "
+    "run_get{run <id>} for one run's tool calls, memory_read{<name>} reads a store's "
     "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
     "entry, or something said in the conversation."
 )
@@ -1690,8 +1690,8 @@ _RUN_WRITES_MULTI_COLLECTION = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and change history, "
-    "run_get{run <id>} for one run's tool calls, collection_list{<name>} reads a store's "
+    "To look deeper: memory_info{<name>} for a collection's full config and change history, "
+    "run_get{run <id>} for one run's tool calls, memory_read{<name>} reads a store's "
     "entries, and find{query: <text>} searches them all by meaning — a collection, a stored "
     "entry, or something said in the conversation."
 )
@@ -1712,9 +1712,9 @@ _EXCLUSION_RENDER = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )
@@ -1750,9 +1750,9 @@ _MUTATION_CHANGED_FIELDS_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )
@@ -1788,9 +1788,9 @@ _MUTATION_NOTE_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )
@@ -1813,9 +1813,9 @@ _EMISSION_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )
@@ -1839,9 +1839,9 @@ _DYNAMIC_EMISSION_HORIZON_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )
@@ -1869,9 +1869,9 @@ _MUTATION_BARE_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )

@@ -18,7 +18,7 @@ reply's voice.
 ``a34ff4fd…``, 2026-10-19), rebuilt through the stores' own chokepoints: the exchanges the
 history window held — a espresso thread with two real browse calls behind its replies, the
 job's morning notification, a read of the job's record (``memory_get``), a read of the
-morning run's trace (``run_get``), a read of the collection (``collection_list``), and the
+morning run's trace (``run_get``), a read of the collection (``memory_read``), and the
 two formatting passes the ask points back at — plus the job, the user's profile, the two
 standing rules, the browse-results log, and the two collector cycles the morning left
 behind (one WORKED, one FAILED). Every tool result a past turn got is the tool's own real
@@ -78,7 +78,7 @@ from penny.tests.eval.utils.cohort import (
 )
 from penny.tests.eval.utils.worlds import World
 from penny.tools.base import Tool
-from penny.tools.memory_tools import MemoryMetadataTool, format_entries
+from penny.tools.memory_tools import MemoryInfoTool, format_entries
 from penny.tools.models import ToolResult
 
 _HEADLINES_ASK = "the top 3 news headlines with their titles and URLs"
@@ -229,7 +229,7 @@ _BROWSE_LOG_LINKS = (
 def _browse_log_entries() -> tuple[str, ...]:
     """The 15 page-fetch blobs the conversation's reads left behind — the count the
     self-state's memory map renders.  The bodies stand for the news-site fetches and the
-    hardware-thread page; none reaches the prompt except through a ``log_read``, which no
+    hardware-thread page; none reaches the prompt except through a ``memory_read``, which no
     claim reads."""
     entries = []
     for index in range(15):
@@ -911,7 +911,7 @@ def _seed_world(db: Database) -> None:
                 ),
             ),
             (
-                "collection_write",
+                "memory_write",
                 {
                     "collection": _JOB_CONTAINER,
                     "entries": [{"key": _TODAY, "content": _stored_brief()}],
@@ -992,9 +992,7 @@ def _seed_world(db: Database) -> None:
         call_id="call-seeded-memory-get",
         tool="memory_get",
         arguments={"memory": _JOB_CONTAINER},
-        result=ToolResult(
-            message=MemoryMetadataTool(db)._format(require_memory(db, _JOB_CONTAINER))
-        ),
+        result=ToolResult(message=MemoryInfoTool(db)._format(require_memory(db, _JOB_CONTAINER))),
         reply=_EX3_REPLY,
     )
     worked_run = seeded_run_id("headline-cycle-worked")
@@ -1024,7 +1022,7 @@ def _seed_world(db: Database) -> None:
         run_id=seeded_run_id("list-read"),
         ask=_EX7_USER,
         call_id="call-seeded-collection-list",
-        tool="collection_list",
+        tool="memory_read",
         arguments={"collection": _JOB_CONTAINER},
         result=ToolResult(
             message=format_entries(

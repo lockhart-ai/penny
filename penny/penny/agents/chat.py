@@ -438,7 +438,7 @@ class ChatAgent(Agent):
         persona and voice, the standing rules, the conversation history (a past
         report is there to be read, and a formatting ask in it holds here as
         anywhere), and the full chat tool surface — so "show me yesterday's" shape
-        follow-ups stay one ``collection_get`` away from the rendered job name.
+        follow-ups stay one ``memory_get`` away from the rendered job name.
 
         ``sender`` is the user the message is written for (the primary sender, read
         by the caller); ``call_link`` (#2458) is REQUIRED, as on every run starter.

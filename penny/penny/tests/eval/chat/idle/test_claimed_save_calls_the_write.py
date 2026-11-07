@@ -10,10 +10,10 @@ your itinerary in it." — then, in the very next turn, sent a second, much long
 a multi-line table of bookings and references to add to the same collection. Replaying
 that row verbatim 15 times: in 9 of the 15 samples Penny's reply opens "I saved those
 booking details to your `<trip>` collection," with EMPTY thinking and NO tool call at
-all — nothing is written. The other 6 samples call `collection_write` as asked.
+all — nothing is written. The other 6 samples call `memory_write` as asked.
 
 **Likely mechanism.**  The history Penny is shown carries only her own WORDS from the
-turn before — "I created … and saved …" — never the `collection_write` call that backed
+turn before — "I created … and saved …" — never the `memory_write` call that backed
 them (#2888). The very next turn asks for the same shape of thing (more details to add to
 the same collection), and the model completes the pattern it was just shown: open with the
 same sentence, skip the step that made it true the first time.
@@ -28,7 +28,7 @@ Bratislava) rather than inventing a second cover for the same conversation:
   #2905 — the real self-state this turn answered against was exactly this crowded;
 - the same seven-turn history window up to and including the dates turn that created the
   trip collection — but THIS time that turn is seeded as a REAL run: a logged
-  `collection_write` tool call backs its reply, through the same seeded-run primitives
+  `memory_write` tool call backs its reply, through the same seeded-run primitives
   `test_history_tool_line.py` uses (`seeded_run_id`, `_log_chat_step`, `_seeded_response`,
   `_wire_tool_call`), not a plain logged pair with nothing behind it — the row Penny is
   shown is exactly the shape that teaches the "I created … and saved …" pattern;
@@ -310,7 +310,7 @@ def _seed_trip_collection(db: Database) -> None:
 #
 # Six plain exchanges (small talk, the trip announcement, the Kraków memory), then the
 # seventh — the dates turn that created the trip collection — seeded as a REAL run: a
-# logged `collection_write` call backs its "I created … and saved …" reply, through the
+# logged `memory_write` call backs its "I created … and saved …" reply, through the
 # same primitives `test_history_tool_line.py` uses.  This is the row the live turn below
 # is shown right before it: the exact shape the failure's own mechanism reproduces off.
 
@@ -382,7 +382,7 @@ def _log_small_talk(db: Database) -> None:
 def _log_dates_turn_as_a_real_run(db: Database) -> None:
     """The dates/create-collection turn, backed by a REAL seeded run: the message log
     carries the reply under the run id the framework stamps, and that run's own
-    prompt-log record carries the `collection_write` call that backed it — the shape the
+    prompt-log record carries the `memory_write` call that backed it — the shape the
     next turn's false-save copies from, and the one plain message-log rows (#2905's own
     build of this same turn) cannot carry at all."""
     run_id = seeded_run_id(_TRIP_RUN_NAME)
@@ -401,7 +401,7 @@ def _log_dates_turn_as_a_real_run(db: Database) -> None:
         tool_calls=[
             _wire_tool_call(
                 f"call-seeded-{_TRIP_RUN_NAME}",
-                "collection_write",
+                "memory_write",
                 {"collection": _TRIP_NAME, "entries": [{"key": _ITINERARY_KEY}]},
             )
         ]
@@ -492,7 +492,7 @@ def _premise() -> Preparer:
     """The world this case is answered in, asserted out loud: the trip collection holds
     exactly its one seeded itinerary entry, created under the run id the history's dates
     turn is logged under — and that run's own prompt-log record really does carry the
-    `collection_write` call its reply claims, the same way `test_history_tool_line.py`'s
+    `memory_write` call its reply claims, the same way `test_history_tool_line.py`'s
     premise holds the seeded run's trace against the line read off it."""
 
     def probe(penny: Penny) -> None:
@@ -506,7 +506,7 @@ def _premise() -> Preparer:
         seeded_rows = [row for row in db.messages.recent_prompts(limit=200) if row.run_id == run_id]
         assert seeded_rows, f"{_CASE_ID}: the dates turn's run {run_id!r} must have its own record"
         names = tuple(dict.fromkeys(name for name, _ in run_tool_calls(seeded_rows)))
-        assert names == ("collection_write",), (
+        assert names == ("memory_write",), (
             f"{_CASE_ID}: the dates turn's run must trace a collection_write call, it shows {names}"
         )
         storage_row = db.memories.get(_ARCHIVE_STORAGE_NAME)

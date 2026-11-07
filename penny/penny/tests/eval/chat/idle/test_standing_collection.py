@@ -39,7 +39,7 @@ retired the whole job, or reached for the global mute.
 ``standing-schedule-fix-prior`` runs on the derived one-line program the other cases share;
 ``standing-retime-keeps-prompt`` (#2719) runs on a job whose instructions are several lines
 of rules, per-item fields and formatting — long enough that the self-state's Jobs section
-shows only its first sentence, with the rest cut behind a ``memory_get`` hop.  The observed
+shows only its first sentence, with the rest cut behind a ``memory_info`` hop.  The observed
 failure lived in exactly that gap: a re-time turn rebuilt the job's prompt from the
 one-sentence render and its own earlier reply, dropping a rule and the formatting, because it
 believed a configure call needed a prompt.  So this case's claim is that every line of the
@@ -1036,7 +1036,7 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
 #
 # The same action over the job whose instructions run several lines (#2719).  The self-state's
 # Jobs section renders that prompt cut to its first sentence, with the rest behind a
-# ``memory_get`` hop — so a turn that rebuilds a prompt from what it was shown, rather than
+# ``memory_info`` hop — so a turn that rebuilds a prompt from what it was shown, rather than
 # leaving it alone, drops lines nobody asked it to touch.  The observed failure did exactly
 # that: a re-time whose call passed a one-paragraph paraphrase that lost a rule, the per-item
 # fields and the formatting, none of it visible in the echo that confirmed the edit back.
@@ -1081,15 +1081,15 @@ def _assert_the_long_prompt_renders_cut(db: Database, container: str) -> None:
     """The job's own prompt renders CUT in the self-state — the whole premise of this case.
 
     Read through the header's own render, the way ``_assert_the_row_renders`` reads the
-    schedule clause: the cut note names the ``memory_get`` hop, and a world whose prompt
+    schedule clause: the cut note names the ``memory_info`` hop, and a world whose prompt
     rendered whole would measure the model's restraint rather than the gap the failure
     lived in."""
     rendered = SelfStateHeader(
         db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
     ).render()
-    assert f"more sentences cut — memory_get{{'{container}'}} shows the whole prompt" in rendered, (
-        f"{container}'s prompt must render cut in the self-state:\n{rendered}"
-    )
+    assert (
+        f"more sentences cut — memory_info{{'{container}'}} shows the whole prompt" in rendered
+    ), f"{container}'s prompt must render cut in the self-state:\n{rendered}"
 
 
 def _premise_prompt_survives(case: _OperationCase) -> Preparer:

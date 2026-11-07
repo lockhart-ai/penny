@@ -1,4 +1,4 @@
-"""The ``collection_write`` headline is honest about a merge (#2758).
+"""The ``memory_write`` headline is honest about a merge (#2758).
 
 The contract is `docs/eval-case-design.md`.
 
@@ -18,7 +18,7 @@ SAME VALUE, which settles as an unchanged duplicate and never reaches the merge 
 exists to narrate — MEASURED in this case's own early runs, where a too-close restatement left
 the write a no-op every time.  When the ladder settles "same" with something new added, the
 store MERGES the new content onto the EXISTING entry under its OWN key rather than creating a
-second row, and the write's own result (`CollectionWriteTool.to_result_narration`, fixed on
+second row, and the write's own result (`MemoryWriteTool.to_result_narration`, fixed on
 this branch by #2758) tells the model so by naming the key that was actually updated — never
 the key the model passed, which the write never created.
 
@@ -29,11 +29,11 @@ the key the model passed, which the write never created.
   different name.  A sample where the ladder did NOT merge (wrote the restatement as a
   genuinely new, second entry) fails this openly: the claim's pass rate is itself how often
   the pair merged, never forced.
-- EXACT KEY, no extraction: for every `key` this turn's `collection_write` calls PASSED that
+- EXACT KEY, no extraction: for every `key` this turn's `memory_write` calls PASSED that
   `rules` does NOT hold under that name at the end (because it merged into a different entry),
   the reply does not contain that exact string.  This is the strict version of the production
   failure — "I saved a new rule called `rule: research_and_cite`" when no such entry ever
-  existed — read off the write's own argument (`SampleObservation.collection_write_keys`,
+  existed — read off the write's own argument (`SampleObservation.memory_write_keys`,
   read straight off the turn's prompt log, #2758), compared by exact substring, never
   tokenised and never a lexicon.  (An earlier version of this claim tried to spot a "named
   key" by pattern-matching the REPLY alone — backtick/quote-wrapped tokens — and that
@@ -265,13 +265,13 @@ def _rules_holds_one_entry_for_the_policy(sample: SampleObservation, _world: Wor
 
 
 def _reply_never_claims_a_merged_key(sample: SampleObservation, _world: World) -> Answer:
-    """EXACT KEY, no extraction (#2758): for every key THIS TURN'S ``collection_write`` calls
+    """EXACT KEY, no extraction (#2758): for every key THIS TURN'S ``memory_write`` calls
     passed that `rules` does not hold under that name at the end — because it merged into a
     different entry — the reply does not contain that exact string.  A sample that wrote no
     key at all, or whose write landed under its own key (no merge), passes vacuously, which is
     the honest reading: nothing here was false to begin with."""
     held_keys = {key for key, _content in _rules_entries(sample) if key}
-    merged_away = [key for key in sample.collection_write_keys if key not in held_keys]
+    merged_away = [key for key in sample.memory_write_keys if key not in held_keys]
     offending = [key for key in merged_away if key in sample.reply]
     return not offending, f"the reply contains {offending!r}, a key `{RULES}` does not hold"
 

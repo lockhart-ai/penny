@@ -524,7 +524,7 @@ _EVAL_LLM_RETRY_DELAY = 1.0
 # LOCAL (#2713) gets a longer deadline instead of this one: a local endpoint (Ollama, LM
 # Studio) has no network between the sample and the model, so a call that is simply SLOW is
 # not a stall this deadline needs to catch — it is the model thinking, and cutting it off
-# mid-call is the defect this issue fixes.  Measured: the digest case's ``collection_write``
+# mid-call is the defect this issue fixes.  Measured: the digest case's ``memory_write``
 # call (~4k tokens of prompt, ~800 of thinking, then twelve headlines with their urls as the
 # argument) ran past the 20s REMOTE deadline on every attempt on an M1 Max / LM Studio
 # gemma-4-26B, cutting the tool call's argument mid-string every time (0/15 samples).
@@ -2865,15 +2865,15 @@ def _chat_tool_sequence(db: Database) -> list[str]:
     return [tool for run in chat_run_tool_sequences(db) for tool in run]
 
 
-def _collection_write_keys(db: Database) -> list[str]:
-    """Every ``key`` a ``collection_write`` call in this sample's turn PASSED, in call order
+def _memory_write_keys(db: Database) -> list[str]:
+    """Every ``key`` a ``memory_write`` call in this sample's turn PASSED, in call order
     (#2758) — the write's own ARGUMENT, read straight off this turn's own prompt-log rows via
     ``run_tool_calls``, never the store's end state: a cross-key merge lands the content under
     an EXISTING entry, so the key the model typed is absent from ``held`` entirely once it has
     merged, and a claim that needs "what she asked for" cannot derive it from "what survived"."""
     keys: list[str] = []
     for tool, args in run_tool_calls(_sample_prompt_rows(db)):
-        if tool != "collection_write" or not isinstance(args, dict):
+        if tool != "memory_write" or not isinstance(args, dict):
             continue
         entries = args.get("entries")
         if not isinstance(entries, list):
@@ -2960,7 +2960,7 @@ def _observe_sample(
         muted=db.users.is_muted(TEST_SENDER),
         images=stored_images(db),
         tool_sequence=_chat_tool_sequence(db),
-        collection_write_keys=_collection_write_keys(db),
+        memory_write_keys=_memory_write_keys(db),
         reply=reply,
         final_reply=final_reply,
         stored_reply=_stored_reply(db),

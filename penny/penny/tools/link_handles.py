@@ -21,7 +21,7 @@ at 101, a small bracketed number in a reply is prose by construction, never a
 failed citation.
 
 Tokens are a RENDERING.  Stored state keeps real URLs: memory entries are
-expanded back to their URLs before they are written (``collection_write``), and
+expanded back to their URLs before they are written (``memory_write``), and
 the browse-results log stores the un-converted sections.  Conversion happens only
 at each seam where the model READS — page sections, search results, history,
 memory read renders, the job-report render.

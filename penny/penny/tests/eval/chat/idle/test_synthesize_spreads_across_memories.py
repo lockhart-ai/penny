@@ -87,7 +87,7 @@ fill every slot.
 
 **What is NOT claimed, and why.** Which tool answers the ask, and which memories
 it draws on, are both ROUTES, never claims (`docs/principles.md` §4.1): `synthesize`
-is the tool built for exactly this ask, but `find`/`collection_list` reading some of
+is the tool built for exactly this ask, but `find`/`memory_read` reading some of
 the same entries is an equally legitimate path, and nothing here forces a call.
 `TOOL_SEQUENCE` is measured instead, never asserted — and the tool result's own
 "Drew on:" list is never asserted either, since which hits a draw happened to read

@@ -144,7 +144,7 @@ class Tool(ABC):
     args_model: type[ToolArgs] = NoArgs
     timeout: float | None = None  # None = use ToolExecutor's global timeout
     # The tools THIS tool's own rendered text may direct the model to (#1911).  A
-    # result message that says "call ``collection_write(key=…)``" is an ANCHOR: the n≤1
+    # result message that says "call ``memory_write(key=…)``" is an ANCHOR: the n≤1
     # discipline says a rendered instruction resolves in one call, so it must never
     # name a tool the surface does not carry.  A job's cycle gets the FIXED
     # chat-minus-lifecycle surface (#2455 naive baseline, not a program-scoped one), so
@@ -248,7 +248,7 @@ class Tool(ABC):
     def _format_field_error(error: Any, properties: dict[str, Any]) -> str:
         """One ``field (type: description): reason`` line for a Pydantic error.
 
-        Loc-path-aware: a nested error (a field inside a ``collection_write`` batch
+        Loc-path-aware: a nested error (a field inside a ``memory_write`` batch
         entry) is named by its full path (``entries.0.content``) and described by
         its own schema node, not the top-level field's (#1416)."""
         loc = tuple(error.get("loc") or ())
@@ -396,15 +396,23 @@ class Tool(ABC):
         string.
 
         ``arguments`` may be a LOGGED call's — one made before #2307 renamed
-        ``collection_write``'s first argument from ``memory`` to ``collection`` — so a
-        miss on the CURRENT ``destination_param`` falls back to ``memory`` rather than
-        reading an old call as having named no destination at all."""
+        ``collection_write``'s first argument from ``memory`` to ``collection``, or
+        before #3128 folded ``collection_write``/``log_append`` into ``memory_write``
+        and renamed that argument AGAIN, this time from ``collection``/``log`` to
+        ``memory`` — so a miss on the CURRENT ``destination_param`` falls back
+        first to ``memory`` (the #2307-era name), then to ``collection`` then
+        ``log`` (the pre-#3128 names), rather than reading an old call as having
+        named no destination at all."""
         tool_cls = cls._registry.get(tool_name)
         if tool_cls is None or tool_cls.destination_param is None:
             return None
         value = arguments.get(tool_cls.destination_param)
         if value is None and tool_cls.destination_param == "collection":
             value = arguments.get("memory")
+        if value is None and tool_cls.destination_param == "memory":
+            value = arguments.get("collection")
+            if value is None:
+                value = arguments.get("log")
         return value if isinstance(value, str) else None
 
     @classmethod
@@ -615,7 +623,7 @@ class ToolExecutor:
         The suggestion goes through ``suggest_tool_name`` (#1944, #2510), which reads
         a retired name through the rename table, then string distance, then whether a
         real tool name sits inside the malformed one — a guessed ``collection_metadata``
-        names ``memory_get`` rather than the character-nearest ``collection_configure``,
+        names ``memory_info`` rather than the character-nearest ``collection_configure``,
         and a guessed ``functions.done`` names ``done``."""
         logger.error("Tool not found: %s", tool_call.tool)
         available_tools = [t.name for t in self.registry.get_all()]

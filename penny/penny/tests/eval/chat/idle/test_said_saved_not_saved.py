@@ -4,7 +4,7 @@ The contract is `docs/eval-case-design.md`.  Sibling of
 `test_announced_lookup_not_done.py`/`test_lookup_result_recalled.py` (the lookup half
 of #2901's baseline) and `test_really_saved_dedup.py` (this case's own healthy
 counterpart): `_build_conversation` renders only reply text, so "I've saved that" and a
-real `collection_write` read identically a turn later.  This is the MEMORY-side failure
+real `memory_write` read identically a turn later.  This is the MEMORY-side failure
 shape: the earlier reply claimed a save, the seeded run's own prompt-log record carries
 NO write call, and nothing exists anywhere in the store — so the three originally-asked
 facts survive only in the EARLIER USER TURN's own text (never in Penny's own past reply,

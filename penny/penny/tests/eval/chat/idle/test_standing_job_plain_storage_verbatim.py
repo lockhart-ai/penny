@@ -10,7 +10,7 @@ shouldn't carry; the second is the follow-up, one turn later, after the model ha
 already (falsely) claimed to have fixed it — asking outright to set the prompt and the
 schedule to empty. Replaying each row's own messages verbatim on the suite's model, 15
 samples each, showed the model making exactly the entry decision the real run made:
-the first row reaches for `collection_configure{prompt: ""}` plus a `collection_write`
+the first row reaches for `collection_configure{prompt: ""}` plus a `memory_write`
 to also backfill the missing booking details; the second reaches for
 `collection_configure{prompt: "", schedule: ""}` — the literal ask — and, pre-fix, both
 promptly got refused.

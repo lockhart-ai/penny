@@ -605,7 +605,7 @@ async def test_related_exchanges_render_in_the_dynamic_section(db, make_config):
     assert section == (
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · Oct 12 14:05 (messages {ask_id}, reply {reply_id}) — "
-        "log_read{'user-messages', day: '2026-10-12'}\n"
+        "memory_read{'user-messages', day: '2026-10-12'}\n"
         f'User: "{_PLAN_ASK}"\n'
         f'Penny: "{_PLAN_REPLY}"'
     )
@@ -729,11 +729,11 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
     assert section == (
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · Oct 12 14:20 (messages {second_ask}, reply {second_reply}) — "
-        "log_read{'user-messages', day: '2026-10-12'}\n"
+        "memory_read{'user-messages', day: '2026-10-12'}\n"
         'User: "alpha bravo charlie delta — partial notes"\n'
         'Penny: "delta notes, and the rest."\n\n'
         f"Related earlier exchange · Oct 12 14:25 (messages {top_ask}, reply {top_reply}) — "
-        "log_read{'user-messages', day: '2026-10-12'}\n"
+        "memory_read{'user-messages', day: '2026-10-12'}\n"
         'User: "alpha bravo charlie delta echo foxtrot — the full plan"\n'
         f'Penny: "{long_reply[:600]}…"'
     )
@@ -842,7 +842,7 @@ async def test_related_exchange_on_a_map_line_renders_her_reply_alone(db, make_c
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · {_map_stamp(db, now)} "
         f"(messages {ask_id}, reply {reply_id}) — "
-        f"log_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
+        f"memory_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
         f'Penny: "{_MAP_REPLY}"'
     )
 
@@ -882,7 +882,7 @@ async def test_related_exchange_on_a_folded_day_renders_both_sides(db, make_conf
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · {_map_stamp(db, yesterday)} "
         f"(messages {ask_id}, reply {reply_id}) — "
-        f"log_read{{'user-messages', day: '{_map_day(db, yesterday)}'}}\n"
+        f"memory_read{{'user-messages', day: '{_map_day(db, yesterday)}'}}\n"
         f'User: "{_MAP_ASK}"\n'
         f'Penny: "{_MAP_REPLY}"'
     )
@@ -919,7 +919,7 @@ async def test_related_exchange_longer_than_the_clip_keeps_both_sides(db, make_c
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · {_map_stamp(db, now)} "
         f"(messages {ask_id}, reply {reply_id}) — "
-        f"log_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
+        f"memory_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
         f'User: "{_MAP_ASK_MULTILINE}"\n'
         f'Penny: "{_MAP_REPLY}"'
     )
@@ -974,8 +974,8 @@ def test_a_run_that_called_tools_renders_them_natively_into_a_later_turns_histor
                     "tool_calls": [
                         _wire_call(
                             "call_2",
-                            "collection_write",
-                            {"collection": "weather_log", "entries": [{"content": "Sunny, 18C"}]},
+                            "memory_write",
+                            {"memory": "weather_log", "entries": [{"content": "Sunny, 18C"}]},
                         )
                     ],
                 }
@@ -1017,9 +1017,9 @@ def test_a_run_that_called_tools_renders_them_natively_into_a_later_turns_histor
     write_call = expanded[2].tool_calls[0]
     assert browse_call.function.name == "browse"
     assert browse_call.function.arguments == {"url": "https://example.com"}
-    assert write_call.function.name == "collection_write"
+    assert write_call.function.name == "memory_write"
     assert write_call.function.arguments == {
-        "collection": "weather_log",
+        "memory": "weather_log",
         "entries": [{"content": "Sunny, 18C"}],
     }
     # Each call's own id is freshly minted, never the id it logged under, and
@@ -1546,9 +1546,9 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
         if not tool_turns:  # the write that LANDS
             return _tool_call(
                 "c0",
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "lantern-prices",
+                    "memory": "lantern-prices",
                     "entries": [{"key": "keel lantern", "content": "$18"}],
                 },
             )
@@ -1559,9 +1559,9 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
             drew_the_second["hit"] = True
             return _tool_call(
                 "c1",
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "lantern-prices",
+                    "memory": "lantern-prices",
                     "entries": [{"key": "aurora lantern", "content": _COLLAPSE}],
                 },
             )
@@ -1617,9 +1617,9 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
         if not [m for m in messages if m.get("role") == "tool"]:
             return _tool_call(
                 "c0",
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "lantern-prices",
+                    "memory": "lantern-prices",
                     "entries": [{"key": "keel lantern", "content": "$18"}],
                 },
             )
@@ -1641,7 +1641,7 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
             record=(
                 "Nothing this turn tried to keep is in the store. What each try came back "
                 "with:\n"
-                "- `collection_write`: Unchanged: 'keel lantern' already holds the same "
+                "- `memory_write`: Unchanged: 'keel lantern' already holds the same "
                 "value — no change since the last write (entry)."
             )
         )
@@ -1667,9 +1667,9 @@ async def test_a_turn_that_writes_twice_states_the_full_record_each_time(
         if not tool_turns:
             return _tool_call(
                 "c0",
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "lantern-prices",
+                    "memory": "lantern-prices",
                     "entries": [{"key": "keel lantern", "content": "$18"}],
                 },
             )
@@ -1677,9 +1677,9 @@ async def test_a_turn_that_writes_twice_states_the_full_record_each_time(
             seen.append(_writes_record(messages))
             return _tool_call(
                 "c1",
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "lantern-prices",
+                    "memory": "lantern-prices",
                     "entries": [{"key": "aurora lantern", "content": "$22"}],
                 },
             )
@@ -1732,7 +1732,7 @@ async def test_a_turn_that_wrote_nothing_narrates_nothing(
             saw_writes["hit"] = True
             return _text("(this should never be reached)")
         if not [m for m in messages if m.get("role") == "tool"]:
-            return _tool_call("c0", "collection_list", {"collection": "weather-notes"})
+            return _tool_call("c0", "memory_read", {"memory": "weather-notes"})
         return _text("grey and stubborn about it, same as yesterday 🌫️")
 
     mock_llm.set_response_handler(handler)
@@ -2013,7 +2013,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
     Capability is no longer curated by omission: the user can direct chat
     to fix a skill, correct a thought, seed a collection, or re-roll an
     entry mid-conversation.  Invalid calls are rejected by deterministic
-    invariants (e.g. ``log_append`` to a system log) with a readable
+    invariants (e.g. ``memory_write`` to a system log) with a readable
     refusal, not by withholding the tool.  Loop-control tools (``done`` /
     ``send_message``) stay background-only and must NOT be here, or the
     model may call ``done`` instead of replying.
@@ -2022,9 +2022,8 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         names = {tool.name for tool in penny.chat_agent.get_tools()}
 
         # Entry mutations — now available to chat (user-directed edits).
-        assert "collection_write" in names
+        assert "memory_write" in names
         assert "collection_remove" in names
-        assert "log_append" in names
 
         # Lifecycle / shape.
         assert "collection_configure" in names
@@ -2037,12 +2036,12 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_unarchive" not in names
 
         # Reads.
-        assert "collection_list" in names
-        assert "collection_get" in names
-        # collection_sample is retired (#2812): collection_list(order='random') replaces it.
-        assert "collection_sample" not in names
-        assert "collection_keys" in names
+        assert "memory_read" in names
         assert "memory_get" in names
+        # collection_sample is retired (#2812): memory_read(order='random') replaces it.
+        assert "collection_sample" not in names
+        assert "memory_keys" in names
+        assert "memory_info" in names
         # Ledger reads: run_list browses a source's runs; run_get resolves
         # one run by the typed id the activity block renders (#1580).
         assert "run_list" in names
@@ -2639,8 +2638,8 @@ _BASIC_FLOW_LEADING_EXPECTED = (
     "It's fine to greet them back when they greet you; otherwise just pick up the thread.\n"
     "\n"
     "Search memory before browsing. Your memory tools "
-    "(`collection_list{<collection>}`, `find{query: <text>}`, "
-    "`log_read{<log>}`, etc.) read everything stored — the 'Your memory' "
+    "(`memory_read{<memory>}`, `find{query: <text>}`, etc.) read everything "
+    "stored — the 'Your memory' "
     "list in the 'Penny's current state' section below names every store you can pull "
     "from, and the mechanisms + recent activity there are your own operational state "
     "(what you're running, what you just did). Only browse if memory doesn't have what "
@@ -2669,7 +2668,7 @@ _BASIC_FLOW_LEADING_EXPECTED = (
     "nothing you run is like what they ask for, work out how to do it "
     "yourself, and ask for the steps only if you can't.\n"
     "\n"
-    "When something is worth remembering, `collection_write` it — into a collection that "
+    "When something is worth remembering, `memory_write` it — into a collection that "
     "fits, or under a new name; the write creates the collection if it doesn't exist. "
     "That is a plain write, not a job: no schedule, no notify.\n"
     "\n"
@@ -2754,9 +2753,9 @@ _BASIC_FLOW_SESSION_STATE_EXPECTED = (
     "- timezone: America/Los_Angeles\n"
     "- location: Seattle, WA\n"
     "\n"
-    "To look deeper: memory_get{<name>} for a collection's full config and "
+    "To look deeper: memory_info{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
+    "memory_read{<name>} reads a store's entries, and find{query: <text>} "
     "searches them all by meaning — a collection, a stored entry, or "
     "something said in the conversation."
 )

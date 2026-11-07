@@ -1,5 +1,5 @@
 """One refer-back case: two days later, past the history window and with the
-plan's day folded into the conversation map's one ``log_read`` line, the user
+plan's day folded into the conversation map's one ``memory_read`` line, the user
 asks Penny to go ahead with a change they AGREED for one of her jobs (#3010).
 
 The agreed plan is CONDITIONAL — once the ``weather-log`` feed is running
@@ -356,7 +356,7 @@ def _seed_world(db: Database) -> None:
         _FROST_REPLY,
         "frost-lookalike",
         clock_now - timedelta(minutes=10),
-        "log_read",
+        "memory_read",
         {"log": _WEATHER_LOG},
         _FROST_RESULT,
     )
@@ -422,7 +422,7 @@ def _assert_the_plan_world(penny: Penny) -> None:
     assert_seeded_turns_embedded(db)
     map_anchor = db.messages.session_anchor(TEST_SENDER)
     map_render = ConversationMap(db, TEST_SENDER, penny.config.runtime, map_anchor).render()
-    fold_lines = [line for line in map_render.splitlines() if "exchanges — log_read{" in line]
+    fold_lines = [line for line in map_render.splitlines() if "exchanges — memory_read{" in line]
     assert fold_lines, (
         f"the plan's day must render as the map's collapsed log_read line, the map "
         f"rendered: {map_render!r}"

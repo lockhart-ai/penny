@@ -347,7 +347,7 @@ async def test_agent_progress_is_redacted_and_connection_scoped(db):
             scope="background",
             step=1,
             max_steps=20,
-            tools=(("log_append", {"name": "notes"}),),
+            tools=(("memory_write", {"name": "notes"}),),
             thinking="Extraction plan…",
         )
     )

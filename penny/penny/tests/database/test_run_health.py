@@ -165,7 +165,7 @@ done"""
 def test_incomplete_run_is_flagged_and_shows_trace():
     """An incomplete run (work landed, never closed done) is surfaced with its trace."""
     run = [
-        _prompt([_call("collection_write", {"memory": "games", "entries": [{"content": "x"}]})]),
+        _prompt([_call("memory_write", {"memory": "games", "entries": [{"content": "x"}]})]),
         _prompt([], outcome="incomplete", reason="max steps exceeded"),
     ]
     health = classify_run(run)
@@ -178,7 +178,7 @@ def test_incomplete_run_is_flagged_and_shows_trace():
 writes: 1
 ⚠ INCOMPLETE — hit the step ceiling without a closing done; work landed but \
 the cycle never finished cleanly
-collection_write{collection: 'games', entries: 'x'}"""
+memory_write{memory: 'games', entries: 'x'}"""
     )
 
 
@@ -217,18 +217,18 @@ def test_aborted_run_record_names_the_failed_model_call():
     header IS the whole story, which is exactly what the flags could not say."""
     abort = RunAbort(
         step=4,
-        after_tool="collection_list",
+        after_tool="memory_read",
         error=ModelCallError(error_class="LlmTimeoutError", message="Request timed out."),
     )
     run = [
-        _prompt([_call("collection_list", {"collection": "games"})]),
+        _prompt([_call("memory_read", {"collection": "games"})]),
         _prompt([], outcome="failed", reason=abort.render()),
     ]
     health = classify_run(run)
     assert health.bailed is False
     assert health.flags == []
     assert (
-        render_run_record(run) == "[games] model call failed at step 4 after collection_list: "
+        render_run_record(run) == "[games] model call failed at step 4 after memory_read: "
         "LlmTimeoutError: Request timed out."
     )
 
@@ -236,7 +236,7 @@ def test_aborted_run_record_names_the_failed_model_call():
 def test_tool_failure_count_is_flagged():
     """A run that hit tool failures and kept going is flagged with the count."""
     run = [
-        _prompt([_call("collection_write", {"memory": "games", "entries": [{"content": "x"}]})]),
+        _prompt([_call("memory_write", {"memory": "games", "entries": [{"content": "x"}]})]),
         _prompt([_DONE_OK], outcome="worked", tool_failures=2),
     ]
     health = classify_run(run)
@@ -247,7 +247,7 @@ def test_tool_failure_count_is_flagged():
 [games] worked
 writes: 1
 ⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
-collection_write{collection: 'games', entries: 'x'}"""
+memory_write{memory: 'games', entries: 'x'}"""
     )
 
 
@@ -283,7 +283,7 @@ send_message{'Heads up — a new title dropped, details inside.'}"""
 
 def test_healthy_worked_run_has_no_flags():
     run = [
-        _prompt([_call("collection_write", {"memory": "games", "entries": [{"content": "x"}]})]),
+        _prompt([_call("memory_write", {"memory": "games", "entries": [{"content": "x"}]})]),
         _prompt([_DONE_OK], outcome="worked", tool_failures=0),
     ]
     health = classify_run(run)
@@ -294,7 +294,7 @@ def test_healthy_worked_run_has_no_flags():
         == """\
 [games] worked
 writes: 1
-collection_write{collection: 'games', entries: 'x'}"""
+memory_write{memory: 'games', entries: 'x'}"""
     )
 
 
@@ -303,7 +303,7 @@ def test_healthy_quiet_read_is_not_a_bail():
     bail — no flags, heading-only (no trace to tempt an over-correction)."""
     run = [
         _prompt(
-            [_call("log_read", {"memory": "user-messages"}), _DONE_OK],
+            [_call("memory_read", {"memory": "user-messages"}), _DONE_OK],
             outcome="no_work",
         )
     ]
@@ -313,18 +313,20 @@ def test_healthy_quiet_read_is_not_a_bail():
 
 
 def test_logged_log_call_renders_its_log_argument_under_either_key():
-    """The trace renders a log call's log name under the CURRENT argument name,
-    however the row was logged: a call logged before the rename stored ``memory``,
-    and the read projection — never the stored row — maps it to ``log``."""
-    run = [_prompt([_call("log_read", {"memory": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
+    """The trace renders a read call's memory name under the CURRENT argument name,
+    however the row was logged: the retired ``log_read``'s own ``log`` key, or the
+    current ``memory_read``'s ``memory`` key, both normalise to the same render."""
+    run = [
+        _prompt([_call("memory_read", {"memory": "user-messages"}), _DONE_OK], outcome="no_work")
+    ]
+    assert "step 1: memory_read{memory: 'user-messages'}" in render_run_calls(
         run,
         with_thinking=False,
         delivered_text=None,
         plan_descriptions={},
     )
-    fresh = [_prompt([_call("log_read", {"log": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
+    fresh = [_prompt([_call("memory_read", {"log": "user-messages"}), _DONE_OK], outcome="no_work")]
+    assert "step 1: memory_read{memory: 'user-messages'}" in render_run_calls(
         fresh,
         with_thinking=False,
         delivered_text=None,
@@ -403,7 +405,7 @@ def test_browse_failures_but_wrote_is_not_no_writes(emitted_suffix):
             [
                 _call("browse", {"queries": ["a", "b"]}),
                 _call(
-                    f"collection_write{emitted_suffix}",
+                    f"memory_write{emitted_suffix}",
                     {"memory": "games", "entries": [{"content": "x"}]},
                     call_id="w1",
                 ),
@@ -423,7 +425,7 @@ def test_browse_failures_but_wrote_is_not_no_writes(emitted_suffix):
 [games] worked
 browses: 1 ok, 1 failed · writes: 1
 browse{['a', 'b']}
-collection_write{collection: 'games', entries: 'x'}"""
+memory_write{memory: 'games', entries: 'x'}"""
     )
     assert (
         render_run_calls(
@@ -436,7 +438,7 @@ collection_write{collection: 'games', entries: 'x'}"""
 run wrote-fixed
 [games]
     step 1: browse{{['a', 'b']}}
-    step 2: collection_write{{collection: 'games', entries: 'x'}}
+    step 2: memory_write{{memory: 'games', entries: 'x'}}
 done: worked
 {_facts(1)}"""
     )
@@ -461,7 +463,7 @@ def test_a_call_that_named_only_control_tokens_named_no_tool():
 
 def test_write_gate_stop_ended_run_shows_trace_and_reason():
     """A write-gate STOP-ended run (#1587): a watch's unchanged re-observation ends
-    the collector run at the write chokepoint — a collection_write with NO closing
+    the collector run at the write chokepoint — a memory_write with NO closing
     done(), a clean ``no_work`` outcome, and the declared stop reason stamped as
     ``run_reason``.  Whole render: the ``[target] <stop reason>`` header, the counts
     line, then the stop-point write trace — NO ⚠ flag (a clean stop is healthy), and
@@ -470,7 +472,7 @@ def test_write_gate_stop_ended_run_shows_trace_and_reason():
         _prompt(
             [
                 _call(
-                    "collection_write",
+                    "memory_write",
                     {"memory": "games", "entries": [{"key": "price", "content": "$42"}]},
                 )
             ],
@@ -486,7 +488,7 @@ def test_write_gate_stop_ended_run_shows_trace_and_reason():
         == """\
 [games] the value was unchanged since the last observation
 writes: 1
-collection_write{collection: 'games', entries: '$42'}"""
+memory_write{memory: 'games', entries: '$42'}"""
     )
 
 
@@ -524,7 +526,7 @@ def test_logged_tool_call_round_trips_to_the_wire_form():
     name + arguments — so the logged form is canonical, never a paraphrase, and a
     logged call could be re-executed unchanged (or promoted to a skill step by
     copy)."""
-    original = {"name": "collection_write", "arguments": '{"memory": "watch", "entries": []}'}
+    original = {"name": "memory_write", "arguments": '{"memory": "watch", "entries": []}'}
     logged = LoggedToolCall.from_function(original)
     # Round-trip identity at the structured level.
     assert LoggedToolCall.from_function(logged.to_wire()) == logged
@@ -542,12 +544,12 @@ def test_logged_tool_call_round_trips_to_the_wire_form():
     # answers "which tool is this?" the way production answers it at the live boundary,
     # so a consumer comparing names never has to know the leak exists (#2013).
     leaked = LoggedToolCall.from_function(
-        {"name": f"collection_write{LEAKED_HARMONY_TOKEN}", "arguments": "{}"}
+        {"name": f"memory_write{LEAKED_HARMONY_TOKEN}", "arguments": "{}"}
     )
-    assert leaked.name == f"collection_write{LEAKED_HARMONY_TOKEN}"
-    assert leaked.to_wire()["name"] == f"collection_write{LEAKED_HARMONY_TOKEN}"
+    assert leaked.name == f"memory_write{LEAKED_HARMONY_TOKEN}"
+    assert leaked.to_wire()["name"] == f"memory_write{LEAKED_HARMONY_TOKEN}"
     assert LoggedToolCall.from_function(leaked.to_wire()) == leaked
-    assert leaked.tool == "collection_write"
+    assert leaked.tool == "memory_write"
     assert leaked.tool == strip_harmony_control_tokens(leaked.name)
 
 
@@ -579,7 +581,7 @@ def _chat_kitchen_sink_run() -> list[PromptLog]:
     second = _prompt(
         [
             _call(
-                "collection_write",
+                "memory_write",
                 {"memory": "shows", "entries": [{"key": "fox-tales", "content": "Fox Tales S2"}]},
                 call_id="w1",
             ),
@@ -591,9 +593,9 @@ def _chat_kitchen_sink_run() -> list[PromptLog]:
     third = _prompt(
         [
             _call("generate_image", {"description": "a cartoon fox"}, call_id="g1"),
-            _call("collection_get", {"collection": "old-shelf", "key": "fox tales"}, call_id="r1"),
+            _call("memory_get", {"memory": "old-shelf", "key": "fox tales"}, call_id="r1"),
             _call(
-                "collection_write",
+                "memory_write",
                 {
                     "memory": "shows",
                     "entries": [{"key": "fox-tales-2", "content": "Fox Tales again"}],
@@ -655,13 +657,13 @@ def test_render_run_calls_chat_kitchen_sink_full_literal():
         "user: draw me a cartoon fox and log any new fox shows\n"
         "    step 1: browse{['new fox cartoons']} => "
         "## browse: https://example.com/fox-cartoons\n"
-        "    step 2: collection_write{collection: 'shows', entries: 'Fox Tales S2'} => "
+        "    step 2: memory_write{memory: 'shows', entries: 'Fox Tales S2'} => "
         "Wrote 1 entry: fox-tales.\n"
         "    step 4: generate_image{description: 'a cartoon fox'} => "
         "Generated image #7 of: a cartoon fox.\n"
-        "    step 5: collection_get{collection: 'old-shelf', key: 'fox tales'} => "
+        "    step 5: memory_get{memory: 'old-shelf', key: 'fox tales'} => "
         "Memory 'old-shelf' not found.\n"
-        "    step 6: collection_write{collection: 'shows', entries: 'Fox Tales again'} => "
+        "    step 6: memory_write{memory: 'shows', entries: 'Fox Tales again'} => "
         "Duplicate of fox-tales.\n"
         "penny: Done — logged the new season and drew your fox!\n"
         "    attached: image #7\n"
@@ -682,7 +684,7 @@ def test_render_run_calls_collector_run_full_literal():
         _prompt(
             [
                 _call(
-                    "collection_write",
+                    "memory_write",
                     {
                         "memory": "games",
                         "entries": [{"key": "pocket-go", "content": "Pocket Go pick"}],
@@ -710,7 +712,7 @@ def test_render_run_calls_collector_run_full_literal():
         "run coll-fixed\n"
         "[games]\n"
         "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
-        "    step 2: collection_write{collection: 'games', entries: 'Pocket Go pick'} => "
+        "    step 2: memory_write{memory: 'games', entries: 'Pocket Go pick'} => "
         "Wrote 1 entry: pocket-go.\n"
         "done: worked\n"
         f"{_facts(2)}"
@@ -748,7 +750,7 @@ def _collector_run_with_thinking(thinking: str) -> list[PromptLog]:
         _prompt(
             [
                 _call(
-                    "collection_write",
+                    "memory_write",
                     {
                         "memory": "games",
                         "entries": [{"key": "pocket-go", "content": "Pocket Go pick"}],
@@ -785,7 +787,7 @@ def test_render_run_calls_with_thinking_shows_a_short_thinking_whole():
         "[games]\n"
         "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
         f"    step 2 thinking: {_SHORT_THINKING}\n"
-        "    step 2: collection_write{collection: 'games', entries: 'Pocket Go pick'} => "
+        "    step 2: memory_write{memory: 'games', entries: 'Pocket Go pick'} => "
         "Wrote 1 entry: pocket-go.\n"
         "done: worked\n"
         f"{_facts(2)}"
@@ -902,7 +904,7 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
         _prompt(
             [
                 _call(
-                    "collection_write",
+                    "memory_write",
                     {"memory": "games", "entries": [{"key": "price", "content": "$42"}]},
                     call_id="w1",
                 )
@@ -931,7 +933,7 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
         == f"""\
 run stop-fixed
 [games]
-    step 1: collection_write{{collection: 'games', entries: '$42'}} => Unchanged: 'price' \
+    step 1: memory_write{{memory: 'games', entries: '$42'}} => Unchanged: 'price' \
 already holds the same value — no change since the last write (entry).
 stopped: the value was unchanged since the last observation
 {_facts(1)}"""
@@ -1010,12 +1012,12 @@ penny: doing great!
 
 
 def _terminal_write_run(*, trailing: str | None) -> list[PromptLog]:
-    """A run that ended the instant its ``collection_write`` came back failed — the
+    """A run that ended the instant its ``memory_write`` came back failed — the
     shape every gap case shares (``max_steps`` on a tool step, a write-gate STOP, a
     reroll abort, an exception): the call is durable in ``response``, but its result
     had no next call to ride into."""
     call = _call(
-        "collection_write",
+        "memory_write",
         {"memory": "shelf", "entries": [{"key": "price", "content": "$42"}]},
         call_id="w1",
     )
@@ -1050,7 +1052,7 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
                 "content": "",
                 "tool_calls": [
                     _call(
-                        "collection_write",
+                        "memory_write",
                         {"memory": "shelf", "entries": [{"key": "price", "content": "$42"}]},
                         call_id="w1",
                     )
@@ -1075,9 +1077,9 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
         == f"""\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write{{collection: 'shelf', entries: '$42'}} => Memory 'shelf' not found \
+    step 1: memory_write{{memory: 'shelf', entries: '$42'}} => Memory 'shelf' not found \
 — did you mean 'shelves'?
-{_facts(1, tool_errors="collection_write×1")}"""
+{_facts(1, tool_errors="memory_write×1")}"""
     )
     # Without the tail (every pre-#1778 row) the same run renders the call bare — the
     # gap this closes.
@@ -1091,7 +1093,7 @@ user: log the new shelf price
         == f"""\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write{{collection: 'shelf', entries: '$42'}}
+    step 1: memory_write{{memory: 'shelf', entries: '$42'}}
 {_facts(1)}"""
     )
 

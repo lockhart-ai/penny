@@ -88,7 +88,7 @@ def sent_at(snapshots: Sequence[CycleSnapshot], index: int) -> list[str]:
 #       up to watch; and
 #   (b) the EARLIER CONVERSATION that set it up, in her own logs — the user's ask, her own
 #       turn's tool calls (the read, the write, the `collection_configure` naming its
-#       prompt), and her reply — so her self-state's recent activity, `log_read`, and
+#       prompt), and her reply — so her self-state's recent activity, `memory_read`, and
 #       `run_get` all read it back exactly as if that turn had really happened.
 #
 # The seeded run's own model name is cosmetic (no claim reads it) but kept honest rather
@@ -177,7 +177,7 @@ def seed_known_routine(
     the collection already running and holding its entry, and the earlier turn that set it
     up durable in her own logs — the user's ask, her read → write → ``collection_configure``
     calls (each with its real result turn), and her closing reply, all under one run id, so
-    a reader of her recent activity, ``log_read``, or ``run_get`` sees exactly what a real
+    a reader of her recent activity, ``memory_read``, or ``run_get`` sees exactly what a real
     turn would have left behind.
 
     The job's prompt is the plain naive shape (#2455): free text naming the page and what
@@ -249,19 +249,19 @@ def seed_known_routine(
         run_id=run_id,
         messages=conversation,
         response=_seeded_response(
-            tool_calls=[_wire_tool_call(write_id, "collection_write", write_args)]
+            tool_calls=[_wire_tool_call(write_id, "memory_write", write_args)]
         ),
     )
     write_message = f"Wrote 1 entry to '{collection}': {entry_key}."
     write_result = Tool.format_result(
-        "collection_write", write_args, ToolResult(message=write_message, mutated=True)
+        "memory_write", write_args, ToolResult(message=write_message, mutated=True)
     )
     conversation = [
         *conversation,
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_wire_tool_call(write_id, "collection_write", write_args)],
+            "tool_calls": [_wire_tool_call(write_id, "memory_write", write_args)],
         },
         _tool_result_turn(write_id, write_result),
     ]

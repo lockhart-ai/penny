@@ -567,7 +567,7 @@ _RECORDED_TURNS: tuple[_Turn, ...] = (
         _RECORDED_RULE_REPLY,
         run_name="turn-rule",
         call=(
-            "collection_write",
+            "memory_write",
             {
                 "collection": "rules",
                 "key": "search_then_read_first",
@@ -925,7 +925,7 @@ def _premise() -> Preparer:
             if is_seeded_run(row.run_id)
         }
         for run_name, tools in (
-            ("turn-rule", ("collection_write",)),
+            ("turn-rule", ("memory_write",)),
             ("turn-specs", ("browse",)),
             ("turn-shelf", ()),
         ):

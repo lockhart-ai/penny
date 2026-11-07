@@ -2,7 +2,7 @@
 
 The contract is `docs/eval-case-design.md`.  The healthy counterpart to
 `test_said_saved_not_saved.py`: same ask, same earlier conversation shape, but this
-time the seeded run's own prompt-log record carries a REAL `collection_write` call and
+time the seeded run's own prompt-log record carries a REAL `memory_write` call and
 the store already holds the three facts it wrote.  The user asks for the same one more
 detail to be added.  The failure this guards against is the opposite of the sibling
 case's: a model that cannot tell "I already saved this" from "I only said I did" may
@@ -13,7 +13,7 @@ exactly the confusion #2888 exists to prevent, read from its other side.
 Swiss Alpine III spokes, a 2.0mm gauge — but the earlier run's write really happened:
 `db.memories.create_collection` + `Memory.write_rule_decided` lay the entry down through
 the SAME store chokepoints a live turn would use, and the seeded prompt-log record
-carries the matching `collection_write` call and its real result.
+carries the matching `memory_write` call and its real result.
 
 **Real proper nouns** (`docs/principles.md` #9): same real cycling terms as the sibling
 case.
@@ -100,7 +100,7 @@ for _wording in (_ASK, *_ALSO_PHRASED):
 def _seed_world(db: Database) -> None:
     """The one earlier exchange, this time with a REAL write behind it: the collection
     created and its entry written through the store's own chokepoints, and the seeded
-    run's own prompt-log record carrying the matching `collection_write` call and its
+    run's own prompt-log record carrying the matching `memory_write` call and its
     real result — the shape a real save leaves."""
     db.users.save_info(
         sender=TEST_SENDER,
@@ -129,7 +129,7 @@ def _seed_world(db: Database) -> None:
     conversation: list[dict] = [{"role": "user", "content": _PRIOR_ASK}]
     write_args = {"collection": _COLLECTION, "key": _ENTRY_KEY, "content": _ENTRY_CONTENT}
     call_id = "call-seeded-wheel-write"
-    call = _wire_tool_call(call_id, "collection_write", write_args)
+    call = _wire_tool_call(call_id, "memory_write", write_args)
     _log_chat_step(
         db, run_id=run_id, messages=conversation, response=_seeded_response(tool_calls=[call])
     )
@@ -146,7 +146,7 @@ def _seed_world(db: Database) -> None:
 
 def _probe_world(penny: Penny) -> None:
     """The premise: the profile is seeded, the earlier run traces exactly one real
-    `collection_write` call, and the store already holds the three facts it wrote."""
+    `memory_write` call, and the store already holds the three facts it wrote."""
     db = penny.db
     info = db.users.get_info(TEST_SENDER)
     assert info is not None and info.name == _USER_NAME, (
@@ -156,7 +156,7 @@ def _probe_world(penny: Penny) -> None:
     group = [row for row in seeded_rows if row.run_id == seeded_run_id(_RUN_NAME)]
     assert group, f"the seeded run {_RUN_NAME!r} must have its own prompt-log record"
     names = tuple(dict.fromkeys(name for name, _ in run_tool_calls(group)))
-    assert names == ("collection_write",), (
+    assert names == ("memory_write",), (
         f"the seeded run must trace one collection_write call, it shows {names}"
     )
     held = require_memory(db, _COLLECTION).read_all()

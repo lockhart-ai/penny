@@ -145,16 +145,17 @@ class ToolResult(BaseModel):
     back to the most relevant reply at egress (``MediaStore.select_image``).
 
     - ``stop``: the enumerated write-gate outcome that ends a must-act (collector)
-      run at the chokepoint (#1587) — set by ``collection_write`` when the write
-      resolved to a STOP-worthy outcome (a watch's unchanged re-observation).  The
+      run at the chokepoint (#1587) — set by ``memory_write``'s collection branch
+      when the write resolved to a STOP-worthy outcome (a watch's unchanged
+      re-observation).  The
       collector loop honors it (``should_stop_loop``) and stamps it as the run's
       stop reason; the chat loop never reads it, so a chat write gets the same
       enumerated text WITHOUT a loop-stop (chat isn't must-act).  ``None`` for every
       other call.
-    - ``saved_keys`` / ``merged_keys``: which of a ``collection_write`` call's entries
+    - ``saved_keys`` / ``merged_keys``: which of a ``memory_write`` call's entries
       landed under their own key (new, or an exact-key content refresh) versus merged
       into an EXISTING entry under a DIFFERENT key the identity ladder (#2715) matched
-      it to — set by ``CollectionWriteTool._format_results`` and read by that tool's own
+      it to — set by ``MemoryWriteTool._format_results`` and read by that tool's own
       ``to_result_narration`` so the headline names what the write actually did rather
       than re-deriving it from the call's arguments (#2758): a cross-key merge redirects
       the content onto the matched entry, so a headline built from the key the model

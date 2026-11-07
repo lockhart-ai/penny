@@ -367,8 +367,9 @@ class EntryDecider:
 
 
 class WriteDecisionCache:
-    """Caches ``collection_write``'s identity-ladder decisions, keyed by the
-    run and the exact call (collection + entries) that produced them (#2933).
+    """Caches ``memory_write``'s (collection branch) identity-ladder decisions,
+    keyed by the run and the exact call (collection + entries) that produced
+    them (#2933).
 
     The ladder's decision-model rung (``EntryDecider.decide``) is
     non-deterministic — asked twice, it can answer differently.  Without this,
@@ -378,7 +379,7 @@ class WriteDecisionCache:
     apply with identical arguments in the SAME run reads them back instead of
     asking the decision model again, so the two can never diverge.
 
-    One per run, passed as an explicit parameter (``CollectionWriteTool``'s own
+    One per run, passed as an explicit parameter (``MemoryWriteTool``'s own
     constructor, threaded the same way ``HandleTable`` is) — never ambient
     state.  Keyed on the entries' ``key``/``content`` TEXT (plain
     ``(key, content)`` pairs the caller extracts from its own call

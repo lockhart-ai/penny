@@ -417,7 +417,8 @@ class Agent:
         Penny user so notify can address them by name and the profile
         section reads correctly.  Reads ``self.name`` (class attr — also
         the prompt type identifier in promptlog) to drive the cycle.  Every cursored
-        read in the surface (``CursorReadTool`` — ``log_read``) leaves a PENDING cursor
+        read in the surface (``CursorReadTool`` — ``memory_read``'s log branch)
+        leaves a PENDING cursor
         advance, returned on the result for the CALLER to settle (#1936) — a cursor and
         a reverted write are the same claim about how much of the run was real, so they
         are settled together at the end rather than one of them here.
@@ -1523,7 +1524,7 @@ class Agent:
         field (``Functions?????``, which would otherwise flow to a tool-not-found error
         that keeps the poison in context) — are transport artifacts, checked on every
         draw.  Serialising the tool-call arguments is what lets the guard catch the
-        common collapse case, where it lands in a ``collection_write`` / ``done``
+        common collapse case, where it lands in a ``memory_write`` / ``done``
         argument rather than in visible prose.
 
         A draw carrying real tool calls is otherwise clean by construction — it IS a
@@ -1860,7 +1861,7 @@ class Agent:
         Default: no scope — chat-style agents see the full chat surface
         (lifecycle + reads, no entry mutations).  ``Collector`` overrides
         to return its current target's name, so ``build_memory_tools``
-        returns the collector surface (reads + log_append + entry
+        returns the collector surface (reads + memory_write + entry
         mutations keyed to that target — writes to ANY collection are
         allowed, #2963; the author and read cursors stay bound to it).
         """
@@ -1885,10 +1886,10 @@ class Agent:
         mutation records it as the change's cause.  Passed as an explicit
         parameter, never ambient state.
 
-        ``decision_cache`` (#2933) is ``collection_write``'s plan-decision cache —
-        one per run, like ``handles``.  ``None`` builds a fresh one here; since
-        this method itself is called once per run, that is exactly one cache
-        per run either way.
+        ``decision_cache`` (#2933) is ``memory_write``'s collection-branch
+        plan-decision cache — one per run, like ``handles``.  ``None`` builds a
+        fresh one here; since this method itself is called once per run, that
+        is exactly one cache per run either way.
         """
         table = handles if handles is not None else HandleTable()
         decisions = decision_cache if decision_cache is not None else WriteDecisionCache()
@@ -2294,7 +2295,7 @@ class Agent:
         # A media row this call created (generate_image) rides to egress on the
         # record → ControllerResponse.generated_media_ids → deterministic attach.
         record.media_id = result.media_id
-        # A write-gate STOP (collection_write on a collector-scoped write, #1587)
+        # A write-gate STOP (memory_write on a collector-scoped write, #1587)
         # rides on the record → should_stop_loop exits the collector loop and
         # _cycle_result stamps it as the run's stop reason.
         record.stop_reason = result.stop

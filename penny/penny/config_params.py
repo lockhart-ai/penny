@@ -195,7 +195,7 @@ ConfigParam(
         "and cuts back to N only at the session's first turn or at "
         "CHAT_SESSION_MAX_TURNS (#3077; previously grew from N to 2N-1 and "
         "cut back every N turns, #2756). Older turns stay reachable through "
-        "log_read, find, and the self-state's recent activity."
+        "memory_read, find, and the self-state's recent activity."
     ),
     type=int,
     default=5,
@@ -256,7 +256,7 @@ ConfigParam(
     description=(
         "The conversation map's line ceiling (#2752, about 35 tokens a line). "
         "Past it the OLDEST WHOLE DAY collapses into one line naming its "
-        "log_read read — never line by line, which would break the cached "
+        "memory_read read — never line by line, which would break the cached "
         "prefix every turn."
     ),
     type=int,

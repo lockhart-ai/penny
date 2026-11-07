@@ -74,20 +74,17 @@ from penny.tools.memory_tools import (
     SCHEDULE_PARAM_DESCRIPTION,
     CollectionArchiveTool,
     CollectionCreateTool,
-    CollectionGetTool,
-    CollectionKeysTool,
-    CollectionListTool,
     CollectionRemoveTool,
     CollectionSetTool,
     CollectionUpdateTool,
-    CollectionWriteTool,
     FindTool,
     GetEventTool,
-    LogAppendTool,
     LogCreateTool,
-    LogGetTool,
-    LogReadTool,
-    MemoryMetadataTool,
+    MemoryGetTool,
+    MemoryInfoTool,
+    MemoryKeysTool,
+    MemoryReadTool,
+    MemoryWriteTool,
     ReadRunCallsTool,
     SynthesizeTool,
     _format_unsure,
@@ -185,7 +182,7 @@ class _KeyOnlyFailingEmbedClient:
     """Fails only the embed of a specific string (the key), returning a real
     vector for everything else (the content).
 
-    ``CollectionWriteTool._build_entry`` embeds key then content in two calls, so
+    ``MemoryWriteTool._build_entry`` embeds key then content in two calls, so
     this reproduces a transient miss that lands on the key alone — the entry would
     be stored missing its key vector, which the write path refuses (an entry must
     carry all its vectors).  The startup backfill is the safety net for a
@@ -1096,7 +1093,7 @@ class TestInertCollections:
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), name="deals-watch", description="track the trail-runner shoe deals"
         )
-        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="deals-watch")
+        result = await MemoryInfoTool(db).execute(CallLink.new_top(), memory="deals-watch")
         assert "prompt: none" in result.message
         assert "description: track the trail-runner shoe deals" in result.message
 
@@ -1109,11 +1106,11 @@ class TestInertCollections:
         _seed_collection(db, name="big-pile", schedule=None, extraction_prompt=None)
         entries = [EntryInput(key=f"item-{i:02d}", content=f"content {i}") for i in range(22)]
         require_memory(db, "big-pile").write_rule_decided(entries, author="chat")
-        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="big-pile")
+        result = await MemoryInfoTool(db).execute(CallLink.new_top(), memory="big-pile")
         assert (
             "Showing 20 of 22 entries in big-pile, newest first. For more, "
-            "collection_list{big-pile, k: <n>}; for an overview, "
-            "collection_keys{big-pile}; to search, find{...}"
+            "memory_read{big-pile, k: <n>}; for an overview, "
+            "memory_keys{big-pile}; to search, find{...}"
         ) in result.message
         assert "keys: " in result.message
         assert "key='item-21'" in result.message  # the newest, shown
@@ -1855,7 +1852,7 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -1864,7 +1861,7 @@ class TestCollectionWritesAndReads:
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[
                 {"key": "dark roast", "content": "loves dark roast"},
                 {"key": "cold brew", "content": "enjoys cold brew"},
@@ -1872,7 +1869,7 @@ class TestCollectionWritesAndReads:
         )
         assert "Wrote 2 entries to 'likes'" in result.message
         assert result.mutated is True
-        latest = await CollectionListTool(db).execute(CallLink.new_top(), collection="likes")
+        latest = await MemoryReadTool(db, "test", None).execute(CallLink.new_top(), memory="likes")
         assert "dark roast" in latest.message
         assert "cold brew" in latest.message
         # Each rendered entry carries an absolute UTC timestamp so the model can
@@ -1883,7 +1880,7 @@ class TestCollectionWritesAndReads:
         # holds is EXPANDED before the write, so the store keeps real URLs (#2717).
         table = HandleTable()
         table.register("https://roasts.example/dark")
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -1893,7 +1890,7 @@ class TestCollectionWritesAndReads:
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[
                 {"key": "dark roast", "content": "loves dark roast — [the roaster] {link 101}"}
             ],
@@ -1903,9 +1900,7 @@ class TestCollectionWritesAndReads:
         # handle — a URL the model reads always arrives as a handle (#2717).
         stored = require_memory(db, "likes").get("dark roast")[0]
         assert "https://roasts.example/dark" in stored.content
-        get = await CollectionGetTool(db).execute(
-            CallLink.new_top(), collection="likes", key="dark roast"
-        )
+        get = await MemoryGetTool(db).execute(CallLink.new_top(), memory="likes", key="dark roast")
         assert "[the roaster] {link 101}" in get.message
         assert "https://roasts.example/dark" not in get.message
 
@@ -1914,7 +1909,7 @@ class TestCollectionWritesAndReads:
         # (a held-citation entry and a no-handles entry) lands unaffected.
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[
                 {"key": "espresso", "content": "raves about the crema {link 999}"},
                 {"key": "light roast", "content": "likes light roast — [the roaster] {link 101}"},
@@ -1937,7 +1932,7 @@ class TestCollectionWritesAndReads:
         # whole reply.
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[
                 {"key": "espresso", "content": "raves about the crema {link 999}"},
                 {"key": "pour over", "content": "brews pour over at {link 103}"},
@@ -1996,7 +1991,7 @@ class TestCollectionWritesAndReads:
         (placeholder description + created_by_run_id stamp); and a collector-
         scoped write is never materialized."""
         _seed_collection(db, name="gear-notes", description="gear notes")
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2007,7 +2002,7 @@ class TestCollectionWritesAndReads:
         # Rules-same (plural variant, folded by singularize): 'gear-note' → 'gear-notes'.
         result = await write.execute(
             CallLink.new_top(),
-            collection="gear-note",
+            memory="gear-note",
             entries=[{"key": "tent", "content": "3kg tent"}],
         )
         assert result.mutated is True
@@ -2019,13 +2014,15 @@ class TestCollectionWritesAndReads:
         assert (
             "tent"
             in (
-                await CollectionListTool(db).execute(CallLink.new_top(), collection="gear-notes")
+                await MemoryReadTool(db, "test", None).execute(
+                    CallLink.new_top(), memory="gear-notes"
+                )
             ).message
         )
         # Model-same (a true typo, below the rules): the decider's YES redirects.
         typo_stub = _StubDecisionClient("yes")
         typo_decider = CollectionNameDecider(typo_stub)
-        write_with_model = CollectionWriteTool(
+        write_with_model = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2034,7 +2031,7 @@ class TestCollectionWritesAndReads:
         )
         result = await write_with_model.execute(
             CallLink.new_top(),
-            collection="gear-ntoes",
+            memory="gear-ntoes",
             entries=[{"key": "stove", "content": "canister stove"}],
         )
         assert result.mutated is True and "'gear-notes'" in result.message
@@ -2046,7 +2043,7 @@ class TestCollectionWritesAndReads:
         # owns the near-miss — nothing is written and nothing is created.
         result = await write.execute(
             CallLink.new_top(),
-            collection="gear-ntoes",
+            memory="gear-ntoes",
             entries=[{"key": "tent", "content": "3kg tent"}],
         )
         assert result.success is False
@@ -2056,7 +2053,7 @@ class TestCollectionWritesAndReads:
         assert db.memories.get("gear-ntoes") is None
         # A decisive NO across the shortlist → auto-create, narrated, provenance stamped.
         no_decider = CollectionNameDecider(_StubDecisionClient("no"))
-        write_no_match = CollectionWriteTool(
+        write_no_match = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2066,7 +2063,7 @@ class TestCollectionWritesAndReads:
         )
         result = await write_no_match.execute(
             CallLink.new_top(),
-            collection="trail-recipes",
+            memory="trail-recipes",
             entries=[{"key": "oats", "content": "overnight oats"}],
         )
         assert result.mutated is True
@@ -2091,7 +2088,7 @@ class TestCollectionWritesAndReads:
         # auto-creates its own deck.
         deck_stub = _StubDecisionClient("yes")
         deck_decider = CollectionNameDecider(deck_stub)
-        write_deck = CollectionWriteTool(
+        write_deck = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2101,7 +2098,7 @@ class TestCollectionWritesAndReads:
         _seed_collection(db, name="aurora-deck-2", description="aurora deck 2")
         result = await write_deck.execute(
             CallLink.new_top(),
-            collection="aurora-deck-3",
+            memory="aurora-deck-3",
             entries=[{"key": "price", "content": "$4.20"}],
         )
         assert result.mutated is True
@@ -2109,7 +2106,7 @@ class TestCollectionWritesAndReads:
         assert db.memories.get("aurora-deck-2").name == "aurora-deck-2"
         assert deck_stub.states == []
         # A collector-scoped write is pinned — no materialization, plain refusal.
-        scoped = CollectionWriteTool(
+        scoped = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="collector",
@@ -2118,7 +2115,7 @@ class TestCollectionWritesAndReads:
             scope="gear-notes",
         )
         result = await scoped.execute(
-            CallLink.new_top(), collection="something-else", entries=[{"key": "x", "content": "y"}]
+            CallLink.new_top(), memory="something-else", entries=[{"key": "x", "content": "y"}]
         )
         assert result.success is False
         assert db.memories.get("something-else") is None
@@ -2128,14 +2125,14 @@ class TestCollectionWritesAndReads:
         """An empty ``entries`` batch gets a named, actionable rejection through the
         arg-validation envelope — not Pydantic's bare "List should have at least 1
         item" (the house wording-unification pass)."""
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
             decider=_NO_MODEL,
             name_decider=_NO_NAME_MODEL,
         )
-        result = await write.run(CallLink.new_top(), collection="likes", entries=[])
+        result = await write.run(CallLink.new_top(), memory="likes", entries=[])
         assert result.success is False
         assert "at least one entry" in result.message
         assert "List should have at least 1 item" not in result.message
@@ -2145,7 +2142,7 @@ class TestCollectionWritesAndReads:
         """A misspelled/extraneous key INSIDE a batch entry surfaces the nested loc
         path and suggests the valid sibling, rather than being silently dropped or
         mis-rendered as the whole ``entries`` field (#1416)."""
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2154,7 +2151,7 @@ class TestCollectionWritesAndReads:
         )
         result = await write.run(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "k", "content": "v", "contnt": "typo"}],
         )
         assert result.success is False
@@ -2179,7 +2176,7 @@ class TestCollectionWritesAndReads:
         assert "matched as the same thing as 'Genesis (band)'" in merged
         assert 'It held: "Genesis, the prog band"' in merged
         assert (
-            "collection_write{collection: 'likes', "
+            "memory_write{memory: 'likes', "
             "entries: [{'key': 'genesis', 'content': \"Genesis, the prog band\"}]}" in merged
         )
         assert "write yours under its own key ('Genesis (band)')" in merged
@@ -2223,17 +2220,17 @@ class TestCollectionWritesAndReads:
         """``to_result_narration`` reads the structured ``saved_keys``/``merged_keys``
         fields a real write populates (#2758) — a failure, an unchanged no-op, and a
         merge all narrate off the result, never off the arguments passed."""
-        args = {"collection": "rules", "entries": [{"key": "whatever", "content": "x"}]}
+        args = {"memory": "rules", "entries": [{"key": "whatever", "content": "x"}]}
         failed = ToolResult(message="boom", success=False)
-        assert CollectionWriteTool.to_result_narration(args, failed) == (
+        assert MemoryWriteTool.to_result_narration(args, failed) == (
             "You tried to save to `rules` but it didn't work:"
         )
         unchanged = ToolResult(message="unchanged", mutated=False)
-        assert CollectionWriteTool.to_result_narration(args, unchanged) == (
+        assert MemoryWriteTool.to_result_narration(args, unchanged) == (
             "You didn't add anything new to `rules` — it was already there:"
         )
         merged = ToolResult(message="x", mutated=True, merged_keys=["search-before-answering"])
-        assert CollectionWriteTool.to_result_narration(args, merged) == (
+        assert MemoryWriteTool.to_result_narration(args, merged) == (
             "You updated the existing `search-before-answering` in `rules` — it "
             "matched what you wrote as the same thing:"
         )
@@ -2254,7 +2251,7 @@ class TestCollectionWritesAndReads:
         assert "'2026-10-21' was written as a new entry" in asked
         assert "also holds '2026-10-20'" in asked
         assert (
-            "collection_write{collection: 'daily_headlines', "
+            "memory_write{memory: 'daily_headlines', "
             "entries: [{'key': '2026-10-20', 'content': <the value>}]}" in asked
         )
         assert "if it is a different thing, the new entry stands as written" in asked
@@ -2274,7 +2271,7 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2283,12 +2280,12 @@ class TestCollectionWritesAndReads:
         )
         await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
         # The write landed (the entry exists), so it counts as work.
@@ -2296,7 +2293,7 @@ class TestCollectionWritesAndReads:
         assert "'dark roast coffee' was written as a new entry" in result.message
         assert "also holds 'dark roast'" in result.message
         assert (
-            "collection_write{collection: 'likes', "
+            "memory_write{memory: 'likes', "
             "entries: [{'key': 'dark roast', 'content': <the value>}]}" in result.message
         )
         assert "if it is a different thing, the new entry stands as written" in result.message
@@ -2314,7 +2311,7 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2323,12 +2320,12 @@ class TestCollectionWritesAndReads:
         )
         await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast coffee", "content": "a fresher value"}],
         )
         assert result.mutated is True
@@ -2336,7 +2333,7 @@ class TestCollectionWritesAndReads:
         assert "matched as the same thing as 'dark roast coffee'" in result.message
         assert 'It held: "first body"' in result.message
         assert (
-            "collection_write{collection: 'likes', "
+            "memory_write{memory: 'likes', "
             "entries: [{'key': 'dark roast', 'content': \"first body\"}]}" in result.message
         )
         entries = db.memories.memory("likes").read_all()
@@ -2347,8 +2344,8 @@ class TestCollectionWritesAndReads:
         # under, never the new key 'dark roast coffee' the model passed.
         assert result.saved_keys == []
         assert result.merged_keys == ["dark roast"]
-        narration = CollectionWriteTool.to_result_narration(
-            {"collection": "likes", "entries": [{"key": "dark roast coffee"}]}, result
+        narration = MemoryWriteTool.to_result_narration(
+            {"memory": "likes", "entries": [{"key": "dark roast coffee"}]}, result
         )
         assert narration == (
             "You updated the existing `dark roast` in `likes` — it matched what you "
@@ -2367,7 +2364,7 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2376,12 +2373,12 @@ class TestCollectionWritesAndReads:
         )
         await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[
                 {"key": "mountain views", "content": "likes a window seat with a view"},
                 {"key": "dark roast coffee", "content": "a fresher value"},
@@ -2390,9 +2387,7 @@ class TestCollectionWritesAndReads:
         assert result.mutated is True
         assert result.saved_keys == ["mountain views"]
         assert result.merged_keys == ["dark roast"]
-        narration = CollectionWriteTool.to_result_narration(
-            {"collection": "likes", "entries": []}, result
-        )
+        narration = MemoryWriteTool.to_result_narration({"memory": "likes", "entries": []}, result)
         assert narration == (
             'You saved "mountain views" and updated the existing `dark roast` in '
             "`likes` — it matched what you wrote as the same thing:"
@@ -2408,7 +2403,7 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         # A collector binds its writes to one collection via ``scope``.
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2418,7 +2413,7 @@ class TestCollectionWritesAndReads:
         )
         await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         # A re-write under the SAME key with the SAME value is the change-gate's
@@ -2429,7 +2424,7 @@ class TestCollectionWritesAndReads:
         # the quiet cycle is the model's recorded decision.
         same_key = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         assert "Unchanged: 'dark roast' already holds the same value" in same_key.message
@@ -2440,7 +2435,7 @@ class TestCollectionWritesAndReads:
         # never a rejection that leaves a write stranded (#2715).
         partial = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[
                 {"key": "cold brew", "content": "a brand new distinct entry"},
                 {"key": "dark roast blend", "content": "roasted longer this season"},
@@ -2455,7 +2450,7 @@ class TestCollectionWritesAndReads:
         # nothing to do about a value that is already stored.  Identical content
         # settles NOTHING by rule now — the decision model sees both keys and its
         # ``same_value`` verdict reports the no-news.
-        decider_write = CollectionWriteTool(
+        decider_write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2465,7 +2460,7 @@ class TestCollectionWritesAndReads:
         )
         same_value = await decider_write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
         )
         assert (
@@ -2476,7 +2471,7 @@ class TestCollectionWritesAndReads:
             "Already recorded: 'morning roast selection' is already stored as 'dark roast'"
             in same_value.message
         )
-        assert "collection_write{" not in same_value.message
+        assert "memory_write{" not in same_value.message
         assert "was not written" not in same_value.message
 
     @pytest.mark.asyncio
@@ -2491,7 +2486,7 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2500,13 +2495,13 @@ class TestCollectionWritesAndReads:
         )
         await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         # Identical content settles nothing by rule now (#2715 review) — the
         # decision model sees both keys and its ``same_value`` verdict reports
         # the no-news the exact-key read produces.
-        decider_write = CollectionWriteTool(
+        decider_write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2515,7 +2510,7 @@ class TestCollectionWritesAndReads:
         )
         already = await decider_write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
         )
         assert "Already recorded: 'morning roast selection'" in already.message
@@ -2534,7 +2529,7 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         # No scope → chat surface.
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2543,12 +2538,12 @@ class TestCollectionWritesAndReads:
         )
         await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         unchanged = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "first body"}],
         )
         assert "Unchanged: 'dark roast' already holds the same value" in unchanged.message
@@ -2571,7 +2566,7 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2580,14 +2575,14 @@ class TestCollectionWritesAndReads:
             scope="watch",
         )
         await write.execute(
-            CallLink.new_top(), collection="watch", entries=[{"key": "price", "content": "$42"}]
+            CallLink.new_top(), memory="watch", entries=[{"key": "price", "content": "$42"}]
         )
         changed = await write.execute(
-            CallLink.new_top(), collection="watch", entries=[{"key": "price", "content": "$40"}]
+            CallLink.new_top(), memory="watch", entries=[{"key": "price", "content": "$40"}]
         )
         assert changed.message == (
             "Updated 'price'. It held: \"$42\". If they are different things, "
-            "restore it with collection_write{collection: 'watch', "
+            "restore it with memory_write{memory: 'watch', "
             "entries: [{'key': 'price', 'content': \"$42\"}]} and write yours "
             "under its own key ('price')."
         )
@@ -2598,7 +2593,7 @@ class TestCollectionWritesAndReads:
         assert len(refreshed) == 1
         assert refreshed[0].content == "$40"
         # The gate is shared: a chat-surface write auto-refreshes identically, never STOPs.
-        chat_write = CollectionWriteTool(
+        chat_write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="chat",
@@ -2606,14 +2601,14 @@ class TestCollectionWritesAndReads:
             name_decider=_NO_NAME_MODEL,
         )
         await chat_write.execute(
-            CallLink.new_top(), collection="watch", entries=[{"key": "note", "content": "v1"}]
+            CallLink.new_top(), memory="watch", entries=[{"key": "note", "content": "v1"}]
         )
         chat_changed = await chat_write.execute(
-            CallLink.new_top(), collection="watch", entries=[{"key": "note", "content": "v2"}]
+            CallLink.new_top(), memory="watch", entries=[{"key": "note", "content": "v2"}]
         )
         assert chat_changed.message == (
             "Updated 'note'. It held: \"v1\". If they are different things, "
-            "restore it with collection_write{collection: 'watch', "
+            "restore it with memory_write{memory: 'watch', "
             "entries: [{'key': 'note', 'content': \"v1\"}]} and write yours "
             "under its own key ('note')."
         )
@@ -2694,7 +2689,7 @@ class TestWritesLandedRender:
         arguments were wrong" stay the different outcomes they are."""
         attempts = [
             ToolCallRecord(
-                tool="collection_write",
+                tool="memory_write",
                 arguments={},
                 failed=False,
                 result=(
@@ -2711,7 +2706,7 @@ class TestWritesLandedRender:
         ]
         assert render_nothing_landed(attempts) == (
             "Nothing this turn tried to keep is in the store. What each try came back with:\n"
-            "- `collection_write`: Already recorded: 'sea kayaking' is already stored as "
+            "- `memory_write`: Already recorded: 'sea kayaking' is already stored as "
             "'sea kayaking' — no change since the last write (entry).\n"
             "- `update_entry`: Key 'kayak' not found in 'hobbies'.\n"
             "  Write it as a new entry."
@@ -2744,7 +2739,7 @@ class TestEmbedFailureRefusesWrite:
     @pytest.mark.asyncio
     async def test_collection_write_refuses_when_embedding_fails(self, db):
         await self._make_relevant_collection(db)
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             cast(Any, _FailingEmbedClient()),
             author="test",
@@ -2753,7 +2748,7 @@ class TestEmbedFailureRefusesWrite:
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "loves dark roast"}],
         )
         # Fail-hard: actionable failure naming the transient cause and binding the
@@ -2762,7 +2757,7 @@ class TestEmbedFailureRefusesWrite:
         assert result.mutated is False
         assert "transient embedding error" in result.message
         assert "'dark roast'" in result.message
-        assert "collection_write{collection: 'likes'" in result.message
+        assert "memory_write{memory: 'likes'" in result.message
         # Nothing persisted — the invariant "every stored entry has a vector" holds.
         with Session(db.engine) as session:
             rows = session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == "likes")).all()
@@ -2775,7 +2770,7 @@ class TestEmbedFailureRefusesWrite:
         # atomically and nothing lands.  (The backfill now also repairs a
         # key-null row, #1468, but the write path won't persist one to begin with.)
         await self._make_relevant_collection(db)
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             cast(Any, _KeyOnlyFailingEmbedClient("dark roast")),
             author="test",
@@ -2784,7 +2779,7 @@ class TestEmbedFailureRefusesWrite:
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "dark roast", "content": "loves dark roast"}],
         )
         assert result.success is False
@@ -2799,14 +2794,20 @@ class TestEmbedFailureRefusesWrite:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, cast(Any, _FailingEmbedClient()), author="test")
+        append = MemoryWriteTool(
+            db,
+            cast(Any, _FailingEmbedClient()),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
         result = await append.execute(
-            CallLink.new_top(), log="events", content="something happened"
+            CallLink.new_top(), memory="events", entries=[{"content": "something happened"}]
         )
         assert result.success is False
         assert result.mutated is False
         assert "transient embedding error" in result.message
-        assert "log_append{log: 'events'" in result.message
+        assert "memory_write{memory: 'events'" in result.message
         with Session(db.engine) as session:
             rows = session.exec(
                 select(MemoryEntry).where(MemoryEntry.memory_name == "events")
@@ -2822,27 +2823,23 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
             decider=_NO_MODEL,
             name_decider=_NO_NAME_MODEL,
-        ).execute(
-            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "hello"}]
-        )
+        ).execute(CallLink.new_top(), memory="likes", entries=[{"key": "k", "content": "hello"}])
         assert (
             "hello"
             in (
-                await CollectionGetTool(db).execute(CallLink.new_top(), collection="likes", key="k")
+                await MemoryGetTool(db).execute(CallLink.new_top(), memory="likes", key="k")
             ).message
         )
-        missing = await CollectionGetTool(db).execute(
-            CallLink.new_top(), collection="likes", key="absent"
-        )
+        missing = await MemoryGetTool(db).execute(CallLink.new_top(), memory="likes", key="absent")
         assert "not found" in missing.message
         # A key one typo away from a stored one is named in the miss, so the retry is a copy.
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2850,21 +2847,21 @@ class TestEmbedFailureRefusesWrite:
             name_decider=_NO_NAME_MODEL,
         ).execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "sea kayaking", "content": "weekends"}],
         )
-        near = await CollectionGetTool(db).execute(
-            CallLink.new_top(), collection="likes", key="sea kayakng"
+        near = await MemoryGetTool(db).execute(
+            CallLink.new_top(), memory="likes", key="sea kayakng"
         )
         assert "did you mean key 'sea kayaking'?" in near.message
         # The proven-win read guidance (collection_keys / find by meaning), AND the
         # rejection now closes the residual write-vs-update decision: once the model
         # finds the entry under a different key it must UPDATE that entry, not
         # collection_write it (which the dedup rejects as a duplicate).
-        assert "collection_keys{'likes'}" in missing.message
+        assert "memory_keys{'likes'}" in missing.message
         assert "find{query: <what you're looking for>, memory: 'likes'}" in missing.message
         assert (
-            "collection_write{collection: 'likes', entries: [{'key': <the key you found>, "
+            "memory_write{memory: 'likes', entries: [{'key': <the key you found>, "
             "'content': <the new content>}]}" in missing.message
         )
         assert "the store replaces the content of the key you name" in missing.message
@@ -2872,9 +2869,7 @@ class TestEmbedFailureRefusesWrite:
         # display form) is never silently resolved — it's rejected with a teaching
         # error that names the mistake, the current key='...' render, and the bare
         # key ready to reuse.
-        bracketed = await CollectionGetTool(db).execute(
-            CallLink.new_top(), collection="likes", key="[k]"
-        )
+        bracketed = await MemoryGetTool(db).execute(CallLink.new_top(), memory="likes", key="[k]")
         assert bracketed.success is False
         assert bracketed.message == (
             "Key '[k]' not found in 'likes'. The enclosing [brackets] are not part "
@@ -2883,13 +2878,13 @@ class TestEmbedFailureRefusesWrite:
         )
         # A bracket-wrapped key whose bare form doesn't exist either gets the
         # ordinary not-found error, not the bracket teaching rejection.
-        double_miss = await CollectionGetTool(db).execute(
-            CallLink.new_top(), collection="likes", key="[absent]"
+        double_miss = await MemoryGetTool(db).execute(
+            CallLink.new_top(), memory="likes", key="[absent]"
         )
         assert "Key '[absent]' not found" in double_miss.message
         assert "Retry with" not in double_miss.message
         # A key that genuinely contains brackets exact-matches with no rejection.
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2897,12 +2892,10 @@ class TestEmbedFailureRefusesWrite:
             name_decider=_NO_NAME_MODEL,
         ).execute(
             CallLink.new_top(),
-            collection="likes",
+            memory="likes",
             entries=[{"key": "[lit]", "content": "bracket literal body"}],
         )
-        literal = await CollectionGetTool(db).execute(
-            CallLink.new_top(), collection="likes", key="[lit]"
-        )
+        literal = await MemoryGetTool(db).execute(CallLink.new_top(), memory="likes", key="[lit]")
         assert literal.success is True
         assert "bracket literal body" in literal.message
 
@@ -2915,7 +2908,7 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2923,12 +2916,12 @@ class TestEmbedFailureRefusesWrite:
             name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
-            CallLink.new_top(), collection="likes", entries=[{"key": "first", "content": "1"}]
+            CallLink.new_top(), memory="likes", entries=[{"key": "first", "content": "1"}]
         )
         await write.execute(
-            CallLink.new_top(), collection="likes", entries=[{"key": "second", "content": "2"}]
+            CallLink.new_top(), memory="likes", entries=[{"key": "second", "content": "2"}]
         )
-        listing = await CollectionKeysTool(db).execute(CallLink.new_top(), collection="likes")
+        listing = await MemoryKeysTool(db).execute(CallLink.new_top(), memory="likes")
         assert listing.message == "- first\n- second"
 
     @pytest.mark.asyncio
@@ -2942,7 +2935,7 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        listing = await CollectionKeysTool(db).execute(CallLink.new_top(), collection="likes")
+        listing = await MemoryKeysTool(db).execute(CallLink.new_top(), memory="likes")
         assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
 
     @pytest.mark.asyncio
@@ -2954,7 +2947,7 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -2962,10 +2955,10 @@ class TestEmbedFailureRefusesWrite:
             name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
-            CallLink.new_top(), collection="likes", entries=[{"key": "a", "content": "1"}]
+            CallLink.new_top(), memory="likes", entries=[{"key": "a", "content": "1"}]
         )
-        rendered = await CollectionListTool(db).execute(
-            CallLink.new_top(), collection="likes", k=5, order="random"
+        rendered = await MemoryReadTool(db, "test", None).execute(
+            CallLink.new_top(), memory="likes", k=5, order="random"
         )
         assert "key='a' 1" in rendered.message
 
@@ -3004,7 +2997,9 @@ class TestEmbedFailureRefusesWrite:
         total = limit + 3
         self._seed_entries(db, "ai-news", total, key="item", content="story")
 
-        rendered = await CollectionListTool(db).execute(CallLink.new_top(), collection="ai-news")
+        rendered = await MemoryReadTool(db, "test", None).execute(
+            CallLink.new_top(), memory="ai-news"
+        )
 
         # Written oldest-to-newest (item-01 .. item-{total}); newest-first shows the
         # last `limit` written, highest index first.
@@ -3014,7 +3009,7 @@ class TestEmbedFailureRefusesWrite:
         )
         expected = (
             f"Showing {limit} of {total} entries in ai-news, newest first. For more, "
-            f"collection_list{{ai-news, k: <n>}}; for an overview, collection_keys{{ai-news}}; "
+            f"memory_read{{ai-news, k: <n>}}; for an overview, memory_keys{{ai-news}}; "
             f"to search, find{{...}}\n{newest_first}"
         )
         assert rendered.message == expected
@@ -3029,7 +3024,9 @@ class TestEmbedFailureRefusesWrite:
         _seed_collection(db, name="likes", description="x")
         self._seed_entries(db, "likes", 2, key="pref", content="loves")
 
-        rendered = await CollectionListTool(db).execute(CallLink.new_top(), collection="likes")
+        rendered = await MemoryReadTool(db, "test", None).execute(
+            CallLink.new_top(), memory="likes"
+        )
 
         entries = require_memory(db, "likes").read_latest(None)
         newest_first = "\n".join(
@@ -3046,8 +3043,8 @@ class TestEmbedFailureRefusesWrite:
         _seed_collection(db, name="recipes", description="x")
         self._seed_entries(db, "recipes", 5, key="dish", content="recipe")
 
-        rendered = await CollectionListTool(db).execute(
-            CallLink.new_top(), collection="recipes", k=3
+        rendered = await MemoryReadTool(db, "test", None).execute(
+            CallLink.new_top(), memory="recipes", k=3
         )
 
         shown = require_memory(db, "recipes").read_latest(3)
@@ -3056,7 +3053,7 @@ class TestEmbedFailureRefusesWrite:
         )
         expected = (
             "Showing 3 of 5 entries in recipes, newest first. For more, "
-            "collection_list{recipes, k: <n>}; for an overview, collection_keys{recipes}; "
+            "memory_read{recipes, k: <n>}; for an overview, memory_keys{recipes}; "
             f"to search, find{{...}}\n{newest_first}"
         )
         assert rendered.message == expected
@@ -3073,13 +3070,13 @@ class TestEmbedFailureRefusesWrite:
         total = limit + 5
         self._seed_entries(db, "trivia", total, key="fact", content="fact")
 
-        rendered = await CollectionListTool(db).execute(
-            CallLink.new_top(), collection="trivia", order="random"
+        rendered = await MemoryReadTool(db, "test", None).execute(
+            CallLink.new_top(), memory="trivia", order="random"
         )
 
         header = (
             f"Showing {limit} of {total} entries in trivia, random sample. For more, "
-            f"collection_list{{trivia, k: <n>}}; for an overview, collection_keys{{trivia}}; "
+            f"memory_read{{trivia, k: <n>}}; for an overview, memory_keys{{trivia}}; "
             f"to search, find{{...}}"
         )
         assert rendered.message.startswith(f"{header}\n")
@@ -3100,7 +3097,7 @@ class TestCollectionMutations:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -3108,13 +3105,13 @@ class TestCollectionMutations:
             name_decider=_NO_NAME_MODEL,
         )
         await write.execute(
-            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "old"}]
+            CallLink.new_top(), memory="likes", entries=[{"key": "k", "content": "old"}]
         )
         result = await write.execute(
-            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "new"}]
+            CallLink.new_top(), memory="likes", entries=[{"key": "k", "content": "new"}]
         )
         assert "Updated 'k'. It held: \"old\"." in result.message
-        assert "restore it with collection_write" in result.message
+        assert "restore it with memory_write" in result.message
         assert db.memory("likes").get("k")[0].content == "new"
         # A bracket-wrapped key (display form copied from an entry list) on the
         # delete path is rejected with a teaching error naming the bare key —
@@ -3167,7 +3164,9 @@ class TestDidYouMeanSuggestions:
         leads the not-found render with the nearest existing name — the string
         (typo) leg, universal because it needs no embedding client."""
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
-        result = await CollectionListTool(db).execute(CallLink.new_top(), collection="aurora-deone")
+        result = await MemoryReadTool(db, "test", None).execute(
+            CallLink.new_top(), memory="aurora-deone"
+        )
         assert result.success is False
         assert result.message == (
             "Memory 'aurora-deone' not found — did you mean 'aurora-deck-2'? Check the "
@@ -3183,7 +3182,7 @@ class TestDidYouMeanSuggestions:
         """A miss with nothing close renders EXACTLY today's message — no empty
         'did you mean' artifact, no changed punctuation."""
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
-        result = await CollectionListTool(db).execute(CallLink.new_top(), collection="xyzzy")
+        result = await MemoryReadTool(db, "test", None).execute(CallLink.new_top(), memory="xyzzy")
         assert result.success is False
         assert result.message == (
             "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
@@ -3195,13 +3194,25 @@ class TestDidYouMeanSuggestions:
 
     @pytest.mark.asyncio
     async def test_memory_name_miss_leads_with_the_nearest_by_meaning(self, db, mock_llm):
-        """When the typo leg finds nothing, an embedding-capable tool (log_append)
+        """When the typo leg finds nothing, an embedding-capable tool (memory_write)
         falls back to the MEANING leg — the collection whose description anchor is
-        closest to the missed name, clearing the reused dedup threshold."""
+        closest to the missed name, clearing the reused dedup threshold.  The entry
+        carries a `key` so the miss resolves on NAME before the collection branch's
+        own (orthogonal) key-required check ever runs — a name that doesn't exist
+        at all defaults to the collection write path, same as the retired
+        ``collection_write`` always did."""
         _seed_collection(db, name="garage", description="tracking oil changes and tire rotations")
-        tool = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        tool = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
         result = await tool.execute(
-            CallLink.new_top(), log="oil changes and tire rotations", content="my car"
+            CallLink.new_top(),
+            memory="oil changes and tire rotations",
+            entries=[{"key": "service", "content": "my car"}],
         )
         assert result.success is False
         assert result.message == (
@@ -3218,7 +3229,7 @@ class TestDidYouMeanSuggestions:
         """Same key suggestion on collection_remove — the nearest key leads,
         the existing 'nothing to delete' guidance follows."""
         _seed_collection(db, name="notes")
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -3227,7 +3238,7 @@ class TestDidYouMeanSuggestions:
         )
         await write.execute(
             CallLink.new_top(),
-            collection="notes",
+            memory="notes",
             entries=[{"key": "quarterly-report", "content": "x"}],
         )
         result = await CollectionRemoveTool(db).execute(
@@ -3237,7 +3248,7 @@ class TestDidYouMeanSuggestions:
         assert result.message == (
             "No entry with key 'quarterly-reprot' in 'notes' — did you mean key "
             "'quarterly-report'? Nothing to delete. List the current keys with "
-            "collection_keys{'notes'} to find it."
+            "memory_keys{'notes'} to find it."
         )
         # No close key → byte-identical to today's message.
         far = await CollectionRemoveTool(db).execute(
@@ -3245,7 +3256,7 @@ class TestDidYouMeanSuggestions:
         )
         assert far.message == (
             "No entry with key 'zzzzz' in 'notes' — nothing to delete. "
-            "List the current keys with collection_keys{'notes'} to find it."
+            "List the current keys with memory_keys{'notes'} to find it."
         )
 
 
@@ -3258,11 +3269,23 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(CallLink.new_top(), log="events", content="first entry")
-        await append.execute(CallLink.new_top(), log="events", content="second entry")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await append.execute(
+            CallLink.new_top(), memory="events", entries=[{"content": "first entry"}]
+        )
+        await append.execute(
+            CallLink.new_top(), memory="events", entries=[{"content": "second entry"}]
+        )
         entry = db.memories.memory("events").read_all()[1]
-        result = await LogGetTool(db).execute(CallLink.new_top(), log="events", id=entry.id)
+        result = await MemoryGetTool(db).execute(
+            CallLink.new_top(), memory="events", key=str(entry.id)
+        )
         assert result.success is True
         assert result.message == (
             f"1 entry from `events`:\n1. [{format_log_timestamp(entry.created_at)}] second entry"
@@ -3276,47 +3299,56 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(CallLink.new_top(), log="events", content="hello")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "hello"}])
         entry = db.memories.memory("events").read_all()[0]
-        rendered = await LogReadTool(db, "chat", scope=None).execute(
-            CallLink.new_top(), log="events"
+        rendered = await MemoryReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), memory="events"
         )
         assert rendered.message == (
             f"1 entry from `events` (oldest first):\n"
             f"1. [{format_log_timestamp(entry.created_at)}] id={entry.id} hello"
         )
-        result = await LogGetTool(db).execute(CallLink.new_top(), log="events", id=entry.id)
+        result = await MemoryGetTool(db).execute(
+            CallLink.new_top(), memory="events", key=str(entry.id)
+        )
         assert "hello" in result.message
 
     @pytest.mark.asyncio
     async def test_log_get_refuses_the_non_id_addressable_stores(self, db, mock_llm):
-        """Each store that isn't an id-addressable log is refused by name, saying how
-        it IS read: a collection by key, messages and run records through
-        ``log_read``.  The refusals name no tool but ``log_read``, so a program whose
-        only route to ``log_get`` is a stored page keeps a closed surface."""
+        """A collection now addresses by `key` through this same tool (#3128) — a
+        miss there is the ordinary not-found refusal, not a type mismatch.  The
+        message-log and run-log facades stay genuinely non-id-addressable
+        regardless: messages and run records are refused by name, saying how they
+        ARE read, through `memory_read`.  The refusals name no tool but
+        `memory_read`, so a program whose only route to `memory_get` is a stored
+        page keeps a closed surface."""
         _seed_collection(db, name="notes", description="x")
         db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
         db.memories.create_log(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG, "audit")
-        tool = LogGetTool(db)
-        collection = await tool.execute(CallLink.new_top(), log="notes", id=1)
+        tool = MemoryGetTool(db)
+        collection = await tool.execute(CallLink.new_top(), memory="notes", key=str(1))
         assert collection.success is False
-        assert collection.message == (
-            "'notes' is a collection, not a log: its entries are read by key, not by id."
-        )
+        assert collection.message.startswith("Key '1' not found in 'notes'")
         user_log = PennyConstants.MEMORY_USER_MESSAGES_LOG
-        messages = await tool.execute(CallLink.new_top(), log=user_log, id=1)
+        messages = await tool.execute(CallLink.new_top(), memory=user_log, key=str(1))
         assert messages.success is False
         assert messages.message == (
             f"'{user_log}' holds messages, and a message is not read by id. "
-            f"Read them with log_read{{'{user_log}'}}."
+            f"Read them with memory_read{{'{user_log}'}}."
         )
         run_log = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
-        runs = await tool.execute(CallLink.new_top(), log=run_log, id=1)
+        runs = await tool.execute(CallLink.new_top(), memory=run_log, key=str(1))
         assert runs.success is False
         assert runs.message == (
             f"'{run_log}' holds run records, and a run is read by the `run <id>` shown "
-            f"beside it, not by an entry id. Read them with log_read{{'{run_log}'}}."
+            f"beside it, not by an entry id. Read them with memory_read{{'{run_log}'}}."
         )
 
     @pytest.mark.asyncio
@@ -3326,10 +3358,10 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        result = await LogGetTool(db).execute(CallLink.new_top(), log="events", id=99)
+        result = await MemoryGetTool(db).execute(CallLink.new_top(), memory="events", key=str(99))
         assert result.success is False
         assert result.message == (
-            "No entry 99 in 'events'. Read it with log_read{'events'} to see its "
+            "No entry 99 in 'events'. Read it with memory_read{'events'} to see its "
             "entries and their ids."
         )
 
@@ -3337,7 +3369,7 @@ class TestLogTools:
     async def test_log_get_unknown_log_gets_the_did_you_mean_refusal(self, db, mock_llm):
         """An unknown log name raises ``MemoryNotFoundError``, which the base turns
         into the standard not-found message — no separate refusal here."""
-        result = await LogGetTool(db).execute(CallLink.new_top(), log="evnts", id=1)
+        result = await MemoryGetTool(db).execute(CallLink.new_top(), memory="evnts", key=str(1))
         assert result.success is False
         assert "Memory 'evnts' not found" in result.message
 
@@ -3348,9 +3380,13 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            CallLink.new_top(), log="events", content="hello"
-        )
+        await MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        ).execute(CallLink.new_top(), memory="events", entries=[{"content": "hello"}])
         entry = db.memories.memory("events").read_all()[0]
         plain = format_entries([entry], source="events", ordering="oldest first")
         assert f"id={entry.id}" not in plain
@@ -3359,17 +3395,29 @@ class TestLogTools:
 
     @pytest.mark.asyncio
     async def test_collection_list_refuses_a_log(self, db, mock_llm):
-        """Collection reads error on a log instead of silently bypassing the
-        cursored log_read/log_get interface (the read_latest-on-a-log footgun)."""
+        """`k`/`order` are collection-only options (#3128): naming one on a log is a
+        teaching error pointing at the log's own `day`/`before` options, never a
+        silent newest-first scan that would bypass the log's cursor (the
+        read_latest-on-a-log footgun)."""
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            CallLink.new_top(), log="events", content="first"
+        await MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        ).execute(CallLink.new_top(), memory="events", entries=[{"content": "first"}])
+        rendered = await MemoryReadTool(db, "test", None).execute(
+            CallLink.new_top(), memory="events", k=5
         )
-        rendered = await CollectionListTool(db).execute(CallLink.new_top(), collection="events")
-        assert "Refused" in rendered.message
-        assert "log_read" in rendered.message
+        assert rendered.success is False
+        assert rendered.message == (
+            "'events' is a log: `k`/`order` only apply to a collection. Read a log with "
+            "`day`/`before` instead, or bare memory_read{'events'} for its next "
+            "batch/window."
+        )
 
     @pytest.mark.asyncio
     async def test_read_latest_rejects_zero_count(self, db, mock_llm):
@@ -3383,21 +3431,21 @@ class TestLogTools:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
             decider=_NO_MODEL,
             name_decider=_NO_NAME_MODEL,
-        ).execute(
-            CallLink.new_top(), collection="notes", entries=[{"key": "a", "content": "first"}]
+        ).execute(CallLink.new_top(), memory="notes", entries=[{"key": "a", "content": "first"}])
+        rejected = await MemoryReadTool(db, "test", None).run(
+            CallLink.new_top(), memory="notes", k=0
         )
-        rejected = await CollectionListTool(db).run(CallLink.new_top(), collection="notes", k=0)
         assert rejected.success is False
         assert "at least 1" in rejected.message
         assert "Omit k" in rejected.message
         # A valid read still returns the entry (the guard only rejects k < 1).
-        ok = await CollectionListTool(db).run(CallLink.new_top(), collection="notes")
+        ok = await MemoryReadTool(db, "test", None).run(CallLink.new_top(), memory="notes")
         assert "first" in ok.message
 
     @pytest.mark.asyncio
@@ -3407,16 +3455,22 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(CallLink.new_top(), log="events", content="hello")
-        rendered = await LogReadTool(db, "chat", scope=None).execute(
-            CallLink.new_top(), log="events"
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "hello"}])
+        rendered = await MemoryReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), memory="events"
         )
         assert "hello" in rendered.message
         # A blank append is refused (blank-only — a bare URL is still a valid log
         # entry), so nothing degenerate joins the stream.  The non-blank rule lives
-        # on LogAppendArgs.content, so the refusal comes from the Tool.run gate.
-        blank = await append.run(CallLink.new_top(), log="events", content="   ")
+        # on MemoryWriteArgs.content, so the refusal comes from the Tool.run gate.
+        blank = await append.run(CallLink.new_top(), memory="events", entries=[{"content": "   "}])
         assert blank.success is False
         assert "blank" in blank.message
 
@@ -3442,21 +3496,29 @@ class TestLogTools:
                     )
                 )
             session.commit()
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(CallLink.new_top(), log="events", content="recent entry")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await append.execute(
+            CallLink.new_top(), memory="events", entries=[{"content": "recent entry"}]
+        )
         recent = db.memory("events").read_all()[-1]
-        rendered = await LogReadTool(db, "chat", scope=None).execute(
-            CallLink.new_top(), log="events"
+        rendered = await MemoryReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), memory="events"
         )
         assert rendered.message == (
             f"1 entry from `events` (oldest first):\n"
             f"1. [{format_log_timestamp(recent.created_at)}] id={recent.id} recent entry\n"
             f"3 earlier entries in `events` — "
-            f"log_read{{log: 'events', before: {recent.id}}} reads the 3 before these."
+            f"memory_read{{memory: 'events', before: {recent.id}}} reads the 3 before these."
         )
         older = db.memory("events").read_all()[:3]
-        paged = await LogReadTool(db, "chat", scope=None).execute(
-            CallLink.new_top(), log="events", before=recent.id
+        paged = await MemoryReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), memory="events", before=recent.id
         )
         body = "\n".join(
             f"{position}. [{format_log_timestamp(entry.created_at)}] id={entry.id} {entry.content}"
@@ -3494,13 +3556,13 @@ class TestLogTools:
                 )
             )
             session.commit()
-        rendered = await LogReadTool(db, "chat", scope=None).execute(
-            CallLink.new_top(), log="events"
+        rendered = await MemoryReadTool(db, "chat", scope=None).execute(
+            CallLink.new_top(), memory="events"
         )
         assert rendered.message == (
             "No entries in `events` — it's empty or nothing matched (not an error).\n"
             "2 earlier entries in `events`, not shown here — "
-            "log_read{log: 'events', day: '2026-01-05'} reads that day."
+            "memory_read{memory: 'events', day: '2026-01-05'} reads that day."
         )
 
     @pytest.mark.asyncio
@@ -3527,8 +3589,8 @@ class TestLogTools:
         entries = db.memory("events").read_all()
         anchor = entries[-1]
         page_one = entries[-21:-1]
-        tool = LogReadTool(db, "chat", scope=None)
-        first = await tool.execute(CallLink.new_top(), log="events", before=anchor.id)
+        tool = MemoryReadTool(db, "chat", scope=None)
+        first = await tool.execute(CallLink.new_top(), memory="events", before=anchor.id)
         body_one = "\n".join(
             f"{position}. [{format_log_timestamp(entry.created_at)}] id={entry.id} {entry.content}"
             for position, entry in enumerate(page_one, start=1)
@@ -3536,10 +3598,10 @@ class TestLogTools:
         assert first.message == (
             f"20 entries from `events` (oldest first):\n{body_one}\n"
             f"4 earlier entries in `events` — "
-            f"log_read{{log: 'events', before: {page_one[0].id}}} reads the 4 before these."
+            f"memory_read{{memory: 'events', before: {page_one[0].id}}} reads the 4 before these."
         )
         page_two = entries[:4]
-        second = await tool.execute(CallLink.new_top(), log="events", before=page_one[0].id)
+        second = await tool.execute(CallLink.new_top(), memory="events", before=page_one[0].id)
         body_two = "\n".join(
             f"{position}. [{format_log_timestamp(entry.created_at)}] id={entry.id} {entry.content}"
             for position, entry in enumerate(page_two, start=1)
@@ -3548,40 +3610,44 @@ class TestLogTools:
 
     @pytest.mark.asyncio
     async def test_log_read_before_refuses_non_id_addressable_stores(self, db):
-        """#2961: `before` only works where ids render beside entries — a
-        collection and the id-less log facades refuse it by name, the same
-        shape `log_get` already refuses those stores with, rather than accept
-        an id nothing ever showed the model."""
+        """#2961: `before` only works where ids render beside entries — `day`/
+        `before` are log-only options now (#3128), so a collection gets the
+        cross-shape teaching error (pointing at `k`/`order` instead); the id-less
+        log facades still refuse it by name, the same shape `memory_get` already
+        refuses those stores with, rather than accept an id nothing ever showed
+        the model."""
         _seed_collection(db, name="notes", description="x")
         db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
         db.memories.create_log(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG, "audit")
         db.memories.create_log(PennyConstants.MEMORY_RUN_HEALTH_LOG, "health")
-        tool = LogReadTool(db, "chat", scope=None)
-        collection = await tool.execute(CallLink.new_top(), log="notes", before=1)
+        tool = MemoryReadTool(db, "chat", scope=None)
+        collection = await tool.execute(CallLink.new_top(), memory="notes", before=1)
         assert collection.success is False
         assert collection.message == (
-            "'notes' is a collection, not a log: it has no `before` order to page by."
+            "'notes' is a collection: `day`/`before` only apply to a log. Read a "
+            "collection with `k`/`order` instead — memory_read{'notes'} for the "
+            "newest, or memory_read{'notes', order: 'random'} for a sample."
         )
         user_log = PennyConstants.MEMORY_USER_MESSAGES_LOG
-        messages = await tool.execute(CallLink.new_top(), log=user_log, before=1)
+        messages = await tool.execute(CallLink.new_top(), memory=user_log, before=1)
         assert messages.success is False
         assert messages.message == (
             f"'{user_log}' holds messages, and a message isn't paged by `before`. "
-            f"Read it with log_read{{'{user_log}'}} or day='YYYY-MM-DD'."
+            f"Read it with memory_read{{'{user_log}'}} or day='YYYY-MM-DD'."
         )
         run_log = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
-        runs = await tool.execute(CallLink.new_top(), log=run_log, before=1)
+        runs = await tool.execute(CallLink.new_top(), memory=run_log, before=1)
         assert runs.success is False
         assert runs.message == (
             f"'{run_log}' holds run records, read by the `run <id>` shown beside each — "
-            f"not by `before`. Read it with log_read{{'{run_log}'}} or day='YYYY-MM-DD'."
+            f"not by `before`. Read it with memory_read{{'{run_log}'}} or day='YYYY-MM-DD'."
         )
         health_log = PennyConstants.MEMORY_RUN_HEALTH_LOG
-        health = await tool.execute(CallLink.new_top(), log=health_log, before=1)
+        health = await tool.execute(CallLink.new_top(), memory=health_log, before=1)
         assert health.success is False
         assert health.message == (
             f"'{health_log}' holds run records, read by the `run <id>` shown beside each — "
-            f"not by `before`. Read it with log_read{{'{health_log}'}} or day='YYYY-MM-DD'."
+            f"not by `before`. Read it with memory_read{{'{health_log}'}} or day='YYYY-MM-DD'."
         )
 
     @pytest.mark.asyncio
@@ -3622,8 +3688,8 @@ class TestLogTools:
         )
         db.messages.set_run_outcome("run-42", "worked", "sent an update about a grinder")
 
-        rendered = await LogReadTool(db, "quality", scope="quality").execute(
-            CallLink.new_top(), log="collector-runs"
+        rendered = await MemoryReadTool(db, "quality", scope="quality").execute(
+            CallLink.new_top(), memory="collector-runs"
         )
 
         # collector-runs reads through the uniform log formatter now (it's a log
@@ -3656,7 +3722,7 @@ class TestLogTools:
                         "tool_calls": [
                             {
                                 "function": {
-                                    "name": "collection_write",
+                                    "name": "memory_write",
                                     "arguments": '{"memory": "espresso-gear", '
                                     '"entries": [{"content": "Niche grinder"}]}',
                                 }
@@ -3725,7 +3791,7 @@ class TestLogTools:
 
         collector = await tool.run(CallLink.new_top(), source="espresso-gear")
         assert "[espresso-gear]" in collector.message
-        assert "collection_write{collection: 'espresso-gear'" in collector.message
+        assert "memory_write{memory: 'espresso-gear'" in collector.message
         # Argless done() → the conclusion is the run's STRUCTURAL outcome (#1569),
         # never a model summary.
         assert "done: worked" in collector.message
@@ -3773,7 +3839,7 @@ class TestLogTools:
                                 "id": "w0",
                                 "type": "function",
                                 "function": {
-                                    "name": "collection_write",
+                                    "name": "memory_write",
                                     "arguments": json.dumps(
                                         {
                                             "memory": target,
@@ -3829,7 +3895,7 @@ class TestLogTools:
         )
         assert result.message == expected
         assert result.message.startswith("run news-1")
-        assert "collection_write{collection: 'ai-news'" in result.message
+        assert "memory_write{memory: 'ai-news'" in result.message
 
     @pytest.mark.asyncio
     async def test_run_get_lists_a_draw_made_on_the_runs_behalf(self, db):
@@ -3945,11 +4011,19 @@ class TestLogTools:
         only by Python side-effects.  ``log_append`` from any agent gets a
         readable refusal and writes nothing — guarding the conversation-turn
         reconstruction and the run audit trail from model-authored entries."""
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
         # The reserved-target check is a pure constant lookup, so it lives on
-        # LogAppendArgs.memory and the refusal comes from the Tool.run gate.
+        # MemoryWriteArgs.memory and the refusal comes from the Tool.run gate.
         for system_log in PennyConstants.SYSTEM_LOGS:
-            result = await append.run(CallLink.new_top(), log=system_log, content="forged turn")
+            result = await append.run(
+                CallLink.new_top(), memory=system_log, entries=[{"content": "forged turn"}]
+            )
             assert result.success is False
             assert system_log in result.message
             assert "system log" in result.message  # what went wrong + how to fix
@@ -3962,9 +4036,9 @@ class TestLogTools:
             CallLink.new_top(), log="events", description="x"
         )
         client = _make_llm_client(mock_llm)
-        await LogAppendTool(db, client, author="test").execute(
-            CallLink.new_top(), log="events", content="coffee is great"
-        )
+        await MemoryWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(CallLink.new_top(), memory="events", entries=[{"content": "coffee is great"}])
         # Anchor shares words with the entry so the bag-of-words mock embedding gives
         # meaningful cosine and the entry ranks in `Memory.read_similar` — the store
         # method `read_similar` (the tool) used to wrap; the tool is gone, the method
@@ -3980,12 +4054,18 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(CallLink.new_top(), log="events", content="first")
-        await append.execute(CallLink.new_top(), log="events", content="second")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "first"}])
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "second"}])
 
-        read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await read_next.execute(CallLink.new_top(), log="events")
+        read_next = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        rendered = await read_next.execute(CallLink.new_top(), memory="events")
 
         assert "first" in rendered.message
         assert "second" in rendered.message
@@ -3996,17 +4076,23 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(CallLink.new_top(), log="events", content="first")
-        await append.execute(CallLink.new_top(), log="events", content="second")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "first"}])
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "second"}])
 
-        read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(CallLink.new_top(), log="events")
+        read_next = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        await read_next.execute(CallLink.new_top(), memory="events")
         read_next.commit_pending()
 
         # A new instance after commit should see no entries (cursor caught up).
-        fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(CallLink.new_top(), log="events")
+        fresh = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        rendered = await fresh.execute(CallLink.new_top(), memory="events")
         # Empty read names the source and marks it as absence, not an error.
         assert (
             rendered.message
@@ -4019,16 +4105,22 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(CallLink.new_top(), log="events", content="first")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "first"}])
 
-        read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(CallLink.new_top(), log="events")
+        read_next = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        await read_next.execute(CallLink.new_top(), memory="events")
         read_next.discard_pending()
 
         # Cursor still at None; a new read sees the same entries.
-        fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(CallLink.new_top(), log="events")
+        fresh = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        rendered = await fresh.execute(CallLink.new_top(), memory="events")
         assert "first" in rendered.message
 
     @pytest.mark.asyncio
@@ -4045,14 +4137,24 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
         # Append more entries than the bound to confirm trimming
         n_entries = PennyConstants.LOG_READ_LIMIT + 5
         for i in range(n_entries):
-            await append.execute(CallLink.new_top(), log="events", content=f"entry-{i:02d}")
+            await append.execute(
+                CallLink.new_top(), memory="events", entries=[{"content": f"entry-{i:02d}"}]
+            )
 
-        read_next = LogReadTool(db, agent_name="brand-new-collector", scope="brand-new-collector")
-        rendered = await read_next.execute(CallLink.new_top(), log="events")
+        read_next = MemoryReadTool(
+            db, agent_name="brand-new-collector", scope="brand-new-collector"
+        )
+        rendered = await read_next.execute(CallLink.new_top(), memory="events")
 
         # Exactly the latest N entries — entry-(n-N) through entry-(n-1)
         # should appear; older entries should not.
@@ -4070,19 +4172,29 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
         for i in range(15):
-            await append.execute(CallLink.new_top(), log="events", content=f"old-{i:02d}")
+            await append.execute(
+                CallLink.new_top(), memory="events", entries=[{"content": f"old-{i:02d}"}]
+            )
 
-        read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(CallLink.new_top(), log="events")
+        read_next = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        await read_next.execute(CallLink.new_top(), memory="events")
         read_next.commit_pending()
 
         # New entries arrive
-        await append.execute(CallLink.new_top(), log="events", content="new-after-cursor")
+        await append.execute(
+            CallLink.new_top(), memory="events", entries=[{"content": "new-after-cursor"}]
+        )
 
-        fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(CallLink.new_top(), log="events")
+        fresh = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        rendered = await fresh.execute(CallLink.new_top(), memory="events")
         assert "new-after-cursor" in rendered.message
         # Old entries excluded by the bound stay excluded
         assert "old-00" not in rendered.message
@@ -4098,20 +4210,28 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        append = MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        )
 
         # Establish a cursor, then pile up a backlog bigger than one batch.
-        await append.execute(CallLink.new_top(), log="events", content="seed")
-        seed_read = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await seed_read.execute(CallLink.new_top(), log="events")
+        await append.execute(CallLink.new_top(), memory="events", entries=[{"content": "seed"}])
+        seed_read = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        await seed_read.execute(CallLink.new_top(), memory="events")
         seed_read.commit_pending()
 
         backlog = limit + 3
         for i in range(backlog):
-            await append.execute(CallLink.new_top(), log="events", content=f"backlog-{i:02d}")
+            await append.execute(
+                CallLink.new_top(), memory="events", entries=[{"content": f"backlog-{i:02d}"}]
+            )
 
-        first = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered_first = await first.execute(CallLink.new_top(), log="events")
+        first = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        rendered_first = await first.execute(CallLink.new_top(), memory="events")
         first.commit_pending()
         # Exactly one batch — the oldest N of the backlog, not all of it.
         assert rendered_first.message.count("backlog-") == limit
@@ -4119,8 +4239,8 @@ class TestLogTools:
         assert f"backlog-{backlog - 1:02d}" not in rendered_first.message
 
         # The next read picks up the remainder since the advanced cursor.
-        second = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered_second = await second.execute(CallLink.new_top(), log="events")
+        second = MemoryReadTool(db, agent_name="extractor", scope="extractor")
+        rendered_second = await second.execute(CallLink.new_top(), memory="events")
         assert f"backlog-{backlog - 1:02d}" in rendered_second.message
 
     @pytest.mark.asyncio
@@ -4129,22 +4249,26 @@ class TestLogTools:
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             CallLink.new_top(), log="events", description="x"
         )
-        await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            CallLink.new_top(), log="events", content="hello"
-        )
+        await MemoryWriteTool(
+            db,
+            _make_llm_client(mock_llm),
+            author="test",
+            decider=_NO_MODEL,
+            name_decider=_NO_NAME_MODEL,
+        ).execute(CallLink.new_top(), memory="events", entries=[{"content": "hello"}])
 
-        agent_a = LogReadTool(db, agent_name="a", scope="a")
-        await agent_a.execute(CallLink.new_top(), log="events")
+        agent_a = MemoryReadTool(db, agent_name="a", scope="a")
+        await agent_a.execute(CallLink.new_top(), memory="events")
         agent_a.commit_pending()
 
         # Agent B has its own cursor and still sees the entry.
-        agent_b = LogReadTool(db, agent_name="b", scope="b")
-        rendered = await agent_b.execute(CallLink.new_top(), log="events")
+        agent_b = MemoryReadTool(db, agent_name="b", scope="b")
+        rendered = await agent_b.execute(CallLink.new_top(), memory="events")
         assert "hello" in rendered.message
 
     @pytest.mark.asyncio
     async def test_log_read_renders_changelog_entries_whole(self, db):
-        """`log_read{'changelog'}` (#2845) is a plain `Log` like `browse-results`
+        """`memory_read{'changelog'}` (#2845) is a plain `Log` like `browse-results`
         — no special facade class — so two `record_new_entries`-written rows
         render byte-for-byte through the ordinary log render, PR number and
         all. A second `record_new_entries` call with an already-recorded PR
@@ -4160,8 +4284,8 @@ class TestLogTools:
         )
         assert len(added) == 2
         entries = changelog.read_all()
-        result = await LogReadTool(db, agent_name="chat", scope=None).execute(
-            CallLink.new_top(), log=PennyConstants.MEMORY_CHANGELOG_LOG
+        result = await MemoryReadTool(db, agent_name="chat", scope=None).execute(
+            CallLink.new_top(), memory=PennyConstants.MEMORY_CHANGELOG_LOG
         )
         assert result.message == (
             "2 entries from `changelog` (oldest first):\n"
@@ -4232,8 +4356,8 @@ class TestEmissionProvenanceRender:
         content``); the mechanism-stamped line with no run carries the plain
         inline marker; the one with a run adds its ``run <id>`` anchor too."""
         self._seed(db)
-        result = await LogReadTool(db, agent_name="reader", scope="reader").execute(
-            CallLink.new_top(), log=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
+        result = await MemoryReadTool(db, agent_name="reader", scope="reader").execute(
+            CallLink.new_top(), memory=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
         )
         assert result.message == (
             "3 entries from `penny-messages` (oldest first):\n"
@@ -4270,7 +4394,7 @@ class TestMemoryNameNormalization:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="test",
@@ -4281,7 +4405,7 @@ class TestMemoryNameNormalization:
         # observed in the wild.
         result = await write.execute(
             CallLink.new_top(),
-            collection="board‑games",
+            memory="board‑games",
             entries=[{"key": "k", "content": "v"}],
         )
         assert "Wrote 1 entry to 'board-games'" in result.message
@@ -4298,13 +4422,13 @@ class TestAuthorAttribution:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="preference-extractor",
             decider=_NO_MODEL,
             name_decider=_NO_NAME_MODEL,
-        ).execute(CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "v"}])
+        ).execute(CallLink.new_top(), memory="likes", entries=[{"key": "k", "content": "v"}])
 
         rows = db.memory("likes").get("k")
         assert rows[0].author == "preference-extractor"
@@ -4319,12 +4443,10 @@ class TestFactory:
 
     _FULL_SURFACE = {
         # Reads
-        "collection_list",
-        "collection_get",
-        "collection_keys",
+        "memory_read",
         "memory_get",
-        "log_read",
-        "log_get",
+        "memory_keys",
+        "memory_info",
         "run_list",
         "run_get",
         "find",
@@ -4334,9 +4456,8 @@ class TestFactory:
         "collection_archive",
         "log_create",
         # Entry mutations (contents)
-        "collection_write",
+        "memory_write",
         "collection_remove",
-        "log_append",
     }
 
     def test_every_tool_advertises_the_arguments_it_validates(self, db, mock_llm):
@@ -4458,7 +4579,7 @@ class TestScopedFactory:
             schedule="FREQ=HOURLY",
         )
 
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="collector:likes",
@@ -4467,7 +4588,7 @@ class TestScopedFactory:
             scope="likes",
         )
         result = await write.execute(
-            CallLink.new_top(), collection="dislikes", entries=[{"key": "k", "content": "v"}]
+            CallLink.new_top(), memory="dislikes", entries=[{"key": "k", "content": "v"}]
         )
 
         assert "Wrote 1 entry" in result.message
@@ -4487,7 +4608,7 @@ class TestScopedFactory:
             schedule="FREQ=HOURLY",
         )
 
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="collector:likes",
@@ -4496,7 +4617,7 @@ class TestScopedFactory:
             scope="likes",
         )
         result = await write.execute(
-            CallLink.new_top(), collection="likes", entries=[{"key": "k", "content": "v"}]
+            CallLink.new_top(), memory="likes", entries=[{"key": "k", "content": "v"}]
         )
 
         assert "Wrote 1 entry" in result.message
@@ -4512,7 +4633,7 @@ class TestScopedFactory:
             extraction_prompt=None,
             schedule=None,
         )
-        seed = CollectionWriteTool(
+        seed = MemoryWriteTool(
             db,
             cast(Any, MockLlmClient()),
             author="chat",
@@ -4520,7 +4641,7 @@ class TestScopedFactory:
             name_decider=_NO_NAME_MODEL,
         )
         await seed.execute(
-            CallLink.new_top(), collection="dislikes", entries=[{"key": "k", "content": "v"}]
+            CallLink.new_top(), memory="dislikes", entries=[{"key": "k", "content": "v"}]
         )
         delete = CollectionRemoveTool(db, scope="likes")
         result = await delete.execute(CallLink.new_top(), collection="dislikes", key="k")
@@ -4540,7 +4661,7 @@ class TestScopedFactory:
             extraction_prompt=None,
             schedule=None,
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="collector:likes",
@@ -4549,7 +4670,7 @@ class TestScopedFactory:
             scope="likes",
         )
         result = await write.execute(
-            CallLink.new_top(), collection="rules", entries=[{"key": "k", "content": "v"}]
+            CallLink.new_top(), memory="rules", entries=[{"key": "k", "content": "v"}]
         )
         assert result.message == _RULES_GUARD_REFUSAL
         assert not result.success
@@ -4566,7 +4687,7 @@ class TestScopedFactory:
             extraction_prompt=None,
             schedule=None,
         )
-        seed = CollectionWriteTool(
+        seed = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="chat",
@@ -4575,7 +4696,7 @@ class TestScopedFactory:
         )
         await seed.execute(
             CallLink.new_top(),
-            collection=PennyConstants.MEMORY_RULES_COLLECTION,
+            memory=PennyConstants.MEMORY_RULES_COLLECTION,
             entries=[{"key": "always-x", "content": "always do x"}],
         )
         delete = CollectionRemoveTool(db, scope="likes")
@@ -4597,7 +4718,7 @@ class TestScopedFactory:
             extraction_prompt=None,
             schedule=None,
         )
-        write = CollectionWriteTool(
+        write = MemoryWriteTool(
             db,
             _make_llm_client(mock_llm),
             author="chat",
@@ -4606,7 +4727,7 @@ class TestScopedFactory:
         )
         result = await write.execute(
             CallLink.new_top(),
-            collection=PennyConstants.MEMORY_RULES_COLLECTION,
+            memory=PennyConstants.MEMORY_RULES_COLLECTION,
             entries=[{"key": "always-x", "content": "always do x"}],
         )
         assert result.success
@@ -4667,7 +4788,7 @@ class TestRegistryProvenanceAndLifecycle:
         message_id = self._spawn(
             db, "run-audiobooks-01", "keep a running list of good sci-fi audiobooks"
         )
-        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="audiobooks")
+        result = await MemoryInfoTool(db).execute(CallLink.new_top(), memory="audiobooks")
         # One exact-name call answers the whole lifecycle question.
         assert "status: active" in result.message
         assert "expires: never" in result.message
@@ -4688,7 +4809,7 @@ class TestRegistryProvenanceAndLifecycle:
         await CollectionArchiveTool(db).execute(
             CallLink.new_top(), collection="kickstarters", archived=True
         )
-        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="kickstarters")
+        result = await MemoryInfoTool(db).execute(CallLink.new_top(), memory="kickstarters")
 
         assert "status: archived" in result.message
         # Provenance (message + ask excerpt) renders on the created line.
@@ -4704,7 +4825,7 @@ class TestRegistryProvenanceAndLifecycle:
         )
         await self._create(db, "keyboards", created_by_run_id="run-kb-01")
         self._spawn(db, "run-kb-01", long_ask)
-        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="keyboards")
+        result = await MemoryInfoTool(db).execute(CallLink.new_top(), memory="keyboards")
         # The ask renders WHOLE — no invented truncation (#2642): the exact user
         # words that spawned the job are what the render shows.
         assert long_ask in result.message
@@ -4719,7 +4840,7 @@ class TestRegistryProvenanceAndLifecycle:
             schedule="FREQ=HOURLY",
             expires_at=expiry,
         )
-        result = await MemoryMetadataTool(db).execute(CallLink.new_top(), memory="holiday-watch")
+        result = await MemoryInfoTool(db).execute(CallLink.new_top(), memory="holiday-watch")
         # A set end condition renders on the user's own clock (#2206/#2251 — UTC here,
         # since no profile is seeded), not "never".
         assert "expires: Friday, December 25, 2026 at 09:00 AM UTC" in result.message
@@ -4743,7 +4864,7 @@ class TestRegistryProvenanceAndLifecycle:
             extraction_prompt="1. check it.",
             schedule="FREQ=HOURLY",
         )
-        tool = MemoryMetadataTool(db)
+        tool = MemoryInfoTool(db)
         one_off = await tool.execute(CallLink.new_top(), memory="one-off")
         plain = await tool.execute(CallLink.new_top(), memory="plain")
         assert (
@@ -4823,14 +4944,14 @@ class TestFind:
     _KITCHEN_SINK = (
         'Found 3 things matching "aurora beacon cascade", best first:\n'
         "1. aurora-watch — active collection: aurora beacon cascade\n"
-        "   how to use it: read it with collection_list{'aurora-watch'}, "
+        "   how to use it: read it with memory_read{'aurora-watch'}, "
         "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
         "with collection_archive{'aurora-watch', archived: true}\n"
         "2. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_archive{'aurora-archive', "
-        "archived: false}; its entries stay readable with collection_list{'aurora-archive'}\n"
+        "archived: false}; its entries stay readable with memory_read{'aurora-archive'}\n"
         "3. aurora-log — active log: aurora echo foxtrot\n"
-        "   how to use it: read it with log_read{'aurora-log'}\n"
+        "   how to use it: read it with memory_read{'aurora-log'}\n"
         "Ranked by closeness — if one is what you meant, use its addressing above; "
         "otherwise narrow by its exact name."
     )
@@ -4887,7 +5008,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list{'solo-watch'}, "
+            "   how to use it: read it with memory_read{'solo-watch'}, "
             "reconfigure it with collection_configure{collection: 'solo-watch', ...}, archive it "
             "with collection_archive{'solo-watch', archived: true}"
         )
@@ -4905,11 +5026,11 @@ class TestFind:
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list{'watch-primary'}, reconfigure "
+            "   how to use it: read it with memory_read{'watch-primary'}, reconfigure "
             "it with collection_configure{collection: 'watch-primary', ...}, archive it "
             "with collection_archive{'watch-primary', archived: true}\n"
             "2. watch-secondary — active collection: aurora beacon delta\n"
-            "   how to use it: read it with collection_list{'watch-secondary'}, reconfigure "
+            "   how to use it: read it with memory_read{'watch-secondary'}, reconfigure "
             "it with collection_configure{collection: 'watch-secondary', ...}, archive it "
             "with collection_archive{'watch-secondary', archived: true}\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
@@ -4949,11 +5070,11 @@ class TestFind:
         container was not guessed)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="knowledge-notes",
+            memory="knowledge-notes",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
         )
         result = await FindTool(db, client).execute(
@@ -4963,7 +5084,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
-            "   read it: collection_get{collection: 'knowledge-notes', key: 'aurora beacon'}"
+            "   read it: memory_get{memory: 'knowledge-notes', key: 'aurora beacon'}"
         )
 
     @pytest.mark.asyncio
@@ -4973,11 +5094,11 @@ class TestFind:
         pattern (#1640)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="aurora-watch",
+            memory="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
         result = await FindTool(db, client).execute(
@@ -4986,11 +5107,11 @@ class TestFind:
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list{'aurora-watch'}, "
+            "   how to use it: read it with memory_read{'aurora-watch'}, "
             "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
             "with collection_archive{'aurora-watch', archived: true}\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
-            "   read it: collection_get{collection: 'aurora-watch', key: 'aurora beacon'}\n"
+            "   read it: memory_get{memory: 'aurora-watch', key: 'aurora beacon'}\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
         )
@@ -5012,16 +5133,16 @@ class TestFind:
             "backstop schedule"
         )
         assert len(long_entry) > 120
-        await LogAppendTool(db, client, author="test").execute(
-            CallLink.new_top(), log="aurora-log", content=long_entry
-        )
+        await MemoryWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(CallLink.new_top(), memory="aurora-log", entries=[{"content": long_entry}])
         entry_id = db.memories.memory("aurora-log").read_all()[0].id
         result = await FindTool(db, client).execute(CallLink.new_top(), query="aurora echo foxtrot")
         assert result.success
         assert result.message == (
             'Found 1 thing matching "aurora echo foxtrot":\n'
             f'1. entry #{entry_id} in `aurora-log` (log) — "{long_entry}"\n'
-            f"   read it: log_get{{log: 'aurora-log', id: {entry_id}}}"
+            f"   read it: memory_get{{memory: 'aurora-log', key: '{entry_id}'}}"
         )
 
     @pytest.mark.asyncio
@@ -5067,7 +5188,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list{'aurora-watch'}, "
+            "   how to use it: read it with memory_read{'aurora-watch'}, "
             "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
             "with collection_archive{'aurora-watch', archived: true}\n"
             "\n"
@@ -5104,7 +5225,7 @@ class TestFind:
         assert result.message.startswith(
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list{'aurora-watch'}, "
+            "   how to use it: read it with memory_read{'aurora-watch'}, "
             "reconfigure it with collection_configure{collection: 'aurora-watch', ...}, archive it "
             "with collection_archive{'aurora-watch', archived: true}\n"
             "\n"
@@ -5149,11 +5270,11 @@ class TestFind:
         never another store's hit even when it would also match the query."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="aurora-watch",
+            memory="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta echo foxtrot"}],
         )
         # Would also match the unscoped search — proves the scope actually narrows.
@@ -5196,11 +5317,11 @@ class TestFind:
         name the self-state header's archived line already names."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="aurora-archive",
+            memory="aurora-archive",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
         await CollectionArchiveTool(db).execute(
@@ -5236,19 +5357,19 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         for i in range(PennyConstants.FIND_STORE_LIMIT + 2):
-            await CollectionWriteTool(
+            await MemoryWriteTool(
                 db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
             ).execute(
                 CallLink.new_top(),
-                collection="aurora-watch",
+                memory="aurora-watch",
                 entries=[{"key": f"aurora beacon {i}", "content": "aurora beacon cascade"}],
             )
         await _create_collection(db, client, "nebula-watch", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="nebula-watch",
+            memory="nebula-watch",
             entries=[{"key": "nebula entry", "content": "aurora beacon cascade"}],
         )
         result = await FindTool(db, client).execute(
@@ -5266,9 +5387,9 @@ class TestFind:
         await LogCreateTool(db, client).execute(
             CallLink.new_top(), log="aurora-feed", description="aurora beacon cascade"
         )
-        await LogAppendTool(db, client, author="test").execute(
-            CallLink.new_top(), log="aurora-feed", content="cascade gamma"
-        )
+        await MemoryWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(CallLink.new_top(), memory="aurora-feed", entries=[{"content": "cascade gamma"}])
         with Session(db.engine) as session:
             row = session.get(MemoryRow, "aurora-feed")
             assert row is not None
@@ -5362,11 +5483,11 @@ class TestSynthesize:
         synthesis above it is the draw's own text, verbatim, never re-transcribed."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="knowledge-notes",
+            memory="knowledge-notes",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
         )
         mock_llm.set_response_handler(
@@ -5383,7 +5504,7 @@ class TestSynthesize:
             "They share the cascade theme.\n\n"
             "Drew on:\n"
             "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
-            "   read it: collection_get{collection: 'knowledge-notes', key: 'aurora beacon'}"
+            "   read it: memory_get{memory: 'knowledge-notes', key: 'aurora beacon'}"
         )
 
     @pytest.mark.asyncio
@@ -5426,18 +5547,18 @@ class TestSynthesize:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "notes-one", "aurora beacon cascade")
         await _create_collection(db, client, "notes-two", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="notes-one",
+            memory="notes-one",
             entries=[{"key": "k1", "content": "aurora beacon cascade gamma"}],
         )
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="notes-two",
+            memory="notes-two",
             entries=[{"key": "k2", "content": "aurora beacon cascade delta"}],
         )
         mock_llm.set_response_handler(
@@ -5466,21 +5587,21 @@ class TestSynthesize:
         for i in range(PennyConstants.RESOLVE_SPREAD_MEMORY_CAP + 1):
             name = f"noise-{i}"
             await _create_collection(db, client, name, "aurora beacon cascade")
-            await CollectionWriteTool(
+            await MemoryWriteTool(
                 db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
             ).execute(
                 CallLink.new_top(),
-                collection=name,
+                memory=name,
                 # A perfect match for the query — ranks strictly above "target"
                 # below, which has one extra, non-matching word diluting it.
                 entries=[{"key": "k", "content": "aurora beacon cascade"}],
             )
         await _create_collection(db, client, "target", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="target",
+            memory="target",
             entries=[{"key": "k", "content": "aurora beacon cascade echo"}],
         )
         mock_llm.set_response_handler(
@@ -5505,8 +5626,10 @@ class TestSynthesize:
         await LogCreateTool(db, client).execute(
             CallLink.new_top(), log="aurora-feed", description="aurora beacon cascade"
         )
-        await LogAppendTool(db, client, author="test").execute(
-            CallLink.new_top(), log="aurora-feed", content="aurora beacon cascade"
+        await MemoryWriteTool(
+            db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
+        ).execute(
+            CallLink.new_top(), memory="aurora-feed", entries=[{"content": "aurora beacon cascade"}]
         )
         with Session(db.engine) as session:
             row = session.get(MemoryRow, "aurora-feed")
@@ -5555,11 +5678,11 @@ class TestSynthesize:
         reaches the draw."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "notes", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="notes",
+            memory="notes",
             entries=[{"key": "old", "content": "aurora beacon cascade gamma"}],
         )
         with Session(db.engine) as session:
@@ -5589,11 +5712,11 @@ class TestSynthesize:
         WERE there; only the synthesis step didn't come back clean."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "notes", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="notes",
+            memory="notes",
             entries=[{"key": "k1", "content": "aurora beacon cascade gamma"}],
         )
         mock_llm.set_response_handler(
@@ -5621,11 +5744,11 @@ class TestSynthesize:
             retry_delay=0.0,
         )
         await _create_collection(db, embedding_client, "notes", "aurora beacon cascade")
-        await CollectionWriteTool(
+        await MemoryWriteTool(
             db, embedding_client, author="test", decider=_NO_MODEL, name_decider=_NO_NAME_MODEL
         ).execute(
             CallLink.new_top(),
-            collection="notes",
+            memory="notes",
             entries=[{"key": "k1", "content": "aurora beacon cascade gamma"}],
         )
         mock_llm.set_response_handler(
@@ -5677,7 +5800,7 @@ def _plan_setup_write_merge(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
     require_memory(db, "plan-notes").write_rule_decided(
         [EntryInput(key="hours", content="Mon-Fri 9-5")], author="seed"
     )
-    tool = CollectionWriteTool(
+    tool = MemoryWriteTool(
         db,
         _make_llm_client(mock_llm),
         author="test",
@@ -5685,7 +5808,7 @@ def _plan_setup_write_merge(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
         name_decider=_NO_NAME_MODEL,
     )
     return tool, {
-        "collection": "plan-notes",
+        "memory": "plan-notes",
         "entries": [{"key": "hours", "content": "Mon-Sat 10-6"}],
     }
 
@@ -5721,8 +5844,14 @@ def _plan_verify_remove(db) -> None:
 
 def _plan_setup_log_append(db, mock_llm) -> tuple[Tool, dict[str, Any]]:
     db.memories.create_log("plan-log", "x", description_embedding=_single_hash_vec("x"))
-    tool = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-    return tool, {"log": "plan-log", "content": "something happened"}
+    tool = MemoryWriteTool(
+        db,
+        _make_llm_client(mock_llm),
+        author="test",
+        decider=_NO_MODEL,
+        name_decider=_NO_NAME_MODEL,
+    )
+    return tool, {"memory": "plan-log", "entries": [{"content": "something happened"}]}
 
 
 def _plan_verify_log_append(db) -> None:
@@ -5780,10 +5909,10 @@ def _plan_verify_configure_clear(db) -> None:
 
 
 _PLAN_CASES: dict[str, _PlanCase] = {
-    "collection_write": _PlanCase(_plan_setup_write_merge, _plan_verify_write_merge),
+    "memory_write_collection": _PlanCase(_plan_setup_write_merge, _plan_verify_write_merge),
     "collection_archive": _PlanCase(_plan_setup_archive, _plan_verify_archive),
     "collection_remove": _PlanCase(_plan_setup_remove, _plan_verify_remove),
-    "log_append": _PlanCase(_plan_setup_log_append, _plan_verify_log_append),
+    "memory_write_log": _PlanCase(_plan_setup_log_append, _plan_verify_log_append),
     "collection_configure_create": _PlanCase(
         _plan_setup_configure_create, _plan_verify_configure_create
     ),
@@ -5801,7 +5930,7 @@ class TestPlanMode:
     describes the change without making it.  For every mutating tool here, a
     plan call (1) leaves the store byte-identical and (2) describes exactly
     what the very next apply call — the SAME tool instance, same arguments —
-    actually does; ``collection_write``'s plan-decision cache is what makes
+    actually does; ``memory_write``'s collection-branch plan-decision cache is what makes
     that guaranteed rather than merely likely (its decision model, where one
     is configured, is non-deterministic across two separate askings).
 

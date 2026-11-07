@@ -1,17 +1,17 @@
-"""Confirming a drafted standing rule, in a world where she reads `memory_get` on
+"""Confirming a drafted standing rule, in a world where she reads `memory_info` on
 `rules` first, still lands the rule as an entry — not folded into the collection's
 prompt (#2907, item D).
 
 The contract is `docs/eval-case-design.md`.
 
 **The failure this reproduces.** A replayed prod turn (recorded before #2860) had Penny
-call `memory_get('rules')` mid-turn to see the full standing-rules prompt before
+call `memory_info('rules')` mid-turn to see the full standing-rules prompt before
 merging a newly-drafted rule into it, then call `collection_configure(prompt=...)` with
 the old and new rules concatenated — rewriting the job's prompt instead of writing the
 new rule as an entry. `rules` has no schedule, so nothing ever reads that prompt;
 standing rules render from the collection's ENTRIES. #2860 (`CollectionUpdateTool`'s
 no-schedule refusal, `test_standing_rule_lands_as_entry.py`) fixed the general shape of
-this mistake, but its own regression case never routes through `memory_get` the way the
+this mistake, but its own regression case never routes through `memory_info` the way the
 production failure did — it was explicitly flagged as not reproducing that exact trigger.
 
 **ONE case**, `standing-rule-merge-via-memory-get`. This world mirrors the replayed
@@ -20,13 +20,13 @@ collections (a store map of comparable size and variety — scheduled jobs with 
 and off, plain storage, one of Penny's own self-review jobs the live ask names by name),
 `rules` seeded with four entries AND the same shape of stray prompt the failure needs (a
 numbered list duplicating those entries, long enough that the self-state's Jobs section
-renders it cut behind a `memory_get` hop — the exact condition that sent the original
+renders it cut behind a `memory_info` hop — the exact condition that sent the original
 turn looking there), and seven prior exchanges of ordinary conversation — a pet-mishap
 digression, a memory-correction episode, a first attempt where Penny only described a
 new rule instead of writing it, and the exchange where she actually drafts one. The live
 turn is just the user's confirmation, naming the drafted rule's own self-review job by
 name — the same two-turn shape `test_standing_rule_lands_as_entry.py` uses, now reached
-through the fuller, memory_get-inducing path instead of a single-exchange shortcut.
+through the fuller, memory_info-inducing path instead of a single-exchange shortcut.
 
 **What this case asserts. Three claims, all facts, all survival.**
 
@@ -486,7 +486,7 @@ def _seed_world(db: Database) -> None:
 def _premise() -> Preparer:
     """`rules` starts with exactly the four seeded entries and the stray prompt, and
     the stray prompt renders CUT in the self-state's Jobs section — the condition that
-    sends a model down the `memory_get` path in the first place."""
+    sends a model down the `memory_info` path in the first place."""
 
     def probe(penny: Penny) -> None:
         from penny.agents.self_state import SelfStateHeader
@@ -503,8 +503,8 @@ def _premise() -> Preparer:
         rendered = SelfStateHeader(
             db, TEST_SENDER, as_of=db.clock.now(), map_horizon=db.clock.now()
         ).render()
-        assert "more sentence" in rendered and f"memory_get{{'{RULES}'}}" in rendered, (
-            f"`{RULES}`'s stray prompt must render CUT, naming the memory_get hop:\n{rendered}"
+        assert "more sentence" in rendered and f"memory_info{{'{RULES}'}}" in rendered, (
+            f"`{RULES}`'s stray prompt must render CUT, naming the memory_info hop:\n{rendered}"
         )
 
     return probe
@@ -553,10 +553,10 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_confirmed_rule_lands_as_an_entry_after_memory_get(
+async def test_a_confirmed_rule_lands_as_an_entry_after_memory_info(
     chat_eval: ChatEval, model: str
 ) -> None:
-    """A confirmation turn, reached through a world that routes through `memory_get`
+    """A confirmation turn, reached through a world that routes through `memory_info`
     on `rules` the way the replayed production turn did: the new rule survives as an
     entry in `rules`, the four already-standing rules survive untouched, and the
     stray prompt is never rewritten."""

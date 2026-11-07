@@ -18,7 +18,7 @@ replays the EXACT failing prompt straight out of a local promptlog so there's no
 approximation gap.
 
 What it measures: one model turn per sample.  A collector cycle's first turn either
-reaches for ``log_read`` (it's doing the work) or jumps to ``done()`` (it bailed —
+reaches for ``memory_read`` (it's doing the work) or jumps to ``done()`` (it bailed —
 "the user said nothing").  Replaying the verbatim messages N times gives the bail
 rate and the reasoning-token cost of the current all-in-system / empty-user-turn
 structure.

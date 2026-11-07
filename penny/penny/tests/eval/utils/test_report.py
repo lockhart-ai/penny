@@ -128,7 +128,7 @@ def test_an_end_to_end_sample_renders_each_cycle_as_its_own_step() -> None:
         ),
         report.Event(report.EventKind.RESULT, "You opened the page (browse result) · $109"),
         report.Event(
-            report.EventKind.CALL, 'collection_write({"key":"price"})', thinking="the price moved"
+            report.EventKind.CALL, 'memory_write({"key":"price"})', thinking="the price moved"
         ),
         report.Event(report.EventKind.RESULT, "You saved the entry (collection_write result)"),
         report.Event(
@@ -174,7 +174,7 @@ def test_an_end_to_end_sample_renders_each_cycle_as_its_own_step() -> None:
         '| actual | 🔧 browse({"queries":["x"]}) |  |\n'
         "| actual | 📥 You opened the page (browse result) · $109 |  |\n"
         "| 💭 | the price moved |  |\n"
-        '| actual | 🔧 collection_write({"key":"price"}) | ✅ C1 |\n'
+        '| actual | 🔧 memory_write({"key":"price"}) | ✅ C1 |\n'
         "| actual | 📥 You saved the entry (collection_write result) |  |\n"
         "| actual | 🧩 notify-composer ← user turn: The job just ran on its own. |  |\n"
         "| 💭 | thinking (notify-composer) — 9 chars: tell them |  |\n"
@@ -349,7 +349,7 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
     render, not a score), an empty thought is ``💭 (empty)``, and the banner carries ``fragile``."""
     events = [
         report.Event(report.EventKind.USER, "add game and remind me friday"),
-        report.Event(report.EventKind.CALL, 'collection_write("games")', thinking=""),
+        report.Event(report.EventKind.CALL, 'memory_write("games")', thinking=""),
     ]
     checks = [
         report.CheckView("C1", "entry written", "state", True, False, True, anchor_index=1),
@@ -383,7 +383,7 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
         "|---|---|---|\n"
         "| expected | C1 [state]⚖ entry written |  |\n"
         "| expected | C2 [spine]ℹ single-write efficiency |  |\n"
-        '| actual | 🔧 collection_write("games") | ✅ C1 · ✅ C2 |\n'
+        '| actual | 🔧 memory_write("games") | ✅ C1 · ✅ C2 |\n'
         "\n"
         "| run-close | whole-conversation contracts | 1/1 |\n"
         "|---|---|---|\n"

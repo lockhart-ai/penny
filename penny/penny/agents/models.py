@@ -225,7 +225,7 @@ class ToolCallRecord(BaseModel):
         default=None,
         description=(
             "The enumerated write-gate outcome that ends a must-act (collector) run "
-            "at the chokepoint (#1587).  Set from ``ToolResult.stop`` (collection_write "
+            "at the chokepoint (#1587).  Set from ``ToolResult.stop`` (memory_write "
             "on a collector-scoped write); the collector's ``should_stop_loop`` reads "
             "it to exit, and ``_cycle_result`` stamps it as the run's stop reason.  "
             "None for every call that doesn't carry a STOP."

@@ -43,10 +43,14 @@ class MemoryTypeError(MemoryAccessError):
 class WrongShapeError(MemoryTypeError):
     """Raised by a base ``Memory`` op a subclass doesn't implement for its shape.
 
-    A collection has no cursored ``log_read``; a log has no keyed ``get``.  The
-    base defines every op as a no-op that raises this; each shape overrides the
-    ones it supports.  The tool layer catches it and returns the readable
-    refusal that points the model at the right tool.  Subclasses
+    A collection has no cursored log batch read; a log has no keyed ``get``.
+    The base defines every op as a no-op that raises this; each shape overrides
+    the ones it supports.  The tool layer catches it and returns the readable
+    refusal that points the model at the right tool — reached today only by the
+    collection-only lifecycle tools (``collection_configure`` / ``collection_archive``
+    / ``collection_remove``) if ever called against a log; ``memory_read`` /
+    ``memory_get`` / ``memory_keys`` / ``memory_write`` (#3128) dispatch on the
+    resolved type explicitly and never reach this path.  Subclasses
     ``MemoryTypeError`` so existing ``except MemoryTypeError`` callers (the addon
     write handlers) and ``pytest.raises(MemoryTypeError)`` keep working.
     """
@@ -119,11 +123,11 @@ def wrong_shape_message(name: str, actual_type: str) -> str:
     if actual_type == MemoryType.LOG:
         return (
             f"Refused: '{name}' is a log, not a collection.  Read a log with "
-            f"log_read{{'{name}'}} (recent batch / cursored, oldest-first)."
+            f"memory_read{{'{name}'}} (recent batch / cursored, oldest-first)."
         )
     return (
         f"Refused: '{name}' is a collection, not a log.  Read a collection with "
-        f"collection_list{{'{name}'}} / collection_get{{collection: '{name}', key: <key>}}."
+        f"memory_read{{'{name}'}} / memory_get{{memory: '{name}', key: <key>}}."
     )
 
 
@@ -145,7 +149,8 @@ class MemoryAlreadyExistsError(Exception):
 
 
 class EntryInput(BaseModel):
-    """Input row for collection_write — key, content, and optional embeddings."""
+    """Input row for memory_write's collection branch — key, content, and
+    optional embeddings."""
 
     key: str
     content: str
@@ -332,7 +337,7 @@ def render_key_value(key: str) -> str:
     Used where a key renders inside prose that already fixes the field position,
     so the label would be redundant: the self-state activity block's writes
     clause (``wrote '<key>' → `<collection>```, #1641), where the quoted token
-    pastes straight into a ``collection_list`` / ``read_similar`` ``key=``
+    pastes straight into a ``memory_get`` / ``read_similar`` ``key=``
     argument.  ``render_key`` composes this with the ``key=`` label, so the
     quoting is single-sourced — the two forms can't drift apart.
     """

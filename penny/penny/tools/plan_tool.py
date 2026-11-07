@@ -2,7 +2,7 @@
 read-only RESOLVE phase and the APPLY call itself (#2947, following #2933's
 ``mutates`` mark and #2946's ``as_plan_result``).
 
-Unlike a DB write (``collection_write``/``collection_configure``), there is no
+Unlike a DB write (``memory_write``/``collection_configure``), there is no
 local transaction to roll back on an external API call — Zoho and InvoiceNinja
 have no "try it and undo it" primitive.  So a plugin tool's plan can never
 actually call its mutating endpoint: ``describe`` renders the would-be action

@@ -138,8 +138,8 @@ class DispatchReason(StrEnum):
 
 
 class WriteGateOutcome(StrEnum):
-    """The closed, deterministic outcome of one ``collection_write`` entry at the
-    write chokepoint — the change-gate (#1587, epic #1554 via mini-epic #1562).
+    """The closed, deterministic outcome of one ``memory_write`` collection
+    entry at the write chokepoint — the change-gate (#1587, epic #1554 via mini-epic #1562).
 
     Python computes it by comparing the written value against the stored baseline
     per key; it is never a model judgment, and it supersedes the old ``WriteOutcome``
@@ -528,8 +528,9 @@ class PennyConstants:
     # The model-facing day-read anchor for the user's message log, shared by
     # the two surfaces that point at the same read: the conversation map's
     # collapsed-day line and the related-exchanges block (#3010).  Rendered
-    # with ``.format(day=<ISO date>)`` — the map's byte-exact form.
-    USER_MESSAGES_DAY_ANCHOR = "log_read{{'user-messages', day: '{day}'}}"
+    # with ``.format(day=<ISO date>)`` — the map's byte-exact form.  ``memory_read``
+    # (#3128, replacing ``log_read``).
+    USER_MESSAGES_DAY_ANCHOR = "memory_read{{'user-messages', day: '{day}'}}"
 
     # Browse tool constants
     URL_BLOCKLIST_DOMAINS = (
@@ -561,8 +562,8 @@ class PennyConstants:
     # the oversized same-format JPEG fallback alike).
     IMAGE_JPEG_QUALITY = 85
 
-    # ``log_read`` window-mode look-back (seconds) for chat/schedule reads — the
-    # "what just happened" range.  1 hour.
+    # ``memory_read`` log window-mode look-back (seconds) for chat/schedule reads
+    # — the "what just happened" range.  1 hour.
     LOG_READ_WINDOW_SECONDS = 3600
 
     # Connect timeout for the OpenAI-compatible LLM HTTP client.  Tunes only the
@@ -837,10 +838,20 @@ class PennyConstants:
     # same shape ``DONE_TOOL_NAME`` already set.  ``SEND_MESSAGE_TOOL_NAME``
     # stays even though the tool itself is retired (#1911): pre-retirement
     # ``promptlog`` rows still carry the name, and history is never rewritten.
+    # ``COLLECTION_WRITE_TOOL_NAME``/``LOG_READ_TOOL_NAME``/``LOG_APPEND_TOOL_NAME``
+    # stay the same way after #3128 retired the tools themselves — a row logged
+    # before the rename still carries these literal names, forever; the renderer
+    # and the write-tool set below recognise BOTH the old names and the new
+    # ``MEMORY_*_TOOL_NAME`` ones a fresh call carries.
     COLLECTION_WRITE_TOOL_NAME = "collection_write"
     COLLECTION_REMOVE_TOOL_NAME = "collection_remove"
     LOG_READ_TOOL_NAME = "log_read"
     LOG_APPEND_TOOL_NAME = "log_append"
+    MEMORY_READ_TOOL_NAME = "memory_read"
+    MEMORY_WRITE_TOOL_NAME = "memory_write"
+    MEMORY_GET_TOOL_NAME = "memory_get"
+    MEMORY_KEYS_TOOL_NAME = "memory_keys"
+    MEMORY_INFO_TOOL_NAME = "memory_info"
     SEND_MESSAGE_TOOL_NAME = "send_message"
     BROWSE_TOOL_NAME = "browse"
     # The per-call rationale key every tool's schema used to carry (``Tool.
@@ -883,27 +894,27 @@ class PennyConstants:
     # discipline: format and parse share this one constant, never a magic string).
     RUN_EVENT_PREFIX = "run "
 
-    # ``log_read`` cursor-mode batch bound — entries returned per call for a
+    # ``memory_read`` log cursor-mode batch bound — entries returned per call for a
     # collector.  Applies to every call: the first read (no cursor → most-recent
     # N, not the whole history) and later reads (the next N since the cursor).
     # The cursor advances by what was returned, so a backlog is worked through in
     # bounded batches across cycles instead of flooding one agentic loop with
     # hundreds of entries it can't reason over.
     LOG_READ_LIMIT = 10
-    # ``log_read``'s day-read bound (#2752) — the optional ``day`` argument
+    # ``memory_read`` log day-read bound (#2752) — the optional ``day`` argument
     # reads ONE local day of a message log, oldest first, capped at this.  A
     # day is what the conversation map's anchors name, and a day's own volume
     # (10–23 messages on this deployment, ~52 at the recorded peak) is what the
     # cap has to hold — the 10-entry cursor batch would cut a day's exchange
     # in half.
     LOG_READ_DAY_LIMIT = 60
-    # ``log_read``'s backward-paging bound (#2961) — the optional ``before``
+    # ``memory_read`` log backward-paging bound (#2961) — the optional ``before``
     # argument pages the newest entries older than a given entry id, oldest
     # first.  The disclosure this same page carries, if there is still more
     # before it, is what lets a log that looks sparse because nothing fell in
     # the recent window stay reachable: page by page, never a dead end.
     LOG_READ_PAGE = 20
-    # How many recent registry-change events ``memory_get`` renders in its
+    # How many recent registry-change events ``memory_info`` renders in its
     # "Recent changes" block (``db.mutations.history``) — bounded like every other
     # history read so a config-change trail stays readable without flooding.
     RUN_HISTORY_RECORDS = 8
@@ -977,7 +988,7 @@ class PennyConstants:
     # short synthesis, never inflating the parent run's context.
     SYNTHESIZE_AGENT_NAME = "synthesize"
     SYNTHESIZE_MICRO_CONTEXT_PROMPT_TYPE = "synthesize_micro_context"
-    # Write-target REDIRECT gates (#1570 journey): a chat collection_write whose
+    # Write-target REDIRECT gates (#1570 journey): a chat memory_write whose
     # target name doesn't exist is silently-but-NARRATEDLY redirected into an
     # existing collection when the miss is near-certainly a name variant of it.
     # The auto-created collection's placeholder description prefix — shared by the
@@ -1005,15 +1016,22 @@ class PennyConstants:
     # might not be on it, and an instruction that cannot be followed is worse than the
     # honest number.
     COLLECTOR_HOLDINGS_LIMIT = 20
-    # Default cap on an unbounded collection read (``collection_list``, either order)
-    # when the model omits `k` (#2771): with no cap, one ordinary "look through your
-    # memory" turn — 13 parallel reads across several collections — pulled in 330k
-    # characters at once (one 281-entry collection alone cost 111k characters), and
-    # prefill slowed accordingly. 20 keeps an unscoped look cheap while still showing
-    # real content; an explicit `k`, or a collection with 20 or fewer entries, is
-    # unaffected. The cut is never silent — the tool's own result header names the
-    # real total and the follow-up calls that reach the rest.
+    # Default cap on an unbounded collection read (``memory_read``'s collection
+    # branch, either order) when the model omits `k` (#2771): with no cap, one
+    # ordinary "look through your memory" turn — 13 parallel reads across several
+    # collections — pulled in 330k characters at once (one 281-entry collection
+    # alone cost 111k characters), and prefill slowed accordingly. 20 keeps an
+    # unscoped look cheap while still showing real content; an explicit `k`, or a
+    # collection with 20 or fewer entries, is unaffected. The cut is never silent
+    # — the tool's own result header names the real total and the follow-up
+    # calls that reach the rest.
     COLLECTION_LIST_DEFAULT_LIMIT = 20
+    # ``memory_keys``'s log branch (#3128): a log's entry ids have no cursor or
+    # window to bound them the way every other log read does, and a long-lived
+    # log could otherwise dump thousands of bare ids at once.  Ids cost far less
+    # per line than a full entry render, so this is more generous than
+    # ``COLLECTION_LIST_DEFAULT_LIMIT`` — a disclosure still names what's left out.
+    MEMORY_KEYS_LOG_LIMIT = 50
     # How many of a learned routine's steps the learn-close narration's step-shape line
     # renders (#1943), in order, before it states the count it left off.  The line exists
     # to be SKIMMED in one pass by the person who knows what the routine was meant to do,
@@ -1071,7 +1089,7 @@ class PennyConstants:
     # reads and follows — a READING budget like the activity cap above, not a hard
     # guarantee: a longer prompt renders its first sentence (hard-cut at a word
     # boundary inside the cap if even that is longer) followed by a note counting the
-    # sentences cut and naming the ``memory_get('<name>')`` hop to the whole prompt, so
+    # sentences cut and naming the ``memory_info('<name>')`` hop to the whole prompt, so
     # nothing is cut silently and the job's page renders whole regardless.  160 is
     # roughly the first sentence of a real job's prompt with room to spare; the full
     # prompt is always one anchored read away.
@@ -1096,7 +1114,7 @@ class PennyConstants:
     # The per-run operational-facts facade (#2843): one line per run, across chat
     # AND every collector (unlike ``collector-runs``, which is collector-only by
     # design — the seeded ``quality`` prompt reads it expecting only collector
-    # records). Read via ``log_read`` (cursor/day); the same facts also render on
+    # records). Read via ``memory_read`` (cursor/day); the same facts also render on
     # ``run_list``/``run_get`` (``render_run_calls``), which filter by source.
     MEMORY_RUN_HEALTH_LOG = "run-health"
     # The changelog system log (#2845, migration seeds the row — see
@@ -1105,7 +1123,7 @@ class PennyConstants:
     # commit-title dump (#2891 — ``penny.changelog.load_commits`` /
     # ``record_new_entries``). A plain append-only ``Log`` facade (no special
     # dispatch class — unlike ``collector-runs``/the message logs, its rows ARE
-    # its own stored content), read like any other log via ``log_read``.
+    # its own stored content), read like any other log via ``memory_read``.
     MEMORY_CHANGELOG_LOG = "changelog"
     # The ``memory_entry.author`` every changelog row is written with — not a
     # conversational author (``MessageAuthor`` above), since no agent or user
@@ -1121,9 +1139,9 @@ class PennyConstants:
     # channel ingress/egress (``user-messages`` / ``penny-messages``), the
     # browse tool (``browse-results``), and the collector dispatcher
     # (``collector-runs``).  Agents may *read* them but must never append via
-    # the ``log_append`` tool: a model-authored entry would corrupt the
-    # conversation-turn reconstruction or forge an audit row.  Enforced in
-    # ``LogAppendTool.execute``.
+    # the ``memory_write`` tool: a model-authored entry would corrupt the
+    # conversation-turn reconstruction or forge an audit row.  Enforced by the
+    # ``AppendableLogName`` arg validator on ``MemoryWriteArgs.memory``.
     SYSTEM_LOGS = frozenset(
         {
             MEMORY_USER_MESSAGES_LOG,

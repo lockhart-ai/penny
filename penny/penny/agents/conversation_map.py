@@ -48,7 +48,7 @@ report, a sandbox preview, the startup notice::
   delivery mechanism degrades visibly rather than vanishing.
 - ``(run <id>)`` is the verbatim anchor ``run_get(run: 'run <id>')`` consumes
   (#2974's self-state convention); the delivered message is one
-  ``log_read{'penny-messages', day: …}`` away — the day the line's own stamp
+  ``memory_read{'penny-messages', day: …}`` away — the day the line's own stamp
   names.  The ``→ you replied`` fragment states the one record-derived fact
   the row carries: the send happened.
 
@@ -71,7 +71,7 @@ through every line but possibly the last content line — the cached prefix runs
 through the rest.
 
 Reachability: each line carries its absolute time, so the full text of any
-exchange is one anchored read away — ``log_read`` with the ``day`` the line's
+exchange is one anchored read away — ``memory_read`` with the ``day`` the line's
 date names, on the log the closing line points at.  An autonomous line's own
 anchor is ``(run <id>)``, read by ``run_get`` verbatim.
 
@@ -217,7 +217,7 @@ class ConversationMap:
     HEADER = "## Conversation map"
     # The closing line: the anchored reads that reach any line's full text.  The
     # ``day`` argument is the map's own horizon read — chat's no-argument
-    # ``log_read`` reaches only its recent window, so the anchor names the form
+    # ``memory_read`` reaches only its recent window, so the anchor names the form
     # that answers at the horizon's age.
     ANCHOR_PREFIX = "Full text: "
     CLIP_SUFFIX = "…"
@@ -616,7 +616,7 @@ class ConversationMap:
         self, lines: list[ConversationMap._Line]
     ) -> list[ConversationMap._Line]:
         """Past ``CHAT_MAP_MAX_LINES``, the OLDEST WHOLE DAY collapses into one
-        line — ``Oct 20 · 23 exchanges — log_read('user-messages', day=…)`` —
+        line — ``Oct 20 · 23 exchanges — memory_read('user-messages', day=…)`` —
         repeated while the map is over the ceiling.  Each pass folds the OLDEST
         day that still has more than one line, never the newest day, so every
         pass strictly reduces the line count; when no such day remains the fold
@@ -675,6 +675,6 @@ class ConversationMap:
         the horizon rolls and break the byte-identical-prefix property the map's
         cache stability rests on."""
         return (
-            f"{self.ANCHOR_PREFIX}log_read{{'user-messages', day: 'YYYY-MM-DD'}}, "
-            "log_read{'penny-messages', day: 'YYYY-MM-DD'}"
+            f"{self.ANCHOR_PREFIX}memory_read{{'user-messages', day: 'YYYY-MM-DD'}}, "
+            "memory_read{'penny-messages', day: 'YYYY-MM-DD'}"
         )

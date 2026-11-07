@@ -25,16 +25,15 @@ from penny.tools.link_handles import HandleTable
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
     CollectionCreateTool,
-    CollectionGetTool,
-    CollectionKeysTool,
     CollectionRemoveTool,
     CollectionUpdateTool,
-    CollectionWriteTool,
     GetEventTool,
-    LogAppendTool,
     LogCreateTool,
-    LogReadTool,
-    MemoryMetadataTool,
+    MemoryGetTool,
+    MemoryInfoTool,
+    MemoryKeysTool,
+    MemoryReadTool,
+    MemoryWriteTool,
     ReadRunCallsTool,
 )
 from penny.tools.models import ToolResult
@@ -238,32 +237,34 @@ class TestMemoryReadNarration:
     """
 
     def test_log_read_narrates_read(self):
-        narration = LogReadTool.to_result_narration(
-            {"log": "browse-results"}, ToolResult(message="entries")
+        narration = MemoryReadTool.to_result_narration(
+            {"memory": "browse-results"}, ToolResult(message="entries")
         )
-        assert narration == "You read `browse-results`:"
+        assert narration == "You looked up `browse-results`:"
 
     def test_log_read_failure_narrates_honestly(self):
-        narration = LogReadTool.to_result_narration(
-            {"log": "browse-results"}, ToolResult(message="err", success=False)
+        narration = MemoryReadTool.to_result_narration(
+            {"memory": "browse-results"}, ToolResult(message="err", success=False)
         )
-        assert narration == "You tried to read `browse-results` but it didn't work:"
+        assert narration == "You tried to look up your `browse-results` but it didn't work:"
 
     def test_memory_get_narrates_check(self):
-        narration = MemoryMetadataTool.to_result_narration(
+        narration = MemoryInfoTool.to_result_narration(
             {"memory": "likes"}, ToolResult(message="metadata")
         )
         assert narration == "You checked the details of `likes`:"
 
     def test_format_result_wraps_memory_read_narration(self):
-        """End-to-end through the seam: registry dispatch → log_read override →
-        `(log_read result)` tag → body."""
+        """End-to-end through the seam: registry dispatch → memory_read override →
+        `(memory_read result)` tag → body."""
         framed = Tool.format_result(
-            "log_read",
-            {"log": "browse-results"},
+            "memory_read",
+            {"memory": "browse-results"},
             ToolResult(message="1. really into chess"),
         )
-        assert framed == ("You read `browse-results`: (log_read result)\n1. really into chess")
+        assert framed == (
+            "You looked up `browse-results`: (memory_read result)\n1. really into chess"
+        )
 
 
 class TestMemoryWriteNarration:
@@ -275,23 +276,21 @@ class TestMemoryWriteNarration:
         """The headline names what the write did (#2758) — the key it landed under,
         read off the result's own ``saved_keys``, never re-derived from the call's
         arguments."""
-        args = {"collection": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
         result = ToolResult(message="ok", mutated=True, saved_keys=["chess"])
-        assert (
-            CollectionWriteTool.to_result_narration(args, result) == 'You saved "chess" to `likes`:'
-        )
+        assert MemoryWriteTool.to_result_narration(args, result) == 'You saved "chess" to `likes`:'
 
     def test_collection_write_already_there(self):
-        args = {"collection": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
         assert (
-            CollectionWriteTool.to_result_narration(args, ToolResult(message="dup", mutated=False))
+            MemoryWriteTool.to_result_narration(args, ToolResult(message="dup", mutated=False))
             == "You didn't add anything new to `likes` — it was already there:"
         )
 
     def test_collection_write_failure(self):
-        args = {"collection": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
         assert (
-            CollectionWriteTool.to_result_narration(args, ToolResult(message="e", success=False))
+            MemoryWriteTool.to_result_narration(args, ToolResult(message="e", success=False))
             == "You tried to save to `likes` but it didn't work:"
         )
 
@@ -311,14 +310,14 @@ class TestMemoryWriteNarration:
         )
 
     def test_log_append(self):
-        args = {"log": "events", "content": "x"}
+        args = {"memory": "events", "entries": [{"content": "x"}]}
         assert (
-            LogAppendTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
-            == "You added an entry to `events`:"
+            MemoryWriteTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
+            == "You added to `events`:"
         )
         assert (
-            LogAppendTool.to_result_narration(args, ToolResult(message="e", success=False))
-            == "You tried to add an entry to `events` but it didn't work:"
+            MemoryWriteTool.to_result_narration(args, ToolResult(message="e", success=False))
+            == "You tried to save to `events` but it didn't work:"
         )
 
 
@@ -365,16 +364,16 @@ class TestMemoryLifecycleNarration:
         )
 
     def test_collection_get(self):
-        args = {"collection": "likes", "key": "chess"}
+        args = {"memory": "likes", "key": "chess"}
         assert (
-            CollectionGetTool.to_result_narration(args, ToolResult(message="ok"))
+            MemoryGetTool.to_result_narration(args, ToolResult(message="ok"))
             == 'You looked up "chess" in `likes`:'
         )
 
     def test_collection_read_keys(self):
-        args = {"collection": "likes"}
+        args = {"memory": "likes"}
         assert (
-            CollectionKeysTool.to_result_narration(args, ToolResult(message="ok"))
+            MemoryKeysTool.to_result_narration(args, ToolResult(message="ok"))
             == "You listed the keys in `likes`:"
         )
 

@@ -44,7 +44,7 @@ from penny.llm.call_link import CallLink
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
 from penny.tests.conftest import require_memory
 from penny.tests.schema_template import migrated_db, schema_only_db
-from penny.tools.memory_tools import MemoryMetadataTool
+from penny.tools.memory_tools import MemoryInfoTool
 
 pytestmark = pytest.mark.bare_db
 
@@ -279,7 +279,7 @@ class TestMemoryMetadata:
             updated=datetime(2026, 3, 5, 8, 10, tzinfo=UTC),
         )
         result = asyncio.run(
-            MemoryMetadataTool(db).execute(CallLink.new_top(), memory="hedgehog-sightings")
+            MemoryInfoTool(db).execute(CallLink.new_top(), memory="hedgehog-sightings")
         )
         assert (
             result.message
@@ -334,7 +334,7 @@ Recent changes (newest first):
             updated=datetime(2026, 3, 5, 8, 0, tzinfo=UTC),
         )
         result = asyncio.run(
-            MemoryMetadataTool(db).execute(CallLink.new_top(), memory="standing-notes")
+            MemoryInfoTool(db).execute(CallLink.new_top(), memory="standing-notes")
         )
         assert (
             result.message
@@ -437,7 +437,7 @@ Recent changes (newest first):
             extraction_prompt="Browse for new board games and write entries.",
             notify=True,
         )
-        tool = MemoryMetadataTool(db)
+        tool = MemoryInfoTool(db)
         result = asyncio.run(tool.execute(CallLink.new_top(), memory="board-games"))
         assert "board-games" in result.message
         assert "collection" in result.message
@@ -463,7 +463,7 @@ Recent changes (newest first):
 
     def test_collection_metadata_tool_no_extraction_prompt(self, db):
         db.memories.create_collection("plain", "no collector")
-        tool = MemoryMetadataTool(db)
+        tool = MemoryInfoTool(db)
         result = asyncio.run(tool.execute(CallLink.new_top(), memory="plain"))
         assert "prompt: none" in result.message
         # notify is opt-in: a collection created without it defaults to silent.
@@ -477,7 +477,7 @@ Recent changes (newest first):
         assert after >= before
 
     def test_collection_metadata_tool_not_found(self, db):
-        tool = MemoryMetadataTool(db)
+        tool = MemoryInfoTool(db)
         result = asyncio.run(tool.execute(CallLink.new_top(), memory="nonexistent"))
         assert "not found" in result.message
         # A wrong-name miss (incl. the entry-vs-collection footgun: a skill key

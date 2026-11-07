@@ -680,7 +680,7 @@ class MemoryStore:
         keyless rows.  This one is one run's whole rows — content included, log appends
         included — because the notify document renders what was written and the
         similarity anchor is built from it.  Reading the stamp rather than a
-        ``collection_write`` call's arguments is what keeps it tool-agnostic: a routine
+        ``memory_write`` call's arguments is what keeps it tool-agnostic: a routine
         writes through whatever tools it was taught with, including a plugin's (#1783).
 
         ``exclude_system_logs`` is required, no default (#2803): every caller states its
@@ -691,7 +691,7 @@ class MemoryStore:
         itself kept, never a page the browse tool logged in passing; the self-state
         writes clause and the chat turn's own "what landed" record (``False``) want
         every entry.  The mark is the memory's own kind — which logs ``SYSTEM_LOGS``
-        already names as framework-managed and the ``log_append`` gate already refuses
+        already names as framework-managed and the ``memory_write`` gate already refuses
         model writes to — never a fresh name list grown for this call.
         """
         with self._session() as session:

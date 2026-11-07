@@ -14,7 +14,7 @@ At startup (`Penny._record_changelog_entries`), the entries this call's
 list carries that the `changelog` log itself says are new (``record_new_entries`` —
 the log is the cursor, #2973) are appended to the `changelog`
 system log (``PennyConstants.MEMORY_CHANGELOG_LOG`` — a plain append-only
-``Log``, read like any other log via ``log_read``), stamped with that
+``Log``, read like any other log via ``memory_read``), stamped with that
 deploy's own time rather than the commit's merge time: the date that
 matters is when the change reached her, not when it merged. The commit list
 itself is a PARAMETER (``Config.changelog_commits``) — never read from this
@@ -128,7 +128,7 @@ def record_new_entries(log: Memory, entries: list[ChangelogEntry]) -> list[Chang
 # of facts, with no instruction attached — she decides for herself whether, how,
 # and how many times to reply, the same as on any chat turn.  The PR-number
 # prefix each entry already carries (``render()``) is kept here too: it is the
-# same anchor a later ``log_read('changelog')`` shows, so a reply that cites a
+# same anchor a later ``memory_read('changelog')`` shows, so a reply that cites a
 # change and a reader checking the log against it are looking at the same text.
 # This is the ONE render used both live and, byte-identical, in every later
 # turn's history (``Agent._run_trigger_message`` reads it back off the run's

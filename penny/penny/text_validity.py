@@ -631,6 +631,11 @@ def check_description(description: str) -> str | None:
 #              prompts to ``update_entry`` instead, which was a surface-scope correction
 #              for a tool a cycle cannot call, not a rename — so it is deliberately not
 #              what this table says)
+#   #3128      memory_get (the metadata lookup) → memory_info — the retired NAME
+#              ``memory_get`` is reused by the new entry-get verb this arm introduced,
+#              so every entry below that once resolved to the metadata tool now
+#              resolves to ``memory_info`` instead, never to the name that changed
+#              meaning under it
 # and names that were never tools at all, recurring enough for a migration to sweep them:
 #   0039/0059  read_last → read_latest → collection_read_latest
 #   0040/0057  log_read_log → log_read_next → log_read
@@ -642,6 +647,11 @@ def check_description(description: str) -> str | None:
 #              (on=False / on=True) — three tool-PAIR folds, each a retired name
 #              resolving to the one tool that replaced it plus the argument that
 #              recovers the retired direction
+#   #3128      collection_list / collection_get / collection_keys / collection_write /
+#              log_read / log_get / log_append retired onto the verb-unified surface
+#              (memory_read / memory_get / memory_keys / memory_write) — the code
+#              resolves the store's type, so a retired collection-only or log-only
+#              name repoints at the one verb that now covers both
 # Why a table rather than more string distance: what a name became is a fact about this
 # project's history, and the two names need not look alike.  ``collection_metadata`` is
 # the measured case — the model guessed the retired name, and the string leg answered
@@ -651,27 +661,32 @@ def check_description(description: str) -> str | None:
 # name is actually on the surface being suggested from, so an entry whose target that
 # surface lacks falls through to the string leg like any other miss.
 LEGACY_TOOL_RENAMES: dict[str, str] = {
-    "collection_metadata": "memory_get",
+    "collection_metadata": "memory_info",
     "collection_update": "collection_configure",
     "collection_set": "collection_configure",
-    "memory_metadata": "memory_get",
-    "log_read_log": "log_read",
-    "log_read_next": "log_read",
-    "log_read_recent": "log_read",
-    # Each of these two once pointed at collection_read_latest; #2307 renamed THAT
-    # tool too, so both are repointed straight at the name it ended up with —
-    # resolution is one hop, never a chain.
-    "read_last": "collection_list",
-    "read_latest": "collection_list",
-    "collection_read_latest": "collection_list",
+    "memory_metadata": "memory_info",
+    "log_read_log": "memory_read",
+    "log_read_next": "memory_read",
+    "log_read_recent": "memory_read",
+    "log_read": "memory_read",
+    "log_get": "memory_get",
+    "log_append": "memory_write",
+    # Each of these once pointed at collection_read_latest / collection_list; #3128
+    # folded that tool itself into memory_read — repointed straight at the name it
+    # ended up with, one hop, never a chain.
+    "read_last": "memory_read",
+    "read_latest": "memory_read",
+    "collection_read_latest": "memory_read",
+    "collection_list": "memory_read",
     "collection_delete_entry": "collection_remove",
-    # A value stored under a key is written with the collection's one write call.
-    "update_entry": "collection_write",
+    # A value stored under a key is written with the memory's one write call.
+    "update_entry": "memory_write",
+    "collection_write": "memory_write",
     # collection_read_random pointed at collection_sample, which #2812 folded into
-    # collection_list(order='random') — repointed straight at the tool it ended up
-    # with, one hop, never a chain.
-    "collection_read_random": "collection_list",
-    "collection_sample": "collection_list",
+    # collection_list(order='random'), which #3128 folded into memory_read —
+    # repointed straight at the tool it ended up with, one hop, never a chain.
+    "collection_read_random": "memory_read",
+    "collection_sample": "memory_read",
     # The archive/unarchive pair folded onto one tool (#2812): both retired names
     # point at the tool that replaced them, which takes the direction as `archived`.
     "collection_unarchive": "collection_archive",
@@ -679,8 +694,11 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     # at the tool that replaced them, which takes the direction as `on`.
     "notifications_mute": "notifications_set",
     "notifications_unmute": "notifications_set",
-    # A key either reads back something or it doesn't — collection_get answers that.
-    "exists": "collection_get",
+    # A key either reads back something or it doesn't — memory_get answers that
+    # (#3128, repointed from collection_get).
+    "exists": "memory_get",
+    "collection_get": "memory_get",
+    "collection_keys": "memory_keys",
     # Reading one skill by name is skill_get (#2305).
     "skill_read": "skill_get",
     # A source's runs are listed by run_list, one is read by run_get; the retired

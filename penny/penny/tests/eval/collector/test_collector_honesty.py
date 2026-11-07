@@ -100,7 +100,7 @@ _PARAMETER = "source"
 # The calls the routine makes, in order — what the stored program must read back as under
 # the strict rendered dialect, and therefore what the cycle's tool surface is scoped to.
 _BROWSE = "browse"
-_WRITE = "collection_write"
+_WRITE = "memory_write"
 _PROGRAM_CALLS = (_BROWSE, _WRITE)
 
 # The job's cadence.  Stated because a configured collection has one, though the cycle is

@@ -120,7 +120,7 @@ def _seed_filler(db: Database) -> None:
 #
 # Several lists sit in the store; ONE was made the other night, and only the
 # map's outcome line (or her own records) says which.  With one list,
-# ``collection_list`` would answer the ask blind — the world would not be able
+# ``memory_read`` would answer the ask blind — the world would not be able
 # to fail (§4.6).
 
 _JAZZ_LIST = "jazz-albums-to-hear"
@@ -207,7 +207,7 @@ def _seed_list_exchange(db: Database) -> None:
             tool_calls=[
                 _wire_tool_call(
                     f"{run_id}-0",
-                    "collection_write",
+                    "memory_write",
                     {
                         "collection": _JAZZ_LIST,
                         "entries": [{"key": _JAZZ_ENTRY_KEY, "content": _JAZZ_ENTRY}],

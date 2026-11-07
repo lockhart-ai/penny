@@ -3,7 +3,7 @@
 The contract is `docs/eval-case-design.md`.
 
 A standing rule is a thing the user asked Penny to always or never do.  It is an
-ordinary entry in the seeded ``rules`` collection — one ``collection_write`` to
+ordinary entry in the seeded ``rules`` collection — one ``memory_write`` to
 keep it, one ``collection_remove`` to forget it — and the ``### Standing rules``
 section renders the collection in full wherever Penny acts (the chat self-state
 header, every collector cycle's prompt, the notify document), so a rule holds
@@ -27,7 +27,7 @@ and the premise probe asserts the section renders them — a world that stopped
 showing what the reply is answered from would make every sample measure
 guesswork.
 
-**What is NOT claimed.**  That she called ``collection_write`` / ``collection_remove``
+**What is NOT claimed.**  That she called ``memory_write`` / ``collection_remove``
 is a ROUTE — a rule is an entry, and nothing here keys to a verb — so it is measured
 in the tool sequence and never asserted.  How the reply words the keeping or the
 forgetting is the reply's spread.  No wording of a reply is matched beyond the
@@ -335,7 +335,7 @@ async def test_an_always_ask_is_kept_as_a_standing_rule(chat_eval: ChatEval, mod
 #
 # "What are my standing rules?"  Three rules seeded, so the answer is entirely
 # ambient — the section carries each rule in full, and the reply states each one.
-# Which read she reaches for (the section itself, or one ``collection_list``) is a
+# Which read she reaches for (the section itself, or one ``memory_read``) is a
 # route, measured in the tool sequence.
 
 _LISTED_TOKENS = tuple(token for _, token in _SEEDED_TOKENS)

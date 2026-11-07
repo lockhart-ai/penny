@@ -3,7 +3,8 @@
 Each tool validates its kwargs through one of these models as its first line,
 per the Pydantic-everywhere rule. Most read tools accept ``k: int | None``
 meaning "no cap — return every entry" when omitted; this matches the access
-layer's signature. ``CollectionListArgs`` is the exception (#2771): with ``k``
+layer's signature. ``MemoryReadArgs``'s collection branch is the exception
+(#2771): with ``k``
 omitted, the tool caps the read itself at
 ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT`` rather than reading every entry —
 an explicit ``k`` is still honoured in full, however large.
@@ -28,7 +29,6 @@ from pydantic import (
 from penny.constants import PennyConstants
 from penny.text_validity import (
     require_non_blank_description,
-    require_non_blank_log_content,
     require_non_degenerate_content,
 )
 from penny.tools.base import PLAN_ARG_DESCRIPTION
@@ -38,7 +38,7 @@ from penny.tools.models import ToolArgs
 # hyphen-minus (U+002D) when emitting memory names — gpt-oss has been
 # observed writing ``"board‑games"`` for ``"board-games"``.
 # The visual is identical but the string compares unequal, so memory-keyed
-# tools (``collection_write``, ``log_read``, etc.) silently failed
+# tools (``memory_write``, ``memory_read``, etc.) silently failed
 # with refusals or "memory not found" errors.  Normalise on the way in so
 # the rest of the stack sees a single canonical form.
 _UNICODE_DASHES = "‐‑‒–—―−"
@@ -205,7 +205,11 @@ AppendableLogName = Annotated[
 
 NonBlankDescription = Annotated[str, AfterValidator(require_non_blank_description)]
 CollectionContent = Annotated[str, AfterValidator(require_non_degenerate_content)]
-NonBlankLogContent = Annotated[str, AfterValidator(require_non_blank_log_content)]
+# ``require_non_blank_log_content`` is applied directly in ``MemoryWriteTool._run``
+# (memory_tools.py), not as an Annotated type here: whether a ``memory_write`` entry's
+# ``content`` must be non-blank depends on the resolved target's SHAPE (a log refuses
+# blank; a collection's degenerate check, including blank, runs inside ``collection.write``
+# itself) — a fact Pydantic can't know before the tool resolves the name.
 
 
 # ── Metadata ────────────────────────────────────────────────────────────────
@@ -287,7 +291,7 @@ class LogCreateArgs(ToolArgs):
 
 
 class MemoryNameArgs(ToolArgs):
-    """One-field args for ``memory_get`` — the shape-agnostic metadata lookup."""
+    """One-field args for ``memory_info`` — the shape-agnostic metadata lookup."""
 
     memory: MemoryName
 
@@ -399,70 +403,54 @@ class CollectionUpdateArgs(ToolArgs):
     plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
 
-# ── Collection reads ────────────────────────────────────────────────────────
+# ── Memory reads (collection or log, store-type resolved in Python) ─────────
 
 
-class CollectionListArgs(ToolArgs):
-    """Newest-first by default; ``k=None`` returns the newest (or, with
+class MemoryReadArgs(ToolArgs):
+    """A single ``memory_read`` over a collection or a log — the caller names
+    only the memory; the tool resolves whether it's a collection or a log and
+    applies that shape's own option set.  The model never picks the shape.
+
+    Collection options (#2771/#2812): ``k=None`` returns the newest (or, with
     ``order="random"``, samples up to) ``PennyConstants.COLLECTION_LIST_DEFAULT_LIMIT``
-    entries (#2771) rather than every entry. Name ``k`` to read more (or fewer) — it
-    is honoured in full, however large.
+    entries rather than every entry; name ``k`` to read more (or fewer) — honoured
+    in full, however large. ``order`` picks ``"newest"`` (default, walks back from
+    the most recent entry) or ``"random"`` (samples ``k`` entries uniformly).
 
-    ``order`` (#2812) picks how the read is drawn: ``"newest"`` (default) walks back
-    from the most recent entry; ``"random"`` samples ``k`` entries uniformly at
-    random — exactly what the retired ``collection_sample`` tool did on its own, now
-    one argument on the one read tool rather than a second tool to pick between."""
+    Log options (#2752/#2961): with no option, the read is cursor-based for a
+    collector (the next batch since its last committed cursor) or window-based for
+    chat/schedule (the recent look-back window) — the caller never chooses the
+    mode, Python does. ``day`` reads one local day, oldest first, capped — the
+    conversation map's anchor reads name the day this way. ``before`` pages
+    backward from an id a prior read rendered beside an entry — the newest bounded
+    batch older than that entry, oldest first.
 
-    collection: MemoryName
+    ``k``/``order`` on a log, or ``day``/``before`` on a collection, are refused
+    with a teaching error naming the options that actually apply to that shape —
+    the two option sets describe genuinely different reading models (a keyed,
+    deduped store vs. an append-only stream), so a cross-shape argument is never
+    silently reinterpreted."""
+
+    memory: MemoryName
     k: ReadCount = None
     order: Literal["newest", "random"] = "newest"
-
-
-class CollectionGetArgs(ToolArgs):
-    """Exact key lookup in a collection."""
-
-    collection: MemoryName
-    key: str
-
-
-class CollectionKeysArgs(ToolArgs):
-    """One-field args for ``collection_keys``."""
-
-    collection: MemoryName
-
-
-# ── Log-specific reads ──────────────────────────────────────────────────────
-
-
-class ReadLogArgs(ToolArgs):
-    """A single ``log_read`` over a log.  The caller names only the log — the
-    semantics (cursor batch for collectors, recent window for chat/schedule) and
-    all sizes are decided in Python from the caller, never by the model.
-
-    ``day`` is optional (#2752): the conversation map's lines are older than
-    chat's recent window, so its anchor reads name the DAY to read — that local
-    day's entries, oldest first, capped.  A map line's own date names the day
-    its full text is read at.
-
-    ``before`` is optional (#2961): pages backward from an id a prior read
-    rendered beside an entry — the newest bounded batch older than that entry,
-    oldest first.  A disclosure line names this call, with the id, whenever a
-    read left earlier entries unshown — so a log that looks sparse because
-    nothing fell in the recent window is never a dead end."""
-
-    log: MemoryName
     day: str | None = None
     before: int | None = None
 
 
-class LogGetArgs(ToolArgs):
-    """One entry of a log, by the id shown beside it — the ``log_get`` read.
+class MemoryGetArgs(ToolArgs):
+    """``memory_get`` — exact key lookup in a collection, or the numeric entry id
+    (passed as a string) a ``memory_read`` showed beside an entry, for a log."""
 
-    ``log`` names the log; ``id`` is the entry id a log read renders beside the
-    entry (``format_entries(show_ids=True)``)."""
+    memory: MemoryName
+    key: str
 
-    log: MemoryName
-    id: int
+
+class MemoryKeysArgs(ToolArgs):
+    """One-field args for ``memory_keys`` — a collection's keys, or a log's
+    entry ids."""
+
+    memory: MemoryName
 
 
 class ReadRunCallsArgs(ToolArgs):
@@ -492,11 +480,18 @@ class GetEventArgs(ToolArgs):
     step: int | None = Field(default=None, ge=1)
 
 
-# ── Collection writes ───────────────────────────────────────────────────────
+# ── Memory writes (collection or log, store-type resolved in Python) ────────
 
 
-class CollectionEntrySpec(BaseModel):
-    """One entry in a ``collection_write`` batch.
+class MemoryEntrySpec(BaseModel):
+    """One entry in a ``memory_write`` batch.
+
+    ``key`` is REQUIRED for a collection (the tool refuses a keyless entry
+    against a collection with a teaching error) and IGNORED for a log — a log
+    entry always lands keyless, exactly as the retired ``log_append`` always
+    stored it, whatever a supplied ``key`` said; the write headline for a log
+    target always states entries landed keyless, so a model is never taught
+    that a log honours a key.
 
     ``extra="forbid"`` — a misspelled or extraneous key inside a batch entry
     (``{"key": …, "content": …, "id": …}``) surfaces as an actionable rejection
@@ -507,7 +502,7 @@ class CollectionEntrySpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: str
+    key: str | None = None
     content: str
 
     @model_validator(mode="before")
@@ -530,21 +525,32 @@ class CollectionEntrySpec(BaseModel):
         return value
 
 
-def _require_write_entries(value: list[CollectionEntrySpec]) -> list[CollectionEntrySpec]:
-    """Reject an empty ``collection_write`` batch with an actionable message.
+def _require_write_entries(value: list[MemoryEntrySpec]) -> list[MemoryEntrySpec]:
+    """Reject an empty ``memory_write`` batch with an actionable message.
 
     A bare ``Field(min_length=1)`` surfaces Pydantic's generic "List should have
     at least 1 item"; name what an entry is so the model fixes the call."""
     if not value:
-        raise ValueError("provide at least one entry (each a key plus its content) to write")
+        raise ValueError(
+            "provide at least one entry (each its content, plus a key for a collection) to write"
+        )
     return value
 
 
-class CollectionWriteArgs(ToolArgs):
-    """Batched write to a collection with dedup applied per entry."""
+class MemoryWriteArgs(ToolArgs):
+    """Batched write to a collection (dedup applied per entry, each entry's
+    ``key`` required) or an append to a log (keyless, no dedup, any supplied
+    ``key`` ignored) — the ``memory`` named decides which, in Python.
 
-    collection: MemoryName
-    entries: Annotated[list[CollectionEntrySpec], AfterValidator(_require_write_entries)]
+    ``memory`` reuses the system-log guard ``log_append`` carried
+    (``AppendableLogName``): a model-authored entry can't land on a framework-
+    managed log (``user-messages`` / ``penny-messages`` / ``collector-runs`` /
+    ``run-health`` / ``changelog``) — safe to apply unconditionally here, since
+    no collection is ever one of those five names (the registry's names are
+    unique across both shapes)."""
+
+    memory: AppendableLogName
+    entries: Annotated[list[MemoryEntrySpec], AfterValidator(_require_write_entries)]
     # The structural plan mark (#2933) — see ``CollectionArchiveArgs.plan``.
     plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 
@@ -554,18 +560,6 @@ class CollectionRemoveArgs(ToolArgs):
 
     collection: MemoryName
     key: str
-    # The structural plan mark (#2933) — see ``CollectionArchiveArgs.plan``.
-    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
-
-
-# ── Log writes ──────────────────────────────────────────────────────────────
-
-
-class LogAppendArgs(ToolArgs):
-    """Append one keyless entry to a log."""
-
-    log: AppendableLogName
-    content: NonBlankLogContent
     # The structural plan mark (#2933) — see ``CollectionArchiveArgs.plan``.
     plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
 

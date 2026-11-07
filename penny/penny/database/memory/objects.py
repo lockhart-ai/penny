@@ -236,9 +236,11 @@ class Memory:
         self, k: int | None = None, offset: int = 0, search: str | None = None
     ) -> list[MemoryEntry]:
         """Newest-first entries — the shape-independent internal read used by
-        the log cursor's first read and send_message's cooldown probe.  The
-        model-facing ``collection_list`` is the ``Collection.read_latest``
-        wrapper over this; logs reach it only through ``read_batch``."""
+        the log cursor's first read, send_message's cooldown probe, and
+        ``memory_keys``'s log branch (#3128, bounded ids).  The model-facing
+        collection read (``memory_read``) is ``Collection.read_latest``'s own
+        wrapper over this; a log's bulk content otherwise reaches it only
+        through ``read_batch``."""
         return self._newest_rows(k, offset, search)
 
     def read_all(self) -> list[MemoryEntry]:
@@ -414,7 +416,7 @@ class Collection(Memory):
 
         Called from each mutating path with the rows that path has ALREADY read to do
         its work, so the record costs no extra query — and it is keyed to the MUTATION
-        rather than to a tool, which is what makes ``collection_write``,
+        rather than to a tool, which is what makes ``memory_write``'s collection branch,
         ``collection_remove`` and the change-gate's own
         ``KEY_EXISTS_CHANGED`` baseline refresh (#1633) all recorded identically.  That
         last one is the write nobody makes explicitly, and precisely the one an aborted
@@ -426,9 +428,9 @@ class Collection(Memory):
     def read_latest(
         self, k: int | None = None, offset: int = 0, search: str | None = None
     ) -> list[MemoryEntry]:
-        """The model-facing newest-first collection read (``collection_list``).
-        Logs don't expose this — the base refuses it so a log read can't bypass
-        its cursor."""
+        """The model-facing newest-first collection read (``memory_read``'s
+        collection branch). Logs don't expose this — the base refuses it so a
+        log read can't bypass its cursor."""
         return self.newest_entries(k, offset, search)
 
     def read_random(self, k: int | None = None) -> list[MemoryEntry]:
@@ -866,7 +868,7 @@ class Log(Memory):
     Backed by ``memory_entry`` (the base's row primitives).  Implements the
     cursored/window read surface and ``append``; keyed ops stay refused.  The
     cursor *read* logic lives here, uniform across every log backing — the
-    reader's pending/commit lifecycle stays in ``LogReadTool``.
+    reader's pending/commit lifecycle stays in ``MemoryReadTool``.
     """
 
     def append(
@@ -1038,26 +1040,13 @@ class MessageLogMemory(Log):
         return [self._to_entry(row) for row in rows]
 
 
-def _collection_field(fields: dict) -> Any:
-    """A logged call's collection name, read however it was logged.
-
-    The six entry tools name this argument ``collection`` today; a call logged
-    before the rename stored it as ``memory``.  The stored row is never
-    rewritten, so a reader pulls a collection's name out of a logged call's
-    arguments through this one accessor rather than re-deriving the fallback at
-    each site."""
-    return fields.get("collection", fields.get("memory", "?"))
-
-
-def _log_field(fields: dict) -> Any:
-    """A logged call's log name, read however it was logged.
-
-    ``log_read`` / ``log_append`` name this argument ``log`` today; a call logged
-    before the rename stored it as ``memory``.  The stored row is never
-    rewritten, so a reader pulls a log's name out of a logged call's arguments
-    through this one accessor rather than re-deriving the fallback at each
-    site."""
-    return fields.get("log", fields.get("memory", "?"))
+def _memory_field(fields: dict) -> Any:
+    """A logged ``memory_write``/``memory_read``/``memory_get``/``memory_keys``
+    call's target name (#3128) — named ``memory`` today; a call logged before
+    this rename to a tool it replaced stored it as ``collection`` (the retired
+    ``collection_write``) or ``log`` (the retired ``log_append``).  History is
+    never rewritten, so every prior shape is read back through one accessor."""
+    return fields.get("memory", fields.get("collection", fields.get("log", "?")))
 
 
 def render_tool_call(name: str, args: object) -> str:
@@ -1078,13 +1067,30 @@ def render_tool_call(name: str, args: object) -> str:
     and nothing else is added.
     """
     fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
-    if name == PennyConstants.COLLECTION_WRITE_TOOL_NAME:
+    # ``name`` arrives here already resolved (#2307/#3128): every caller reads it
+    # off ``LoggedToolCall.tool`` / ``run_tool_calls``, both of which run
+    # ``_resolve_logged_tool_name`` first — Harmony-strip, then
+    # ``LEGACY_TOOL_RENAMES`` — so a row logged under a retired name
+    # (``collection_write``, ``log_read``, ``log_append``, …) arrives here as
+    # the CURRENT name already.  There is no separate retired-name branch to
+    # keep: the rename table is the one place that distinction lives.
+    if name == PennyConstants.MEMORY_WRITE_TOOL_NAME:
         return (
-            f"collection_write{{collection: {_collection_field(fields)!r}, "
+            f"memory_write{{memory: {_memory_field(fields)!r}, "
             f"entries: {_write_contents(fields)!r}}}"
         )
-    if name in (PennyConstants.LOG_READ_TOOL_NAME, PennyConstants.LOG_APPEND_TOOL_NAME):
-        return f"{name}{{log: {_log_field(fields)!r}}}"
+    if name == PennyConstants.MEMORY_READ_TOOL_NAME:
+        # The destination argument normalises to ``memory`` however the call was
+        # logged (#3128) — the retired ``log_read``'s own ``log`` key, or the
+        # #2307-era ``collection``/``memory`` split — so one read renders one way
+        # regardless of when it was made.  Any other field (``k``/``order``/
+        # ``day``/``before``) rides alongside it, verbatim.
+        rest = "".join(
+            f", {key}: {value!r}"
+            for key, value in fields.items()
+            if key not in ("memory", "collection", "log")
+        )
+        return f"memory_read{{memory: {_memory_field(fields)!r}{rest}}}"
     if name == PennyConstants.SEND_MESSAGE_TOOL_NAME:
         return f"send_message{{{fields.get('content', '')!r}}}"
     if name == PennyConstants.BROWSE_TOOL_NAME:
@@ -1270,7 +1276,8 @@ def _run_logged_steps(
 
 
 def _write_contents(fields: dict) -> str:
-    """The entry contents of a ``collection_write`` call, joined for a run record."""
+    """The entry contents of a ``memory_write`` (or a retired ``collection_write``)
+    call, joined for a run record."""
     entries = fields.get("entries") or []
     return "; ".join(str(e.get("content", "")) for e in entries if isinstance(e, dict))
 
@@ -1400,9 +1407,13 @@ def _run_tool_failures(prompts: list[PromptLog]) -> int:
 
 _WRITE_TOOLS = frozenset(
     {
-        PennyConstants.COLLECTION_WRITE_TOOL_NAME,
+        # Every name here is compared against the ALREADY-RESOLVED ``.tool``
+        # (#2307/#3128, ``_resolve_logged_tool_name`` via ``run_tool_calls``), so
+        # a retired name (``collection_write``, ``log_append``, …) a historical
+        # row still carries literally resolves to the current one below before
+        # it ever reaches this set — no separate retired entry needed.
         PennyConstants.COLLECTION_REMOVE_TOOL_NAME,
-        PennyConstants.LOG_APPEND_TOOL_NAME,
+        PennyConstants.MEMORY_WRITE_TOOL_NAME,
     }
 )
 
@@ -1497,9 +1508,9 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
       from the rendered headers here.  Only an *all-queries-failed* browse returns
       ``success=False`` (and so does add to ``tool_failures``); the header count still
       captures it, so ``no_writes`` is unaffected either way.
-    - **reads** — internal collection/log reads (``log_read``,
-      ``collection_list``, ``read_similar``, ``memory_get``, …): every
-      tool call that isn't a browse, write, send,
+    - **reads** — internal collection/log reads (``memory_read``,
+      ``memory_get``, ``memory_keys``, ``memory_info``, ``read_similar``, …):
+      every tool call that isn't a browse, write, send,
       or ``done()``.  These don't meaningfully fail, so they're a plain call count.
 
     Writes and sends count the model's own tool *calls* (each appears once across
@@ -1560,7 +1571,7 @@ def _io_tally_line(prompts: list[PromptLog]) -> str | None:
 # One line per run — calls/output tokens/time, discards, tool errors (by
 # tool), and whether a message went out and carried a link — read off existing
 # columns only, never inferred from wording.  Shared by the ``run-health``
-# facade (every run, cursor/day via ``log_read``) and ``render_run_calls``
+# facade (every run, cursor/day via ``memory_read``) and ``render_run_calls``
 # (the ``run_list``/``run_get`` view, already source-filterable).
 
 # A bare ``http(s)://`` URL anywhere in text — the shape ``link_handles``
@@ -1849,7 +1860,7 @@ def render_run_record(prompts: list[PromptLog]) -> str:
     run's structural outcome (its ``RunOutcome`` enum, or the write-gate stop
     reason), never a model-authored ``done()`` summary (``done()`` is argless).
     Carries NO timestamp — each consumer supplies its own (the model via the
-    ``log_read`` entry stamp, the addon via the run's ``created_at`` field), so
+    ``memory_read`` entry stamp, the addon via the run's ``created_at`` field), so
     embedding one here just duplicated it.  Kept deliberately flat: a format
     bake-off (``format_bakeoff.py``) found markdown headers / numbered tool lists
     gave gpt-oss no reading-comprehension gain over plain text on these records

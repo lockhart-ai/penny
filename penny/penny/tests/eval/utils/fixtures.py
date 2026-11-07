@@ -142,11 +142,10 @@ ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 # of those reads as having acted on nothing.
 ENACTING_TOOLS = (
     "browse",
-    "collection_write",
+    "memory_write",
     "collection_configure",
     "update_entry",
     "collection_remove",
-    "log_append",
 )
 
 
@@ -246,15 +245,15 @@ BOARD_GAMES_INTENT = (
 # Guideline-compliant seed: EVERY numbered step is a canonical ``tool(args)`` call — no prose
 # steps, no reasoning/filter lines (a prose step trains the model to emit its own calls as
 # prose — the notation drift the eval surfaced; a reasoning step it tries to "perform" as
-# text).  The entry shape lives INSIDE ``collection_write``'s args, not a separate line.
+# text).  The entry shape lives INSIDE ``memory_write``'s args, not a separate line.
 # Notification is the ``notify`` flag (the run-time notify suffix, #1557) — NO ``send_message``
-# step in the stored prompt (that is the deprecated direct-send pattern).  ``log_read`` is the
-# removable call the edit-operations case drops.
+# step in the stored prompt (that is the deprecated direct-send pattern).  ``memory_read`` is
+# the removable call the edit-operations case drops.
 BOARD_GAMES_EXTRACTION_PROMPT = (
     "Collect heavier euro-style strategy board games and modern tabletop classics.\n"
     '1. browse(queries=["<new strategy board game releases>"]) — read the actual pages.\n'
-    '2. log_read("user-messages") — note which games the user has said they want.\n'
-    '3. collection_write("board-games", entries=[<one per game: key = game name; '
+    '2. memory_read("user-messages") — note which games the user has said they want.\n'
+    '3. memory_write("board-games", entries=[<one per game: key = game name; '
     "content = name + description + player count + URL>]).\n"
     "4. done()."
 )
@@ -455,7 +454,7 @@ RESEARCH_WATCHER_EXTRACTION_PROMPT = (
     "Collect newly released indie metroidvania games worth playing.\n"
     "1. browse the web for new indie metroidvania releases; read actual pages.\n"
     "2. Each entry: key = game name; content = name + description + URL.\n"
-    '3. collection_write("indie-metroidvanias", entries=[...]).\n'
+    '3. memory_write("indie-metroidvanias", entries=[...]).\n'
     "4. done()."
 )
 

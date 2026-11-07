@@ -70,7 +70,7 @@ from penny.tools.base import PLAN_MESSAGE_PREFIX
 from penny.tools.memory_tools import (
     CollectionSetTool,
     DoneTool,
-    LogReadTool,
+    MemoryReadTool,
     build_memory_tools,
 )
 
@@ -170,27 +170,27 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
         author="user",
     )
 
-    def _log_read_for(collection: str) -> LogReadTool:
+    def _memory_read_for(collection: str) -> MemoryReadTool:
         # A program that READS the log — the surface is scoped to its calls (#1911), so
         # the tool under test is on it because the routine names it.
         db.memories.create_collection(
-            collection, "d", extraction_prompt='1. log_read(log="chatter")'
+            collection, "d", extraction_prompt='1. memory_read(memory="chatter")'
         )
         collector._bind(db.memories.get(collection))
-        tool = next(t for t in collector.get_tools() if isinstance(t, LogReadTool))
+        tool = next(t for t in collector.get_tools() if isinstance(t, MemoryReadTool))
         collector._bind(None)
         return tool
 
-    alpha = _log_read_for("alpha")
-    alpha_result = await alpha.execute(CallLink.new_top(), log="chatter")
+    alpha = _memory_read_for("alpha")
+    alpha_result = await alpha.execute(CallLink.new_top(), memory="chatter")
     assert "hello there" in alpha_result.message
     # Framing: the read leads with a count + source header so the model reads
     # the body as fetched data, not a fresh instruction.
     assert "1 entry from `chatter`" in alpha_result.message
     alpha.commit_pending()  # advance alpha's cursor past the entry
 
-    beta = _log_read_for("beta")
-    assert "hello there" in (await beta.execute(CallLink.new_top(), log="chatter")).message, (
+    beta = _memory_read_for("beta")
+    assert "hello there" in (await beta.execute(CallLink.new_top(), memory="chatter")).message, (
         "beta starved by alpha's cursor — collections share one cursor"
     )
 
@@ -376,7 +376,7 @@ def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
         f"collector surface leaked lifecycle tools: {names & _LIFECYCLE_TOOL_NAMES}"
     )
     # It keeps its actual job: reads, scoped entry writes, browse, choose.
-    assert {"collection_write", "collection_list", "browse", "choose"} <= names
+    assert {"memory_write", "memory_read", "browse", "choose"} <= names
 
 
 def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
@@ -409,7 +409,7 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
     assert chat_names >= _LIFECYCLE_TOOL_NAMES
     assert collector_names.isdisjoint(_LIFECYCLE_TOOL_NAMES)
     # Reads + entry mutations are present in BOTH — only the lifecycle tier differs.
-    assert {"collection_write", "collection_list"} <= collector_names <= chat_names
+    assert {"memory_write", "memory_read"} <= collector_names <= chat_names
 
 
 # ── Schedule gating: the RRULE decides when a collection is due (#1857) ──────
@@ -846,9 +846,9 @@ async def test_expiry_passing_mid_cycle_archives_post_cycle(mock_llm, test_confi
         if count == 1:  # a working step, then the close — an ordinary cycle shape
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "expiring-watch",
+                    "memory": "expiring-watch",
                     "entries": [{"key": "today", "content": "a fact"}],
                 },
             )
@@ -977,8 +977,8 @@ async def test_build_system_prompt_carries_no_job_identity(test_config, tmp_path
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
-        "- Single batched `collection_write{entries: [...]}` per cycle — not one call per entry.\n"
-        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
+        "- Single batched `memory_write{entries: [...]}` per cycle — not one call per entry.\n"
+        "- To correct an entry: `memory_write` it under the key it is stored under — the store "
         "keeps one value per key and replaces the stored content in place. If the entry should "
         "be removed instead: `collection_remove{key: <key>}`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
@@ -1286,14 +1286,14 @@ def _program_handler(
         results = _results_so_far(request)
         if results == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_read", {"memory": "indie-metroidvanias"}
             )
         if results == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "indie-metroidvanias",
+                    "memory": "indie-metroidvanias",
                     "entries": [{"key": key, "content": content}],
                 },
             )
@@ -1495,7 +1495,7 @@ def _one_step_then_cancel(mock_llm) -> Callable[[dict, int], LlmResponse]:
     def handler(request: dict, count: int) -> LlmResponse:
         if _results_so_far(request) == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_read", {"memory": "indie-metroidvanias"}
             )
         raise asyncio.CancelledError
 
@@ -1549,7 +1549,7 @@ async def test_a_sandbox_cycle_cancelled_by_a_shutdown_is_reported_as_interrupte
     assert lines[1] == "What the job is for: Indie metroidvania releases"
     # The one step the run got through renders in the trace, and the record ends
     # in the interrupted ending — never the finished sandbox stamp.
-    assert "step 1: collection_list{collection: 'indie-metroidvanias'}" in rendered
+    assert "step 1: memory_read{memory: 'indie-metroidvanias'}" in rendered
     assert "ended: interrupted by a restart" in rendered
     assert "ended: sandbox" not in rendered
     assert "is complete" not in rendered
@@ -1631,14 +1631,14 @@ def _bad_done_then_close(mock_llm, bad_args: dict):
         results = _results_so_far(request)
         if results == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_read", {"memory": "indie-metroidvanias"}
             )
         if results == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "indie-metroidvanias",
+                    "memory": "indie-metroidvanias",
                     "entries": [
                         {"key": "Cinder Drift", "content": "out now. https://ex.example/cd"}
                     ],
@@ -1729,7 +1729,7 @@ def _read_only_handler(mock_llm, *, notify: bool = True):
     def handler(request: dict, count: int) -> LlmResponse:
         if _results_so_far(request) == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_read", {"memory": "indie-metroidvanias"}
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": notify})
 
@@ -1958,9 +1958,9 @@ def _writes_then_dies(mock_llm, *, key: str, content: str):
         if calls == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "indie-metroidvanias",
+                    "memory": "indie-metroidvanias",
                     "entries": [{"key": key, "content": content}],
                 },
             )
@@ -2064,9 +2064,9 @@ async def test_a_cycle_cut_short_leaves_nothing_behind_either(mock_llm, test_con
         if calls == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "indie-metroidvanias",
+                    "memory": "indie-metroidvanias",
                     "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — out now."}],
                 },
             )
@@ -2137,8 +2137,8 @@ async def test_an_unchanged_write_keeps_what_the_cycle_wrote_before_it(
             )
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
-                {"collection": "indie-metroidvanias", "entries": [entry]},
+                "memory_write",
+                {"memory": "indie-metroidvanias", "entries": [entry]},
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
@@ -2213,8 +2213,8 @@ async def test_a_revert_that_cannot_land_still_settles_the_rest_of_the_cycle(
 
 _LOG_DRIVEN_PROGRAM = (
     "Watch the release feed for new indie metroidvanias.\n"
-    '1. log_read(log="release-feed")\n'
-    '2. collection_write("indie-metroidvanias", entries=[{key: <the game>, '
+    '1. memory_read(memory="release-feed")\n'
+    '2. memory_write("indie-metroidvanias", entries=[{key: <the game>, '
     "content: <what is new>}])"
 )
 
@@ -2230,13 +2230,15 @@ def _reads_then_writes(mock_llm, *, close: bool):
         nonlocal calls
         calls += 1
         if calls == 1:
-            return mock_llm._make_tool_call_response(request, "log_read", {"log": "release-feed"})
+            return mock_llm._make_tool_call_response(
+                request, "memory_read", {"memory": "release-feed"}
+            )
         if calls == 2:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "indie-metroidvanias",
+                    "memory": "indie-metroidvanias",
                     "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — next spring."}],
                 },
             )
@@ -2422,7 +2424,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     db.memories.create_collection(
         "board-games",
         "Strategy board games worth buying",
-        extraction_prompt='Collect board games.\n1. log_read("user-messages")',
+        extraction_prompt='Collect board games.\n1. memory_read("user-messages")',
     )
     for run_id, outcome, reason in [
         ("run-a", RunOutcome.WORKED, ""),
@@ -2463,8 +2465,8 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
-        "- Single batched `collection_write{entries: [...]}` per cycle — not one call per entry.\n"
-        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
+        "- Single batched `memory_write{entries: [...]}` per cycle — not one call per entry.\n"
+        "- To correct an entry: `memory_write` it under the key it is stored under — the store "
         "keeps one value per key and replaces the stored content in place. If the entry should "
         "be removed instead: `collection_remove{key: <key>}`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
@@ -2484,7 +2486,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "Description: Strategy board games worth buying\n"
         "\n"
         "Collect board games.\n"
-        '1. log_read("user-messages")\n'
+        '1. memory_read("user-messages")\n'
         "\n"
         "## What this collection holds (newest first)\n"
         "It holds nothing yet.\n"
@@ -2665,7 +2667,7 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
     wrote_then_closed = ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
+            ToolCallRecord(tool="memory_write", arguments={}, mutated=True),
             done,
         ],
     )
@@ -2674,7 +2676,7 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
     # Closed having changed nothing → no_work, same empty reason.
     read_then_closed = ControllerResponse(
         answer="",
-        tool_calls=[ToolCallRecord(tool="log_read", arguments={}), done],
+        tool_calls=[ToolCallRecord(tool="memory_read", arguments={}), done],
     )
     assert collector._cycle_result(read_then_closed, None, True) == (RunOutcome.NO_WORK, "")
 
@@ -2692,7 +2694,7 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
     # undo journal removes.
     unclosed_write = ControllerResponse(
         answer="",
-        tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, mutated=True)],
+        tool_calls=[ToolCallRecord(tool="memory_write", arguments={}, mutated=True)],
     )
     assert collector._cycle_result(unclosed_write, None, False) == (
         RunOutcome.FAILED,
@@ -2704,7 +2706,7 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
     bad_done = ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
+            ToolCallRecord(tool="memory_write", arguments={}, mutated=True),
             ToolCallRecord(tool=DoneTool.name, arguments={}, failed=True),
         ],
     )
@@ -2762,7 +2764,7 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
         answer="",
         tool_calls=[
             ToolCallRecord(
-                tool="collection_write",
+                tool="memory_write",
                 arguments={},
                 mutated=False,
                 stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED,
@@ -2775,9 +2777,9 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
     stop_after_work = ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
+            ToolCallRecord(tool="memory_write", arguments={}, mutated=True),
             ToolCallRecord(
-                tool="collection_write",
+                tool="memory_write",
                 arguments={},
                 mutated=False,
                 stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED,
@@ -2801,14 +2803,14 @@ def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_con
     recorded-but-empty close."""
     collector, _ = _make_collector(test_config, tmp_path)
     stop = ToolCallRecord(
-        tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
+        tool="memory_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
     )
     # Every member of the declared STOP table closes the loop — the hook reads the
     # record's stop_reason, so #1919's second member needed no loop change.
     already = ToolCallRecord(
-        tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED
+        tool="memory_write", arguments={}, stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED
     )
-    whole_program = ToolCallRecord(tool="collection_write", arguments={}, mutated=True)
+    whole_program = ToolCallRecord(tool="memory_write", arguments={}, mutated=True)
     assert collector.should_stop_loop([stop]) is True
     assert collector.should_stop_loop([already]) is True
     assert collector.should_stop_loop([ToolCallRecord(tool=DoneTool.name, arguments={})]) is True
@@ -2828,8 +2830,8 @@ def test_tool_failures_counts_failed_calls():
         answer="",
         tool_calls=[
             ToolCallRecord(tool="browse", arguments={}, failed=True),
-            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
-            ToolCallRecord(tool="log_read", arguments={}, failed=True),
+            ToolCallRecord(tool="memory_write", arguments={}, mutated=True),
+            ToolCallRecord(tool="memory_read", arguments={}, failed=True),
             ToolCallRecord(tool="done", arguments={}),
         ],
     )
@@ -3015,7 +3017,7 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     def handler(request: dict, count: int) -> LlmResponse:
         if count == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_read", {"memory": "indie-metroidvanias"}
             )
         raise LlmConnectionError("Connection refused")
 
@@ -3027,7 +3029,7 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     assert len(runs) == 1
     assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
     assert runs[0]["run_reason"] == (
-        "model call failed at step 2 after collection_list: LlmConnectionError: Connection refused"
+        "model call failed at step 2 after memory_read: LlmConnectionError: Connection refused"
     )
 
 
@@ -3141,9 +3143,9 @@ def _writes_then_closes(mock_llm) -> Callable[[dict, int], LlmResponse]:
         if calls == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_write",
                 {
-                    "collection": "morning-briefing",
+                    "memory": "morning-briefing",
                     "entries": [{"key": "today", "content": "the ferries are running"}],
                 },
             )
@@ -3240,7 +3242,7 @@ async def test_a_budget_spent_cadence_failure_queues_the_failure_event(
         # transport — the aborted-cycle shape the retry bound exists for.
         if count % 2 == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "morning-briefing"}
+                request, "memory_read", {"memory": "morning-briefing"}
             )
         raise LlmConnectionError("Connection refused")
 
@@ -3286,7 +3288,7 @@ async def test_a_quiet_completed_cycle_still_consumes_its_occurrence(
     def reads_then_closes(request: dict, count: int) -> LlmResponse:
         if count == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "morning-briefing"}
+                request, "memory_read", {"memory": "morning-briefing"}
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
@@ -3526,7 +3528,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
     db.memories.create_collection(
         "test-col",
         "test",
-        extraction_prompt='Extract things.\n1. log_read(log="user-messages")',
+        extraction_prompt='Extract things.\n1. memory_read(memory="user-messages")',
     )
 
     async def mock_run_cycle(
@@ -3537,7 +3539,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
             response=ControllerResponse(
                 answer="",
                 tool_calls=[
-                    ToolCallRecord(tool="log_read", arguments={"log": "user-messages"}),
+                    ToolCallRecord(tool="memory_read", arguments={"memory": "user-messages"}),
                     ToolCallRecord(tool=DoneTool.name, arguments={}),
                 ],
             ),
@@ -3548,21 +3550,21 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
     success, message = await collector.run_for("test-col")
     assert success is True
     assert message.startswith(f"Collector cycle complete: {RunOutcome.NO_WORK.value}")
-    assert "1. log_read(log=user-messages)" in message
+    assert "1. memory_read(memory=user-messages)" in message
 
 
 def test_format_tool_trace_numbers_calls_and_renders_args_whole():
     response = ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="log_read", arguments={"log": "user-messages"}),
+            ToolCallRecord(tool="memory_read", arguments={"memory": "user-messages"}),
             ToolCallRecord(tool="browse", arguments={"queries": ["board game " * 10]}),
             ToolCallRecord(tool="done", arguments={}),
         ],
     )
     trace = Collector._format_tool_trace(response)
     lines = trace.splitlines()
-    assert lines[0] == "1. log_read(log=user-messages)"
+    assert lines[0] == "1. memory_read(memory=user-messages)"
     assert lines[1] == f"2. browse(queries=['{'board game ' * 10}'])"
     assert lines[2].startswith("3. done(")
 
@@ -3662,7 +3664,7 @@ def _idle_response() -> ControllerResponse:
     return ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="collection_list", arguments={}, failed=False),
+            ToolCallRecord(tool="memory_read", arguments={}, failed=False),
             ToolCallRecord(tool="done", arguments={}, failed=False),
         ],
     )
@@ -3672,9 +3674,7 @@ def _work_response() -> ControllerResponse:
     """A cycle that actually wrote an entry — produced work (``mutated=True``)."""
     return ControllerResponse(
         answer="",
-        tool_calls=[
-            ToolCallRecord(tool="collection_write", arguments={}, failed=False, mutated=True)
-        ],
+        tool_calls=[ToolCallRecord(tool="memory_write", arguments={}, failed=False, mutated=True)],
     )
 
 
@@ -3685,7 +3685,7 @@ def test_produced_work_distinguishes_state_changes():
     # A failed mutation isn't work.
     failed = ControllerResponse(
         answer="",
-        tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=True)],
+        tool_calls=[ToolCallRecord(tool="memory_write", arguments={}, failed=True)],
     )
     assert Collector._produced_work(failed, None) is False
     # The bug this fix targets: a duplicate-rejected write doesn't error
@@ -3693,7 +3693,7 @@ def test_produced_work_distinguishes_state_changes():
     # as no-work — a successful no-op changed nothing.
     duplicate = ControllerResponse(
         answer="",
-        tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=False)],
+        tool_calls=[ToolCallRecord(tool="memory_write", arguments={}, failed=False)],
     )
     assert Collector._produced_work(duplicate, None) is False
     # THE FOLD (#1914): the framework-queued notification is the cycle's SECOND way of
@@ -3714,7 +3714,7 @@ def test_consumed_input_advances_cursor_on_work_even_without_done():
     input — so the cursor must move, else the next tick re-reads the same batch,
     re-attempts the already-landed write, and dedup-rejects it (a wasted cycle)."""
     read_only = ControllerResponse(
-        answer="", tool_calls=[ToolCallRecord(tool="log_read", arguments={}, mutated=False)]
+        answer="", tool_calls=[ToolCallRecord(tool="memory_read", arguments={}, mutated=False)]
     )
     # Closed via the terminator → input consumed regardless of work.
     assert Collector._consumed_input(True, read_only) is True
