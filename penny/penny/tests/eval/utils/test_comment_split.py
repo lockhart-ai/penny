@@ -505,3 +505,68 @@ def test_collapsed_summary_over_the_cap_with_no_fold_seam_is_cut_and_names_its_f
     assert any(_ARTIFACT_FILE in part for part in parts)
     with pytest.raises(OversizedPartError):
         enforce_part_cap(split_collapsed_summary(document))
+
+
+# ── The collapsed summary's per-block artifact RESOLVER (#3151) ──────────────
+#
+# A whole-suite run's collapsed document carries several different cases' own folds, so a
+# single ``artifact_file`` path would misname every case's cut after the first — and the real
+# failure this guards against was worse than a wrong name: `_write_collapsed_comment` passed NO
+# artifact at all, so the one case that outgrew the cap (120 checks of transcript) left nothing
+# to name, ``enforce_part_cap`` raised, and the run's whole ``comment/`` directory stayed empty
+# — not one case posted. ``artifact_file`` accepts a RESOLVER — a function from the over-cap
+# block's own text to ITS case's artifact — for exactly this document.
+
+
+def _resolver(paths: dict[str, str]):
+    """A resolver reading the case id a fold block opens on (``_case_fold``'s own
+    ``` `{case_id}` ``` shape) back out of the block, the same way :mod:`assemble`'s own
+    resolver reads it off ``_case_detail_fold``'s summary line."""
+
+    def resolve(block: str) -> str | None:
+        match = re.search(r"`([^`]+)`", block)
+        return paths.get(match.group(1)) if match else None
+
+    return resolve
+
+
+def test_collapsed_summary_resolver_names_each_oversized_case_with_its_own_artifact() -> None:
+    """Two different cases, each several times over the cap on their own, in one collapsed
+    document: every part still fits, every other case keeps posting, and each cut names ITS
+    OWN case's artifact — never one path misattributed to both."""
+    document = (
+        "\n\n".join(
+            [
+                "## Run summary",
+                "#### Per-case detail",
+                _case_fold("case-a", inner_size=40000),
+                _case_fold("case-b", inner_size=40000),
+                _case_fold("case-c", inner_size=50),
+                FOOTER,
+            ]
+        )
+        + "\n"
+    )
+    paths = {"case-a": "run-x/case-a.md", "case-b": "run-x/case-b.md"}
+    parts = split_collapsed_summary(document, artifact_file=_resolver(paths))
+    assert all(len(part) <= GITHUB_COMMENT_LIMIT for part in parts)
+    assert any("run-x/case-a.md" in part for part in parts)
+    assert any("run-x/case-b.md" in part for part in parts)
+    assert any("`case-c`" in part for part in parts), "the healthy case still posts, untouched"
+    for part in parts:
+        if "run-x/case-a.md" in part:
+            assert "run-x/case-b.md" not in part, "case-b's cut must not carry case-a's name"
+        if "run-x/case-b.md" in part:
+            assert "run-x/case-a.md" not in part, "case-a's cut must not carry case-b's name"
+    enforce_part_cap(parts)  # the real failure (#3151): no part is over cap, so nothing raises
+
+
+def test_collapsed_summary_resolver_leaves_an_unmapped_block_for_the_invariant() -> None:
+    """A resolver that does not recognise a block's case id behaves exactly like no artifact
+    file at all — the block comes back unchanged and ``enforce_part_cap`` still raises, so an
+    unrecognised case is a loud failure rather than a silent, unnamed truncation."""
+    document = _collapsed_document(cases=1, inner_size=40000)
+    parts = split_collapsed_summary(document, artifact_file=_resolver({}))
+    assert any(len(part) > GITHUB_COMMENT_LIMIT for part in parts)
+    with pytest.raises(OversizedPartError):
+        enforce_part_cap(parts)

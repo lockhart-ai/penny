@@ -67,12 +67,20 @@ from __future__ import annotations
 
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
 from penny.tests.eval.utils.report import SAMPLE_BLOCK_START
+
+# What a last-resort cut names as the block's artifact: one path shared by every block in
+# the document (a per-case document IS one case, #2696), or a function from the over-cap
+# block's own text to ITS artifact (the collapsed whole-suite summary, #2939/#3151 — one
+# document's blocks are several different cases' own folds, and naming all of them with
+# the same path would misname every one but the first). ``None`` either way leaves nothing
+# to name, which ``enforce_part_cap`` still raises on exactly as it always has.
+ArtifactResolver = str | Callable[[str], str | None] | None
 
 # GitHub's hard limit on an issue-comment body. A part over this cannot be posted at all.
 GITHUB_COMMENT_LIMIT = 65536
@@ -99,7 +107,7 @@ _SAMPLE_FOLD_BOUNDARY = re.compile(rf"\n\n(?={SAMPLE_BLOCK_START})")
 
 
 def split_run_comment(
-    document: str, budget: int = PART_BUDGET, artifact_file: str | None = None
+    document: str, budget: int = PART_BUDGET, artifact_file: ArtifactResolver = None
 ) -> list[str]:
     """The postable comment parts for ``document``, in post order (the summary function): cut on
     sample-fold boundaries, packed to ``budget``, each headed ``report N of M``.
@@ -311,7 +319,7 @@ def _split_table_block(block: str, budget: int) -> list[str]:
     ]
 
 
-def _rescue_part(part: str, budget: int, artifact_file: str | None) -> list[str]:
+def _rescue_part(part: str, budget: int, artifact_file: ArtifactResolver) -> list[str]:
     """An over-cap part re-cut at whole-block boundaries (the summary function of the rescue):
     ``block_segments`` → greedy pack, with a table block over budget cut between its rows.
     Packing cannot produce an over-cap part except from a single block, and that is the
@@ -330,13 +338,26 @@ def _rescue_part(part: str, budget: int, artifact_file: str | None) -> list[str]
     ]
 
 
-def _cut_over_cap(block: str, artifact_file: str | None) -> str:
+def _resolve_artifact(block: str, artifact_file: ArtifactResolver) -> str | None:
+    """The artifact path to name for ``block``: call the resolver with the block's own text
+    when ``artifact_file`` is one (the collapsed summary, one case per block), else the single
+    path every block in the document shares (a per-case document, or ``None``). ``isinstance``
+    rather than ``callable()`` — narrowing on the ABSENCE of ``str``/``None`` is what leaves the
+    type checker able to prove the remaining case is the callable."""
+    if artifact_file is None or isinstance(artifact_file, str):
+        return artifact_file
+    return artifact_file(block)
+
+
+def _cut_over_cap(block: str, artifact_file: ArtifactResolver) -> str:
     """A single block still over GitHub's cap after every legal seam was used, CUT on a line
     boundary — never silently: the cut part ends with a line naming the run-dir file that
     holds the block whole, and whatever the cut left open (a fence, a fold) is closed so the
-    part still renders. A caller with no artifact file to name gets the block back unchanged,
-    leaving ``enforce_part_cap`` to raise — a refusal beats content that points nowhere."""
-    if artifact_file is None:
+    part still renders. A caller with no artifact file to name (or a resolver that does not
+    recognise this block) gets the block back unchanged, leaving ``enforce_part_cap`` to
+    raise — a refusal beats content that points nowhere."""
+    artifact = _resolve_artifact(block, artifact_file)
+    if artifact is None:
         return block
     budget = GITHUB_COMMENT_LIMIT - _CUT_RESERVE
     lines = block.split("\n")
@@ -354,7 +375,7 @@ def _cut_over_cap(block: str, artifact_file: str | None) -> str:
         kept.append(_FENCE)
     kept.extend([_DETAILS_CLOSES] * depth)
     elided = len(block) - size
-    marker = OVERSIZE_CUT_MARKER.format(elided=elided, artifact=artifact_file)
+    marker = OVERSIZE_CUT_MARKER.format(elided=elided, artifact=artifact)
     return "\n".join(kept).rstrip("\n") + f"\n\n{marker}\n"
 
 
@@ -512,7 +533,7 @@ def split_run_summary(document: str, budget: int = PART_BUDGET) -> list[str]:
 
 
 def split_collapsed_summary(
-    document: str, budget: int = PART_BUDGET, artifact_file: str | None = None
+    document: str, budget: int = PART_BUDGET, artifact_file: ArtifactResolver = None
 ) -> list[str]:
     """The collapsed whole-suite summary's postable parts (#2939): cut at whole top-level BLOCK
     boundaries (:func:`block_segments`) rather than at a sample-fold boundary.
@@ -526,7 +547,9 @@ def split_collapsed_summary(
     already uses when a fold-cut segment comes back over cap, reused here as the PRIMARY cut
     rather than a fallback. A single block still over budget is re-cut the same way that rescue
     is: between a table's rows, or — last resort — a line cut naming the artifact that holds it
-    whole.
+    whole. Since this document's blocks are several different cases' own folds (never just one,
+    the way a per-case document is), ``artifact_file`` is typically a RESOLVER here (#3151) —
+    read :data:`ArtifactResolver`.
 
     A document that fits is returned unchanged as a single unheaded part."""
     return render_parts(_rescue_part(document, budget, artifact_file))

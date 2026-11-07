@@ -36,8 +36,9 @@ Run it via ``python -m penny.tests.eval.utils.assemble <report_dir>``
 
 from __future__ import annotations
 
+import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from penny.tests.eval.utils import cohort, comment_split, compare, report
@@ -1028,6 +1029,38 @@ def render_collapsed_summary(report_dirs: Sequence[Path]) -> str:
     return SECTION_SEPARATOR.join(sections) + "\n"
 
 
+# The fold id a collapsed summary's own detail block opens on (`_case_detail_fold` →
+# `report.fold`: `<details><summary>{glyph} `{case_id}` — …</summary>`) — read back out of an
+# over-cap block so its last-resort cut can name THAT case's own artifact (#3151) rather than
+# one path misattributed to every case after the first.
+_CASE_FOLD_ID_RE = re.compile(r"<details><summary>[^\n`]*`(?P<case_id>[^`]+)`")
+
+
+def _case_artifact_paths(report_dirs: Sequence[Path]) -> dict[str, str]:
+    """Every started case's own ``.md``, by case id — the same path :func:`_case_documents`
+    already names for the per-case posting path, built here so the collapsed summary's cut can
+    look one up by whichever case's fold it finds itself inside."""
+    return {
+        case_id: f"{report_dir.name}/{case_id}.md"
+        for report_dir in report_dirs
+        for case_id in started_cases(report_dir)
+    }
+
+
+def _case_artifact_resolver(report_dirs: Sequence[Path]) -> Callable[[str], str | None]:
+    """A resolver from an over-cap collapsed-summary block back to the artifact of the ONE case
+    whose fold it opens on — ``None`` when the block carries no recognisable fold id, which
+    leaves it for :func:`comment_split.enforce_part_cap` to raise on exactly as a caller with no
+    artifact file at all always has."""
+    paths = _case_artifact_paths(report_dirs)
+
+    def resolve(block: str) -> str | None:
+        match = _CASE_FOLD_ID_RE.search(block)
+        return paths.get(match["case_id"]) if match else None
+
+    return resolve
+
+
 def _write_collapsed_comment(report_dirs: Sequence[Path], out_dir: Path) -> int:
     """The above-:data:`DETAIL_CASE_THRESHOLD` path (#2939): ONE document — written through
     the same contract :func:`_write_comments` holds for the per-case path (noise refusal, the
@@ -1035,6 +1068,12 @@ def _write_collapsed_comment(report_dirs: Sequence[Path], out_dir: Path) -> int:
     BLOCK boundaries rather than a sample fold, since this document nests a case's own
     per-sample folds inside its own outer ``<details>`` and a sample-fold cut could land inside
     a still-open case fold and split it across two comments.
+
+    A block the cut still leaves over GitHub's cap — one case's own detail fold, carrying
+    checks enough to outgrow a comment on its own — is truncated and named by its OWN case's
+    artifact (:func:`_case_artifact_resolver`, #3151) rather than raising and taking the whole
+    multi-case document down with it: before this, that one oversized case's block emptied the
+    run's entire ``comment/`` directory and no case posted at all.
 
     Stamps :data:`COLLAPSED_MARKER_FILENAME` into ``out_dir`` once the parts are written — the
     recipe's own signal that the branch-vs-main table, when there was a baseline, already rode
@@ -1049,7 +1088,10 @@ def _write_collapsed_comment(report_dirs: Sequence[Path], out_dir: Path) -> int:
         print(f"assemble: refusing to post — {refusal}", file=sys.stderr)
         return 1
     parts = [
-        f"{part}\n\n{REPORT_MARKER}" for part in comment_split.split_collapsed_summary(document)
+        f"{part}\n\n{REPORT_MARKER}"
+        for part in comment_split.split_collapsed_summary(
+            document, artifact_file=_case_artifact_resolver(report_dirs)
+        )
     ]
     comment_split.enforce_part_cap(parts)
     for name in comment_split.write_parts(parts, out_dir):
