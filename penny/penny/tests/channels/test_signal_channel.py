@@ -1290,7 +1290,7 @@ async def test_signal_message_and_reply_link_to_the_real_device(
         assert incoming.device_id == device.id
         assert outgoing.device_id == device.id
 
-        page_rows, _ = penny.db.messages.ios_history_page(channel_types=None, before=None, limit=10)
+        page_rows, _ = penny.db.messages.history_page(channel_types=None, before=None, limit=10)
         page_ids = {row[0].id for row in page_rows}
         assert incoming.id in page_ids
         assert outgoing.id in page_ids

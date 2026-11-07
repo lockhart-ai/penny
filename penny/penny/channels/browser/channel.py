@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import html
 import json
@@ -18,7 +19,13 @@ import websockets
 from pydantic import BaseModel, ValidationError
 from websockets.asyncio.server import Server, ServerConnection
 
-from penny.channels.base import IncomingMessage, MessageChannel, PageContext, ProgressTracker
+from penny.channels.base import (
+    IncomingMessage,
+    MessageChannel,
+    PageContext,
+    ProgressTracker,
+    strip_image_tokens,
+)
 from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_CAPABILITIES_UPDATE,
     BROWSER_MSG_TYPE_COLLECTION_TRIGGER,
@@ -32,6 +39,7 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_ENTRY_DELETE,
     BROWSER_MSG_TYPE_ENTRY_UPDATE,
     BROWSER_MSG_TYPE_HEARTBEAT,
+    BROWSER_MSG_TYPE_HISTORY_REQUEST,
     BROWSER_MSG_TYPE_MEMORIES_REQUEST,
     BROWSER_MSG_TYPE_MEMORY_ARCHIVE,
     BROWSER_MSG_TYPE_MEMORY_CREATE,
@@ -70,6 +78,9 @@ from penny.channels.browser.models import (
     BrowserEntryCreate,
     BrowserEntryDelete,
     BrowserEntryUpdate,
+    BrowserHistoryRecord,
+    BrowserHistoryRequest,
+    BrowserHistoryResponse,
     BrowserIncoming,
     BrowserMemoriesResponse,
     BrowserMemoryArchive,
@@ -129,9 +140,38 @@ if TYPE_CHECKING:
     from penny.agents.collector import Collector
     from penny.commands import CommandRegistry
     from penny.database import Database
-    from penny.database.models import MessageLog
+    from penny.database.models import Device, IosOutboxItem, MessageLog
 
 logger = logging.getLogger(__name__)
+
+
+def _required_message_id(message: MessageLog) -> int:
+    """A history row's own database id — required to page or to cite as a cursor."""
+    if message.id is None:
+        raise ValueError("history message is missing its database ID")
+    return message.id
+
+
+def _encode_browser_history_cursor(timestamp: datetime, message_id: int) -> str:
+    """Opaque ``before`` cursor for the next history page (#3139) — the same
+    ``(timestamp, id)`` boundary iOS's own history cursor carries, minus the
+    channel-scope field: the browser sidebar never filters by channel."""
+    payload = {"timestamp": timestamp.isoformat(), "id": message_id}
+    return base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+
+
+def _decode_browser_history_cursor(value: str | None) -> tuple[datetime, int] | None:
+    """Decode a ``before`` cursor, or ``None`` for the first page.  Raises
+    ``ValueError`` on a malformed cursor, caught by the request handler
+    alongside its own ``ValidationError``."""
+    if value is None:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(value.encode()).decode())
+        timestamp = datetime.fromisoformat(payload["timestamp"])
+        return timestamp.replace(tzinfo=None), int(payload["id"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid history cursor") from exc
 
 
 def _attachment_to_src(attachment: str) -> str | None:
@@ -676,6 +716,10 @@ class BrowserChannel(MessageChannel):
 
         if msg_type == BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST:
             await self._handle_run_detail_request(ws, data)
+            return device_label
+
+        if msg_type == BROWSER_MSG_TYPE_HISTORY_REQUEST:
+            await self._handle_history_request(ws, data)
             return device_label
 
         return device_label
@@ -1374,6 +1418,58 @@ class BrowserChannel(MessageChannel):
         payload = BrowserRunDetailResponse(run_id=req.run_id, run=run)
         with contextlib.suppress(websockets.ConnectionClosed):
             await ws.send(payload.model_dump_json())
+
+    # ── Shared history read (#3139) ──────────────────────────────────────────
+
+    async def _handle_history_request(self, ws: ServerConnection, data: dict) -> None:
+        """Return one newest-first page of the shared conversation history,
+        cross-device by default — analogous to iOS's own history read
+        (``IosChannel._handle_history``), reusing the SAME store query
+        (``MessageStore.history_page``) rather than a second one. No
+        registration gate: like the other read-only requests on this
+        channel (run detail, memories), a browser addon doesn't have to be
+        registered to read history."""
+        try:
+            request = BrowserHistoryRequest(**data)
+            cursor = _decode_browser_history_cursor(request.before)
+        except ValidationError, ValueError:
+            logger.warning("Invalid history_request: %s", str(data)[:200])
+            return
+        rows, has_more = self._db.messages.history_page(
+            channel_types=None, before=cursor, limit=request.limit
+        )
+        records = [self._history_record(row) for row in rows]
+        next_cursor = None
+        if has_more and rows:
+            oldest, _, _ = rows[0]
+            next_cursor = _encode_browser_history_cursor(
+                oldest.timestamp, _required_message_id(oldest)
+            )
+        await self._send_ws(
+            ws, BrowserHistoryResponse(messages=records, next_cursor=next_cursor, has_more=has_more)
+        )
+
+    def _history_record(
+        self, row: tuple[MessageLog, Device | None, IosOutboxItem | None]
+    ) -> BrowserHistoryRecord:
+        """One history row as the sidebar renders it (#3139). An OUTGOING
+        row's content goes through the same send-time rendering a live
+        ``message`` push gets (``prepare_outgoing`` + image-token strip —
+        see ``_send_raw``); an INCOMING row's content is the user's own
+        words, untouched, matching the live ``incoming_message`` push
+        (#3137's ``_on_incoming_logged``)."""
+        message, device, _ = row
+        content = message.content
+        if message.direction == PennyConstants.MessageDirection.OUTGOING:
+            content = strip_image_tokens(self.prepare_outgoing(content))
+        return BrowserHistoryRecord(
+            message_id=_required_message_id(message),
+            created_at=message.timestamp.isoformat(),
+            content=content,
+            direction=message.direction,
+            channel_type=device.channel_type if device is not None else None,
+            device_label=device.label if device is not None else None,
+        )
 
     async def _handle_config_request(self, ws: ServerConnection) -> None:
         """Return all runtime config params with current values."""

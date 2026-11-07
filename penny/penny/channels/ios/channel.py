@@ -256,7 +256,7 @@ class IosChannel(MessageChannel):
         device (#3137, rules 2/3) — the device it arrived on already knows
         what it sent, so it is excluded.  Best-effort, live-only: an offline
         device gets nothing and catches up through the ordinary cross-device
-        ``ios_history_page`` read on reconnect, never a replay of this push.
+        ``history_page`` read on reconnect, never a replay of this push.
         """
         device = self._db.devices.get_by_id(row.device_id) if row.device_id is not None else None
         record = _history_record(
@@ -1111,7 +1111,7 @@ class IosChannel(MessageChannel):
             )
             return
 
-        rows, has_more = self._db.messages.ios_history_page(
+        rows, has_more = self._db.messages.history_page(
             channel_types=request.channel_types,
             before=cursor,
             limit=request.limit,
