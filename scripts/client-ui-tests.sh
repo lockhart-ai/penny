@@ -11,21 +11,40 @@
 # fails with FBSOpenApplicationServiceErrorDomain "failed preflight checks".
 set -euo pipefail
 
+# Picks the iPhone destination on the NEWEST installed iOS runtime, not
+# whichever one `-showdestinations` happens to list first (#3150): this box
+# carries several simulator runtimes side by side, and the first-listed one
+# was an older iOS whose `.searchToolbarBehavior(.minimize)` doesn't collapse
+# a `DefaultToolbarItem(kind: .search)` into an icon at all — it falls back
+# to an always-visible field instead (works, just not the icon the suite
+# asserts), so the scripted run picked a simulator that could never pass the
+# search checks even though the fix is correct on the iOS version the app
+# ships on. "Newest installed" stays generic on purpose — never hardcode a
+# version here, since the next Xcode install changes what "newest" means.
 UDID=$(xcodebuild -project penny-client/PennyClient.xcodeproj -scheme PennyClientUITests -showdestinations 2>&1 \
-    | awk -F'[{},]' '
-        /platform:iOS Simulator/ && /name:iPhone/ && !found {
-            for (i = 1; i <= NF; i++) {
-                gsub(/^ +| +$/, "", $i)
-                if ($i ~ /^id:/) {
-                    sub(/^id:/, "", $i)
-                    if ($i !~ /^dvtdevice-/) {
-                        print $i
-                        found = 1
-                    }
-                }
-            }
-        }
-    ')
+    | /usr/bin/python3 -c "
+import re
+import sys
+
+best = None
+for line in sys.stdin:
+    if 'platform:iOS Simulator' not in line:
+        continue
+    id_match = re.search(r'id:([0-9A-Fa-f-]+)', line)
+    name_match = re.search(r'name:([^,}]+)', line)
+    os_match = re.search(r'OS:([0-9.]+)', line)
+    if not (id_match and name_match and os_match):
+        continue
+    device_id = id_match.group(1)
+    name = name_match.group(1).strip()
+    if device_id.startswith('dvtdevice-') or not name.startswith('iPhone'):
+        continue
+    os_version = tuple(int(part) for part in os_match.group(1).split('.'))
+    if best is None or os_version > best[0]:
+        best = (os_version, device_id)
+if best:
+    print(best[1])
+")
 if [ -z "$UDID" ]; then
     echo "client-ui-tests: no available iPhone simulator found (is Xcode + an iOS runtime installed?)" >&2
     exit 1

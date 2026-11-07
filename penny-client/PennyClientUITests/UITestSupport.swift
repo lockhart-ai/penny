@@ -58,6 +58,17 @@ func waitForLabel(_ element: XCUIElement, toEqual expected: String, timeout: Tim
     return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
 }
 
+/// Polls `element`'s accessibility value for an exact match (#3150 — a
+/// chat message row's `.accessibilityValue` carries find-in-chat's
+/// highlight state, `"highlighted-current"`/`"highlighted"`/empty) instead
+/// of sleeping, the same reasoning as `waitForLabel` extended to `value`.
+@discardableResult
+func waitForValue(_ element: XCUIElement, toEqual expected: String, timeout: TimeInterval = UITestWait.standard) -> Bool {
+    let predicate = NSPredicate(format: "value == %@", expected)
+    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+    return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+}
+
 /// Polls for `element` to be gone — the non-existence counterpart to
 /// `waitForExistence`, via the same `XCTNSPredicateExpectation` mechanism
 /// `waitForLabel` uses, so a control that's already absent returns quickly
