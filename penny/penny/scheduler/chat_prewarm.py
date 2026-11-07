@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import time
 from datetime import datetime
@@ -38,6 +37,10 @@ class PrewarmModelClient(Protocol):
     async def prewarm(
         self, messages: list[LlmMessage], tools: list[dict] | None
     ) -> UsageTiming: ...
+
+    def render_prewarm_prompt(
+        self, messages: list[LlmMessage], tools: list[dict] | None
+    ) -> str: ...
 
 
 class ChatPrewarmTask:
@@ -97,7 +100,8 @@ class ChatPrewarmTask:
             return False
         newest_call_at = self._newest_call_timestamp()
         messages, tools = await self._chat_agent.build_prewarm_prefix(sender)
-        key = (_prefix_hash(messages, tools), newest_call_at)
+        rendered_prompt = self._model_client.render_prewarm_prompt(messages, tools)
+        key = (_prefix_hash(rendered_prompt), newest_call_at)
         if key == self._last_warmed_key:
             return False
         start = time.monotonic()
@@ -122,13 +126,15 @@ class ChatPrewarmTask:
         return newest[0].timestamp if newest else None
 
 
-def _prefix_hash(messages: list[LlmMessage], tools: list[dict] | None) -> str:
+def _prefix_hash(rendered_prompt: str) -> str:
     """A short, deterministic hash of the rendered prefix (#3078) — over the
-    SAME ``to_log_dict()`` shape every ``promptlog`` row is already
-    serialized through, so two renders of the same state hash identically."""
-    payload = json.dumps(
-        {"messages": [message.to_log_dict() for message in messages], "tools": tools or []},
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    EXACT raw-template prompt text the model server receives
+    (``LlmClient.render_prewarm_prompt``, #3133), never the pre-wire
+    message/tool shapes. Those shapes can carry bytes the render never
+    prints — e.g. a replayed tool call's freshly-minted id
+    (``new_history_replay_call_id``, re-minted on every history rebuild) —
+    which made the OLD hash (over ``to_log_dict()`` + the tool dicts) differ
+    on every tick even though the actual rendered prefix, and so the
+    server's cache, never changed: the warm re-fired roughly every tick
+    instead of once per prefix."""
+    return hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()[:16]

@@ -783,6 +783,31 @@ class LlmClient:
         )
         return usage_timing_from_response(draw.raw.model_dump())
 
+    def render_prewarm_prompt(self, messages: list[LlmMessage], tools: list[dict] | None) -> str:
+        """The exact raw-template prompt TEXT :meth:`prewarm` sends for these
+        messages/tools (#3133) — the SAME translate-then-render steps
+        :meth:`_send_raw_template_request` applies internally (factored into
+        the shared :func:`_render_raw_template`, so this can never drift from
+        what actually gets sent).
+
+        Exists so the chat pre-warm's own dedup key (``ChatPrewarmTask``) can
+        hash exactly what the model server receives, rather than hashing the
+        pre-wire message/tool shapes (``LlmMessage.to_log_dict()`` plus the
+        tool dicts) — those can carry bytes the render never prints at all,
+        e.g. a replayed tool call's freshly-minted id
+        (``new_history_replay_call_id``, re-minted every time history is
+        rebuilt): the raw template only ever MATCHES an id to pair a call
+        with its result, never prints the id itself, so two renders of the
+        same history agree byte-for-byte while their ``to_log_dict()``
+        shapes never do (#3133's bug: the dedup key never repeated, so the
+        warm re-fired every tick instead of once per prefix).
+
+        Thinking stays ON, matching :meth:`prewarm`'s own always-on default.
+        """
+        messages_snapshot = [message.to_log_dict() for message in messages]
+        translated_messages = self._translate_messages(messages_snapshot)
+        return self._render_raw_template(translated_messages, tools, thinking_enabled=True)
+
     def _resolve_transport(
         self, messages: list[LlmMessage], format: dict | str | None
     ) -> PromptTransport:
@@ -1281,8 +1306,7 @@ class LlmClient:
         existing budget-cut path instead (:func:`_budget_cut_raw`), bounding
         a repeat to two cycles rather than the full budget.
         """
-        translated_tools = self._translate_tools(tools) if tools else None
-        prompt = raw_template.render_prompt(messages, translated_tools, thinking_enabled)
+        prompt = self._render_raw_template(messages, tools, thinking_enabled)
         stream, sent_request = await self._create_raw_completion(
             prompt, token_budget, skip_cache_store
         )
@@ -1940,6 +1964,19 @@ class LlmClient:
             else:
                 translated.append({"type": "function", "function": tool})
         return translated
+
+    @staticmethod
+    def _render_raw_template(
+        messages: list[dict], tools: list[dict] | None, thinking_enabled: bool
+    ) -> str:
+        """Translate ``tools`` and render the vendored template — the ONE
+        place that combination happens, called by
+        :meth:`_send_raw_template_request` (``messages`` already translated
+        by its own caller) and by :meth:`render_prewarm_prompt` (#3133), so
+        the chat pre-warm's dedup hash and the real send can never compute
+        this differently by hand."""
+        translated_tools = LlmClient._translate_tools(tools) if tools else None
+        return raw_template.render_prompt(messages, translated_tools, thinking_enabled)
 
     @staticmethod
     def _translate_format(format: dict | str) -> dict:
