@@ -349,7 +349,7 @@ def _seed_one_run(db: Database, job: StandingJob, run_seed: _RunSeed) -> None:
             f"{run_id}-1",
             "memory_write",
             {
-                "collection": job.container,
+                "memory": job.container,
                 "entries": [{"key": run_seed.entry_key, "content": run_seed.entry_value}],
             },
         ),

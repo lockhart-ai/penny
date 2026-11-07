@@ -445,7 +445,7 @@ def _cycle_calls(cycle: _SeededCycle) -> list[dict]:
             _wire_tool_call(
                 f"{run_id}-{len(calls)}",
                 _WRITE,
-                {"collection": cycle.job.container, "entries": [{"key": key, "content": content}]},
+                {"memory": cycle.job.container, "entries": [{"key": key, "content": content}]},
             )
         )
     if cycle.closed:

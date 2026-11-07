@@ -209,7 +209,7 @@ def _seed_list_exchange(db: Database) -> None:
                     f"{run_id}-0",
                     "memory_write",
                     {
-                        "collection": _JAZZ_LIST,
+                        "memory": _JAZZ_LIST,
                         "entries": [{"key": _JAZZ_ENTRY_KEY, "content": _JAZZ_ENTRY}],
                     },
                 )

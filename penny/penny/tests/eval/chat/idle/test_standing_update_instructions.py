@@ -17,7 +17,7 @@ reply's voice.
 **The world is the prod turn's own conversation** (promptlog id 119, run
 ``a34ff4fd…``, 2026-10-19), rebuilt through the stores' own chokepoints: the exchanges the
 history window held — a espresso thread with two real browse calls behind its replies, the
-job's morning notification, a read of the job's record (``memory_get``), a read of the
+job's morning notification, a read of the job's record (``memory_info``), a read of the
 morning run's trace (``run_get``), a read of the collection (``memory_read``), and the
 two formatting passes the ask points back at — plus the job, the user's profile, the two
 standing rules, the browse-results log, and the two collector cycles the morning left
@@ -431,7 +431,7 @@ _EX4_REPLY = (
     "It looks like a second browse call was specifically triggered for dw.com to ensure "
     "those headlines were pulled correctly.\n\n"
     "Step 3: Saving the Results\n"
-    "Finally, the collection_write tool was used to save everything into the "
+    "Finally, the memory_write tool was used to save everything into the "
     "npr_daily_brief collection. It organized the news by source like this:\n\n"
     "   NPR News: The stories about the radio fundraiser and the trail.\n"
     "   The Guardian: The stories about the library wing and the river.\n"
@@ -913,7 +913,7 @@ def _seed_world(db: Database) -> None:
             (
                 "memory_write",
                 {
-                    "collection": _JOB_CONTAINER,
+                    "memory": _JOB_CONTAINER,
                     "entries": [{"key": _TODAY, "content": _stored_brief()}],
                 },
                 ToolResult(message=f"Wrote 1 entry to '{_JOB_CONTAINER}': {_TODAY}.", mutated=True),
@@ -989,8 +989,8 @@ def _seed_world(db: Database) -> None:
         db,
         run_id=seeded_run_id("job-read"),
         ask=_EX3_USER,
-        call_id="call-seeded-memory-get",
-        tool="memory_get",
+        call_id="call-seeded-memory-info",
+        tool="memory_info",
         arguments={"memory": _JOB_CONTAINER},
         result=ToolResult(message=MemoryInfoTool(db)._format(require_memory(db, _JOB_CONTAINER))),
         reply=_EX3_REPLY,
@@ -1021,9 +1021,9 @@ def _seed_world(db: Database) -> None:
         db,
         run_id=seeded_run_id("list-read"),
         ask=_EX7_USER,
-        call_id="call-seeded-collection-list",
+        call_id="call-seeded-memory-read",
         tool="memory_read",
-        arguments={"collection": _JOB_CONTAINER},
+        arguments={"memory": _JOB_CONTAINER},
         result=ToolResult(
             message=format_entries(
                 require_memory(db, _JOB_CONTAINER).read_all(),

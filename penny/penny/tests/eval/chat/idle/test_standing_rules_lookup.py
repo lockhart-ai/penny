@@ -419,7 +419,7 @@ _RECORDED_RULE_REPLY = (
     "my findings much more robust.\n"
     "\n"
     "I'm all set—what's on the agenda now? 🫡\n"
-    "[Tool calls: collection_write]"
+    "[Tool calls: memory_write]"
 )
 _RECORDED_PUSH_COLLAPSE = "👋 I added a way to collapse older messages in your prompts!"
 _RECORDED_PHOTO_ASK = "[sent a photo]"
@@ -569,9 +569,8 @@ _RECORDED_TURNS: tuple[_Turn, ...] = (
         call=(
             "memory_write",
             {
-                "collection": "rules",
-                "key": "search_then_read_first",
-                "content": _RULES[1][1],
+                "memory": "rules",
+                "entries": [{"key": "search_then_read_first", "content": _RULES[1][1]}],
             },
         ),
         result="You saved the rule to `rules`.",

@@ -122,7 +122,7 @@ def test_an_end_to_end_sample_renders_each_cycle_as_its_own_step() -> None:
         report.Event(report.EventKind.CALL, 'browse({"queries":["x"]})', thinking="read the page"),
         report.Event(report.EventKind.RESULT, "You opened the page (browse result) · $129"),
         report.Event(report.EventKind.REPLY, "Watching it — I'll tell you when it moves.", ""),
-        report.Event(report.EventKind.CYCLE, "browse, collection_write"),
+        report.Event(report.EventKind.CYCLE, "browse, memory_write"),
         report.Event(
             report.EventKind.CALL, 'browse({"queries":["x"]})', thinking="check the price"
         ),
@@ -130,7 +130,7 @@ def test_an_end_to_end_sample_renders_each_cycle_as_its_own_step() -> None:
         report.Event(
             report.EventKind.CALL, 'memory_write({"key":"price"})', thinking="the price moved"
         ),
-        report.Event(report.EventKind.RESULT, "You saved the entry (collection_write result)"),
+        report.Event(report.EventKind.RESULT, "You saved the entry (memory_write result)"),
         report.Event(
             report.EventKind.MICRO_IN, "The job just ran on its own.", context="notify-composer"
         ),
@@ -167,7 +167,7 @@ def test_an_end_to_end_sample_renders_each_cycle_as_its_own_step() -> None:
         "| actual | 📥 You opened the page (browse result) · $129 |  |\n"
         "| actual | 🤖 Watching it — I'll tell you when it moves. |  |\n"
         "\n"
-        "| cycle 1 · ⏱ | browse, collection_write | ✅ |\n"
+        "| cycle 1 · ⏱ | browse, memory_write | ✅ |\n"
         "|---|---|---|\n"
         "| expected | C1 [spine]⚖ the cycle wrote the reading |  |\n"
         "| 💭 | check the price |  |\n"
@@ -175,7 +175,7 @@ def test_an_end_to_end_sample_renders_each_cycle_as_its_own_step() -> None:
         "| actual | 📥 You opened the page (browse result) · $109 |  |\n"
         "| 💭 | the price moved |  |\n"
         '| actual | 🔧 memory_write({"key":"price"}) | ✅ C1 |\n'
-        "| actual | 📥 You saved the entry (collection_write result) |  |\n"
+        "| actual | 📥 You saved the entry (memory_write result) |  |\n"
         "| actual | 🧩 notify-composer ← user turn: The job just ran on its own. |  |\n"
         "| 💭 | thinking (notify-composer) — 9 chars: tell them |  |\n"
         "| actual | 🧩 notify-composer → MESSAGE: the price moved to $109 |  |\n"

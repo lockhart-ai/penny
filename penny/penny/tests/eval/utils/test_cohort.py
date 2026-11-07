@@ -477,7 +477,7 @@ def _recipe_round() -> Given:
     read = ToolResult(
         message=format_entries(recipes, source="recipe-box", ordering="most recent first")
     )
-    framed = Tool.format_result("memory_read", {"collection": "recipe-box"}, read)
+    framed = Tool.format_result("memory_read", {"memory": "recipe-box"}, read)
     return read_given(
         [
             {"role": "system", "content": f"{_TOLD_LINE}\n1. Read it.\n2. Then give the answer."},

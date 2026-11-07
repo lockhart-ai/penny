@@ -243,7 +243,7 @@ def seed_known_routine(
     ]
 
     write_id = "call-seeded-write"
-    write_args = {"collection": collection, "entries": [{"key": entry_key, "content": entry_value}]}
+    write_args = {"memory": collection, "entries": [{"key": entry_key, "content": entry_value}]}
     _log_chat_step(
         db,
         run_id=run_id,

@@ -402,7 +402,7 @@ def _log_dates_turn_as_a_real_run(db: Database) -> None:
             _wire_tool_call(
                 f"call-seeded-{_TRIP_RUN_NAME}",
                 "memory_write",
-                {"collection": _TRIP_NAME, "entries": [{"key": _ITINERARY_KEY}]},
+                {"memory": _TRIP_NAME, "entries": [{"key": _ITINERARY_KEY}]},
             )
         ]
     )
@@ -507,7 +507,7 @@ def _premise() -> Preparer:
         assert seeded_rows, f"{_CASE_ID}: the dates turn's run {run_id!r} must have its own record"
         names = tuple(dict.fromkeys(name for name, _ in run_tool_calls(seeded_rows)))
         assert names == ("memory_write",), (
-            f"{_CASE_ID}: the dates turn's run must trace a collection_write call, it shows {names}"
+            f"{_CASE_ID}: the dates turn's run must trace a memory_write call, it shows {names}"
         )
         storage_row = db.memories.get(_ARCHIVE_STORAGE_NAME)
         assert storage_row is not None and storage_row.archived, (

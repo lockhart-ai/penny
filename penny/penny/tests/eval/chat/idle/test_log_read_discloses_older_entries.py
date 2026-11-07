@@ -456,7 +456,7 @@ async def test_log_read_discloses_older_entries(chat_eval: ChatEval, model: str)
     cohort = await chat_eval(
         case_id="log-read-older-entries-disclosed",
         behaviour=(
-            "In the chat agent, when log_read's recent window leaves earlier entries "
+            "In the chat agent, when memory_read's recent window leaves earlier entries "
             "unshown, Penny's account of the log states how much more it holds, rather "
             "than reading it as sparse or empty."
         ),

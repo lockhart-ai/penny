@@ -111,7 +111,7 @@ def _cycle_calls(run_id: str) -> list[dict]:
         _wire_tool_call(
             f"{run_id}-1",
             "memory_write",
-            {"collection": _JOB.container, "entries": [{"content": "restocked — in stock now"}]},
+            {"memory": _JOB.container, "entries": [{"content": "restocked — in stock now"}]},
         ),
         _wire_tool_call(f"{run_id}-2", PennyConstants.DONE_TOOL_NAME, {}),
     ]

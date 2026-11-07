@@ -1363,7 +1363,7 @@ class FeatureDivergence(BaseModel):
 
     This — not the sample's transcript — is what makes an outlier legible.  A sample is outlying
     on a SPECIFIC feature, so rendering 19,000 characters of prose to say "its tool sequence was
-    `browse → browse` where the representative's was `browse → log_read → collection_write`" is
+    `browse → browse` where the representative's was `browse → memory_read → memory_write`" is
     the wrong thing by three orders of magnitude.  Show the divergence and its evidence; the
     whole transcript is in the artifact for a reader who then wants it."""
 

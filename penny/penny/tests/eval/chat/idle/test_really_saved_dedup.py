@@ -127,7 +127,10 @@ def _seed_world(db: Database) -> None:
     )
 
     conversation: list[dict] = [{"role": "user", "content": _PRIOR_ASK}]
-    write_args = {"collection": _COLLECTION, "key": _ENTRY_KEY, "content": _ENTRY_CONTENT}
+    write_args = {
+        "memory": _COLLECTION,
+        "entries": [{"key": _ENTRY_KEY, "content": _ENTRY_CONTENT}],
+    }
     call_id = "call-seeded-wheel-write"
     call = _wire_tool_call(call_id, "memory_write", write_args)
     _log_chat_step(
@@ -157,7 +160,7 @@ def _probe_world(penny: Penny) -> None:
     assert group, f"the seeded run {_RUN_NAME!r} must have its own prompt-log record"
     names = tuple(dict.fromkeys(name for name, _ in run_tool_calls(group)))
     assert names == ("memory_write",), (
-        f"the seeded run must trace one collection_write call, it shows {names}"
+        f"the seeded run must trace one memory_write call, it shows {names}"
     )
     held = require_memory(db, _COLLECTION).read_all()
     assert len(held) == 1 and held[0].content == _ENTRY_CONTENT, (
