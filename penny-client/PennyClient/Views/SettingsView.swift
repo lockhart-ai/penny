@@ -183,6 +183,7 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
         // The shared shell toolbar's leading/trailing slots are the
         // page menu and search (#3111), so Cancel/Save move to a
         // stock bottom bar rather than fighting over the top one —
