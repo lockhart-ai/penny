@@ -200,6 +200,8 @@ function handleRuntimeMessage(message: RuntimeMessage): void {
     sendCursorSet(message.name, message.log_name, message.last_read_at);
   } else if (message.type === RuntimeMessageType.CursorClear) {
     sendCursorClear(message.name, message.log_name);
+  } else if (message.type === RuntimeMessageType.HistoryRequest) {
+    requestHistory(message.limit, message.before);
   }
 }
 
@@ -359,6 +361,13 @@ function connect(): void {
         action: data.action,
         name: data.name,
         message: data.message,
+      });
+    } else if (data.type === WsIn.HistoryResponse) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.HistoryResponse,
+        messages: data.messages,
+        next_cursor: data.next_cursor,
+        has_more: data.has_more,
       });
     }
   });
@@ -568,6 +577,11 @@ function sendEntryUpdate(memory: string, key: string, content: string): void {
 function sendEntryDelete(memory: string, key: string): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: WsOutgoingType.EntryDelete, memory, key }));
+}
+
+function requestHistory(limit: number, before: string | null): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: WsOutgoingType.HistoryRequest, limit, before }));
 }
 
 function syncDomainPermissionsToLocal(permissions: DomainPermissionEntry[]): void {

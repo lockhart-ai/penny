@@ -61,7 +61,8 @@ export type WsOutgoingType =
   | "collection_trigger"
   | "cursor_set"
   | "cursor_clear"
-  | "run_detail_request";
+  | "run_detail_request"
+  | "history_request";
 export const WsOutgoingType = {
   Message: "message",
   ToolResponse: "tool_response",
@@ -87,6 +88,7 @@ export const WsOutgoingType = {
   CursorSet: "cursor_set",
   CursorClear: "cursor_clear",
   RunDetailRequest: "run_detail_request",
+  HistoryRequest: "history_request",
 } as const satisfies Record<string, WsOutgoingType>;
 
 export interface WsOutgoingMessage {
@@ -149,11 +151,21 @@ export interface WsOutgoingCapabilitiesUpdate {
   tool_use_enabled: boolean;
 }
 
+/** Request one newest-first page of the shared conversation history
+ *  (#3139/#3148) — ``before`` is the previous response's ``next_cursor``,
+ *  ``null`` for the first page. */
+export interface WsOutgoingHistoryRequest {
+  type: typeof WsOutgoingType.HistoryRequest;
+  limit: number;
+  before: string | null;
+}
+
 export type WsOutgoing =
   | WsOutgoingMessage
   | WsOutgoingToolResponse
   | WsOutgoingHeartbeat
-  | WsOutgoingCapabilitiesUpdate;
+  | WsOutgoingCapabilitiesUpdate
+  | WsOutgoingHistoryRequest;
 
 // --- WebSocket: incoming (server → browser) ---
 
@@ -179,7 +191,8 @@ export type WsIncomingType =
   | "memory_save_error"
   | "call_started"
   | "tool_started"
-  | "tool_finished";
+  | "tool_finished"
+  | "history_response";
 export const WsIncomingType = {
   Message: "message",
   IncomingMessage: "incoming_message",
@@ -203,6 +216,7 @@ export const WsIncomingType = {
   CallStarted: "call_started",
   ToolStarted: "tool_started",
   ToolFinished: "tool_finished",
+  HistoryResponse: "history_response",
 } as const satisfies Record<string, WsIncomingType>;
 
 export interface WsIncomingMessagePayload {
@@ -228,6 +242,40 @@ export interface WsIncomingIncomingMessagePayload {
   direction: "incoming";
   channel_type: IncomingChannelType;
   device_label: string;
+}
+
+/** A message's direction on the shared history page (#3139/#3148) — mirrors
+ *  the Python side's ``MessageDirection`` string values. */
+export type HistoryDirection = "incoming" | "outgoing";
+export const HistoryDirection = {
+  Incoming: "incoming",
+  Outgoing: "outgoing",
+} as const satisfies Record<string, HistoryDirection>;
+
+/** One row of the shared conversation history (#3139), as the server's
+ *  ``history_response`` sends it — newest-first within a page.  An
+ *  ``outgoing`` row's ``content`` is pre-rendered HTML, the same path a live
+ *  `message` push gets; an ``incoming`` row's ``content`` is the user's raw
+ *  text, like a live `incoming_message` push.  ``channel_type``/
+ *  ``device_label`` are null only when the row's device could not be
+ *  resolved — a known, rare server-side gap, not a client bug. */
+export interface BrowserHistoryMessage {
+  message_id: number;
+  created_at: string;
+  content: string;
+  direction: HistoryDirection;
+  channel_type: IncomingChannelType | null;
+  device_label: string | null;
+}
+
+/** One page of the shared conversation history (#3139/#3148).  ``before``
+ *  the first page: ``next_cursor`` is echoed on the next ``history_request``
+ *  to page further back; ``has_more`` says whether one exists. */
+export interface WsIncomingHistoryResponsePayload {
+  type: typeof WsIncomingType.HistoryResponse;
+  messages: BrowserHistoryMessage[];
+  next_cursor: string | null;
+  has_more: boolean;
 }
 
 export interface WsIncomingTypingPayload {
@@ -589,7 +637,8 @@ export type WsIncomingPayload =
   | WsIncomingMemorySaveErrorPayload
   | WsIncomingCallStartedPayload
   | WsIncomingToolStartedPayload
-  | WsIncomingToolFinishedPayload;
+  | WsIncomingToolFinishedPayload
+  | WsIncomingHistoryResponsePayload;
 
 // --- Runtime messages (sidebar ↔ background) ---
 
@@ -637,7 +686,9 @@ export type RuntimeMessageType =
   | "run_detail_response"
   | "call_started"
   | "tool_started"
-  | "tool_finished";
+  | "tool_finished"
+  | "history_request"
+  | "history_response";
 
 export const RuntimeMessageType = {
   SendChat: "send_chat",
@@ -684,6 +735,8 @@ export const RuntimeMessageType = {
   CallStarted: "call_started",
   ToolStarted: "tool_started",
   ToolFinished: "tool_finished",
+  HistoryRequest: "history_request",
+  HistoryResponse: "history_response",
 } as const satisfies Record<string, RuntimeMessageType>;
 
 /** Sidebar → background: user typed a chat message */
@@ -1037,6 +1090,23 @@ export interface RuntimeRunDetailResponse {
   run: PromptLogRun | null;
 }
 
+/** Sidebar → background: load one page of the shared conversation history
+ *  (#3139/#3148) — the latest page on open/reconnect (``before: null``), or
+ *  the next older page via a prior response's ``next_cursor``. */
+export interface RuntimeHistoryRequest {
+  type: typeof RuntimeMessageType.HistoryRequest;
+  limit: number;
+  before: string | null;
+}
+
+/** Background → sidebar: one page of the shared conversation history. */
+export interface RuntimeHistoryResponse {
+  type: typeof RuntimeMessageType.HistoryResponse;
+  messages: BrowserHistoryMessage[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
 export type RuntimeMessage =
   | RuntimeSendChat
   | RuntimeChatMessage
@@ -1081,7 +1151,9 @@ export type RuntimeMessage =
   | RuntimeRunDetailResponse
   | RuntimeCallStarted
   | RuntimeToolStarted
-  | RuntimeToolFinished;
+  | RuntimeToolFinished
+  | RuntimeHistoryRequest
+  | RuntimeHistoryResponse;
 
 // --- Domain permissions ---
 
@@ -1115,22 +1187,13 @@ export const MessageSender = {
   Penny: "penny",
 } as const satisfies Record<string, MessageSender>;
 
-// --- Chat history ---
-
-export interface StoredMessage {
-  text: string;
-  sender: MessageSender;
-  /** Device caption (#3144) for a message relayed from another device —
-   *  built by `deviceCaption` (`sidebar/incoming.ts`). Optional so a
-   *  history entry stored before this field existed still loads. */
-  caption?: string;
-}
-
-export const MAX_STORED_MESSAGES = 200;
-
 // --- Storage keys ---
 
 export const STORAGE_KEY_DEVICE_LABEL = "deviceLabel";
+/** Legacy per-sidebar local chat history key (#3148) — no longer read or
+ *  written; the shared conversation now comes from the server's
+ *  `history_request`/`history_response`. Kept only so startup can clear a
+ *  stale copy once (`sidebar.ts`'s `init`). */
 export const STORAGE_KEY_CHAT_HISTORY = "chatHistory";
 export const STORAGE_KEY_DOMAIN_ALLOWLIST = "domainAllowlist";
 export const STORAGE_KEY_TOOL_USE = "toolUseEnabled";
