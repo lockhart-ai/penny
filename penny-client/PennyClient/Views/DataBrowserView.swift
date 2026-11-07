@@ -2,32 +2,21 @@ import SwiftUI
 import PennyDesign
 import PennyServices
 
-/// The Memory tab's content under the app shell (#3037): today's memories
-/// list and its pushed detail in one navigation stack whose path is the
-/// model's selection. The shell owns the model's lifecycle and connection
-/// handling; this view only renders it. Interim content — the redesign of
-/// this page has its own ticket.
+/// The Memory page's content under the app shell (#3111): today's memories
+/// list; its pushed detail is `DataBrowserMemoryDetailView`, pushed by the
+/// shell's own stack via `AppShellView.ShellRoute`. The shell owns the
+/// model's lifecycle and connection handling; this view only renders the
+/// list. Interim content — the redesign of this page has its own ticket.
 struct DataBrowserMemoriesView: View {
     @Bindable var model: DataBrowserViewModel
     let reconnect: () -> Void
-    @Environment(\.shellContentTopClearance) private var contentTopClearance
 
     var body: some View {
-        NavigationStack(path: Binding(
-            get: { model.selection.map { [$0] } ?? [] },
-            set: { model.selection = $0.last }
-        )) {
-            memoriesList
-                .navigationDestination(for: String.self) { name in memoryDetail(name) }
-                .navigationBarBackButtonHidden(true)
-                .toolbar(.hidden, for: .navigationBar)
-        }
-        .contentMargins(.top, contentTopClearance, for: .scrollContent)
-        .overlay(alignment: .top) {
-            DataBrowserOfflineBanner(model: model, reconnect: reconnect)
-                .padding(.top, contentTopClearance)
-        }
-        .onChange(of: model.context) { _, _ in model.contextChanged() }
+        memoriesList
+            .overlay(alignment: .top) {
+                DataBrowserOfflineBanner(model: model, reconnect: reconnect)
+            }
+            .onChange(of: model.context) { _, _ in model.contextChanged() }
     }
 
     private var memoriesList: some View {
@@ -53,7 +42,26 @@ struct DataBrowserMemoriesView: View {
         .refreshable { model.refresh() }
     }
 
-    private func memoryDetail(_ name: String) -> some View {
+    @ViewBuilder
+    private func status(_ slot: DataBrowserViewModel.Slot, retry: (() -> Void)? = nil) -> some View {
+        if model.loading.contains(slot) || (slot == model.visibleSlot && model.isDebouncing) { ProgressView("Loading…") }
+        if let error = model.errors[slot] {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(error).foregroundStyle(.red)
+                Button("Retry", action: retry ?? model.refresh).disabled(!model.isOnline)
+            }
+        }
+    }
+}
+
+/// A memory's pushed detail (#3111) — `AppShellView.ShellRoute.memoryDetail`'s
+/// destination, with the system back button returning to
+/// `DataBrowserMemoriesView`'s list.
+struct DataBrowserMemoryDetailView: View {
+    @Bindable var model: DataBrowserViewModel
+    let name: String
+
+    var body: some View {
         List {
             Picker("Memory panel", selection: $model.panel) {
                 ForEach(DataBrowserViewModel.Panel.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -71,8 +79,6 @@ struct DataBrowserMemoriesView: View {
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.detailQuery, prompt: "Search entries")
-        .navigationBarBackButtonHidden(true)
-        .toolbar(.hidden, for: .navigationBar)
         .refreshable { model.refresh() }
         .accessibilityIdentifier(AXID.memoryDetailRoot)
     }
@@ -136,27 +142,20 @@ struct DataBrowserMemoriesView: View {
     }
 }
 
-/// The Prompts tab's content under the app shell (#3037): today's prompt
+/// The Prompts page's content under the app shell (#3111): today's prompt
 /// log list, including a message's linked run. The shell owns the model's
 /// lifecycle and connection handling; this view only renders it. Interim
 /// content — the redesign of this page has its own ticket.
 struct DataBrowserPromptsView: View {
     @Bindable var model: DataBrowserViewModel
     let reconnect: () -> Void
-    @Environment(\.shellContentTopClearance) private var contentTopClearance
 
     var body: some View {
-        NavigationStack {
-            promptsList
-                .navigationBarBackButtonHidden(true)
-                .toolbar(.hidden, for: .navigationBar)
-        }
-        .contentMargins(.top, contentTopClearance, for: .scrollContent)
-        .overlay(alignment: .top) {
-            DataBrowserOfflineBanner(model: model, reconnect: reconnect)
-                .padding(.top, contentTopClearance)
-        }
-        .onChange(of: model.context) { _, _ in model.contextChanged() }
+        promptsList
+            .overlay(alignment: .top) {
+                DataBrowserOfflineBanner(model: model, reconnect: reconnect)
+            }
+            .onChange(of: model.context) { _, _ in model.contextChanged() }
     }
 
     @ViewBuilder private var promptsList: some View {
@@ -210,7 +209,7 @@ struct DataBrowserPromptsView: View {
     }
 }
 
-/// The disconnected banner both browser tabs show under the nav row.
+/// The disconnected banner both browser pages show at the top of their list.
 private struct DataBrowserOfflineBanner: View {
     @Bindable var model: DataBrowserViewModel
     let reconnect: () -> Void

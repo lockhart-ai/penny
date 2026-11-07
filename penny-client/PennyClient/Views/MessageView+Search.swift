@@ -2,11 +2,14 @@ import Foundation
 import Observation
 import PennyServices
 
-/// Find-in-chat's search state (#3045): the keyword that replaces the
-/// chat's nav row with a search bar in place. Matches come from
+/// Find-in-chat's search state (#3045, wired to the stock system search
+/// field in #3111/#3129): the keyword that highlights matches in the chat
+/// below and scrolls to the newest one. Matches come from
 /// `PennyService.searchMessages` — the whole local history, not just what
-/// the chat view currently has loaded — so the match count and order are
-/// never a function of how far the view has paged.
+/// the chat view currently has loaded — so the match order is never a
+/// function of how far the view has paged. No counter or stepping between
+/// matches (the code owner approved highlights only) — the system search
+/// field has no room for them, and nothing here drives one anymore.
 @MainActor
 @Observable
 final class ChatSearchState {
@@ -31,18 +34,9 @@ final class ChatSearchState {
         self.client = client
     }
 
-    var hasMatches: Bool {
-        !matches.isEmpty
-    }
-
     var currentMatchID: Int? {
         guard let currentIndex, matches.indices.contains(currentIndex) else { return nil }
         return matches[currentIndex].id
-    }
-
-    var counterText: String? {
-        guard let currentIndex, hasMatches else { return nil }
-        return "\(currentIndex + 1) of \(matches.count)"
     }
 
     /// The query to highlight in the chat, or `nil` when there's nothing
@@ -59,24 +53,6 @@ final class ChatSearchState {
     func close() {
         isSearching = false
         query = ""
-    }
-
-    /// Chevron up: matches are newest-first, so the next older match is
-    /// the next array entry.
-    func stepToOlderMatch() {
-        step(by: 1)
-    }
-
-    /// Chevron down: the next newer match is the previous array entry,
-    /// wrapping back to the newest.
-    func stepToNewerMatch() {
-        step(by: -1)
-    }
-
-    private func step(by delta: Int) {
-        guard let currentIndex, !matches.isEmpty else { return }
-        let count = matches.count
-        self.currentIndex = (currentIndex + delta + count) % count
     }
 
     private var trimmedQuery: String {

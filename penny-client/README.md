@@ -9,9 +9,10 @@ building or launching an app target. CI runs the complete gate on pull requests
 touching `penny-client/`.
 
 `make client-ui-tests` runs the `PennyClientUITests` XCUITest smoke suite (#3106) —
-tapping each shell tab, pushing and returning from a memory's detail, opening
-find-in-chat and stepping between matches, and sending from the composer — against
-fixture data (`-PennyStory`, #2965), never a server. It's LOCAL ONLY: CI's
+reaching each page through the shell's menu, pushing and returning from a memory's
+detail, opening find-in-chat and highlighting a match, and sending from the
+composer — against fixture data (`-PennyStory`, #2965), never a server. It's LOCAL
+ONLY: CI's
 `client-check.yml` never builds or runs it (macOS runners are scarce), so run it
 yourself before review whenever a PR adds or moves an interactive control.
 
@@ -30,14 +31,15 @@ new replies; existing messages and the History attachment option are unchanged.
 An older server that does not expose all four switches shows disabled controls.
 
 
-Navigation is one centred glass tab capsule at the top (Chat, Memory, Prompts,
-Settings) with a search circle; pushed pages keep the capsule and add a glass back
-circle. The Memory and Prompts tabs host the read-only data browser (previously a
+Navigation is one stock `NavigationStack` (#3111): a leading glass page menu
+switches between Chat, Memory, Prompts and Settings, Penny's avatar and name sit
+centred, and search is trailing; a push (a memory's detail) gets the system back
+button. The Memory and Prompts pages host the read-only data browser (previously a
  Memories/Prompts sheet off the chat's memories button). Memories are grouped into
 Collections, Logs, and Archived; each has Entries,
 Activity, and read-only Config panels. Prompts shows all agent runs with filters and
 expandable run → prompt → turn details. The previous Insights and Memory Management
-screens have been removed. Global settings live on the Settings tab.
+screens have been removed. Global settings live on the Settings page.
 
 The browser reads the current memory contract, including `schedule` (RRULE) and
 notification status (`published` on the wire). Deploy the accompanying iOS server

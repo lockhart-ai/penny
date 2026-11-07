@@ -2,28 +2,26 @@ import SwiftUI
 import PennyDesign
 import PennyServices
 
-/// The app shell (#3037): one centred glass tab capsule with a trailing
-/// search circle floating over every screen — no traditional navigation bar,
-/// no bottom tab bar. Four tabs host today's views; pushed pages keep the
-/// capsule and add a glass back circle on the leading edge. Content scrolls
-/// under the row and dissolves below it through the kit's `TopFade`.
+/// The app shell (#3111): one stock `NavigationStack` with a visible system
+/// bar. A leading glass page `Menu` switches between Chat, Memory, Prompts
+/// and Settings under the same bar (no back button on a page switch);
+/// Penny's avatar and name sit centred (`.principal`); search is trailing
+/// (`DefaultToolbarItem(kind: .search)`), each page supplying its own
+/// `.searchable`. Drill-downs (today, only a memory's detail) push onto the
+/// stack via a typed `ShellRoute` and return with the system back button.
+/// Replaces the hand-built top tab capsule and glass circles, whose taps
+/// were swallowed by the hidden navigation bars beneath them (#3111).
 struct AppShellView: View {
-    @State private var selected: TopTab
+    @State private var page: TopTab
     @State private var chatViewModel: MessageView.ViewModel
     @State private var browserModel: DataBrowserViewModel
-    /// The top safe-area inset (the status bar), which the top fade holds
-    /// opaque through.
-    @State private var topInset: CGFloat = 0
-    /// Find-in-chat's field focus (#3045) — lives here, not on the view
-    /// model, since focus is UI state the chrome row owns.
-    @FocusState private var isSearchFieldFocused: Bool
 
     /// Story mode only (#3042): passed straight through to the chat tab's
     /// `MessageView`, freezing the live dock mid-morph.
     private let dockResolveProgress: Double?
 
     /// `chatViewModel` and `browserModel` are injectable so story mode
-    /// (#2965) can render any tab from fixtures; the defaults are the real
+    /// (#2965) can render any page from fixtures; the defaults are the real
     /// app's — one chat view model, and the browser model reading through
     /// its client.
     init(
@@ -33,7 +31,7 @@ struct AppShellView: View {
         dockResolveProgress: Double? = nil
     ) {
         let resolvedChatViewModel = chatViewModel ?? MessageView.ViewModel()
-        _selected = State(initialValue: initialTab)
+        _page = State(initialValue: initialTab)
         _chatViewModel = State(initialValue: resolvedChatViewModel)
         _browserModel = State(initialValue: browserModel ?? DataBrowserViewModel(runID: nil) {
             try await resolvedChatViewModel.client.dataBrowser.read($0)
@@ -41,58 +39,69 @@ struct AppShellView: View {
         self.dockResolveProgress = dockResolveProgress
     }
 
-    /// Where a tab's first content sits below the safe-area top: below the
-    /// nav row and fully clear of the top fade (the fade is clear exactly
-    /// `topFadeBleed` below the row).
-    static var contentTopClearance: CGFloat {
-        Tokens.chromeTopGap + Tokens.navControlHeight + Tokens.topFadeBleed
+    /// The one drill-down destination the shell pushes today — a typed
+    /// route, not a raw `String`, so a second destination added later
+    /// can't compile without a matching `navigationDestination` arm.
+    enum ShellRoute: Hashable {
+        case memoryDetail(String)
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            tabContent
-            topFade
-            chromeRow
+        NavigationStack(path: routePath) {
+            content(for: page)
+                .toolbar { pageToolbar }
+                .navigationDestination(for: ShellRoute.self) { route in
+                    switch route {
+                    case .memoryDetail(let name):
+                        DataBrowserMemoryDetailView(model: browserModel, name: name)
+                    }
+                }
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
-        .onGeometryChange(for: CGFloat.self, of: { $0.safeAreaInsets.top }, action: { topInset = $0 })
         .onAppear {
-            syncBrowserTab(with: selected)
+            syncBrowserTab(with: page)
             browserModel.updateConnection(chatViewModel.client.canSend)
         }
-        .onChange(of: selected) { _, newTab in
-            syncBrowserTab(with: newTab)
+        .onChange(of: page) { _, newPage in
+            // A page switch never carries a push from the page it left —
+            // "a page switch has no back button" (the approved mock).
+            browserModel.selection = nil
+            syncBrowserTab(with: newPage)
             browserModel.contextChanged()
         }
         .onChange(of: chatViewModel.client.canSend) { _, connected in
             browserModel.updateConnection(connected)
         }
         .onChange(of: chatViewModel.client.browserMemoryRevision) { _, _ in
-            if selected == .memory { browserModel.scheduleRefresh() }
+            if page == .memory { browserModel.scheduleRefresh() }
         }
         .onChange(of: chatViewModel.client.browserRunRevision) { _, _ in
-            if selected == .prompts || browserModel.selection != nil { browserModel.scheduleRefresh() }
+            if page == .prompts || browserModel.selection != nil { browserModel.scheduleRefresh() }
         }
         .onDisappear { browserModel.stop() }
-        .environment(\.shellContentTopClearance, Self.contentTopClearance)
         .environment(\.shellOpenPrompts) { runID in
             browserModel.linkedRunID = runID
-            selected = .prompts
+            page = .prompts
         }
     }
 
-    // MARK: Tabs
+    // MARK: Pages
 
-    /// One identifier per tab root (#3106), applied here rather than inside
-    /// each tab's own view — `AppShellView` is the one place that already
-    /// knows which tab is showing.
-    private var tabContent: some View {
-        content(for: selected)
-            .accessibilityIdentifier(AXID.tabRoot(selected))
+    /// One identifier per page root (#3106), applied here rather than
+    /// inside each page's own view — `AppShellView` is the one place that
+    /// already knows which page is showing. `.accessibilityElement(children:
+    /// .contain)` first: without it, `.accessibilityIdentifier` broadcasts
+    /// onto every leaf element inside a multi-element subtree (confirmed —
+    /// it overwrote the composer's own text-field and attach-button ids
+    /// with the page root's), not just a single root node.
+    private func content(for tab: TopTab) -> some View {
+        pageContent(for: tab)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(AXID.tabRoot(tab))
     }
 
     @ViewBuilder
-    private func content(for tab: TopTab) -> some View {
+    private func pageContent(for tab: TopTab) -> some View {
         switch tab {
         case .chat:
             MessageView(viewModel: chatViewModel, dockResolveProgress: dockResolveProgress)
@@ -101,11 +110,7 @@ struct AppShellView: View {
         case .prompts:
             DataBrowserPromptsView(model: browserModel, reconnect: chatViewModel.client.reconnect)
         case .settings:
-            // The old Cancel/Save bar stays for now (the Settings redesign
-            // ticket replaces it with save-as-you-change); padded below the
-            // chrome row so the two rows of controls don't collide.
             SettingsView(client: chatViewModel.client)
-                .padding(.top, Self.contentTopClearance)
         }
     }
 
@@ -117,98 +122,72 @@ struct AppShellView: View {
         }
     }
 
-    // MARK: Chrome
-
-    /// The soft fade over the whole chrome zone: fully opaque from the
-    /// screen's top through the nav row's bottom (status bar + gap + row),
-    /// then fading out over `topFadeBleed` — a tab's first content at
-    /// `contentTopClearance` sits exactly where the fade clears. Sized from
-    /// the measured top safe-area inset, as the mock's `ChatCanvasTopFade`.
-    private var topFade: some View {
-        TopFade(
-            background: Color(.systemGroupedBackground),
-            height: topInset + Tokens.chromeTopGap + Tokens.navControlHeight + Tokens.topFadeBleed,
-            opaqueThrough: topInset + Tokens.chromeTopGap + Tokens.navControlHeight
-        )
-        .frame(maxHeight: .infinity, alignment: .top)
-        .ignoresSafeArea(edges: .top)
-    }
-
-    /// The chrome row: the tab capsule, or — on the Chat tab, while
-    /// find-in-chat is open (#3045) — the search bar in its place. Per-tab
-    /// search on the other tabs is a later ticket, so the circle stays
-    /// inert everywhere but Chat.
-    private var chromeRow: some View {
-        Group {
-            if isChatSearchActive {
-                ChatSearchBar(
-                    query: $chatViewModel.search.query,
-                    matchCountText: chatViewModel.search.counterText,
-                    arrowsEnabled: chatViewModel.search.hasMatches,
-                    isFocused: $isSearchFieldFocused,
-                    onStepToOlderMatch: chatViewModel.search.stepToOlderMatch,
-                    onStepToNewerMatch: chatViewModel.search.stepToNewerMatch,
-                    onClose: chatViewModel.search.close
-                )
-            } else {
-                tabRow
-            }
-        }
-        .padding(.top, Tokens.chromeTopGap)
-        .onChange(of: isChatSearchActive) { _, isActive in
-            isSearchFieldFocused = isActive
-        }
-    }
-
-    private var isChatSearchActive: Bool {
-        selected == .chat && chatViewModel.search.isSearching
-    }
-
-    private var tabRow: some View {
-        ZStack {
-            HStack {
-                Spacer()
-                TopTabBar(
-                    selected: selected,
-                    promptsBadge: chatViewModel.client.backgroundProgressRuns.count,
-                    onSelect: { selected = $0 },
-                    chatAvatar: { ChatTabAvatar() }
-                )
-                Spacer()
-            }
-            HStack {
-                if showsBackButton {
-                    GlassCircleButton(symbol: "chevron.left", onTap: goBack)
-                        .accessibilityLabel("Back")
-                        .accessibilityIdentifier(AXID.backButton)
+    /// The stack's one push/pop path: a memory selection pushes
+    /// `.memoryDetail`, and popping (the system back button, or a page
+    /// switch resetting it above) clears the selection — the same binding
+    /// shape `DataBrowserMemoriesView` owned itself before the shell became
+    /// one shared stack.
+    private var routePath: Binding<[ShellRoute]> {
+        Binding(
+            get: { browserModel.selection.map { [.memoryDetail($0)] } ?? [] },
+            set: { newPath in
+                guard case .memoryDetail(let name) = newPath.last else {
+                    browserModel.selection = nil
+                    return
                 }
-                Spacer()
-                GlassCircleButton(symbol: "magnifyingglass", onTap: openChatSearch)
-                    .accessibilityLabel("Search")
-                    .accessibilityIdentifier(AXID.searchOpenButton)
+                browserModel.selection = name
             }
+        )
+    }
+
+    // MARK: Toolbar
+
+    @ToolbarContentBuilder
+    private var pageToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Menu {
+                Picker("Page", selection: $page) {
+                    ForEach(TopTab.allCases) { tab in
+                        Label(tab.name, systemImage: tab.symbol).tag(tab)
+                    }
+                }
+            } label: {
+                Image(systemName: page.symbol)
+            }
+            .accessibilityIdentifier(AXID.pageMenu)
+            .badge(chatViewModel.client.backgroundProgressRuns.count)
         }
-        .padding(.horizontal, Tokens.margin)
-    }
-
-    /// The only pushed page today is the memory detail, reached when the
-    /// browser model holds a selection.
-    private var showsBackButton: Bool {
-        selected == .memory && browserModel.selection != nil
-    }
-
-    private func goBack() {
-        browserModel.selection = nil
-    }
-
-    private func openChatSearch() {
-        guard selected == .chat else { return }
-        chatViewModel.search.open()
+        ToolbarItem(placement: .principal) {
+            ShellTitle()
+        }
+        DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
     }
 }
 
-/// Penny's avatar for the chat tab — the app owns the `penny` asset; the
-/// kit's `TopTabBar` sizes and badges whatever it is handed.
+/// The toolbar's principal title: Penny's avatar with the small green
+/// connected dot, plus her name — a stock composition riding the toolbar's
+/// `.principal` slot on every page, not a hand-built chrome row.
+private struct ShellTitle: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ChatTabAvatar()
+                .frame(width: 28, height: 28)
+                .overlay(alignment: .bottomTrailing) {
+                    ZStack {
+                        Circle().fill(.white)
+                        Circle().fill(.green).frame(width: 8, height: 8)
+                    }
+                    .frame(width: 11, height: 11)
+                    .offset(x: 2, y: 2)
+                }
+            Text("Penny")
+                .font(.headline)
+        }
+    }
+}
+
+/// Penny's avatar for the chat page's principal title — the app owns the
+/// `penny` asset.
 struct ChatTabAvatar: View {
     var body: some View {
         Image("penny")
@@ -220,21 +199,7 @@ struct ChatTabAvatar: View {
 
 // MARK: Environment
 
-/// How far a tab's scrolling content starts below the safe-area top: the
-/// nav row plus the top fade, so content begins fully clear of both and
-/// scrolls up under them.
-private struct ShellContentTopClearanceKey: EnvironmentKey {
-    static let defaultValue: CGFloat = 0
-}
-
-extension EnvironmentValues {
-    var shellContentTopClearance: CGFloat {
-        get { self[ShellContentTopClearanceKey.self] }
-        set { self[ShellContentTopClearanceKey.self] = newValue }
-    }
-}
-
-/// Opens the Prompts tab on a run — the chat long-press menu's "View
+/// Opens the Prompts page on a run — the chat long-press menu's "View
 /// prompts" route, replacing the data-browser popover.
 private struct ShellOpenPromptsKey: EnvironmentKey {
     static let defaultValue: (String) -> Void = { _ in }

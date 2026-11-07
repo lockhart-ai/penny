@@ -100,8 +100,6 @@ struct StoryRootView: View {
                 viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages),
                 presentedCardMessage: StoryFixtures.conversationMessages[1]
             )
-        case .kitTopTabBar:
-            KitTopTabBarStory()
         case .kitPageHeader:
             KitPageHeaderStory()
         case .kitListRows:

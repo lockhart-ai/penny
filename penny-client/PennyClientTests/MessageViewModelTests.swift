@@ -661,9 +661,9 @@ struct MessageViewModelTests {
         #expect(viewModel.shouldShowLiveDock == false)
     }
 
-    // MARK: Find-in-chat (#3045)
+    // MARK: Find-in-chat (#3045, #3111/#3129 — highlights only, no counter or stepping)
 
-    @Test func searchFindsMatchesNewestFirstAndReportsTheCounter() async {
+    @Test func searchFindsMatchesNewestFirst() async {
         let database = configuredDatabase()
         saveSearchFixture(in: database)
         let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
@@ -674,44 +674,17 @@ struct MessageViewModelTests {
 
         #expect(viewModel.search.matches.map(\.id) == [5, 3, 1])
         #expect(viewModel.search.currentMatchID == 5)
-        #expect(viewModel.search.counterText == "1 of 3")
         #expect(viewModel.search.highlightQuery == "alpha")
     }
 
-    @Test func searchSteppingWrapsInBothDirections() async {
+    @Test func closingSearchClearsQueryAndMatches() async {
         let database = configuredDatabase()
         saveSearchFixture(in: database)
         let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
         await viewModel.connect()
         viewModel.search.open()
         viewModel.search.query = "alpha"
-        #expect(viewModel.search.currentMatchID == 5)
-
-        viewModel.search.stepToOlderMatch()
-        #expect(viewModel.search.currentMatchID == 3)
-        #expect(viewModel.search.counterText == "2 of 3")
-
-        viewModel.search.stepToOlderMatch()
-        #expect(viewModel.search.currentMatchID == 1)
-        #expect(viewModel.search.counterText == "3 of 3")
-
-        viewModel.search.stepToOlderMatch() // wraps back to the newest match
-        #expect(viewModel.search.currentMatchID == 5)
-        #expect(viewModel.search.counterText == "1 of 3")
-
-        viewModel.search.stepToNewerMatch() // wraps back to the oldest match
-        #expect(viewModel.search.currentMatchID == 1)
-        #expect(viewModel.search.counterText == "3 of 3")
-    }
-
-    @Test func closingSearchClearsQueryMatchesAndCounter() async {
-        let database = configuredDatabase()
-        saveSearchFixture(in: database)
-        let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
-        await viewModel.connect()
-        viewModel.search.open()
-        viewModel.search.query = "alpha"
-        #expect(viewModel.search.hasMatches)
+        #expect(viewModel.search.matches.isEmpty == false)
 
         viewModel.search.close()
 
@@ -719,11 +692,10 @@ struct MessageViewModelTests {
         #expect(viewModel.search.query.isEmpty)
         #expect(viewModel.search.matches.isEmpty)
         #expect(viewModel.search.currentMatchID == nil)
-        #expect(viewModel.search.counterText == nil)
         #expect(viewModel.search.highlightQuery == nil)
     }
 
-    @Test func emptySearchQueryShowsNoMatchesAndIgnoresStepping() async {
+    @Test func emptySearchQueryShowsNoMatches() async {
         let database = configuredDatabase()
         saveSearchFixture(in: database)
         let (viewModel, _) = makePagingViewModel(database: database, pageSize: 2)
@@ -731,12 +703,9 @@ struct MessageViewModelTests {
 
         viewModel.search.open()
 
-        #expect(viewModel.search.hasMatches == false)
-        #expect(viewModel.search.counterText == nil)
-        #expect(viewModel.search.highlightQuery == nil)
-
-        viewModel.search.stepToOlderMatch()
+        #expect(viewModel.search.matches.isEmpty)
         #expect(viewModel.search.currentMatchID == nil)
+        #expect(viewModel.search.highlightQuery == nil)
     }
 
     @Test func searchPagesOlderHistoryUntilTheSteppedToMatchIsLoaded() async {

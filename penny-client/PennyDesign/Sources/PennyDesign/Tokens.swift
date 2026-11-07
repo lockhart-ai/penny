@@ -53,8 +53,6 @@ public enum Tokens {
     public static let bubbleMetaGap: CGFloat = 4        // bubble → metadata line
     public static let dockComposerGap: CGFloat = 8      // dock bottom → composer top
     public static let dockChromeGap: CGFloat = 8        // dock top → chrome row bottom (.top placement)
-    public static let topFadeBleed: CGFloat = 36        // chrome row bottom → top fade fully clear
-    public static let chromeTopGap: CGFloat = 2         // safe-area top → nav row top (measured off chat.png)
     public static let lastMessageComposerGap: CGFloat = 12
     public static let capsuleContentGap: CGFloat = 12   // capsule bottom → first content
     public static let iconColumn: CGFloat = 38          // dock/stream icon column
@@ -63,14 +61,12 @@ public enum Tokens {
     public static let bubbleCorner: CGFloat = 20
     public static let menuCorner: CGFloat = 16
     public static let menuRowHeight: CGFloat = 44
-    /// The one height every glass control in the nav row shares — the tab
-    /// capsule, the search field capsule and every glass circle — Apple's
-    /// minimum tap target. They share one centre line; the capsule and
-    /// field read it as content + the glass's 4pt inset each side, the
-    /// circles as their full side.
+    /// `GlassCircle`'s one size — Apple's minimum tap target — kept even
+    /// though its own nav-row callers retired with #3111's stock shell,
+    /// because `KitPageHeaderStory` still demos a `GlassCircleButton` in
+    /// `PageTitle`'s trailing slot.
     public static let navControlHeight: CGFloat = 44
-    /// The one glyph size every glass circle's symbol uses — the nav
-    /// circles' size, shared with every other glass circle in the app.
+    /// `GlassCircle`'s symbol size, same reason as `navControlHeight` above.
     public static let navGlyphSize: CGFloat = 19.5
     public static let imageBubbleWidth: CGFloat = 270   // 16:10 flair image bubble
     public static let drawingImageWidth: CGFloat = 260  // 4:5 drawing bubble

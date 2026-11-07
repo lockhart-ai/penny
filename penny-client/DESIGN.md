@@ -20,9 +20,15 @@ The kit's components each render in story mode (`make client-stories`, story ids
    blue content on it (cards, rows, bubbles); glass only for **floating controls** —
    the nav row, the message field, the live dock. Glass never sits on glass, and
    nothing inside a card is glass.
-2. **Navigation.** One centred glass tab capsule at the top (Chat = Penny's avatar,
-   Memory, Prompts, Settings) plus a search circle that searches the current tab.
-   Pushed pages keep the capsule and add a glass back button leading.
+2. **Navigation (#3111).** One stock `NavigationStack` with a visible system bar. A
+   leading glass `Menu`/`Picker` switches pages (Chat, Memory, Prompts, Settings) —
+   closed, its label is the current page's icon, iOS drawing its own glass circle;
+   open, each row carries its icon, name and a checkmark on the current one. Penny's
+   avatar and name sit centred (`.principal`) on every page; search is trailing
+   (`DefaultToolbarItem(kind: .search)`), each page supplying its own `.searchable`.
+   A page switch swaps the content under the same bar, with no back button. A
+   drill-down (today, a memory's detail) pushes onto the stack with the system back
+   button — nothing hidden, nothing floated over a system element.
 3. **Every page has an `[icon] Title / byline` header** (`PageTitle`): the page's
    type icon tile, a bold one-line title, and a **required one-line byline** under
    it. There is one title size in the whole app (`Tokens.pageTitleStyle/Weight`);
@@ -89,7 +95,7 @@ that needs a constant adds it to `Tokens` first.
 
 | Component | Kit file | Reads |
 |---|---|---|
-| `TopTabBar` (tabs, badges, avatar), `GlassCircle`, `GlassCircleButton` | `TopTabBar.swift` | nav control height, glyph size |
+| `GlassCircle`, `GlassCircleButton` | `GlassCircle.swift` | nav control height, glyph size |
 | `PageTitle` | `PageTitle.swift` | `pageIconSize`, `pageIconX`, `rowTextX` |
 | `SectionHeader`, `SectionCard` | `SectionCard.swift` | `sectionHeaderInset`, `cardInnerPadding`, `cardCorner` |
 | `ListRow` (with `ListRowTile`, `RowIconKind`) | `ListRow.swift` | `cardInnerPadding`, `tile`, `iconTextGap`, `rowVerticalPadding`, `rowLineGap` |
