@@ -70,22 +70,22 @@ struct MessageView: View {
             .onPreferenceChange(ChatViewportFramePreferenceKey.self) { frame in
                 chatViewportFrame = frame
             }
-            // Find-in-chat (#3045, #3129): the shell's shared
-            // `DefaultToolbarItem(kind: .search)` is the placement hint,
-            // but confirmed on this SDK it doesn't collapse to a trailing
-            // circle the way the approved mock shows — plain `.searchable`
-            // (with or without the hint, tested both) renders as an
-            // always-visible bar pinned to the screen's bottom, which sits
-            // directly on top of the composer. `.navigationBarDrawer
-            // (displayMode: .always)` is the stock placement that doesn't:
-            // an inline field under the title, not fighting the composer
-            // for the bottom of the screen — the same fallback the
-            // mockup's own exploration landed on for this exact
-            // DefaultToolbarItem-plus-.searchable combination. No counter,
-            // no up/down (the code owner approved highlights only); typing
-            // highlights matches in the bubbles below and scrolls to the
-            // newest one via `viewModel.search`'s existing state machine.
-            .searchable(text: $viewModel.search.query, placement: .navigationBarDrawer(displayMode: .always))
+            // Find-in-chat (#3045, #3129, #3150): the shell's shared
+            // `DefaultToolbarItem(kind: .search)` is the trailing top-bar
+            // icon every page uses; it only collapses to that icon — instead
+            // of blanking the bar when tapped — with `.searchToolbarBehavior
+            // (.minimize)` alongside it (confirmed in the component gallery,
+            // `.claude/component-gallery/Gallery/Pages/SearchTopPage.swift`:
+            // all three of `.searchable`, `.searchToolbarBehavior(.minimize)`
+            // and the explicit `DefaultToolbarItem` are required together on
+            // this SDK). Expanding it doesn't dock the field into the title —
+            // it floats as a glass capsule just above the keyboard, with its
+            // own Close (X) button. No counter, no up/down (the code owner
+            // approved highlights only); typing highlights matches in the
+            // bubbles below and scrolls to the newest one via
+            // `viewModel.search`'s existing state machine.
+            .searchable(text: $viewModel.search.query, prompt: "Search")
+            .searchToolbarBehavior(.minimize)
             .onChange(of: isSearchFieldActive) { _, active in
                 if active {
                     viewModel.search.open()
