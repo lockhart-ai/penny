@@ -159,6 +159,7 @@ export type WsOutgoing =
 
 export type WsIncomingType =
   | "message"
+  | "incoming_message"
   | "typing"
   | "status"
   | "tool_request"
@@ -181,6 +182,7 @@ export type WsIncomingType =
   | "tool_finished";
 export const WsIncomingType = {
   Message: "message",
+  IncomingMessage: "incoming_message",
   Typing: "typing",
   Status: "status",
   ToolRequest: "tool_request",
@@ -206,6 +208,26 @@ export const WsIncomingType = {
 export interface WsIncomingMessagePayload {
   type: typeof WsIncomingType.Message;
   content: string;
+}
+
+/** The device a chat replication push (#3137, PR #3142) names as the
+ *  message's origin — mirrors the Python side's channel type names. */
+export type IncomingChannelType = "signal" | "ios" | "browser";
+export const IncomingChannelType = {
+  Signal: "signal",
+  Ios: "ios",
+  Browser: "browser",
+} as const satisfies Record<string, IncomingChannelType>;
+
+/** A user message sent from another device (chat replication, #3137) —
+ *  Penny's own replies still arrive as the plain `message` type above; this
+ *  is the turn's other half, the question it answers. */
+export interface WsIncomingIncomingMessagePayload {
+  type: typeof WsIncomingType.IncomingMessage;
+  content: string;
+  direction: "incoming";
+  channel_type: IncomingChannelType;
+  device_label: string;
 }
 
 export interface WsIncomingTypingPayload {
@@ -547,6 +569,7 @@ export interface WsIncomingToolFinishedPayload {
 
 export type WsIncomingPayload =
   | WsIncomingMessagePayload
+  | WsIncomingIncomingMessagePayload
   | WsIncomingTypingPayload
   | WsIncomingStatusPayload
   | WsIncomingToolRequestPayload
@@ -573,6 +596,7 @@ export type WsIncomingPayload =
 export type RuntimeMessageType =
   | "send_chat"
   | "chat_message"
+  | "incoming_message"
   | "typing"
   | "connection_state"
   | "permission_request"
@@ -618,6 +642,7 @@ export type RuntimeMessageType =
 export const RuntimeMessageType = {
   SendChat: "send_chat",
   ChatMessage: "chat_message",
+  IncomingMessage: "incoming_message",
   Typing: "typing",
   ConnectionState: "connection_state",
   PermissionRequest: "permission_request",
@@ -672,6 +697,16 @@ export interface RuntimeSendChat {
 export interface RuntimeChatMessage {
   type: typeof RuntimeMessageType.ChatMessage;
   content: string;
+}
+
+/** Background → sidebar: a user message sent from another device (chat
+ *  replication, #3137) — rendered as the user's own bubble, captioned with
+ *  its device. */
+export interface RuntimeIncomingMessage {
+  type: typeof RuntimeMessageType.IncomingMessage;
+  content: string;
+  channel_type: IncomingChannelType;
+  device_label: string;
 }
 
 /** Background → sidebar: typing indicator */
@@ -1005,6 +1040,7 @@ export interface RuntimeRunDetailResponse {
 export type RuntimeMessage =
   | RuntimeSendChat
   | RuntimeChatMessage
+  | RuntimeIncomingMessage
   | RuntimeTyping
   | RuntimeConnectionState
   | RuntimePermissionRequest
@@ -1084,6 +1120,10 @@ export const MessageSender = {
 export interface StoredMessage {
   text: string;
   sender: MessageSender;
+  /** Device caption (#3144) for a message relayed from another device —
+   *  built by `deviceCaption` (`sidebar/incoming.ts`). Optional so a
+   *  history entry stored before this field existed still loads. */
+  caption?: string;
 }
 
 export const MAX_STORED_MESSAGES = 200;
