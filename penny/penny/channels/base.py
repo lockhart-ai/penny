@@ -10,7 +10,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
@@ -57,6 +57,28 @@ def strip_image_tokens(text: str) -> str:
 # URLs Penny cites in an outgoing message — used to attach the cited page's own
 # captured image at egress (see ``MediaStore.select_image``).
 _MESSAGE_URL_RE = re.compile(r"https?://[^\s)>\]]+")
+
+
+class PeerFanout(Protocol):
+    """The cross-channel delivery collaborator every channel needs to reach
+    every OTHER registered device (#3137, rule 1) — satisfied structurally by
+    ``ChannelManager`` (no import here: ``manager.py`` already imports this
+    module, so importing it back would cycle).  Wired by ``register_channel``
+    the moment a channel joins the manager — the one real composition root
+    (``create_channel_manager``) — so production code is never missing one;
+    a channel built directly (a test, a bespoke script) that never calls
+    ``set_peer_manager`` simply gets no fan-out, loudly logged rather than
+    silently skipped (see ``MessageChannel._log_and_send``)."""
+
+    async def fan_out_outgoing(
+        self,
+        *,
+        exclude_device_id: int | None,
+        message_id: int,
+        content: str,
+        attachments: list[str] | None,
+        source_name: str | None,
+    ) -> None: ...
 
 
 class PageContext(BaseModel):
@@ -180,10 +202,24 @@ class MessageChannel(ABC):
         self._scheduler: BackgroundScheduler | None = None
         self._config: Config | None = None
         self._embedding_model_client: LlmClient | None = None
+        # The cross-channel fan-out collaborator (#3137) — unset until
+        # ``register_channel`` wires it (the one real composition root), so a
+        # channel built directly with no registration never silently fans out;
+        # see ``PeerFanout`` and ``_log_and_send``.
+        self._peer_manager: PeerFanout | None = None
 
     def set_scheduler(self, scheduler: BackgroundScheduler) -> None:
         """Set the scheduler for message notifications."""
         self._scheduler = scheduler
+
+    def set_peer_manager(self, peer_manager: PeerFanout) -> None:
+        """Wire the collaborator ``_log_and_send`` fans Penny's own messages out
+        through (#3137).  Called by ``ChannelManager.register_channel`` for
+        every channel it registers — the one production path — so this is a
+        registration dependency, not an optional extra; a channel that never
+        goes through registration (a test, a bespoke script) simply gets no
+        fan-out, loudly logged rather than silently skipped."""
+        self._peer_manager = peer_manager
 
     def set_command_context(
         self,
@@ -481,6 +517,19 @@ class MessageChannel(ABC):
         logger.info("Sent response to %s (%d chars)", recipient, len(content))
         return message_id if external_id is not None else None
 
+    def _device_for_outgoing(self, recipient: str) -> Device | None:
+        """The device an outgoing send to ``recipient`` actually reaches.
+
+        Default: a concrete channel's own ``recipient`` IS a device
+        identifier — a plain lookup.  ``ChannelManager`` overrides this,
+        since its own ``_resolve_channel`` may route a proactive send to the
+        DEFAULT device rather than whatever device ``recipient`` happens to
+        name (#1298) — the messagelog row's ``device_id`` stamp and the
+        outgoing fan-out's exclusion (#3137) both have to agree with where
+        the primary send actually went, not the raw recipient string.
+        """
+        return self._db.devices.get_by_identifier(recipient)
+
     async def _log_and_send(
         self,
         recipient: str,
@@ -518,7 +567,7 @@ class MessageChannel(ABC):
         if (not prepared or not prepared.strip()) and not attachments:
             logger.error("Attempted to send empty message to %s", recipient)
             raise ValueError("Cannot send empty or whitespace-only message")
-        device = self._db.devices.get_by_identifier(recipient)
+        device = self._device_for_outgoing(recipient)
         device_id = device.id if device else None
         message_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
@@ -542,7 +591,53 @@ class MessageChannel(ABC):
         # Store the external ID for future reactions and quote replies
         if external_id and message_id:
             self._db.messages.set_external_id(message_id, str(external_id))
+        if message_id is not None:
+            await self._fan_out_delivery(
+                message_id, device_id, external_id, content, attachments, source_name
+            )
         return message_id, external_id
+
+    async def _fan_out_delivery(
+        self,
+        message_id: int,
+        device_id: int | None,
+        external_id: int | None,
+        content: str,
+        attachments: list[str] | None,
+        source_name: str | None,
+    ) -> None:
+        """Record the primary delivery, then fan this message out to every
+        OTHER registered device (#3137, rule 1): every reply, interim message
+        and autonomous send reaches every connected client, not just the one
+        recipient this channel resolved — the code owner's call, since Signal
+        can always post as Penny even when the triggering turn happened
+        elsewhere.
+
+        A channel with no peer manager wired — never registered through
+        ``ChannelManager.register_channel``, the one production path (a test,
+        a bespoke script) — gets no fan-out, LOUDLY logged rather than
+        silently skipped (``PeerFanout``)."""
+        if device_id is not None:
+            self._db.messages.record_delivery(
+                message_id,
+                device_id,
+                external_id=str(external_id) if external_id else None,
+                error=None if external_id else "primary send failed",
+            )
+        if self._peer_manager is None:
+            logger.error(
+                "No peer manager wired on %s — outgoing fan-out skipped for message %d",
+                type(self).__name__,
+                message_id,
+            )
+            return
+        await self._peer_manager.fan_out_outgoing(
+            exclude_device_id=device_id,
+            message_id=message_id,
+            content=content,
+            attachments=attachments,
+            source_name=source_name,
+        )
 
     def _resolve_media(
         self,

@@ -46,6 +46,7 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_TOOL_RESPONSE,
     BROWSER_RESP_TYPE_CALL_STARTED,
     BROWSER_RESP_TYPE_CONFIG,
+    BROWSER_RESP_TYPE_INCOMING_MESSAGE,
     BROWSER_RESP_TYPE_MEMORY_CHANGED,
     BROWSER_RESP_TYPE_MESSAGE,
     BROWSER_RESP_TYPE_PROMPT_LOG_UPDATE,
@@ -218,6 +219,12 @@ class BrowserChannel(MessageChannel):
         db.messages.subscribe_call_started(self._on_call_started)
         db.messages.subscribe_tool_started(self._on_tool_started)
         db.messages.subscribe_tool_finished(self._on_tool_finished)
+        # Live-push a just-logged user message from ANY device to every OTHER
+        # connected browser addon (#3137, rules 2/3) — Signal and Discord never
+        # subscribe here (no live transport, no way to post as the user), so
+        # this is structurally the only way a user message ever reaches an
+        # app client other than the one it arrived on.
+        db.messages.subscribe_incoming_logged(self._on_incoming_logged)
 
     def _on_prompt_logged(self, prompt_data: dict) -> None:
         """Callback fired after each prompt is logged — broadcast to browsers."""
@@ -274,10 +281,29 @@ class BrowserChannel(MessageChannel):
         message = BrowserMemoryChanged(name=name).model_dump_json()
         self._push(message, BROWSER_RESP_TYPE_MEMORY_CHANGED)
 
-    def _push(self, payload: str, update: str) -> None:
+    def _on_incoming_logged(self, row: MessageLog) -> None:
+        """Live-push a just-logged user message to every OTHER connected
+        browser addon (#3137, rules 2/3) — the device it arrived on already
+        knows what it sent, so it is excluded by device label.  Best-effort,
+        live-only: this PR carries no server-backed history for the browser
+        sidebar (that is #3139), so an addon that misses the live push has no
+        catch-up yet — a known limitation, not an oversight.
+        """
+        device = self._db.devices.get_by_id(row.device_id) if row.device_id is not None else None
+        payload = BrowserOutgoing(
+            type=BROWSER_RESP_TYPE_INCOMING_MESSAGE,
+            content=row.content,
+            direction=PennyConstants.MessageDirection.INCOMING,
+            channel_type=device.channel_type if device else None,
+            device_label=device.label if device else None,
+        ).model_dump_json(exclude_none=True)
+        origin_label = device.identifier if device else None
+        self._push(payload, BROWSER_RESP_TYPE_INCOMING_MESSAGE, exclude_label=origin_label)
+
+    def _push(self, payload: str, update: str, *, exclude_label: str | None = None) -> None:
         """Schedule a push notification's fan-out to every connected addon.
 
-        These three callbacks are SYNCHRONOUS — the database stores call them from
+        These callbacks are SYNCHRONOUS — the database stores call them from
         ordinary code the moment a row lands — so the fan-out can only be scheduled,
         never awaited.  What is scheduled therefore has to handle its own failures:
         a detached task is the one place an exception has nobody to raise to, and
@@ -288,13 +314,17 @@ class BrowserChannel(MessageChannel):
 
         Nothing is scheduled when nobody is connected: a push with no recipient is
         not a reason to require a running event loop (these callbacks also fire on
-        the startup backfill path, where there is none).
+        the startup backfill path, where there is none).  ``exclude_label`` leaves
+        out one connection on purpose (#3137) — the device that already knows
+        what it just sent.
         """
         if not self._connections:
             return
-        asyncio.ensure_future(self._deliver_push(payload, update))
+        asyncio.ensure_future(self._deliver_push(payload, update, exclude_label))
 
-    async def _deliver_push(self, payload: str, update: str) -> None:
+    async def _deliver_push(
+        self, payload: str, update: str, exclude_label: str | None = None
+    ) -> None:
         """Deliver one push frame to every connection, and name the ones that are gone.
 
         Fanned out CONCURRENTLY over a snapshot, each send guarded on its own: a push
@@ -303,7 +333,9 @@ class BrowserChannel(MessageChannel):
         the reason ``_watch_liveness``'s is — this coroutine runs DETACHED, so anything
         it lets out is the unretrieved-task-exception this whole path exists to stop.
         """
-        targets = list(self._connections.items())
+        targets = [item for item in self._connections.items() if item[0] != exclude_label]
+        if not targets:
+            return
         try:
             delivered = await asyncio.gather(
                 *(self._deliver_text(conn.ws, payload) for _, conn in targets)

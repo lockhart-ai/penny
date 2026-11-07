@@ -196,6 +196,12 @@ class IosChannel(MessageChannel):
         db.messages.subscribe_prompt_logged(self._on_prompt_logged)
         db.messages.subscribe_run_outcome_set(self._on_run_outcome_set)
         db.memories.subscribe_memory_changed(self._on_memory_changed)
+        # Live-push a just-logged user message from ANY device to every OTHER
+        # connected iOS device (#3137, rules 2/3) — Signal and Discord never
+        # subscribe here (no live transport, no way to post as the user), so
+        # this is structurally the only way a user message ever reaches an
+        # app client other than the one it arrived on.
+        db.messages.subscribe_incoming_logged(self._on_incoming_logged)
 
     @property
     def sender_id(self) -> str:
@@ -245,14 +251,36 @@ class IosChannel(MessageChannel):
         message = BrowserMemoryChanged(name=name).model_dump_json()
         self._push(message, "memory_changed")
 
-    def _push(self, payload: str, update: str) -> None:
+    def _on_incoming_logged(self, row: MessageLog) -> None:
+        """Live-push a just-logged user message to every OTHER connected iOS
+        device (#3137, rules 2/3) — the device it arrived on already knows
+        what it sent, so it is excluded.  Best-effort, live-only: an offline
+        device gets nothing and catches up through the ordinary cross-device
+        ``ios_history_page`` read on reconnect, never a replay of this push.
+        """
+        device = self._db.devices.get_by_id(row.device_id) if row.device_id is not None else None
+        record = _history_record(
+            (row, device, None), include_attachments=False, run_stats={}, page_attachments={}
+        )
+        payload = IosMessages(messages=[record], mode="live").model_dump_json(exclude_none=True)
+        self._push(payload, "live_message", exclude_device_id=row.device_id)
+
+    def _push(self, payload: str, update: str, *, exclude_device_id: int | None = None) -> None:
         """Schedule a database update whose detached task handles its own failures."""
         if self._connections:
-            asyncio.ensure_future(self._deliver_push(payload, update))
+            asyncio.ensure_future(self._deliver_push(payload, update, exclude_device_id))
 
-    async def _deliver_push(self, payload: str, update: str) -> None:
-        """A disconnected device must not prevent other devices receiving an update."""
-        targets = list(self._connections.values())
+    async def _deliver_push(
+        self, payload: str, update: str, exclude_device_id: int | None = None
+    ) -> None:
+        """A disconnected device must not prevent other devices receiving an
+        update; ``exclude_device_id`` leaves out one device on purpose (#3137)
+        — the one that already knows what it just sent."""
+        targets = [
+            conn for conn in self._connections.values() if conn.device_id != exclude_device_id
+        ]
+        if not targets:
+            return
         try:
             delivered = await asyncio.gather(
                 *(self._deliver_text(conn.ws, payload) for conn in targets)

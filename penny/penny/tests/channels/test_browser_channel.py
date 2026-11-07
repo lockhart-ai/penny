@@ -1808,6 +1808,60 @@ class TestBrowserPushBroadcasts:
 
         assert live.sent == [{"type": "memory_changed", "name": None}]
 
+    @pytest.mark.asyncio
+    async def test_incoming_message_from_another_channel_reaches_connected_addons(self, db):
+        """#3137 rules 2/4: a Signal message is live-pushed to every connected
+        browser addon, carrying ``direction``/``channel_type``/``device_label``
+        so a client that renders them can caption it."""
+        channel = self._channel(db)
+        live = _MockWs()
+        self._connect(channel, "firefox-live", live)
+        signal_device = db.devices.register(
+            ChannelType.SIGNAL, "+15551234567", "Signal", is_default=True
+        )
+
+        before = asyncio.all_tasks()
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "+15551234567",
+            "hello from signal",
+            device_id=signal_device.id,
+        )
+        await self._settle(before)
+
+        assert live.sent == [
+            {
+                "type": "incoming_message",
+                "content": "hello from signal",
+                "direction": PennyConstants.MessageDirection.INCOMING,
+                "channel_type": ChannelType.SIGNAL,
+                "device_label": "Signal",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_incoming_message_excludes_the_addon_it_arrived_on(self, db):
+        """The addon window a browser message arrived ON never gets it echoed
+        back — only every OTHER connected addon does."""
+        channel = self._channel(db)
+        origin = _MockWs()
+        other = _MockWs()
+        self._connect(channel, "firefox-origin", origin)
+        self._connect(channel, "firefox-other", other)
+        origin_device = db.devices.register(ChannelType.BROWSER, "firefox-origin", "firefox-origin")
+
+        before = asyncio.all_tasks()
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "firefox-origin",
+            "typed in this very window",
+            device_id=origin_device.id,
+        )
+        await self._settle(before)
+
+        assert origin.sent == [], "the originating addon already knows what it sent"
+        assert other.sent, "a second connected addon still gets the push"
+
     def test_a_push_with_nobody_connected_schedules_nothing(self, db):
         """With no addon connected there is nothing to deliver — and a callback the
         database makes outside a running loop (the startup backfill) must not need one
