@@ -4,7 +4,7 @@ import XCTest
 /// Find-in-chat (#3045), wired to the stock `.searchable` field under
 /// Chat's title (#3111/#3129, `.navigationBarDrawer(displayMode: .always)`
 /// — confirmed the only placement on this SDK that doesn't sit the search
-/// bar on top of the composer): typing a query, and cancelling it. No
+/// bar on top of the composer): typing a query, and closing it. No
 /// counter, no up/down — the code owner approved highlights only.
 final class ChatSearchUITests: XCTestCase {
     private var app: XCUIApplication!
@@ -16,7 +16,7 @@ final class ChatSearchUITests: XCTestCase {
     }
 
     /// Typing a fixture word highlights its newest match and scrolls it
-    /// into view; the system Cancel control closes the field again. The
+    /// into view; the system Close control clears the field again. The
     /// field itself existing with our typed text IS the search state —
     /// there's no separate flag to assert.
     func testSearchHighlightsTheNewestMatchAndCancelCloses() {
@@ -34,8 +34,11 @@ final class ChatSearchUITests: XCTestCase {
         XCTAssertTrue(newestMatch.waitForExistence(timeout: UITestWait.standard),
                        "Expected the newest ferry match to be visible once search finds it")
 
-        app.buttons["Cancel"].tap()
-        XCTAssertTrue(waitForAbsence(app.keyboards.firstMatch), "Expected Cancel to dismiss the keyboard")
-        XCTAssertEqual(field.value as? String, "Search", "Expected Cancel to clear the query back to the placeholder")
+        // `.navigationBarDrawer(displayMode: .always)` has no "Cancel" —
+        // the field never collapses, so the system gives it a "Close"
+        // button instead (confirmed: a dedicated nav-bar button next to
+        // the field, distinct from the keyboard's own close key).
+        app.buttons["Close"].tap()
+        XCTAssertEqual(field.value as? String, "Search", "Expected Close to clear the query back to the placeholder")
     }
 }
