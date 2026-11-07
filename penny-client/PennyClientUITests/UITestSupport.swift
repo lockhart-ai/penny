@@ -58,26 +58,15 @@ func waitForLabel(_ element: XCUIElement, toEqual expected: String, timeout: Tim
     return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
 }
 
-/// Taps `element`, then polls `condition` for the state change the tap is
-/// expected to cause, re-tapping roughly once a second until `condition`
-/// reports true or the overall bound elapses — `wait_until`, not a fixed
-/// sleep, with a retry instead of a bare wait. A synthesized XCUITest touch
-/// on a SwiftUI `Button` occasionally never reaches its action closure even
-/// though the element reports `exists`/`isHittable` (observed here on a
-/// glass control for its second tap in a row); retrying the tap is the
-/// documented mitigation for that known XCUITest/SwiftUI gap. `condition`
-/// must be a quick, non-blocking check (e.g. `element.exists`), not another
-/// `waitForExistence` call.
+/// Polls for `element` to be gone — the non-existence counterpart to
+/// `waitForExistence`, via the same `XCTNSPredicateExpectation` mechanism
+/// `waitForLabel` uses, so a control that's already absent returns quickly
+/// instead of blocking for the whole timeout (`waitForExistence(timeout:)`
+/// itself can only return `false` by exhausting its timeout, since it keeps
+/// polling for existence to become true until the deadline).
 @discardableResult
-func tap(_ element: XCUIElement, until condition: @autoclosure () -> Bool, timeout: TimeInterval = UITestWait.standard) -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        element.tap()
-        let stepDeadline = min(Date().addingTimeInterval(1), deadline)
-        while Date() < stepDeadline {
-            if condition() { return true }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        }
-    }
-    return condition()
+func waitForAbsence(_ element: XCUIElement, timeout: TimeInterval = UITestWait.standard) -> Bool {
+    let predicate = NSPredicate(format: "exists == 0")
+    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+    return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
 }
