@@ -1,6 +1,5 @@
 """Integration tests for Signal channel."""
 
-import asyncio
 import base64
 import time
 from unittest.mock import AsyncMock, Mock
@@ -13,7 +12,6 @@ from penny.channels.signal import SignalChannel
 from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType
 from penny.database import Database
-from penny.database.link_thumbnail_store import LinkThumbnailEntry
 from penny.database.models import Media
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
@@ -911,52 +909,22 @@ def _media_egress_channel(test_config, db):
     return channel
 
 
-def _mock_cited_page_http(monkeypatch, handler) -> None:
-    """Point the cited-page preview fetch at a ``httpx.MockTransport`` — the
-    HTTP boundary mocked, the rest of egress running for real (#3064)."""
-    from penny.channels import base as base_module
-
-    monkeypatch.setattr(
-        base_module,
-        "_cited_page_http_client",
-        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True),
-    )
-
-
-def _story_page_html() -> str:
-    """The HTML a cited story page returns: og:title + a site-relative og:image."""
-    return (
-        "<html><head>"
-        '<meta property="og:title" content="The Story">'
-        '<meta property="og:image" content="/preview.jpg">'
-        "</head><body></body></html>"
-    )
-
-
-def _story_site_handler(request: httpx.Request) -> httpx.Response:
-    if request.url.path == "/preview.jpg":
-        return httpx.Response(
-            200, content=b"fetched-preview", headers={"content-type": "image/png"}
-        )
-    return httpx.Response(
-        200, content=_story_page_html(), headers={"content-type": "text/html; charset=utf-8"}
-    )
-
-
 def _data_uri(raw: bytes, mime: str = "image/png") -> str:
     return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
 
 
 @pytest.mark.asyncio
-async def test_send_response_cited_capture_attaches_with_no_fetch(
-    signal_server, db, test_config, mock_llm, monkeypatch
+async def test_send_response_cited_capture_attaches_on_exact_tier(
+    signal_server, db, test_config, mock_llm
 ):
-    """A cited page we hold a capture for attaches its own image through egress —
-    with the URL's trailing comma stripped before matching — and no preview
-    fetch is attempted for it: no second media row is stored (#3064)."""
+    """A cited page we hold a capture for attaches its own image through
+    egress — no second row is written at send time — even when the stored
+    ``source_url`` and the reply's cited form differ trivially (mixed case,
+    the cited one trailing a prose comma): both are run through the same
+    normaliser (``MediaStore.normalize_url``) before they're compared, so a
+    link card's own href casing never breaks the exact-URL match (#3113)."""
     channel = _media_egress_channel(test_config, db)
-    db.media.put(b"captured-story", "image/png", source_url="https://news.test/story/2026-11-04/")
-    _mock_cited_page_http(monkeypatch, _story_site_handler)
+    db.media.put(b"captured-story", "image/png", source_url="HTTPS://News.Test/Story/2026-11-04/")
 
     await channel.send_response(
         TEST_SENDER,
@@ -967,176 +935,63 @@ async def test_send_response_cited_capture_attaches_with_no_fetch(
 
     sent = signal_server.outgoing_messages[-1]
     assert sent.get("base64_attachments") == [_data_uri(b"captured-story")]
-    # The fetch never ran — the one captured row is all the store holds.
-    assert [row.source_url for row in _all_media(db)] == ["https://news.test/story/2026-11-04/"]
+    # No egress write — the one captured row is all the store holds.
+    assert len(_all_media(db)) == 1
 
     await channel.close()
 
 
 @pytest.mark.asyncio
-async def test_send_response_fetches_cited_page_preview_image(
-    signal_server, db, test_config, mock_llm, monkeypatch
+async def test_send_response_cited_unknown_link_falls_through_to_nearest(
+    signal_server, db, test_config, mock_llm
 ):
-    """A cited page with no capture gets its og:image fetched at send time,
-    absolutized, stored like a browse capture (URL-keyed, titled, embedded), and
-    attached to the reply (#3064)."""
-    channel = _media_egress_channel(test_config, db)
-    requested: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requested.append(str(request.url))
-        return _story_site_handler(request)
-
-    _mock_cited_page_http(monkeypatch, handler)
-
-    await channel.send_response(
-        TEST_SENDER,
-        "worth a read https://news.test/story/2026-11-04/ today",
-        parent_id=None,
-        author="penny",
-    )
-
-    sent = signal_server.outgoing_messages[-1]
-    assert sent.get("base64_attachments") == [_data_uri(b"fetched-preview")]
-    rows = _all_media(db)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.source_url == "https://news.test/story/2026-11-04/"
-    assert row.title == "The Story"
-    assert row.data == b"fetched-preview"
-    assert row.embedding is not None
-    # The site-relative og:image was absolutized against the page URL.
-    assert "https://news.test/preview.jpg" in requested
-
-    await channel.close()
-
-
-@pytest.mark.asyncio
-async def test_send_response_cited_link_thumbnail_attaches_without_page_fetch(
-    signal_server, db, test_config, mock_llm, monkeypatch
-):
-    """A cited URL a browse read recorded a link card for (#3072) gets that
-    card's own image downloaded and attached at egress — with no page fetch:
-    the card image is the page's real picture, which the page's own og:image
-    (the front page's) never is."""
-    channel = _media_egress_channel(test_config, db)
-    db.link_thumbnails.record(
-        [
-            LinkThumbnailEntry(
-                url="https://news.test/story/2026-11-04/",
-                image_url="https://cdn.test/cards/story.jpg",
-                title="The Story Card",
-            )
-        ]
-    )
-    requested: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requested.append(request.url.path)
-        return httpx.Response(200, content=b"card-thumbnail", headers={"content-type": "image/png"})
-
-    _mock_cited_page_http(monkeypatch, handler)
-
-    await channel.send_response(
-        TEST_SENDER,
-        "worth a read https://news.test/story/2026-11-04/ today",
-        parent_id=None,
-        author="penny",
-    )
-
-    sent = signal_server.outgoing_messages[-1]
-    assert sent.get("base64_attachments") == [_data_uri(b"card-thumbnail")]
-    rows = _all_media(db)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.source_url == "https://news.test/story/2026-11-04/"
-    assert row.title == "The Story Card"
-    assert row.data == b"card-thumbnail"
-    assert row.mime_type == "image/png"
-    assert row.embedding is not None
-    # Only the card image was fetched — the page itself never was.
-    assert requested == ["/cards/story.jpg"]
-
-    await channel.close()
-
-
-@pytest.mark.asyncio
-async def test_send_response_failed_thumbnail_download_falls_through_to_page_preview(
-    signal_server, db, test_config, mock_llm, monkeypatch
-):
-    """A recorded card whose image download fails hands the og:image fetch its
-    turn (#3072): the page is then fetched and its preview stored exactly as
-    #3064 does — the nearest-image ladder is still only the last resort."""
-    channel = _media_egress_channel(test_config, db)
-    db.link_thumbnails.record(
-        [
-            LinkThumbnailEntry(
-                url="https://news.test/story/2026-11-04/",
-                image_url="https://cdn.test/cards/gone.jpg",
-                title="The Story Card",
-            )
-        ]
-    )
-    requested: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requested.append(request.url.path)
-        if request.url.path == "/cards/gone.jpg":
-            return httpx.Response(500)
-        return _story_site_handler(request)
-
-    _mock_cited_page_http(monkeypatch, handler)
-
-    await channel.send_response(
-        TEST_SENDER,
-        "worth a read https://news.test/story/2026-11-04/ today",
-        parent_id=None,
-        author="penny",
-    )
-
-    sent = signal_server.outgoing_messages[-1]
-    assert sent.get("base64_attachments") == [_data_uri(b"fetched-preview")]
-    rows = _all_media(db)
-    assert len(rows) == 1
-    assert rows[0].source_url == "https://news.test/story/2026-11-04/"
-    assert rows[0].title == "The Story"
-    # The card image was tried first, then the page's own preview.
-    assert requested == ["/cards/gone.jpg", "/story/2026-11-04/", "/preview.jpg"]
-
-    await channel.close()
-
-
-@pytest.mark.asyncio
-async def test_send_response_cited_preview_fetch_failure_falls_through_to_nearest(
-    signal_server, db, test_config, mock_llm, monkeypatch
-):
-    """A failed or timed-out preview fetch falls through to the nearest image,
-    unchanged — every reply still gets one, and the send never waits past the
-    one bounded timeout (#3064)."""
+    """A reply citing a link with no captured image falls straight through
+    to the nearest embedding match — there is no egress fetch to try first
+    any more (#3113), so the exact tier simply has nothing to match and the
+    fallback carries the reply through unchanged."""
     from penny.tests.mocks.llm_patches import deterministic_embed
 
     channel = _media_egress_channel(test_config, db)
-    reply = "wild story https://fresh.test/a"
+    reply = "wild story https://fresh.test/never-captured"
     db.media.put(b"nearest", "image/png", embedding=serialize_embedding(deterministic_embed(reply)))
-    _mock_cited_page_http(monkeypatch, lambda request: httpx.Response(500))
 
     await channel.send_response(TEST_SENDER, reply, parent_id=None, author="penny")
     assert signal_server.outgoing_messages[-1].get("base64_attachments") == [_data_uri(b"nearest")]
 
-    # A fetch that overstays its bound falls through the same way: the whole
-    # operation is cancelled at the (here shortened) timeout constant.
-    from penny.channels import base as base_module
+    await channel.close()
 
-    async def slow_handler(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(1.0)
-        return _story_site_handler(request)
 
-    monkeypatch.setattr(base_module, "_CITED_PAGE_FETCH_TIMEOUT", 0.05)
-    _mock_cited_page_http(monkeypatch, slow_handler)
+@pytest.mark.asyncio
+async def test_send_response_makes_no_http_request(
+    signal_server, db, test_config, mock_llm, monkeypatch
+):
+    """Egress makes no web request of its own (#3113): the image ladder only
+    ever reads stored media, never fetches anything at send time. Every
+    ``httpx.AsyncClient`` request is recorded (and still let through for
+    real, so the channel's own legitimate delivery to the Signal API still
+    succeeds) and checked afterwards — a second request, to anywhere else,
+    would mean egress tried to fetch an image rather than only reading what
+    was already stored."""
+    requested_urls: list[str] = []
+    real_send = httpx.AsyncClient.send
+
+    async def _record_and_send(self, request, *args, **kwargs):
+        requested_urls.append(str(request.url))
+        return await real_send(self, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _record_and_send)
+    channel = _media_egress_channel(test_config, db)
+
     await channel.send_response(
-        TEST_SENDER, "wild story https://fresh.test/b", parent_id=None, author="penny"
+        TEST_SENDER,
+        "worth a read https://news.test/never-captured/ today",
+        parent_id=None,
+        author="penny",
     )
-    assert signal_server.outgoing_messages[-1].get("base64_attachments") == [_data_uri(b"nearest")]
+
+    # The one HTTP call made is the channel's own delivery to the Signal
+    # API — never a fetch for an image.
+    assert requested_urls == [f"{test_config.signal_api_url}/v2/send"]
 
     await channel.close()
 

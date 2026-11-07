@@ -27,9 +27,12 @@ logger = logging.getLogger(__name__)
 URL_TRAILING_PUNCTUATION = ".,;:!?()<>]}>'\""
 
 
-def _normalize_url(url: str) -> str:
+def normalize_url(url: str) -> str:
     """Lower-case and strip trailing punctuation so a URL written into a message
-    matches the captured ``source_url`` of the same page."""
+    matches the captured ``source_url`` of the same page.  Public — a link-card
+    image is stored keyed by this same normal form (#3113), so storage and the
+    exact-URL tier agree on one identity for a URL without either side needing
+    to guess the other's casing or trailing punctuation."""
     return url.rstrip(URL_TRAILING_PUNCTUATION).lower()
 
 
@@ -61,7 +64,7 @@ class ImageSelectionPolicy(BaseModel):
 
     def allows(self, row: _Candidate, urls: list[str]) -> bool:
         """Classify by the strongest relationship so blocked rows cannot fall through."""
-        if _normalize_url(row.source_url) in {_normalize_url(url) for url in urls}:
+        if normalize_url(row.source_url) in {normalize_url(url) for url in urls}:
             return self.cited_page
         if _domain(row.source_url) in ({_domain(url) for url in urls} - {""}):
             return self.same_site
@@ -132,12 +135,13 @@ class MediaStore:
         ``urls`` are the links the message itself contains (Penny cites her
         source), ``embedding`` is the message text's vector.  Two tiers:
 
-        1. **Exact URL** — the message links a page we captured an image from:
+        1. **Exact URL** — the message links a page we hold an image for:
            attach that page's own image (newest capture).  Deterministic — it
-           *is* the right image.  A cited page with no capture gets one at send
-           time — the channel fetches the page's preview image (which
-           ``uncaptured_cited_url`` names) and stores it here first — so this
-           tier fires for pages she cites without ever browsing (#3064).
+           *is* the right image.  A capture can come from actually browsing the
+           page, or from a link card's own image data stored at read time for a
+           link she never opened (``BrowserChannel._store_link_card_media``,
+           #3113) — either way this tier fires for pages she cites without
+           having fetched anything at send time.
         2. **No captured source linked** — embedding-nearest over everything,
            but a uniform random pick among the top-K so a centroid "magnet"
            image can't repeat on consecutive messages (jitter applies *only*
@@ -173,25 +177,18 @@ class MediaStore:
             if row[0] is not None
         ]
 
-    def uncaptured_cited_url(self, urls: list[str]) -> str | None:
-        """The first URL the message cites that we hold no captured image for —
-        the one the channel fetches a preview image for at send time (#3064).
-
-        None when every cited page already has a capture (or the message cites
-        no URL at all), so no fetch is attempted.
-        """
-        if not urls:
-            return None
-        captured = {_normalize_url(row.source_url) for row in self._candidates()}
-        for url in urls:
-            if _normalize_url(url) not in captured:
-                return url
-        return None
+    def has_capture(self, url: str) -> bool:
+        """Whether some media row already holds an image for ``url`` (normalised
+        the same way the exact-URL tier matches) — the dedup check a link-card
+        capture makes before storing, so a re-read of the same link never writes
+        a second row (#3113)."""
+        target = normalize_url(url)
+        return any(normalize_url(row.source_url) == target for row in self._candidates())
 
     def _cited_page_image(self, rows: list[_Candidate], urls: list[str]) -> int | None:
         """Tier 1: the newest image captured from a page the message links."""
-        linked = {_normalize_url(url) for url in urls}
-        matches = [row for row in rows if _normalize_url(row.source_url) in linked]
+        linked = {normalize_url(url) for url in urls}
+        matches = [row for row in rows if normalize_url(row.source_url) in linked]
         if not matches:
             return None
         best = max(matches, key=lambda row: row.created_at)

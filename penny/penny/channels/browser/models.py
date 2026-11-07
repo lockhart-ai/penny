@@ -80,8 +80,10 @@ class LinkThumbnail(BaseModel):
 
     ``image`` (#3115) is the card's own picture, already fetched by the
     extension — a size-capped ``data:image/jpeg;base64,…`` URI — since Penny's
-    server no longer downloads images itself. ``None`` on an older extension,
-    which never sent the field at all."""
+    server no longer downloads images itself (#3113). ``None`` on an older
+    extension, which never sent the field at all, or one whose fetch chose
+    not to send it; the channel stores nothing for such an entry rather than
+    fetching ``image_url`` itself."""
 
     url: str
     image_url: str
@@ -97,9 +99,9 @@ class BrowserToolResponse(BaseModel):
     extension — which the channel treats as the ARTICLE default, logged rather than
     silent (see ``BrowserChannel._handle_tool_response``).
 
-    ``link_thumbnails`` (#3068) pairs each link a front-page read cites with
-    that link's own card image; ``[]`` when the read captured none, and the
-    same when an older extension sent none at all."""
+    ``link_thumbnails`` (#3068, image data since #3113) pairs each link a
+    front-page read cites with that link's own card; ``[]`` when the read
+    captured none, and the same when an older extension sent none at all."""
 
     type: str
     request_id: str

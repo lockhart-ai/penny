@@ -14,8 +14,6 @@ per-call total ceiling.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import logging
 import re
@@ -27,6 +25,7 @@ import tldextract
 
 from penny.constants import PageReading, PennyConstants, ProgressEmoji
 from penny.database.memory import LogEntryInput
+from penny.image_utils import decode_data_uri
 from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
@@ -1205,7 +1204,7 @@ class BrowseTool(Tool):
         if self._db is None:
             return
         for page in pages:
-            decoded = self._decode_data_uri(page.image)
+            decoded = decode_data_uri(page.image)
             if decoded is None:
                 continue
             data, mime_type = decoded
@@ -1224,17 +1223,3 @@ class BrowseTool(Tool):
     def _media_metadata(page: BrowsePage) -> str:
         """Text embedded for egress matching — the page title plus its URL."""
         return "\n".join(part for part in (page.title, page.url) if part)
-
-    @staticmethod
-    def _decode_data_uri(image: str | None) -> tuple[bytes, str] | None:
-        """Decode a ``data:<mime>;base64,<data>`` URI into (bytes, mime_type)."""
-        if not image or not image.startswith("data:") or ";base64," not in image:
-            logger.warning("Browse image is not a base64 data URI; skipping media store")
-            return None
-        header, encoded = image.split(";base64,", 1)
-        mime_type = header[len("data:") :]
-        try:
-            return base64.b64decode(encoded), mime_type
-        except binascii.Error:
-            logger.warning("Browse image base64 failed to decode; skipping media store")
-            return None

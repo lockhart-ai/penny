@@ -94,6 +94,7 @@ from penny.channels.browser.models import (
     BrowserToolStarted,
     CursorRecord,
     DomainPermissionRecord,
+    LinkThumbnail,
     MemoryEntryRecord,
     MemoryRecord,
 )
@@ -101,7 +102,7 @@ from penny.channels.permission_manager import PermissionManager
 from penny.channels.turns import TurnRegistry
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
 from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
-from penny.database.link_thumbnail_store import LinkThumbnailEntry
+from penny.database.media_store import normalize_url
 from penny.database.memory import (
     EntryInput,
     MemoryAlreadyExistsError,
@@ -110,6 +111,9 @@ from penny.database.memory import (
 )
 from penny.database.message_store import CallStarted, ToolFinished, ToolStarted
 from penny.datetime_utils import user_timezone_name, utc_isoformat
+from penny.image_utils import decode_data_uri
+from penny.llm.embeddings import serialize_embedding
+from penny.llm.models import LlmError
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
     Schedule,
@@ -139,6 +143,13 @@ def _attachment_to_src(attachment: str) -> str | None:
     if len(attachment) > 100:
         return f"data:image/png;base64,{attachment}"
     return None
+
+
+def _link_card_metadata(thumb: LinkThumbnail) -> str:
+    """Text embedded for egress matching — the card title plus its own link,
+    the same shape ``tools/browse.py._media_metadata`` embeds for a browse
+    capture (#3113), so both land in the same comparable space."""
+    return "\n".join(part for part in (thumb.title, thumb.url) if part)
 
 
 @dataclass
@@ -543,7 +554,7 @@ class BrowserChannel(MessageChannel):
             return label
 
         if msg_type == BROWSER_MSG_TYPE_TOOL_RESPONSE:
-            self._handle_tool_response(data)
+            await self._handle_tool_response(data)
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_PERMISSION_DECISION:
@@ -728,8 +739,14 @@ class BrowserChannel(MessageChannel):
         """Sync the full domain permissions list to all connected addons."""
         await self._sync_domain_permissions()
 
-    def _handle_tool_response(self, data: dict) -> None:
-        """Resolve a pending tool request future."""
+    async def _handle_tool_response(self, data: dict) -> None:
+        """Resolve a pending tool request future.
+
+        Link-card media is stored BEFORE the future resolves (#3113): a reply
+        citing a card link can land in the same turn right after this read, so
+        the row must already exist for the exact-URL tier to find it — a
+        fire-and-forget background store would race that.
+        """
         try:
             response = BrowserToolResponse(**data)
         except Exception:
@@ -748,33 +765,61 @@ class BrowserChannel(MessageChannel):
         )
         if response.error:
             pending.future.set_exception(RuntimeError(response.error))
-        else:
-            self._record_link_thumbnails(response)
-            pending.future.set_result(
-                (response.result or "", response.image, self._reading(response))
-            )
-
-    def _record_link_thumbnails(self, response: BrowserToolResponse) -> None:
-        """Record the read's link-card thumbnails (#3072) — image addresses
-        only, never bytes; a cited link with no capture gets its card image
-        downloaded at egress.  Best-effort: a recording failure is logged and
-        the tool response still resolves, since the read itself succeeded."""
-        if not response.link_thumbnails:
             return
-        try:
-            self._db.link_thumbnails.record(
-                [
-                    LinkThumbnailEntry(url=thumb.url, image_url=thumb.image_url, title=thumb.title)
-                    for thumb in response.link_thumbnails
-                ]
+        await self._store_link_card_media(response)
+        pending.future.set_result((response.result or "", response.image, self._reading(response)))
+
+    async def _store_link_card_media(self, response: BrowserToolResponse) -> None:
+        """Store each link card's own image data as a media row keyed to its
+        link (#3113) — no egress fetch left to do it: the browser already has
+        the picture loaded, so it rides the read instead.  An entry with no
+        image (an older extension, or one the extension chose not to send)
+        stores nothing; an entry whose link is already captured
+        (``MediaStore.has_capture``) is skipped so a re-read of the same card
+        never writes a duplicate row.  Best-effort throughout: a card whose
+        image fails to decode is logged and skipped, never failing the read.
+        """
+        pending_entries = [
+            (thumb, decoded)
+            for thumb in response.link_thumbnails
+            if thumb.image is not None
+            and (decoded := decode_data_uri(thumb.image)) is not None
+            and not self._db.media.has_capture(thumb.url)
+        ]
+        if not pending_entries:
+            return
+        vectors = await self._embed_link_card_metadata([thumb for thumb, _ in pending_entries])
+        if vectors is None:
+            return
+        for (thumb, (data, mime_type)), vector in zip(pending_entries, vectors, strict=True):
+            self._db.media.put(
+                data=data,
+                mime_type=mime_type,
+                source_url=normalize_url(thumb.url),
+                title=thumb.title,
+                embedding=serialize_embedding(vector) if vector else None,
             )
-        except Exception:
+        logger.info("Stored %d link-card image(s) at read time", len(pending_entries))
+
+    async def _embed_link_card_metadata(
+        self, entries: list[LinkThumbnail]
+    ) -> list[list[float]] | None:
+        """Embed every entry's title+url metadata in ONE batched call (#3113)
+        — one network round trip for the whole read's cards, never one per
+        card.  ``None`` on no embedding client or a failed batch call (logged)
+        — the caller stores nothing for this read rather than half its cards
+        with no vector to rank by."""
+        if self._embedding_model_client is None:
             logger.warning(
-                "Recording %d link thumbnails from request %s failed",
-                len(response.link_thumbnails),
-                response.request_id,
-                exc_info=True,
+                "No embedding client configured — skipping %d link-card image(s)", len(entries)
             )
+            return None
+        texts = [_link_card_metadata(thumb) for thumb in entries]
+        try:
+            return await self._embedding_model_client.embed(texts)
+        except LlmError:
+            logger.warning("Embedding %d link-card image(s) failed", len(entries), exc_info=True)
+            return None
 
     @staticmethod
     def _reading(response: BrowserToolResponse) -> PageReading:

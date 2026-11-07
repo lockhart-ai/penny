@@ -82,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 142
+        assert count == 143
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +124,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 142
+        assert count1 == 143
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +162,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 141 migrations
-        assert count == 141
+        # 0001 is skipped; the rest run = 142 migrations
+        assert count == 142
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +189,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 142  # all migrations applied
+        assert count == 143  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -407,6 +407,48 @@ class TestMigrate:
             "SELECT message_id, position, data_uri FROM message_attachment"
         ).fetchall()
         assert rows == [(1, 0, "data:image/jpeg;base64,AAAA")]
+        conn.close()
+
+    def test_0143_drops_link_thumbnail(self, tmp_path):
+        """Migration 0143 drops the ``link_thumbnail`` table (#3113) — nothing
+        reads it any more now the egress fetch it fed is retired. Guarded: a
+        DB that carries the table (an upgraded prod DB, simulated here by
+        running 0141 first) loses it; a fresh DB with no such table is a
+        no-op either way."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.commit()
+        conn.close()
+
+        migrations_dir = Path(__file__).parents[3] / "penny" / "database" / "migrations"
+
+        def _load(name: str):
+            spec = importlib.util.spec_from_file_location(name, migrations_dir / f"{name}.py")
+            assert spec is not None
+            mod = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            return mod
+
+        m0141 = _load("0141_add_link_thumbnail")
+        m0143 = _load("0143_drop_link_thumbnail")
+
+        conn = sqlite3.connect(db_path)
+        m0141.up(conn)
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        assert "link_thumbnail" in tables
+
+        m0143.up(conn)
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        assert "link_thumbnail" not in tables
+        # Idempotent: a second pass over a DB with no table changes nothing.
+        m0143.up(conn)
         conn.close()
 
     def test_0138_adds_send_queue_kind(self, tmp_path):

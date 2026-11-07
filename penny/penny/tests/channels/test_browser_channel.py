@@ -20,10 +20,8 @@ from penny.channels.turns import TurnRegistry
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.constants import ChannelType, PageReading, PennyConstants, PermissionResolution
 from penny.database import Database
+from penny.database.media_store import normalize_url
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.models import (
-    LinkThumbnail as LinkThumbnailRow,
-)
 from penny.database.models import (
     Media,
     PromptLog,
@@ -52,11 +50,6 @@ def _data_uri(raw: bytes, mime: str = "image/jpeg") -> str:
 def _all_media(db: Database) -> list[Media]:
     with Session(db.engine) as session:
         return list(session.exec(select(Media)).all())
-
-
-def _all_link_thumbnails(db: Database) -> list[LinkThumbnailRow]:
-    with Session(db.engine) as session:
-        return list(session.exec(select(LinkThumbnailRow)).all())
 
 
 class TestBrowserChannelExtract:
@@ -1098,7 +1091,9 @@ class TestBrowserRegister:
         message through ``_handle_tool_response`` into ``send_tool_request``'s
         result — never guessed by the server from the text's shape.  The same
         message's ``link_thumbnails`` (#3068) parses into typed entries alongside
-        it, and an older extension's missing key parses as []."""
+        it; an address-only entry (no ``image``, #3113) stores nothing — there
+        is no egress fetch left to feed it, and the old ``link_thumbnail``
+        table that fed one is retired."""
         channel = BrowserChannel(
             host="localhost",
             port=9999,
@@ -1139,11 +1134,6 @@ class TestBrowserRegister:
                                 "image_url": "https://example.com/story.jpg",
                                 "title": "The story",
                             },
-                            {
-                                "url": "https://example.com/story,",
-                                "image_url": "https://example.com/story-2.jpg",
-                                "title": "The story, retold",
-                            },
                         ],
                     }
                 ),
@@ -1154,17 +1144,8 @@ class TestBrowserRegister:
         result = await channel.send_tool_request("browse_url", {"url": "https://example.com"})
         assert result == ("page content here", None, PageReading.LINK_LIST)
 
-        # #3072: the read's link-card thumbnails are recorded at the response
-        # seam — addresses only, upserted, each URL normalised the way the
-        # link-handle table normalises a link (the trailing prose comma the
-        # index line carried is gone), so the same link seen twice is one row
-        # whose newest card wins.
-        rows = _all_link_thumbnails(db)
-        assert len(rows) == 1
-        assert rows[0].url == "https://example.com/story"
-        assert rows[0].image_url == "https://example.com/story-2.jpg"
-        assert rows[0].title == "The story, retold"
-        assert rows[0].seen_at is not None
+        # #3113: an address-only card stores no media row.
+        assert _all_media(db) == []
 
         # #3068: the same message shape carrying ``link_thumbnails`` parses
         # into typed entries (the read above tolerates it on the real path);
@@ -1208,6 +1189,105 @@ class TestBrowserRegister:
         assert parsed.link_thumbnails[1].image is None
         bare = BrowserToolResponse(type="tool_response", request_id="resp-2", result="page")
         assert bare.link_thumbnails == []
+
+    @pytest.mark.asyncio
+    async def test_tool_response_link_card_image_stores_media_before_future_resolves(self, db):
+        """A browse response carrying ``link_thumbnails[].image`` stores a
+        media row keyed to each link, embedded in ONE batched call (#3113) —
+        and it happens BEFORE ``send_tool_request``'s future resolves, so a
+        reply citing the card in the same turn finds the row already there
+        (no fire-and-forget background store to race it). A card whose image
+        fails to decode is logged and skipped without failing the read, and a
+        re-read of the same link stores no second row."""
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
+        channel._embedding_model_client = cast(Any, MockLlmClient())
+        ws = _MockWs()
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-macbook"}),
+            None,
+        )
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "capabilities_update", "tool_use_enabled": True}),
+            "firefox-macbook",
+        )
+        db.domain_permissions.set_permission("example.com", "allowed")
+
+        async def respond(thumbnails: list[dict]) -> tuple[str, str | None, PageReading]:
+            async def fake_tool_response() -> None:
+                await wait_until(
+                    lambda: any(not p.future.done() for p in channel._pending_requests.values()),
+                    timeout=2.0,
+                )
+                request_id = next(iter(channel._pending_requests))
+                await channel._process_raw_message(
+                    ws,  # ty: ignore[invalid-argument-type]
+                    json.dumps(
+                        {
+                            "type": "tool_response",
+                            "request_id": request_id,
+                            "result": "page content here",
+                            "reading": "link_list",
+                            "link_thumbnails": thumbnails,
+                        }
+                    ),
+                    "firefox-macbook",
+                )
+
+            asyncio.create_task(fake_tool_response())
+            return await channel.send_tool_request("browse_url", {"url": "https://example.com"})
+
+        await respond(
+            [
+                {
+                    "url": "https://example.com/story",
+                    "image_url": "https://example.com/story.jpg",
+                    "title": "The story",
+                    "image": _data_uri(b"card-image"),
+                },
+                {
+                    "url": "https://example.com/broken",
+                    "image_url": "https://example.com/broken.jpg",
+                    "title": "Broken card",
+                    "image": "not-a-data-uri",
+                },
+            ]
+        )
+
+        # Stored by the time the tool call returns — no sleep, no wait_until:
+        # a fire-and-forget store would only sometimes have finished here.
+        rows = _all_media(db)
+        assert len(rows) == 1
+        assert rows[0].source_url == normalize_url("https://example.com/story")
+        assert rows[0].title == "The story"
+        assert rows[0].data == b"card-image"
+        assert rows[0].embedding is not None
+
+        # ONE batched embed call for the turn's cards, not one per card.
+        mock_client = cast(MockLlmClient, channel._embedding_model_client)
+        assert len(mock_client.embed_requests) == 1
+        assert mock_client.embed_requests[0]["input"] == ["The story\nhttps://example.com/story"]
+
+        # A re-read of the same link stores no second row and embeds nothing.
+        await respond(
+            [
+                {
+                    "url": "https://example.com/story",
+                    "image_url": "https://example.com/story.jpg",
+                    "title": "The story",
+                    "image": _data_uri(b"card-image"),
+                }
+            ]
+        )
+        assert len(_all_media(db)) == 1
+        assert len(mock_client.embed_requests) == 1
 
     @pytest.mark.asyncio
     async def test_tool_response_missing_reading_defaults_to_article_and_logs(self, db, caplog):

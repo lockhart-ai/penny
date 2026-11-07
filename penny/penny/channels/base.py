@@ -5,16 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import mimetypes
 import re
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urljoin
 
-import httpx
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -60,116 +57,6 @@ def strip_image_tokens(text: str) -> str:
 # URLs Penny cites in an outgoing message — used to attach the cited page's own
 # captured image at egress (see ``MediaStore.select_image``).
 _MESSAGE_URL_RE = re.compile(r"https?://[^\s)>\]]+")
-
-# A cited page with no captured image gets ONE bounded preview fetch at send
-# time (#3064): the whole fetch+download is cancelled past this, and any failure
-# falls through to the nearest-image fallback unchanged — a send never waits
-# beyond it.
-_CITED_PAGE_FETCH_TIMEOUT = 4.0
-
-_OG_IMAGE_PROPERTY = "og:image"
-_TWITTER_IMAGE_NAME = "twitter:image"
-_OG_TITLE_PROPERTY = "og:title"
-_DEFAULT_IMAGE_MIME = "image/jpeg"
-
-_META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
-_HTML_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-
-
-class CitedPagePreview(BaseModel):
-    """The preview image a cited page's HTML offers — its ``og:image`` (or
-    ``twitter:image``) absolutized against the page URL, plus the page's title."""
-
-    image_url: str
-    title: str | None = None
-
-
-class CitedPageImage(BaseModel):
-    """A downloaded cited-page preview image, ready to store as a media row."""
-
-    data: bytes
-    mime_type: str
-    title: str | None
-
-
-def _meta_content(html: str, key: str) -> str | None:
-    """The ``content`` of the first ``<meta>`` tag naming ``key`` (as its
-    ``property`` or ``name``), or None when the page carries no such tag."""
-    for tag in _META_TAG_RE.findall(html):
-        named = re.search(rf"(?:property|name)\s*=\s*[\"']{key}[\"']", tag, re.IGNORECASE)
-        content = re.search(r"""content\s*=\s*["']([^"']*)["']""", tag, re.IGNORECASE)
-        if named and content and content.group(1).strip():
-            return content.group(1).strip()
-    return None
-
-
-def _html_title(html: str) -> str | None:
-    """The page's ``<title>`` text, or None when it has none."""
-    match = _HTML_TITLE_RE.search(html)
-    if not match:
-        return None
-    return match.group(1).strip() or None
-
-
-def _cited_page_http_client() -> httpx.AsyncClient:
-    """The client a cited-page preview fetch rides — the seam tests swap for a
-    ``httpx.MockTransport`` (#3064)."""
-    return httpx.AsyncClient(follow_redirects=True, timeout=_CITED_PAGE_FETCH_TIMEOUT)
-
-
-def _parse_cited_page_preview(html: str, page_url: str) -> CitedPagePreview | None:
-    """A cited page's own preview image: ``og:image`` first, then
-    ``twitter:image``, absolutized against the page's own URL."""
-    raw = _meta_content(html, _OG_IMAGE_PROPERTY) or _meta_content(html, _TWITTER_IMAGE_NAME)
-    if not raw:
-        return None
-    return CitedPagePreview(
-        image_url=urljoin(page_url, raw),
-        title=_meta_content(html, _OG_TITLE_PROPERTY) or _html_title(html),
-    )
-
-
-def _image_mime(response: httpx.Response, image_url: str) -> str:
-    """The downloaded image's mime type: the response's content-type when it
-    names an image, else the image URL's own suffix."""
-    mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
-    if mime.startswith("image/"):
-        return mime
-    guessed = mimetypes.guess_type(image_url)[0]
-    return guessed if guessed and guessed.startswith("image/") else _DEFAULT_IMAGE_MIME
-
-
-async def _fetch_cited_page_image(page_url: str) -> CitedPageImage | None:
-    """Fetch a cited page's preview image: GET the page HTML, read its
-    ``og:image`` (then ``twitter:image``), download the image bytes.
-
-    State-free and module-level so it runs under the caller's one bounded
-    timeout.  Raises on any fetch failure — the caller catches everything.
-    """
-    async with _cited_page_http_client() as client:
-        page = await client.get(page_url)
-        page.raise_for_status()
-        preview = _parse_cited_page_preview(page.text, page_url)
-        if preview is None:
-            return None
-        image = await client.get(preview.image_url)
-        image.raise_for_status()
-        return CitedPageImage(
-            data=image.content, mime_type=_image_mime(image, preview.image_url), title=preview.title
-        )
-
-
-async def _fetch_image_bytes(image_url: str) -> CitedPageImage:
-    """Download one image address and name its mime type — the fetch a recorded
-    link-card thumbnail gets at egress (#3072), riding the same client seam and
-    bounded timeout the cited-page preview fetch does.  Raises on any fetch
-    failure — the caller catches everything."""
-    async with _cited_page_http_client() as client:
-        image = await client.get(image_url)
-        image.raise_for_status()
-        return CitedPageImage(
-            data=image.content, mime_type=_image_mime(image, image_url), title=None
-        )
 
 
 class PageContext(BaseModel):
@@ -578,11 +465,6 @@ class MessageChannel(ABC):
         # embedding is of the model's own text — the content stored on the row —
         # so recall and the startup backfill rank on the same words.
         embedding = await self._embed_message(content)
-        # A cited page with no captured image gets one bounded preview fetch
-        # before the ladder runs (#3064) — skipped outright when the caller
-        # supplies attachments or generated media ids (they win outright).
-        if not attachments and not media_ids:
-            await self._capture_cited_page_image(content)
         attachments = self._resolve_media(attachments, content, embedding, media_ids)
         message_id, external_id = await self._log_and_send(
             recipient,
@@ -676,12 +558,13 @@ class MessageChannel(ABC):
            attached deterministically: exactly those images, fetched by id, land
            on the reply that describes them.  The fuzzy ladder does not also run
            (no double attach).
-        3. Otherwise the nearest-image ladder: ``_capture_cited_page_image`` has
-           already fetched the cited page's own preview image when no capture
-           existed (#3064), so ``select_image`` attaches a cited page's captured
-           image (exact URL) and otherwise falls back to a jittered
-           embedding-nearest pick — every reply carries an image whenever one
-           can be matched.
+        3. Otherwise the nearest-image ladder: ``select_image`` attaches a
+           cited page's own already-captured image (exact URL — from a browse
+           capture, or from a link card's own image data stored at read time,
+           #3113) and otherwise falls back to a jittered embedding-nearest
+           pick — every reply carries an image whenever one can be matched.
+           The server makes no web request of its own at send time; every
+           image lands in the store at browse/read time, never fetched here.
         """
         if attachments:
             return attachments
@@ -696,95 +579,9 @@ class MessageChannel(ABC):
         return [self._encode_media_row(media)]
 
     def _cited_urls(self, text: str) -> list[str]:
-        """The URLs the reply cites, prose trailing punctuation stripped (#3064) —
-        it must not ride the URL into egress matching or a preview fetch."""
+        """The URLs the reply cites, prose trailing punctuation stripped —
+        it must not ride the URL into egress matching."""
         return [url.rstrip(URL_TRAILING_PUNCTUATION) for url in _MESSAGE_URL_RE.findall(text)]
-
-    async def _capture_cited_page_image(self, text: str) -> None:
-        """Fetch and store the preview image of a cited page that has none (#3064).
-
-        She cites links she never opened — an article straight off an index
-        page's link list — so no image was ever captured for the URL, and the
-        exact-URL tier never fired.  Here, the FIRST cited URL with no capture
-        gets one: a link card recorded for it at browse time (#3072) has its
-        own card image downloaded; when no card is recorded (or that download
-        fails), a bounded fetch of the page's HTML and its ``og:image`` (then
-        ``twitter:image``) follows, stored like a browse capture (title,
-        URL-keyed, metadata embedded) — so the exact-URL tier attaches the
-        page's own image.  Each fetch is cancelled past
-        ``_CITED_PAGE_FETCH_TIMEOUT``; any failure is logged and the ordinary
-        nearest-image fallback runs unchanged.  The fetch runs outside any DB
-        transaction — ``media.put`` opens its own session after the download.
-        """
-        policy = self._image_selection_policy()
-        if not policy.automatic or not policy.cited_page:
-            return
-        url = self._db.media.uncaptured_cited_url(self._cited_urls(text))
-        if url is None:
-            return
-        if await self._capture_link_thumbnail(url):
-            return
-        try:
-            image = await asyncio.wait_for(_fetch_cited_page_image(url), _CITED_PAGE_FETCH_TIMEOUT)
-        except Exception:
-            logger.warning(
-                "Cited-page preview fetch failed for %s — falling back to nearest image", url
-            )
-            return
-        if image is None:
-            logger.debug("Cited page %s offers no preview image — nearest-image fallback", url)
-            return
-        # Embedded like a browse capture (tools/browse.py): the page title plus
-        # its URL, one text, so egress matching ranks this row the same way.
-        metadata = "\n".join(part for part in (image.title, url) if part)
-        vector = await self._embed_message(metadata)
-        self._db.media.put(
-            data=image.data,
-            mime_type=image.mime_type,
-            source_url=url,
-            title=image.title,
-            embedding=serialize_embedding(vector) if vector else None,
-        )
-        logger.info("Stored cited-page preview image for %s", url)
-
-    async def _capture_link_thumbnail(self, url: str) -> bool:
-        """Download a link card's recorded thumbnail for a cited URL with no
-        capture (#3072) — the card image the extension saw when the link index
-        was read, which is the page's real picture where the page's own
-        ``og:image`` is the front page's.  Stores it as a media row keyed to
-        the cited URL (title = the card label, embedded like a browse capture)
-        and returns True.  ``False`` — no card recorded, or the download
-        failed (logged) — hands the og:image fetch its turn; the send never
-        waits past the one bounded timeout per fetch.
-        """
-        thumb = self._db.link_thumbnails.lookup(url)
-        if thumb is None:
-            return False
-        try:
-            image = await asyncio.wait_for(
-                _fetch_image_bytes(thumb.image_url), _CITED_PAGE_FETCH_TIMEOUT
-            )
-        except Exception:
-            logger.warning(
-                "Link-card thumbnail download failed for %s (%s) — falling through to the "
-                "page preview fetch",
-                url,
-                thumb.image_url,
-            )
-            return False
-        # Embedded like a browse capture (tools/browse.py): the title plus the
-        # cited URL, one text, so egress matching ranks this row the same way.
-        metadata = "\n".join(part for part in (thumb.title, url) if part)
-        vector = await self._embed_message(metadata)
-        self._db.media.put(
-            data=image.data,
-            mime_type=image.mime_type,
-            source_url=url,
-            title=thumb.title,
-            embedding=serialize_embedding(vector) if vector else None,
-        )
-        logger.info("Stored link-card thumbnail for %s", url)
-        return True
 
     def _image_selection_policy(self) -> ImageSelectionPolicy:
         """Channels can restrict automatic images without changing explicit delivery."""
