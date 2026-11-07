@@ -32,7 +32,7 @@ if [ -z "$UDID" ]; then
 fi
 
 echo "client-ui-tests: using simulator $UDID"
-xcrun simctl shutdown all >/dev/null 2>&1 || true
+xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
 xcrun simctl erase "$UDID"
 xcrun simctl boot "$UDID"
 xcrun simctl bootstatus "$UDID" -b
