@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -74,12 +75,19 @@ class _FakeCycleGate:
 
 
 class _FakeModelClient:
-    """Stands in for ``LlmClient`` in a ``ChatPrewarmTask`` test — only the
-    two members the task actually reads/calls."""
+    """Stands in for ``LlmClient`` in a ``ChatPrewarmTask`` test — the three
+    members the task actually reads/calls. ``render_prewarm_prompt`` renders
+    for real (through the same ``_rendered`` helper the end-to-end tests
+    above use), never a stub, so a test exercising the dedup key sees
+    exactly what the real ``LlmClient.render_prewarm_prompt`` (#3133) would
+    produce for the same messages/tools."""
 
     def __init__(self, *, raw_template_enabled: bool = True) -> None:
         self.raw_template_enabled = raw_template_enabled
         self.prewarm_requests: list[dict] = []
+
+    def render_prewarm_prompt(self, messages: list[LlmMessage], tools: list[dict] | None) -> str:
+        return _rendered(messages, tools)
 
     async def prewarm(self, messages: list[LlmMessage], tools: list[dict] | None) -> UsageTiming:
         self.prewarm_requests.append({"messages": messages, "tools": tools})
@@ -296,6 +304,83 @@ async def test_no_second_warm_for_an_unchanged_key(
 
         assert first is True
         assert second is False
+        assert len(model_client.prewarm_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_second_warm_across_idle_ticks_when_history_carries_a_past_tool_call(
+    make_config, running_penny, test_user_info, mock_llm
+) -> None:
+    """#3133: a past run that called a tool mints a FRESH id for that call
+    every time history is rebuilt (``new_history_replay_call_id``, #2915) —
+    bytes that never reach the RENDERED prompt (the raw template only
+    matches an id to pair a call with its result, never prints the id
+    itself) but DO land in ``LlmMessage.to_log_dict()``. Hashing that
+    pre-wire shape — the OLD ``_prefix_hash`` — made the dedup key differ on
+    every tick even though the actual prefix never changed. Reproduces the
+    prod symptom (hash different every ~65s, prompt/cached tokens
+    identical): three ticks, no state change between them, the clock
+    advanced a real idle gap each time — must still send only once."""
+    clock = _FixedClock(datetime(2026, 1, 1, 9, 0))
+    config = make_config(clock=clock)
+    async with running_penny(config) as penny:
+        db = penny.db
+        start = clock.now().replace(tzinfo=None)
+        ask_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            TEST_SENDER,
+            "check the weather and save it",
+            timestamp=start - timedelta(minutes=5),
+        )
+        run_id = "warm-test-run-1"
+        first_messages = [{"role": "user", "content": "check the weather and save it"}]
+        first_response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "browse",
+                                    "arguments": json.dumps({"url": "https://example.com"}),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        db.messages.log_prompt(
+            model="m", messages=first_messages, response=first_response, run_id=run_id
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "Checked and saved — sunny, 18C!",
+            parent_id=ask_id,
+            run_id=run_id,
+            timestamp=start - timedelta(minutes=4),
+            recipient=TEST_SENDER,
+        )
+
+        model_client = _FakeModelClient()
+        task = ChatPrewarmTask(
+            chat_agent=penny.chat_agent,
+            model_client=model_client,
+            cycle_gate=_FakeCycleGate(running=False),
+            runtime=penny.config.runtime,
+        )
+
+        assert await task.execute() is True
+        clock._when = clock._when + timedelta(seconds=30)
+        assert await task.execute() is False
+        clock._when = clock._when + timedelta(seconds=30)
+        assert await task.execute() is False
+
         assert len(model_client.prewarm_requests) == 1
 
 
