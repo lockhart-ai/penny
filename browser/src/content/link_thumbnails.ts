@@ -167,8 +167,10 @@ export function largestSrcsetCandidate(value: string): string | null {
 /** A srcset's candidates, parsed to the HTML grammar rather than split on
  *  every comma: a candidate's URL runs up to the next whitespace — and may
  *  itself hold commas, the way some CDNs encode an image id in the path —
- *  while candidates are separated by a comma after the descriptor, and a
- *  trailing comma left on a descriptor-less URL is stripped. */
+ *  while candidates are separated by a comma after the descriptor.  When the
+ *  URL itself ends with one or more commas, those commas end the candidate
+ *  right there — stripped, with no descriptor to collect — rather than
+ *  being absorbed into the next candidate's descriptor text. */
 function srcsetCandidates(value: string): { url: string; descriptors: string[] }[] {
   const candidates: { url: string; descriptors: string[] }[] = [];
   let i = 0;
@@ -177,12 +179,18 @@ function srcsetCandidates(value: string): { url: string; descriptors: string[] }
     if (i >= value.length) break;
     const urlStart = i;
     while (i < value.length && !/\s/.test(value[i]!)) i++;
-    const url = value.slice(urlStart, i).replace(/,+$/, "");
+    const rawUrl = value.slice(urlStart, i);
+    const url = rawUrl.replace(/,+$/, "");
+    if (url === "") continue;
+    if (rawUrl !== url) {
+      candidates.push({ url, descriptors: [] });
+      continue;
+    }
     while (i < value.length && /\s/.test(value[i]!)) i++;
     const descriptorsStart = i;
     while (i < value.length && value[i] !== ",") i++;
     const descriptors = value.slice(descriptorsStart, i).trim().split(/\s+/).filter(Boolean);
-    if (url !== "") candidates.push({ url, descriptors });
+    candidates.push({ url, descriptors });
   }
   return candidates;
 }

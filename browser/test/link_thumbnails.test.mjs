@@ -152,6 +152,18 @@ test("largestSrcsetCandidate picks the largest candidate even when a URL holds c
   );
 });
 
+test("largestSrcsetCandidate ends a bare candidate at its trailing comma, not at the next candidate's descriptor", () => {
+  assert.equal(largestSrcsetCandidate("a.jpg, b.jpg 2x"), "b.jpg");
+});
+
+test("largestSrcsetCandidate parses a candidate with no space after its comma the same way", () => {
+  assert.equal(largestSrcsetCandidate("a.jpg 1x,b.jpg 2x"), "b.jpg");
+});
+
+test("largestSrcsetCandidate reads two bare, comma-joined candidates as one URL — a URL runs to whitespace, per the grammar", () => {
+  assert.equal(largestSrcsetCandidate("a.jpg,b.jpg"), "a.jpg,b.jpg");
+});
+
 test("an empty page yields no entries", () => {
   const doc = documentFrom("<!doctype html><html><body></body></html>", `${SITE}/`);
   assert.deepEqual(captureLinkThumbnails(doc), []);
