@@ -19,6 +19,13 @@
     * a card whose picture only a meta tag names
     * a second card linking the same address as the first — the first card's
       picture wins
+    * a srcset whose candidate URLs hold commas in their own path — the
+      largest candidate, picked whole, comma and all
+    * the same comma-in-path shape on a lazy card's data-srcset
+    * a card whose only image is a favicon proxy — dropped, not a picture
+    * a card whose only image is a legacy .ico — dropped the same way
+    * a card whose first image is a tiny byline avatar and whose second is
+      its own photo — the photo wins
 -->
 <html lang="en">
   <head>
@@ -123,6 +130,53 @@
         <a href="/stories/first-frost-sets-in">
           <img src="https://gazette.example/imgs/frost-alt.jpg" alt="">
           <h3>First frost sets in across the valley</h3>
+        </a>
+      </article>
+
+      <!-- 12. a srcset whose URLs hold commas in their own path -->
+      <article class="card">
+        <a href="/stories/harbor-crane-replaced">
+          <img
+            src="https://gazette.example/imgs/crane-small.jpg"
+            srcset="https://gazette.example/imgs/1.100,200/crane-small.jpg 320w, https://gazette.example/imgs/1.100,200/crane-large.jpg 1280w"
+            alt="">
+          <h2>Harbor crane replaced ahead of schedule</h2>
+        </a>
+      </article>
+
+      <!-- 13. the same comma-in-path shape, lazy via data-srcset -->
+      <article class="card">
+        <a href="/stories/ferry-schedule-extended">
+          <img
+            src="https://gazette.example/static/spacer.gif"
+            data-srcset="https://gazette.example/imgs/2.50,60/ferry-480.jpg 480w, https://gazette.example/imgs/2.50,60/ferry-960.jpg 960w"
+            alt="">
+          <h2>Ferry schedule extended into the new year</h2>
+        </a>
+      </article>
+
+      <!-- 14. a favicon proxy is the card's only image — dropped -->
+      <article class="card">
+        <a href="/stories/search-result-favicon-card">
+          <img src="https://search.example/proxy/favicons?c=abc" alt="">
+          <h3>A search-style card whose only image is a favicon</h3>
+        </a>
+      </article>
+
+      <!-- 15. a legacy .ico is the card's only image — dropped -->
+      <article class="card">
+        <a href="/stories/legacy-icon-only-card">
+          <img src="https://gazette.example/icons/legacy.ico" alt="">
+          <h3>A card whose only image is a legacy .ico</h3>
+        </a>
+      </article>
+
+      <!-- 16. a byline avatar ahead of the card's own photo — the photo wins -->
+      <article class="card">
+        <a href="/stories/author-byline-photo-story">
+          <img src="https://gazette.example/avatars/writer.png" width="16" height="16" alt="">
+          <img src="https://gazette.example/imgs/byline-story.jpg" alt="">
+          <h3>A story whose byline avatar sits ahead of its own photo</h3>
         </a>
       </article>
     </main>
