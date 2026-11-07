@@ -76,11 +76,17 @@ class BrowserIncoming(BaseModel):
 class LinkThumbnail(BaseModel):
     """One link card's own thumbnail, captured by the extension at read time
     (#3068): the link's address exactly as the link index writes it, the card's
-    image (absolute, never a data URI), and the label the index line carries."""
+    image (absolute, never a data URI), and the label the index line carries.
+
+    ``image`` (#3115) is the card's own picture, already fetched by the
+    extension — a size-capped ``data:image/jpeg;base64,…`` URI — since Penny's
+    server no longer downloads images itself. ``None`` on an older extension,
+    which never sent the field at all."""
 
     url: str
     image_url: str
     title: str
+    image: str | None = None
 
 
 class BrowserToolResponse(BaseModel):
