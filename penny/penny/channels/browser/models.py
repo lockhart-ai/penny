@@ -35,6 +35,7 @@ BROWSER_MSG_TYPE_COLLECTION_TRIGGER = "collection_trigger"
 BROWSER_MSG_TYPE_CURSOR_SET = "cursor_set"
 BROWSER_MSG_TYPE_CURSOR_CLEAR = "cursor_clear"
 BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST = "run_detail_request"
+BROWSER_MSG_TYPE_HISTORY_REQUEST = "history_request"
 
 # Outgoing message types (server → browser)
 BROWSER_RESP_TYPE_MESSAGE = "message"
@@ -63,6 +64,7 @@ BROWSER_RESP_TYPE_MEMORY_SAVE_ERROR = "memory_save_error"
 BROWSER_RESP_TYPE_CALL_STARTED = "call_started"
 BROWSER_RESP_TYPE_TOOL_STARTED = "tool_started"
 BROWSER_RESP_TYPE_TOOL_FINISHED = "tool_finished"
+BROWSER_RESP_TYPE_HISTORY = "history_response"
 
 # Sections of a memory's detail view that paginate independently.
 MEMORY_SECTION_ENTRIES = "entries"
@@ -562,3 +564,44 @@ class BrowserRunDetailResponse(BaseModel):
     request_id: str | None = None
     run_id: str
     run: dict | None = None
+
+
+class BrowserHistoryRequest(BaseModel):
+    """Request one newest-first page of the shared conversation history
+    (#3139) — analogous to iOS's own history read, cross-device by default
+    (there is no channel filter: the sidebar always reads every device).
+    ``before`` is an opaque cursor echoed back on a prior response's
+    ``next_cursor``; omitted on the first page."""
+
+    type: str = BROWSER_MSG_TYPE_HISTORY_REQUEST
+    limit: int = Field(default=50, ge=1, le=200)
+    before: str | None = None
+
+
+class BrowserHistoryRecord(BaseModel):
+    """One history row as the sidebar renders it (#3139).
+
+    An OUTGOING row's ``content`` is rendered through the same send-time
+    pipeline a live ``message`` push gets (markdown → HTML, image tokens
+    stripped) — see ``BrowserChannel._history_record``. An INCOMING row's
+    ``content`` is the user's own words, untouched, matching the live
+    ``incoming_message`` push (#3137). There is no attachment field: an
+    inline image on a past send doesn't reappear on this surface — a known
+    scope limit, not a silent drop (#3139's PR body says so explicitly)."""
+
+    message_id: int
+    created_at: str
+    content: str
+    direction: str
+    channel_type: str | None = None
+    device_label: str | None = None
+
+
+class BrowserHistoryResponse(BaseModel):
+    """One newest-first page of history (#3139), analogous to iOS's
+    ``messages``/``mode="history"`` response."""
+
+    type: str = BROWSER_RESP_TYPE_HISTORY
+    messages: list[BrowserHistoryRecord]
+    next_cursor: str | None = None
+    has_more: bool = False

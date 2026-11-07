@@ -348,8 +348,9 @@ class MessageStore:
     (``get_by_id``, ``get_by_ids``, ``find_by_external_id``,
     ``find_outgoing_by_content``) · thread context (``get_thread_history``) ·
     conversation queries (``get_conversation_leaves``, ``get_user_messages``,
-    ``get_messages_since``, the iOS history page via ``ios_history_page``/
-    ``ios_history_count``, ``get_unprocessed``, ``get_user_reactions``,
+    ``get_messages_since``, the shared history page (iOS and the browser
+    sidebar both read it) via ``history_page``/``ios_history_count``,
+    ``get_unprocessed``, ``get_user_reactions``,
     ``mark_processed``) · aggregate + run queries (``count``/
     ``count_active_threads``, ``set_run_outcome``, the ``recent_*`` activity
     reads, ``run_call_groups``, ``get_prompt_log_runs``, ``get_run``,
@@ -1579,14 +1580,17 @@ class MessageStore:
             all_messages.sort(key=_in_send_order)
             return all_messages[-limit:]
 
-    def ios_history_page(
+    def history_page(
         self,
         *,
         channel_types: list[str] | None,
         before: tuple[datetime, int] | None,
         limit: int,
     ) -> tuple[list[tuple[MessageLog, Device | None, IosOutboxItem | None]], bool]:
-        """Return one newest-first boundary page for the iOS history surface.
+        """Return one newest-first boundary page of the shared conversation
+        history — read by both the iOS history surface and the browser
+        sidebar's history read (#3139); ``channel_types=None`` means every
+        device, which is what the browser sidebar always asks for.
 
         Device identifiers are used as a compatibility fallback because older
         message-log rows may not have a populated ``device_id``.

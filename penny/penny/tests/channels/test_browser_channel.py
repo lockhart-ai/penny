@@ -3775,3 +3775,154 @@ class TestBrowserRunDetailHandlers:
         assert resp["type"] == "run_detail_response"
         assert resp["run_id"] == "no-such-run"
         assert resp["run"] is None
+
+
+class TestBrowserHistoryRequest:
+    """history_request handler (#3139) — the browser sidebar's own
+    server-backed read of the shared conversation history, analogous to
+    iOS's own history read but always cross-device."""
+
+    def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
+        db = migrated_db(str(tmp_path / "test.db"))
+        channel = BrowserChannel(
+            host="localhost",
+            port=9999,
+            message_agent=MagicMock(),
+            db=db,
+            turn_registry=TurnRegistry(),
+        )
+        return channel, db
+
+    @pytest.mark.asyncio
+    async def test_history_request_returns_cross_device_page_with_device_attribution(
+        self, tmp_path
+    ):
+        """A page carries Signal and iOS messages side by side, newest page
+        first — the sidebar's own history read is cross-device by default,
+        unlike iOS's filterable one — and each record is captioned with its
+        own device."""
+        channel, db = self._channel(tmp_path)
+        signal_device = db.devices.register(ChannelType.SIGNAL, "+15551234567", "Signal")
+        ios_device = db.devices.register(ChannelType.IOS, "ios-keychain-id", "iPhone")
+
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "+15551234567",
+            "signal question",
+            device_id=signal_device.id,
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "signal reply",
+            recipient="+15551234567",
+            device_id=signal_device.id,
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "ios-keychain-id",
+            "ios question",
+            device_id=ios_device.id,
+        )
+
+        ws = _MockWs()
+        await channel._handle_history_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "history_request", "limit": 10},
+        )
+
+        resp = ws.sent[0]
+        assert resp["type"] == "history_response"
+        assert resp["has_more"] is False
+        assert [m["content"] for m in resp["messages"]] == [
+            "signal question",
+            "signal reply",
+            "ios question",
+        ]
+        assert resp["messages"][0]["channel_type"] == ChannelType.SIGNAL
+        assert resp["messages"][0]["device_label"] == "Signal"
+        assert resp["messages"][0]["direction"] == PennyConstants.MessageDirection.INCOMING
+        assert resp["messages"][1]["direction"] == PennyConstants.MessageDirection.OUTGOING
+        assert resp["messages"][2]["channel_type"] == ChannelType.IOS
+        assert resp["messages"][2]["device_label"] == "iPhone"
+
+    @pytest.mark.asyncio
+    async def test_history_cursor_fetches_next_page_without_duplicates(self, tmp_path):
+        """Paging forward by ``next_cursor`` never re-sends a row the first
+        page already carried, and the last page says so (``has_more=False``)."""
+        channel, db = self._channel(tmp_path)
+        device = db.devices.register(ChannelType.BROWSER, "firefox-1", "firefox-1")
+        for content in ["oldest", "middle", "newest"]:
+            db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                "firefox-1",
+                content,
+                device_id=device.id,
+            )
+
+        ws = _MockWs()
+        await channel._handle_history_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "history_request", "limit": 2},
+        )
+        first_page = ws.sent[-1]
+        assert [m["content"] for m in first_page["messages"]] == ["middle", "newest"]
+        assert first_page["has_more"] is True
+        assert first_page["next_cursor"] is not None
+
+        await channel._handle_history_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "history_request", "limit": 2, "before": first_page["next_cursor"]},
+        )
+        second_page = ws.sent[-1]
+        assert [m["content"] for m in second_page["messages"]] == ["oldest"]
+        assert second_page["has_more"] is False
+
+        first_ids = {m["message_id"] for m in first_page["messages"]}
+        second_ids = {m["message_id"] for m in second_page["messages"]}
+        assert first_ids.isdisjoint(second_ids)
+
+    @pytest.mark.asyncio
+    async def test_outgoing_content_rendered_like_a_live_message_incoming_left_raw(self, tmp_path):
+        """An outgoing row's ``content`` is rendered through the SAME
+        send-time pipeline a live ``message`` push gets — markdown link to
+        HTML anchor, ``{image <id>}`` token stripped — proven here by
+        sending it live and comparing the two, not by re-deriving the HTML by
+        hand. An incoming row's content stays the user's own raw words."""
+        channel, db = self._channel(tmp_path)
+        live = _MockWs()
+        await channel._process_raw_message(
+            live,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-live"}),
+            None,
+        )
+
+        raw_reply = "check out [the aurora forecast](https://example.com/aurora) {image 7}"
+        await channel.send_message("firefox-live", raw_reply)
+        live_push = live.sent[-1]
+        assert live_push["type"] == "message"
+
+        firefox_device = db.devices.get_by_identifier("firefox-live")
+        assert firefox_device is not None
+        raw_incoming = "<not html, just> <text>"
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "firefox-live",
+            raw_incoming,
+            device_id=firefox_device.id,
+        )
+
+        history_ws = _MockWs()
+        await channel._handle_history_request(
+            history_ws,  # ty: ignore[invalid-argument-type]
+            {"type": "history_request", "limit": 10},
+        )
+        resp = history_ws.sent[0]
+        by_content_direction = {m["direction"]: m for m in resp["messages"]}
+        outgoing_record = by_content_direction[PennyConstants.MessageDirection.OUTGOING]
+        incoming_record = by_content_direction[PennyConstants.MessageDirection.INCOMING]
+
+        assert outgoing_record["content"] == live_push["content"]
+        assert "{image" not in outgoing_record["content"]
+        assert "<a href=" in outgoing_record["content"]
+        assert incoming_record["content"] == raw_incoming
