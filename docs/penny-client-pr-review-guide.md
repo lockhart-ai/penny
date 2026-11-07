@@ -7,7 +7,7 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 This is the primary rule; every other rule in this guide sits under it.
 
 - [ ] **Never rebuild an element iOS provides.** When SwiftUI has an element for the job, use it with its stock placement and behaviour: `TabView` (the bottom tab bar, `.badge`, the search role); `NavigationStack` with its visible bar, title, `.navigationSubtitle`, `.toolbar` items and the system back button; `List` with `Section`s; `Label`; `LabeledContent`; `.searchable`; `Menu` and `.contextMenu`; sheets; the system scroll-edge effect. A hand-built lookalike gets none of the system's glass, animation, accessibility or tap targets, and breaks in ways the stock element never does.
-- [ ] **Custom views only where no stock element exists** (for example, chat bubbles). The PR names the stock element it considered and why it can't do the job.
+- [ ] **Compose, never fake.** Building our own element out of Apple's components and materials is fine (the live dock is a panel on real `.glassEffect`). What's never fine is faking what Apple renders or animates: hand-drawn glass or blur, a hand-rolled animation standing in for a system one (a geometry "morph" in place of the glass morph), painted fades over the system's scroll-edge effect, faked menus. If Apple provides the rendering or the animation, use theirs.
 - [ ] **Never hide a system element to draw a lookalike over it.** A hidden navigation bar still takes touches in its region: the hand-built top tab capsule and glass circles, floated over hidden bars, shipped with dead taps (#3111).
 
 ## 2. Scope and architecture
