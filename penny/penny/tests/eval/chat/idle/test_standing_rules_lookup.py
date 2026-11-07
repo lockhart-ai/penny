@@ -419,7 +419,7 @@ _RECORDED_RULE_REPLY = (
     "my findings much more robust.\n"
     "\n"
     "I'm all set—what's on the agenda now? 🫡\n"
-    "[Tool calls: collection_write]"
+    "[Tool calls: memory_access]"
 )
 _RECORDED_PUSH_COLLAPSE = "👋 I added a way to collapse older messages in your prompts!"
 _RECORDED_PHOTO_ASK = "[sent a photo]"
@@ -567,11 +567,13 @@ _RECORDED_TURNS: tuple[_Turn, ...] = (
         _RECORDED_RULE_REPLY,
         run_name="turn-rule",
         call=(
-            "collection_write",
+            "memory_access",
             {
-                "collection": "rules",
-                "key": "search_then_read_first",
-                "content": _RULES[1][1],
+                "target": "rules",
+                "action": "write",
+                "payload": {
+                    "entries": [{"key": "search_then_read_first", "content": _RULES[1][1]}]
+                },
             },
         ),
         result="You saved the rule to `rules`.",
@@ -925,7 +927,7 @@ def _premise() -> Preparer:
             if is_seeded_run(row.run_id)
         }
         for run_name, tools in (
-            ("turn-rule", ("collection_write",)),
+            ("turn-rule", ("memory_access",)),
             ("turn-specs", ("browse",)),
             ("turn-shelf", ()),
         ):

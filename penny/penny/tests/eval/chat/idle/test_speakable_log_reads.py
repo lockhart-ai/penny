@@ -131,7 +131,7 @@ _FAMILY = "speakable-logread"
 # them and a fixture that stopped rendering a runnable program would claim a job that could
 # never have run.
 _BROWSE = "browse"
-_WRITE = "collection_write"
+_WRITE = "memory_access"
 
 # The cross-collector index the run-record case's answer lives in.
 _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
@@ -141,7 +141,7 @@ _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
 # reading that is answered by a model never offered a read verb scores a model miss for a
 # HARNESS failure.  It is a premise about the SURFACE and not a route the case expects — which
 # verb she reaches for is hers, and the claims below read no tool name at all.
-_READ_VERBS = ("log_read", "find")
+_READ_VERBS = ("memory_access", "find")
 
 # Wide enough that a world seeding a conversation window is read WHOLE: the probe's answer has
 # to be "none of them", not "none of the first few".
@@ -445,7 +445,11 @@ def _cycle_calls(cycle: _SeededCycle) -> list[dict]:
             _wire_tool_call(
                 f"{run_id}-{len(calls)}",
                 _WRITE,
-                {"collection": cycle.job.container, "entries": [{"key": key, "content": content}]},
+                {
+                    "target": cycle.job.container,
+                    "action": "write",
+                    "payload": {"entries": [{"key": key, "content": content}]},
+                },
             )
         )
     if cycle.closed:

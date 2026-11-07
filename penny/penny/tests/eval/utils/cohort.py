@@ -387,7 +387,7 @@ class SampleObservation(BaseModel):
     # a shape that writes its own observation leaves it empty, and no non-chat case claims it.
     images: list[StoredImage] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
-    # Every ``key`` a ``collection_write`` call in this sample's turn PASSED, in call order,
+    # Every ``key`` a ``memory_access`` write call in this sample's turn PASSED, in call order,
     # duplicates included — the write's own ARGUMENT, read off the prompt log, never derived
     # from ``held``/``entries`` (#2758).  The identity ladder can redirect a write's content
     # onto an EXISTING entry under a DIFFERENT key, so after a cross-key merge the key the
@@ -1363,7 +1363,7 @@ class FeatureDivergence(BaseModel):
 
     This — not the sample's transcript — is what makes an outlier legible.  A sample is outlying
     on a SPECIFIC feature, so rendering 19,000 characters of prose to say "its tool sequence was
-    `browse → browse` where the representative's was `browse → log_read → collection_write`" is
+    `browse → browse` where the representative's was `browse → memory_access → memory_access`" is
     the wrong thing by three orders of magnitude.  Show the divergence and its evidence; the
     whole transcript is in the artifact for a reader who then wants it."""
 

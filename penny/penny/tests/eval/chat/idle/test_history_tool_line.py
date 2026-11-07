@@ -344,7 +344,7 @@ _EXCHANGES: tuple[tuple[str, str, str], ...] = (
 # empty tuple is a turn that only talked — the rendered state is ``[Tool calls: none]``,
 # which is exactly the line the history shows for those replies.
 _RUN_TOOLS: dict[str, tuple[str, ...]] = {
-    "history-rule-write": ("collection_write",),
+    "history-rule-write": ("memory_access",),
     "history-photo-turn": (),
     "history-plant-recall": ("find",),
     "history-plant-settling": (),

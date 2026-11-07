@@ -1,5 +1,5 @@
 """One refer-back case: two days later, past the history window and with the
-plan's day folded into the conversation map's one ``log_read`` line, the user
+plan's day folded into the conversation map's one ``memory_access`` line, the user
 asks Penny to go ahead with a change they AGREED for one of her jobs (#3010).
 
 The agreed plan is CONDITIONAL — once the ``weather-log`` feed is running
@@ -191,7 +191,7 @@ _TAIL_REPLIES = (
 
 # The fold: unrelated exchanges on the plan's day, enough of them to push the
 # map past its line ceiling so the OLDEST WHOLE DAY — the plan's — collapses
-# into the one log_read line.  Each side clears the short-exchange threshold,
+# into the one memory_access line.  Each side clears the short-exchange threshold,
 # so every filler renders its own line and the ceiling is what folds the day.
 _FOLD_FILLERS = 45
 # A second day of fillers (yesterday), so the map holds more than one day and
@@ -406,7 +406,7 @@ def _assert_the_plan_world(penny: Penny) -> None:
     """The case's premise, asserted before the turn runs: the job starts on its
     two-section prompt, the weather log holds its daily entries, every seeded
     message carries a vector, and — the fold — the map renders the plan's day
-    as its collapsed log_read line with NONE of the plan's words on any 1:1
+    as its collapsed memory_access line with NONE of the plan's words on any 1:1
     line."""
     db = penny.db
     row = db.memories.get(_GARDEN_JOB)
@@ -422,9 +422,10 @@ def _assert_the_plan_world(penny: Penny) -> None:
     assert_seeded_turns_embedded(db)
     map_anchor = db.messages.session_anchor(TEST_SENDER)
     map_render = ConversationMap(db, TEST_SENDER, penny.config.runtime, map_anchor).render()
-    fold_lines = [line for line in map_render.splitlines() if "exchanges — log_read{" in line]
+    fold_marker = "exchanges — memory_access{"
+    fold_lines = [line for line in map_render.splitlines() if fold_marker in line]
     assert fold_lines, (
-        f"the plan's day must render as the map's collapsed log_read line, the map "
+        f"the plan's day must render as the map's collapsed memory_access line, the map "
         f"rendered: {map_render!r}"
     )
     assert _LEG_WEATHER not in fold_typography(map_render), (
@@ -535,7 +536,7 @@ _PLAN_WORLD = World(
 async def test_an_agreed_job_plan_referred_back_two_days_later_is_made_from_the_plan(
     chat_eval: ChatEval, model: str
 ) -> None:
-    """Two days later, with the plan's day folded into the map's one log_read
+    """Two days later, with the plan's day folded into the map's one memory_access
     line and the visible window full of look-alikes, the user asks Penny to go
     ahead with the change they agreed — the plan's messages leg is the fact
     the turn has to recover, and the job's own prompt must survive whatever
@@ -546,7 +547,7 @@ async def test_an_agreed_job_plan_referred_back_two_days_later_is_made_from_the_
         behaviour=(
             "In the chat agent, when the user refers back — two days later, past the "
             "conversation window, with the plan's day folded into the conversation "
-            "map's collapsed log_read line and the visible window full of look-alike "
+            "map's collapsed memory_access line and the visible window full of look-alike "
             "job edits — to a change they agreed for one of Penny's jobs, Penny makes "
             "the change from the agreed plan: the plan's distinctive leg — the user's "
             "recent messages — is named in her reply or in the job's configured "

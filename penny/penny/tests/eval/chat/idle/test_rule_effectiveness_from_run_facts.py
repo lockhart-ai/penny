@@ -10,7 +10,7 @@ link (the ``hallucinated_urls`` validator reject-and-reroll, #2702); after the r
 do.  The user asks whether the rule actually helped, and how many times it had to step in
 before versus since.  The answer is a FACT, not a memory of having written the rule: the
 job's own ``promptlog`` rows carry the discard before the cutoff and none after, reachable
-through exactly the surfaces #2843 lands — the ``run-health`` facade (``log_read``) and
+through exactly the surfaces #2843 lands — the ``run-health`` facade (``memory_access``) and
 ``run_list(source=<job>)``/``run_get`` (``render_run_calls``), both newly carrying the
 per-run facts clause this ticket adds.
 
@@ -32,7 +32,7 @@ states it can only have counted the seeded facts, never echoed something it was 
 
 What is NOT claimed: which tool she calls, how many turns she takes, or anything about her
 reply beyond the two counts above.  Which read verb she reaches for
-(``log_read('run-health')``, ``run_list(source=<job>)``, or the self-state header's own
+(``memory_access('run-health')``, ``run_list(source=<job>)``, or the self-state header's own
 per-job summary) is a ROUTE, so it is measured in the tool sequence, never claimed.
 
 REPORT-ONLY (``min_pass_rate=None``): #2843 is new capability, not a regression fix, so there
@@ -110,8 +110,12 @@ def _cycle_calls(run_id: str) -> list[dict]:
         _wire_tool_call(f"{run_id}-0", "browse", {"queries": [_JOB.url]}),
         _wire_tool_call(
             f"{run_id}-1",
-            "collection_write",
-            {"collection": _JOB.container, "entries": [{"content": "restocked — in stock now"}]},
+            "memory_access",
+            {
+                "target": _JOB.container,
+                "action": "write",
+                "payload": {"entries": [{"content": "restocked — in stock now"}]},
+            },
         ),
         _wire_tool_call(f"{run_id}-2", PennyConstants.DONE_TOOL_NAME, {}),
     ]

@@ -50,7 +50,7 @@ paraphrase of one line still contains it.
 is no conversation machine left to land on this branch, so every landing claim is dropped
 rather than ported — consistent with #2496's ruling on the naive branch generally.
 
-**What is NOT claimed, and why.**  That she called ``collection_configure`` is a ROUTE — many routes
+**What is NOT claimed, and why.**  That she called ``memory_admin`` is a ROUTE — many routes
 reach one end state, and a rule keyed to that name would simply not fire for a verb nobody
 enumerated — so it is measured in the tool sequence and never asserted, where a divergence reads
 as a sample worth opening rather than as a claim about which verb was right.
@@ -529,7 +529,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, REPLY_SPREAD)
 # Every one is a read of what the turn LEFT BEHIND — the job's own row, what it holds, the
 # registry around it, the global switch.  None reads a tool NAME: a job cannot change its own
 # configuration by accident, so the row already says whether the edit happened, and a rule
-# keyed to ``collection_configure`` would simply not fire for a plugin verb nobody enumerated.
+# keyed to ``memory_admin`` would simply not fire for a plugin verb nobody enumerated.
 #
 # They stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the
 # second CUSTOMER, and the cases below are one behaviour family in one file: a second
@@ -1636,10 +1636,10 @@ async def test_an_ask_matching_two_jobs_of_the_same_kind_changes_neither(
 #
 # The four sites are real Portland outlets (OregonLive, the Portland Mercury, Willamette
 # Week, Street Roots); every headline and the user's profile here are made up, because
-# the repo is public.  The job is stood up the way the live ``collection_
-# configure`` call stands one up — one ``create_collection`` carrying the prompt, the
+# the repo is public.  The job is stood up the way the live ``memory_
+# admin`` configure call stands one up — one ``create_collection`` carrying the prompt, the
 # rule and the switch, the single-create shape ``seed_known_routine`` models — and the
-# creation turn is logged with its own ``collection_configure`` call under the run id the
+# creation turn is logged with its own ``memory_admin`` call under the run id the
 # job's creation event cites, so a reader of the recent activity's run anchor sees the
 # real turn.
 
@@ -1850,7 +1850,7 @@ def _history_up_to(exchange_index: int) -> list[dict]:
 
 def _log_creation_turn(db: Database) -> None:
     """Exchange 4 — the turn that stood the job up — recorded the way production records
-    a turn: the user's ask, the ``collection_configure`` call with its real result
+    a turn: the user's ask, the ``memory_admin`` call with its real result
     (``render_creation_echo``, the echo the live path produces), and the closing reply,
     all under the one run id the job's creation event cites."""
     run_id = seeded_run_id(_WIDEN_JOB_CONTAINER)
@@ -1869,11 +1869,14 @@ def _log_creation_turn(db: Database) -> None:
     db.memories.link_source_message(run_id, ask_id)
     call_id = "call-seeded-configure"
     configure_args = {
-        "collection": _WIDEN_JOB_CONTAINER,
-        "description": _WIDEN_JOB_DESCRIPTION,
-        "prompt": _WIDEN_JOB_PROGRAM,
-        "schedule": _WIDEN_JOB_SCHEDULE,
-        "notify": True,
+        "target": _WIDEN_JOB_CONTAINER,
+        "action": "configure",
+        "params": {
+            "description": _WIDEN_JOB_DESCRIPTION,
+            "prompt": _WIDEN_JOB_PROGRAM,
+            "schedule": _WIDEN_JOB_SCHEDULE,
+            "notify": True,
+        },
     }
     conversation = [*_history_up_to(3), {"role": "user", "content": _EX4_USER}]
     _log_chat_step(
@@ -1881,11 +1884,11 @@ def _log_creation_turn(db: Database) -> None:
         run_id=run_id,
         messages=conversation,
         response=_seeded_response(
-            tool_calls=[_wire_tool_call(call_id, "collection_configure", configure_args)]
+            tool_calls=[_wire_tool_call(call_id, "memory_admin", configure_args)]
         ),
     )
     configure_result = Tool.format_result(
-        "collection_configure",
+        "memory_admin",
         configure_args,
         ToolResult(
             message=render_creation_echo(row, user_timezone_name(db), now=db.clock.now()),
@@ -1897,7 +1900,7 @@ def _log_creation_turn(db: Database) -> None:
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_wire_tool_call(call_id, "collection_configure", configure_args)],
+            "tool_calls": [_wire_tool_call(call_id, "memory_admin", configure_args)],
         },
         _tool_result_turn(call_id, configure_result),
     ]

@@ -3540,10 +3540,10 @@ def test_a_seeded_known_routines_entry_is_not_counted_as_written_this_run(tmp_pa
         call
         for row in rows
         for call in _response_tool_calls(row)
-        if tool_call_name(call) == "collection_configure"
+        if tool_call_name(call) == "memory_admin"
     )
-    assert json.loads(configure_call["function"]["arguments"])["notify"] is True, (
-        "the logged collection_configure call must show the same notify the row carries, "
+    assert json.loads(configure_call["function"]["arguments"])["params"]["notify"] is True, (
+        "the logged memory_admin call must show the same notify the row carries, "
         "so the logged call and the row it produced agree"
     )
 

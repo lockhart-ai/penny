@@ -286,9 +286,9 @@ def _seed(db: Database) -> None:
     (#2455 naive baseline, code-owner ruling) — both halves of it, through the chokepoints
     the runtime itself writes through: the job ALREADY RUNNING (scheduled, already holding
     the old item's line), and the EARLIER CONVERSATION that set it up, in her own logs (the
-    ask, her read → write → ``collection_configure`` calls, her reply) — so her self-state's
-    recent activity, ``log_read``, and ``run_get`` all read it back exactly as if that turn
-    had really happened.  Asserted rather than assumed, so a world that drifted fails here
+    ask, her read → write → ``memory_admin`` calls, her reply) — so her self-state's
+    recent activity, ``memory_access``, and ``run_get`` all read it back exactly as if that
+    turn had really happened.  Asserted rather than assumed, so a world that drifted fails here
     rather than after a live run.
 
     Checked against COLLECTIONS only, never the whole store — a fresh eval database is

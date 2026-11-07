@@ -129,8 +129,10 @@ def datum(page: CannedPage, old: str, new: str) -> CannedPage:
 ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 
 
-# Six tools that mean she acted: a fetch, a write, an edit, a deletion, a job stood
-# up.  ONE definition, because two case files ask the same question of a turn — the
+# The tools that mean she acted: a fetch, or a write/edit/deletion/job-stand-up — the
+# latter four unified onto two names under #3127 (``memory_access``'s write action,
+# ``memory_admin``'s every action), so what was six distinct per-verb names folds to
+# two.  ONE definition, because two case files ask the same question of a turn — the
 # state machine's elicitation edge, which must not act before it has been taught, and
 # the passing-mention guard, which must not act on something nobody asked for — and a
 # second copy would let the two drift into two policies.
@@ -142,11 +144,8 @@ ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 # of those reads as having acted on nothing.
 ENACTING_TOOLS = (
     "browse",
-    "collection_write",
-    "collection_configure",
-    "update_entry",
-    "collection_remove",
-    "log_append",
+    "memory_access",
+    "memory_admin",
 )
 
 
@@ -246,16 +245,17 @@ BOARD_GAMES_INTENT = (
 # Guideline-compliant seed: EVERY numbered step is a canonical ``tool(args)`` call — no prose
 # steps, no reasoning/filter lines (a prose step trains the model to emit its own calls as
 # prose — the notation drift the eval surfaced; a reasoning step it tries to "perform" as
-# text).  The entry shape lives INSIDE ``collection_write``'s args, not a separate line.
-# Notification is the ``notify`` flag (the run-time notify suffix, #1557) — NO ``send_message``
-# step in the stored prompt (that is the deprecated direct-send pattern).  ``log_read`` is the
-# removable call the edit-operations case drops.
+# text).  The entry shape lives INSIDE ``memory_access``'s write-action payload, not a separate
+# line.  Notification is the ``notify`` flag (the run-time notify suffix, #1557) — NO
+# ``send_message`` step in the stored prompt (that is the deprecated direct-send pattern).
+# ``memory_access``'s read action is the removable call the edit-operations case drops.
 BOARD_GAMES_EXTRACTION_PROMPT = (
     "Collect heavier euro-style strategy board games and modern tabletop classics.\n"
     '1. browse(queries=["<new strategy board game releases>"]) — read the actual pages.\n'
-    '2. log_read("user-messages") — note which games the user has said they want.\n'
-    '3. collection_write("board-games", entries=[<one per game: key = game name; '
-    "content = name + description + player count + URL>]).\n"
+    '2. memory_access(target="user-messages", action="read") — note which games the user '
+    "has said they want.\n"
+    '3. memory_access(target="board-games", action="write", payload={entries: [<one per '
+    "game: key = game name; content = name + description + player count + URL>]}).\n"
     "4. done()."
 )
 
@@ -455,7 +455,7 @@ RESEARCH_WATCHER_EXTRACTION_PROMPT = (
     "Collect newly released indie metroidvania games worth playing.\n"
     "1. browse the web for new indie metroidvania releases; read actual pages.\n"
     "2. Each entry: key = game name; content = name + description + URL.\n"
-    '3. collection_write("indie-metroidvanias", entries=[...]).\n'
+    '3. memory_access(target="indie-metroidvanias", action="write", payload={entries: [...]}).\n'
     "4. done()."
 )
 

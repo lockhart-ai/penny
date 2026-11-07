@@ -11,7 +11,7 @@ of a read. #2841 adds a step's thinking to `run_get`'s render — the closing pa
 the decision got made — so the reason is a read, not a guess.
 
 **The world.** One completed collector run, already in the log, bound to a daily tech
-roundup collection. Its `collection_write` step's own thinking explains that the item's
+roundup collection. Its `memory_access` write step's own thinking explains that the item's
 only source handle resolved to a Quora thread sitting behind Quora's sign-in wall, with
 nothing readable behind it to cite — so the write-up names the finding without a link.
 `Quora` is the ONE fact this case measures: it is REAL, it names the reason, and it
@@ -24,7 +24,7 @@ survives unchanged: the ask is a question about an entry that already exists, no
 about it is rewritten.
 
 **What is NOT claimed:** which tool resolves it (`run_get`, `run_list`, or a
-`log_read` of `collector-runs`), how many calls it takes, or how she words the rest of
+`memory_access` read of `collector-runs`), how many calls it takes, or how she words the rest of
 the reply — those are route and wording, measured as variance, never asserted.
 
 REPORT-ONLY (``min_pass_rate=None``) on its first run: a main-vs-branch comparison, not a
@@ -129,10 +129,11 @@ def _seed_tech_roundup_world(db: Database) -> None:
         tool_calls=[
             _wire_tool_call(
                 "call-seeded-tech-roundup-write",
-                "collection_write",
+                "memory_access",
                 {
-                    "memory": _COLLECTION,
-                    "entries": [{"key": _ENTRY_KEY, "content": _ENTRY_CONTENT}],
+                    "target": _COLLECTION,
+                    "action": "write",
+                    "payload": {"entries": [{"key": _ENTRY_KEY, "content": _ENTRY_CONTENT}]},
                 },
             )
         ]

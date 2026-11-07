@@ -6,7 +6,7 @@ The contract is `docs/eval-case-design.md`.
 **The failure.** Chat, asked to update a running job's instructions so its output is
 formatted a certain way every day: Penny replied that she had updated it, ended the turn
 with no tool call, and the job's row never moved. Her thinking walked the whole
-``collection_configure`` call and stopped one step short — the history she was shown carried
+``memory_admin`` call and stopped one step short — the history she was shown carried
 no past tool calls to imitate, only her own prose, so narrating read as the way a change
 happens. This is #2630's failure again after #2651 removed the history's ``[Tool calls:
 ...]`` line (the model had copied that line into replies). The fix decided with the code
@@ -18,7 +18,7 @@ reply's voice.
 ``a34ff4fd…``, 2026-10-19), rebuilt through the stores' own chokepoints: the exchanges the
 history window held — a espresso thread with two real browse calls behind its replies, the
 job's morning notification, a read of the job's record (``memory_get``), a read of the
-morning run's trace (``run_get``), a read of the collection (``collection_list``), and the
+morning run's trace (``run_get``), a read of the collection (``memory_access``), and the
 two formatting passes the ask points back at — plus the job, the user's profile, the two
 standing rules, the browse-results log, and the two collector cycles the morning left
 behind (one WORKED, one FAILED). Every tool result a past turn got is the tool's own real
@@ -30,7 +30,7 @@ change as asked — read off the store — while the job's schedule, its switch,
 singleness and the global mute are what they were. Tool calls and reply wording stay
 measured.
 
-**What is NOT claimed, and why.**  That she called ``collection_configure`` is a ROUTE —
+**What is NOT claimed, and why.**  That she called ``memory_admin`` is a ROUTE —
 the measured tool sequence names it, never a claim.  Whether the reply also carries a
 copied tool-call line is measured variance, never asserted.  Nothing reads where a
 conversation machine landed; there is none left to land on.
@@ -229,8 +229,8 @@ _BROWSE_LOG_LINKS = (
 def _browse_log_entries() -> tuple[str, ...]:
     """The 15 page-fetch blobs the conversation's reads left behind — the count the
     self-state's memory map renders.  The bodies stand for the news-site fetches and the
-    hardware-thread page; none reaches the prompt except through a ``log_read``, which no
-    claim reads."""
+    hardware-thread page; none reaches the prompt except through a ``memory_access`` read,
+    which no claim reads."""
     entries = []
     for index in range(15):
         url, title = _BROWSE_LOG_SITES[index % len(_BROWSE_LOG_SITES)]
@@ -431,7 +431,7 @@ _EX4_REPLY = (
     "It looks like a second browse call was specifically triggered for dw.com to ensure "
     "those headlines were pulled correctly.\n\n"
     "Step 3: Saving the Results\n"
-    "Finally, the collection_write tool was used to save everything into the "
+    "Finally, the memory_access tool was used to save everything into the "
     "npr_daily_brief collection. It organized the news by source like this:\n\n"
     "   NPR News: The stories about the radio fundraiser and the trail.\n"
     "   The Guardian: The stories about the library wing and the river.\n"
@@ -623,7 +623,7 @@ for _wording in (_ASK, *_ALSO_PHRASED):
     assert any(word in _folded for word in _JOB_WORDS), f"no job named: {_wording!r}"
     assert any(word in _folded for word in _FORMAT_WORDS), f"no referent named: {_wording!r}"
     assert any(word in _folded for word in _EVERY_WORDS), f"no permanence named: {_wording!r}"
-    for _leak in ("collection_configure", "Morning Briefing", "numbered", "extraction_prompt"):
+    for _leak in ("memory_admin", "Morning Briefing", "numbered", "extraction_prompt"):
         assert _leak.casefold() not in _folded, f"a wording names {_leak!r}: {_wording!r}"
     for _host in _JOB_SOURCES:
         assert _host not in _folded, f"a wording names a source host {_host!r}: {_wording!r}"
@@ -911,10 +911,11 @@ def _seed_world(db: Database) -> None:
                 ),
             ),
             (
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": _JOB_CONTAINER,
-                    "entries": [{"key": _TODAY, "content": _stored_brief()}],
+                    "target": _JOB_CONTAINER,
+                    "action": "write",
+                    "payload": {"entries": [{"key": _TODAY, "content": _stored_brief()}]},
                 },
                 ToolResult(message=f"Wrote 1 entry to '{_JOB_CONTAINER}': {_TODAY}.", mutated=True),
             ),
@@ -1024,8 +1025,8 @@ def _seed_world(db: Database) -> None:
         run_id=seeded_run_id("list-read"),
         ask=_EX7_USER,
         call_id="call-seeded-collection-list",
-        tool="collection_list",
-        arguments={"collection": _JOB_CONTAINER},
+        tool="memory_access",
+        arguments={"target": _JOB_CONTAINER, "action": "read"},
         result=ToolResult(
             message=format_entries(
                 require_memory(db, _JOB_CONTAINER).read_all(),

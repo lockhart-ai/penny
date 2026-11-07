@@ -87,8 +87,8 @@ def sent_at(snapshots: Sequence[CycleSnapshot], index: int) -> list[str]:
 #   (a) the job ALREADY RUNNING — the collection, scheduled, holding the entry it was set
 #       up to watch; and
 #   (b) the EARLIER CONVERSATION that set it up, in her own logs — the user's ask, her own
-#       turn's tool calls (the read, the write, the `collection_configure` naming its
-#       prompt), and her reply — so her self-state's recent activity, `log_read`, and
+#       turn's tool calls (the read, the write, the `memory_admin` call naming its
+#       prompt), and her reply — so her self-state's recent activity, `memory_access`, and
 #       `run_get` all read it back exactly as if that turn had really happened.
 #
 # The seeded run's own model name is cosmetic (no claim reads it) but kept honest rather
@@ -175,14 +175,14 @@ def seed_known_routine(
 ) -> None:
     """Stand up ONE job she already knows, both ways at once (see the module note above):
     the collection already running and holding its entry, and the earlier turn that set it
-    up durable in her own logs — the user's ask, her read → write → ``collection_configure``
+    up durable in her own logs — the user's ask, her read → write → ``memory_admin``
     calls (each with its real result turn), and her closing reply, all under one run id, so
-    a reader of her recent activity, ``log_read``, or ``run_get`` sees exactly what a real
+    a reader of her recent activity, ``memory_access``, or ``run_get`` sees exactly what a real
     turn would have left behind.
 
     The job's prompt is the plain naive shape (#2455): free text naming the page and what
     to find on it, written straight into ``extraction_prompt`` — what the seeded
-    ``collection_configure`` call itself names, so the logged call and the row it produced
+    ``memory_admin`` call itself names, so the logged call and the row it produced
     agree.
 
     Each logged tool turn's result text is the REAL render (``Tool.format_result`` over the
@@ -243,48 +243,55 @@ def seed_known_routine(
     ]
 
     write_id = "call-seeded-write"
-    write_args = {"collection": collection, "entries": [{"key": entry_key, "content": entry_value}]}
-    _log_chat_step(
-        db,
-        run_id=run_id,
-        messages=conversation,
-        response=_seeded_response(
-            tool_calls=[_wire_tool_call(write_id, "collection_write", write_args)]
-        ),
-    )
-    write_message = f"Wrote 1 entry to '{collection}': {entry_key}."
-    write_result = Tool.format_result(
-        "collection_write", write_args, ToolResult(message=write_message, mutated=True)
-    )
-    conversation = [
-        *conversation,
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [_wire_tool_call(write_id, "collection_write", write_args)],
-        },
-        _tool_result_turn(write_id, write_result),
-    ]
-
-    configure_id = "call-seeded-configure"
-    configure_args = {
-        "collection": collection,
-        "description": description,
-        "prompt": prompt,
-        "schedule": schedule,
-        "notify": notify,
+    write_args = {
+        "target": collection,
+        "action": "write",
+        "payload": {"entries": [{"key": entry_key, "content": entry_value}]},
     }
     _log_chat_step(
         db,
         run_id=run_id,
         messages=conversation,
         response=_seeded_response(
-            tool_calls=[_wire_tool_call(configure_id, "collection_configure", configure_args)]
+            tool_calls=[_wire_tool_call(write_id, "memory_access", write_args)]
+        ),
+    )
+    write_message = f"Wrote 1 entry to '{collection}': {entry_key}."
+    write_result = Tool.format_result(
+        "memory_access", write_args, ToolResult(message=write_message, mutated=True)
+    )
+    conversation = [
+        *conversation,
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_wire_tool_call(write_id, "memory_access", write_args)],
+        },
+        _tool_result_turn(write_id, write_result),
+    ]
+
+    configure_id = "call-seeded-configure"
+    configure_args = {
+        "target": collection,
+        "action": "configure",
+        "params": {
+            "description": description,
+            "prompt": prompt,
+            "schedule": schedule,
+            "notify": notify,
+        },
+    }
+    _log_chat_step(
+        db,
+        run_id=run_id,
+        messages=conversation,
+        response=_seeded_response(
+            tool_calls=[_wire_tool_call(configure_id, "memory_admin", configure_args)]
         ),
     )
     echo = render_creation_echo(row, user_timezone_name(db), now=db.clock.now())
     configure_result = Tool.format_result(
-        "collection_configure",
+        "memory_admin",
         configure_args,
         ToolResult(
             message=echo, mutated=True, configure_outcome=CollectionConfigureOutcome.CREATED
@@ -295,7 +302,7 @@ def seed_known_routine(
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_wire_tool_call(configure_id, "collection_configure", configure_args)],
+            "tool_calls": [_wire_tool_call(configure_id, "memory_admin", configure_args)],
         },
         _tool_result_turn(configure_id, configure_result),
     ]

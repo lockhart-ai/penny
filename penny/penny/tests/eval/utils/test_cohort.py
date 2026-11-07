@@ -455,7 +455,7 @@ _TOLD_LINE = (
 )
 _STAMPED = datetime(2026, 10, 2, 20, 11)
 _STAMP = format_log_timestamp(_STAMPED)
-_READ_CALL = {"id": "call-1", "function": {"name": "collection_list"}}
+_READ_CALL = {"id": "call-1", "function": {"name": "memory_access"}}
 
 
 def _recipe_round() -> Given:
@@ -477,7 +477,7 @@ def _recipe_round() -> Given:
     read = ToolResult(
         message=format_entries(recipes, source="recipe-box", ordering="most recent first")
     )
-    framed = Tool.format_result("collection_list", {"collection": "recipe-box"}, read)
+    framed = Tool.format_result("memory_access", {"target": "recipe-box", "action": "read"}, read)
     return read_given(
         [
             {"role": "system", "content": f"{_TOLD_LINE}\n1. Read it.\n2. Then give the answer."},

@@ -437,8 +437,8 @@ def identity_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
     seeds the arm's collection through the store's OWN write path (``seed_collection`` →
     ``write_rule_decided``, the manual rules-only path — the seed must not put a decision
     model in the loop), backfills its embeddings so the shortlist ranks what production
-    would rank, probes the seeded world loudly, then drives ONE real ``collection_write``
-    call — built through ``build_memory_tools`` with the real decision client from config —
+    would rank, probes the seeded world loudly, then drives ONE real ``memory_access``
+    write call — built through ``build_memory_tools`` with the real decision client from config —
     and reads the store it left behind.
 
     The chat model draws nothing on this path: what is measured is the ladder — the rules,
@@ -604,7 +604,7 @@ def identity_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
 #
 # ``identity_eval`` drives ONE new entry per sample — the ladder's ordinary question,
 # one pair at a time. The #2922 regression needs a BATCH: several new entries driven in
-# the SAME ``collection_write`` call, each one a candidate against the SAME stored
+# the SAME ``memory_access`` write call, each one a candidate against the SAME stored
 # digest entry (a summary that bundles several things). That batch is what can trigger
 # the sequential-apply collision the deterministic guard (``resolve_sibling_collisions``,
 # ``penny.database.memory.identity``) exists to catch — so this driver, unlike
@@ -671,7 +671,7 @@ def _sibling_events(
     tool_message: str | None,
 ) -> list[report.Event]:
     """One sample's transcript: the batch's new entries render as one block, since
-    they are driven by a SINGLE ``collection_write`` call, not one-at-a-time."""
+    they are driven by a SINGLE ``memory_access`` write call, not one-at-a-time."""
     new_lines = "\n".join(f"{key}: {content}" for key, content in arm.new)
     events = [
         report.Event(
@@ -782,12 +782,12 @@ def _observe_sibling_write(
 @pytest.fixture
 def sibling_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[SiblingEval]:
     """Drive the collection write's entry-identity ladder with a BATCH write (#2922):
-    several new entries in ONE ``collection_write`` call, each a candidate against the
+    several new entries in ONE ``memory_access`` write call, each a candidate against the
     SAME stored digest entry, and nothing else.
 
     Everything else matches ``identity_eval``: one hermetic Penny/database per sample,
     the collection seeded through the rules-only write path, embeddings backfilled, the
-    seeded world probed loudly, then ONE real ``collection_write`` call built through
+    seeded world probed loudly, then ONE real ``memory_access`` write call built through
     ``build_memory_tools`` with the real decision client from config.  What differs is
     the write itself: ``len(arm.new)`` new entries land in the SAME call, which is what
     can trigger the sequential-apply collision the batch guard

@@ -450,13 +450,13 @@ def _seed(db: Database) -> None:
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_log_read_discloses_older_entries(chat_eval: ChatEval, model: str) -> None:
-    """In the chat agent, when `log_read` returns a log's recent window and earlier
-    entries sit before it, Penny's account of the log carries the true older-entry
-    count rather than reading the log as sparse or empty."""
+    """In the chat agent, when `memory_access`'s read action returns a log's recent window
+    and earlier entries sit before it, Penny's account of the log carries the true
+    older-entry count rather than reading the log as sparse or empty."""
     cohort = await chat_eval(
         case_id="log-read-older-entries-disclosed",
         behaviour=(
-            "In the chat agent, when log_read's recent window leaves earlier entries "
+            "In the chat agent, when memory_access's recent window leaves earlier entries "
             "unshown, Penny's account of the log states how much more it holds, rather "
             "than reading it as sparse or empty."
         ),
