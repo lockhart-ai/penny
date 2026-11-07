@@ -14,7 +14,7 @@ import io
 from PIL import Image
 
 from penny.constants import PennyConstants
-from penny.image_utils import normalize_data_uri, normalize_image
+from penny.image_utils import decode_data_uri, normalize_data_uri, normalize_image
 
 _MIME_JPEG = "image/jpeg"
 _MIME_PNG = "image/png"
@@ -200,3 +200,18 @@ def test_normalize_data_uri_round_trips_a_normalized_image():
 
 def test_normalize_data_uri_passes_through_a_non_data_uri():
     assert normalize_data_uri("https://example.test/image.png") == "https://example.test/image.png"
+
+
+def test_decode_data_uri_round_trips_bytes_and_mime():
+    data = _solid_jpeg((40, 40))
+    uri = f"data:{_MIME_JPEG};base64,{base64.b64encode(data).decode()}"
+    assert decode_data_uri(uri) == (data, _MIME_JPEG)
+
+
+def test_decode_data_uri_rejects_a_non_data_uri():
+    assert decode_data_uri("https://example.test/image.png") is None
+    assert decode_data_uri(None) is None
+
+
+def test_decode_data_uri_rejects_bad_base64():
+    assert decode_data_uri("data:image/jpeg;base64,not-valid-base64!!") is None

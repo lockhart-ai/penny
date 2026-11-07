@@ -74,6 +74,25 @@ def normalize_image(data: bytes, mime_type: str) -> tuple[bytes, str]:
     return _normalize_static(img, data, mime_type)
 
 
+def decode_data_uri(uri: str | None) -> tuple[bytes, str] | None:
+    """Decode a ``data:<mime>;base64,<data>`` URI into ``(bytes, mime_type)``.
+
+    ``None`` on anything that isn't a decodable base64 data URI — not a data
+    URI at all, or base64 that fails to decode — logged, never raised: every
+    caller (a browse capture's own page image, a link card's image data,
+    #3113) treats a bad image as best-effort skip, not a failed read."""
+    if not uri or not uri.startswith("data:") or ";base64," not in uri:
+        logger.warning("Not a base64 data URI; skipping")
+        return None
+    header, encoded = uri.split(";base64,", 1)
+    mime_type = header[len("data:") :]
+    try:
+        return base64.b64decode(encoded), mime_type
+    except binascii.Error:
+        logger.warning("Data URI base64 failed to decode; skipping")
+        return None
+
+
 def normalize_data_uri(uri: str) -> str:
     """Normalize the image payload of a ``data:<mime>;base64,<data>`` URI.
 
