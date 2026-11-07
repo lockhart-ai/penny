@@ -1265,7 +1265,7 @@ class MessageStore:
         boundary = self._session_boundary(sender)
         if boundary is not None and boundary >= newest:
             return False  # already rotated past this message
-        self._set_session_boundary(sender, now)
+        self.record_rotation_at(sender, now)
         return True
 
     def record_cap_rotation(self, sender: str, window: int, max_turns: int) -> bool:
@@ -1285,7 +1285,7 @@ class MessageStore:
         anchor = self.session_anchor(sender)
         if anchor.session_turns <= max_turns - window:
             return False
-        self._set_session_boundary(sender, self._naive_now())
+        self.record_rotation_at(sender, self._naive_now())
         return True
 
     def _naive_now(self) -> datetime:
@@ -1384,18 +1384,26 @@ class MessageStore:
             row = session.get(ChatSession, sender)
             return _as_naive(row.started_at) if row else None
 
-    def _set_session_boundary(self, sender: str, started_at: datetime) -> None:
-        """Upsert the session boundary for ``sender`` (#3125) — one row per
-        sender, always overwritten in place: a session only ever has one
-        current start."""
-        if started_at.tzinfo:
-            started_at = started_at.replace(tzinfo=None)
+    def record_rotation_at(self, sender: str, at: datetime) -> None:
+        """Write the session boundary at an explicit instant (#3125) — the
+        ONE shared write both :meth:`record_idle_rotation` and
+        :meth:`record_cap_rotation` make for their own decided rotation, and
+        the EVAL HARNESS calls directly to replay the rotation its own
+        gap-scan over a seeded world already found due (``tests/eval/
+        conftest.py``'s ``_seed_sample``) — a seeded world has to look like
+        prod, and in prod the idle scheduler task would have rotated at
+        every idle gap in that history. Unconditional: the caller has
+        already decided a rotation belongs at ``at``; this never re-checks
+        whether one is due. One row per sender, always overwritten in
+        place — a session only ever has one current start."""
+        if at.tzinfo:
+            at = at.replace(tzinfo=None)
         with self._session() as session:
             row = session.get(ChatSession, sender)
             if row is None:
-                session.add(ChatSession(sender=sender, started_at=started_at))
+                session.add(ChatSession(sender=sender, started_at=at))
             else:
-                row.started_at = started_at
+                row.started_at = at
                 session.add(row)
             session.commit()
 

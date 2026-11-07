@@ -30,7 +30,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -3549,6 +3549,50 @@ def _record_case_report(
     )
 
 
+_SEEDED_MESSAGE_SCAN_LIMIT = 100_000  # generous: no seeded world comes close
+
+
+def _newest_qualifying_gap_older_end(rows: list[MessageLog], idle_seconds: int) -> datetime | None:
+    """The older endpoint of the NEWEST gap of at least ``idle_seconds`` between
+    consecutive timestamps in ``rows`` (oldest first), or ``None`` when no gap
+    qualifies (#3125).
+
+    Walking oldest-first and keeping the LAST qualifying gap, not the first, is
+    what makes this the newest one: in production the idle scheduler task
+    rotates at every gap it finds, one after another as the clock passes them,
+    so only the final rotation is still the one a later turn reads back."""
+    idle = timedelta(seconds=idle_seconds)
+    newest_gap_older_end: datetime | None = None
+    for earlier, later in zip(rows, rows[1:], strict=False):
+        if later.timestamp - earlier.timestamp >= idle:
+            newest_gap_older_end = earlier.timestamp
+    return newest_gap_older_end
+
+
+def _replay_idle_rotation(penny: Penny) -> None:
+    """Record the session boundary the idle scheduler task would have left
+    behind over a seeded world's own message history (#3125) — called once
+    a sample's seed has written whatever conversation it needs, so the world
+    is in the state production would already be in: in prod the idle task
+    rotates at EVERY idle gap it finds, not only the one nearest "now", so a
+    seeded history with a gap this wide anywhere in it would already carry a
+    boundary by the time a real turn ran.
+
+    THE one place a gap-walk survives #3125's own removal of it from runtime
+    code — it exists only to put a seeded world where production would
+    already have put it, through the store's OWN write
+    (``MessageStore.record_rotation_at``), never a second mechanism of its
+    own. A world with no qualifying gap records nothing."""
+    idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+    rows = penny.db.messages.recent_direct_messages(
+        since=datetime.min, limit=_SEEDED_MESSAGE_SCAN_LIMIT
+    )
+    older_end = _newest_qualifying_gap_older_end(rows, idle_seconds)
+    if older_end is None:
+        return
+    penny.db.messages.record_rotation_at(TEST_SENDER, older_end + timedelta(seconds=idle_seconds))
+
+
 async def _seed_sample(
     penny: Penny,
     *,
@@ -3558,12 +3602,14 @@ async def _seed_sample(
     prepare: Preparer | None,
 ) -> None:
     """Lay a sample's world down before its first turn: the user, the world's own seeded
-    store, the case's own seed, the embeddings those seeds need, the canned browse, the
-    world's mailbox, and the case's late hook."""
+    store, the case's own seed, the idle rotation that seed's own history would already
+    have earned, the embeddings those seeds need, the canned browse, the world's mailbox,
+    and the case's late hook."""
     seed_user(penny.db)
     seed_world_stores(penny.db, world)
     if seed is not None:
         seed(penny.db)
+    _replay_idle_rotation(penny)
     await _embed_seeds(penny)
     if browse is not None:
         install_browse(penny, browse)
