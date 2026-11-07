@@ -112,18 +112,32 @@ export interface WsOutgoingToolResponse {
   // one of the page's links can get that link's own picture (the page's meta
   // image is the front page's, not the article's).  Empty when the read
   // captured none; absent on an older extension, which the server treats the
-  // same as empty.
-  link_thumbnails?: LinkThumbnail[];
+  // same as empty.  Each entry here already carries its own `image` (#3115) —
+  // the background script attaches it after capture, so a capture that never
+  // got one never reaches the wire.
+  link_thumbnails?: LinkThumbnailImage[];
 }
 
 /** One link's thumbnail, keyed by the link's own address.  `url` is exactly
  *  the `anchor.href` the link index (`page_text.ts`) writes into the read, so
  *  the server normalises both the same way; `image_url` is absolute and never
- *  a data URI; `title` is the link label, normalised as the index line's. */
+ *  a data URI; `title` is the link label, normalised as the index line's.
+ *  This is what the content script captures — before the background script
+ *  has fetched the card's own picture. */
 export interface LinkThumbnail {
   url: string;
   image_url: string;
   title: string;
+}
+
+/** A captured `LinkThumbnail` with its own picture attached (#3115): a
+ *  `data:image/jpeg;base64,…` URI the background script fetched, downscaled
+ *  to at most 640px on the longest side and re-encoded under 200KB —
+ *  produced by `attachThumbnailData` (`background/tools/thumbnail_data.ts`).
+ *  Only entries whose fetch produced one ever become one of these, so the
+ *  field is never an empty-string placeholder. */
+export interface LinkThumbnailImage extends LinkThumbnail {
+  image: string;
 }
 
 export interface WsOutgoingHeartbeat {

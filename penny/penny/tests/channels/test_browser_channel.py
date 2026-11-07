@@ -1169,6 +1169,8 @@ class TestBrowserRegister:
         # #3068: the same message shape carrying ``link_thumbnails`` parses
         # into typed entries (the read above tolerates it on the real path);
         # an older extension's response without the key parses as [].
+        # #3115: an entry carrying the extension-fetched ``image`` parses with
+        # it set; an entry without it (an older extension) parses as None.
         parsed = BrowserToolResponse.model_validate(
             {
                 "type": "tool_response",
@@ -1180,7 +1182,13 @@ class TestBrowserRegister:
                         "url": "https://example.com/story",
                         "image_url": "https://example.com/story.jpg",
                         "title": "The story",
-                    }
+                        "image": "data:image/jpeg;base64,abcd",
+                    },
+                    {
+                        "url": "https://example.com/other",
+                        "image_url": "https://example.com/other.jpg",
+                        "title": "The other story",
+                    },
                 ],
             }
         )
@@ -1189,8 +1197,15 @@ class TestBrowserRegister:
                 url="https://example.com/story",
                 image_url="https://example.com/story.jpg",
                 title="The story",
-            )
+                image="data:image/jpeg;base64,abcd",
+            ),
+            LinkThumbnail(
+                url="https://example.com/other",
+                image_url="https://example.com/other.jpg",
+                title="The other story",
+            ),
         ]
+        assert parsed.link_thumbnails[1].image is None
         bare = BrowserToolResponse(type="tool_response", request_id="resp-2", result="page")
         assert bare.link_thumbnails == []
 

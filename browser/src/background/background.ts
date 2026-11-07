@@ -10,7 +10,7 @@ import {
   type DomainAllowlist,
   type DomainPermissionEntry,
   HEARTBEAT_INTERVAL_MS,
-  type LinkThumbnail,
+  type LinkThumbnailImage,
   type MemorySection,
   type PageContext,
   type PageReading,
@@ -586,7 +586,7 @@ async function setToolUse(enabled: boolean): Promise<void> {
 
 function sendToolResponse(
   requestId: string, result?: string, error?: string, image?: string, reading?: PageReading,
-  linkThumbnails?: LinkThumbnail[],
+  linkThumbnails?: LinkThumbnailImage[],
 ): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     logStep("tool", `sendToolResponse DROPPED (socket not open) id=${requestId}`);
@@ -633,7 +633,7 @@ async function handleToolRequest(request: WsIncomingToolRequestPayload): Promise
 async function executeBrowseUrl(
   _requestId: string,
   args: Record<string, unknown>,
-): Promise<{ text: string; image: string; reading: PageReading; link_thumbnails: LinkThumbnail[] }> {
+): Promise<{ text: string; image: string; reading: PageReading; link_thumbnails: LinkThumbnailImage[] }> {
   const url = args.url as string;
   if (!url) throw new Error("Missing required argument: url");
   return await browseUrl(url);

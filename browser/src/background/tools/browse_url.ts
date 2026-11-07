@@ -7,8 +7,14 @@
  * UnreadableUrlError at once — see unreadable.ts.
  */
 
-import { type LinkThumbnail, PageReading, TAB_LOAD_TIMEOUT_MS } from "../../protocol.js";
+import {
+  type LinkThumbnail,
+  type LinkThumbnailImage,
+  PageReading,
+  TAB_LOAD_TIMEOUT_MS,
+} from "../../protocol.js";
 import { logStep } from "../ws_log.js";
+import { attachThumbnailData } from "./thumbnail_data.js";
 import { UnreadableUrlError, isUnreadableFailure } from "./unreadable.js";
 
 const EXTRACT_MAX_RETRIES = 10;
@@ -283,7 +289,7 @@ interface BrowseResult {
   text: string;
   image: string;
   reading: PageReading;
-  link_thumbnails: LinkThumbnail[];
+  link_thumbnails: LinkThumbnailImage[];
 }
 
 async function formatResult(data: PageData): Promise<BrowseResult> {
@@ -291,13 +297,14 @@ async function formatResult(data: PageData): Promise<BrowseResult> {
   const image = data.image ? await downloadImageAsDataUri(data.image) : "";
   if (data.image) logStep("browse", `downloadImageAsDataUri done (${image.length}ch)`);
   console.log(`[browse_url] image: ${image ? `${image.length} chars` : "none"}`);
+  // An older content script's PageData carries no capture at all — same
+  // shape as the wire's absent mark: the server treats it as none.
+  const link_thumbnails = await attachThumbnailData(data.link_thumbnails ?? []);
   return {
     text: `Title: ${data.title}\nURL: ${data.url}\n\n${data.text}`,
     image,
     reading: data.reading,
-    // An older content script's PageData carries no capture at all — same
-    // shape as the wire's absent mark: the server treats it as none.
-    link_thumbnails: data.link_thumbnails ?? [],
+    link_thumbnails,
   };
 }
 
