@@ -125,6 +125,7 @@ public struct Composer: View {
                     .submitLabel(.send)
                     .focused(isFocused)
                     .onSubmit(onSend)
+                    .accessibilityIdentifier(AXID.composerTextField)
 
                 if hasDraft {
                     Button(action: onSend) {
@@ -135,6 +136,7 @@ public struct Composer: View {
                     .buttonStyle(.plain)
                     .disabled(!canSend)
                     .accessibilityLabel("Send")
+                    .accessibilityIdentifier(AXID.composerSendButton)
                 }
             }
             // Single-line state: the field matches the `+` button's height

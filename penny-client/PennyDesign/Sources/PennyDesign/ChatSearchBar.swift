@@ -43,10 +43,13 @@ public struct ChatSearchBar: View {
             field
             GlassCircleButton(symbol: "chevron.up", dimmed: !arrowsEnabled, onTap: onStepToOlderMatch)
                 .accessibilityLabel("Previous match")
+                .accessibilityIdentifier(AXID.searchOlderButton)
             GlassCircleButton(symbol: "chevron.down", dimmed: !arrowsEnabled, onTap: onStepToNewerMatch)
                 .accessibilityLabel("Next match")
+                .accessibilityIdentifier(AXID.searchNewerButton)
             GlassCircleButton(symbol: "xmark", onTap: onClose)
                 .accessibilityLabel("Close search")
+                .accessibilityIdentifier(AXID.searchCloseButton)
         }
         .padding(.horizontal, Tokens.margin)
     }
@@ -65,10 +68,12 @@ public struct ChatSearchBar: View {
                 .textFieldStyle(.plain)
                 .submitLabel(.search)
                 .autocorrectionDisabled()
+                .accessibilityIdentifier(AXID.searchField)
             if let matchCountText {
                 Text(matchCountText)
                     .font(.subheadline.weight(.medium).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier(AXID.searchCounter)
             }
         }
         .padding(.leading, 14)

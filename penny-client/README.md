@@ -8,6 +8,13 @@ build verification on a freshly booted simulator). For service-only changes,
 building or launching an app target. CI runs the complete gate on pull requests
 touching `penny-client/`.
 
+`make client-ui-tests` runs the `PennyClientUITests` XCUITest smoke suite (#3106) —
+tapping each shell tab, pushing and returning from a memory's detail, opening
+find-in-chat and stepping between matches, and sending from the composer — against
+fixture data (`-PennyStory`, #2965), never a server. It's LOCAL ONLY: CI's
+`client-check.yml` never builds or runs it (macOS runners are scarce), so run it
+yourself before review whenever a PR adds or moves an interactive control.
+
 While Penny works, a rainbow-edged glass live dock sits at the end of the
 conversation, above the message field: a header (`Working · Step n · t s`) over
 a chronological stream of her thinking and tool calls, growing with the run up

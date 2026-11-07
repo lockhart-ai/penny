@@ -1,4 +1,5 @@
 import SwiftUI
+import PennyDesign
 import PennyServices
 
 /// The Memory tab's content under the app shell (#3037): today's memories
@@ -40,6 +41,7 @@ struct DataBrowserMemoriesView: View {
             ForEach(model.visibleMemories) { memory in
                 Button { model.select(memory) } label: { BrowserMemorySummary(memory: memory) }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier(AXID.memoryRow(memory.name))
             }
             if model.visibleMemories.isEmpty && !model.isDebouncing && !model.loading.contains(.memories) && model.errors[.memories] == nil && model.isOnline {
                 ContentUnavailableView("No memories", systemImage: "tray", description: Text("No memories match this group and search."))
@@ -72,6 +74,7 @@ struct DataBrowserMemoriesView: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .refreshable { model.refresh() }
+        .accessibilityIdentifier(AXID.memoryDetailRoot)
     }
 
     @ViewBuilder

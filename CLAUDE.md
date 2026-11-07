@@ -236,6 +236,11 @@ make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes
 make signal-avatar    # Set Penny's Signal profile picture from penny.png
 make client-check     # Build the iOS client + run PennyClientTests on a simulator (requires Xcode)
+make client-ui-tests  # Run the PennyClientUITests XCUITest smoke suite on a simulator — LOCAL
+                      # ONLY (#3106): drives the real shell (tabs, push/back, find-in-chat,
+                      # composer) against fixture data via `-PennyStory`, never CI (scarce
+                      # macOS runners); kept out of PennyClient.xctestplan and the PennyClient
+                      # scheme's TestAction so make client-check never runs it
 ```
 
 ### iOS data browser

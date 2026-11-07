@@ -14,10 +14,18 @@
 		B00000000000000000000002 /* PennyDesign in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000004 /* PennyDesign */; };
 		D1F83D7F2FF98F1D0010DBDD /* PennyClient.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */; };
 		D1F83D822FF9A0000010DBDD /* PennyClient.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */; };
+		E10000000000000000000010 /* PennyDesign in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000004 /* PennyDesign */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		D18FD9B82FF98AC900225D47 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000100000000;
+			remoteInfo = PennyClient;
+		};
+		E1000000000000000000000D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000000 /* Project object */;
 			proxyType = 1;
@@ -32,6 +40,7 @@
 		D18FD9B42FF98AC900225D47 /* PennyClientTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PennyClientTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = PennyClient.xctestplan; sourceTree = "<group>"; };
 		D1F83D832FF9A0000010DBDD /* PennyTestflight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PennyTestflight.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E10000000000000000000001 /* PennyClientUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PennyClientUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -48,6 +57,11 @@
 		D18FD9B52FF98AC900225D47 /* PennyClientTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PennyClientTests;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000002 /* PennyClientUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PennyClientUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -78,6 +92,12 @@
 				B00000000000000000000002 /* PennyDesign in Frameworks */,
 			);
 		};
+		E10000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				E10000000000000000000010 /* PennyDesign in Frameworks */,
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -87,6 +107,7 @@
 				D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */,
 				000000000000000000000010 /* PennyClient */,
 				D18FD9B52FF98AC900225D47 /* PennyClientTests */,
+				E10000000000000000000002 /* PennyClientUITests */,
 				A10000000000000000000003 /* PennyServices/Tests/PennyServicesTests */,
 				000000000000000000000020 /* Products */,
 			);
@@ -99,6 +120,7 @@
 				D1F83D832FF9A0000010DBDD /* PennyTestflight.app */,
 				D18FD9B42FF98AC900225D47 /* PennyClientTests.xctest */,
 				A10000000000000000000002 /* PennyServicesStandaloneTests.xctest */,
+				E10000000000000000000001 /* PennyClientUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -174,6 +196,31 @@
 			productReference = D18FD9B42FF98AC900225D47 /* PennyClientTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		E10000000000000000000003 /* PennyClientUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E10000000000000000000009 /* Build configuration list for PBXNativeTarget "PennyClientUITests" */;
+			buildPhases = (
+				E10000000000000000000005 /* Sources */,
+				E10000000000000000000004 /* Frameworks */,
+				E10000000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E1000000000000000000000A /* PBXTargetDependency */,
+				E1000000000000000000000C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E10000000000000000000002 /* PennyClientUITests */,
+			);
+			name = PennyClientUITests;
+			packageProductDependencies = (
+				B00000000000000000000004 /* PennyDesign */,
+			);
+			productName = PennyClientUITests;
+			productReference = E10000000000000000000001 /* PennyClientUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		D1F83D852FF9A0000010DBDD /* PennyTestflight */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D1F83D882FF9A0000010DBDD /* Build configuration list for PBXNativeTarget "PennyTestflight" */;
@@ -220,6 +267,10 @@
 					D1F83D852FF9A0000010DBDD = {
 						CreatedOnToolsVersion = 26.3;
 					};
+					E10000000000000000000003 = {
+						CreatedOnToolsVersion = 27.2;
+						TestTargetID = 000000000000000100000000;
+					};
 				};
 			};
 			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "PennyClient" */;
@@ -247,6 +298,7 @@
 				D1F83D852FF9A0000010DBDD /* PennyTestflight */,
 				D18FD9B32FF98AC900225D47 /* PennyClientTests */,
 				A10000000000000000000005 /* PennyServicesStandaloneTests */,
+				E10000000000000000000003 /* PennyClientUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -272,6 +324,11 @@
 			isa = PBXResourcesBuildPhase;
 			files = (
 				D1F83D822FF9A0000010DBDD /* PennyClient.xctestplan in Resources */,
+			);
+		};
+		E10000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -320,6 +377,11 @@
 			files = (
 			);
 		};
+		E10000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -339,6 +401,15 @@
 			isa = PBXTargetDependency;
 			target = 000000000000000100000000 /* PennyDev */;
 			targetProxy = D18FD9B82FF98AC900225D47 /* PBXContainerItemProxy */;
+		};
+		E1000000000000000000000A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = E1000000000000000000000B /* SwiftLintBuildToolPlugin */;
+		};
+		E1000000000000000000000C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000100000000 /* PennyDev */;
+			targetProxy = E1000000000000000000000D /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -813,6 +884,51 @@
 			};
 			name = Release;
 		};
+		E10000000000000000000007 /* Debug configuration for PBXNativeTarget "PennyClientUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P87URHZFZ4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.leveltenpaladin.PennyClientUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PennyDev;
+			};
+			name = Debug;
+		};
+		E10000000000000000000008 /* Release configuration for PBXNativeTarget "PennyClientUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P87URHZFZ4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.leveltenpaladin.PennyClientUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PennyDev;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -853,6 +969,14 @@
 			buildConfigurations = (
 				D1F83D892FF9A0000010DBDD /* Debug configuration for PBXNativeTarget "PennyTestflight" */,
 				D1F83D8A2FF9A0000010DBDD /* Release configuration for PBXNativeTarget "PennyTestflight" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		E10000000000000000000009 /* Build configuration list for PBXNativeTarget "PennyClientUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E10000000000000000000007 /* Debug configuration for PBXNativeTarget "PennyClientUITests" */,
+				E10000000000000000000008 /* Release configuration for PBXNativeTarget "PennyClientUITests" */,
 			);
 			defaultConfigurationName = Release;
 		};
@@ -914,6 +1038,11 @@
 			productName = "plugin:SwiftLintBuildToolPlugin";
 		};
 		D102352C2FFF4855008CD9FF /* SwiftLintBuildToolPlugin */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */;
+			productName = "plugin:SwiftLintBuildToolPlugin";
+		};
+		E1000000000000000000000B /* SwiftLintBuildToolPlugin */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */;
 			productName = "plugin:SwiftLintBuildToolPlugin";
