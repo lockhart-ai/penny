@@ -10,7 +10,8 @@
  * address, and the picture is whatever the card renders for itself — its
  * `<img>`, a `<picture>` source, or an og:image-style meta — with the
  * lazy-loading placeholder shapes resolved to the address the real picture
- * sits at, and what the page repeats across cards (logos, icons) dropped.
+ * sits at, an icon skipped by its known size or by its address (a favicon,
+ * however served), and what the page repeats across cards (logos) dropped.
  *
  * Pure over the given Document — jsdom in the tests, the live page in the
  * content script.  jsdom has no layout, so a rendered size is only read when
@@ -43,6 +44,11 @@ const MAX_CARD_ANCESTORS = 4;
 /** The picture selectors tried inside a card, in the order a card renders
  *  them: its `<img>`, a `<picture>` source, an og:image-style meta. */
 const META_IMAGE_SELECTOR = 'meta[property="og:image"], meta[itemprop="image"]';
+
+/** An address naming a favicon, not a card's own picture — a convention every
+ *  site shares (a search result's only image is often its site icon, served
+ *  through a favicon proxy), never a per-site rule. */
+const FAVICON_PATTERN = /favicon/i;
 
 /** One thumbnail entry per distinct link, in document order, capped — then
  *  whatever the page repeats across cards is dropped. */
@@ -102,22 +108,28 @@ function cardImage(card: Element, doc: Document): string | null {
   return imageFromImg(card, doc) ?? imageFromSource(card, doc) ?? imageFromMeta(card, doc);
 }
 
+/** The card's first `<img>` that passes the known-size and favicon checks,
+ *  not only its first `<img>` — a card whose first image is an icon or an
+ *  avatar still gets its photo from whichever image further down is it. */
 function imageFromImg(card: Element, doc: Document): string | null {
-  const img = card.querySelector("img");
-  if (img === null || knownSizeBelow(img)) return null;
-  return absolute(imgValue(img), doc);
+  for (const img of card.querySelectorAll<HTMLImageElement>("img")) {
+    if (knownSizeBelow(img)) continue;
+    const address = resolvedPicture(imgValue(img), doc);
+    if (address !== null) return address;
+  }
+  return null;
 }
 
 function imageFromSource(card: Element, doc: Document): string | null {
   const source = card.querySelector("picture source");
   if (source === null) return null;
   const set = source.getAttribute("srcset") ?? source.getAttribute("data-srcset") ?? "";
-  return absolute(largestSrcsetCandidate(set) ?? "", doc);
+  return resolvedPicture(largestSrcsetCandidate(set) ?? "", doc);
 }
 
 function imageFromMeta(card: Element, doc: Document): string | null {
   const meta = card.querySelector(META_IMAGE_SELECTOR);
-  return absolute(meta?.getAttribute("content") ?? "", doc);
+  return resolvedPicture(meta?.getAttribute("content") ?? "", doc);
 }
 
 /** The `<img>`'s real address.  A src that is missing, a data URI, or a known
@@ -143,16 +155,36 @@ function isPlaceholder(value: string): boolean {
 /** The largest candidate in a srcset — the one with the highest width (w) or
  *  density (x) descriptor; a bare candidate counts as 1x, the way the browser
  *  reads it. */
-function largestSrcsetCandidate(value: string): string | null {
+export function largestSrcsetCandidate(value: string): string | null {
   let best: { url: string; score: number } | null = null;
-  for (const candidate of value.split(",")) {
-    const trimmed = candidate.trim();
-    if (trimmed === "") continue;
-    const [url, ...descriptors] = trimmed.split(/\s+/);
+  for (const { url, descriptors } of srcsetCandidates(value)) {
     const score = srcsetScore(descriptors);
     if (score !== null && (best === null || score > best.score)) best = { url, score };
   }
   return best?.url ?? null;
+}
+
+/** A srcset's candidates, parsed to the HTML grammar rather than split on
+ *  every comma: a candidate's URL runs up to the next whitespace — and may
+ *  itself hold commas, the way some CDNs encode an image id in the path —
+ *  while candidates are separated by a comma after the descriptor, and a
+ *  trailing comma left on a descriptor-less URL is stripped. */
+function srcsetCandidates(value: string): { url: string; descriptors: string[] }[] {
+  const candidates: { url: string; descriptors: string[] }[] = [];
+  let i = 0;
+  while (i < value.length) {
+    while (i < value.length && /[\s,]/.test(value[i]!)) i++;
+    if (i >= value.length) break;
+    const urlStart = i;
+    while (i < value.length && !/\s/.test(value[i]!)) i++;
+    const url = value.slice(urlStart, i).replace(/,+$/, "");
+    while (i < value.length && /\s/.test(value[i]!)) i++;
+    const descriptorsStart = i;
+    while (i < value.length && value[i] !== ",") i++;
+    const descriptors = value.slice(descriptorsStart, i).trim().split(/\s+/).filter(Boolean);
+    if (url !== "") candidates.push({ url, descriptors });
+  }
+  return candidates;
 }
 
 /** One candidate's size on the single scale the comparison needs: a width
@@ -167,6 +199,15 @@ function srcsetScore(descriptors: string[]): number | null {
   return number;
 }
 
+/** The address made absolute against the page's own base, kept only when it
+ *  names something fetchable over http(s) and isn't an icon by address — a
+ *  data URI, a relative path that fails to resolve, or a favicon all read as
+ *  no picture here, never as this candidate's picture. */
+function resolvedPicture(value: string, doc: Document): string | null {
+  const address = absolute(value, doc);
+  return address !== null && !isFaviconAddress(address) ? address : null;
+}
+
 /** The address made absolute against the page's own base — kept only when it
  *  names something fetchable over http(s), never a data URI. */
 function absolute(value: string, doc: Document): string | null {
@@ -179,18 +220,34 @@ function absolute(value: string, doc: Document): string | null {
   }
 }
 
+/** Does this resolved address name a favicon?  The word in the path or the
+ *  query, or an ICO extension — the one check every site's icon shares,
+ *  however it serves it (a direct file, a favicon proxy). */
+function isFaviconAddress(url: string): boolean {
+  try {
+    const { pathname, search } = new URL(url);
+    return FAVICON_PATTERN.test(pathname + search) || pathname.toLowerCase().endsWith(".ico");
+  } catch {
+    return false;
+  }
+}
+
 /** Is this image KNOWN to render under the icon threshold?  The width/height
- *  attributes decide when present; otherwise the rendered box decides only
- *  when it is non-zero — a zero box is "no layout here", never "zero-sized". */
+ *  attributes decide when present, then the rendered box when it is non-zero
+ *  — a zero box is "no layout here", never "zero-sized" — and last the
+ *  loaded image's own natural size, read only once it has loaded. */
 function knownSizeBelow(img: HTMLImageElement): boolean {
   for (const attribute of [img.getAttribute("width"), img.getAttribute("height")]) {
     const size = Number(attribute);
     if (Number.isFinite(size) && size > 0 && size < MIN_KNOWN_SIZE) return true;
   }
   const box = img.getBoundingClientRect();
-  return (
-    (box.width > 0 && box.width < MIN_KNOWN_SIZE) || (box.height > 0 && box.height < MIN_KNOWN_SIZE)
-  );
+  if ((box.width > 0 && box.width < MIN_KNOWN_SIZE) || (box.height > 0 && box.height < MIN_KNOWN_SIZE)) {
+    return true;
+  }
+  return img.complete && img.naturalWidth > 0
+    ? img.naturalWidth < MIN_KNOWN_SIZE || img.naturalHeight < MIN_KNOWN_SIZE
+    : false;
 }
 
 /** The pass drops what a front page repeats across cards: an address two or
