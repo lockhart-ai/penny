@@ -631,6 +631,15 @@ def check_description(description: str) -> str | None:
 #              prompts to ``update_entry`` instead, which was a surface-scope correction
 #              for a tool a cycle cannot call, not a rename — so it is deliberately not
 #              what this table says)
+#   #3127      collection_list / collection_get / collection_keys / collection_write /
+#              log_read / log_get / log_append → memory_access (the unified read/write);
+#              collection_configure / collection_archive / collection_remove →
+#              memory_admin (the unified admin surface) — the experiment arm that
+#              resolves a store's shape in code instead of the model picking between a
+#              collection verb and a log verb.  No prod-data migration rewrote stored
+#              prompts for this one (the arm may not ship), so every entry below that
+#              used to point at one of these names is repointed straight at the tool it
+#              now resolves to, same as every other rename here.
 # and names that were never tools at all, recurring enough for a migration to sweep them:
 #   0039/0059  read_last → read_latest → collection_read_latest
 #   0040/0057  log_read_log → log_read_next → log_read
@@ -652,35 +661,39 @@ def check_description(description: str) -> str | None:
 # surface lacks falls through to the string leg like any other miss.
 LEGACY_TOOL_RENAMES: dict[str, str] = {
     "collection_metadata": "memory_get",
-    "collection_update": "collection_configure",
-    "collection_set": "collection_configure",
+    "collection_update": "memory_admin",
+    "collection_set": "memory_admin",
     "memory_metadata": "memory_get",
-    "log_read_log": "log_read",
-    "log_read_next": "log_read",
-    "log_read_recent": "log_read",
+    "log_read_log": "memory_access",
+    "log_read_next": "memory_access",
+    "log_read_recent": "memory_access",
     # Each of these two once pointed at collection_read_latest; #2307 renamed THAT
-    # tool too, so both are repointed straight at the name it ended up with —
-    # resolution is one hop, never a chain.
-    "read_last": "collection_list",
-    "read_latest": "collection_list",
-    "collection_read_latest": "collection_list",
-    "collection_delete_entry": "collection_remove",
-    # A value stored under a key is written with the collection's one write call.
-    "update_entry": "collection_write",
+    # tool too, and #3127 folded it (and every other read/write verb) onto
+    # memory_access — repointed straight at the tool it ended up with, one hop,
+    # never a chain.
+    "read_last": "memory_access",
+    "read_latest": "memory_access",
+    "collection_read_latest": "memory_access",
+    "collection_delete_entry": "memory_admin",
+    # A value stored under a key is written with the unified write action.
+    "update_entry": "memory_access",
     # collection_read_random pointed at collection_sample, which #2812 folded into
-    # collection_list(order='random') — repointed straight at the tool it ended up
-    # with, one hop, never a chain.
-    "collection_read_random": "collection_list",
-    "collection_sample": "collection_list",
-    # The archive/unarchive pair folded onto one tool (#2812): both retired names
-    # point at the tool that replaced them, which takes the direction as `archived`.
-    "collection_unarchive": "collection_archive",
+    # collection_list(order='random'), which #3127 folded into memory_access's
+    # `read` action — repointed straight at the tool it ended up with, one hop,
+    # never a chain.
+    "collection_read_random": "memory_access",
+    "collection_sample": "memory_access",
+    # The archive/unarchive pair folded onto one tool (#2812), which #3127 folded
+    # into memory_admin's `archive`/`restore` actions: both retired names point at
+    # the tool that replaced them.
+    "collection_unarchive": "memory_admin",
     # The mute/unmute pair folded onto one tool (#2812): both retired names point
     # at the tool that replaced them, which takes the direction as `on`.
     "notifications_mute": "notifications_set",
     "notifications_unmute": "notifications_set",
-    # A key either reads back something or it doesn't — collection_get answers that.
-    "exists": "collection_get",
+    # A key either reads back something or it doesn't — memory_access's `get_item`
+    # action answers that.
+    "exists": "memory_access",
     # Reading one skill by name is skill_get (#2305).
     "skill_read": "skill_get",
     # A source's runs are listed by run_list, one is read by run_get; the retired
@@ -688,6 +701,18 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     "read_run_calls": "run_list",
     "get_event": "run_get",
     "collector_run_history": "run_list",
+    # #3127 — the experiment arm's own retirements: every per-verb collection/log
+    # tool resolves to whichever of the two unified tools replaced it.
+    "collection_list": "memory_access",
+    "collection_get": "memory_access",
+    "collection_keys": "memory_access",
+    "collection_write": "memory_access",
+    "log_read": "memory_access",
+    "log_get": "memory_access",
+    "log_append": "memory_access",
+    "collection_configure": "memory_admin",
+    "collection_archive": "memory_admin",
+    "collection_remove": "memory_admin",
 }
 
 
@@ -747,12 +772,13 @@ def require_non_degenerate_content(value: str) -> str:
     degenerate (blank, bare URL, or a known bail-out phrase).
 
     Mirrors the corpus write filter (:func:`degenerate_reason`) at the tool
-    surface, pointing the model at ``collection_remove`` if removal was the
-    intent rather than a replacement.
+    surface, pointing the model at ``memory_admin``'s ``delete`` action if
+    removal was the intent rather than a replacement.
     """
     if reason := degenerate_reason(value):
         raise ValueError(
             f"replacement content rejected — {reason}. Provide the full replacement "
-            f"text, or use collection_remove if you meant to remove the entry."
+            f"text, or use memory_admin{{action: 'delete'}} if you meant to remove "
+            f"the entry."
         )
     return value

@@ -70,7 +70,7 @@ from penny.tools.base import PLAN_MESSAGE_PREFIX
 from penny.tools.memory_tools import (
     CollectionSetTool,
     DoneTool,
-    LogReadTool,
+    MemoryAccessTool,
     build_memory_tools,
 )
 
@@ -170,27 +170,28 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
         author="user",
     )
 
-    def _log_read_for(collection: str) -> LogReadTool:
+    def _memory_access_for(collection: str) -> MemoryAccessTool:
         # A program that READS the log — the surface is scoped to its calls (#1911), so
         # the tool under test is on it because the routine names it.
         db.memories.create_collection(
-            collection, "d", extraction_prompt='1. log_read(log="chatter")'
+            collection, "d", extraction_prompt='1. memory_access(target="chatter", action="read")'
         )
         collector._bind(db.memories.get(collection))
-        tool = next(t for t in collector.get_tools() if isinstance(t, LogReadTool))
+        tool = next(t for t in collector.get_tools() if isinstance(t, MemoryAccessTool))
         collector._bind(None)
         return tool
 
-    alpha = _log_read_for("alpha")
-    alpha_result = await alpha.execute(CallLink.new_top(), log="chatter")
+    alpha = _memory_access_for("alpha")
+    alpha_result = await alpha.execute(CallLink.new_top(), target="chatter", action="read")
     assert "hello there" in alpha_result.message
     # Framing: the read leads with a count + source header so the model reads
     # the body as fetched data, not a fresh instruction.
     assert "1 entry from `chatter`" in alpha_result.message
     alpha.commit_pending()  # advance alpha's cursor past the entry
 
-    beta = _log_read_for("beta")
-    assert "hello there" in (await beta.execute(CallLink.new_top(), log="chatter")).message, (
+    beta = _memory_access_for("beta")
+    beta_result = await beta.execute(CallLink.new_top(), target="chatter", action="read")
+    assert "hello there" in beta_result.message, (
         "beta starved by alpha's cursor — collections share one cursor"
     )
 
@@ -347,20 +348,18 @@ async def test_get_tools_raises_outside_cycle(test_config, tmp_path):
 
 # ── Scoped tool surface: a cadence run cannot reshape the registry (#1556) ──
 
-_LIFECYCLE_TOOL_NAMES = frozenset(
-    {
-        "collection_configure",
-        # Folded onto one tool (#2812): archived=true/false.
-        "collection_archive",
-        "log_create",
-    }
-)
+# ``log_create`` is the one tool still structurally ABSENT from a collector's
+# surface (#3127 folded ``collection_configure``/``collection_archive`` into
+# ``memory_admin``, which stays on every surface so a scoped cycle keeps the
+# ``delete`` action — see ``test_collector_surface_refuses_lifecycle_actions_on_memory_admin``
+# for where the create/reconfigure/archive/restore invariant now lives: a
+# structural REFUSAL inside the one tool, not the tool's absence).
+_LIFECYCLE_TOOL_NAMES = frozenset({"log_create"})
 
 
 def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
-    """A cadence-fired collector run cannot reshape the registry: the lifecycle tools
-    are ABSENT, not merely discouraged, so a background poll cannot create,
-    reconfigure, merge, or archive a mechanism.
+    """A cadence-fired collector run cannot start a new log: ``log_create`` is
+    ABSENT, not merely discouraged.
 
     Asserted against the collector's real cycle surface — the inherited
     ``BackgroundAgent.get_tools()`` default (#2455 naive baseline) — since that is
@@ -375,8 +374,39 @@ def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
     assert names.isdisjoint(_LIFECYCLE_TOOL_NAMES), (
         f"collector surface leaked lifecycle tools: {names & _LIFECYCLE_TOOL_NAMES}"
     )
-    # It keeps its actual job: reads, scoped entry writes, browse, choose.
-    assert {"collection_write", "collection_list", "browse", "choose"} <= names
+    # It keeps its actual job: reads, scoped entry writes, browse, choose — and
+    # memory_admin for the one action a scoped cycle still carries (delete).
+    assert {"memory_access", "memory_admin", "browse", "choose"} <= names
+
+
+@pytest.mark.asyncio
+async def test_collector_surface_refuses_lifecycle_actions_on_memory_admin(test_config, tmp_path):
+    """#3127's own invariant: ``memory_admin`` stays on a scoped collector's
+    surface (so ``delete`` is reachable, per the corrections runtime rule,
+    #1783), but its ``configure``/``archive``/``restore`` actions are refused
+    structurally whenever the call is scope-bound — the same "a background job
+    cannot create, reconfigure, or archive a mechanism" invariant
+    ``test_collector_surface_excludes_lifecycle_tools`` pinned by the tool's
+    absence before this fold, now pinned by the refusal inside the one tool
+    that replaced it."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection("watch", "d")
+    collector._bind(db.memories.get("watch"))
+    try:
+        admin = next(tool for tool in collector.get_tools() if tool.name == "memory_admin")
+        for action in ("configure", "archive", "restore"):
+            result = await admin.execute(
+                CallLink.new_top(), target="watch", action=action, params={}
+            )
+            assert result.success is False
+            assert "background job" in result.message
+        # delete stays reachable — the one action the corrections runtime rule needs.
+        delete_result = await admin.execute(
+            CallLink.new_top(), target="watch", action="delete", params={"key": "nope"}
+        )
+        assert "background job" not in delete_result.message
+    finally:
+        collector._bind(None)
 
 
 def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
@@ -408,8 +438,9 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
     }
     assert chat_names >= _LIFECYCLE_TOOL_NAMES
     assert collector_names.isdisjoint(_LIFECYCLE_TOOL_NAMES)
-    # Reads + entry mutations are present in BOTH — only the lifecycle tier differs.
-    assert {"collection_write", "collection_list"} <= collector_names <= chat_names
+    # Reads + entry mutations + memory_admin are present in BOTH — only the
+    # log_create lifecycle tier differs.
+    assert {"memory_access", "memory_admin"} <= collector_names <= chat_names
 
 
 # ── Schedule gating: the RRULE decides when a collection is due (#1857) ──────
@@ -846,10 +877,11 @@ async def test_expiry_passing_mid_cycle_archives_post_cycle(mock_llm, test_confi
         if count == 1:  # a working step, then the close — an ordinary cycle shape
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "expiring-watch",
-                    "entries": [{"key": "today", "content": "a fact"}],
+                    "target": "expiring-watch",
+                    "action": "write",
+                    "payload": {"entries": [{"key": "today", "content": "a fact"}]},
                 },
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
@@ -977,10 +1009,12 @@ async def test_build_system_prompt_carries_no_job_identity(test_config, tmp_path
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
-        "- Single batched `collection_write{entries: [...]}` per cycle — not one call per entry.\n"
-        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
-        "keeps one value per key and replaces the stored content in place. If the entry should "
-        "be removed instead: `collection_remove{key: <key>}`.\n"
+        "- Single batched `memory_access{action: 'write', payload: {entries: [...]}}` per "
+        "cycle — not one call per entry.\n"
+        "- To correct an entry: `memory_access{action: 'write'}` it under the key it is "
+        "stored under — the store keeps one value per key and replaces the stored content "
+        "in place. If the entry should be removed instead: "
+        "`memory_admin{action: 'delete', params: {key: <key>}}`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
@@ -1286,15 +1320,16 @@ def _program_handler(
         results = _results_so_far(request)
         if results == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_access", {"target": "indie-metroidvanias", "action": "read"}
             )
         if results == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "indie-metroidvanias",
-                    "entries": [{"key": key, "content": content}],
+                    "target": "indie-metroidvanias",
+                    "action": "write",
+                    "payload": {"entries": [{"key": key, "content": content}]},
                 },
             )
         closing_notify = False if (notify and _write_said_unchanged(request)) else notify
@@ -1495,7 +1530,9 @@ def _one_step_then_cancel(mock_llm) -> Callable[[dict, int], LlmResponse]:
     def handler(request: dict, count: int) -> LlmResponse:
         if _results_so_far(request) == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request,
+                "memory_access",
+                {"target": "indie-metroidvanias", "action": "read"},
             )
         raise asyncio.CancelledError
 
@@ -1549,7 +1586,7 @@ async def test_a_sandbox_cycle_cancelled_by_a_shutdown_is_reported_as_interrupte
     assert lines[1] == "What the job is for: Indie metroidvania releases"
     # The one step the run got through renders in the trace, and the record ends
     # in the interrupted ending — never the finished sandbox stamp.
-    assert "step 1: collection_list{collection: 'indie-metroidvanias'}" in rendered
+    assert "step 1: memory_access{target: 'indie-metroidvanias', action: 'read'}" in rendered
     assert "ended: interrupted by a restart" in rendered
     assert "ended: sandbox" not in rendered
     assert "is complete" not in rendered
@@ -1631,17 +1668,20 @@ def _bad_done_then_close(mock_llm, bad_args: dict):
         results = _results_so_far(request)
         if results == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_access", {"target": "indie-metroidvanias", "action": "read"}
             )
         if results == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "indie-metroidvanias",
-                    "entries": [
-                        {"key": "Cinder Drift", "content": "out now. https://ex.example/cd"}
-                    ],
+                    "target": "indie-metroidvanias",
+                    "action": "write",
+                    "payload": {
+                        "entries": [
+                            {"key": "Cinder Drift", "content": "out now. https://ex.example/cd"}
+                        ]
+                    },
                 },
             )
         last = _last_tool_result(request)
@@ -1729,7 +1769,7 @@ def _read_only_handler(mock_llm, *, notify: bool = True):
     def handler(request: dict, count: int) -> LlmResponse:
         if _results_so_far(request) == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_access", {"target": "indie-metroidvanias", "action": "read"}
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": notify})
 
@@ -1958,10 +1998,11 @@ def _writes_then_dies(mock_llm, *, key: str, content: str):
         if calls == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "indie-metroidvanias",
-                    "entries": [{"key": key, "content": content}],
+                    "target": "indie-metroidvanias",
+                    "action": "write",
+                    "payload": {"entries": [{"key": key, "content": content}]},
                 },
             )
         raise LlmConnectionError("Connection refused")
@@ -2064,10 +2105,13 @@ async def test_a_cycle_cut_short_leaves_nothing_behind_either(mock_llm, test_con
         if calls == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "indie-metroidvanias",
-                    "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — out now."}],
+                    "target": "indie-metroidvanias",
+                    "action": "write",
+                    "payload": {
+                        "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — out now."}]
+                    },
                 },
             )
         raise asyncio.CancelledError
@@ -2137,8 +2181,12 @@ async def test_an_unchanged_write_keeps_what_the_cycle_wrote_before_it(
             )
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
-                {"collection": "indie-metroidvanias", "entries": [entry]},
+                "memory_access",
+                {
+                    "target": "indie-metroidvanias",
+                    "action": "write",
+                    "payload": {"entries": [entry]},
+                },
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
@@ -2230,14 +2278,21 @@ def _reads_then_writes(mock_llm, *, close: bool):
         nonlocal calls
         calls += 1
         if calls == 1:
-            return mock_llm._make_tool_call_response(request, "log_read", {"log": "release-feed"})
+            return mock_llm._make_tool_call_response(
+                request, "memory_access", {"target": "release-feed", "action": "read"}
+            )
         if calls == 2:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "indie-metroidvanias",
-                    "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — next spring."}],
+                    "target": "indie-metroidvanias",
+                    "action": "write",
+                    "payload": {
+                        "entries": [
+                            {"key": "Cinder Drift", "content": "Cinder Drift — next spring."}
+                        ]
+                    },
                 },
             )
         if close:
@@ -2463,10 +2518,12 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
-        "- Single batched `collection_write{entries: [...]}` per cycle — not one call per entry.\n"
-        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
-        "keeps one value per key and replaces the stored content in place. If the entry should "
-        "be removed instead: `collection_remove{key: <key>}`.\n"
+        "- Single batched `memory_access{action: 'write', payload: {entries: [...]}}` per "
+        "cycle — not one call per entry.\n"
+        "- To correct an entry: `memory_access{action: 'write'}` it under the key it is "
+        "stored under — the store keeps one value per key and replaces the stored content "
+        "in place. If the entry should be removed instead: "
+        "`memory_admin{action: 'delete', params: {key: <key>}}`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
@@ -3015,7 +3072,7 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     def handler(request: dict, count: int) -> LlmResponse:
         if count == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "indie-metroidvanias"}
+                request, "memory_access", {"target": "indie-metroidvanias", "action": "read"}
             )
         raise LlmConnectionError("Connection refused")
 
@@ -3027,7 +3084,7 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     assert len(runs) == 1
     assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
     assert runs[0]["run_reason"] == (
-        "model call failed at step 2 after collection_list: LlmConnectionError: Connection refused"
+        "model call failed at step 2 after memory_access: LlmConnectionError: Connection refused"
     )
 
 
@@ -3141,10 +3198,13 @@ def _writes_then_closes(mock_llm) -> Callable[[dict, int], LlmResponse]:
         if calls == 1:
             return mock_llm._make_tool_call_response(
                 request,
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "morning-briefing",
-                    "entries": [{"key": "today", "content": "the ferries are running"}],
+                    "target": "morning-briefing",
+                    "action": "write",
+                    "payload": {
+                        "entries": [{"key": "today", "content": "the ferries are running"}]
+                    },
                 },
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
@@ -3240,7 +3300,7 @@ async def test_a_budget_spent_cadence_failure_queues_the_failure_event(
         # transport — the aborted-cycle shape the retry bound exists for.
         if count % 2 == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "morning-briefing"}
+                request, "memory_access", {"target": "morning-briefing", "action": "read"}
             )
         raise LlmConnectionError("Connection refused")
 
@@ -3286,7 +3346,7 @@ async def test_a_quiet_completed_cycle_still_consumes_its_occurrence(
     def reads_then_closes(request: dict, count: int) -> LlmResponse:
         if count == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_list", {"collection": "morning-briefing"}
+                request, "memory_access", {"target": "morning-briefing", "action": "read"}
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
@@ -3454,7 +3514,7 @@ async def test_run_for_collection_not_found(test_config, tmp_path):
     assert "does-not-exist" in message
     assert "not found" in message
     # matches the house memory-not-found wording (str(MemoryNotFoundError))
-    assert "collection_configure" in message
+    assert "memory_admin" in message
 
 
 @pytest.mark.asyncio
@@ -3466,7 +3526,7 @@ async def test_run_for_archived_collection(test_config, tmp_path):
     assert success is False
     assert "archived" in message
     # names the exact recovery move — restore this collection (#2812: the folded tool)
-    assert "collection_archive{'archived-col', archived: false}" in message
+    assert "memory_admin{target: 'archived-col', action: 'restore'}" in message
 
 
 @pytest.mark.asyncio
@@ -3476,7 +3536,7 @@ async def test_run_for_no_extraction_prompt(test_config, tmp_path):
     success, message = await collector.run_for("bare-col")
     assert success is False
     assert "extraction_prompt" in message
-    assert "collection_configure" in message
+    assert "memory_admin" in message
 
 
 @pytest.mark.asyncio

@@ -605,7 +605,7 @@ async def test_related_exchanges_render_in_the_dynamic_section(db, make_config):
     assert section == (
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · Oct 12 14:05 (messages {ask_id}, reply {reply_id}) — "
-        "log_read{'user-messages', day: '2026-10-12'}\n"
+        "memory_access{target: 'user-messages', action: 'read', payload: {day: '2026-10-12'}}\n"
         f'User: "{_PLAN_ASK}"\n'
         f'Penny: "{_PLAN_REPLY}"'
     )
@@ -729,11 +729,11 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
     assert section == (
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · Oct 12 14:20 (messages {second_ask}, reply {second_reply}) — "
-        "log_read{'user-messages', day: '2026-10-12'}\n"
+        "memory_access{target: 'user-messages', action: 'read', payload: {day: '2026-10-12'}}\n"
         'User: "alpha bravo charlie delta — partial notes"\n'
         'Penny: "delta notes, and the rest."\n\n'
         f"Related earlier exchange · Oct 12 14:25 (messages {top_ask}, reply {top_reply}) — "
-        "log_read{'user-messages', day: '2026-10-12'}\n"
+        "memory_access{target: 'user-messages', action: 'read', payload: {day: '2026-10-12'}}\n"
         'User: "alpha bravo charlie delta echo foxtrot — the full plan"\n'
         f'Penny: "{long_reply[:600]}…"'
     )
@@ -842,7 +842,8 @@ async def test_related_exchange_on_a_map_line_renders_her_reply_alone(db, make_c
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · {_map_stamp(db, now)} "
         f"(messages {ask_id}, reply {reply_id}) — "
-        f"log_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
+        f"memory_access{{target: 'user-messages', action: 'read', payload: "
+        f"{{day: '{_map_day(db, now)}'}}}}\n"
         f'Penny: "{_MAP_REPLY}"'
     )
 
@@ -882,7 +883,8 @@ async def test_related_exchange_on_a_folded_day_renders_both_sides(db, make_conf
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · {_map_stamp(db, yesterday)} "
         f"(messages {ask_id}, reply {reply_id}) — "
-        f"log_read{{'user-messages', day: '{_map_day(db, yesterday)}'}}\n"
+        f"memory_access{{target: 'user-messages', action: 'read', payload: "
+        f"{{day: '{_map_day(db, yesterday)}'}}}}\n"
         f'User: "{_MAP_ASK}"\n'
         f'Penny: "{_MAP_REPLY}"'
     )
@@ -919,7 +921,8 @@ async def test_related_exchange_longer_than_the_clip_keeps_both_sides(db, make_c
         "## Related earlier exchanges\n\n"
         f"Related earlier exchange · {_map_stamp(db, now)} "
         f"(messages {ask_id}, reply {reply_id}) — "
-        f"log_read{{'user-messages', day: '{_map_day(db, now)}'}}\n"
+        f"memory_access{{target: 'user-messages', action: 'read', payload: "
+        f"{{day: '{_map_day(db, now)}'}}}}\n"
         f'User: "{_MAP_ASK_MULTILINE}"\n'
         f'Penny: "{_MAP_REPLY}"'
     )
@@ -1017,7 +1020,10 @@ def test_a_run_that_called_tools_renders_them_natively_into_a_later_turns_histor
     write_call = expanded[2].tool_calls[0]
     assert browse_call.function.name == "browse"
     assert browse_call.function.arguments == {"url": "https://example.com"}
-    assert write_call.function.name == "collection_write"
+    # The replayed name is the CURRENT one (#3127 resolves a retired per-verb
+    # name the same way history-expansion reads any other stored field) — the
+    # row's own arguments stay exactly as logged, in the retired verb's shape.
+    assert write_call.function.name == "memory_access"
     assert write_call.function.arguments == {
         "collection": "weather_log",
         "entries": [{"content": "Sunny, 18C"}],
@@ -1416,12 +1422,17 @@ async def test_collection_configure_stamps_chat_provenance(
                     LlmToolCall(
                         id="call_0",
                         function=LlmToolCallFunction(
-                            name="collection_configure",
+                            name="memory_admin",
                             arguments={
-                                "collection": "indie-platformers",
-                                "description": "a running list of new indie platformers",
-                                "prompt": "Browse for new indie platformers and note each one.",
-                                "schedule": "FREQ=HOURLY",
+                                "target": "indie-platformers",
+                                "action": "configure",
+                                "params": {
+                                    "description": "a running list of new indie platformers",
+                                    "prompt": (
+                                        "Browse for new indie platformers and note each one."
+                                    ),
+                                    "schedule": "FREQ=HOURLY",
+                                },
                             },
                         ),
                     )
@@ -1546,10 +1557,11 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
         if not tool_turns:  # the write that LANDS
             return _tool_call(
                 "c0",
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "lantern-prices",
-                    "entries": [{"key": "keel lantern", "content": "$18"}],
+                    "target": "lantern-prices",
+                    "action": "write",
+                    "payload": {"entries": [{"key": "keel lantern", "content": "$18"}]},
                 },
             )
         if not drew_the_second["hit"]:
@@ -1559,10 +1571,11 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
             drew_the_second["hit"] = True
             return _tool_call(
                 "c1",
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "lantern-prices",
-                    "entries": [{"key": "aurora lantern", "content": _COLLAPSE}],
+                    "target": "lantern-prices",
+                    "action": "write",
+                    "payload": {"entries": [{"key": "aurora lantern", "content": _COLLAPSE}]},
                 },
             )
         # The collapse was discarded and re-rolled on the UNCHANGED context: tool_turns
@@ -1617,10 +1630,11 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
         if not [m for m in messages if m.get("role") == "tool"]:
             return _tool_call(
                 "c0",
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "lantern-prices",
-                    "entries": [{"key": "keel lantern", "content": "$18"}],
+                    "target": "lantern-prices",
+                    "action": "write",
+                    "payload": {"entries": [{"key": "keel lantern", "content": "$18"}]},
                 },
             )
         captured["writes"] = _writes_record(messages)
@@ -1641,7 +1655,7 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
             record=(
                 "Nothing this turn tried to keep is in the store. What each try came back "
                 "with:\n"
-                "- `collection_write`: Unchanged: 'keel lantern' already holds the same "
+                "- `memory_access`: Unchanged: 'keel lantern' already holds the same "
                 "value — no change since the last write (entry)."
             )
         )
@@ -1667,20 +1681,22 @@ async def test_a_turn_that_writes_twice_states_the_full_record_each_time(
         if not tool_turns:
             return _tool_call(
                 "c0",
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "lantern-prices",
-                    "entries": [{"key": "keel lantern", "content": "$18"}],
+                    "target": "lantern-prices",
+                    "action": "write",
+                    "payload": {"entries": [{"key": "keel lantern", "content": "$18"}]},
                 },
             )
         if len(tool_turns) == 1:
             seen.append(_writes_record(messages))
             return _tool_call(
                 "c1",
-                "collection_write",
+                "memory_access",
                 {
-                    "collection": "lantern-prices",
-                    "entries": [{"key": "aurora lantern", "content": "$22"}],
+                    "target": "lantern-prices",
+                    "action": "write",
+                    "payload": {"entries": [{"key": "aurora lantern", "content": "$22"}]},
                 },
             )
         seen.append(_writes_record(messages))
@@ -1732,7 +1748,7 @@ async def test_a_turn_that_wrote_nothing_narrates_nothing(
             saw_writes["hit"] = True
             return _text("(this should never be reached)")
         if not [m for m in messages if m.get("role") == "tool"]:
-            return _tool_call("c0", "collection_list", {"collection": "weather-notes"})
+            return _tool_call("c0", "memory_access", {"target": "weather-notes", "action": "read"})
         return _text("grey and stubborn about it, same as yesterday 🌫️")
 
     mock_llm.set_response_handler(handler)
@@ -2021,27 +2037,37 @@ async def test_chat_tool_surface_excludes_entry_mutations(
     async with running_penny(test_config) as penny:
         names = {tool.name for tool in penny.chat_agent.get_tools()}
 
-        # Entry mutations — now available to chat (user-directed edits).
-        assert "collection_write" in names
-        assert "collection_remove" in names
-        assert "log_append" in names
+        # Reads + entry mutations, unified (#3127): one tool, dispatched by `action`,
+        # available to chat (user-directed edits) — the per-verb names it replaced
+        # (collection_write/collection_remove/log_append/collection_list/
+        # collection_get/collection_keys/log_read/log_get) are all GONE.
+        assert "memory_access" in names
+        for retired in (
+            "collection_write",
+            "collection_remove",
+            "log_append",
+            "collection_list",
+            "collection_get",
+            "collection_keys",
+            "log_read",
+            "log_get",
+        ):
+            assert retired not in names
 
-        # Lifecycle / shape.
-        assert "collection_configure" in names
-        # The fused surface: the two prior lifecycle verbs are GONE.
-        assert "collection_create" not in names
-        assert "collection_update" not in names
+        # Lifecycle / shape — create/update/archive/restore/delete unified onto
+        # memory_admin (#3127); the retired per-verb names it replaced are GONE.
+        assert "memory_admin" in names
+        for retired in (
+            "collection_configure",
+            "collection_create",
+            "collection_update",
+            "collection_archive",
+            "collection_unarchive",
+            "collection_remove",
+        ):
+            assert retired not in names
         assert "log_create" in names
-        # The archive/unarchive pair is folded onto one tool (#2812): archived=true/false.
-        assert "collection_archive" in names
-        assert "collection_unarchive" not in names
 
-        # Reads.
-        assert "collection_list" in names
-        assert "collection_get" in names
-        # collection_sample is retired (#2812): collection_list(order='random') replaces it.
-        assert "collection_sample" not in names
-        assert "collection_keys" in names
         assert "memory_get" in names
         # Ledger reads: run_list browses a source's runs; run_get resolves
         # one run by the typed id the activity block renders (#1580).
@@ -2639,8 +2665,8 @@ _BASIC_FLOW_LEADING_EXPECTED = (
     "It's fine to greet them back when they greet you; otherwise just pick up the thread.\n"
     "\n"
     "Search memory before browsing. Your memory tools "
-    "(`collection_list{<collection>}`, `find{query: <text>}`, "
-    "`log_read{<log>}`, etc.) read everything stored — the 'Your memory' "
+    "(`memory_access{target: <name>, action: 'read'}`, `find{query: <text>}`, "
+    "etc.) read everything stored — the 'Your memory' "
     "list in the 'Penny's current state' section below names every store you can pull "
     "from, and the mechanisms + recent activity there are your own operational state "
     "(what you're running, what you just did). Only browse if memory doesn't have what "
@@ -2662,14 +2688,16 @@ _BASIC_FLOW_LEADING_EXPECTED = (
     "If they ask for a new job like one you already run, it's fine to offer to set it up "
     "the "
     "same way — name that job and what it does, step by step, and make it a new job with "
-    "`collection_configure{collection: <name>, prompt: <the steps>}` once they agree. When "
+    "`memory_admin{target: <name>, action: 'configure', "
+    "params: {prompt: <the steps>}}` once they agree. When "
     "they ask to change a job you already run — more sources, a different format, a new "
     "time — just change that job, only what they asked for: reconfigure it with "
-    "`collection_configure{collection: <that job>}` and tell them what changed. When "
+    "`memory_admin{target: <that job>, action: 'configure', ...}` and tell them what changed. When "
     "nothing you run is like what they ask for, work out how to do it "
     "yourself, and ask for the steps only if you can't.\n"
     "\n"
-    "When something is worth remembering, `collection_write` it — into a collection that "
+    "When something is worth remembering, `memory_access{action: 'write'}` it — into a "
+    "collection that "
     "fits, or under a new name; the write creates the collection if it doesn't exist. "
     "That is a plain write, not a job: no schedule, no notify.\n"
     "\n"
@@ -2756,7 +2784,7 @@ _BASIC_FLOW_SESSION_STATE_EXPECTED = (
     "\n"
     "To look deeper: memory_get{<name>} for a collection's full config and "
     "change history, run_get{run <id>} for one run's tool calls, "
-    "collection_list{<name>} reads a store's entries, and find{query: <text>} "
-    "searches them all by meaning — a collection, a stored entry, or "
-    "something said in the conversation."
+    "memory_access{target: <name>, action: 'read'} reads a store's entries, "
+    "and find{query: <text>} searches them all by meaning — a collection, a "
+    "stored entry, or something said in the conversation."
 )

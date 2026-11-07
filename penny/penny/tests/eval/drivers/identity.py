@@ -193,10 +193,11 @@ class _RecordingDecisionClient(DecisionClient):
 
 
 def _collection_tool(penny: Penny) -> tuple[Tool, _RecordingDecisionClient]:
-    """The real ``collection_write`` tool, built the way production builds the memory
-    surface: through ``build_memory_tools``, with the agent's own embedding client and the
-    decision step constructed from config, exactly as ``Agent.__init__`` does — its
-    decision client wrapped by the driver's recording one."""
+    """The real unified ``memory_access`` tool (#3127 — its ``write`` action is where the
+    entry-identity ladder this driver measures actually runs), built the way production
+    builds the memory surface: through ``build_memory_tools``, with the agent's own
+    embedding client and the decision step constructed from config, exactly as
+    ``Agent.__init__`` does — its decision client wrapped by the driver's recording one."""
     if not penny.config.llm_decision_model:
         raise ValueError(
             "identity_eval measures the entry-identity ladder's decision step: set "
@@ -217,7 +218,7 @@ def _collection_tool(penny: Penny) -> tuple[Tool, _RecordingDecisionClient]:
         name_decider=CollectionNameDecider(recording),
         include_lifecycle=False,
     )
-    return next(tool for tool in tools if tool.name == "collection_write"), recording
+    return next(tool for tool in tools if tool.name == "memory_access"), recording
 
 
 def _seeded_world_check(arm: IdentityArm, seeded: dict[str, str]) -> Check:
@@ -518,8 +519,9 @@ def identity_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                 write_result = await asyncio.wait_for(
                     tool.run(
                         call_link=CallLink.new_top(),
-                        collection=arm.collection,
-                        entries=[{"key": arm.new[0], "content": arm.new[1]}],
+                        target=arm.collection,
+                        action="write",
+                        payload={"entries": [{"key": arm.new[0], "content": arm.new[1]}]},
                     ),
                     timeout=timeout,
                 )
@@ -864,8 +866,13 @@ def sibling_eval(make_config: Callable[..., Config], tmp_path, request) -> Itera
                 write_result = await asyncio.wait_for(
                     tool.run(
                         call_link=CallLink.new_top(),
-                        collection=arm.collection,
-                        entries=[{"key": key, "content": content} for key, content in arm.new],
+                        target=arm.collection,
+                        action="write",
+                        payload={
+                            "entries": [
+                                {"key": key, "content": content} for key, content in arm.new
+                            ]
+                        },
                     ),
                     timeout=timeout,
                 )

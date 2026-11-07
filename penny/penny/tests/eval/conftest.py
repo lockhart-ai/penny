@@ -1525,11 +1525,13 @@ REPLY_ANCHOR = "__reply__"
 def _anchor_hits(needle: str, content: str) -> bool:
     """Does this tool-call row satisfy the anchor? A tool-name anchor (``memory_get(``)
     matches that call; a keyword anchor (``designer``, ``"published": false``) must live inside
-    a ``collection_configure`` call — the row that made the edit — never another tool's reasoning
-    field that merely mentions the word."""
+    a configure call — the row that made the edit — never another tool's reasoning field that
+    merely mentions the word.  Two call shapes name a configure edit: the retired
+    ``collection_configure(`` (older committed fixtures) and #3127's unified
+    ``memory_admin(`` (any fixture using its ``action: 'configure'``)."""
     if needle.endswith("("):
         return needle in content
-    return "collection_configure(" in content and needle in content
+    return ("collection_configure(" in content or "memory_admin(" in content) and needle in content
 
 
 def _place_checks(
@@ -2866,16 +2868,24 @@ def _chat_tool_sequence(db: Database) -> list[str]:
 
 
 def _collection_write_keys(db: Database) -> list[str]:
-    """Every ``key`` a ``collection_write`` call in this sample's turn PASSED, in call order
+    """Every ``key`` a collection write call in this sample's turn PASSED, in call order
     (#2758) — the write's own ARGUMENT, read straight off this turn's own prompt-log rows via
     ``run_tool_calls``, never the store's end state: a cross-key merge lands the content under
     an EXISTING entry, so the key the model typed is absent from ``held`` entirely once it has
-    merged, and a claim that needs "what she asked for" cannot derive it from "what survived"."""
+    merged, and a claim that needs "what she asked for" cannot derive it from "what survived".
+
+    Action-aware since #3127's unified ``memory_access`` (``run_tool_calls`` resolves every
+    retired per-verb name, ``collection_write`` included, to it) — only a ``write`` action
+    carries ``entries``, so a read or a get_item call on the same tool name is skipped rather
+    than misread as a write with none."""
     keys: list[str] = []
     for tool, args in run_tool_calls(_sample_prompt_rows(db)):
-        if tool != "collection_write" or not isinstance(args, dict):
+        if tool != "memory_access" or not isinstance(args, dict):
             continue
-        entries = args.get("entries")
+        if args.get("action") != "write":
+            continue
+        payload = args.get("payload")
+        entries = payload.get("entries") if isinstance(payload, dict) else None
         if not isinstance(entries, list):
             continue
         for entry in entries:

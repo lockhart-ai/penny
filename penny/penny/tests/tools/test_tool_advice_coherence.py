@@ -75,7 +75,8 @@ def _names_tool(text: str, name: str) -> bool:
 
 _PROGRAM = (
     "1. browse{queries: ['https://ex.example/t'], extract: 'the dawn sailing'}\n"
-    "2. collection_write{memory: 'ferry-departures', entries: [{'key': 'x'}]}"
+    "2. memory_access{target: 'ferry-departures', action: 'write', "
+    "payload: {entries: [{'key': 'x'}]}}"
 )
 
 
@@ -203,10 +204,12 @@ def test_the_scanner_reads_the_real_message_sources():
 
     ``collection_get`` is the canary — its miss guidance is the reference that
     motivated the whole relation, and it lives in a module-level helper, so seeing it
-    proves the class scan, the constant scan and the helper scan are all live."""
+    proves the class scan, the constant scan and the helper scan are all live.  Its
+    miss guidance points at the unified ``memory_access`` read since #3127 retired
+    it as its own model-facing tool."""
     vocabulary = _registered_tools()
     get = vocabulary["collection_get"]
-    assert "collection_keys" in _referenced_tools(get, vocabulary)
+    assert "memory_access" in _referenced_tools(get, vocabulary)
     assert len(vocabulary) > 20, "the registry looks unpopulated — imports may be missing"
 
 

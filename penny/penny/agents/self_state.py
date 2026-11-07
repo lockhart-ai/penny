@@ -198,9 +198,9 @@ class SelfStateHeader:
     POINTERS = (
         "To look deeper: memory_get{<name>} for a collection's full config and "
         "change history, run_get{run <id>} for one run's tool calls, "
-        "collection_list{<name>} reads a store's entries, and find{query: <text>} "
-        "searches them all by meaning — a collection, a stored entry, or "
-        "something said in the conversation."
+        "memory_access{target: <name>, action: 'read'} reads a store's entries, "
+        "and find{query: <text>} searches them all by meaning — a collection, a "
+        "stored entry, or something said in the conversation."
     )
 
     def __init__(

@@ -180,16 +180,16 @@ class Collector(BackgroundAgent):
     _RUNTIME_RULES_HEAD = "## Runtime rules (always apply)"
     _RUNTIME_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
-            "- Single batched `collection_write{entries: [...]}` per cycle — not one call "
-            "per entry.",
-            ("collection_write",),
+            "- Single batched `memory_access{action: 'write', payload: {entries: [...]}}` "
+            "per cycle — not one call per entry.",
+            ("memory_access",),
         ),
         (
-            "- To correct an entry: `collection_write` it under the key it is stored "
-            "under — the store keeps one value per key and replaces the stored content "
-            "in place. If the entry should be removed instead: "
-            "`collection_remove{key: <key>}`.",
-            ("collection_write", "collection_remove"),
+            "- To correct an entry: `memory_access{action: 'write'}` it under the key it "
+            "is stored under — the store keeps one value per key and replaces the stored "
+            "content in place. If the entry should be removed instead: "
+            "`memory_admin{action: 'delete', params: {key: <key>}}`.",
+            ("memory_access", "memory_admin"),
         ),
         (
             "- Cite only what you actually browsed this cycle.  Never invent a URL to "
@@ -198,7 +198,7 @@ class Collector(BackgroundAgent):
         ),
         (
             "- Don't dedup manually — the store rejects duplicates on write automatically.",
-            ("collection_write",),
+            ("memory_access",),
         ),
     )
 
@@ -378,13 +378,14 @@ class Collector(BackgroundAgent):
         if collection.archived:
             return (
                 f"Collection '{collection_name}' is archived — restore it first with "
-                f"collection_archive{{'{collection_name}', archived: false}}, or test a "
-                f"different collection."
+                f"memory_admin{{target: '{collection_name}', action: 'restore'}}, or test "
+                f"a different collection."
             )
         if collection.extraction_prompt is None:
             return (
                 f"Collection '{collection_name}' has no extraction_prompt — "
-                f"set one with collection_configure before testing."
+                f"set one with memory_admin{{target: '{collection_name}', "
+                f"action: 'configure', ...}} before testing."
             )
         return collection
 

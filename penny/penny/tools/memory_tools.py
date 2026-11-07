@@ -126,6 +126,8 @@ from penny.tools.memory_args import (
     LogAppendArgs,
     LogCreateArgs,
     LogGetArgs,
+    MemoryAccessArgs,
+    MemoryAdminArgs,
     MemoryNameArgs,
     ReadLogArgs,
     ReadRunCallsArgs,
@@ -213,13 +215,14 @@ def format_entries(
     return f"{len(entries)} {noun} from `{source}`{suffix}:\n{body}"
 
 
-# The disclosure line a bounded collection read (`collection_list`, either order)
-# shows in place of `format_entries`' own header when its default cap (#2771) left
+# The disclosure line a bounded collection read (`memory_access` action=read, either
+# order) shows in place of `format_entries`' own header when its default cap (#2771) left
 # entries out — named total, named follow-up calls, so the cut is never silent.
 _BOUNDED_READ_CUT_HEADER = (
     "Showing {shown} of {total} entries in {collection}, {ordering}. For more, "
-    "{tool}{{{collection}, k: <n>}}; for an overview, collection_keys{{{collection}}}; "
-    "to search, find{{...}}"
+    "memory_access{{target: {collection}, action: 'read', payload: {{k: <n>}}}}; for an "
+    "overview, memory_access{{target: {collection}, action: 'list_identifiers'}}; to "
+    "search, find{{...}}"
 )
 
 
@@ -228,7 +231,6 @@ def _bounded_read_message(
     *,
     collection: str,
     total: int,
-    tool: str,
     ordering: str,
     cut_ordering: str | None = None,
     handles: HandleTable | None = None,
@@ -242,11 +244,11 @@ def _bounded_read_message(
     than the default, or an empty collection — this is just ``format_entries``'
     normal header, with ``ordering`` as its human hint (e.g. ``"most recent
     first"``). When the read is short of the total, the header instead states the
-    real count and names the two calls that reach what it left out: the same tool
-    with a larger ``k``, or ``collection_keys`` for an overview (``find`` for a
-    meaning search) — worded with ``cut_ordering`` (falling back to ``ordering``),
-    since the disclosure sentence's own phrasing (e.g. ``"newest first"``) need not
-    match the un-cut header's."""
+    real count and names the two calls that reach what it left out: a bigger ``k`` on
+    the same ``memory_access`` read, or ``action: 'list_identifiers'`` for an overview
+    (``find`` for a meaning search) — worded with ``cut_ordering`` (falling back to
+    ``ordering``), since the disclosure sentence's own phrasing (e.g. ``"newest
+    first"``) need not match the un-cut header's."""
     if len(entries) >= total:
         return format_entries(entries, source=collection, ordering=ordering, handles=handles)
     body = format_entries(entries, handles=handles)
@@ -254,7 +256,6 @@ def _bounded_read_message(
         shown=len(entries),
         total=total,
         collection=collection,
-        tool=tool,
         ordering=cut_ordering if cut_ordering is not None else ordering,
     )
     return f"{header}\n{body}"
@@ -737,8 +738,8 @@ _INERT_JOB_ARGS_REFUSAL = (
     "Can't set a schedule, notify, or expiry on '{name}' without a prompt — those describe "
     "a JOB, and a prompt-less collection is inert storage with no job to run. Create it as "
     "storage now (name + description only), then attach a job later with "
-    "collection_configure{{collection: '{name}', prompt: <what the job's cycles should do>, "
-    "schedule: <recurrence rule>, notify: <true/false>}}."
+    "memory_admin{{target: '{name}', action: 'configure', params: {{prompt: <what the job's "
+    "cycles should do>, schedule: <recurrence rule>, notify: <true/false>}}}}."
 )
 
 # A job create with no schedule: the collection wouldn't know when to run, so it's
@@ -788,9 +789,9 @@ SCHEDULE_PARAM_DESCRIPTION = (
 # job, not every field's own line.
 PROMPT_PARAM_DESCRIPTION = (
     "The job's instructions, as free text, run on its schedule — never what the "
-    "collection holds; write an entry with `collection_write` for that. Supplying it "
-    "REPLACES the whole instructions text. An empty string clears it; leaving it out "
-    "changes nothing."
+    "collection holds; write an entry with `memory_access{action: 'write'}` for that. "
+    "Supplying it REPLACES the whole instructions text. An empty string clears it; "
+    "leaving it out changes nothing."
 )
 
 
@@ -810,8 +811,9 @@ class CollectionCreateTool(MemoryTool):
 
     name = "collection_configure"
     mutates = True
-    # The creation / re-render echo points at the metadata read for what was configured.
-    advises = ("memory_get",)
+    # The creation / re-render echo points at the metadata read for what was configured;
+    # the plain-storage note points at the unified read/write and admin tools.
+    advises = ("memory_get", "memory_access", "memory_admin")
     description = (
         "Create or reconfigure a background job in ONE idempotent call. A collection "
         "is storage plus an OPTIONAL job.\n"
@@ -851,8 +853,8 @@ class CollectionCreateTool(MemoryTool):
         "\n"
         "Returns a structured echo of what landed (description, prompt, schedule, "
         "notify, expiry). Confirm it back — don't invent fields it didn't return. "
-        "Plain storage needs no call at all — collection_write creates storage "
-        "automatically; use collection_configure for jobs and config.\n"
+        "Plain storage needs no call at all — memory_access{action: 'write'} creates "
+        "storage automatically; use memory_admin{action: 'configure'} for jobs and config.\n"
         "\n"
         "Pass `plan=true` to see what this call would do without doing it."
     )
@@ -1176,26 +1178,31 @@ class CollectionListTool(MemoryTool):
     characters across one turn's parallel reads, one collection alone costing 111k).
     A capped read never looks silently incomplete: when it left entries out, the
     result's header says so, states the real total, and names the two calls that
-    reach the rest (a larger ``k`` on this same tool, or ``collection_keys`` for an
-    overview).
+    reach the rest (a larger ``k`` on this same read, or ``action: 'list_identifiers'``
+    for an overview).
 
     ``order`` (#2812) picks ``"newest"`` (default) or ``"random"`` — folding in what
     the retired ``collection_sample`` tool did on its own: a uniform random draw of
     ``k`` entries, the same default cap and the same disclosure header when capped.
     One read tool, one extra argument, rather than two tools for one capability.
+
+    Retired as its own model-facing tool (#3127) — ``MemoryAccessTool``'s
+    ``action: 'read'`` on a collection target dispatches here now; this class name
+    stays registered so a call logged under it, before the switch, still renders.
     """
 
     name = "collection_list"
-    # Collections only — the description sends a log read to the cursored reader.
-    # A cut result's disclosure header also names `collection_keys` (an overview)
-    # and `find` (a meaning search) — see `_BOUNDED_READ_CUT_HEADER` (#2771).
-    advises = ("log_read", "collection_keys", "find")
+    # Collections only — the description sends a log read to the unified read tool.
+    # A cut result's disclosure header also names an overview read and `find` (a
+    # meaning search) — see `_BOUNDED_READ_CUT_HEADER` (#2771).
+    advises = ("memory_access", "find")
     description = (
         "Return entries from a collection. Omit `k` for the newest (or, with "
         "order='random', a sampled) 20; name `k` to read more (or fewer) — however "
         "large, it's honoured in full. `order` is 'newest' (default, most recent "
         "first) or 'random' (a uniform random sample — for variety rather than "
-        "recency). Collections only — to read a log use `log_read{<log>}`."
+        "recency). Collections only — to read a log use "
+        "`memory_access{target: <log>, action: 'read'}`."
     )
     parameters = {
         "type": "object",
@@ -1246,7 +1253,6 @@ class CollectionListTool(MemoryTool):
                 entries,
                 collection=args.collection,
                 total=collection.entry_count(),
-                tool="collection_list",
                 ordering=ordering,
                 cut_ordering=cut_ordering,
                 handles=self._handles,
@@ -1255,12 +1261,17 @@ class CollectionListTool(MemoryTool):
 
 
 class CollectionGetTool(MemoryTool):
-    """Look up one entry by its exact key."""
+    """Look up one entry by its exact key.
+
+    Retired as its own model-facing tool (#3127) — ``MemoryAccessTool``'s
+    ``action: 'get_item'`` on a collection target dispatches here now; this class
+    name stays registered so a call logged under it, before the switch, still
+    renders."""
 
     name = "collection_get"
     # A key that does not exist sends the model to the list of keys, a meaning
     # search, or a fresh write under the key it actually has.
-    advises = ("collection_keys", "find", "collection_write")
+    advises = ("memory_access", "find")
     description = (
         "Look up an entry by its exact key in a collection. Returns the entry's "
         "content if found, or a 'not found' message otherwise."
@@ -1298,12 +1309,13 @@ class CollectionGetTool(MemoryTool):
             did_you_mean = _key_did_you_mean(collection, args.key)
             return ToolResult(
                 message=f"Key '{args.key}' not found in '{args.collection}'{did_you_mean or '.'} "
-                f"List the available "
-                f"keys with collection_keys{{'{args.collection}'}}, or search by meaning with "
+                f"List the available keys with "
+                f"memory_access{{target: '{args.collection}', action: 'list_identifiers'}}, "
+                f"or search by meaning with "
                 f"find{{query: <what you're looking for>, memory: '{args.collection}'}}. "
                 f"If it exists under a different key, write the new content there: "
-                f"collection_write{{collection: '{args.collection}', "
-                f"entries: [{{'key': <the key you found>, 'content': <the new content>}}]}} — "
+                f"memory_access{{target: '{args.collection}', action: 'write', payload: "
+                f"{{entries: [{{'key': <the key you found>, 'content': <the new content>}}]}}}} — "
                 f"the store replaces the content of the key you name."
             )
         return ToolResult(
@@ -1390,8 +1402,9 @@ _WRITE_AUTOCREATE_NOTE = (
 # creates one, so this names what WOULD happen and stops there.
 _WRITE_PLAN_AUTOCREATE_NOTE = (
     "create '{name}' (storage only, no job, from the key '{key}') and write your "
-    "entries into it — plan doesn't create collections, so call collection_write "
-    "again without `plan` to do it for real."
+    "entries into it — plan doesn't create collections, so call "
+    "memory_access{{target: '{name}', action: 'write', ...}} again without `plan` "
+    "to do it for real."
 )
 _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '{key}'"
 # The auto-created collection's description is only the placeholder above, and the reply
@@ -1408,8 +1421,9 @@ _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '
 # a cross-key merge the ladder decided alike.
 _UPDATED_REPLY = (
     "Updated '{matched}'{matched_as}. It held: \"{prior}\". If they are different "
-    "things, restore it with collection_write{{collection: '{collection}', entries: [{{'key': "
-    "'{matched}', 'content': \"{prior}\"}}]}} and write yours under its own key ('{key}')."
+    "things, restore it with memory_access{{target: '{collection}', action: 'write', "
+    "payload: {{entries: [{{'key': '{matched}', 'content': \"{prior}\"}}]}}}} and write "
+    "yours under its own key ('{key}')."
 )
 
 
@@ -1442,9 +1456,9 @@ def _format_updated(collection: str, result: WriteResult) -> str:
 _UNSURE_REPLY = (
     "'{key}' was written as a new entry. This collection also holds '{candidate}', "
     "which looks similar — if what you wrote is the same thing as that entry, update it "
-    "with collection_write{{collection: '{collection}', entries: [{{'key': '{candidate}', "
-    "'content': <the value>}}]}}; if it is a different thing, the new entry stands as "
-    "written."
+    "with memory_access{{target: '{collection}', action: 'write', payload: {{entries: "
+    "[{{'key': '{candidate}', 'content': <the value>}}]}}}}; if it is a different thing, "
+    "the new entry stands as written."
 )
 
 
@@ -1526,24 +1540,29 @@ def _format_unexpected(results: list[WriteResult]) -> str:
 _EMBED_WRITE_FAILURE_COLLECTION = (
     "Couldn't embed {keys} (a transient embedding error) — nothing was written, "
     "since an entry is only stored once it has a similarity vector. Retry "
-    "collection_write{{collection: '{collection}', entries: <the same entries>}} in a moment."
+    "memory_access{{target: '{collection}', action: 'write', payload: {{entries: "
+    "<the same entries>}}}} in a moment."
 )
 _EMBED_WRITE_FAILURE_LOG = (
     "Couldn't embed this entry (a transient embedding error) — nothing was "
     "appended, since an entry is only stored once it has a similarity vector. "
-    "Retry log_append{{log: '{log}', content: <the same content>}} in a moment."
+    "Retry memory_access{{target: '{log}', action: 'write', payload: {{content: "
+    "<the same content>}}}} in a moment."
 )
 
 
 class CollectionWriteTool(MemoryTool):
-    """Write entries to a collection with similarity-based dedup."""
+    """Write entries to a collection with similarity-based dedup.
+
+    Retired as its own model-facing tool (#3127) — ``MemoryAccessTool``'s
+    ``action: 'write'`` on a collection target dispatches here now; this class
+    name stays registered so a call logged under it, before the switch, still
+    renders."""
 
     name = "collection_write"
-    # ``collection_remove`` rides beside the write because the collector's
-    # corrections runtime rule names the pair together: a routine that writes may find
-    # an entry that should be removed rather than rewritten, and offering one half of
-    # that without the other would teach a correction the surface cannot carry out.
-    advises = ("collection_remove",)
+    # The merge/unsure replies above point at the unified write; a correction
+    # (rewrite vs. remove) points at memory_admin's delete action.
+    advises = ("memory_access", "memory_admin")
     stores_entries = True
     destination_param = "collection"
     mutates = True
@@ -1965,7 +1984,8 @@ class CollectionWriteTool(MemoryTool):
 _PROMPT_NEEDS_SCHEDULE_REFUSAL = (
     "Refused: '{name}' has no schedule, and this call doesn't set one. A prompt is a "
     "job's instructions and only runs on a schedule, so this one would never run. To "
-    "add to what '{name}' holds, write an entry with `collection_write`. To make "
+    "add to what '{name}' holds, write an entry with "
+    "`memory_access{{target: '{name}', action: 'write', ...}}`. To make "
     "'{name}' a job, set `schedule` in the same call."
 )
 
@@ -1992,7 +2012,8 @@ def _no_schedule_refusal(
 # storage; its entries are never touched by this.
 _PLAIN_STORAGE_MESSAGE = (
     "'{name}' is now plain storage — no job, {count} entries kept. It has no prompt "
-    "and no schedule; write to it with `collection_write`."
+    "and no schedule; write to it with `memory_access{{target: '{name}', "
+    "action: 'write', ...}}`."
 )
 
 
@@ -2053,12 +2074,13 @@ class CollectionSetTool(MemoryTool):
     name = "collection_configure"
     mutates = True
     # The creation echo points at the metadata read for what was configured; the
-    # same-job refusal (#1775, tightened #2893, ``_SAME_JOB_REFUSAL``) points at
-    # ``collection_list`` for the near-match it names, so the model can read what that
-    # job already does before deciding whether to update it or name a new one; the
-    # `prompt` description and the no-schedule refusal (#2857) point at
-    # `collection_write` for adding to what a collection holds.
-    advises = ("memory_get", "collection_list", "collection_write")
+    # same-job refusal (#1775, tightened #2893, ``_SAME_JOB_REFUSAL``) points at the
+    # unified read for the near-match it names, so the model can read what that job
+    # already does before deciding whether to update it or name a new one; the
+    # `prompt` description and the no-schedule refusal (#2857) point at the unified
+    # write for adding to what a collection holds; the birth-needs-description
+    # refusal points back at the unified admin call to retry.
+    advises = ("memory_get", "memory_access", "memory_admin")
     description = (
         "Create or reconfigure a collection in ONE idempotent call. If "
         "`collection` doesn't exist, it's created with the fields you give; if "
@@ -2069,7 +2091,8 @@ class CollectionSetTool(MemoryTool):
         "`prompt` is the job's instructions, run on its schedule — free text "
         "written as you'd explain the task to someone doing it once: what to "
         "read, what to do with it, and what to remember. It is never what the "
-        "collection holds; that's its entries, written with `collection_write`. "
+        "collection holds; that's its entries, written with "
+        "`memory_access{action: 'write'}`. "
         "Leave `prompt` out to change only `schedule`, `expires_at`, or `notify` "
         "— the job's instructions stay exactly as they are. Set `prompt` to "
         "replace the instructions completely. An empty `prompt` or an empty "
@@ -2081,8 +2104,8 @@ class CollectionSetTool(MemoryTool):
         "without telling them. It doesn't pause the job, and it's separate "
         "from the global notification mute.\n"
         "\n"
-        "Plain storage needs no call here — collection_write creates storage "
-        "automatically. Use this tool only for jobs and settings.\n"
+        "Plain storage needs no call here — memory_access{action: 'write'} creates "
+        "storage automatically. Use this tool only for jobs and settings.\n"
         "\n"
         "Pass `plan=true` to see what this call would do without doing it — "
         "created, updated, cleared to plain storage, or refused, with nothing "
@@ -2217,7 +2240,8 @@ class CollectionSetTool(MemoryTool):
 _SET_BIRTH_NEEDS_DESCRIPTION = (
     "'{name}' doesn't exist yet, so this call would create it — but a new "
     "collection needs a `description` (what it's for, in the user's words; it's "
-    "how the collection is found by meaning later). Call collection_configure again "
+    "how the collection is found by meaning later). Call "
+    "memory_admin{{target: '{name}', action: 'configure', ...}} again "
     "with description=<what it holds>."
 )
 
@@ -2229,9 +2253,10 @@ _SET_BIRTH_NEEDS_DESCRIPTION = (
 _SAME_JOB_REFUSAL = (
     "'{requested}' reads as the same job as the existing collection '{existing}' — so "
     "nothing was created and '{existing}' is unchanged. Read it with "
-    "collection_list{{'{existing}'}}; to update it, call "
-    "collection_configure{{collection: '{existing}', ...}}. If '{requested}' is really a "
-    "separate job, set it up again with a name that carries what makes it different.\n"
+    "memory_access{{target: '{existing}', action: 'read'}}; to update it, call "
+    "memory_admin{{target: '{existing}', action: 'configure', ...}}. If '{requested}' is "
+    "really a separate job, set it up again with a name that carries what makes it "
+    "different.\n"
 )
 
 
@@ -2260,8 +2285,9 @@ class CollectionUpdateTool(MemoryTool):
 
     name = "collection_configure"
     mutates = True
-    # The creation / re-render echo points at the metadata read for what was configured.
-    advises = ("memory_get",)
+    # The creation / re-render echo points at the metadata read for what was configured;
+    # the prompt field's own text points at the unified write.
+    advises = ("memory_get", "memory_access")
     description = (
         "Update an existing collection's metadata. Only supplied fields "
         "are changed.\n"
@@ -2278,7 +2304,7 @@ class CollectionUpdateTool(MemoryTool):
         "unchanged.\n"
         "- `prompt` — FULL replacement of the job's instructions, not a diff; "
         "run on its schedule, never what the collection holds (write entries "
-        "with `collection_write` for that). Drives what the collector actually "
+        "with `memory_access{action: 'write'}` for that). Drives what the collector actually "
         "does each cycle. Read the current body via `memory_get` first if you "
         "need to preserve any of it. On an inert (prompt-less) collection, "
         "setting this adopts a job for the first time — pair it with "
@@ -2619,12 +2645,13 @@ class MemoryMetadataTool(MemoryTool):
     """
 
     name = "memory_get"
+    advises = ("memory_access",)
     description = (
         "Return metadata for a memory: description, notify flag, schedule, last "
         "collected timestamp, archived state, and prompt.  Works for both "
         "collections and logs.  For a collection, also shows its entry count and "
-        "keys (content is one `collection_list` call away); the prompt framing "
-        "shows the job's cycle instructions only when a schedule runs it — on a "
+        "keys (content is one `memory_access{action: 'read'}` call away); the prompt "
+        "framing shows the job's cycle instructions only when a schedule runs it — on a "
         "collection with no schedule, an unused prompt is labelled as such."
     )
     parameters = {
@@ -2692,10 +2719,10 @@ class MemoryMetadataTool(MemoryTool):
     @staticmethod
     def _content_block(memory: Memory) -> list[str]:
         """What a collection HOLDS (its entries, #2857) ahead of what it DOES (the
-        prompt) — a log carries no entries render here (it's read through
-        ``log_read``, never a newest-first scan), so it keeps the prompt framing
-        alone, which for a log is always ``prompt: none`` anyway (logs carry no
-        ``extraction_prompt`` by design)."""
+        prompt) — a log carries no entries render here (it's read through the
+        unified cursored read, never a newest-first scan), so it keeps the prompt
+        framing alone, which for a log is always ``prompt: none`` anyway (logs carry
+        no ``extraction_prompt`` by design)."""
         if memory.is_log:
             return MemoryMetadataTool._behaviour_block(memory)
         return [
@@ -2706,11 +2733,11 @@ class MemoryMetadataTool(MemoryTool):
 
     @staticmethod
     def _entries_block(memory: Memory) -> list[str]:
-        """The entry count and keys, bounded like ``collection_list``'s own default
-        cap (#2857) — reusing the SAME disclosure header a capped ``collection_list``
-        read shows, so the two teach the same next call rather than inventing a
-        second convention.  Content is never shown here: that's one ``collection_list``
-        call away."""
+        """The entry count and keys, bounded like a capped ``memory_access``
+        read's own default cap (#2857) — reusing the SAME disclosure header a
+        capped read shows, so the two teach the same next call rather than
+        inventing a second convention.  Content is never shown here: that's one
+        ``memory_access{action: 'read'}`` call away."""
         total = memory.entry_count()
         if total == 0:
             return [f"No entries in `{memory.name}` yet (not an error)."]
@@ -2724,7 +2751,6 @@ class MemoryMetadataTool(MemoryTool):
             shown=len(entries),
             total=total,
             collection=memory.name,
-            tool="collection_list",
             ordering="newest first",
         )
         return [header, f"keys: {keys}"]
@@ -2765,11 +2791,15 @@ class MemoryMetadataTool(MemoryTool):
 
 
 class CollectionRemoveTool(MemoryTool):
-    """Remove an entry from a collection by key."""
+    """Remove an entry from a collection by key.
+
+    Retired as its own model-facing tool (#3127) — ``MemoryAdminTool``'s
+    ``action: 'delete'`` dispatches here now; this class name stays registered
+    so a call logged under it, before the switch, still renders."""
 
     name = "collection_remove"
     # A key that does not exist sends the model to the list of keys that do.
-    advises = ("collection_keys",)
+    advises = ("memory_access",)
     mutates = True
     description = (
         "Remove the entry with the given key from a collection. Returns the "
@@ -2824,7 +2854,8 @@ class CollectionRemoveTool(MemoryTool):
                 lead = f"No entry with key '{args.key}' in '{args.collection}' — nothing to delete."
             return ToolResult(
                 message=f"{lead} "
-                f"List the current keys with collection_keys{{'{args.collection}'}} to find it."
+                f"List the current keys with memory_access{{target: '{args.collection}', "
+                f"action: 'list_identifiers'}} to find it."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.collection}'.", mutated=True)
 
@@ -2915,9 +2946,14 @@ class LogReadTool(CursorReadTool):
     most recent look-back window, stateless — an ad-hoc "what just happened"
     read.  The caller never chooses the mode or a size; Python does, from who's
     asking — so the model can't pick the wrong one.
+
+    Retired as its own model-facing tool (#3127) — ``MemoryAccessTool``'s
+    ``action: 'read'`` on a log target dispatches here now; this class name stays
+    registered so a call logged under it, before the switch, still renders.
     """
 
     name = "log_read"
+    advises = ("memory_access",)
     parameters = {
         "type": "object",
         "properties": {
@@ -2927,7 +2963,7 @@ class LogReadTool(CursorReadTool):
                 "type": "integer",
                 "description": (
                     "Optional: page backward — the entries before this id, "
-                    "oldest first. Use an id a log_read result shows beside an entry."
+                    "oldest first. Use an id a log read result shows beside an entry."
                 ),
             },
         },
@@ -3031,7 +3067,8 @@ class LogReadTool(CursorReadTool):
             return ToolResult(
                 message=(
                     f"No entry {before_id} in `{log}` to page before. Read it with "
-                    f"log_read{{'{log}'}} to see its entries and their ids."
+                    f"memory_access{{target: '{log}', action: 'read'}} to see its entries "
+                    f"and their ids."
                 ),
                 success=False,
             )
@@ -3051,14 +3088,16 @@ class LogReadTool(CursorReadTool):
     def _message_log_before_refusal(name: str) -> str:
         return (
             f"'{name}' holds messages, and a message isn't paged by `before`. "
-            f"Read it with log_read{{'{name}'}} or day='YYYY-MM-DD'."
+            f"Read it with memory_access{{target: '{name}', action: 'read'}} or "
+            f"payload: {{day: 'YYYY-MM-DD'}}."
         )
 
     @staticmethod
     def _run_log_before_refusal(name: str) -> str:
         return (
             f"'{name}' holds run records, read by the `run <id>` shown beside each — "
-            f"not by `before`. Read it with log_read{{'{name}'}} or day='YYYY-MM-DD'."
+            f"not by `before`. Read it with memory_access{{target: '{name}', "
+            f"action: 'read'}} or payload: {{day: 'YYYY-MM-DD'}}."
         )
 
     def _with_older_disclosure(
@@ -3096,13 +3135,15 @@ class LogReadTool(CursorReadTool):
             page = min(len(older), PennyConstants.LOG_READ_PAGE)
             return (
                 f"{len(older)} earlier {noun} in `{log}` — "
-                f"log_read{{log: '{log}', before: {shown[0].id}}} reads the {page} before these."
+                f"memory_access{{target: '{log}', action: 'read', payload: "
+                f"{{before: {shown[0].id}}}}} reads the {page} before these."
             )
         zone = zone_or_utc(user_timezone_name(self._db))
         newest_hidden_day = stored_as_utc(older[-1].created_at).astimezone(zone).date().isoformat()
         return (
             f"{len(older)} earlier {noun} in `{log}`, not shown here — "
-            f"log_read{{log: '{log}', day: '{newest_hidden_day}'}} reads that day."
+            f"memory_access{{target: '{log}', action: 'read', payload: "
+            f"{{day: '{newest_hidden_day}'}}}} reads that day."
         )
 
     @staticmethod
@@ -3140,10 +3181,14 @@ class LogGetTool(MemoryTool):
     call names.  The id-taking read has its own refusals for the stores that
     aren't id-addressable logs — a collection is keyed, the two message logs
     and the run log are read by their own verbs.
+
+    Retired as its own model-facing tool (#3127) — ``MemoryAccessTool``'s
+    ``action: 'get_item'`` on a log target dispatches here now; this class name
+    stays registered so a call logged under it, before the switch, still renders.
     """
 
     name = "log_get"
-    advises = ("log_read",)
+    advises = ("memory_access",)
     description = (
         "Return one entry of a log in full, by the id shown beside that entry. "
         "Pass the log's name and the id from a log read."
@@ -3184,7 +3229,8 @@ class LogGetTool(MemoryTool):
             return ToolResult(
                 message=(
                     f"No entry {args.id} in '{args.log}'. Read it with "
-                    f"log_read{{'{args.log}'}} to see its entries and their ids."
+                    f"memory_access{{target: '{args.log}', action: 'read'}} to see its "
+                    f"entries and their ids."
                 ),
                 success=False,
             )
@@ -3198,14 +3244,15 @@ class LogGetTool(MemoryTool):
     def _message_log_refusal(name: str) -> str:
         return (
             f"'{name}' holds messages, and a message is not read by id. "
-            f"Read them with log_read{{'{name}'}}."
+            f"Read them with memory_access{{target: '{name}', action: 'read'}}."
         )
 
     @staticmethod
     def _run_log_refusal(name: str) -> str:
         return (
             f"'{name}' holds run records, and a run is read by the `run <id>` shown beside "
-            f"it, not by an entry id. Read them with log_read{{'{name}'}}."
+            f"it, not by an entry id. Read them with memory_access{{target: '{name}', "
+            f"action: 'read'}}."
         )
 
 
@@ -3490,10 +3537,18 @@ class GetEventTool(Tool):
 
 
 class LogAppendTool(MemoryTool):
-    """Append a keyless entry to a log."""
+    """Append a keyless entry to a log.
+
+    Retired as its own model-facing tool (#3127) — ``MemoryAccessTool``'s
+    ``action: 'write'`` on a log target dispatches here now; this class name
+    stays registered so a call logged under it, before the switch, still
+    renders."""
 
     name = "log_append"
     mutates = True
+    # The transient embed-failure retry (``_EMBED_WRITE_FAILURE_LOG``) points at
+    # the unified write.
+    advises = ("memory_access",)
     description = (
         "Append one keyless entry to a log. No dedup runs; every append is stored. "
         "Pass `plan=true` to see what this call would do without doing it."
@@ -3616,16 +3671,16 @@ def _find_addressing(match: ResolvedMatch) -> str:
     model never derives this mapping — it copies the call verbatim."""
     name = match.name
     if match.kind == ResolvedKind.LOG:
-        return f"read it with log_read{{'{name}'}}"
+        return f"read it with memory_access{{target: '{name}', action: 'read'}}"
     if match.archived:
         return (
-            f"restore it with collection_archive{{'{name}', archived: false}}; its entries "
-            f"stay readable with collection_list{{'{name}'}}"
+            f"restore it with memory_admin{{target: '{name}', action: 'restore'}}; its "
+            f"entries stay readable with memory_access{{target: '{name}', action: 'read'}}"
         )
     return (
-        f"read it with collection_list{{'{name}'}}, reconfigure it with "
-        f"collection_configure{{collection: '{name}', ...}}, archive it with "
-        f"collection_archive{{'{name}', archived: true}}"
+        f"read it with memory_access{{target: '{name}', action: 'read'}}, reconfigure it "
+        f"with memory_admin{{target: '{name}', action: 'configure', ...}}, archive it with "
+        f"memory_admin{{target: '{name}', action: 'archive'}}"
     )
 
 
@@ -3638,7 +3693,7 @@ def _entry_preview(content: str) -> str:
 def _entry_identity(entry: ResolvedEntry) -> str:
     """The entry's head identity: a keyed collection entry shows its invocation-form
     key in its collection; a keyless log entry shows its ``#<id>`` id in its log —
-    the id the addressing line below reads back with ``log_get``."""
+    the id the addressing line below reads back with a ``get_item`` read."""
     if entry.key is None:
         return f"entry #{entry.entry_id} in `{entry.memory_name}` ({entry.container_kind.value})"
     return f"entry {render_key(entry.key)} in `{entry.memory_name}`"
@@ -3646,12 +3701,19 @@ def _entry_identity(entry: ResolvedEntry) -> str:
 
 def _entry_addressing(entry: ResolvedEntry) -> str:
     """How to read the stored entry back — deterministic from whether it is keyed: a
-    keyed collection entry is one ``collection_get`` away (re-reads the exact value
-    the find already carried); a keyless log entry is one ``log_get`` away, by the
-    id the find itself shows in its identity line (#1640)."""
+    keyed collection entry or a keyless log entry are both one
+    ``memory_access`` ``get_item`` away (re-reads the exact value the find
+    already carried — a log entry by the id the find itself shows in its
+    identity line, #1640)."""
     if entry.key is None:
-        return f"log_get{{log: '{entry.memory_name}', id: {entry.entry_id}}}"
-    return f"collection_get{{collection: '{entry.memory_name}', key: '{entry.key}'}}"
+        return (
+            f"memory_access{{target: '{entry.memory_name}', action: 'get_item', "
+            f"payload: {{id: {entry.entry_id}}}}}"
+        )
+    return (
+        f"memory_access{{target: '{entry.memory_name}', action: 'get_item', "
+        f"payload: {{key: '{entry.key}'}}}}"
+    )
 
 
 def _render_entry_hit(index: int, entry: ResolvedEntry, handles: HandleTable | None = None) -> str:
@@ -3787,12 +3849,8 @@ class FindTool(MemoryTool):
     # helper's own constants; declaring it is the fix that test's docstring prescribes.
     # Message hits carry no addressing line (#2289), so they add no verb here.
     advises = (
-        "collection_list",
-        "collection_get",
-        "collection_configure",
-        "collection_archive",
-        "log_read",
-        "log_get",
+        "memory_access",
+        "memory_admin",
     )
     description = (
         "Find anything of your own by meaning, when you don't know its exact "
@@ -3990,12 +4048,12 @@ class SynthesizeTool(Tool):
     name = "synthesize"
     # Every hit's "Drew on:" line renders through ``_render_entry_hit``/
     # ``_render_message_hit`` (the SAME module-level helpers ``find`` composes
-    # its own result from), so an entry hit's addressing names ``collection_get``
-    # and a log-entry hit's names ``log_get`` (#1911) — declared here so the
-    # coherence scanner's closure carries them onto every surface this tool sits
+    # its own result from), so an entry hit's addressing names the unified
+    # ``memory_access`` get-item read (#1911/#3127) — declared here so the
+    # coherence scanner's closure carries it onto every surface this tool sits
     # on.  A message hit carries no addressing line (mirrors ``find``), so it
     # adds no verb here.
-    advises = ("collection_get", "log_get")
+    advises = ("memory_access",)
     description = (
         'Answers "what does my memory say about X?" Pass `query`, what you '
         "want to know about. Reads matching stored entries and past "
@@ -4230,6 +4288,459 @@ class DoneTool(Tool):
 # ── On-demand collector trigger ─────────────────────────────────────────────
 
 
+# ── Unified access (#3127 — Penny's own design) ─────────────────────────────
+#
+# One read/write tool and one admin tool, dispatched by `action`, resolving the
+# store's shape (collection vs. log) in code — the design Penny herself proposed
+# after she called `collection_get` on a store that was a log and named the cause:
+# every read or write first needed her to know the shape, then pick that
+# family's tool.  Both dispatchers COMPOSE the per-verb classes above for the
+# actual mechanism (identity-ladder writes, cursored log reads, the
+# did-you-mean refusals, the create-or-update fusion) — nothing here
+# re-implements a write or a read; it only resolves which one to run.  Those
+# per-verb classes stay registered under their own retired names (#2307's
+# ``LEGACY_TOOL_RENAMES`` points every one of them here) so a call logged
+# before this switch still renders correctly.
+
+
+_MISSING_GET_ITEM_KEY = (
+    "'{target}' is a collection, so `get_item` needs `payload.key` naming the entry to look up."
+)
+_MISSING_GET_ITEM_ID = (
+    "'{target}' is a log, so `get_item` needs `payload.id` — the id a prior "
+    "`read` showed beside the entry."
+)
+_MISSING_WRITE_ENTRIES = (
+    "'{target}' is a collection (or doesn't exist yet, which would create one), so "
+    "`write` needs `payload.entries` — a list of {{key, content}}."
+)
+_MISSING_WRITE_CONTENT = "'{target}' is a log, so `write` needs `payload.content`."
+_NOT_ID_ADDRESSABLE_LIST = (
+    "'{target}' doesn't show entry ids to list this way — read it with "
+    "memory_access{{target: '{target}', action: 'read'}} instead."
+)
+
+
+class MemoryAccessTool(CursorReadTool):
+    """Read, get one entry, write, or list identifiers — against a collection or
+    a log, resolved here rather than chosen by the model (#3127).
+
+    A ``CursorReadTool`` itself, so the orchestration layer's cursor
+    commit/discard (keyed on ``isinstance(tool, CursorReadTool)``, #1936) still
+    reaches a log read made through it — but ``commit_pending``/
+    ``discard_pending`` forward to the composed ``LogReadTool``, which is where
+    a cursor read's pending advance is actually tracked; this tool's own
+    inherited ``_pending`` is never populated, by design.
+
+    ``mutates = True`` (the ``write`` action changes durable state), but only
+    ``write`` ever reads ``args.plan`` — every read action ignores it entirely,
+    so a sandboxed collector preview's forced ``plan=True`` (#2964) is a no-op
+    on a read: it runs for real and returns an ordinary result with no
+    ``plan_description``, exactly as an unscoped read tool always has (reads
+    never carried ``plan`` before this tool existed, and still don't)."""
+
+    name = "memory_access"
+    mutates = True
+    # True only for a WRITE call — ``stores_entries_for`` below overrides the
+    # class-level mark every other storing tool uses as-is, since one name here
+    # covers both reads and writes (#3127).
+    stores_entries = True
+    destination_param = "target"
+    advises = ("memory_admin", "find")
+    description = (
+        "Read, get one entry, write, or list identifiers — against a collection "
+        "or a log. `target` names the store; whether it's a collection or a log "
+        "is resolved for you, never something you choose. `action` is one of:\n"
+        "- `read` — a collection's entries (newest first, or `payload.order: "
+        "'random'` for a sample; `payload.k` caps it, however large, honoured in "
+        "full) or a log's (a cursored batch for a background job, a recent window "
+        "otherwise; `payload.day` reads one whole day, `payload.before` pages "
+        "backward from an id a prior read showed).\n"
+        "- `get_item` — one entry: `payload.key` (exact) in a collection, "
+        "`payload.id` (shown beside an entry by a prior read) in a log.\n"
+        "- `write` — `payload.entries` (each a `key` + `content`) into a "
+        "collection, or `payload.content` appended to a log. A `target` that "
+        "doesn't exist yet is created as plain storage. Pass `plan: true` to see "
+        "what a write would do without doing it — every other action ignores "
+        "`plan` and always runs for real.\n"
+        "- `list_identifiers` — a collection's keys, or a log's recent entry ids.\n"
+        "\n"
+        "Use `memory_admin` to create or reconfigure a JOB (schedule/notify/"
+        "expiry), archive or restore a collection, or delete an entry by key."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string", "description": "The collection or log's exact name"},
+            "action": {
+                "type": "string",
+                "enum": ["read", "get_item", "write", "list_identifiers"],
+                "description": "Which operation to run against `target`.",
+            },
+            "payload": {
+                "type": "object",
+                "description": (
+                    "The action's own fields — read: k, order ('newest'/'random', "
+                    "collections only), day, before (logs only). get_item: key "
+                    "(collections) or id (logs). write: entries (collections, a "
+                    "list of {key, content}) or content (logs)."
+                ),
+                "properties": {
+                    "k": {"type": "integer"},
+                    "order": {"type": "string", "enum": ["newest", "random"]},
+                    "day": {"type": "string"},
+                    "before": {"type": "integer"},
+                    "key": {"type": "string"},
+                    "id": {"type": "integer"},
+                    "entries": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["key", "content"],
+                        },
+                    },
+                    "content": {"type": "string"},
+                },
+            },
+        },
+        "required": ["target", "action"],
+    }
+    args_model = MemoryAccessArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        target = _named(arguments, "target", "a memory")
+        action = arguments.get("action")
+        if action == "write":
+            if not result.success:
+                return f"You tried to write to {target} but it didn't work:"
+            if not result.mutated:
+                return f"You didn't add anything new to {target} — it was already there:"
+            return _write_headline(result.saved_keys, result.merged_keys, target)
+        if action == "get_item":
+            if not result.success:
+                return f"You tried to look up an entry in {target} but it didn't work:"
+            return f"You looked up an entry in {target}:"
+        if action == "list_identifiers":
+            if not result.success:
+                return f"You tried to list the identifiers in {target} but it didn't work:"
+            return f"You listed the identifiers in {target}:"
+        if not result.success:
+            return f"You tried to read {target} but it didn't work:"
+        return f"You read {target}:"
+
+    def __init__(
+        self,
+        db: Database,
+        *,
+        embedding_client: LlmClient,
+        agent_name: str,
+        decider: EntryDecider,
+        name_decider: CollectionNameDecider,
+        scope: str | None = None,
+        run_id: str | None = None,
+        handles: HandleTable | None = None,
+        decision_cache: WriteDecisionCache | None = None,
+    ) -> None:
+        super().__init__(db, agent_name)
+        self._llm = embedding_client
+        self._handles = handles if handles is not None else HandleTable()
+        self._list = CollectionListTool(db, self._handles)
+        self._get = CollectionGetTool(db, self._handles)
+        self._keys = CollectionKeysTool(db)
+        self._log_read = LogReadTool(db, agent_name, scope, self._handles)
+        self._log_get = LogGetTool(db)
+        self._write = CollectionWriteTool(
+            db,
+            embedding_client,
+            agent_name,
+            decider=decider,
+            name_decider=name_decider,
+            scope=scope,
+            run_id=run_id,
+            handles=self._handles,
+            decision_cache=decision_cache,
+        )
+        self._append = LogAppendTool(db, embedding_client, agent_name, run_id=run_id)
+
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        return await embed_text(self._llm, name)
+
+    @classmethod
+    def stores_entries_for(cls, arguments: dict) -> bool:
+        """Only a ``write`` call asks the store to keep anything — see
+        ``Tool.stores_entries_for`` and the class docstring's ``plan`` note for
+        the matching reasoning (#3127: one name, several actions, only one of
+        which the class-level ``stores_entries`` mark alone could ever describe)."""
+        return arguments.get("action") == "write"
+
+    def commit_pending(self) -> None:
+        """Forward to the composed ``LogReadTool`` — see the class docstring."""
+        self._log_read.commit_pending()
+
+    def discard_pending(self) -> None:
+        """Forward to the composed ``LogReadTool`` — see the class docstring."""
+        self._log_read.discard_pending()
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = MemoryAccessArgs(**kwargs)
+        if args.action == "write":
+            return await self._dispatch_write(args)
+        memory = _resolve(self._db, args.target)
+        if args.action == "read":
+            return await self._dispatch_read(args, memory)
+        if args.action == "get_item":
+            return await self._dispatch_get_item(args, memory)
+        return await self._dispatch_list_identifiers(args, memory)
+
+    async def _dispatch_read(self, args: MemoryAccessArgs, memory: Memory) -> ToolResult:
+        if isinstance(memory, Collection):
+            return await self._list._run(
+                collection=args.target, k=args.payload.k, order=args.payload.order
+            )
+        return await self._log_read._run(
+            log=args.target, day=args.payload.day, before=args.payload.before
+        )
+
+    async def _dispatch_get_item(self, args: MemoryAccessArgs, memory: Memory) -> ToolResult:
+        if isinstance(memory, Collection):
+            if args.payload.key is None:
+                return ToolResult(
+                    message=_MISSING_GET_ITEM_KEY.format(target=args.target), success=False
+                )
+            return await self._get._run(collection=args.target, key=args.payload.key)
+        if args.payload.id is None:
+            return ToolResult(
+                message=_MISSING_GET_ITEM_ID.format(target=args.target), success=False
+            )
+        return await self._log_get._run(log=args.target, id=args.payload.id)
+
+    async def _dispatch_list_identifiers(
+        self, args: MemoryAccessArgs, memory: Memory
+    ) -> ToolResult:
+        if isinstance(memory, Collection):
+            return await self._keys._run(collection=args.target)
+        return self._log_identifiers(memory, args.target)
+
+    def _log_identifiers(self, memory: Memory, target: str) -> ToolResult:
+        """A log's own recent entry ids (#3127) — the one genuinely new capability
+        this tool adds: no prior tool returned a log's ids without its content.
+        Id-addressable logs only (the same ``LogReadTool._shows_ids`` gate a
+        cursored/windowed read uses) — a message or run facade has no id a later
+        ``get_item`` could consume, so it's refused the same way those refuse a
+        ``before`` page."""
+        if not LogReadTool._shows_ids(memory):
+            return ToolResult(message=_NOT_ID_ADDRESSABLE_LIST.format(target=target), success=False)
+        entries = memory.read_window(PennyConstants.LOG_READ_WINDOW_SECONDS)
+        if not entries:
+            return ToolResult(message=f"No entries in `{target}` — it's empty (not an error).")
+        ids = ", ".join(str(entry.id) for entry in entries)
+        noun = "id" if len(entries) == 1 else "ids"
+        return ToolResult(message=f"{len(entries)} recent entry {noun} in `{target}`: {ids}")
+
+    async def _dispatch_write(self, args: MemoryAccessArgs) -> ToolResult:
+        """Collection vs. log, for a write: a target that already exists as a log
+        (or a log-shaped facade) appends; everything else — an existing
+        collection, or a brand-new name — takes the collection write path, which
+        auto-creates a missing name as plain storage (#1570) exactly as it always
+        has.  A log is never auto-created by a write; ``log_create`` is the only
+        deliberate way to start one, unchanged by this tool."""
+        existing = self._db.memory(args.target)
+        if existing is not None and not isinstance(existing, Collection):
+            if args.payload.content is None:
+                return ToolResult(
+                    message=_MISSING_WRITE_CONTENT.format(target=args.target), success=False
+                )
+            return await self._append._run(
+                log=args.target, content=args.payload.content, plan=args.plan
+            )
+        if args.payload.entries is None:
+            return ToolResult(
+                message=_MISSING_WRITE_ENTRIES.format(target=args.target), success=False
+            )
+        return await self._write._run(
+            collection=args.target, entries=args.payload.entries, plan=args.plan
+        )
+
+
+_ADMIN_SCOPE_REFUSAL = (
+    "A background job can't {verb} a collection — only a chat turn can. Say what "
+    "you'd {verb} in your notification and let the user do it."
+)
+
+
+class MemoryAdminTool(MemoryTool):
+    """Create or reconfigure a collection, archive or restore it, or delete one
+    of its entries — against a collection, resolved here, never chosen by the
+    model (#3127).
+
+    Composes ``CollectionSetTool`` (configure — the existing create-or-update
+    dispatcher, #2768), ``CollectionArchiveTool`` (archive/restore), and
+    ``CollectionRemoveTool`` (delete) for the actual mechanism.
+
+    ``configure``/``archive``/``restore`` stay lifecycle-only: a background job
+    cannot create, reconfigure, or archive a mechanism no matter what its
+    ``extraction_prompt`` says (#1556) — an architectural invariant this tool
+    preserves structurally, refusing those three actions whenever ``scope`` is
+    set, rather than by excluding the whole tool from a collector's surface.
+    ``delete`` stays reachable from a scoped cycle (the collector's corrections
+    runtime rule names it beside a write, #1783) — the one action this tool
+    shares with both tiers the two retired tools it replaces sat in."""
+
+    name = "memory_admin"
+    mutates = True
+    advises = ("memory_get", "memory_access")
+    description = (
+        "Create or reconfigure a background job, archive or restore a "
+        "collection, or delete one of its entries by key. `target` names the "
+        "collection. `action` is one of:\n"
+        "- `configure` — create or update, in ONE idempotent call; you never need "
+        "to know which case this is. `params.description` is required the first "
+        "time. `params.prompt` is the job's instructions, run on `params.schedule` "
+        "— never what the collection holds (write entries with "
+        "`memory_access{action: 'write'}` for that). Leave `prompt` out to change "
+        "only `schedule`/`expires_at`/`notify`. An empty `prompt` or `schedule` "
+        "clears BOTH, leaving the collection as plain storage, entries kept. "
+        "Plain storage needs no call here — `memory_access{action: 'write'}` "
+        "creates storage automatically.\n"
+        "- `archive` — retires it: data stays, its collector stops running, it "
+        "drops out of the active list (still reachable by its exact name).\n"
+        "- `restore` — brings a previously archived one back.\n"
+        "- `delete` — removes the entry with `params.key` from `target`.\n"
+        "\n"
+        "Pass `plan: true` to see what any of these would do without doing it."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string", "description": "The collection's exact name"},
+            "action": {
+                "type": "string",
+                "enum": ["configure", "archive", "restore", "delete"],
+                "description": "Which operation to run against `target`.",
+            },
+            "params": {
+                "type": "object",
+                "description": (
+                    "The action's own fields — configure: description, prompt, "
+                    "schedule, expires_at, notify. delete: key."
+                ),
+                "properties": {
+                    "description": {"type": "string"},
+                    "prompt": {"type": "string", "description": PROMPT_PARAM_DESCRIPTION},
+                    "schedule": {
+                        "type": "string",
+                        "description": (
+                            f"{SCHEDULE_PARAM_DESCRIPTION} An empty string clears it; "
+                            "leaving it out changes nothing."
+                        ),
+                    },
+                    "expires_at": {"type": "string", "description": EXPIRES_AT_PARAM_DESCRIPTION},
+                    "notify": {"type": "boolean"},
+                    "key": {"type": "string"},
+                },
+            },
+        },
+        "required": ["target", "action"],
+    }
+    args_model = MemoryAdminArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        target = _named(arguments, "target", "a collection")
+        action = arguments.get("action")
+        if action == "configure":
+            if not result.success:
+                return f"You tried to set up {target} but it didn't work:"
+            if result.configure_outcome == CollectionConfigureOutcome.UPDATED:
+                return f"You updated {target}'s settings:"
+            return f"You created {target}:"
+        if action in ("archive", "restore"):
+            archiving = action == "archive"
+            if not result.success:
+                tail = "" if archiving else " from the archive"
+                return f"You tried to {action} {target}{tail} but it didn't work:"
+            return (
+                f"You archived {target}:"
+                if archiving
+                else f"You restored {target} from the archive:"
+            )
+        if not result.success:
+            return f"You tried to delete an entry from {target} but it didn't work:"
+        if not result.mutated:
+            return f"You couldn't find that entry to remove from {target}:"
+        return f"You removed an entry from {target}:"
+
+    def __init__(
+        self,
+        db: Database,
+        llm_client: LlmClient,
+        scope: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        self._db = db
+        self._llm_client = llm_client
+        self._scope = scope
+        self._configure = CollectionSetTool(db, llm_client, run_id=run_id)
+        self._archive = CollectionArchiveTool(db, run_id=run_id)
+        self._delete = CollectionRemoveTool(db, scope=scope)
+
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        return await embed_text(self._llm_client, name)
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = MemoryAdminArgs(**kwargs)
+        if args.action == "configure":
+            return await self._dispatch_configure(args)
+        if args.action in ("archive", "restore"):
+            return await self._dispatch_archive(args)
+        return await self._dispatch_delete(args)
+
+    def _scope_refusal(self, action: str, plan: bool) -> ToolResult | None:
+        """The structural guard that keeps a background job from configuring,
+        archiving, or restoring a mechanism (#1556) — see the class docstring.
+        ``plan`` wraps the refusal the same way every other refusal on this
+        surface does (#2946): a planning call learns it would be refused rather
+        than silently reading as a would-be success."""
+        if self._scope is None:
+            return None
+        refusal = ToolResult(message=_ADMIN_SCOPE_REFUSAL.format(verb=action), success=False)
+        return as_plan_result(refusal) if plan else refusal
+
+    async def _dispatch_configure(self, args: MemoryAdminArgs) -> ToolResult:
+        if (refusal := self._scope_refusal("configure", args.plan)) is not None:
+            return refusal
+        return await self._configure._run(
+            collection=args.target,
+            description=args.params.description,
+            prompt=args.params.prompt,
+            schedule=args.params.schedule,
+            expires_at=args.params.expires_at,
+            notify=args.params.notify,
+            plan=args.plan,
+        )
+
+    async def _dispatch_archive(self, args: MemoryAdminArgs) -> ToolResult:
+        if (refusal := self._scope_refusal(args.action, args.plan)) is not None:
+            return refusal
+        return await self._archive._run(
+            collection=args.target, archived=(args.action == "archive"), plan=args.plan
+        )
+
+    async def _dispatch_delete(self, args: MemoryAdminArgs) -> ToolResult:
+        if args.params.key is None:
+            return ToolResult(
+                message=f"'delete' needs `params.key` naming the entry to remove "
+                f"from '{args.target}'.",
+                success=False,
+            )
+        return await self._delete._run(collection=args.target, key=args.params.key, plan=args.plan)
+
+
 # ── Factory ─────────────────────────────────────────────────────────────────
 
 
@@ -4269,11 +4780,10 @@ def build_memory_tools(
     base, so the tool catches that one and returns ``str(exc)`` verbatim — no
     sentinel return, no per-call type check, no branching on a name or shape:
 
-    * **Wrong shape.** A keyed read/write on a log (or a cursored ``log_read``
-      on a collection) hits a base no-op that raises ``WrongShapeError``.  This
-      is what stops a newest-first ``collection_list`` from bypassing a
-      log's cursor.
-    * **Read-only facades.** ``log_append`` to ``user-messages`` /
+    * **Wrong shape.** A keyed read/write on a log (or a cursored read on a
+      collection) hits a base no-op that raises ``WrongShapeError``.  This is
+      what stops a newest-first collection read from bypassing a log's cursor.
+    * **Read-only facades.** A log write to ``user-messages`` /
       ``penny-messages`` / ``collector-runs`` is refused up front
       (``SYSTEM_LOGS``); the facades also raise ``ReadOnlyMemoryError`` if
       reached, since they're views over ``messagelog`` / ``promptlog``.
@@ -4301,48 +4811,54 @@ def build_memory_tools(
     or the collector cycle's — passed as an explicit parameter, never ambient state
     (#1560).  It threads to every write- and mutation-capable tool as the executing
     run: entry writes stamp it as ``created_by_run_id`` / ``last_written_by_run_id``
-    on the rows they add or rewrite; ``collection_configure`` records it as the new
-    mechanism's ``created_by_run_id`` (#1566); and create / update / archive /
-    unarchive record it on the durable mutation event they emit (the ledger's
+    on the rows they add or rewrite; ``memory_admin``'s ``configure`` action records it
+    as the new mechanism's ``created_by_run_id`` (#1566); and configure / archive /
+    restore record it on the durable mutation event they emit (the ledger's
     provenance closure).  ``None`` for a non-run caller, which leaves the columns
     NULL.  (The spawning ``source_message_id`` is linked afterward by the channel,
     since the message id isn't known until the run returns.)
 
-    ``decision_cache`` (#2933) is ``collection_write``'s plan-decision cache —
-    one per run, like ``handles``: a ``plan=true`` call's identity-ladder
+    ``decision_cache`` (#2933) is ``memory_access``'s write-action plan-decision
+    cache — one per run, like ``handles``: a ``plan=true`` call's identity-ladder
     decisions land there, and an apply with identical arguments in the SAME
     run reuses them instead of asking the (non-deterministic) decision model
     again, so a plan can never disagree with the apply it describes.
     ``None`` builds a fresh one — every caller here builds this surface once
     per run, so that is exactly one cache per run either way.
 
-    ``include_lifecycle`` gates the registry-shape tier — ``collection_configure`` /
-    ``collection_archive`` / ``log_create``.  Chat-style agents get it (the user
-    evolves collections through them); a cadence-fired collector run passes
-    ``False`` (#1556), so those tools are structurally ABSENT from its surface — a
-    background poll cannot create, reconfigure, or archive mechanisms, no
-    matter what its extraction_prompt says.  The declaration lives on the agent
+    ``include_lifecycle`` gates the one remaining registry-shape tool —
+    ``log_create``.  Chat-style agents get it (the user starts a log through it);
+    a cadence-fired collector run passes ``False`` (#1556), so it is structurally
+    ABSENT from its surface — a background poll cannot start a new log no matter
+    what its extraction_prompt says.  ``memory_admin`` (#3127 — Penny's own unified
+    create/reconfigure/archive/restore/delete surface) is NOT gated this way: it
+    stays on every surface so a scoped collector keeps the ``delete`` action its
+    corrections runtime rule names (#1783) — but its own ``_run`` refuses
+    ``configure``/``archive``/``restore`` whenever ``scope`` is set, preserving the
+    same invariant (a background job cannot create, reconfigure, or archive a
+    mechanism) structurally, inside the one tool, rather than by the tool's
+    absence.  The lifecycle declaration lives on the agent
     (``Agent._include_lifecycle_tools``, overridden by ``Collector``), not as a
     branch here.
 
     ``find`` stays on every surface, lifecycle or not: the did-you-mean fallback on
     every other read/write tool here points at it (#1674), so an agent without it
-    would have those tools dead-end into a call it cannot make.  The one coherence
-    gap this opens — a `find` hit on a lifecycle object addresses it with a
-    lifecycle verb (``collection_configure``/``collection_archive``) a collector
-    surface does not carry — is a known, narrow exception: unlike every other
-    tool here, `find`'s OWN closure cannot be made to fit inside a collector
-    cycle without either losing the did-you-mean target every other tool
-    depends on, or inventing a surface-aware addressing `find` has never needed
-    before.
+    would have those tools dead-end into a call it cannot make.
     """
     reads: list[Tool] = [
-        CollectionListTool(db, handles),
-        CollectionGetTool(db, handles),
-        CollectionKeysTool(db),
+        MemoryAccessTool(
+            db,
+            embedding_client=embedding_client,
+            agent_name=agent_name,
+            decider=decider,
+            name_decider=name_decider,
+            scope=scope,
+            run_id=run_id,
+            handles=handles,
+            decision_cache=decision_cache,
+        ),
+        MemoryAdminTool(db, embedding_client, scope=scope, run_id=run_id),
         MemoryMetadataTool(db),
-        LogReadTool(db, agent_name, scope, handles),
-        LogGetTool(db),
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
         FindTool(db, embedding_client, handles),
@@ -4355,23 +4871,6 @@ def build_memory_tools(
         ),
     ]
     lifecycle: list[Tool] = [
-        CollectionSetTool(db, embedding_client, run_id=run_id),
-        CollectionArchiveTool(db, run_id=run_id),
         LogCreateTool(db, embedding_client),
     ]
-    mutations: list[Tool] = [
-        CollectionWriteTool(
-            db,
-            embedding_client,
-            agent_name,
-            decider=decider,
-            name_decider=name_decider,
-            scope=scope,
-            run_id=run_id,
-            handles=handles,
-            decision_cache=decision_cache,
-        ),
-        CollectionRemoveTool(db, scope=scope),
-        LogAppendTool(db, embedding_client, agent_name, run_id=run_id),
-    ]
-    return reads + (lifecycle if include_lifecycle else []) + mutations
+    return reads + (lifecycle if include_lifecycle else [])

@@ -529,7 +529,9 @@ class PennyConstants:
     # the two surfaces that point at the same read: the conversation map's
     # collapsed-day line and the related-exchanges block (#3010).  Rendered
     # with ``.format(day=<ISO date>)`` — the map's byte-exact form.
-    USER_MESSAGES_DAY_ANCHOR = "log_read{{'user-messages', day: '{day}'}}"
+    USER_MESSAGES_DAY_ANCHOR = (
+        "memory_access{{target: 'user-messages', action: 'read', payload: {{day: '{day}'}}}}"
+    )
 
     # Browse tool constants
     URL_BLOCKLIST_DOMAINS = (
@@ -841,6 +843,13 @@ class PennyConstants:
     COLLECTION_REMOVE_TOOL_NAME = "collection_remove"
     LOG_READ_TOOL_NAME = "log_read"
     LOG_APPEND_TOOL_NAME = "log_append"
+    # #3127 — the experiment arm's unified read/write and admin tools.  Every
+    # retired per-verb name above resolves to one of these two through
+    # ``LEGACY_TOOL_RENAMES`` before a logged call ever reaches ``render_tool_call``,
+    # so a row logged under an old name renders through the branch below, not the
+    # per-verb one its own literal name still names.
+    MEMORY_ACCESS_TOOL_NAME = "memory_access"
+    MEMORY_ADMIN_TOOL_NAME = "memory_admin"
     SEND_MESSAGE_TOOL_NAME = "send_message"
     BROWSE_TOOL_NAME = "browse"
     # The per-call rationale key every tool's schema used to carry (``Tool.

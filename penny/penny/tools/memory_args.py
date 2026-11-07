@@ -646,6 +646,70 @@ class SynthesizeArgs(ToolArgs):
     since: datetime | None = None
 
 
+class MemoryAccessPayload(BaseModel):
+    """Every field any ``memory_access`` action might carry (#3127 — Penny's own
+    design: one read/write tool, dispatched by ``action``, with the store's type
+    resolved in code).
+
+    Not ``extra="forbid"``: which fields are read, required, or rejected depends
+    on ``action`` AND on whether ``target`` resolves to a collection or a log —
+    neither is known at the schema level, so ``MemoryAccessTool._run`` validates
+    per action/shape itself and names the exact field it needed, the same
+    actionable-rejection shape every other refusal on this surface uses."""
+
+    k: ReadCount = None
+    order: Literal["newest", "random"] = "newest"
+    day: str | None = None
+    before: int | None = None
+    key: str | None = None
+    id: int | None = None
+    entries: list[CollectionEntrySpec] | None = None
+    content: str | None = None
+
+
+class MemoryAccessArgs(ToolArgs):
+    """Args for ``memory_access`` — read, get one entry, write, or list
+    identifiers, against a collection or a log (#3127).  ``target`` names the
+    store; the code resolves whether it's a collection or a log, so the model
+    never picks between the two families' tools.  ``payload`` carries the
+    action's own fields — see ``MemoryAccessPayload``."""
+
+    target: MemoryName
+    action: Literal["read", "get_item", "write", "list_identifiers"]
+    payload: MemoryAccessPayload = Field(default_factory=MemoryAccessPayload)
+    # The structural plan mark (#2933) — every ``mutates=True`` tool declares
+    # this literal field itself.  Only the ``write`` action ever reads it; every
+    # read action ignores it, so a sandbox's forced ``plan=True`` (#2964) is a
+    # no-op on a read — it executes for real, exactly as an unscoped read tool
+    # always has.
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
+
+
+class MemoryAdminPayload(BaseModel):
+    """Every field any ``memory_admin`` action might carry (#3127) — the
+    registry-shape counterpart to ``MemoryAccessPayload``, same reasoning:
+    which fields apply depends on ``action``, validated inside
+    ``MemoryAdminTool._run``, not by the schema."""
+
+    description: OptionalText = None
+    prompt: PromptSetterText = None
+    schedule: ScheduleSetterText = None
+    expires_at: OptionalText = None
+    notify: bool | None = None
+    key: str | None = None
+
+
+class MemoryAdminArgs(ToolArgs):
+    """Args for ``memory_admin`` — configure (create-or-update), archive,
+    restore, or delete a collection (#3127).  ``target`` names the collection;
+    ``params`` carries the action's own fields — see ``MemoryAdminPayload``."""
+
+    target: MemoryName
+    action: Literal["configure", "archive", "restore", "delete"]
+    params: MemoryAdminPayload = Field(default_factory=MemoryAdminPayload)
+    plan: bool = Field(default=False, description=PLAN_ARG_DESCRIPTION)
+
+
 class DoneArgs(ToolArgs):
     """The one argument the cycle's close carries (#2385): whether the user should
     hear about this cycle.

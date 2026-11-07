@@ -321,7 +321,7 @@ class ChatAgent(Agent):
         same tool mark the record is read off (``Tool.asks_to_store``), so a step
         that only read or browsed is never worth a ledger query: the record can't
         change from a read."""
-        return any(Tool.asks_to_store(record.tool) for record in step_records)
+        return any(Tool.asks_to_store(record.tool, record.arguments) for record in step_records)
 
     @staticmethod
     def _append_to_last_tool_result(messages: list[LlmMessage], addendum: str) -> None:
@@ -358,7 +358,7 @@ class ChatAgent(Agent):
     def _store_attempts(records: list[ToolCallRecord]) -> list[ToolCallRecord]:
         """This run's calls that asked the store to keep an entry, in the order made —
         read off each call's own tool's declared mark, never off its name."""
-        return [record for record in records if Tool.asks_to_store(record.tool)]
+        return [record for record in records if Tool.asks_to_store(record.tool, record.arguments)]
 
     # ── Message handling ───────────────────────────────────────────────
 

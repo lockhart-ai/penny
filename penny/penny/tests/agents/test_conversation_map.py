@@ -490,10 +490,12 @@ def test_past_the_ceiling_the_oldest_whole_day_collapses(db) -> None:
 
     rendered = _map(db).render()
     content_lines = list(rendered.split("\n")[1:-1])
-    day_lines = [line for line in content_lines if "exchanges — log_read" in line]
+    day_lines = [line for line in content_lines if "exchanges — memory_access" in line]
     assert len(day_lines) == 1, rendered
     assert day_lines[0].startswith("- ")
-    assert "log_read{'user-messages', day: '" in day_lines[0]
+    assert (
+        "memory_access{target: 'user-messages', action: 'read', payload: {day: '" in (day_lines[0])
+    )
     assert len(content_lines) <= 5
     # Never trimmed line-by-line: every exchange the day line replaced is gone whole.
     assert "exchange ask 0" not in rendered and "exchange ask 4" not in rendered
@@ -527,10 +529,10 @@ def test_the_fold_folds_the_oldest_unfolded_day_and_terminates(db) -> None:
 
     rendered = _render_bounded(_map(db))
     content_lines = _content_lines(rendered)
-    day_lines = [line for line in content_lines if "exchanges — log_read" in line]
+    day_lines = [line for line in content_lines if "exchanges — memory_access" in line]
     assert len(day_lines) == 2, rendered  # day A already folded, then day B folded too
-    assert any("· 2 exchanges — log_read" in line for line in day_lines), rendered
-    assert any("· 4 exchanges — log_read" in line for line in day_lines), rendered
+    assert any("· 2 exchanges — memory_access" in line for line in day_lines), rendered
+    assert any("· 4 exchanges — memory_access" in line for line in day_lines), rendered
     assert len(content_lines) == 4, rendered  # 2 fold lines + the newest day's 2 lines
     assert "exchange ask 6" in rendered and "exchange ask 7" in rendered  # never folded
     assert "exchange ask 0" not in rendered and "exchange ask 2" not in rendered
@@ -561,9 +563,9 @@ def test_only_the_newest_day_over_the_ceiling_stops_the_fold(db) -> None:
 
     rendered = _render_bounded(_map(db))
     content_lines = _content_lines(rendered)
-    day_lines = [line for line in content_lines if "exchanges — log_read" in line]
+    day_lines = [line for line in content_lines if "exchanges — memory_access" in line]
     assert len(day_lines) == 1, rendered  # only the oldest day folded
-    assert "· 2 exchanges — log_read" in day_lines[0], rendered
+    assert "· 2 exchanges — memory_access" in day_lines[0], rendered
     assert len(content_lines) == 5, rendered  # over the ceiling — the fold stopped
     for index in range(2, 6):
         assert f"exchange ask {index}" in rendered  # the newest day stays unfolded
@@ -600,14 +602,16 @@ def test_a_folded_day_over_the_pool_keeps_its_true_count(db) -> None:
     )
 
     before = _render_bounded(_map(db))
-    before_fold = next(line for line in _content_lines(before) if "exchanges — log_read" in line)
-    assert f"· {day_a_count} exchanges — log_read" in before_fold, before
+    before_fold = next(
+        line for line in _content_lines(before) if "exchanges — memory_access" in line
+    )
+    assert f"· {day_a_count} exchanges — memory_access" in before_fold, before
     assert "a busy day's question 0" not in before  # the day folded whole, not line-by-line
 
     _long_exchange(db, 200)  # later-day messages: the pool drops more of day A's front
     _long_exchange(db, 201)
     after = _render_bounded(_map(db))
-    after_fold = next(line for line in _content_lines(after) if "exchanges — log_read" in line)
+    after_fold = next(line for line in _content_lines(after) if "exchanges — memory_access" in line)
 
     assert after_fold == before_fold  # byte-identical — a pure function of the day
     # The fold replaced the day's lines at the map's front, so everything the

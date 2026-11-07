@@ -178,7 +178,7 @@ def test_incomplete_run_is_flagged_and_shows_trace():
 writes: 1
 ⚠ INCOMPLETE — hit the step ceiling without a closing done; work landed but \
 the cycle never finished cleanly
-collection_write{collection: 'games', entries: 'x'}"""
+memory_access{collection: 'games', entries: 'x'}"""
     )
 
 
@@ -247,7 +247,7 @@ def test_tool_failure_count_is_flagged():
 [games] worked
 writes: 1
 ⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
-collection_write{collection: 'games', entries: 'x'}"""
+memory_access{collection: 'games', entries: 'x'}"""
     )
 
 
@@ -294,7 +294,7 @@ def test_healthy_worked_run_has_no_flags():
         == """\
 [games] worked
 writes: 1
-collection_write{collection: 'games', entries: 'x'}"""
+memory_access{collection: 'games', entries: 'x'}"""
     )
 
 
@@ -313,18 +313,20 @@ def test_healthy_quiet_read_is_not_a_bail():
 
 
 def test_logged_log_call_renders_its_log_argument_under_either_key():
-    """The trace renders a log call's log name under the CURRENT argument name,
-    however the row was logged: a call logged before the rename stored ``memory``,
-    and the read projection — never the stored row — maps it to ``log``."""
+    """The trace renders a bare name-only read call the same way whichever argument
+    key the row carries — ``collection``, ``memory``, or ``log``, however it was
+    logged — now under ``memory_access``'s own neutral ``target`` (#3127; the
+    retired ``log_read``'s "either key" invariant, carried forward rather than
+    lost at the collapse)."""
     run = [_prompt([_call("log_read", {"memory": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
+    assert "step 1: memory_access{target: 'user-messages'}" in render_run_calls(
         run,
         with_thinking=False,
         delivered_text=None,
         plan_descriptions={},
     )
     fresh = [_prompt([_call("log_read", {"log": "user-messages"}), _DONE_OK], outcome="no_work")]
-    assert "step 1: log_read{log: 'user-messages'}" in render_run_calls(
+    assert "step 1: memory_access{target: 'user-messages'}" in render_run_calls(
         fresh,
         with_thinking=False,
         delivered_text=None,
@@ -423,7 +425,7 @@ def test_browse_failures_but_wrote_is_not_no_writes(emitted_suffix):
 [games] worked
 browses: 1 ok, 1 failed · writes: 1
 browse{['a', 'b']}
-collection_write{collection: 'games', entries: 'x'}"""
+memory_access{collection: 'games', entries: 'x'}"""
     )
     assert (
         render_run_calls(
@@ -436,7 +438,7 @@ collection_write{collection: 'games', entries: 'x'}"""
 run wrote-fixed
 [games]
     step 1: browse{{['a', 'b']}}
-    step 2: collection_write{{collection: 'games', entries: 'x'}}
+    step 2: memory_access{{collection: 'games', entries: 'x'}}
 done: worked
 {_facts(1)}"""
     )
@@ -486,7 +488,7 @@ def test_write_gate_stop_ended_run_shows_trace_and_reason():
         == """\
 [games] the value was unchanged since the last observation
 writes: 1
-collection_write{collection: 'games', entries: '$42'}"""
+memory_access{collection: 'games', entries: '$42'}"""
     )
 
 
@@ -547,8 +549,12 @@ def test_logged_tool_call_round_trips_to_the_wire_form():
     assert leaked.name == f"collection_write{LEAKED_HARMONY_TOKEN}"
     assert leaked.to_wire()["name"] == f"collection_write{LEAKED_HARMONY_TOKEN}"
     assert LoggedToolCall.from_function(leaked.to_wire()) == leaked
-    assert leaked.tool == "collection_write"
-    assert leaked.tool == strip_harmony_control_tokens(leaked.name)
+    assert leaked.tool == "memory_access"
+    # Harmony-stripped alone (no rename resolution) still differs from ``tool`` —
+    # #3127 retired ``collection_write`` as a model-facing name, so the two
+    # readers now diverge for exactly the reason ``tool`` exists: a consumer
+    # comparing names must get the CURRENT one, not merely the de-leaked one.
+    assert strip_harmony_control_tokens(leaked.name) == "collection_write"
 
 
 # The run-calls render contract (#1560): every rendered surface the model reads is
@@ -655,13 +661,13 @@ def test_render_run_calls_chat_kitchen_sink_full_literal():
         "user: draw me a cartoon fox and log any new fox shows\n"
         "    step 1: browse{['new fox cartoons']} => "
         "## browse: https://example.com/fox-cartoons\n"
-        "    step 2: collection_write{collection: 'shows', entries: 'Fox Tales S2'} => "
+        "    step 2: memory_access{collection: 'shows', entries: 'Fox Tales S2'} => "
         "Wrote 1 entry: fox-tales.\n"
         "    step 4: generate_image{description: 'a cartoon fox'} => "
         "Generated image #7 of: a cartoon fox.\n"
-        "    step 5: collection_get{collection: 'old-shelf', key: 'fox tales'} => "
+        "    step 5: memory_access{collection: 'old-shelf', key: 'fox tales'} => "
         "Memory 'old-shelf' not found.\n"
-        "    step 6: collection_write{collection: 'shows', entries: 'Fox Tales again'} => "
+        "    step 6: memory_access{collection: 'shows', entries: 'Fox Tales again'} => "
         "Duplicate of fox-tales.\n"
         "penny: Done — logged the new season and drew your fox!\n"
         "    attached: image #7\n"
@@ -710,7 +716,7 @@ def test_render_run_calls_collector_run_full_literal():
         "run coll-fixed\n"
         "[games]\n"
         "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
-        "    step 2: collection_write{collection: 'games', entries: 'Pocket Go pick'} => "
+        "    step 2: memory_access{collection: 'games', entries: 'Pocket Go pick'} => "
         "Wrote 1 entry: pocket-go.\n"
         "done: worked\n"
         f"{_facts(2)}"
@@ -785,7 +791,7 @@ def test_render_run_calls_with_thinking_shows_a_short_thinking_whole():
         "[games]\n"
         "    step 1: browse{['budget handhelds']} => ## browse: https://example.com/budget\n"
         f"    step 2 thinking: {_SHORT_THINKING}\n"
-        "    step 2: collection_write{collection: 'games', entries: 'Pocket Go pick'} => "
+        "    step 2: memory_access{collection: 'games', entries: 'Pocket Go pick'} => "
         "Wrote 1 entry: pocket-go.\n"
         "done: worked\n"
         f"{_facts(2)}"
@@ -931,7 +937,7 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
         == f"""\
 run stop-fixed
 [games]
-    step 1: collection_write{{collection: 'games', entries: '$42'}} => Unchanged: 'price' \
+    step 1: memory_access{{collection: 'games', entries: '$42'}} => Unchanged: 'price' \
 already holds the same value — no change since the last write (entry).
 stopped: the value was unchanged since the last observation
 {_facts(1)}"""
@@ -1075,9 +1081,9 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
         == f"""\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write{{collection: 'shelf', entries: '$42'}} => Memory 'shelf' not found \
+    step 1: memory_access{{collection: 'shelf', entries: '$42'}} => Memory 'shelf' not found \
 — did you mean 'shelves'?
-{_facts(1, tool_errors="collection_write×1")}"""
+{_facts(1, tool_errors="memory_access×1")}"""
     )
     # Without the tail (every pre-#1778 row) the same run renders the call bare — the
     # gap this closes.
@@ -1091,7 +1097,7 @@ user: log the new shelf price
         == f"""\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write{{collection: 'shelf', entries: '$42'}}
+    step 1: memory_access{{collection: 'shelf', entries: '$42'}}
 {_facts(1)}"""
     )
 

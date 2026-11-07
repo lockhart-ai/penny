@@ -1049,6 +1049,68 @@ def _collection_field(fields: dict) -> Any:
     return fields.get("collection", fields.get("memory", "?"))
 
 
+def _render_memory_access_call(fields: dict) -> str:
+    """One ``memory_access`` call, compact (#3127) — a ``write`` names its
+    collection entries (mirroring the retired ``collection_write``'s own render)
+    or its log content; every other action just names ``target``/``action``,
+    since ``payload`` carries nothing else worth a run trace's attention.
+
+    A row logged under a RETIRED per-verb name this now resolves to (``collection_write``,
+    ``log_append``, a bare read/get) was logged before #3127 and carries THAT verb's own
+    flat arguments — the stored row is never rewritten — so ``target``/``action`` are
+    absent; ``_render_legacy_access_call`` renders those the same way the retired verb's
+    own branch below still would, under this call's current name."""
+    if "target" not in fields:
+        return _render_legacy_access_call(fields)
+    target = fields.get("target", "?")
+    action = fields.get("action", "?")
+    if action != "write":
+        return f"memory_access{{target: {target!r}, action: {action!r}}}"
+    raw_payload = fields.get("payload")
+    payload: dict = raw_payload if isinstance(raw_payload, dict) else {}
+    if "entries" in payload:
+        return (
+            f"memory_access{{target: {target!r}, action: 'write', "
+            f"entries: {_write_contents(payload)!r}}}"
+        )
+    content = payload.get("content", "")
+    return f"memory_access{{target: {target!r}, action: 'write', content: {content!r}}}"
+
+
+def _render_legacy_access_call(fields: dict) -> str:
+    """A pre-#3127 row's own flat arguments, rendered under ``memory_access`` (the
+    name every retired per-verb name now resolves to): a collection write names its
+    entries, a log append names its content — the two retired verbs whose render
+    was ever special-cased.  Every other retired verb (``collection_get``,
+    ``collection_keys``, ``log_read``, ``log_get``, …) fell through to the generic
+    ``name{field: value, …}`` render before #3127 too, so it still does here,
+    verbatim — the same fallback ``render_tool_call`` itself uses below."""
+    if "entries" in fields:
+        return (
+            f"memory_access{{collection: {_collection_field(fields)!r}, "
+            f"entries: {_write_contents(fields)!r}}}"
+        )
+    if "content" in fields:
+        content = fields.get("content", "")
+        return f"memory_access{{log: {_log_field(fields)!r}, content: {content!r}}}"
+    # A bare name-only read (``log_read``/``collection_list`` before this switch took
+    # a single argument, logged under ``collection``/``memory``/``log`` depending on
+    # which verb and which rename-era it predates) renders under ``target`` — the
+    # new vocabulary's own neutral name for it, so the SAME call renders identically
+    # whichever of the three keys the row happens to carry (#2307's own "either key"
+    # invariant, carried forward rather than lost at this collapse).
+    name_only_keys = {"collection", "memory", "log"}
+    if set(fields) <= name_only_keys and fields:
+        target = _collection_field(fields) if "collection" in fields else _log_field(fields)
+        return f"memory_access{{target: {target!r}}}"
+    rendered = ", ".join(
+        f"{key}: {value!r}"
+        for key, value in fields.items()
+        if key != PennyConstants.STRAY_REASONING_ARG_KEY
+    )
+    return f"memory_access{{{rendered}}}" if rendered else "memory_access"
+
+
 def _log_field(fields: dict) -> Any:
     """A logged call's log name, read however it was logged.
 
@@ -1078,6 +1140,20 @@ def render_tool_call(name: str, args: object) -> str:
     and nothing else is added.
     """
     fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
+    # #3127 — the unified memory_access/memory_admin tools.  ``LoggedToolCall.tool``
+    # resolves every retired per-verb name here FIRST (``LEGACY_TOOL_RENAMES``), so a
+    # row logged under the old ``collection_write``/``log_read``/… names arrives with
+    # ``name`` already "memory_access"/"memory_admin" — the two branches below are
+    # what render EVERY such row, old or new; the per-verb branches beneath them are
+    # consequently unreachable (kept, not deleted — the project's own rule against
+    # rewriting a stored row applies here too, and a future reader of this diff should
+    # see what the rename replaced rather than find it simply gone).
+    if name == PennyConstants.MEMORY_ACCESS_TOOL_NAME:
+        return _render_memory_access_call(fields)
+    if name == PennyConstants.MEMORY_ADMIN_TOOL_NAME:
+        target = fields.get("target", "?")
+        action = fields.get("action", "?")
+        return f"memory_admin{{target: {target!r}, action: {action!r}}}"
     if name == PennyConstants.COLLECTION_WRITE_TOOL_NAME:
         return (
             f"collection_write{{collection: {_collection_field(fields)!r}, "
@@ -1406,6 +1482,35 @@ _WRITE_TOOLS = frozenset(
     }
 )
 
+
+def _is_write_call(name: str, args: object) -> bool:
+    """Whether a logged call changed durable state — unlike the per-verb tools
+    ``_WRITE_TOOLS`` names (where the NAME alone said write-or-read), #3127's
+    unified ``memory_access`` covers both reads and writes under one name, so a
+    write is either ``memory_admin`` outright (every action it offers mutates)
+    or a ``memory_access`` call whose own ``action`` is ``'write'``.  Every
+    retired per-verb name resolves to one of these two before a call ever
+    reaches here (``LoggedToolCall.tool``), so a historical row is covered the
+    same way a fresh one is; ``_WRITE_TOOLS`` stays for any row this resolution
+    predates.
+
+    A row logged under a retired WRITE verb (``collection_write``/``log_append``)
+    before #3127 resolves to ``memory_access`` too, but carries that verb's own
+    flat arguments — no ``action`` key at all — the same gap
+    ``_render_legacy_access_call`` closes for rendering; ``entries``/``content``
+    are the two keys only a write ever carried, so their presence is the same
+    signal here."""
+    if name == PennyConstants.MEMORY_ADMIN_TOOL_NAME:
+        return True
+    if name == PennyConstants.MEMORY_ACCESS_TOOL_NAME:
+        if not isinstance(args, dict):
+            return False
+        if args.get("action") == "write":
+            return True
+        return "action" not in args and ("entries" in args or "content" in args)
+    return name in _WRITE_TOOLS
+
+
 _ROLE_TOOL = "tool"
 
 
@@ -1511,12 +1616,12 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
     #1778), so every result appears exactly once including a terminal one; the call
     counts come from the responses, so they're complete regardless."""
     calls = run_tool_calls(prompts)
-    writes = sum(1 for name, _ in calls if name in _WRITE_TOOLS)
+    writes = sum(1 for name, args in calls if _is_write_call(name, args))
     sends = sum(1 for name, _ in calls if name == PennyConstants.SEND_MESSAGE_TOOL_NAME)
     reads = sum(
         1
-        for name, _ in calls
-        if name not in _WRITE_TOOLS
+        for name, args in calls
+        if not _is_write_call(name, args)
         and name
         not in {
             PennyConstants.BROWSE_TOOL_NAME,

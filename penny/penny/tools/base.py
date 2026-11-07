@@ -380,12 +380,23 @@ class Tool(ABC):
         return ProgressEmoji.WORKING
 
     @classmethod
-    def asks_to_store(cls, tool_name: str) -> bool:
+    def stores_entries_for(cls, arguments: dict) -> bool:
+        """Whether THIS call — not just this tool — asks the store to keep a
+        keyed entry.  The class-level default is ``cls.stores_entries`` (every
+        call a storing tool makes); a tool whose calls can be either a read or
+        a write (#3127's unified ``memory_access``, one name covering both)
+        overrides this to read its own ``action`` argument instead, since the
+        class-level mark alone can no longer say which a given call was."""
+        return cls.stores_entries
+
+    @classmethod
+    def asks_to_store(cls, tool_name: str, arguments: dict) -> bool:
         """Whether a call named ``tool_name`` asked the store to keep an entry — the
-        registered tool's own ``stores_entries`` mark, and ``False`` for a name no tool
-        answers to (a call to nothing kept nothing, and tried to keep nothing either)."""
+        registered tool's own ``stores_entries_for(arguments)`` answer, and ``False``
+        for a name no tool answers to (a call to nothing kept nothing, and tried to
+        keep nothing either)."""
         tool_cls = cls._registry.get(tool_name)
-        return tool_cls.stores_entries if tool_cls else False
+        return tool_cls.stores_entries_for(arguments) if tool_cls else False
 
     @classmethod
     def destination_for(cls, tool_name: str, arguments: dict) -> str | None:
