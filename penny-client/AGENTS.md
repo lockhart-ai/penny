@@ -42,6 +42,7 @@ Use XcodeBuildMCP for project discovery, builds, launches, and device tests. Che
 - Project: `PennyClient.xcodeproj`
 - Primary scheme: `PennyClient`
 - App test target: `PennyClientTests` (via `PennyClient.xctestplan`)
+- UI smoke test target: `PennyClientUITests` (own `PennyClientUITests.xcscheme`, run locally with `make client-ui-tests`; deliberately outside `PennyClient.xctestplan` and the `PennyClient` scheme, so `make client-check`/CI never builds or runs it)
 - Preferred device: Sirius (`5771124D-00F3-5E80-8696-403B3FD55716`)
 - Device platform: `iOS`
 - Device DerivedData: `/private/tmp/PennyClientDerivedData-Sirius`
@@ -68,8 +69,8 @@ service, app, and Testflight build gate; this repository-level script uses its
 own simulator workflow and supplements the preferred XcodeBuildMCP device checks.
 
 ## Testing Guidelines
-Use the Swift Testing framework for unit and component tests. UI tests are not recommended by default; avoid XCUIAutomation unless the behavior cannot be validated with focused unit, component, or service-level tests.
-Keep service tests under `PennyServices/Tests/PennyServicesTests` and app/view-model tests under `PennyClient/PennyClientTests`, with shared helpers in the owning test target instead of large monolithic test sources.
+Logic stays in unit tests: use the Swift Testing framework for unit and component tests — state derivation, side effects, validation, persistence, protocol encoding. Every interactive control (a tap, a push, a back, a search, a send) additionally gets a UI smoke test in `PennyClientUITests` (#3106) — the tab bar once shipped with a dead tap (#3105) that no unit test caught, because nothing drove the real control. A redesign ticket that adds or moves a control adds it to `PennyClientUITests` in the same PR, and runs `make client-ui-tests` locally before review (LOCAL ONLY — CI's `client-check.yml` never runs it, since macOS runners are scarce). `PennyClientUITests` launches against fixture data via a `-PennyStory <id>` launch argument (#2965) and asserts a state change (an accessibility identifier appearing, an element's label, a tab's root) — never a screenshot or a layout check, and never a fixed sleep (`waitForExistence(timeout:)` or an `NSPredicate` expectation instead).
+Keep service tests under `PennyServices/Tests/PennyServicesTests`, app/view-model tests under `PennyClientTests`, and UI smoke tests under `PennyClientUITests`, with shared helpers in the owning test target instead of large monolithic test sources.
 
 All view models require test coverage. When adding or changing a view model, add or update focused tests for:
 - state derived from model/client data

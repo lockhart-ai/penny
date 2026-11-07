@@ -166,7 +166,7 @@ COMMENT_SUBDIR := comment
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-build prod-run prod-stop prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-stories client-services-check fix typecheck check pytest eval-remote replay describe-images eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
+.PHONY: up prod prod-build prod-run prod-stop prod-watch prod-ios kill clean-project-images docker-prune build browser-build client-check client-stories client-services-check client-ui-tests fix typecheck check pytest eval-remote replay describe-images eval-prune eval-report assemble token migrate-test migrate-validate deploy-loop-plist
 
 # --- Docker Compose ---
 
@@ -340,6 +340,14 @@ client-stories:
 # Run service-layer tests without building or launching PennyDev/PennyTestflight.
 client-services-check:
 	./scripts/client-services-check.sh
+
+# Run the PennyClientUITests smoke suite (#3106) on a simulator — LOCAL ONLY,
+# never CI (macOS runners are scarce). Drives the real shell: tabs, push/back,
+# find-in-chat, and the composer, against fixture data via `-PennyStory`, no
+# server. Run under the shared simulator lock alongside client-check/client-stories
+# when agents work in parallel: /usr/bin/lockf -k /tmp/penny-client-sim.lock make client-ui-tests
+client-ui-tests:
+	./scripts/client-ui-tests.sh
 
 # Print a GitHub App installation token for use with gh CLI
 # Usage: GH_TOKEN=$(make token) gh pr create ...

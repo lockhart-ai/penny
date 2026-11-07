@@ -1,6 +1,7 @@
 included:
   - PennyClient
   - PennyClientTests
+  - PennyClientUITests
   - PennyDesign
 
 excluded:

@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// The four top-level tabs of the centred top tab bar.
-public enum TopTab: CaseIterable, Identifiable {
+/// The four top-level tabs of the centred top tab bar. `String`-backed so
+/// each case has a stable raw value (#3106) — the one source `AXID.tabButton`/
+/// `AXID.tabRoot` build their accessibility identifiers from.
+public enum TopTab: String, CaseIterable, Identifiable {
     case chat
     case memory
     case prompts
@@ -65,6 +67,7 @@ public struct TopTabBar<Avatar: View>: View {
                         .foregroundStyle(selected == tab ? .primary : .secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier(AXID.tabButton(tab))
             }
         }
         .padding(4)

@@ -110,6 +110,11 @@ struct StoryRootView: View {
             KitPillsTilesStory()
         case .kitCodeBlock:
             KitCodeBlockStory()
+        case .uiTestChat:
+            AppShellView(
+                chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.findInChatMessages),
+                browserModel: DataBrowserFixtures.model()
+            )
         }
     }
 }

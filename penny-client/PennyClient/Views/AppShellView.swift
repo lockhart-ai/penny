@@ -83,9 +83,17 @@ struct AppShellView: View {
 
     // MARK: Tabs
 
-    @ViewBuilder
+    /// One identifier per tab root (#3106), applied here rather than inside
+    /// each tab's own view — `AppShellView` is the one place that already
+    /// knows which tab is showing.
     private var tabContent: some View {
-        switch selected {
+        content(for: selected)
+            .accessibilityIdentifier(AXID.tabRoot(selected))
+    }
+
+    @ViewBuilder
+    private func content(for tab: TopTab) -> some View {
+        switch tab {
         case .chat:
             MessageView(viewModel: chatViewModel, dockResolveProgress: dockResolveProgress)
         case .memory:
@@ -163,18 +171,21 @@ struct AppShellView: View {
                 TopTabBar(
                     selected: selected,
                     promptsBadge: chatViewModel.client.backgroundProgressRuns.count,
-                    onSelect: { selected = $0 }
-                ) { ChatTabAvatar() }
+                    onSelect: { selected = $0 },
+                    chatAvatar: { ChatTabAvatar() }
+                )
                 Spacer()
             }
             HStack {
                 if showsBackButton {
                     GlassCircleButton(symbol: "chevron.left", onTap: goBack)
                         .accessibilityLabel("Back")
+                        .accessibilityIdentifier(AXID.backButton)
                 }
                 Spacer()
                 GlassCircleButton(symbol: "magnifyingglass", onTap: openChatSearch)
                     .accessibilityLabel("Search")
+                    .accessibilityIdentifier(AXID.searchOpenButton)
             }
         }
         .padding(.horizontal, Tokens.margin)
