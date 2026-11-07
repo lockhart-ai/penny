@@ -518,10 +518,18 @@ def identity_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                 write_result = await asyncio.wait_for(
                     tool.run(
                         call_link=CallLink.new_top(),
-                        collection=arm.collection,
+                        memory=arm.collection,
                         entries=[{"key": arm.new[0], "content": arm.new[1]}],
                     ),
                     timeout=timeout,
+                )
+                # A write the ladder's own decision rejected or the arg model refused
+                # is a harness defect, same standing as a drifted seed above — it
+                # measures nothing about the decision model, so it must not pass
+                # silently as an empty store.
+                assert write_result.success, (
+                    f"{case_id} sample {sample_number(sample_index)}: the driven write "
+                    f"did not land: {write_result.message}"
                 )
                 tool_message: str | None = write_result.message
             except TimeoutError:
@@ -864,10 +872,18 @@ def sibling_eval(make_config: Callable[..., Config], tmp_path, request) -> Itera
                 write_result = await asyncio.wait_for(
                     tool.run(
                         call_link=CallLink.new_top(),
-                        collection=arm.collection,
+                        memory=arm.collection,
                         entries=[{"key": key, "content": content} for key, content in arm.new],
                     ),
                     timeout=timeout,
+                )
+                # A write the ladder's own decision rejected or the arg model refused
+                # is a harness defect, same standing as a drifted seed above — it
+                # measures nothing about the decision model, so it must not pass
+                # silently as an empty store.
+                assert write_result.success, (
+                    f"{case_id} sample {sample_number(sample_index)}: the driven write "
+                    f"did not land: {write_result.message}"
                 )
                 tool_message: str | None = write_result.message
             except TimeoutError:
