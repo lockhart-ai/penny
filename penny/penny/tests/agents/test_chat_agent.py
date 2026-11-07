@@ -40,11 +40,11 @@ from penny.validation import ConditionKey
 
 def _session_anchor(agent, user: str = TEST_SENDER):
     """The anchor ``_session_state_section``/``get_history`` now take
-    explicitly (#3078, so the real turn and the chat pre-warm share one
-    read) — computed fresh, the same way ``_dispatch_turn`` does, for a
+    explicitly (#3125, so every reader of a turn shares one read) — a pure
+    read of whatever boundary is currently stored, the same way
+    ``_dispatch_turn`` reads it (after its own rotation calls), for a
     direct test call outside a live turn."""
-    idle_seconds = int(agent.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-    return agent.db.messages.session_anchor(user, idle_seconds)
+    return agent.db.messages.session_anchor(user)
 
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
@@ -408,7 +408,12 @@ async def test_session_state_message_rebuilds_only_at_a_new_session(db, test_con
     ``datetime.now(UTC)`` call (never ``db.clock``), so "late-addition"'s
     creation time is always real wall-clock time regardless of what ``db.clock``
     is set to — the session boundaries below are chosen relative to it instead
-    of fighting it."""
+    of fighting it.
+
+    The idle gap is turned into a stored boundary explicitly
+    (``record_idle_rotation``, #3125) — direct DB seeding bypasses both the
+    idle scheduler task and a real turn's own inline rotation, so nothing
+    else would ever rotate it here."""
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
     agent.config = test_config
@@ -433,6 +438,7 @@ async def test_session_state_message_rebuilds_only_at_a_new_session(db, test_con
     # creation instant — makes a NEW closed exchange its own session's first
     # turn, and the collection is now visible.
     idle_seconds = int(agent.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+    assert db.messages.record_idle_rotation(TEST_SENDER, idle_seconds) is True
     new_session_start = datetime.now(UTC) + timedelta(seconds=idle_seconds + 60)
     _seed_closed_exchange(db, when=new_session_start)
     rebuilt = agent._session_state_section(TEST_SENDER, _session_anchor(agent))
@@ -536,8 +542,17 @@ def _seed_plan_exchange(db) -> tuple[int, int]:
 
 def _seed_filler_exchanges(db) -> None:
     """The newer exchanges that push the plan out of the window — each with its
-    own exchange vector, so they are real scored candidates, not absent ones."""
+    own exchange vector, so they are real scored candidates, not absent ones.
+
+    The stale/fresh split is now a STORED boundary (#3125): the gap between
+    them (an hour) comfortably clears every idle_seconds this file's configs
+    use (none override it), so an explicit ``record_idle_rotation`` right at
+    the split is what makes the CURRENT session hold exactly the six fresh
+    fillers — direct DB seeding bypasses both the idle scheduler task and a
+    real turn's own inline rotation, so nothing else would ever record it."""
     for index in range(_FILLER_COUNT):
+        if index == _FILLER_STALE:
+            db.messages.record_idle_rotation(TEST_SENDER, 1800)
         user_text = _FILLER_USERS[index % len(_FILLER_USERS)]
         reply_text = _FILLER_REPLIES[index % len(_FILLER_REPLIES)]
         stale = db.clock.now() - timedelta(hours=1) if index < _FILLER_STALE else None
@@ -584,7 +599,7 @@ async def test_related_exchanges_render_in_the_dynamic_section(db, make_config):
     agent = _render_agent(db, config)
 
     section = await agent._related_exchanges_section(
-        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE, _session_anchor(agent)
     )
     assert section is not None
     assert section == (
@@ -611,7 +626,7 @@ async def test_related_exchanges_stay_quiet_below_the_floor(db, test_config):
     agent = _render_agent(db, test_config)
 
     section = await agent._related_exchanges_section(
-        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE, _session_anchor(agent)
     )
 
     assert section is None
@@ -629,7 +644,7 @@ async def test_related_exchanges_exclude_the_history_window(db, make_config):
     agent = _render_agent(db, config)
 
     section = await agent._related_exchanges_section(
-        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+        _PLAN_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE, _session_anchor(agent)
     )
 
     assert section is None
@@ -682,8 +697,12 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
     # exchange vectors, so they are not candidates of their own.  The first
     # five are an hour old (same split as ``_seed_filler_exchanges``): the
     # current session holds six fillers, so the session window keeps the four
-    # ranked exchanges out (#3077).
+    # ranked exchanges out (#3077). The split is a stored boundary (#3125,
+    # ``record_idle_rotation`` — direct seeding bypasses both the idle
+    # scheduler task and a real turn's own inline rotation).
     for index in range(11):
+        if index == _FILLER_STALE:
+            db.messages.record_idle_rotation(TEST_SENDER, 1800)
         stale = db.clock.now() - timedelta(hours=1) if index < _FILLER_STALE else None
         ask_id = db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
@@ -701,7 +720,9 @@ async def test_related_exchanges_show_the_top_scoring_when_more_score_than_the_m
         )
     agent = _render_agent(db, config)
 
-    section = await agent._related_exchanges_section(live, TEST_SENDER, ChatPromptType.USER_MESSAGE)
+    section = await agent._related_exchanges_section(
+        live, TEST_SENDER, ChatPromptType.USER_MESSAGE, _session_anchor(agent)
+    )
 
     assert section is not None
     (_, _, second_ask, second_reply), (_, _, top_ask, top_reply) = seeded[2], seeded[3]
@@ -807,13 +828,14 @@ async def test_related_exchange_on_a_map_line_renders_her_reply_alone(db, make_c
     for index in range(1, 5):
         _map_exchange(db, index, at=now)
     # Sanity: the exchange is on the map's own one-to-one line, AND shown whole.
-    map_ = ConversationMap(db, TEST_SENDER, config.runtime)
+    anchor = db.messages.session_anchor(TEST_SENDER)
+    map_ = ConversationMap(db, TEST_SENDER, config.runtime, anchor)
     assert ask_id in map_.one_to_one_user_ids()
     assert ConversationMap.clips_whole(_MAP_ASK)
     agent = _render_agent(db, config)
 
     section = await agent._related_exchanges_section(
-        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE, anchor
     )
 
     assert section == (
@@ -847,12 +869,13 @@ async def test_related_exchange_on_a_folded_day_renders_both_sides(db, make_conf
             ask_id, reply_id = a_id, r_id
     assert ask_id is not None and reply_id is not None
     # Sanity: the exchange's day folded, so it carries no one-to-one line.
-    map_ = ConversationMap(db, TEST_SENDER, config.runtime)
+    anchor = db.messages.session_anchor(TEST_SENDER)
+    map_ = ConversationMap(db, TEST_SENDER, config.runtime, anchor)
     assert ask_id not in map_.one_to_one_user_ids()
     agent = _render_agent(db, config)
 
     section = await agent._related_exchanges_section(
-        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE, anchor
     )
 
     assert section == (
@@ -882,13 +905,14 @@ async def test_related_exchange_longer_than_the_clip_keeps_both_sides(db, make_c
         _map_exchange(db, index, at=now)
     # Sanity: structurally its own line, but the map's clip cuts it to the
     # first line alone — not the text itself.
-    map_ = ConversationMap(db, TEST_SENDER, config.runtime)
+    anchor = db.messages.session_anchor(TEST_SENDER)
+    map_ = ConversationMap(db, TEST_SENDER, config.runtime, anchor)
     assert ask_id in map_.one_to_one_user_ids()
     assert not ConversationMap.clips_whole(_MAP_ASK_MULTILINE)
     agent = _render_agent(db, config)
 
     section = await agent._related_exchanges_section(
-        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE
+        _MAP_LIVE, TEST_SENDER, ChatPromptType.USER_MESSAGE, anchor
     )
 
     assert section == (

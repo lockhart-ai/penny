@@ -612,21 +612,39 @@ class ChatAgent(Agent):
         self._current_user = sender
         self._pending_page_context = page_context
         run_id = call_link.run_id
-        # The session anchor (#3078) — read ONCE here, off whatever the store
-        # already holds (this turn's own live row may already be stored, on
-        # the flows that write it before their run), and passed explicitly to
-        # both reads below instead of each re-reading it. The chat pre-warm's
-        # own anchor (``MessageStore.anchor_for_arrival``) is the sibling read
-        # for a turn that has not arrived yet.
-        anchor = self.db.messages.session_anchor(
+        # The session boundary (#3125) — a real turn rotates BEFORE its one
+        # read, the same write rule the idle scheduler task uses
+        # (``ChatSessionRotationTask``/``record_idle_rotation``): this
+        # turn's own row isn't stored yet, so "the newest stored message"
+        # is the previous exchange and the gap is measured to now — exactly
+        # the rotation the idle task would already have made, so this is
+        # normally a no-op; it's the only rotation when the idle task
+        # didn't get there first (a restart inside the window, the eval
+        # harness driving turns with no scheduler, a test).
+        # ``record_cap_rotation`` follows it, so a session that has grown
+        # past ``CHAT_SESSION_MAX_TURNS`` cuts at THIS turn too — it can
+        # only ever fire from an active turn, never the idle task.
+        self.db.messages.record_idle_rotation(
             sender, int(self.config.runtime.CHAT_SESSION_IDLE_SECONDS)
         )
+        self.db.messages.record_cap_rotation(
+            sender,
+            int(self.config.runtime.CHAT_HISTORY_TURNS),
+            int(self.config.runtime.CHAT_SESSION_MAX_TURNS),
+        )
+        # The ONE anchor read every reader of this turn shares (#3125) — a
+        # pure read of whatever the rotation calls above just settled,
+        # passed explicitly to every reader below instead of each
+        # re-reading the store itself.
+        anchor = self.db.messages.session_anchor(sender)
         # The related earlier exchanges (#3010) — computed once per turn here,
         # where the live message's own embedding happens, and read by
         # ``_dynamic_system_section`` on every loop step.  A delivery turn's
         # trigger is the framework's, never the user's words, so no retrieval
         # runs for one (``_related_exchanges_section`` gates on the prompt type).
-        self._related_exchanges = await self._related_exchanges_section(prompt, sender, prompt_type)
+        self._related_exchanges = await self._related_exchanges_section(
+            prompt, sender, prompt_type, anchor
+        )
         # The once-per-session state message (#3089) — computed once per turn
         # here too, read by ``_build_messages`` to insert right after the
         # leading system message.
@@ -902,7 +920,7 @@ class ChatAgent(Agent):
         reads its one-to-one line ids off, never a second map."""
         if user is None:
             return None
-        return self._render_session_state(user, anchor, self._conversation_map_for(user))
+        return self._render_session_state(user, anchor, self._conversation_map_for(user, anchor))
 
     def _render_session_state(
         self, user: str, anchor: SessionAnchor, conversation_map: ConversationMap
@@ -925,27 +943,35 @@ class ChatAgent(Agent):
             if section
         )
 
-    def _conversation_map_for(self, user: str | None) -> ConversationMap:
+    def _conversation_map_for(self, user: str | None, anchor: SessionAnchor) -> ConversationMap:
         """This turn's ONE ``ConversationMap`` instance (#3085): built here on
         first use and cached on ``self`` for the rest of the turn, so this
         method and ``_related_exchanges_section`` — whichever runs first in
-        ``_dispatch_turn`` — never build two.  ``ConversationMap`` itself
-        caches nothing (every read is fresh off ``self.db``), so reusing the
-        instance across this turn's two reads, or across repeated calls in a
-        test, changes nothing about what either one returns."""
-        if self._conversation_map is None:
-            self._conversation_map = ConversationMap(self.db, user, self.config.runtime)
+        ``_dispatch_turn`` — never build two.
+
+        ``anchor`` (#3125) is REQUIRED — the caller's own single
+        ``session_anchor`` read, passed straight into the map's constructor
+        instead of the map re-deriving its own boundary, so the map and the
+        history window can never disagree about where the window starts.
+        Since #3125 the map HOLDS that anchor (it no longer re-derives its
+        own), so a cached instance from an earlier anchor is rebuilt the
+        moment a DIFFERENT anchor arrives — within one turn the anchor never
+        changes, so this never rebuilds there; it only matters for a test
+        that drives several direct calls on the same agent instance without
+        ``_dispatch_turn``'s own per-turn cache clear."""
+        if self._conversation_map is None or self._conversation_map.anchor != anchor:
+            self._conversation_map = ConversationMap(self.db, user, self.config.runtime, anchor)
         return self._conversation_map
 
     def _session_as_of(self, anchor: SessionAnchor) -> datetime:
         """The instant every once-per-session section is bounded by (#3089):
         the current session's own first turn — ``anchor.session_started_at``,
-        a pure read of the CALLER's own anchor (#3078: never a second
-        ``MessageStore.session_anchor``/``anchor_for_arrival`` read here, so
-        the session-state message and the history window — and, for the chat
-        pre-warm, its own hypothetical "if the next turn arrived now" —
-        always agree on the same anchor their caller already read once).
-        Falls back to the live clock only when the store holds no turn at all
+        a pure read of the CALLER's own anchor (#3125: never a second
+        ``MessageStore.session_anchor`` read here, so the session-state
+        message and the history window — and, for the chat pre-warm, its own
+        read of the same stored boundary — always agree on the same anchor
+        their caller already read once). Falls back to the live clock only
+        when the store holds no turn at all
         yet (``session_started_at`` is ``None``) — there is nothing earlier to
         freeze against on the very first turn ever.
 
@@ -977,13 +1003,18 @@ class ChatAgent(Agent):
         )
 
     async def _related_exchanges_section(
-        self, prompt: str, sender: str, prompt_type: ChatPromptType
+        self, prompt: str, sender: str, prompt_type: ChatPromptType, anchor: SessionAnchor
     ) -> str | None:
         """The turn's related earlier exchanges, or ``None`` when there are none
         (#3010).  Keyed to the user's own words: an ordinary user turn only — a
         delivery turn's trigger is the framework's notification, never the user
         asking, so no retrieval runs for one.  Embeds the live message once,
         here, so every later loop step reads the section this computed.
+
+        ``anchor`` (#3125) is REQUIRED — ``_dispatch_turn``'s own single
+        ``session_anchor`` read, handed to ``RelatedExchanges`` instead of it
+        re-deriving its own boundary, so the related-exchanges boundary and
+        the history window can never disagree.
 
         Reads the conversation map's own one-to-one line ids off THIS turn's
         ONE ``ConversationMap`` instance (#3085, ``_conversation_map_for`` —
@@ -999,11 +1030,12 @@ class ChatAgent(Agent):
         except LlmError as error:
             logger.warning("Related-exchanges retrieval skipped — embed failed: %s", error)
             return None
-        map_one_to_one_ids = self._conversation_map_for(sender).one_to_one_user_ids()
+        map_one_to_one_ids = self._conversation_map_for(sender, anchor).one_to_one_user_ids()
         rendered = RelatedExchanges(
             self.db,
             sender,
             self.config.runtime,
+            anchor,
             vectors[0],
             map_one_to_one_ids,
         ).render()
@@ -1035,12 +1067,12 @@ class ChatAgent(Agent):
         its own, so it keeps its own smaller, short-chain approximation).
         Falls back to the standard recent-message window.
 
-        ``anchor`` (#3078) is REQUIRED, no default (``CLAUDE.md``, "pass
+        ``anchor`` (#3125) is REQUIRED, no default (``CLAUDE.md``, "pass
         parameters, don't swap state") — the caller's own one read of the
         session anchor (``_dispatch_turn``'s ``session_anchor``, shared with
-        ``_session_state_section``; the chat pre-warm's own
-        ``anchor_for_arrival``), never a second read taken here. Keyword-only
-        so ``thread_parent_id`` keeps its own optional, positional shape.
+        ``_session_state_section``; the chat pre-warm's own read of the same
+        method), never a second read taken here. Keyword-only so
+        ``thread_parent_id`` keeps its own optional, positional shape.
         """
         if thread_parent_id is not None:
             thread_history = self.db.messages.get_thread_history(thread_parent_id)
@@ -1083,9 +1115,7 @@ class ChatAgent(Agent):
 
     # ── Chat pre-warm (#3078) ────────────────────────────────────────────
 
-    async def build_prewarm_prefix(
-        self, user: str, idle_seconds: int, now: datetime
-    ) -> tuple[list[LlmMessage], list[dict]]:
+    async def build_prewarm_prefix(self, user: str) -> tuple[list[LlmMessage], list[dict]]:
         """The next chat turn's rendered PREFIX — the leading system message,
         the session-state message, and history — built through the exact
         render methods a real turn's own ``_build_messages`` uses (#3078),
@@ -1100,10 +1130,15 @@ class ChatAgent(Agent):
         never corrupt either one's state — there is nothing of this call's
         own left lying on ``self`` to corrupt.
 
-        ``now`` is the one clock read: the anchor is "the next turn's own,
-        if it arrived at ``now``" (``MessageStore.anchor_for_arrival``),
-        which structurally comes back already rotated once the idle gap has
-        passed — no separate rotated/mid-session branch anywhere here.
+        A PURE read (#3125): ``MessageStore.session_anchor`` renders
+        whatever boundary is ALREADY stored — this never rotates it. The
+        idle scheduler task (``ChatSessionRotationTask``) runs ahead of the
+        pre-warm in the scheduler's own priority order, so by the time this
+        is called the boundary is already the one the next real turn will
+        also read; a real turn's own inline rotation (its own
+        ``record_idle_rotation``/``record_cap_rotation`` call, before ITS
+        read) is what keeps the two from ever disagreeing even when the
+        idle task hasn't ticked yet.
 
         The history and the tool schemas are built through the SAME methods
         a real turn's own ``_dispatch_turn`` calls (``_history_for_turn``,
@@ -1118,9 +1153,9 @@ class ChatAgent(Agent):
         turn and sit after the cache boundary, so warming them would warm
         nothing reusable.
         """
-        anchor = self.db.messages.anchor_for_arrival(user, idle_seconds, now)
+        anchor = self.db.messages.session_anchor(user)
         session_state = self._render_session_state(
-            user, anchor, ConversationMap(self.db, user, self.config.runtime)
+            user, anchor, ConversationMap(self.db, user, self.config.runtime, anchor)
         )
         table = HandleTable()
         history = self._history_for_turn(user, None, anchor, table)

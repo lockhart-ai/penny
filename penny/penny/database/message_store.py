@@ -18,6 +18,7 @@ from penny.clock import Clock
 from penny.constants import PennyConstants, RunOutcome
 from penny.database.memory.objects import classify_run, render_run_record, run_delivered_text
 from penny.database.models import (
+    ChatSession,
     CommandLog,
     Device,
     IosOutboxItem,
@@ -247,6 +248,19 @@ def _count_run_tool_calls(prompts: list[PromptLog]) -> int:
 _NEWEST_MESSAGE_FIRST = (col(MessageLog.timestamp).desc(), col(MessageLog.id).desc())
 
 
+def _as_naive(when: datetime | None) -> datetime | None:
+    """Strip tzinfo if present (#3125) — a stored column round-trips naive
+    (naive IS UTC, the same convention every other reader of a stored stamp
+    follows), while ``Clock.now()`` is aware; mixing the two would raise
+    comparing/subtracting an aware value against a naive one. Applied to
+    every datetime the session-boundary machinery reads or writes, whether
+    it came from the clock or from a round-tripped column, so a comparison
+    between any two of them never mixes awareness."""
+    if when is None:
+        return None
+    return when.replace(tzinfo=None) if when.tzinfo else when
+
+
 def _in_send_order(message: MessageLog) -> tuple[datetime, int]:
     """One message's place in the conversation \u2014 the Python-side twin of
     ``_NEWEST_MESSAGE_FIRST``, for a result merged from several queries.
@@ -280,32 +294,35 @@ class SessionAnchor(BaseModel):
     """The two counts the history window's size is a pure function of (#3077),
     over CLOSED exchanges.
 
+    Since #3125, the session's start is a STORED fact (``ChatSession.
+    started_at``), written only by :meth:`MessageStore.record_idle_rotation`
+    (the idle scheduler task, and a real turn's own ``_dispatch_turn``, before
+    its one read) or :meth:`MessageStore.record_cap_rotation` (a session whose
+    history passes ``CHAT_SESSION_MAX_TURNS``) — never derived here from a
+    timestamp-gap walk.  :meth:`MessageStore.session_anchor` is a pure read of
+    whatever is currently stored: the boundary plus the turn counts it bounds.
+
     ``total_user_turns`` is the uncapped incoming count (#2756) minus the open
     live turn, when one is in the store: on the flows where the live user
-    message's row is written BEFORE its run (the prod build the #3077 boundary
-    audit read), that row is the live turn itself — the live message also
-    rides the prompt's end as the live turn — so it must occupy none of the
-    window's slots.  ``live_turn_open`` marks its presence: the store's newest
-    non-reaction row is a run-less incoming one, meaning no reply has followed
-    the newest exchange.  ``session_turns`` counts the CLOSED turns of the
-    newest session: consecutive closed turns with no gap of at least the
-    session idle threshold between their stored timestamps.  A zero means the
-    live message is itself the session's first turn, which is exactly when
-    the window cuts.
+    message's row is written BEFORE its run, that row is the live turn itself
+    — the live message also rides the prompt's end as the live turn — so it
+    must occupy none of the window's slots.  ``live_turn_open`` marks its
+    presence: the store's newest non-reaction row is a run-less incoming one,
+    meaning no reply has followed the newest exchange.  ``session_turns``
+    counts the CLOSED turns stored at or after the boundary.  A zero means
+    the live message is itself the session's first turn, which is exactly
+    when the window cuts.
 
-    Computed from stored timestamps against stored timestamps — no clock read
-    anywhere — so every render of the same state gives the same session, and
-    the same window (the cache invariant).
-
-    ``session_started_at`` (#3089) is the stored timestamp of the current
-    session's own oldest CLOSED turn — the one instant everything in the
+    ``session_started_at`` (#3089) is the rotation instant itself once a
+    boundary has been recorded — the one instant everything in the
     once-per-session state message is bounded by, so a job run, a memory
     write, or a mutation that lands DURING this session never changes what
     that message says (it shows up instead as a tool result or a delivery
-    turn in history, never twice).  ``None`` only when there is no incoming
-    row at all (``session_anchor`` is never called before the live turn's
-    own row exists in practice); a caller building the once-per-session
-    message falls back to its own clock read for that one case."""
+    turn in history, never twice).  With no boundary recorded yet (#3125's
+    own no-row fallback — "everything stored so far is one session"), it
+    falls back to the oldest CLOSED turn's own stored timestamp, or the live
+    turn's own timestamp when ``session_turns == 0`` (nothing closed yet);
+    ``None`` only when there is no incoming row at all."""
 
     total_user_turns: int
     session_turns: int
@@ -1166,75 +1183,136 @@ class MessageStore:
                 )
             ).one()
 
-    def session_anchor(self, sender: str, idle_seconds: int) -> SessionAnchor:
-        """The closed-exchange counts the window's size is a pure function of
-        (#3077): the total user-turn count, how many of the newest belong to
-        the current session, and whether the live turn is open.
+    def session_anchor(self, sender: str) -> SessionAnchor:
+        """The CURRENT session anchor for ``sender`` — a PURE read, no write
+        (#3125): the stored boundary (``ChatSession.started_at``, written only
+        by :meth:`record_idle_rotation`/:meth:`record_cap_rotation`) plus the
+        turn counts it bounds.  Every reader of a turn's anchor — the real
+        turn, a delivery turn, the chat pre-warm, the conversation map, the
+        related-exchanges boundary — calls this ONE method; nothing here ever
+        rotates the boundary itself, so calling it twice in a row (or from a
+        read-only caller like the pre-warm) is always side-effect-free.
 
-        Same filters as ``count_user_turns`` (incoming, non-reaction, no run
-        id — joined messages render inside their run's own history, #2985), so
-        the session is counted over exactly the turns the window renders.
-
-        Reads whatever is ALREADY stored (the live turn's own row included,
-        on the flows that write it before its run) and hands the timestamps to
-        :meth:`_anchor_from_timestamps` (#3078) — the pure rule every reader of
-        an anchor shares. :meth:`anchor_for_arrival` is the sibling read for a
-        turn that has not arrived yet.
+        No boundary row yet means everything stored so far is one session —
+        the first idle gap or cap-crossing writes the first real row, so
+        there is nothing else to derive here (#3125's own no-row fallback).
         """
-        timestamps, newest_outgoing = self._incoming_timestamps(sender)
-        return self._anchor_from_timestamps(timestamps, newest_outgoing, idle_seconds)
-
-    def anchor_for_arrival(
-        self, sender: str, idle_seconds: int, arrives_at: datetime
-    ) -> SessionAnchor:
-        """The anchor the NEXT turn would see if it arrived at ``arrives_at``
-        (#3078) — the chat pre-warm's own read, used to render the prefix the
-        next real turn will have before it exists.
-
-        Runs the SAME pure rule as :meth:`session_anchor`
-        (:meth:`_anchor_from_timestamps`), with ``arrives_at`` put in front of
-        the stored timestamps as the open live turn — so whether the gap since
-        the newest stored turn already clears ``idle_seconds`` (a rotation),
-        the ``CHAT_SESSION_MAX_TURNS`` cap, and ``session_started_at`` all come
-        out of the existing rule, structurally, with no separate "has this
-        rotated?" flag anywhere.
-
-        Only correct when nothing is ALREADY open in the store — the chat
-        pre-warm's own precondition (it only runs while no chat turn is in
-        progress). A real turn's own anchor keeps reading :meth:`session_anchor`
-        unmodified, since its live row may already be stored.
-
-        ``arrives_at`` is stripped to naive (#3078) before it joins the
-        stored timestamps: a stored column round-trips naive (naive IS UTC,
-        the same convention every other reader of a stored stamp follows),
-        while the caller's own clock read (``Clock.now()``) is aware — mixing
-        the two would raise subtracting them in :meth:`_anchor_from_timestamps`.
-        """
-        timestamps, newest_outgoing = self._incoming_timestamps(sender)
-        naive_arrival = arrives_at.replace(tzinfo=None) if arrives_at.tzinfo else arrives_at
-        return self._anchor_from_timestamps(
-            [naive_arrival, *timestamps], newest_outgoing, idle_seconds
+        live_turn_open, newest_incoming = self._live_turn_open(sender)
+        open_adjustment = 1 if live_turn_open else 0
+        total_turns = self._closed_turn_count(sender, since=None) - open_adjustment
+        boundary = self._session_boundary(sender)
+        if boundary is None:
+            session_turns = total_turns
+            started_at = self._fallback_started_at(
+                sender, session_turns, open_adjustment, newest_incoming
+            )
+        else:
+            since_count = self._closed_turn_count(sender, since=boundary)
+            open_in_since = (
+                live_turn_open and newest_incoming is not None and newest_incoming >= boundary
+            )
+            session_turns = since_count - (1 if open_in_since else 0)
+            started_at = boundary
+        return SessionAnchor(
+            total_user_turns=total_turns,
+            session_turns=session_turns,
+            live_turn_open=live_turn_open,
+            session_started_at=started_at,
         )
 
-    def _incoming_timestamps(self, sender: str) -> tuple[list[datetime], datetime | None]:
-        """The DB read :meth:`session_anchor` and :meth:`anchor_for_arrival` share
-        (#3078): every stored incoming, non-reaction, run-less timestamp for
-        ``sender`` (newest first — joined messages render inside their own run's
-        history, #2985, so they are excluded here too), and the newest outgoing
-        reply's own timestamp (``None`` with no reply yet)."""
+    def _fallback_started_at(
+        self,
+        sender: str,
+        session_turns: int,
+        open_adjustment: int,
+        newest_incoming: datetime | None,
+    ) -> datetime | None:
+        """No boundary recorded yet (#3125) — "everything stored is one
+        session", so its start is the oldest CLOSED turn, the same rule
+        #3089 always used.  ``session_turns == 0`` means the live turn IS
+        the session's only one (nothing closed yet): its own timestamp is
+        the bound, since nothing from DURING it can have landed in the
+        store yet."""
+        if session_turns == 0:
+            return newest_incoming
+        oldest = self.user_turn_at_offset(sender, session_turns - 1 + open_adjustment)
+        return oldest.timestamp if oldest else None
+
+    def record_idle_rotation(self, sender: str, idle_seconds: int) -> bool:
+        """Write a fresh session boundary (``now``) once the newest stored
+        message for ``sender`` (either direction) has gone idle at least
+        ``idle_seconds`` and no rotation has been recorded since it (#3125)
+        — the ONE write both the idle scheduler task
+        (``ChatSessionRotationTask``) and a real turn's own
+        ``ChatAgent._dispatch_turn`` make, before their single
+        :meth:`session_anchor` read.
+
+        Idleness is measured off this STORED timestamp, never the
+        scheduler's own process-local clock — so it survives a restart. A
+        real turn's own row isn't stored yet when it calls this, so "the
+        newest stored message" is the previous exchange and the gap is
+        measured to the live clock: exactly the rotation the idle task
+        would already have made, so calling it again here is normally a
+        no-op; it's the ONLY rotation when the idle task didn't get there
+        first — a restart inside the window, the eval harness driving turns
+        with no scheduler running, a test. Returns whether it wrote."""
+        newest = self.newest_message_at(sender)
+        if newest is None:
+            return False
+        now = self._naive_now()
+        if now - newest < timedelta(seconds=idle_seconds):
+            return False
+        boundary = self._session_boundary(sender)
+        if boundary is not None and boundary >= newest:
+            return False  # already rotated past this message
+        self._set_session_boundary(sender, now)
+        return True
+
+    def record_cap_rotation(self, sender: str, window: int, max_turns: int) -> bool:
+        """Write a fresh session boundary (``now``) once the current
+        session's own history has grown to fill ``max_turns``
+        (``CHAT_SESSION_MAX_TURNS``, #3077) — the one cut an active
+        conversation can see, recorded the SAME way an idle rotation is
+        (:meth:`record_idle_rotation`): a fresh boundary resets
+        ``session_turns`` to 0, so the window's size (``window +
+        session_turns``) renders ``window`` again instead of growing
+        further.
+
+        Only a real turn calls this (inline in ``ChatAgent._dispatch_turn``,
+        before its one read) — a session can only grow past the cap while
+        the user is actively chatting, never while idle, so there is no
+        background task for it. Returns whether it wrote."""
+        anchor = self.session_anchor(sender)
+        if anchor.session_turns <= max_turns - window:
+            return False
+        self._set_session_boundary(sender, self._naive_now())
+        return True
+
+    def _naive_now(self) -> datetime:
+        """``self._clock.now()``, stripped to naive (#3125) — a stored
+        column round-trips naive (naive IS UTC, the same convention every
+        other reader of a stored stamp follows), while ``Clock.now()`` is
+        aware; mixing the two would raise comparing/subtracting them
+        against a stored timestamp."""
+        now = self._clock.now()
+        return now.replace(tzinfo=None) if now.tzinfo else now
+
+    def newest_message_at(self, sender: str) -> datetime | None:
+        """The newest stored message for ``sender``, either direction
+        (#3125) — what the idle rotation measures its gap from, read off
+        the store rather than a process-local clock so it survives a
+        restart."""
         with self._session() as session:
-            timestamps = list(
-                session.exec(
-                    select(MessageLog.timestamp)
-                    .where(
-                        MessageLog.sender == sender,
-                        MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
-                        MessageLog.is_reaction == False,  # noqa: E712
-                        col(MessageLog.run_id).is_(None),
-                    )
-                    .order_by(*_NEWEST_MESSAGE_FIRST)
-                ).all()
-            )
+            newest_incoming = session.exec(
+                select(MessageLog.timestamp)
+                .where(
+                    MessageLog.sender == sender,
+                    MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+                .limit(1)
+            ).first()
             newest_outgoing = session.exec(
                 select(MessageLog.timestamp)
                 .where(
@@ -1245,68 +1323,81 @@ class MessageStore:
                 .order_by(*_NEWEST_MESSAGE_FIRST)
                 .limit(1)
             ).first()
-        return timestamps, newest_outgoing
+        candidates = [_as_naive(ts) for ts in (newest_incoming, newest_outgoing) if ts is not None]
+        return max(candidates) if candidates else None
 
-    @staticmethod
-    def _anchor_from_timestamps(
-        timestamps: list[datetime], newest_outgoing: datetime | None, idle_seconds: int
-    ) -> SessionAnchor:
-        """The pure rule (#3077, split out for #3078): a session is the newest
-        run of consecutive turns with no gap of at least ``idle_seconds``
-        between stored timestamps — the scan walks newest first and stops at
-        the first such gap. With no gap in the whole history, everything is
-        one session.
-
-        The OPEN live turn — ``timestamps[0]`` is newer than the newest reply —
-        is excluded from both counts: it must occupy none of the window's
-        slots, wherever each reader sits relative to the row's write.
-
-        Timestamps are compared against timestamps — never against a clock —
-        so the same ``timestamps`` always yields the same session, whether
-        they came from the store as-is (:meth:`session_anchor`) or with a
-        hypothetical arrival prepended (:meth:`anchor_for_arrival`).
-        """
-        idle = timedelta(seconds=idle_seconds)
-        session_turns = 1
-        for newer, older in zip(timestamps, timestamps[1:], strict=False):
-            if newer - older >= idle:
-                break
-            session_turns += 1
-        live_turn_open = bool(timestamps) and (
-            newest_outgoing is None or timestamps[0] > newest_outgoing
+    def _live_turn_open(self, sender: str) -> tuple[bool, datetime | None]:
+        """Whether the newest stored turn for ``sender`` has no reply yet,
+        and its own timestamp (``None`` with no incoming row at all) — two
+        single-row lookups, shared by every count :meth:`session_anchor`
+        reads, so the open row is excluded identically from the total and
+        from the since-boundary count."""
+        with self._session() as session:
+            newest_incoming = session.exec(
+                select(MessageLog.timestamp)
+                .where(
+                    MessageLog.sender == sender,
+                    MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                    col(MessageLog.run_id).is_(None),
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+                .limit(1)
+            ).first()
+            newest_outgoing = session.exec(
+                select(MessageLog.timestamp)
+                .where(
+                    MessageLog.recipient == sender,
+                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                    MessageLog.is_reaction == False,  # noqa: E712
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+                .limit(1)
+            ).first()
+        newest_incoming = _as_naive(newest_incoming)
+        newest_outgoing = _as_naive(newest_outgoing)
+        live_turn_open = newest_incoming is not None and (
+            newest_outgoing is None or newest_incoming > newest_outgoing
         )
-        total = len(timestamps) - (1 if live_turn_open else 0)
-        # The scan counts the open live turn too (it is the newest row) — the
-        # closed session count drops it again.
-        session_turns = max(session_turns - (1 if live_turn_open else 0), 0)
-        return SessionAnchor(
-            total_user_turns=total,
-            session_turns=session_turns,
-            live_turn_open=live_turn_open,
-            session_started_at=MessageStore._session_started_at(
-                timestamps, session_turns, live_turn_open
-            ),
-        )
+        return live_turn_open, newest_incoming
 
-    @staticmethod
-    def _session_started_at(
-        timestamps: list[datetime], session_turns: int, live_turn_open: bool
-    ) -> datetime | None:
-        """The oldest CLOSED turn's own stored timestamp (#3089) — the session's
-        first turn, over the SAME newest-first ``timestamps`` the counts above
-        are read from, so it can never disagree with them.
+    def _closed_turn_count(self, sender: str, since: datetime | None) -> int:
+        """User turns for ``sender``, optionally bounded to ``since`` — same
+        filters as :meth:`count_user_turns` (incoming, non-reaction, no run
+        id). Includes the open live turn, if any; :meth:`session_anchor`
+        drops it again via :meth:`_live_turn_open`'s own flag."""
+        with self._session() as session:
+            query = select(func.count()).where(
+                MessageLog.sender == sender,
+                MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
+                MessageLog.is_reaction == False,  # noqa: E712
+                col(MessageLog.run_id).is_(None),
+            )
+            if since is not None:
+                query = query.where(MessageLog.timestamp >= since)
+            return session.exec(query).one()
 
-        With no closed turn in the session at all (``session_turns == 0``,
-        which only happens when the live turn IS the session's first one),
-        the live turn's own timestamp is the bound: nothing from DURING this
-        turn can have landed in the store yet, so everything up to and
-        including the moment the user just wrote is the correct "as of"."""
-        if not timestamps:
-            return None
-        if session_turns == 0:
-            return timestamps[0]
-        oldest_idx = session_turns - 1 + (1 if live_turn_open else 0)
-        return timestamps[min(oldest_idx, len(timestamps) - 1)]
+    def _session_boundary(self, sender: str) -> datetime | None:
+        """The stored session boundary for ``sender`` (#3125), or ``None``
+        when none has ever been recorded."""
+        with self._session() as session:
+            row = session.get(ChatSession, sender)
+            return _as_naive(row.started_at) if row else None
+
+    def _set_session_boundary(self, sender: str, started_at: datetime) -> None:
+        """Upsert the session boundary for ``sender`` (#3125) — one row per
+        sender, always overwritten in place: a session only ever has one
+        current start."""
+        if started_at.tzinfo:
+            started_at = started_at.replace(tzinfo=None)
+        with self._session() as session:
+            row = session.get(ChatSession, sender)
+            if row is None:
+                session.add(ChatSession(sender=sender, started_at=started_at))
+            else:
+                row.started_at = started_at
+                session.add(row)
+            session.commit()
 
     def recent_direct_messages(self, since: datetime, limit: int) -> list[MessageLog]:
         """The conversation's DIRECT messages since a horizon, oldest first (#2752).

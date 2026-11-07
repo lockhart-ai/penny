@@ -83,7 +83,11 @@ class ChatPrewarmTask:
         """Warm the next turn's prefix if it's due — never while a collector
         cycle is running, never on a transport with no vendored chat
         template, never with no primary user configured yet (a fresh
-        install), and never twice for the same (prefix, newest-call) key."""
+        install), and never twice for the same (prefix, newest-call) key.
+
+        A pure read (#3125): the session boundary this renders against is
+        whatever ``ChatSessionRotationTask`` (or a real turn's own inline
+        write) has already recorded — this task never rotates it itself."""
         if self._cycle_gate.is_cycle_running():
             return False
         if not self._model_client.raw_template_enabled:
@@ -92,9 +96,7 @@ class ChatPrewarmTask:
         if sender is None:
             return False
         newest_call_at = self._newest_call_timestamp()
-        idle_seconds = int(self._runtime.CHAT_SESSION_IDLE_SECONDS)
-        now = self._chat_agent.db.clock.now()
-        messages, tools = await self._chat_agent.build_prewarm_prefix(sender, idle_seconds, now)
+        messages, tools = await self._chat_agent.build_prewarm_prefix(sender)
         key = (_prefix_hash(messages, tools), newest_call_at)
         if key == self._last_warmed_key:
             return False

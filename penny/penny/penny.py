@@ -46,6 +46,7 @@ from penny.responses import PennyResponse
 from penny.scheduler import (
     BackgroundScheduler,
     ChatPrewarmTask,
+    ChatSessionRotationTask,
     PeriodicSchedule,
     Schedule,
 )
@@ -388,14 +389,24 @@ class Penny:
         message would only restart. A user-requested "run it now" dispatches the
         collector directly (``Collector.run_for``) and never goes through this gate.
 
-        The chat pre-warm (#3078) is LAST — the lowest priority, behind the
-        collector's own schedule — and gated on ``CHAT_PREWARM_IDLE_SECONDS``:
-        once the user has been idle that long (and nothing else was due this
-        tick), it sends the next chat turn's rendered prefix to the model
-        server once, so the server's prefix cache is warm before the real
-        turn arrives. A foreground message starting mid-warm cancels it
-        through the scheduler's own existing foreground-priority cancel —
-        no new mechanism, the same one the collector's own cycles already use.
+        The chat session rotation (#3125) runs BEFORE the pre-warm — its own
+        idle threshold is ``0.0`` (no scheduler-level gate; it measures
+        idleness itself off stored message timestamps, never the
+        scheduler's process-local ``idle_seconds``, so it survives a
+        restart) and it recurs on ``CHAT_SESSION_ROTATION_RECHECK_INTERVAL``.
+        Because the scheduler only moves on to the NEXT schedule in a tick
+        once the current one returns no work, a rotation here defers the
+        pre-warm to the following tick — "rotate, then warm" falls out of
+        the existing priority-list semantics, no new ordering plumbing.
+
+        The chat pre-warm (#3078) is LAST — the lowest priority — and gated
+        on ``CHAT_PREWARM_IDLE_SECONDS``: once the user has been idle that
+        long (and nothing else was due this tick), it sends the next chat
+        turn's rendered prefix to the model server once, so the server's
+        prefix cache is warm before the real turn arrives. A foreground
+        message starting mid-warm cancels it through the scheduler's own
+        existing foreground-priority cancel — no new mechanism, the same
+        one the collector's own cycles already use.
         """
         schedules: list[Schedule] = [
             # Drain before the collector so a queued message is delivered
@@ -410,6 +421,15 @@ class Penny:
                 agent=self.collector,
                 interval=lambda: config.runtime.COLLECTOR_TICK_INTERVAL,
                 idle_threshold=lambda: config.runtime.COLLECTOR_IDLE_SECONDS,
+            ),
+            PeriodicSchedule(
+                agent=ChatSessionRotationTask(
+                    db=self.db,
+                    cycle_gate=self.collector,
+                    runtime=config.runtime,
+                ),
+                interval=lambda: PennyConstants.CHAT_SESSION_ROTATION_RECHECK_INTERVAL,
+                idle_threshold=lambda: 0.0,
             ),
             PeriodicSchedule(
                 agent=ChatPrewarmTask(

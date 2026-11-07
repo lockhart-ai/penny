@@ -2681,11 +2681,10 @@ class Agent:
     def _build_conversation(self, sender: str, anchor: SessionAnchor) -> list[HistoryTurn]:
         """Build conversation history as strict user/assistant alternation.
 
-        ``anchor`` (#3078) is REQUIRED — the caller's own single read of the
-        session anchor (``MessageStore.session_anchor`` for a real turn,
-        whose live row may already be stored; ``MessageStore.anchor_for_arrival``
-        for the chat pre-warm's hypothetical "if the next turn arrived now"),
-        shared with the session-state section instead of each re-reading it.
+        ``anchor`` (#3125) is REQUIRED — the caller's own single read of
+        ``MessageStore.session_anchor`` (a pure read over the STORED session
+        boundary, for a real turn and the chat pre-warm alike), shared with
+        the session-state section instead of each re-reading it.
 
         Fetches a raw pool of recent messages (``MESSAGE_CONTEXT_LIMIT``, no
         time boundary), merges consecutive INCOMING messages with newlines

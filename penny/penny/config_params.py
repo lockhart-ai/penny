@@ -206,15 +206,17 @@ ConfigParam(
 ConfigParam(
     key="CHAT_SESSION_IDLE_SECONDS",
     description=(
-        "The idle gap that starts a new chat session (#3077): the first user "
-        "message after this many seconds without one. The history window "
-        "keeps every exchange since the session began and cuts back to "
+        "The idle gap that starts a new chat session (#3077, rotation stored "
+        "since #3125): once the user has gone this many seconds without a "
+        "message, the idle task (or, if it didn't get there first, the next "
+        "turn itself) records a fresh session boundary. The history window "
+        "keeps every exchange since that boundary and cuts back to "
         "CHAT_HISTORY_TURNS at the session's first turn — the only cut an "
         "active conversation sees, so its cached prompt prefix survives "
         "turn after turn."
     ),
     type=int,
-    default=1800,
+    default=600,
     validator=_validate_positive_int,
     group=GROUP_CHAT,
 )
@@ -224,8 +226,10 @@ ConfigParam(
     description=(
         "The history window's cap within one chat session (#3077), 4× "
         "CHAT_HISTORY_TURNS by value — a static default that does not follow "
-        "a changed CHAT_HISTORY_TURNS. A session whose history passes it cuts "
-        "back to CHAT_HISTORY_TURNS once and grows again, so a marathon "
+        "a changed CHAT_HISTORY_TURNS. A session whose history passes it "
+        "records a fresh session boundary at that turn (#3125, the same "
+        "stored-rotation mechanism CHAT_SESSION_IDLE_SECONDS uses), cutting "
+        "back to CHAT_HISTORY_TURNS once and growing again, so a marathon "
         "session stays bounded while cuts stay rare."
     ),
     type=int,
