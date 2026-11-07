@@ -26,6 +26,8 @@ from penny.database import Database
 from penny.database.models import PromptLog
 from penny.llm.call_link import CallLink
 from penny.llm.client import (
+    SKIP_CACHE_STORE_HEADER,
+    SKIP_CACHE_STORE_HEADER_OFF,
     LlmClient,
     _extract_model_ids,
     _image_data_uri,
@@ -323,9 +325,11 @@ class TestExplicitSamplingSettings:
 class TestSkipCacheStore:
     """A micro-context draw asks the model server not to store its one-off
     prompt in the prefix cache (#3080). The per-call intent rides as a
-    parameter, and the field reaches the wire on BOTH transports only when the
-    endpoint actually knows it (``LLM_SKIP_CACHE_STORE_SUPPORTED``) — an
-    endpoint that has never heard of the field is never sent it."""
+    parameter, and it reaches the wire on BOTH transports, on BOTH its
+    carriers — the legacy ``skip_cache_store`` body field and oMLX v0.7.3's own
+    ``X-oMLX-Cache-Store: off`` header (#3134) — only when the endpoint
+    actually knows the opt-out (``LLM_SKIP_CACHE_STORE_SUPPORTED``); an
+    endpoint that has never heard of it is never sent either form."""
 
     @pytest.mark.asyncio
     async def test_a_supported_endpoint_chat_call_carries_it(self, monkeypatch) -> None:
@@ -351,6 +355,7 @@ class TestSkipCacheStore:
         await client.close()
 
         assert sent["extra_body"]["skip_cache_store"] is True
+        assert sent["extra_headers"][SKIP_CACHE_STORE_HEADER] == SKIP_CACHE_STORE_HEADER_OFF
 
     @pytest.mark.asyncio
     async def test_a_supported_endpoint_raw_template_call_carries_it(
@@ -379,11 +384,13 @@ class TestSkipCacheStore:
         await client.close()
 
         assert captured["extra_body"]["skip_cache_store"] is True
+        assert captured["extra_headers"][SKIP_CACHE_STORE_HEADER] == SKIP_CACHE_STORE_HEADER_OFF
 
     @pytest.mark.asyncio
-    async def test_an_unsupported_endpoint_is_never_sent_the_field(self, monkeypatch) -> None:
-        """The flag-off default (every eval run on OpenRouter) must never see a
-        field its providers may reject — even when a caller states the intent."""
+    async def test_an_unsupported_endpoint_is_never_sent_either_form(self, monkeypatch) -> None:
+        """The flag-off default (every eval run on OpenRouter) must never see
+        either carrier its providers may reject — even when a caller states
+        the intent."""
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -402,12 +409,13 @@ class TestSkipCacheStore:
         await client.close()
 
         assert "skip_cache_store" not in sent["extra_body"]
+        assert "extra_headers" not in sent
 
     @pytest.mark.asyncio
     async def test_calls_that_do_not_ask_send_nothing_new(self, monkeypatch) -> None:
-        """Chat and collector calls never carry the field — even on a client
-        whose endpoint supports it (their prompts are the reusable prefixes the
-        cache exists for)."""
+        """Chat and collector calls never carry either carrier — even on a
+        client whose endpoint supports the opt-out (their prompts are the
+        reusable prefixes the cache exists for)."""
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -426,6 +434,40 @@ class TestSkipCacheStore:
         await client.close()
 
         assert "skip_cache_store" not in sent["extra_body"]
+        assert "extra_headers" not in sent
+
+    @pytest.mark.asyncio
+    async def test_a_configured_extra_header_survives_alongside_the_opt_out(
+        self, monkeypatch
+    ) -> None:
+        """``LLM_EXTRA_HEADERS`` is a separate, operator-configured header — the
+        opt-out's own header merges in alongside it rather than replacing it."""
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            skip_cache_store_supported=True,
+            extra_headers={"X-Tosh-Agent": "off"},
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            skip_cache_store=True,
+        )
+        await client.close()
+
+        assert sent["extra_headers"] == {
+            "X-Tosh-Agent": "off",
+            SKIP_CACHE_STORE_HEADER: SKIP_CACHE_STORE_HEADER_OFF,
+        }
 
 
 class TestTokenBudgetResolution:

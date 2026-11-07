@@ -289,11 +289,14 @@ class Config:
     # the construction site, never silently.
     llm_decision_model: str | None = None
     llm_decision_api_url: str | None = None  # Defaults to the embedding endpoint's host
-    # Whether the chat endpoint accepts a top-level `skip_cache_store` request field
-    # (LLM_SKIP_CACHE_STORE_SUPPORTED). When on, a micro-context draw may ask the
-    # model server not to store its one-off prompt in the prefix cache. Off by
-    # default: endpoints that don't know the field must never be sent it (eval runs
-    # on OpenRouter leave it off — a provider there may reject unknown fields).
+    # Whether the chat endpoint honours oMLX's cache-store opt-out
+    # (LLM_SKIP_CACHE_STORE_SUPPORTED) — sent both ways during the switchover to
+    # oMLX v0.7.3 (#3134): the legacy top-level `skip_cache_store` request field,
+    # and oMLX's own `X-oMLX-Cache-Store: off` header. When on, a micro-context
+    # draw may ask the model server not to store its one-off prompt in the prefix
+    # cache. Off by default: an endpoint that doesn't know the opt-out must never
+    # be sent either form (eval runs on OpenRouter leave it off — a provider there
+    # may reject an unknown field or header).
     llm_skip_cache_store_supported: bool = False
     # Which upstream to PIN when the chat endpoint is a routing gateway serving one model
     # from several providers. A hard pin, fallbacks off: every call goes to exactly this
