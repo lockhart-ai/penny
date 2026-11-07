@@ -2,7 +2,7 @@
 
 ## The first rule: stock iOS
 
-The client uses SwiftUI's stock elements as Apple designed them, never a hand-built lookalike; a custom view only when the code owner has asked for one (so far: the chat bubbles, the live dock, and the message field with its + attach button). Any design rule below that a stock element contradicts loses. See the [client review guide's first section](../docs/penny-client-pr-review-guide.md#1-use-the-framework-as-designed).
+The client uses SwiftUI's stock elements as Apple designed them, never a hand-built lookalike; our own elements are composed from Apple's components and materials, and every rendering and animation Apple provides (glass, blur, scroll-edge fades, menus, transitions) is Apple's, never faked. Any design rule below that a stock element contradicts loses. See the [client review guide's first section](../docs/penny-client-pr-review-guide.md#1-use-the-framework-as-designed).
 
 Every redesigned screen is built from one place: the [`PennyDesign`](PennyDesign/Package.swift)
 Swift package (the tokens and shared components) and the rules below. The approved
