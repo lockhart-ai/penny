@@ -305,6 +305,21 @@ class MuteState(SQLModel, table=True):
     muted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ChatSession(SQLModel, table=True):
+    """The chat session's stored boundary (#3125) — one row per sender,
+    upserted in place.  ``started_at`` is the instant the CURRENT session
+    begins, written by ``MessageStore.record_idle_rotation`` (the idle
+    scheduler task, and a real turn's own ``_dispatch_turn``, before its one
+    read of ``session_anchor``) or ``record_cap_rotation`` (a session whose
+    history passes ``CHAT_SESSION_MAX_TURNS``).  No row yet means "everything
+    stored so far is one session" — ``session_anchor``'s own fallback."""
+
+    __tablename__ = "chat_session"
+
+    sender: str = Field(primary_key=True)
+    started_at: datetime
+
+
 class DomainPermission(SQLModel, table=True):
     """A domain access permission for browser tool execution."""
 

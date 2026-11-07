@@ -420,7 +420,8 @@ def _assert_the_plan_world(penny: Penny) -> None:
         "the weather log must hold its daily entries — the plan's condition, visibly met"
     )
     assert_seeded_turns_embedded(db)
-    map_render = ConversationMap(db, TEST_SENDER, penny.config.runtime).render()
+    map_anchor = db.messages.session_anchor(TEST_SENDER)
+    map_render = ConversationMap(db, TEST_SENDER, penny.config.runtime, map_anchor).render()
     fold_lines = [line for line in map_render.splitlines() if "exchanges — log_read{" in line]
     assert fold_lines, (
         f"the plan's day must render as the map's collapsed log_read line, the map "

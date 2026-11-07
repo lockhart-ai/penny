@@ -1,7 +1,7 @@
 """Integration tests for Agent context building (conversation, profile, page hint, sentiment)."""
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlmodel import Session, col, select
@@ -16,13 +16,30 @@ from penny.tests.conftest import TEST_SENDER
 from penny.tools.link_handles import HandleTable
 
 
+class _FixedClock:
+    """A controllable clock (#3125) — mutable, never advancing on its own.
+    Passed into ``make_config(clock=...)`` so EVERY store (``db.messages``
+    included) shares this EXACT instance from construction — unlike
+    reassigning ``db.clock`` afterward, which only the Database facade's own
+    direct readers would see, never ``MessageStore._clock`` (captured once
+    at ``__init__``, #3125's own new ``now()`` reads:
+    ``record_idle_rotation``). Advanced by mutating ``_when`` in place.
+    Always handed an AWARE instant here, the same convention this file's
+    own ``penny.db.clock.now()`` reads already follow."""
+
+    def __init__(self, when: datetime) -> None:
+        self._when = when
+
+    def now(self) -> datetime:
+        return self._when
+
+
 def _current_session_anchor(penny, sender: str = TEST_SENDER):
-    """The anchor ``_build_conversation`` now takes explicitly (#3078, so the
-    real turn and the chat pre-warm share one read) — computed the same way
-    ``ChatAgent._dispatch_turn`` does, for a test building conversation
-    history directly rather than through a live turn."""
-    idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-    return penny.db.messages.session_anchor(sender, idle_seconds)
+    """The anchor ``_build_conversation`` now takes explicitly (#3125, so
+    every reader of a turn shares one read) — a pure read of whatever is
+    currently stored, for a test building conversation history directly
+    rather than through a live turn."""
+    return penny.db.messages.session_anchor(sender)
 
 
 # ── History window size — the pure session-window function (#3077) ──────
@@ -85,9 +102,10 @@ async def test_count_user_turns_is_uncapped_by_the_message_context_limit(
 
         assert penny.db.messages.count_user_turns(TEST_SENDER) == 5
 
-        # The session anchor (#3077) reads the same uncapped count, and — no
-        # idle gap among the five — puts them all in one session.
-        anchor = penny.db.messages.session_anchor(TEST_SENDER, 1800)
+        # The session anchor (#3077, stored boundary since #3125) reads the
+        # same uncapped count, and — no boundary ever recorded — puts them
+        # all in one session (the no-row fallback).
+        anchor = penny.db.messages.session_anchor(TEST_SENDER)
         assert anchor.total_user_turns == 5
         assert anchor.session_turns == 5
         assert anchor.live_turn_open is False
@@ -301,14 +319,21 @@ async def test_conversation_cuts_back_to_the_window_after_an_idle_gap(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
     """The first user message after an idle gap of at least
-    CHAT_SESSION_IDLE_SECONDS starts a new session (#3077): the window cuts
-    to the last CHAT_HISTORY_TURNS exchanges — the only cut an active
-    conversation ever sees.  Before that message, the eight exchanges are
-    still one (growing) session and the window keeps them all."""
-    config = make_config()  # default window: 5, idle: 1800s
+    CHAT_SESSION_IDLE_SECONDS starts a new session (#3077, a stored boundary
+    since #3125): the window cuts to the last CHAT_HISTORY_TURNS exchanges —
+    the only cut an active conversation ever sees.  Before that message,
+    the eight exchanges are still one (growing) session, with no boundary
+    ever recorded, and the window keeps them all (the no-row fallback).
+
+    The gap is turned into a stored boundary explicitly here
+    (``record_idle_rotation``, the same call a real turn's own
+    ``_dispatch_turn`` or the idle scheduler task would make) — direct DB
+    seeding bypasses both, so nothing else would ever rotate it."""
+    config_clock = _FixedClock(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+    config = make_config(clock=config_clock)  # default window: 5, idle: 600s
 
     async with running_penny(config) as penny:
-        stale = penny.db.clock.now() - timedelta(hours=1)
+        stale = config_clock.now() - timedelta(hours=1)
         for n in range(1, 9):
             user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
@@ -331,6 +356,9 @@ async def test_conversation_cuts_back_to_the_window_after_an_idle_gap(
 
         # The ninth exchange lands an hour later: a new session, the window
         # cuts to the last 5 exchanges plus the session's own first one.
+        idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+        config_clock._when = stale + timedelta(seconds=idle_seconds + 30)
+        assert penny.db.messages.record_idle_rotation(TEST_SENDER, idle_seconds) is True
         user_id = penny.db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             TEST_SENDER,
@@ -406,18 +434,24 @@ async def test_conversation_cuts_once_at_the_session_cap(
 async def test_the_map_stops_one_exchange_before_the_historys_first(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """With the live user turn already logged (the prod build the #3077
-    boundary audit read writes the incoming row before its run), the map's
-    last 1:1 exchange line is never the history's first exchange: the shared
-    anchor counts CLOSED exchanges only, so the open live turn occupies none
-    of the window's slots — not in the history (it rides the prompt's end as
-    the live turn), not on the map, and not inside the related-exchanges
-    boundary — and the map stops exactly one exchange before the history's
-    own first."""
-    config = make_config()
+    """With the live user turn already logged (some flows write the
+    incoming row before its run), the map's last 1:1 exchange line is never
+    the history's first exchange: the shared anchor counts CLOSED exchanges
+    only, so the open live turn occupies none of the window's slots — not
+    in the history (it rides the prompt's end as the live turn), not on the
+    map, and not inside the related-exchanges boundary — and the map stops
+    exactly one exchange before the history's own first.
+
+    The gap between the two batches is now a STORED boundary (#3125),
+    written explicitly here (``record_idle_rotation``, the same call a real
+    turn's own ``_dispatch_turn`` or the idle scheduler task would make) —
+    the clock is fixed and advanced in place so the rotation lands at a
+    chosen instant rather than racing real wall-clock time."""
+    clock = _FixedClock(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+    config = make_config(clock=clock)
 
     async with running_penny(config) as penny:
-        stale = penny.db.clock.now() - timedelta(hours=1)
+        stale = clock.now() - timedelta(hours=1)
         for n in range(1, 9):  # an older session
             user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
@@ -433,12 +467,20 @@ async def test_the_map_stops_one_exchange_before_the_historys_first(
                 recipient=TEST_SENDER,
                 timestamp=stale,
             )
-        for n in (9, 10):  # a fresh session, closed
+
+        idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+        # Idle long enough, relative to the stale batch, for the rotation to fire.
+        clock._when = stale + timedelta(seconds=idle_seconds + 30)
+        assert penny.db.messages.record_idle_rotation(TEST_SENDER, idle_seconds) is True
+
+        for n in (9, 10):  # a fresh session, closed, after the rotated boundary
+            clock._when = clock._when + timedelta(seconds=5)
             user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
                 TEST_SENDER,
                 f"user message {n}",
             )
+            clock._when = clock._when + timedelta(seconds=5)
             penny.db.messages.log_message(
                 PennyConstants.MessageDirection.OUTGOING,
                 penny.config.signal_number,
@@ -447,11 +489,15 @@ async def test_the_map_stops_one_exchange_before_the_historys_first(
                 recipient=TEST_SENDER,
             )
         # The live turn, already logged — run-less, its reply not yet sent.
+        # Strictly newer than message 10's own reply, or the fixed clock's
+        # static "now" would leave the two indistinguishable and the open
+        # live turn would read as already answered.
+        clock._when = clock._when + timedelta(seconds=5)
         penny.db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING, TEST_SENDER, "user message 11"
         )
 
-        anchor = penny.db.messages.session_anchor(TEST_SENDER, 1800)
+        anchor = penny.db.messages.session_anchor(TEST_SENDER)
         assert anchor.live_turn_open is True
         assert anchor.total_user_turns == 10  # the open live turn is not counted
 
@@ -480,7 +526,7 @@ async def test_the_map_stops_one_exchange_before_the_historys_first(
         # The related-exchanges boundary is the same row the history's first
         # kept exchange holds — one boundary, three readers.
         boundary = RelatedExchanges(
-            penny.db, TEST_SENDER, penny.config.runtime, [0.0], frozenset()
+            penny.db, TEST_SENDER, penny.config.runtime, anchor, [0.0], frozenset()
         )._boundary()
         assert boundary is not None and boundary.content == "user message 4"
 
@@ -493,11 +539,16 @@ async def test_conversation_window_follows_config_value(
     the window on the next build.  Six exchanges an hour old, then two fresh
     ones: the fresh pair starts a session, whose window is 2 — the last two
     pre-session exchanges plus the session's own two, not the default 5
-    (#3077, the cut at a session's first turn)."""
-    config = make_config(chat_history_turns=2)
+    (#3077, the cut at a session's first turn).
+
+    The gap becomes a stored boundary explicitly here
+    (``record_idle_rotation``) — direct DB seeding bypasses both the idle
+    scheduler task and a real turn's own inline rotation."""
+    clock = _FixedClock(datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+    config = make_config(chat_history_turns=2, clock=clock)
 
     async with running_penny(config) as penny:
-        stale = penny.db.clock.now() - timedelta(hours=1)
+        stale = clock.now() - timedelta(hours=1)
         for n in range(1, 7):
             user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,
@@ -513,6 +564,9 @@ async def test_conversation_window_follows_config_value(
                 recipient=TEST_SENDER,
                 timestamp=stale,
             )
+        idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
+        clock._when = stale + timedelta(seconds=idle_seconds + 30)
+        assert penny.db.messages.record_idle_rotation(TEST_SENDER, idle_seconds) is True
         for n in (7, 8):
             user_id = penny.db.messages.log_message(
                 PennyConstants.MessageDirection.INCOMING,

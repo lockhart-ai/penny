@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING
 from penny.agents.base import Agent
 from penny.agents.conversation_map import ConversationMap
 from penny.constants import PennyConstants
+from penny.database.message_store import SessionAnchor
 from penny.datetime_utils import stored_as_utc, user_timezone_name, zone_or_utc
 from penny.llm.embeddings import cosine_similarity, deserialize_embedding
 
@@ -106,12 +107,18 @@ class RelatedExchanges:
         db: Database,
         user: str,
         runtime: RuntimeParams,
+        anchor: SessionAnchor,
         live_embedding: list[float],
         map_one_to_one_user_ids: frozenset[int],
     ) -> None:
         self.db = db
         self.user = user
         self.runtime = runtime
+        # The caller's own single ``session_anchor`` read (#3125), REQUIRED
+        # — this class never re-derives its own boundary, so the boundary
+        # here and the history window it shares ``Agent._history_window_size``
+        # with can never disagree.
+        self.anchor = anchor
         self.live_embedding = live_embedding
         # The conversation map's own one-to-one line ids (#3085,
         # ``ConversationMap.one_to_one_user_ids``) — required, never derived
@@ -139,17 +146,16 @@ class RelatedExchanges:
         before it in send order are exactly the ones the window has dropped.
 
         Computed by the SAME function the history and the map are built from
-        (``Agent._history_window_size``, over the SAME ``session_anchor``
-        #3077 shares), so the retrieval can never show an exchange the window
-        already carries — the boundary is exactly the history's own oldest
-        kept exchange, and when the live turn's row is open in the store the
-        read skips it (#3077's boundary fix)."""
+        (``Agent._history_window_size``, over ``self.anchor`` (#3125), the
+        caller's own single ``session_anchor`` read passed in at
+        construction), so the retrieval can never show an exchange the
+        window already carries — the boundary is exactly the history's own
+        oldest kept exchange, and when the live turn's row is open in the
+        store the read skips it (#3077's boundary fix)."""
         window = int(self.runtime.CHAT_HISTORY_TURNS)
         if window <= 0:
             return None
-        anchor = self.db.messages.session_anchor(
-            self.user, int(self.runtime.CHAT_SESSION_IDLE_SECONDS)
-        )
+        anchor = self.anchor
         size = Agent._history_window_size(
             anchor.session_turns,
             anchor.total_user_turns,

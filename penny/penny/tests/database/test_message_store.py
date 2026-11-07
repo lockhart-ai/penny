@@ -4,9 +4,28 @@ from datetime import UTC, datetime, timedelta
 
 from sqlmodel import Session
 
+from penny.clock import Clock
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.models import MessageLog
+from penny.tests.schema_template import migrated_db
+
+# A controllable clock (#3125) — read ``_when`` verbatim, advanced only by
+# direct reassignment, never real time.  Passed into ``migrated_db``'s own
+# ``clock=`` constructor parameter so EVERY store (``db.messages`` included)
+# shares this exact instance — unlike reassigning ``db.clock`` after
+# construction, which only the Database facade's own direct readers
+# (``db.clock.now()``) would see, never a store's own clock captured at
+# ``__init__`` (``MessageStore._clock``, #3125's own new ``now()`` reads).
+
+
+class _FixedClock(Clock):
+    def __init__(self, when: datetime) -> None:
+        self._when = when
+
+    def now(self) -> datetime:
+        return self._when
+
 
 # One synthetic instant, to the microsecond — what every row in an ordering test is
 # stamped with so the tie those tests are about happens on every run.
@@ -454,17 +473,17 @@ class TestExchangeWindowBoundary:
         assert boundary is not None
         assert db.messages.exchange_vectors_before(boundary) == []
 
-    def test_session_started_at_is_the_sessions_oldest_closed_turn(self, db):
-        """``session_started_at`` (#3089) — the instant the once-per-session
-        state message is bounded by — is the SAME session's oldest CLOSED
-        turn, over the identical ``timestamps`` the counts above are read
-        from, so it can never disagree with ``session_turns``."""
+    def test_session_started_at_is_the_sessions_oldest_closed_turn_with_no_boundary_yet(self, db):
+        """#3125: with no boundary ever recorded, ``session_anchor`` falls
+        back to "everything stored is one session" — ``session_started_at``
+        is the session's oldest CLOSED turn, over the identical counts
+        ``session_turns`` is read from, so it can never disagree with it."""
         first = datetime(2026, 1, 1, 12, 0)
         second = datetime(2026, 1, 1, 12, 5)
         self._seed_exchange(db, "first ask", "first reply", first)
         self._seed_exchange(db, "second ask", "second reply", second)
 
-        anchor = db.messages.session_anchor(self.USER, 1800)
+        anchor = db.messages.session_anchor(self.USER)
 
         assert anchor.session_turns == 2
         assert anchor.live_turn_open is False
@@ -481,7 +500,7 @@ class TestExchangeWindowBoundary:
             PennyConstants.MessageDirection.INCOMING, self.USER, "live ask", timestamp=live_at
         )
 
-        anchor = db.messages.session_anchor(self.USER, 1800)
+        anchor = db.messages.session_anchor(self.USER)
 
         assert anchor.live_turn_open is True
         assert anchor.session_started_at == first
@@ -489,73 +508,120 @@ class TestExchangeWindowBoundary:
     def test_session_started_at_is_none_with_no_turns_at_all(self, db):
         """No incoming row at all → no session to anchor on — ``None``, never
         a guessed instant."""
-        anchor = db.messages.session_anchor(self.USER, 1800)
+        anchor = db.messages.session_anchor(self.USER)
 
         assert anchor.session_started_at is None
 
-    def test_session_started_at_is_the_live_turn_when_it_opens_the_session(self, db):
+    def test_session_started_at_is_the_live_turn_when_it_opens_the_session(self, tmp_path):
         """``session_turns == 0`` means the live turn IS the session's first
         one (the docstring's own named case) — ``session_started_at`` falls
         back to that live turn's own timestamp, the only instant available:
-        nothing from DURING this turn can have landed in the store yet."""
+        nothing from DURING this turn can have landed in the store yet.
+        Reached here via an explicit idle rotation (#3125) — ``session_anchor``
+        itself never rotates, so without that write the stale exchange would
+        simply count toward the session, gap or no gap."""
         stale = datetime(2026, 1, 1, 12, 0)
-        self._seed_exchange(db, "stale ask", "stale reply", stale)
         live_at = stale + timedelta(seconds=3600)  # past the 1800s idle gap
+        db = migrated_db(str(tmp_path / "test.db"), clock=_FixedClock(live_at))
+        self._seed_exchange(db, "stale ask", "stale reply", stale)
+        db.messages.record_idle_rotation(self.USER, 1800)
         db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING, self.USER, "live ask", timestamp=live_at
         )
 
-        anchor = db.messages.session_anchor(self.USER, 1800)
+        anchor = db.messages.session_anchor(self.USER)
 
         assert anchor.session_turns == 0
         assert anchor.live_turn_open is True
         assert anchor.session_started_at == live_at
 
-    def test_anchor_for_arrival_matches_session_anchor_mid_session(self, db):
-        """#3078: with nothing open yet, asking for the anchor a turn would see
-        if it arrived right now — still well inside the idle gap — agrees with
-        ``session_anchor`` read on the closed turns alone: the synthetic
-        arrival's own "open turn" bookkeeping cancels out exactly like a real
-        open turn's does."""
+    def test_record_idle_rotation_is_a_noop_before_the_idle_gap_clears(self, tmp_path):
+        """Still well inside the idle gap: no boundary gets written, and
+        ``session_anchor`` keeps counting the closed turns as one session."""
         first = datetime(2026, 1, 1, 12, 0)
         second = datetime(2026, 1, 1, 12, 5)
-        self._seed_exchange(db, "first ask", "first reply", first)
-        self._seed_exchange(db, "second ask", "second reply", second)
         # The second reply lands one minute after its own ask (``_seed_exchange``);
         # 30s after that is still well inside the 1800s idle gap.
-        arrives_at = second + timedelta(minutes=1, seconds=30)
+        now = second + timedelta(minutes=1, seconds=30)
+        db = migrated_db(str(tmp_path / "test.db"), clock=_FixedClock(now))
+        self._seed_exchange(db, "first ask", "first reply", first)
+        self._seed_exchange(db, "second ask", "second reply", second)
 
-        anchor = db.messages.anchor_for_arrival(self.USER, 1800, arrives_at)
+        rotated = db.messages.record_idle_rotation(self.USER, 1800)
 
+        assert rotated is False
+        anchor = db.messages.session_anchor(self.USER)
         assert anchor.session_turns == 2
         assert anchor.total_user_turns == 2
-        assert anchor.live_turn_open is True
         assert anchor.session_started_at == first
 
-    def test_anchor_for_arrival_rotates_once_the_idle_gap_has_passed(self, db):
-        """#3078: once the gap since the newest stored turn already clears
-        ``idle_seconds``, the anchor for an arrival at ``now`` comes back
-        rotated (``session_turns == 0``) — the SAME structural rule
-        ``session_anchor`` uses for an already-open live turn, not a second
-        "has this rotated?" flag."""
+    def test_record_idle_rotation_writes_once_the_gap_has_passed(self, tmp_path):
+        """Once the gap since the newest stored message clears
+        ``idle_seconds``, ``record_idle_rotation`` writes a boundary at
+        ``now`` — the SAME write a real turn's own inline call and the idle
+        scheduler task share — and the next ``session_anchor`` read comes
+        back rotated (``session_turns == 0``)."""
         stale = datetime(2026, 1, 1, 12, 0)
+        now = stale + timedelta(seconds=3600)  # past the 1800s idle gap
+        db = migrated_db(str(tmp_path / "test.db"), clock=_FixedClock(now))
         self._seed_exchange(db, "stale ask", "stale reply", stale)
-        arrives_at = stale + timedelta(seconds=3600)  # past the 1800s idle gap
 
-        anchor = db.messages.anchor_for_arrival(self.USER, 1800, arrives_at)
+        rotated = db.messages.record_idle_rotation(self.USER, 1800)
 
+        assert rotated is True
+        anchor = db.messages.session_anchor(self.USER)
         assert anchor.session_turns == 0
-        assert anchor.live_turn_open is True
         assert anchor.total_user_turns == 1
-        assert anchor.session_started_at == arrives_at
+        assert anchor.session_started_at == now
 
-    def test_anchor_for_arrival_with_no_turns_at_all(self, db):
-        """No stored turn at all — the arrival itself is the session's first,
-        same shape as a real first-ever turn."""
-        arrives_at = datetime(2026, 1, 1, 12, 0)
+    def test_record_idle_rotation_never_fires_twice_for_the_same_gap(self, tmp_path):
+        """Calling it again with nothing new stored is a no-op (#3125) — the
+        SAME rule both the idle scheduler task and a real turn's own inline
+        call rely on never double-rotating."""
+        stale = datetime(2026, 1, 1, 12, 0)
+        now = stale + timedelta(seconds=3600)
+        clock = _FixedClock(now)
+        db = migrated_db(str(tmp_path / "test.db"), clock=clock)
+        self._seed_exchange(db, "stale ask", "stale reply", stale)
+        assert db.messages.record_idle_rotation(self.USER, 1800) is True
 
-        anchor = db.messages.anchor_for_arrival(self.USER, 1800, arrives_at)
+        clock._when = now + timedelta(seconds=10)
+        rotated_again = db.messages.record_idle_rotation(self.USER, 1800)
 
+        assert rotated_again is False
+        assert db.messages.session_anchor(self.USER).session_started_at == now
+
+    def test_record_idle_rotation_with_no_turns_at_all_is_a_noop(self, tmp_path):
+        """Nothing stored yet — nothing to measure idleness from."""
+        db = migrated_db(str(tmp_path / "test.db"), clock=_FixedClock(datetime(2026, 1, 1, 12, 0)))
+
+        assert db.messages.record_idle_rotation(self.USER, 1800) is False
+        assert db.messages.session_anchor(self.USER).session_started_at is None
+
+    def test_record_cap_rotation_fires_at_the_turn_that_passes_the_cap(self, tmp_path):
+        """#3125: ``CHAT_SESSION_MAX_TURNS`` stays a stored rotation too — a
+        session whose history has grown to fill the cap (``window=2``,
+        ``max_turns=4`` ⇒ threshold ``session_turns > 2``) rotates at THAT
+        turn, resetting ``session_turns`` to 0 the same way an idle rotation
+        does."""
+        start = datetime(2026, 1, 1, 12, 0)
+        now = start + timedelta(minutes=10)
+        db = migrated_db(str(tmp_path / "test.db"), clock=_FixedClock(now))
+        for n in range(4):
+            self._seed_exchange(db, f"ask {n}", f"reply {n}", start + timedelta(minutes=n))
+
+        # Before the cap: with no boundary at all, session_turns == total == 4.
+        assert db.messages.session_anchor(self.USER).session_turns == 4
+
+        rotated = db.messages.record_cap_rotation(self.USER, window=2, max_turns=4)
+
+        assert rotated is True
+        anchor = db.messages.session_anchor(self.USER)
         assert anchor.session_turns == 0
-        assert anchor.total_user_turns == 0
-        assert anchor.session_started_at == arrives_at
+        assert anchor.session_started_at == now
+
+    def test_record_cap_rotation_is_a_noop_below_the_cap(self, db):
+        start = datetime(2026, 1, 1, 12, 0)
+        self._seed_exchange(db, "ask", "reply", start)
+
+        assert db.messages.record_cap_rotation(self.USER, window=2, max_turns=4) is False

@@ -704,6 +704,13 @@ class PennyConstants:
     # promptlog read, one prefix render) that this need not be runtime-configurable.
     CHAT_PREWARM_RECHECK_INTERVAL = 60.0
 
+    # Chat session rotation (#3125) — how often ChatSessionRotationTask rechecks
+    # whether the idle gap has cleared.  Measured off stored message timestamps,
+    # never the scheduler's own idle_seconds (#2779), so this schedule carries no
+    # idle_threshold of its own (lambda: 0.0) and this interval is its only throttle
+    # — cheap enough (two single-row lookups) that it need not be runtime-configurable.
+    CHAT_SESSION_ROTATION_RECHECK_INTERVAL = 60.0
+
     # Signal API connectivity validation
     SIGNAL_VALIDATE_MAX_ATTEMPTS = 12
     SIGNAL_VALIDATE_RETRY_DELAY = 5.0

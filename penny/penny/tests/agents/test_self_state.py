@@ -1387,8 +1387,7 @@ async def test_full_chat_system_prompt_composition(db, tmp_path):
         f"## Instructions\n{Prompt.CONVERSATION_PROMPT}"
     )
     assert leading == expected_leading
-    idle_seconds = int(agent.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-    anchor = db.messages.session_anchor(USER, idle_seconds)
+    anchor = db.messages.session_anchor(USER)
     session_state = agent._session_state_section(USER, anchor)
     assert session_state == _KITCHEN_SINK
     dynamic = agent._dynamic_system_section()

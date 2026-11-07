@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlmodel import select
@@ -106,11 +106,8 @@ async def test_mid_session_prefix_is_a_prefix_of_the_real_next_turns_request(
             "sure, see https://example.com/article for details",
             now - timedelta(minutes=5),
         )
-        idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
 
-        warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(
-            TEST_SENDER, idle_seconds, db.clock.now()
-        )
+        warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(TEST_SENDER)
         warm_text = _rendered(warm_messages, warm_tools)
         assert warm_text.endswith(_GENERATION_PROMPT_MARKER)
         warm_prefix_text = warm_text[: -len(_GENERATION_PROMPT_MARKER)]
@@ -129,15 +126,39 @@ async def test_mid_session_prefix_is_a_prefix_of_the_real_next_turns_request(
 
 
 class _FixedClock:
-    """A controllable ``db.clock`` substitute — a plain, reassignable
-    attribute (``Database.clock``), read only by stored-timestamp writes and
-    anchor reads, so swapping it mid-test advances "now" for those alone."""
+    """A controllable clock (#3125) — mutable, never advancing on its own, so
+    the idle gap it measures is stated rather than raced against real test
+    execution time.  Passed into ``make_config(clock=...)`` so EVERY store
+    (``db.messages`` included) shares this EXACT instance from construction
+    — unlike reassigning ``db.clock`` afterward, which only the Database
+    facade's own direct readers would see, never ``MessageStore._clock``
+    (captured once at ``__init__``, #3125's own new ``now()`` reads:
+    ``record_idle_rotation``/``record_cap_rotation``). Advanced by mutating
+    ``_when`` in place, never by replacing the instance, so the background
+    scheduler's own ``ChatSessionRotationTask`` (sharing this same clock)
+    reads the identical value a test-driven call would.
+
+    ``_when`` is kept NAIVE — the same convention every stored timestamp and
+    every test seed literal already follows — and ``now()`` tags it UTC-aware
+    on the way out, matching the real ``Clock``'s own contract (other
+    renders, e.g. ``map_horizon_start``'s ``.astimezone(zone)``, assume an
+    aware instant)."""
 
     def __init__(self, when: datetime) -> None:
         self._when = when
 
     def now(self) -> datetime:
-        return self._when
+        return self._when.replace(tzinfo=UTC)
+
+
+def _seed_history_longer_than_the_window(db, sender: str, start: datetime) -> None:
+    """Four closed exchanges, a minute apart — more than a small
+    ``CHAT_HISTORY_TURNS`` override, so a real cut actually drops the
+    oldest ones instead of being masked by ``total <= window``."""
+    for n in range(4):
+        _seed_closed_exchange(
+            db, sender, f"old ask {n}", f"old reply {n}", start + timedelta(minutes=n)
+        )
 
 
 @pytest.mark.asyncio
@@ -145,44 +166,33 @@ async def test_post_rotation_prefix_matches_once_the_session_actually_rotates(
     signal_server, make_config, running_penny, test_user_info, mock_llm
 ) -> None:
     """Once the idle gap has passed, the NEXT real turn's own anchor comes
-    back rotated — assert the warm's prediction matches it (#3078: one
-    anchor rule, no separate rotate flag), driven end to end.
+    back rotated — assert the warm's prediction matches it, with ONE real
+    turn after the gap (#3125: the prior version drove two real turns,
+    which encoded the one-message lag rather than catching it — the first
+    turn after a gap is the one whose own anchor must already be rotated
+    when ITS OWN dispatch reads it, not the one after).
 
-    A turn's own incoming row is logged only AFTER its run finishes
-    (``_finish_turn``, deliberately deferred so it never doubles into the
-    turn's own recall) — so a turn never sees ITSELF as the live, open row;
-    the rotation only becomes visible once that row is stored and a LATER
-    turn reads it. Two real turns, with the idle gap advanced on
-    ``db.clock`` (a plain, reassignable attribute — nothing else reads it
-    besides stored-timestamp writes and anchor reads) between them, so the
-    SECOND turn's own dispatch is the one the warm's prediction is checked
-    against."""
-    config = make_config(chat_session_idle_seconds=5)
+    The rotation is driven explicitly here (``record_idle_rotation``, the
+    same write the idle scheduler task makes) so the warm's prefix and the
+    real turn's own inline rotation (``_dispatch_turn``'s own call, before
+    its read) agree on an ALREADY-settled boundary — calling the write
+    again from the turn itself is then the no-op #3125 designs for."""
+    clock = _FixedClock(datetime(2026, 1, 1, 9, 0))
+    config = make_config(chat_session_idle_seconds=5, chat_history_turns=2, clock=clock)
     async with running_penny(config) as penny:
         db = penny.db
-        mock_llm.set_response_handler(
-            lambda request, count: mock_llm._make_text_response(
-                request, "sure, see https://example.com/article for details"
-            ),
-            answers_micro_contexts=False,
+        start = clock.now().replace(tzinfo=None)
+        _seed_history_longer_than_the_window(db, TEST_SENDER, start)
+        clock._when = start + timedelta(minutes=10, seconds=5)  # past the 5s idle gap
+
+        rotated = db.messages.record_idle_rotation(
+            TEST_SENDER, int(config.runtime.CHAT_SESSION_IDLE_SECONDS)
         )
-        await signal_server.push_message(sender=TEST_SENDER, content="check this out")
-        await signal_server.wait_for_message(timeout=10.0)
-        mock_llm.requests.clear()
+        assert rotated is True, "the session must actually have rotated"
+        anchor = db.messages.session_anchor(TEST_SENDER)
+        assert anchor.session_turns == 0
 
-        idle_seconds = int(penny.config.runtime.CHAT_SESSION_IDLE_SECONDS)
-        rotated_now = db.clock.now() + timedelta(seconds=idle_seconds + 30)
-        db.clock = _FixedClock(rotated_now)
-
-        # The session has actually rotated by this point — not a weaker,
-        # still-mid-session case that the prefix check below couldn't tell
-        # apart from one.
-        anchor = db.messages.anchor_for_arrival(TEST_SENDER, idle_seconds, db.clock.now())
-        assert anchor.session_turns == 0, "the session must actually have rotated"
-
-        warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(
-            TEST_SENDER, idle_seconds, db.clock.now()
-        )
+        warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(TEST_SENDER)
         warm_text = _rendered(warm_messages, warm_tools)
         assert warm_text.endswith(_GENERATION_PROMPT_MARKER)
         warm_prefix_text = warm_text[: -len(_GENERATION_PROMPT_MARKER)]
@@ -198,6 +208,47 @@ async def test_post_rotation_prefix_matches_once_the_session_actually_rotates(
         real_text = _rendered_dicts(real_request["messages"], real_request.get("tools"))
 
         assert real_text.startswith(warm_prefix_text)
+        # The history actually cut to CHAT_HISTORY_TURNS (2): the two oldest
+        # seeded exchanges aged out, the two newest survived.
+        assert "old ask 0" not in real_text
+        assert "old ask 1" not in real_text
+        assert "old ask 2" in real_text
+        assert "old ask 3" in real_text
+
+
+@pytest.mark.asyncio
+async def test_first_turn_after_a_gap_cuts_history_even_with_no_rotation_task_run(
+    signal_server, make_config, running_penny, test_user_info, mock_llm
+) -> None:
+    """The real turn's own inline rotation (``_dispatch_turn``'s own
+    ``record_idle_rotation``/``record_cap_rotation`` calls, before its one
+    read) is what guarantees this even when nothing else — the idle
+    scheduler task included — ever got to it (#3125): a restart inside the
+    window, the eval harness driving turns with no scheduler, or simply a
+    tick that hasn't landed yet. No rotation is ever recorded explicitly
+    here; the FIRST real turn after the gap does it for itself."""
+    clock = _FixedClock(datetime(2026, 1, 1, 9, 0))
+    config = make_config(chat_session_idle_seconds=5, chat_history_turns=2, clock=clock)
+    async with running_penny(config) as penny:
+        db = penny.db
+        start = clock.now().replace(tzinfo=None)
+        _seed_history_longer_than_the_window(db, TEST_SENDER, start)
+        clock._when = start + timedelta(minutes=10, seconds=5)  # past the 5s idle gap
+
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, "all set"),
+            answers_micro_contexts=False,
+        )
+        await signal_server.push_message(sender=TEST_SENDER, content="what's new?")
+        await signal_server.wait_for_message(timeout=10.0)
+
+        real_request = mock_llm.requests[0]
+        real_text = _rendered_dicts(real_request["messages"], real_request.get("tools"))
+
+        assert "old ask 0" not in real_text
+        assert "old ask 1" not in real_text
+        assert "old ask 2" in real_text
+        assert "old ask 3" in real_text
 
 
 @pytest.mark.asyncio

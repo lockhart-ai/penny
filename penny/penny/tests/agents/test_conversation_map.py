@@ -41,7 +41,8 @@ _PENNY = PennyConstants.MessageAuthor.PENNY
 
 
 def _map(db) -> ConversationMap:
-    return ConversationMap(db, TEST_SENDER, RuntimeParams(db))
+    anchor = db.messages.session_anchor(TEST_SENDER)
+    return ConversationMap(db, TEST_SENDER, RuntimeParams(db), anchor)
 
 
 def _exchange(db, user: str, reply: str, *, run_id: str | None = None) -> None:
@@ -364,7 +365,10 @@ def test_the_map_and_the_related_exchanges_share_one_boundary(db) -> None:
     for index in range(5):  # one session, cap 3: window = 2 + 5 % 2 = 3
         _outcome_exchange(db, index)
 
-    boundary = RelatedExchanges(db, TEST_SENDER, RuntimeParams(db), [0.0], frozenset())._boundary()
+    anchor = db.messages.session_anchor(TEST_SENDER)
+    boundary = RelatedExchanges(
+        db, TEST_SENDER, RuntimeParams(db), anchor, [0.0], frozenset()
+    )._boundary()
     assert boundary is not None and boundary.content == "exchange ask 2"
 
     lines = _content_lines(_map(db).render())

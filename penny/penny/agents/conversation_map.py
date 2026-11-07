@@ -224,10 +224,17 @@ class ConversationMap:
     SHORT_LINE_TAIL = "short messages"
     DAY_LINE_TAIL = "exchanges"
 
-    def __init__(self, db: Database, user: str | None, runtime: RuntimeParams) -> None:
+    def __init__(
+        self, db: Database, user: str | None, runtime: RuntimeParams, anchor: SessionAnchor
+    ) -> None:
         self.db = db
         self.user = user
         self.runtime = runtime
+        # The caller's own single ``session_anchor`` read (#3125), REQUIRED
+        # — this class never re-derives its own boundary, so the map and
+        # the history window it shares ``Agent._history_window_size`` with
+        # can never disagree about where the window starts.
+        self.anchor = anchor
 
     # ── Summary ──────────────────────────────────────────────────────────────
 
@@ -350,14 +357,14 @@ class ConversationMap:
     ) -> list[_Exchange | _Notification]:
         """Everything in the horizon before the history window's own first
         exchange — computed by the SAME function the history itself is built
-        from (``Agent._history_window_size``), anchored on the SAME session
-        anchor (``MessageStore.session_anchor``, #3077) the history's own
-        size is computed from.  One shared function, so the map and the
-        history can never disagree about where the window starts — the map
-        stops exactly one exchange before the history's own first: the open
-        live turn's exchange (its reply has not followed it) occupies none of
-        the window's slots, here or in the history's own trim (#3077's
-        boundary fix).
+        from (``Agent._history_window_size``), over ``self.anchor`` (#3125),
+        the caller's own single ``MessageStore.session_anchor`` read, passed
+        in at construction rather than re-derived here.  One shared anchor,
+        so the map and the history can never disagree about where the
+        window starts — the map stops exactly one exchange before the
+        history's own first: the open live turn's exchange (its reply has
+        not followed it) occupies none of the window's slots, here or in
+        the history's own trim (#3077's boundary fix).
 
         The slice runs to the window's first USER exchange (#2982): a
         notification rides the map exactly when it has left the history —
@@ -373,15 +380,7 @@ class ConversationMap:
         window = int(self.runtime.CHAT_HISTORY_TURNS)
         if window <= 0 or not items:
             return []
-        if self.user:
-            anchor = self.db.messages.session_anchor(
-                self.user, int(self.runtime.CHAT_SESSION_IDLE_SECONDS)
-            )
-        else:
-            count = sum(1 for item in items if isinstance(item, _Exchange))
-            anchor = SessionAnchor(
-                total_user_turns=count, session_turns=count, live_turn_open=False
-            )
+        anchor = self.anchor
         if anchor.live_turn_open and items and isinstance(items[-1], _Exchange):
             # The open live turn's exchange (its reply has not followed it —
             # that is the mark the anchor read) is the live message's own, not
