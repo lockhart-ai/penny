@@ -205,6 +205,33 @@ body {
   padding: 0 2px;
 }
 
+/* "Load earlier" (#3148) — pages the shared history further back. Sits at
+   the top of #messages, above the oldest rendered row, centred like the
+   message column it pages. */
+
+.load-earlier-btn {
+  align-self: center;
+  margin-bottom: 2px;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.load-earlier-btn:hover {
+  color: var(--text-dim);
+  background: var(--panel-alt);
+}
+
+.load-earlier-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .avatar {
   width: 18px;
   height: 18px;

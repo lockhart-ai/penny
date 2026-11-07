@@ -5,19 +5,19 @@
  */
 
 import {
+  type BrowserHistoryMessage,
   type ConnectionState,
   ConnectionState as CS,
-  MAX_STORED_MESSAGES,
   type MessageSender,
   MessageSender as MS,
   type RuntimeMessage,
   RuntimeMessageType,
   STORAGE_KEY_CHAT_HISTORY,
   STORAGE_KEY_DEVICE_LABEL,
-  type StoredMessage,
   TEXTAREA_LINE_HEIGHT,
   TEXTAREA_MAX_ROWS,
 } from "../protocol.js";
+import { historyCaption, oldestFirst, prependOlderPage } from "./history.js";
 import { deviceCaption, isOwnDevice } from "./incoming.js";
 import { hostnameOf, type TrailRow, parseTrail } from "./trail.js";
 
@@ -30,6 +30,8 @@ let statusEl: HTMLElement;
 const TYPING_ID = "typing";
 const PERM_WAIT_ID = "perm-wait";
 const EMPTY_STATE_ID = "empty-state";
+const LOAD_EARLIER_ID = "load-earlier";
+const HISTORY_PAGE_SIZE = 50;
 
 // Page context for decorating the next response
 let pendingPageRef: { title: string; url: string; image: string } | null = null;
@@ -39,10 +41,23 @@ let currentPageImage = "";
 // recognise an `incoming_message` echo of a message this very sidebar sent.
 let ownDeviceLabel = "";
 
+// Server-backed chat history (#3139/#3148) — the page currently rendered,
+// oldest first, and the paging state to go further back with "Load earlier".
+let historyShown: BrowserHistoryMessage[] = [];
+let historyNextCursor: string | null = null;
+let hasMoreHistory = false;
+// Which in-flight `history_request` this sidebar is waiting on — the
+// response carries no id of its own, so this says how to apply it: "fresh"
+// clears and re-renders from scratch, "older" prepends a page.
+let pendingHistoryLoad: "fresh" | "older" | null = null;
+
 // --- Registration ---
 
 async function init(): Promise<void> {
   statusEl = document.getElementById("status")!;
+  // The shared conversation now comes from the server on every load
+  // (#3148) — drop any stale per-sidebar copy from before this change, once.
+  browser.storage.local.remove(STORAGE_KEY_CHAT_HISTORY);
   const stored = await browser.storage.local.get(STORAGE_KEY_DEVICE_LABEL);
   const label = stored[STORAGE_KEY_DEVICE_LABEL] as string | undefined;
   if (label) {
@@ -101,7 +116,9 @@ async function showChat(): Promise<void> {
   document.getElementById("nav-logo")!.addEventListener("click", openFullPage);
   document.getElementById("open-page")!.addEventListener("click", openFullPage);
 
-  await rehydrateHistory();
+  // No local rehydrate: opening the sidebar always gets an immediate
+  // `connection_state` push (`listenToBackground`'s port connect), which
+  // triggers the fresh history load below the same way a reconnect does.
   listenToBackground();
 }
 
@@ -126,6 +143,14 @@ function listenToBackground(): void {
 function handleBackgroundMessage(message: RuntimeMessage): void {
   if (message.type === RuntimeMessageType.ConnectionState) {
     setStatus(message.state);
+    // Covers both "chat view open" (the port connect's own immediate push,
+    // reflecting whatever the background script's live state already is)
+    // and "connection comes back" (a later reconnect) with one trigger.
+    if (message.state === CS.Connected) {
+      requestHistory(null, "fresh");
+    }
+  } else if (message.type === RuntimeMessageType.HistoryResponse) {
+    applyHistoryResponse(message.messages, message.next_cursor, message.has_more);
   } else if (message.type === RuntimeMessageType.ChatMessage) {
     setTyping(false);
     removePermissionWaiting();
@@ -288,31 +313,98 @@ function buildPageHeader(ref: { title: string; url: string; image: string }): st
   return `<div class="page-header">${img}<div class="page-header-label">In response to ${link}</div></div>`;
 }
 
-// --- Chat history persistence ---
+// --- Chat history (server-backed, #3139/#3148) ---
 
-async function rehydrateHistory(): Promise<void> {
-  const stored = await browser.storage.local.get(STORAGE_KEY_CHAT_HISTORY);
-  const messages: StoredMessage[] = stored[STORAGE_KEY_CHAT_HISTORY] ?? [];
-  for (const msg of messages) {
-    renderMessage(msg.text, msg.sender, false, msg.caption);
+function requestHistory(before: string | null, mode: "fresh" | "older"): void {
+  pendingHistoryLoad = mode;
+  browser.runtime.sendMessage({
+    type: RuntimeMessageType.HistoryRequest,
+    limit: HISTORY_PAGE_SIZE,
+    before,
+  });
+}
+
+function applyHistoryResponse(
+  pageNewestFirst: BrowserHistoryMessage[],
+  nextCursor: string | null,
+  hasMore: boolean,
+): void {
+  const mode = pendingHistoryLoad ?? "fresh";
+  pendingHistoryLoad = null;
+  historyNextCursor = nextCursor;
+  hasMoreHistory = hasMore;
+
+  if (mode === "fresh") {
+    historyShown = oldestFirst(pageNewestFirst);
+    messagesEl.innerHTML = "";
+    for (const message of historyShown) renderHistoryRow(message, false);
+    updateLoadEarlierButton();
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  } else {
+    const shownBefore = historyShown.length;
+    historyShown = prependOlderPage(historyShown, pageNewestFirst);
+    prependHistoryRows(historyShown.slice(0, historyShown.length - shownBefore));
+    updateLoadEarlierButton();
   }
-  messagesEl.scrollTop = messagesEl.scrollHeight;
   updateEmptyState();
 }
 
-async function persistMessage(text: string, sender: MessageSender, caption?: string): Promise<void> {
-  const stored = await browser.storage.local.get(STORAGE_KEY_CHAT_HISTORY);
-  const messages: StoredMessage[] = stored[STORAGE_KEY_CHAT_HISTORY] ?? [];
-  messages.push(caption ? { text, sender, caption } : { text, sender });
-  if (messages.length > MAX_STORED_MESSAGES) {
-    messages.splice(0, messages.length - MAX_STORED_MESSAGES);
+function renderHistoryRow(message: BrowserHistoryMessage, animate: boolean): void {
+  if (message.direction === "outgoing") {
+    renderMessage(message.content, MS.Penny, animate);
+  } else {
+    renderMessage(message.content, MS.User, animate, historyCaption(message, ownDeviceLabel));
   }
-  await browser.storage.local.set({ [STORAGE_KEY_CHAT_HISTORY]: messages });
+}
+
+/** Insert an older page's rows ahead of what's already shown, right after
+ *  the "Load earlier" button, preserving the user's scroll position (the
+ *  viewport shouldn't jump when content is added above it). */
+function prependHistoryRows(messages: BrowserHistoryMessage[]): void {
+  const loadEarlierBtn = document.getElementById(LOAD_EARLIER_ID);
+  const beforeNode = loadEarlierBtn ? loadEarlierBtn.nextSibling : messagesEl.firstChild;
+  const prevScrollHeight = messagesEl.scrollHeight;
+  const prevScrollTop = messagesEl.scrollTop;
+  for (const message of messages) {
+    const caption = message.direction === "incoming" ? historyCaption(message, ownDeviceLabel) : undefined;
+    const sender = message.direction === "outgoing" ? MS.Penny : MS.User;
+    messagesEl.insertBefore(buildMessageRow(message.content, sender, caption), beforeNode);
+  }
+  messagesEl.scrollTop = prevScrollTop + (messagesEl.scrollHeight - prevScrollHeight);
+}
+
+function updateLoadEarlierButton(): void {
+  const existing = document.getElementById(LOAD_EARLIER_ID) as HTMLButtonElement | null;
+  if (!hasMoreHistory) {
+    existing?.remove();
+    return;
+  }
+  if (existing) {
+    existing.disabled = false;
+    existing.textContent = "Load earlier";
+    return;
+  }
+  const btn = document.createElement("button");
+  btn.id = LOAD_EARLIER_ID;
+  btn.className = "load-earlier-btn";
+  btn.textContent = "Load earlier";
+  btn.addEventListener("click", loadEarlierHistory);
+  messagesEl.insertBefore(btn, messagesEl.firstChild);
+}
+
+function loadEarlierHistory(): void {
+  if (!hasMoreHistory || historyNextCursor === null || pendingHistoryLoad) return;
+  const btn = document.getElementById(LOAD_EARLIER_ID) as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+  }
+  requestHistory(historyNextCursor, "older");
 }
 
 // --- Chat UI ---
 
-function renderMessage(text: string, sender: MessageSender, animate = true, caption?: string): void {
+function buildMessageRow(text: string, sender: MessageSender, caption?: string): HTMLElement {
   const row = document.createElement("div");
   row.className = caption ? `msg-row ${sender} captioned` : `msg-row ${sender}`;
   const bubble = document.createElement("div");
@@ -332,6 +424,11 @@ function renderMessage(text: string, sender: MessageSender, animate = true, capt
     captionEl.textContent = caption;
     row.append(captionEl);
   }
+  return row;
+}
+
+function renderMessage(text: string, sender: MessageSender, animate = true, caption?: string): void {
+  const row = buildMessageRow(text, sender, caption);
   messagesEl.appendChild(row);
   updateEmptyState();
   if (!animate) return;
@@ -356,7 +453,6 @@ function scrollToMessage(div: HTMLElement): void {
 
 function addMessage(text: string, sender: MessageSender, caption?: string): void {
   renderMessage(text, sender, true, caption);
-  persistMessage(text, sender, caption);
 }
 
 function setStatus(state: ConnectionState): void {
