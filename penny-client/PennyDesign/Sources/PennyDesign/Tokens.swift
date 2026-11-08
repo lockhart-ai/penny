@@ -2,8 +2,8 @@ import SwiftUI
 
 /// The UIFont for a SwiftUI text style at a weight: the preferred font for
 /// that text style, with the weight trait set to the weight the text uses.
-/// Every reading of the real font metrics — `capHeight` below and the
-/// `Tokens.pageIconSize` derivation in Tokens — goes through this.
+/// Every reading of the real font metrics — `capHeight` below — goes
+/// through this.
 func uiFont(_ style: Font.TextStyle, _ weight: Font.Weight) -> UIFont {
     let uiStyle: UIFont.TextStyle = switch style {
     case .largeTitle: .largeTitle
@@ -56,18 +56,9 @@ public enum Tokens {
     public static let lastMessageComposerGap: CGFloat = 12
     public static let capsuleContentGap: CGFloat = 12   // capsule bottom → first content
     public static let iconColumn: CGFloat = 38          // dock/stream icon column
-    public static let tile: CGFloat = 29                // Settings-app icon tile
-    public static let cardCorner: CGFloat = 16
     public static let bubbleCorner: CGFloat = 20
     public static let menuCorner: CGFloat = 16
     public static let menuRowHeight: CGFloat = 44
-    /// `GlassCircle`'s one size — Apple's minimum tap target — kept even
-    /// though its own nav-row callers retired with #3111's stock shell,
-    /// because `KitPageHeaderStory` still demos a `GlassCircleButton` in
-    /// `PageTitle`'s trailing slot.
-    public static let navControlHeight: CGFloat = 44
-    /// `GlassCircle`'s symbol size, same reason as `navControlHeight` above.
-    public static let navGlyphSize: CGFloat = 19.5
     public static let imageBubbleWidth: CGFloat = 270   // 16:10 flair image bubble
     public static let drawingImageWidth: CGFloat = 260  // 4:5 drawing bubble
     public static let userPhotoBubbleWidth: CGFloat = 260 // the user's photo bubble
@@ -158,70 +149,9 @@ public enum Tokens {
     /// chat's content keeps below its last message, so the last message's
     /// edge sits exactly where the fade clears.
     public static let composerFadeBleed: CGFloat = lastMessageComposerGap
-    /// The five metric columns' fixed widths, so values line up card to card.
-    /// Sized to fit the run card's text column (card interior minus tile,
-    /// spacing and chevron — measured at 284pt) with no overflow: the
-    /// strip is 282pt wide.
-    public static let metricColumns: [CGFloat] = [44, 76, 36, 68, 46]
-    public static let metricSpacing: CGFloat = 3
-    // MARK: The header grid — one derived column set for every page
-
-    /// A white card row's inner leading/trailing padding (the card sits at
-    /// the screen margin; its tile starts this far in).
-    public static let cardInnerPadding: CGFloat = 12
-    /// The gap between a leading icon tile and its text — card rows and
-    /// the page header alike.
+    /// The gap between a leading icon tile and its text — shared by the
+    /// live dock's stream rows (`LiveDock`'s `IconRow`).
     public static let iconTextGap: CGFloat = 12
-    /// A card row's vertical padding — every ListRow carries it, so the
-    /// hairline dividers between a card's rows span the card.
-    public static let rowVerticalPadding: CGFloat = 11
-    /// The gap between a ListRow's title line, its subtitle and its caption.
-    public static let rowLineGap: CGFloat = 3
-    /// The rows' text column: where a card row's text starts on screen
-    /// (screen margin + card inner padding + tile + icon→text gap).
-    /// The page header's title and byline start exactly here.
-    public static let rowTextX = margin + cardInnerPadding + tile + iconTextGap
-    /// The page header icon's fixed side: the span from the one-line
-    /// title's cap top down to the byline's baseline, computed from the
-    /// font metrics — the title's cap height, plus its descent below its
-    /// baseline, plus the title→byline line gap, plus the byline's ascent.
-    /// Titles are one line (`PageTitle` line-limits title and byline), so
-    /// this is the same on every page and is never measured from a wrapped
-    /// layout.
-    public static let pageIconSize: CGFloat = {
-        let title = uiFont(pageTitleStyle, pageTitleWeight)
-        let byline = uiFont(pageBylineStyle, .regular)
-        // Distance from a line box's top to its baseline: the font's
-        // ascender plus its half of the leading.
-        let ascentInBox = { (font: UIFont) in font.ascender + font.leading / 2 }
-        let drop = (title.lineHeight - ascentInBox(title))   // title's descent below its baseline
-            + pageTitleGap                                   // the title→byline line gap
-            + ascentInBox(byline)                            // byline's ascent to its baseline
-        return capHeight(pageTitleStyle, pageTitleWeight) + drop
-    }()
-    /// The header icon's left edge: the tile ends `iconTextGap` before the
-    /// text column. The section headers start on this same column, so the
-    /// header icon and the section headers form one column.
-    public static let pageIconX = rowTextX - iconTextGap - pageIconSize
-    /// What PageTitle adds inside the caller's screen-margin horizontal
-    /// padding so its tile lands on `pageIconX`.
-    public static let pageTitleLeadingInset = pageIconX - margin
-    /// The section headers' column — the header icon's left edge — and the
-    /// inset a section header adds inside the screen-margin padding.
-    public static let sectionHeaderX = pageIconX
-    public static let sectionHeaderInset = sectionHeaderX - margin
-
-    // MARK: Page-title text styles
-
-    /// Every non-chat page's title style. PageTitle reads it for both the
-    /// title text and the tile's cap-height alignment, so they cannot drift.
-    public static let pageTitleStyle: Font.TextStyle = .title2
-    public static let pageTitleWeight: Font.Weight = .bold
-    /// The byline under the title, and the second line the header icon's
-    /// fixed side spans down to.
-    public static let pageBylineStyle: Font.TextStyle = .subheadline
-    /// The gap between the title line and the byline line.
-    public static let pageTitleGap: CGFloat = 2
 }
 
 // MARK: - Semantic colour
@@ -350,9 +280,7 @@ public let pennyRainbow = AngularGradient(
 )
 
 /// The "still running" indicator — an animated blue ellipsis, footnote
-/// size. Shared by `ListRow`'s `.running` trailing item and the live
-/// dock's running tool rows (#3042), so the one definition serves both
-/// rather than each re-authoring the same symbol/effect/style chain.
+/// size. Used by the live dock's running tool rows (#3042).
 public struct RunningEllipsis: View {
     public init() {}
 

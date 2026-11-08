@@ -28,10 +28,6 @@ enum StoryID: String, CaseIterable {
     case chatSearch
     case chatSearchEmpty
     case sheetCardDetail
-    case kitPageHeader
-    case kitListRows
-    case kitPillsTiles
-    case kitCodeBlock
     /// `PennyClientUITests`' one fixture (#3106): a connected chat with
     /// known, matchable content and a populated Memory tab — every UI
     /// smoke test launches with this id, never the network.

@@ -10,10 +10,6 @@ reference screens live in [`Design/screens/`](Design/screens/) — every screen 
 document links to its PNG, and a redesigned page is measured against its shot, not
 against memory.
 
-The kit's components each render in story mode (`make client-stories`, story ids
-`kit*` in `PennyClient/Stories/StoryID.swift`) — run it and look at the PNGs under
-`penny-client/build/stories/` before eyeballing anything by hand.
-
 ## The rules
 
 1. **Three layers.** A grey background (`systemGroupedBackground`); solid white or
@@ -29,24 +25,8 @@ The kit's components each render in story mode (`make client-stories`, story ids
    A page switch swaps the content under the same bar, with no back button. A
    drill-down (today, a memory's detail) pushes onto the stack with the system back
    button — nothing hidden, nothing floated over a system element.
-3. **Every page has an `[icon] Title / byline` header** (`PageTitle`): the page's
-   type icon tile, a bold one-line title, and a **required one-line byline** under
-   it. There is one title size in the whole app (`Tokens.pageTitleStyle/Weight`);
-   content inside cards is never larger than the page title.
-4. **A section header above every card** (`SectionCard`): the grey small-caps-style
-   `SectionHeader` sits on the header icon's column (`Tokens.sectionHeaderX`), one
-   white card under it, hairline dividers between rows. `SectionCard` is the only
-   way to make a section — screens never draw their own cards or dividers.
-5. **Rows, not tiles.** Every data row is the one `ListRow`: leading type icon tile,
-   title, status pill, trailing time/value/toggle, subtitle, caption or metrics
-   strip, chevron, and a live row's progress edge. Screens pass data; the row picks
-   every font, spacing and alignment.
-6. **Icon per type, top-aligned with the title's capitals.** Icons come from the
-   fixed per-type tables below — never set per item. Every tile's TOP edge is level
-   with the TOP OF THE CAPITAL LETTERS of its title's first line (cap height, from
-   real font metrics, computed inside the kit — screens never hand-align).
-7. **Settings save as you change them.** No Save or Done button anywhere.
-8. **The rainbow edge is only on the live dock** (the chat dock while Penny works).
+3. **Settings save as you change them.** No Save or Done button anywhere.
+4. **The rainbow edge is only on the live dock** (the chat dock while Penny works).
    It means "Penny is active" and appears nowhere else — `pennyRainbow` is the only
    colour accent outside the semantic palette.
 
@@ -82,30 +62,16 @@ The kit's components each render in story mode (`make client-stories`, story ids
 
 ## The spacing grid (`Tokens`)
 
-Screen margin 16; card inner padding 12; row vertical padding 11, line gap 3; the
-rows' text column `rowTextX` = 16 + 12 + 29 + 12 — the page header's title starts
-exactly there, on the same column as every card row's text; icon tile 29 (page
-header's tile is the derived `pageIconSize`, spanning the title's cap top down to
-the byline's baseline); section header x = the header icon's column; message gap 12;
-every glass control in the nav row is 44pt tall (Apple's minimum tap target) with a
-19.5pt glyph; card corner 16, bubble corner 20. No magic numbers in views — a view
-that needs a constant adds it to `Tokens` first.
+Screen margin 16; message gap 12; bubble corner 20. No magic numbers in views — a
+view that needs a constant adds it to `Tokens` first.
 
 ## The components
 
-| Component | Kit file | Reads |
-|---|---|---|
-| `GlassCircle`, `GlassCircleButton` | `GlassCircle.swift` | nav control height, glyph size |
-| `PageTitle` | `PageTitle.swift` | `pageIconSize`, `pageIconX`, `rowTextX` |
-| `SectionHeader`, `SectionCard` | `SectionCard.swift` | `sectionHeaderInset`, `cardInnerPadding`, `cardCorner` |
-| `ListRow` (with `ListRowTile`, `RowIconKind`) | `ListRow.swift` | `cardInnerPadding`, `tile`, `iconTextGap`, `rowVerticalPadding`, `rowLineGap` |
-| `StatusPill` | `StatusPill.swift` | — |
-| `IconTile` | `IconTile.swift` | `tile` |
-| `MetricsStrip` | `MetricsStrip.swift` | `metricColumns`, `metricSpacing` |
-| `CodeBlock` | `CodeBlock.swift` | `iconTextGap` |
-
-Chat components — bubbles, the message field, the live dock, find-in-chat — come
-with their own redesign tickets (#3038–#3045) and land in the kit as they are built.
+Memory, Prompts and Settings are redesigned from stock SwiftUI elements directly
+(`List`, `Section`, `Label`, `LabeledContent`) under the first rule, rather than a
+shared `PennyDesign` view — there is no non-chat kit component yet. Chat components
+— bubbles, the message field, the live dock, find-in-chat — come with their own
+redesign tickets (#3038–#3045) and land in the kit as they are built.
 
 ## Reference screens
 

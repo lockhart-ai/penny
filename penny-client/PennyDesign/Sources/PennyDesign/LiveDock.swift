@@ -304,10 +304,8 @@ public struct LiveDock<Avatar: View>: View {
     }
 }
 
-/// The app-wide container for a leading icon beside text, kept for the
-/// chat dock's stream rows — the one place a row's icon and content are
-/// bespoke. Every list row in the app comes from `ListRow` instead. The
-/// rule, literal: the icon's TOP EDGE is level with the TOP OF THE CAPITAL
+/// A leading icon beside text, for the chat dock's stream rows. The rule,
+/// literal: the icon's TOP EDGE is level with the TOP OF THE CAPITAL
 /// LETTERS of the first line of text (the cap height) — the row aligns on
 /// the first text baseline and the icon's baseline guide offsets down by
 /// the first line's cap height, taken from the real font metrics.
