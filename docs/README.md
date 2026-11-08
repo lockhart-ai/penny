@@ -76,6 +76,12 @@ kind, with one line on when to read it. Start here before opening any one of the
 - [`migration-log.md`](migration-log.md) — a migration-by-migration record of
   `penny/database/migrations/`; read on demand, not as onboarding.
 
+## Experiments (measured comparisons that didn't ship)
+
+- [`experiments/memory-tool-shape-ab.md`](experiments/memory-tool-shape-ab.md) — a
+  whole-suite A/B of two candidate memory-tool shapes against main (#3160); read before
+  proposing another tool-shape comparison, for the method and the pitfalls it hit.
+
 ## Archive
 
 - [`archive/README.md`](archive/README.md) — retired designs as a dated timeline;
