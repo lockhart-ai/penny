@@ -76,17 +76,30 @@ enum StoryFixtures {
         return MessageView.ViewModel(client: client)
     }
 
-    /// The live dock mid-morph (#3042, `chat-resolving`): the working run
-    /// is still in `agentProgressRuns` (so the dock has content to render),
-    /// and the reply it is becoming has already arrived as the newest
-    /// message. `MessageView(dockResolveProgress:)` freezes the morph at a
-    /// fixed point instead of animating it, so the shot is reproducible.
+    /// The dock just after a turn ends (#3042, #3130, `chat-resolving`):
+    /// drives the real state machine rather than freezing a hand-picked
+    /// blend. `syncDock()` shows the working run; the fixture then ends it
+    /// (removing it from `agentProgressRuns`, the same way a real
+    /// `run_finished` does) and `beginResolvingIfMatched` marks the
+    /// already-arrived reply resolved — but with no `MessageView` mounted
+    /// yet to drive the real `withAnimation(...) completion:`, nothing
+    /// here finishes the exit. `MessageView`'s own `.onAppear` syncs the
+    /// dock unconditionally (no story-only branch left, #3130) and finds
+    /// no live run, so `handleForegroundRunEnded`'s stuck-`.resolving`
+    /// recovery finishes it immediately on mount — the same fallback a
+    /// real backgrounded/tab-switched-away dock relies on. The shot lands
+    /// on the settled state — the dock gone, the reply in place — never an
+    /// unreproducible mid-flight frame.
     static func resolvingViewModel() -> MessageView.ViewModel {
-        chatViewModel(
+        let viewModel = chatViewModel(
             messages: bubbleMessages + [resolvingUserQuestion, resolvingReplyMessage],
             workingSteps: workingSteps,
             workingElapsedSeconds: 8
         )
+        viewModel.syncDock()
+        viewModel.client.agentProgressRuns.removeValue(forKey: "story-run")
+        viewModel.beginResolvingIfMatched(appendedMessages: [resolvingReplyMessage])
+        return viewModel
     }
 
     /// One message sent while she's working (#3043, `chat-queued`): the
@@ -256,10 +269,10 @@ enum StoryFixtures {
         ]
     }
 
-    /// The question the mid-morph story's dock is answering (#3042,
-    /// `chat-resolving`) — sits directly above the dock/reply slot, same as
-    /// the working stories' user question, so the reply reads as an answer
-    /// to something shown rather than to the collector digest above it.
+    /// The question the `chat-resolving` story's dock is answering (#3042,
+    /// #3130) — sits directly above the dock/reply slot, same as the
+    /// working stories' user question, so the reply reads as an answer to
+    /// something shown rather than to the collector digest above it.
     static var resolvingUserQuestion: ChatMessage {
         ChatMessage(
             id: 18, serverID: 18, createdAt: Date().addingTimeInterval(-20),
@@ -268,9 +281,9 @@ enum StoryFixtures {
         )
     }
 
-    /// The reply the mid-morph story's dock is becoming (#3042,
-    /// `chat-resolving`) — carries the working run's own story id so it
-    /// reads as the run's own output, same as the bubble story's replies.
+    /// The reply the `chat-resolving` story's dock resolves into (#3042,
+    /// #3130) — carries the working run's own story id so
+    /// `beginResolvingIfMatched` matches it, same as a real turn's reply.
     static var resolvingReplyMessage: ChatMessage {
         ChatMessage(
             id: 19, serverID: 19, createdAt: Date(),

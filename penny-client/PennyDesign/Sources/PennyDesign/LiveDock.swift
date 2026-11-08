@@ -140,12 +140,17 @@ private struct LiveDockRow: View {
 /// screen height (`Tokens.dockScreenCapFraction`); past that the body
 /// scrolls internally, pinned to the newest item, with a soft fade at the
 /// top edge. It sits in the conversation's flow on rainbow-edged glass —
-/// the last item, where Penny's reply will appear. The caller drives the
-/// resolve morph from outside (a `matchedGeometryEffect` interpolating
-/// this frame into the reply bubble's, in the same flow slot) rather than
-/// this component fading its own content — a shared `glassEffectID` was
-/// tried first and dropped: two views simultaneously claiming one glass
-/// identity is unsupported and crashes.
+/// the last item, where Penny's reply will appear. When a turn ends
+/// (#3130), the dock leaves on its own stock `.glassEffectTransition
+/// (.materialize)` below — a scale-and-fade removal through translucency,
+/// never a shared identity with whatever replaces it. The reply it
+/// resolved to is a separate flow item, drawn only once this view is fully
+/// gone, with its own separate stock arrival transition: two sequential
+/// stock animations, nothing morphing one into the other. (A shared
+/// `glassEffectID` was tried first for a literal dock→bubble morph and
+/// dropped: two views simultaneously claiming one glass identity is
+/// unsupported and crashes — besides being exactly the faked morph this
+/// replaced.)
 ///
 /// The avatar is handed in (`@ViewBuilder avatar`) — the same seam the
 /// shell's principal title uses for Penny's icon: the kit sizes and rings
@@ -162,7 +167,7 @@ public struct LiveDock<Avatar: View>: View {
     /// A pending permission ask (#3044), shown as the stream's trailing
     /// row — the newest thing in the dock, same as any other item that just
     /// arrived. `nil` renders nothing extra.
-    public var permission: LiveDockPermission? = nil
+    public var permission: LiveDockPermission?
     @ViewBuilder public var avatar: () -> Avatar
 
     public init(
@@ -214,6 +219,12 @@ public struct LiveDock<Avatar: View>: View {
         }
         .padding(dockPadding)
         .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        // Stock: how the dock's own glass animates in/out when it's added
+        // to or removed from the hierarchy (a turn starting or ending,
+        // #3130) — `.materialize` dissolves through translucency rather
+        // than morphing into whatever replaces it (the caller no longer
+        // shares any identity between this view and the reply bubble).
+        .glassEffectTransition(.materialize)
         .background {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(pennyRainbow, lineWidth: 4)
