@@ -7,6 +7,43 @@
 # fails with FBSOpenApplicationServiceErrorDomain "failed preflight checks".
 set -euo pipefail
 
+echo "client-check: $(xcodebuild -version | head -n 1)"
+
+# Prints "<runtime identifier>\n<runtime version>\n<iPhone device type
+# identifier>\n<iPhone device type name>" for the newest available iOS
+# runtime the selected Xcode can see that supports at least one iPhone
+# device type, or nothing if no such runtime is installed.
+#
+# A version tie is broken toward the runtime with more supported device
+# types: some Xcode betas install a second, same-version runtime pinned to
+# one preview device (e.g. an "iOS-27-2-iPhone19-4" runtime supporting only
+# "iPhone Duo") alongside the general-purpose runtime for that same iOS
+# version — the general one is always the richer of the two.
+pick_newest_ios_runtime_and_iphone() {
+    xcrun simctl list runtimes -j | python3 -c "
+import json, sys
+
+runtimes = json.load(sys.stdin)['runtimes']
+ios = [r for r in runtimes if r.get('platform') == 'iOS' and r.get('isAvailable')]
+if not ios:
+    sys.exit(0)
+newest = max(
+    ios,
+    key=lambda r: (
+        tuple(int(p) for p in r['version'].split('.')),
+        len(r['supportedDeviceTypes']),
+    ),
+)
+iphones = [d for d in newest['supportedDeviceTypes'] if d.get('productFamily') == 'iPhone']
+if not iphones:
+    sys.exit(0)
+print(newest['identifier'])
+print(newest['version'])
+print(iphones[0]['identifier'])
+print(iphones[0]['name'])
+"
+}
+
 BUILD_INFO_DERIVED_DATA=""
 UDID=$(xcodebuild -project penny-client/PennyClient.xcodeproj -scheme PennyClient -showdestinations 2>&1 \
     | awk -F'[{},]' '
@@ -23,6 +60,35 @@ UDID=$(xcodebuild -project penny-client/PennyClient.xcodeproj -scheme PennyClien
             }
         }
     ')
+
+# Most runner images already carry a bootable iPhone simulator device, which
+# the pass above finds. Some don't: a fresh runner image can have an iOS
+# runtime installed with zero simulator devices ever created, so
+# -showdestinations lists none (#3156). Rather than fail the job before any
+# test runs, create one deterministically instead of failing: the newest
+# installed iOS runtime the selected Xcode can see, and an iPhone device
+# type it supports — downloading the platform first if no iOS runtime is
+# installed at all.
+if [ -z "$UDID" ]; then
+    echo "client-check: no iPhone simulator found via -showdestinations; creating one" >&2
+    SELECTION="$(pick_newest_ios_runtime_and_iphone)"
+    if [ -z "$SELECTION" ]; then
+        echo "client-check: no iOS runtime installed; downloading one" >&2
+        xcodebuild -downloadPlatform iOS
+        SELECTION="$(pick_newest_ios_runtime_and_iphone)"
+    fi
+    if [ -z "$SELECTION" ]; then
+        echo "client-check: no iOS runtime with an iPhone device type available, even after -downloadPlatform" >&2
+        exit 1
+    fi
+    RUNTIME_ID=$(sed -n '1p' <<<"$SELECTION")
+    RUNTIME_VERSION=$(sed -n '2p' <<<"$SELECTION")
+    DEVICE_TYPE_ID=$(sed -n '3p' <<<"$SELECTION")
+    DEVICE_TYPE_NAME=$(sed -n '4p' <<<"$SELECTION")
+    echo "client-check: creating simulator — iOS $RUNTIME_VERSION, $DEVICE_TYPE_NAME" >&2
+    UDID=$(xcrun simctl create "CI iPhone" "$DEVICE_TYPE_ID" "$RUNTIME_ID")
+fi
+
 if [ -z "$UDID" ]; then
     echo "client-check: no available iPhone simulator found (is Xcode + an iOS runtime installed?)" >&2
     exit 1
