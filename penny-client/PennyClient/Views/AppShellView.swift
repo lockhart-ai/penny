@@ -16,10 +16,6 @@ struct AppShellView: View {
     @State private var chatViewModel: MessageView.ViewModel
     @State private var browserModel: DataBrowserViewModel
 
-    /// Story mode only (#3042): passed straight through to the chat tab's
-    /// `MessageView`, freezing the live dock mid-morph.
-    private let dockResolveProgress: Double?
-
     /// `chatViewModel` and `browserModel` are injectable so story mode
     /// (#2965) can render any page from fixtures; the defaults are the real
     /// app's — one chat view model, and the browser model reading through
@@ -27,8 +23,7 @@ struct AppShellView: View {
     init(
         initialTab: TopTab = .chat,
         chatViewModel: MessageView.ViewModel? = nil,
-        browserModel: DataBrowserViewModel? = nil,
-        dockResolveProgress: Double? = nil
+        browserModel: DataBrowserViewModel? = nil
     ) {
         let resolvedChatViewModel = chatViewModel ?? MessageView.ViewModel()
         _page = State(initialValue: initialTab)
@@ -36,7 +31,6 @@ struct AppShellView: View {
         _browserModel = State(initialValue: browserModel ?? DataBrowserViewModel(runID: nil) {
             try await resolvedChatViewModel.client.dataBrowser.read($0)
         })
-        self.dockResolveProgress = dockResolveProgress
     }
 
     /// The one drill-down destination the shell pushes today — a typed
@@ -104,7 +98,7 @@ struct AppShellView: View {
     private func pageContent(for tab: TopTab) -> some View {
         switch tab {
         case .chat:
-            MessageView(viewModel: chatViewModel, dockResolveProgress: dockResolveProgress)
+            MessageView(viewModel: chatViewModel)
         case .memory:
             DataBrowserMemoriesView(model: browserModel, reconnect: chatViewModel.client.reconnect)
         case .prompts:

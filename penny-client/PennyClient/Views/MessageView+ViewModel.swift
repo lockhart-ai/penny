@@ -4,10 +4,14 @@ import PennyDesign
 import PennyServices
 
 extension MessageView {
-    /// The live dock's lifecycle in the conversation's flow (#3042):
+    /// The live dock's lifecycle in the conversation's flow (#3042, #3130):
     /// hidden, showing a run's live stream, or resolving — the run just
-    /// ended (a reply arrived, or its grace window ran out) and the dock
-    /// is on its way out, morphing into the reply when one arrived in time.
+    /// ended (a reply arrived, or its grace window ran out) and the dock is
+    /// on its way out, playing its own stock exit transition. When a reply
+    /// matched, it stays out of the grid until the dock's exit genuinely
+    /// finishes, then gets its OWN separate stock arrival transition — two
+    /// sequential stock animations, never one faked into morphing into the
+    /// other.
     enum DockPhase: Equatable {
         case hidden
         case working
@@ -136,15 +140,18 @@ extension MessageView {
 
         // MARK: Live dock (#3042)
         var dockPhase: DockPhase = .hidden
-        /// The foreground run the dock is showing — kept alive through
-        /// `.resolving` after the live run itself is gone from
-        /// `client.agentProgressRuns` (run_finished), so the dock has
-        /// content to fade out from instead of collapsing to empty
-        /// mid-transition.
+        /// The foreground run the dock was showing — kept set through
+        /// `.resolving` (cleared only by `dockExitFinished()`) purely so a
+        /// new run arriving before that fires can tell it isn't this one
+        /// (`syncDock`'s stuck-resolving recovery below); the dock view
+        /// itself is already gone the instant `dockPhase` leaves `.working`
+        /// (#3130) — nothing renders `dockRun` during `.resolving` anymore.
         var dockRun: AgentProgressRunItem?
-        /// The id of the just-arrived reply the dock is morphing into,
-        /// while `dockPhase == .resolving` with a match — `nil` during the
-        /// plain fade-out of a run that ended with nothing to show for it.
+        /// The id of the just-arrived reply held out of the grid while
+        /// `dockPhase == .resolving` with a match (#3130) — revealed, with
+        /// its own stock arrival transition, only once `dockExitFinished()`
+        /// runs. `nil` during the plain fade-out of a run that ended with
+        /// nothing to show for it.
         var resolvingMessageID: Int?
         /// A permission request the dock itself just answered (#3044,
         /// `MessageView+Permission.swift`) — lives only as long as this
@@ -211,9 +218,12 @@ extension MessageView {
         /// Resets to `.working` whenever a run is live and the dock isn't
         /// already `.working` — covering not just `.hidden` but a run that
         /// starts while the dock is still `.resolving` a previous one (an
-        /// earlier reply's morph never finished because this new run's own
+        /// earlier reply's reveal never finished because this new run's own
         /// steps started arriving first): that run's content must not sit
-        /// behind the old resolve's faded opacity.
+        /// behind a resolve that's still pending. The other safety net for a
+        /// stuck `.resolving` — no new run, but the view that would have run
+        /// the exit animation's completion was never on screen to do it —
+        /// lives in `handleForegroundRunEnded` below.
         func syncDock() {
             guard let run = client.foregroundProgress else {
                 handleForegroundRunEnded()
@@ -228,65 +238,72 @@ extension MessageView {
         }
 
         /// The run just left `client.agentProgressRuns` with the dock
-        /// still showing it. If a matching reply already arrived,
-        /// `beginResolvingIfMatched` already moved `dockPhase` off
-        /// `.working` — nothing to do here. Otherwise start the grace
-        /// window (#3042): either a reply lands before it elapses and the
-        /// morph still starts, or the run ended with nothing to show for
-        /// it and the dock just fades out.
+        /// still showing it, OR this is a later re-sync (e.g. the chat tab
+        /// reappearing) finding a stuck `.resolving` with no live run:
+        /// the exit animation's own `withAnimation(...) completion:` (see
+        /// `MessageView.prepareArrivalAnimations`) should already have
+        /// called `dockExitFinished()`, but it only fires while some view
+        /// is actually running that animation — if the chat tab wasn't on
+        /// screen for it, this is the fallback that catches it next time
+        /// `syncDock()` runs (#3130). If a matching reply already arrived
+        /// and its exit is still genuinely in flight, `dockPhase` is
+        /// `.resolving` for a run that's still live-adjacent — handled by
+        /// the explicit check below rather than the general `.working`
+        /// grace window. Otherwise start the grace window (#3042): either a
+        /// reply lands before it elapses and its own exit starts, or the
+        /// run ended with nothing to show for it and the dock just leaves.
         private func handleForegroundRunEnded() {
             clearQueuedMarksOnRunEnd()
+            if dockPhase == .resolving {
+                dockExitFinished()
+                return
+            }
             guard dockPhase == .working, dockRun != nil else { return }
             dockPendingTask?.cancel()
             dockPendingTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(Tokens.dockResolveGraceSeconds))
                 guard let self, !Task.isCancelled, self.dockPhase == .working else { return }
-                // This is the dock just fading out with nothing to morph
-                // into, so it's animated here explicitly — unlike the later,
-                // purely-bookkeeping `finishDock()` after a resolve morph
-                // (the view has nothing left to visibly settle by then).
-                withAnimation(.easeInOut(duration: Tokens.dockMorphDuration)) {
-                    self.finishDock()
+                // This is the dock just leaving with nothing to reveal, so
+                // it's animated here explicitly — unlike the later,
+                // purely-bookkeeping `dockExitFinished()` after a matched
+                // reply's reveal (the view has nothing left to visibly
+                // settle by then).
+                withAnimation(.easeInOut(duration: Tokens.dockExitDuration)) {
+                    self.dockExitFinished()
                 }
             }
         }
 
         /// A newly arrived reply carrying the dock's own run id starts the
-        /// morph now — never waiting for `run_finished`, which can trail a
-        /// message that has already arrived.
-        func beginResolvingIfMatched(appendedMessages: [ChatMessage]) {
-            guard let dockRun, dockPhase != .hidden else { return }
-            guard let reply = appendedMessages.first(where: { $0.runID == dockRun.id && !$0.isOutgoing }) else { return }
+        /// dock's real exit now (#3130) — never waiting for `run_finished`,
+        /// which can trail a message that has already arrived. Returns
+        /// whether a match was found, so the view's `withAnimation(...)
+        /// completion:` knows whether it has anything to reveal once the
+        /// exit genuinely finishes — never a fixed-duration sleep guessing
+        /// when that animation is done.
+        @discardableResult
+        func beginResolvingIfMatched(appendedMessages: [ChatMessage]) -> Bool {
+            guard let dockRun, dockPhase != .hidden else { return false }
+            guard let reply = appendedMessages.first(where: { $0.runID == dockRun.id && !$0.isOutgoing }) else { return false }
             clearQueuedMarksOnRunEnd()
             dockPendingTask?.cancel()
             resolvingMessageID = reply.id
             dockPhase = .resolving
-            dockPendingTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(Tokens.dockMorphDuration))
-                guard let self, !Task.isCancelled else { return }
-                self.finishDock()
-            }
+            return true
         }
 
-        /// The dock clears on completion (#3042): hidden, with nothing left
-        /// to morph into or fade out — called once the grace window elapses
-        /// with no reply, or once the resolve morph's duration elapses.
-        func finishDock() {
+        /// The dock clears on completion (#3042, #3130): hidden, with
+        /// nothing left to reveal or fade out — called once the grace
+        /// window elapses with no reply, once a matched reply's exit
+        /// animation completion fires, or by the stuck-`.resolving`
+        /// fallback in `handleForegroundRunEnded` above. Unconditional: a
+        /// caller that already knows the state changed (a direct test, the
+        /// grace-window path) relies on this always resetting fully.
+        func dockExitFinished() {
             dockPhase = .hidden
             dockRun = nil
             resolvingMessageID = nil
             resolvedPermissionItem = nil
-        }
-
-        /// Story mode only (#2965): freezes the dock mid-morph, pointed at
-        /// the last incoming message, bypassing the real run/message-driven
-        /// transition so the mid-morph story is reproducible from fixture
-        /// data alone.
-        func applyStoryDockResolveSnapshot() {
-            guard let run = client.foregroundProgress else { return }
-            dockRun = run
-            dockPhase = .resolving
-            resolvingMessageID = displayedMessages.last(where: { !$0.isOutgoing })?.id
         }
 
         var composerPresentation: ComposerPresentation {

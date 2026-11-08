@@ -17,30 +17,15 @@ struct MessageView: View {
     @State private var chatViewportFrame: CGRect = .zero
     @FocusState private var isComposerFocused: Bool
 
-    // MARK: Live dock (#3042)
-    /// The matched-geometry identity shared by the dock and the one
-    /// message it resolves into, so the dock's frame interpolates into the
-    /// reply bubble's frame in the same flow slot rather than the two
-    /// appearing in different places. A `Namespace` only exists on a View,
-    /// so this is the one piece of dock state that can't live on the view
-    /// model with the rest.
-    @Namespace private var dockNamespace
-    private let dockGeometryID = "dock-resolve"
-    /// Story mode only (#2965): freezes the dock mid-morph at a fixed
-    /// opacity instead of animating it, so the transition is screenshottable.
-    private let storyDockResolveProgress: Double?
-
     /// `presentedCardMessage` only exists so story mode (#2965) can open the
     /// card detail sheet already presented over the chat story. It defaults
     /// to today's behaviour, so `MessageView()` is unchanged.
     init(
         viewModel: ViewModel? = nil,
-        presentedCardMessage: ChatMessage? = nil,
-        dockResolveProgress: Double? = nil
+        presentedCardMessage: ChatMessage? = nil
     ) {
         _viewModel = State(initialValue: viewModel ?? ViewModel())
         _presentedCardMessage = State(initialValue: presentedCardMessage)
-        storyDockResolveProgress = dockResolveProgress
     }
 
     var body: some View {
@@ -113,13 +98,6 @@ struct MessageView: View {
             .searchToolbarBehavior(.minimize)
             .task {
                 await viewModel.connect()
-                // Story mode only (#2965): applied after `connect()` loads
-                // the fixture messages, so the frozen resolve snapshot has
-                // a real message to point at — see the matching note in
-                // `.onAppear`.
-                if storyDockResolveProgress != nil {
-                    viewModel.applyStoryDockResolveSnapshot()
-                }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .background {
@@ -184,14 +162,11 @@ struct MessageView: View {
                 // a run already in `agentProgressRuns` before the view
                 // exists (restoring into an active run; every story fixture)
                 // needs this explicit sync, or the dock never shows at all.
-                // The resolving-snapshot story is the one exception: it
-                // also needs `displayedMessages`, which `connect()` loads
-                // asynchronously — applying it here would race that load
-                // and resolve to no message at all, so it waits for the
-                // `.task` below instead.
-                if storyDockResolveProgress == nil {
-                    viewModel.syncDock()
-                }
+                // This is also the stuck-`.resolving` recovery's trigger
+                // (#3130, `MessageView+ViewModel.handleForegroundRunEnded`)
+                // whenever the tab reappears after missing its exit
+                // animation's completion while off screen.
+                viewModel.syncDock()
             }
             .onChange(of: viewModel.foregroundProgressVersion) { _, _ in
                 viewModel.syncDock()
@@ -229,81 +204,47 @@ struct MessageView: View {
         }
     }
 
-    /// The one flow slot the dock and its resolve occupy — never two
-    /// places at once. `.working` shows the dock; `.resolving` shows the
-    /// message it's becoming, IN THE SAME SLOT, both tagged with the same
-    /// `matchedGeometryEffect` id so the dock's frame interpolates into the
-    /// bubble's frame rather than the bubble appearing somewhere else
-    /// while the dock separately fades at the bottom. That interpolation
-    /// only runs inside the explicit `withAnimation` at the one call site
-    /// that starts a resolve (`prepareArrivalAnimations`) — not a blanket
-    /// `.animation(value:)` here, so the later, purely-bookkeeping
-    /// `.resolving → .hidden` cleanup (the grid has already resumed
-    /// showing this message by then) never re-animates anything.
-    ///
-    /// `matchedGeometryEffect` interpolates geometry only, never a shared
-    /// glass identity — the fix for the crash a shared `glassEffectID`
-    /// caused when two views claimed one identity simultaneously.
+    /// The dock's own slot in the flow (#3042, #3130): showing only while
+    /// `.working` — empty through both `.resolving` and `.hidden` alike.
+    /// Removing `LiveDock` from the hierarchy the moment a run ends
+    /// (matched or not) is what triggers its own stock
+    /// `.glassEffectTransition(.materialize)` (see `LiveDock`) — the dock's
+    /// half of a resolved turn's two separate, sequential stock
+    /// transitions. The reply it resolved to is never drawn here:
+    /// `gridMessages` holds it out of the grid until `dockExitFinished()`
+    /// lets it back in, where it gets the SAME stock arrival transition
+    /// (`IncomingMessageArrivalModifier`) every other new message uses.
+    /// Neither transition drives or waits on the other directly — the
+    /// sequencing is `prepareArrivalAnimations`'s `withAnimation(...)
+    /// completion:`, below.
     @ViewBuilder
     private var dockSlot: some View {
-        switch viewModel.dockPhase {
-        case .hidden:
-            EmptyView()
-        case .working:
-            if let dockRun = viewModel.dockRun {
-                LiveDock(
-                    items: viewModel.dockStreamItems,
-                    step: dockRun.steps.last?.number ?? 1,
-                    startedAt: dockRun.startedAt,
-                    queued: viewModel.queuedMessageIDs.count,
-                    permission: viewModel.dockPermission
-                ) {
-                    ChatTabAvatar()
-                }
-                .matchedGeometryEffect(id: dockGeometryID, in: dockNamespace)
-                .transition(.opacity)
+        if viewModel.dockPhase == .working, let dockRun = viewModel.dockRun {
+            LiveDock(
+                items: viewModel.dockStreamItems,
+                step: dockRun.steps.last?.number ?? 1,
+                startedAt: dockRun.startedAt,
+                queued: viewModel.queuedMessageIDs.count,
+                permission: viewModel.dockPermission
+            ) {
+                ChatTabAvatar()
             }
-        case .resolving:
-            resolvingSlotContent
         }
     }
 
-    /// Story mode only (#2965): a live `matchedGeometryEffect` interpolation
-    /// can't be paused at a reproducible instant for a screenshot, so the
-    /// frozen story instead blends the dock and the reply at fixed,
-    /// complementary opacities, both in this same slot (never one above
-    /// the other) — `dockResolveProgress` is the only path into this branch.
-    @ViewBuilder
-    private var resolvingSlotContent: some View {
-        if let progress = storyDockResolveProgress, let dockRun = viewModel.dockRun, let message = resolvingMessage {
-            ZStack(alignment: .topLeading) {
-                LiveDock(
-                    items: dockRun.liveDockItems,
-                    step: dockRun.steps.last?.number ?? 1,
-                    startedAt: dockRun.startedAt,
-                    queued: viewModel.queuedMessageIDs.count
-                ) {
-                    ChatTabAvatar()
-                }
-                .opacity(1 - progress)
-                messageGridCell(message, layout: .message, onTap: nil)
-                    .opacity(progress)
-            }
-        } else if let message = resolvingMessage {
-            messageGridCell(message, layout: .message, onTap: nil)
-                .matchedGeometryEffect(id: dockGeometryID, in: dockNamespace)
-                .transition(.opacity)
-        }
-    }
-
-    /// The message the dock is resolving into, looked up from
-    /// `displayedMessages` by id — `messageGridRows` excludes this same
-    /// message from the normal grid while it's showing here instead.
-    private var resolvingMessage: ChatMessage? {
-        guard let id = viewModel.resolvingMessageID else { return nil }
-        return viewModel.displayedMessages.first(where: { $0.id == id })
-    }
-
+    /// A reply carrying the dock's own run id starts the dock's real exit
+    /// (#3130): `beginResolvingIfMatched` flips `dockPhase` to `.resolving`
+    /// inside this `withAnimation`, which paces `LiveDock`'s own
+    /// `.glassEffectTransition(.materialize)` as it leaves the hierarchy.
+    /// The completion fires once THAT animation has genuinely finished —
+    /// never a fixed sleep guessing its length — and reveals the reply by
+    /// calling `dockExitFinished()`, which the grid then mounts with the
+    /// same stock arrival transition every other new message gets.
+    ///
+    /// The completion re-checks `dockPhase == .resolving` before acting: if
+    /// a new run already started in the meantime (`syncDock`'s own
+    /// stuck-resolving recovery), this stale completion must not clobber
+    /// that newer run's state.
     private func prepareArrivalAnimations(previousIDs: [Int], currentIDs: [Int]) {
         guard !previousIDs.isEmpty, currentIDs.count > previousIDs.count else { return }
         let appendedIDs = currentIDs.dropFirst(previousIDs.count)
@@ -316,8 +257,13 @@ struct MessageView: View {
 
         arrivalAnimatedMessageIDs.formUnion(incomingIDs)
         pendingIncomingAutoScrollMessageID = incomingIDs.last
-        withAnimation(.easeInOut(duration: Tokens.dockMorphDuration)) {
-            viewModel.beginResolvingIfMatched(appendedMessages: appendedMessages)
+
+        var startedDockExit = false
+        withAnimation(.easeInOut(duration: Tokens.dockExitDuration)) {
+            startedDockExit = viewModel.beginResolvingIfMatched(appendedMessages: appendedMessages)
+        } completion: {
+            guard startedDockExit, viewModel.dockPhase == .resolving else { return }
+            viewModel.dockExitFinished()
         }
     }
 
@@ -526,9 +472,12 @@ private extension MessageView {
     }
 
     /// The messages the normal grid draws — every one of `displayedMessages`
-    /// except, while the dock is resolving into it, the one message its
-    /// slot is showing instead (#3042): drawing it in both places at once
-    /// would duplicate it. Only excluded when the dock is actually visible
+    /// except, while the dock is on its way out (#3042, #3130), the one
+    /// reply it resolved to: held out of the grid until `dockExitFinished()`
+    /// lets it back in, so the dock's own stock exit transition finishes
+    /// before the reply's stock arrival transition starts — two separate,
+    /// sequential transitions, never both claiming the same message at
+    /// once. Only excluded when the dock is actually visible
     /// (`shouldShowLiveDock`) — on a filter where the dock never shows, the
     /// message belongs in the grid as normal, not nowhere.
     var gridMessages: [ChatMessage] {

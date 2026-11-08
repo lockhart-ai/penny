@@ -102,13 +102,17 @@ public enum Tokens {
     public static let quoteBlockCorner: CGFloat = 10
     public static let dockScreenCapFraction: CGFloat = 0.4
     /// How long the live dock waits, once its run finishes with no reply
-    /// bubble carrying its run id yet, before it gives up on the morph and
-    /// just fades out (#3042) — a run that ends with nothing to show for it.
+    /// bubble carrying its run id yet, before it gives up and just plays
+    /// its own exit transition (#3042) — a run that ends with nothing to
+    /// show for it.
     public static let dockResolveGraceSeconds: TimeInterval = 1.5
-    /// How long the resolve morph takes once a matching reply arrives
-    /// (#3042): the dock's content fades out and the reply bubble's own
-    /// arrival fades it in over this span, then the dock is removed.
-    public static let dockMorphDuration: TimeInterval = 0.4
+    /// The `withAnimation` duration that paces the dock's own stock exit
+    /// (`.glassEffectTransition(.materialize)`) once a run ends, matched or
+    /// not (#3042, #3130) — a FALLBACK pace only: the real sequencing for a
+    /// matched reply comes from that `withAnimation`'s own completion
+    /// handler, never a timer guessing the animation's length (see
+    /// `MessageView.prepareArrivalAnimations`).
+    public static let dockExitDuration: TimeInterval = 0.4
     /// A message sent while Penny is working (#3043) renders at this
     /// opacity, with "🕒 Queued" standing in for its time, until the
     /// server's turn inbox (#2985) picks it up or the run ends.
