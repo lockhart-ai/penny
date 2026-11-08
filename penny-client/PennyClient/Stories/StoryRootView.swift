@@ -100,14 +100,6 @@ struct StoryRootView: View {
                 viewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages),
                 presentedCardMessage: StoryFixtures.conversationMessages[1]
             )
-        case .kitPageHeader:
-            KitPageHeaderStory()
-        case .kitListRows:
-            KitListRowsStory()
-        case .kitPillsTiles:
-            KitPillsTilesStory()
-        case .kitCodeBlock:
-            KitCodeBlockStory()
         case .uiTestChat:
             AppShellView(
                 chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.findInChatMessages),
