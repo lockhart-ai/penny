@@ -239,10 +239,18 @@ struct MessageView: View {
     /// (#3130): `beginResolvingIfMatched` flips `dockPhase` to `.resolving`
     /// inside this `withAnimation`, which paces `LiveDock`'s own
     /// `.glassEffectTransition(.materialize)` as it leaves the hierarchy.
-    /// The completion fires once THAT animation has genuinely finished —
-    /// never a fixed sleep guessing its length — and reveals the reply by
-    /// calling `dockExitFinished()`, which the grid then mounts with the
-    /// same stock arrival transition every other new message gets.
+    /// `completionCriteria: .removed` (not the default `.logicallyComplete`)
+    /// is load-bearing here: logical completion fires once the `withAnimation`
+    /// curve's own duration has elapsed, which can be BEFORE the glass
+    /// transition's own removal has actually finished drawing — confirmed
+    /// visually (a frame strip showing the reply already in place while the
+    /// dock's glass was still visibly mid-dissolve underneath it, violating
+    /// the code owner's sequential spec). `.removed` instead waits for the
+    /// animation to be fully removed from the view — i.e. the dock's exit
+    /// to have genuinely finished — before revealing the reply by calling
+    /// `dockExitFinished()`, which the grid then mounts with the same stock
+    /// arrival transition every other new message gets. Never a fixed sleep
+    /// guessing the animation's length either way.
     ///
     /// The completion re-checks `dockPhase == .resolving` before acting: if
     /// a new run already started in the meantime (`syncDock`'s own
@@ -262,7 +270,7 @@ struct MessageView: View {
         pendingIncomingAutoScrollMessageID = incomingIDs.last
 
         var startedDockExit = false
-        withAnimation(.easeInOut(duration: Tokens.dockExitDuration)) {
+        withAnimation(.easeInOut(duration: Tokens.dockExitDuration), completionCriteria: .removed) {
             startedDockExit = viewModel.beginResolvingIfMatched(appendedMessages: appendedMessages)
         } completion: {
             guard startedDockExit, viewModel.dockPhase == .resolving else { return }
