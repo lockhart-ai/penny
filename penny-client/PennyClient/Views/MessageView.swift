@@ -162,11 +162,14 @@ struct MessageView: View {
                 // a run already in `agentProgressRuns` before the view
                 // exists (restoring into an active run; every story fixture)
                 // needs this explicit sync, or the dock never shows at all.
-                // This is also the stuck-`.resolving` recovery's trigger
-                // (#3130, `MessageView+ViewModel.handleForegroundRunEnded`)
-                // whenever the tab reappears after missing its exit
-                // animation's completion while off screen.
                 viewModel.syncDock()
+                // The stuck-`.resolving` safety net (#3130,
+                // `MessageView+ViewModel.finishLeftoverResolveOnAppear`):
+                // whenever this tab reappears after missing a matched
+                // reply's exit-animation completion while off screen
+                // (backgrounded, a different tab selected). A no-op unless
+                // a resolve is genuinely stuck.
+                viewModel.finishLeftoverResolveOnAppear()
             }
             .onChange(of: viewModel.foregroundProgressVersion) { _, _ in
                 viewModel.syncDock()

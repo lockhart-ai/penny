@@ -156,15 +156,15 @@ struct LiveDockViewModelTests {
         #expect(viewModel.resolvingMessageID == nil)
     }
 
-    /// The safety net for a stuck `.resolving` with no new run to trigger
-    /// the recovery above (#3130): if the view that would have run the
-    /// exit animation's `withAnimation(...) completion:` was never on
-    /// screen to fire it (backgrounded, tab switched away), the next
-    /// re-sync that finds no live foreground run — e.g. the chat tab
-    /// reappearing, which calls `syncDock()` on `.onAppear` — finishes the
-    /// stuck exit directly instead of leaving the reply excluded from the
-    /// grid indefinitely.
-    @Test func syncDockRecoversAStuckResolvingPhaseWithNoLiveRun() {
+    /// `run_finished` landing while a matched reply's exit is genuinely in
+    /// flight must NOT cut that exit short (#3130): the reply and the
+    /// run's end arrive close together, often reply first — `syncDock()`
+    /// seeing no live run while `dockPhase == .resolving` must leave it
+    /// alone, or the dock's real exit animation gets cut short and the
+    /// reply pops in early, defeating the sequencing this issue exists to
+    /// fix. Only the exit animation's own completion, or
+    /// `finishLeftoverResolveOnAppear()` below, may finish a resolve.
+    @Test func syncDockDoesNotFinishAResolveStillInFlightWhenTheRunEnds() {
         let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
         var run = AgentProgressRunItem(id: "run-3", agent: "chat", scope: .foreground)
         run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
@@ -179,15 +179,67 @@ struct LiveDockViewModelTests {
         #expect(matched)
         #expect(viewModel.dockPhase == .resolving)
 
-        // The run already left `agentProgressRuns` (as it would have by
-        // the time a real exit animation's completion was missed), and the
-        // view reappears before any completion ever fired.
+        // `run_finished` lands a beat after the reply, while the exit
+        // animation is still genuinely running.
         viewModel.client.agentProgressRuns.removeValue(forKey: "run-3")
         viewModel.syncDock()
+
+        #expect(viewModel.dockPhase == .resolving, "the in-flight exit must not be cut short")
+        #expect(viewModel.dockRun?.id == "run-3")
+        #expect(viewModel.resolvingMessageID == 199)
+    }
+
+    /// The safety net for a resolve truly left stuck (#3130): no new run
+    /// ever starts, and the view that would have run the exit animation's
+    /// `withAnimation(...) completion:` was never on screen to fire it
+    /// (backgrounded, a different tab selected when the reply landed).
+    /// `MessageView`'s `.onAppear` calls this alongside `syncDock()` every
+    /// time the chat tab (re)appears — e.g. switching back from Memory —
+    /// finishing the stuck exit directly instead of leaving the reply
+    /// excluded from the grid indefinitely.
+    @Test func finishLeftoverResolveOnAppearFinishesAStuckResolve() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        var run = AgentProgressRunItem(id: "run-4", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        let reply = ChatMessage(
+            id: 299, serverID: 299, createdAt: Date(), content: "Done.",
+            sourceHint: nil, runID: "run-4", imageAttachments: [], isOutgoing: false
+        )
+        let matched = viewModel.beginResolvingIfMatched(appendedMessages: [reply])
+        #expect(matched)
+        #expect(viewModel.dockPhase == .resolving)
+
+        // The run already left `agentProgressRuns`, and the view reappears
+        // (switching back to the chat tab) before any completion ever fired.
+        viewModel.client.agentProgressRuns.removeValue(forKey: "run-4")
+        viewModel.syncDock()
+        #expect(viewModel.dockPhase == .resolving, "still stuck — syncDock alone never finishes an in-flight resolve")
+
+        viewModel.finishLeftoverResolveOnAppear()
 
         #expect(viewModel.dockPhase == .hidden)
         #expect(viewModel.dockRun == nil)
         #expect(viewModel.resolvingMessageID == nil)
+    }
+
+    /// A no-op outside `.resolving` (#3130) — called unconditionally on
+    /// every `.onAppear`, so it must never disturb a live `.working` dock
+    /// or an already-`.hidden` one.
+    @Test func finishLeftoverResolveOnAppearIsANoOpWhileWorking() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        var run = AgentProgressRunItem(id: "run-5", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+        #expect(viewModel.dockPhase == .working)
+
+        viewModel.finishLeftoverResolveOnAppear()
+
+        #expect(viewModel.dockPhase == .working)
+        #expect(viewModel.dockRun?.id == "run-5")
     }
 
     /// The dock's permission row (#3044) shows the server's pending ask

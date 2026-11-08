@@ -223,7 +223,12 @@ extension MessageView {
         /// behind a resolve that's still pending. The other safety net for a
         /// stuck `.resolving` — no new run, but the view that would have run
         /// the exit animation's completion was never on screen to do it —
-        /// lives in `handleForegroundRunEnded` below.
+        /// is `finishLeftoverResolveOnAppear()` below, NOT this function:
+        /// run-end can land here while a matched reply's exit is still
+        /// genuinely in flight (the two arrive close together, either
+        /// order), and finishing the dock early from here would cut that
+        /// exit short and pop the reply in before its own transition
+        /// completes — exactly the sequencing this issue exists to fix.
         func syncDock() {
             guard let run = client.foregroundProgress else {
                 handleForegroundRunEnded()
@@ -237,27 +242,22 @@ extension MessageView {
             }
         }
 
-        /// The run just left `client.agentProgressRuns` with the dock
-        /// still showing it, OR this is a later re-sync (e.g. the chat tab
-        /// reappearing) finding a stuck `.resolving` with no live run:
-        /// the exit animation's own `withAnimation(...) completion:` (see
-        /// `MessageView.prepareArrivalAnimations`) should already have
-        /// called `dockExitFinished()`, but it only fires while some view
-        /// is actually running that animation — if the chat tab wasn't on
-        /// screen for it, this is the fallback that catches it next time
-        /// `syncDock()` runs (#3130). If a matching reply already arrived
-        /// and its exit is still genuinely in flight, `dockPhase` is
-        /// `.resolving` for a run that's still live-adjacent — handled by
-        /// the explicit check below rather than the general `.working`
-        /// grace window. Otherwise start the grace window (#3042): either a
-        /// reply lands before it elapses and its own exit starts, or the
-        /// run ended with nothing to show for it and the dock just leaves.
+        /// The run just left `client.agentProgressRuns` with the dock still
+        /// showing it. Only acts while `dockPhase == .working`: a reply
+        /// landing just before `run_finished` already moved `dockPhase` to
+        /// `.resolving` via `beginResolvingIfMatched`, and `run_finished`
+        /// landing a beat later must leave that exit alone — cutting it
+        /// short here would pop the reply in before its own transition
+        /// finishes, the very race this guard exists to avoid (#3130). The
+        /// stuck-`.resolving` case this does NOT cover — no new run ever
+        /// starts, and the view that would run the exit animation's
+        /// completion was never on screen to fire it — is
+        /// `finishLeftoverResolveOnAppear()` below. Otherwise start the
+        /// grace window (#3042): either a reply lands before it elapses and
+        /// its own exit starts, or the run ended with nothing to show for
+        /// it and the dock just leaves.
         private func handleForegroundRunEnded() {
             clearQueuedMarksOnRunEnd()
-            if dockPhase == .resolving {
-                dockExitFinished()
-                return
-            }
             guard dockPhase == .working, dockRun != nil else { return }
             dockPendingTask?.cancel()
             dockPendingTask = Task { [weak self] in
@@ -296,14 +296,32 @@ extension MessageView {
         /// nothing left to reveal or fade out — called once the grace
         /// window elapses with no reply, once a matched reply's exit
         /// animation completion fires, or by the stuck-`.resolving`
-        /// fallback in `handleForegroundRunEnded` above. Unconditional: a
-        /// caller that already knows the state changed (a direct test, the
-        /// grace-window path) relies on this always resetting fully.
+        /// fallback `finishLeftoverResolveOnAppear()` below. Unconditional:
+        /// a caller that already knows the state changed (a direct test,
+        /// the grace-window path) relies on this always resetting fully.
         func dockExitFinished() {
             dockPhase = .hidden
             dockRun = nil
             resolvingMessageID = nil
             resolvedPermissionItem = nil
+        }
+
+        /// The stuck-`.resolving` safety net the chat view's own `.onAppear`
+        /// calls, alongside `syncDock()`, every time it (re)appears (#3130):
+        /// a matched reply's exit animation reports its completion through
+        /// `withAnimation(...) completion:` in `MessageView
+        /// .prepareArrivalAnimations`, but that only fires while some view
+        /// is actually running the animation — if the chat tab was
+        /// backgrounded or a different tab was selected when it would have
+        /// completed, nothing ever called `dockExitFinished()`, and the
+        /// reply stays excluded from the grid until this runs. No
+        /// animation: the dock itself already left the hierarchy while
+        /// this view was away, so there's nothing left to visibly settle.
+        /// `syncDock()`'s own next-run recovery (resetting straight to
+        /// `.working`) still covers the case where a NEW run starts first.
+        func finishLeftoverResolveOnAppear() {
+            guard dockPhase == .resolving else { return }
+            dockExitFinished()
         }
 
         var composerPresentation: ComposerPresentation {
