@@ -1,8 +1,10 @@
 # Memory-tool shape A/B (#3160)
 
-A whole-suite comparison of two candidate replacements for Penny's ten collection/log
-read-write tools against the tools as they stood on `main`. Neither arm beat main; both
-were closed without merging, and the tool surface is unchanged.
+A whole-suite comparison of two candidate replacements for Penny's seven collection/log
+read-write tools (`collection_list`, `collection_get`, `collection_keys`,
+`collection_write`, `log_read`, `log_get`, `log_append`) against the tools as they stood on
+`main`. Neither arm beat main; both were closed without merging, and the tool surface is
+unchanged.
 
 ## The question
 
@@ -27,8 +29,8 @@ tool and let the code resolve the store's type.
 
 Both arms kept every kind of read and write 1:1 with what it replaced — nothing lost — and
 carried no prod-data migration. `collection_sandbox_run`, `log_create` and `find` were
-unchanged in both; arm B also left `collection_configure`, `collection_archive` and
-`collection_remove` alone, where arm A folded those into `memory_admin`.
+unchanged in both. Arm A additionally folded `collection_configure`, `collection_archive`
+and `collection_remove` into `memory_admin`; arm B left those three alone.
 
 ## Method
 
@@ -65,9 +67,12 @@ cross-store error for a larger count of new shape errors. Both PRs closed withou
 
 ## Lessons for the next tool-shape comparison
 
-- **A whole-suite run with no `EVAL_LEVER` writes no artifact.** `make eval-remote` fails
-  fast, before any sample runs, if `EVAL_LEVER` isn't set — set it to the arm's one-line
-  hypothesis up front, not after the run fails on it.
+- **A whole-suite run with no `EVAL_LEVER` does not fail fast — it runs to completion with
+  nothing to show for it.** `make eval-remote` only opens a durable report directory when
+  `EVAL_LEVER` is set; left unset, the run proceeds as an ordinary ephemeral iteration run
+  and writes no durable artifact, so `make eval-report` has nothing to post afterward. One
+  run in this comparison cost a full 70 minutes before that was noticed. Set `EVAL_LEVER`
+  to the arm's one-line hypothesis up front, before starting the run.
 - **A renamed tool must be renamed everywhere the model READS it, not only in assertions.**
   Seeded conversation history, world content, and seeded job instructions that still name
   the old tool leave that arm reading a tool it no longer has, which handicaps it against
