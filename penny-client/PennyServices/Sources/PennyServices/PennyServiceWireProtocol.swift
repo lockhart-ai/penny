@@ -522,7 +522,7 @@ enum ServerEnvelope: Decodable {
         case .outboxChanged:
             return nil
         case .messages(let payload):
-            return "messages:\(payload.mode)"
+            return "messages:\(payload.rawMode)"
         case .messagesAcked:
             return "messages_acked"
         case .embeddingResponse(let payload):
@@ -637,9 +637,22 @@ struct OutboxChangedPayload: Decodable {
     }
 }
 
+/// The `messages` frame's mode (#3143) — typed so a new mode the client
+/// hasn't heard of yet fails loudly (`MessagesPayload.mode` decodes to
+/// `nil`, logged in `PennyService.apply(_:)`) rather than silently falling
+/// through a string comparison nobody wrote.
+enum MessagesMode: String {
+    case outbox
+    case history
+    case historyCount = "history_count"
+    case live
+}
+
 struct MessagesPayload: Decodable {
     let messages: [ServerChatMessage]
-    let mode: String
+    /// `nil` when `rawMode` isn't one of the known modes.
+    let mode: MessagesMode?
+    let rawMode: String
     let nextCursor: String?
     let hasMore: Bool
     let totalCount: Int?
@@ -657,7 +670,8 @@ struct MessagesPayload: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         messages = try container.decode([ServerChatMessage].self, forKey: .messages)
-        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "outbox"
+        rawMode = try container.decodeIfPresent(String.self, forKey: .mode) ?? MessagesMode.outbox.rawValue
+        mode = MessagesMode(rawValue: rawMode)
         nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
         hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
         totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount)

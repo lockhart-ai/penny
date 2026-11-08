@@ -196,11 +196,15 @@ public struct MessageBubble<Content: View>: View {
     }
 }
 
-/// The metadata line, on every bubble: the user's time trailing (the
-/// bubble's VStack is trailing-aligned for the user); Penny's
-/// `time • source • 🛠 N • duration` leading, the source naming where a
-/// non-chat message came from (a collection digest, a notification) and
-/// the tool and duration segments omitted when absent.
+/// The metadata line, on every bubble: `time • source • 🛠 N • duration`,
+/// leading for Penny and trailing for the user (the bubble's own VStack
+/// sets the alignment). `source` names where a non-chat message came from
+/// for Penny (a collection digest, a notification) and, for the user, a
+/// message's own channel when it arrived from another device (#3143, "via
+/// Signal") — in both cases just the second bullet segment, the one shared
+/// rendering path below. `tools`/`duration` are Penny-only concepts (the
+/// user's `ChatMessage` never carries either); segments are omitted when
+/// absent.
 public struct MessageMeta: View {
     public enum Role {
         case user
@@ -225,37 +229,27 @@ public struct MessageMeta: View {
     }
 
     public var body: some View {
-        if role == .user {
-            timeText(time)
-        } else if let time {
+        if let time {
             HStack(spacing: 0) {
                 Text(time)
                 if let source, !source.isEmpty {
                     Text(Self.bullet)
                     Text(source)
                 }
-                if let tools, tools > 0 {
+                if role == .penny, let tools, tools > 0 {
                     Text(Self.bullet)
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.caption2)
                         .accessibilityLabel("\(tools) tool calls")
                     Text(" \(tools)")
                 }
-                if let duration, !duration.isEmpty {
+                if role == .penny, let duration, !duration.isEmpty {
                     Text(Self.bullet)
                     Text(duration)
                 }
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder private func timeText(_ time: String?) -> some View {
-        if let time {
-            Text(time)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
         }
     }
 }

@@ -646,26 +646,7 @@ extension PennyService {
                 send(.pullMessages(limit: pendingMessagePullLimit))
             }
         case .messages(let payload):
-            if payload.mode == "history_count" {
-                historyResponseContinuation?.yield(.count(payload.totalCount ?? 0))
-                break
-            }
-            let receiveResult = receive(payload)
-            let newMessages = receiveResult.newMessages
-            if payload.mode == "history" {
-                if historyPageIsNewest {
-                    let visibleMessages = newMessages.filter { liveMessageFilter.includes($0) }
-                    if let historicalMessagesHandler {
-                        historicalMessagesHandler(visibleMessages)
-                    } else {
-                        publishLiveMessages(visibleMessages)
-                    }
-                }
-                historyResponseContinuation?.yield(.page(HistoryPageResult(
-                    payload: payload,
-                    savedOrUpdatedCount: receiveResult.savedOrUpdatedCount
-                )))
-            }
+            applyMessages(payload)
         case .messagesAcked:
             break
         case .embeddingResponse(let payload):
@@ -723,6 +704,38 @@ extension PennyService {
                 permissionPrompt = nil
             }
         }
+    }
+
+    /// The `messages` frame's own dispatch (#3143): an unknown mode is
+    /// logged and dropped here before anything else sees the payload; a
+    /// recognised one goes through the shared `receive(_:mode:)` path,
+    /// with only `history` additionally driving the history-sync stream
+    /// (its own page/count protocol — `live` and `outbox` have no
+    /// equivalent to report).
+    private func applyMessages(_ payload: MessagesPayload) {
+        guard let mode = payload.mode else {
+            logger.warning("Unknown messages frame mode: \(payload.rawMode)", privacy: .public)
+            return
+        }
+        if mode == .historyCount {
+            historyResponseContinuation?.yield(.count(payload.totalCount ?? 0))
+            return
+        }
+        let receiveResult = receive(payload, mode: mode)
+        guard mode == .history else { return }
+
+        if historyPageIsNewest {
+            let visibleMessages = receiveResult.newMessages.filter { liveMessageFilter.includes($0) }
+            if let historicalMessagesHandler {
+                historicalMessagesHandler(visibleMessages)
+            } else {
+                publishLiveMessages(visibleMessages)
+            }
+        }
+        historyResponseContinuation?.yield(.page(HistoryPageResult(
+            payload: payload,
+            savedOrUpdatedCount: receiveResult.savedOrUpdatedCount
+        )))
     }
 
     private func mergePromptLogRuns(_ runs: [PromptLogRun]) {
@@ -789,13 +802,13 @@ extension PennyService {
         let savedOrUpdatedCount: Int
     }
 
-    private func receive(_ payload: MessagesPayload) -> ReceiveResult {
+    private func receive(_ payload: MessagesPayload, mode: MessagesMode) -> ReceiveResult {
         // Deduplicate repeated canonical IDs before updating persistence or UI.
         var seenMessageIDs = Set<Int>()
         let incomingMessages = payload.messages.filter { seenMessageIDs.insert($0.canonicalID).inserted }
         let incomingIDs = incomingMessages.map(\.id)
         if incomingIDs.isEmpty {
-            if payload.mode == "outbox" {
+            if mode == .outbox {
                 pendingCount = 0
             }
             return ReceiveResult(newMessages: [], savedOrUpdatedCount: 0)
@@ -826,7 +839,7 @@ extension PennyService {
         // Persist the canonical representation, including metadata corrections.
         let savedOrUpdatedCount = databaseService.saveMessages(
             decodedMessages.map(MessageModel.init(message:)),
-            preserveAttachments: payload.mode == "history" && !payload.attachmentsIncluded
+            preserveAttachments: mode == .history && !payload.attachmentsIncluded
         )
         updateRunLinks(decodedMessages)
 
@@ -835,11 +848,23 @@ extension PennyService {
             messages.sort { $0.createdAt < $1.createdAt }
         }
 
-        if payload.mode == "outbox" {
+        switch mode {
+        case .outbox:
             publishLiveMessages(decodedMessages)
             send(.ackMessages(ids: incomingIDs))
             pendingCount = max(0, pendingCount - incomingIDs.count)
             clearAppBadge()
+        case .live:
+            // A cross-device push (#3143): the same dedupe/persist path as
+            // `outbox` above, but nothing to ack and no pending count to
+            // clear — it never went through this device's own outbox.
+            publishLiveMessages(decodedMessages)
+        case .history:
+            break
+        case .historyCount:
+            // Never reached: `apply(_:)` answers `.historyCount` before
+            // calling `receive(_:mode:)` at all.
+            break
         }
 
         if pendingCount > 0 {

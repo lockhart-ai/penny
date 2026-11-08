@@ -390,6 +390,41 @@ enum StoryFixtures {
         ]
     }
 
+    /// Cross-device live delivery (#3143, `chat-cross-device`): the first
+    /// question arrives from this app (no `channelType` — no caption), the
+    /// second from Signal (`channelType: "signal"`) — its bubble carries
+    /// the "via Signal" caption, the iOS one none, side by side so the
+    /// contrast is visible in one shot.
+    static func crossDeviceViewModel() -> MessageView.ViewModel {
+        chatViewModel(messages: crossDeviceMessages)
+    }
+
+    static var crossDeviceMessages: [ChatMessage] {
+        let now = Date()
+        func at(_ secondsAgo: TimeInterval) -> Date { now.addingTimeInterval(-secondsAgo) }
+
+        return [
+            ChatMessage(
+                id: 201, serverID: 201, createdAt: at(200),
+                content: "Remind me what time the ferry leaves tomorrow?",
+                sourceHint: nil, channelType: "ios", deviceLabel: "iPhone",
+                imageAttachments: [], isOutgoing: true
+            ),
+            ChatMessage(
+                id: 202, serverID: 202, createdAt: at(180),
+                content: "The 9:30 sailing — calm seas, a light south-westerly.",
+                sourceHint: nil,
+                imageAttachmentDataURLs: [tinyLandscapeImageDataURL], imageAttachments: [], isOutgoing: false
+            ),
+            ChatMessage(
+                id: 203, serverID: 203, createdAt: at(30),
+                content: "Actually, can you add a bag of the dark roast to the list too?",
+                sourceHint: nil, channelType: "signal", deviceLabel: "Signal",
+                imageAttachments: [], isOutgoing: true
+            )
+        ]
+    }
+
     /// Find-in-chat's story conversation (#3045): three plain-text
     /// bubbles — no table, no reply-quote — all three containing "ferry",
     /// so the highlight shows cleanly on both bubble colours. Penny's
