@@ -129,6 +129,7 @@ class MockLlmClient:
         token_budget: int | None = None,
         thinking_enabled: bool = True,
         skip_cache_store: bool = False,
+        chat_slot: bool = False,
     ) -> LlmResponse:
         """Mock chat() call.
 
@@ -170,6 +171,10 @@ class MockLlmClient:
             # production would have passed (the endpoint gate lives on the real
             # client, below this mock's boundary).
             "skip_cache_store": skip_cache_store,
+            # #3164: likewise the chat-slot per-call intent — ``True`` only for
+            # the chat agent's own loop step (``Agent.chat_slot``), recorded here
+            # so a test can assert on it without a real raw-template transport.
+            "chat_slot": chat_slot,
         }
         # A browse micro-context call (#1588/#1570 — extract is required, so EVERY
         # browse routes page content through one): answer deterministically with the

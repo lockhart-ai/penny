@@ -24,8 +24,13 @@ from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.models import PromptLog
+from penny.llm import raw_template
 from penny.llm.call_link import CallLink
 from penny.llm.client import (
+    CHAT_SLOT_HEADER,
+    CHAT_SLOT_HEADER_VALUE,
+    CHAT_SLOT_PREHEAT_HEADER,
+    CHAT_SLOT_PREHEAT_HEADER_VALUE,
     SKIP_CACHE_STORE_HEADER,
     SKIP_CACHE_STORE_HEADER_OFF,
     LlmClient,
@@ -466,6 +471,163 @@ class TestSkipCacheStore:
         assert sent["extra_headers"] == {
             "X-Tosh-Agent": "off",
             SKIP_CACHE_STORE_HEADER: SKIP_CACHE_STORE_HEADER_OFF,
+        }
+
+
+class TestChatSlot:
+    """The chat agent's own raw-template completions mark themselves for
+    oMLX's persistent chat slot (#3164). The per-call intent (``chat_slot``)
+    rides as a parameter, and it reaches the wire ONLY on the raw-template
+    transport, as ``X-Penny-Slot: chat`` — never on the chat-completions
+    transport (an image attachment, a degraded raw-faithfulness mode), and
+    only when the endpoint actually knows it (``LLM_CHAT_SLOT_SUPPORTED``);
+    an endpoint that has never heard of it is never sent the header."""
+
+    @pytest.mark.asyncio
+    async def test_a_supported_endpoint_raw_template_call_carries_it(
+        self, monkeypatch, db: Database
+    ) -> None:
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            chat_slot_supported=True,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            chat_slot=True,
+        )
+        await client.close()
+
+        assert captured["extra_headers"][CHAT_SLOT_HEADER] == CHAT_SLOT_HEADER_VALUE
+
+    @pytest.mark.asyncio
+    async def test_calls_that_do_not_ask_send_nothing_new(self, monkeypatch, db: Database) -> None:
+        """A collector cycle or a micro-context draw never carries the
+        header — even on a client whose endpoint supports it — since every
+        caller but the chat agent's own loop step leaves ``chat_slot`` at its
+        default ``False``."""
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            chat_slot_supported=True,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.chat([LlmMessage(role="user", content="hi")], call_link=CallLink.new_top())
+        await client.close()
+
+        assert "extra_headers" not in captured
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_endpoint_is_never_sent_the_header(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """The flag-off default (every eval run on OpenRouter) must never see
+        the header — even when a caller states the intent."""
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            chat_slot=True,
+        )
+        await client.close()
+
+        assert "extra_headers" not in captured
+
+    @pytest.mark.asyncio
+    async def test_the_chat_completions_transport_never_carries_it(self, monkeypatch) -> None:
+        """A plain model with no vendored chat template always uses the
+        chat-completions transport (#2829) — ``chat_slot`` is a raw-template
+        notion only: there is no raw-template prefix there for a slot to
+        continue, so the header must never ride this transport even when the
+        caller states the intent and the endpoint supports it."""
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            chat_slot_supported=True,
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            chat_slot=True,
+        )
+        await client.close()
+
+        assert "extra_headers" not in sent
+
+    @pytest.mark.asyncio
+    async def test_a_configured_extra_header_survives_alongside_the_slot_header(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """``LLM_EXTRA_HEADERS`` is a separate, operator-configured header —
+        the chat-slot header merges in alongside it rather than replacing it."""
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi")
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            chat_slot_supported=True,
+            extra_headers={"X-Tosh-Agent": "off"},
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.chat(
+            [LlmMessage(role="user", content="hi")],
+            call_link=CallLink.new_top(),
+            chat_slot=True,
+        )
+        await client.close()
+
+        assert captured["extra_headers"] == {
+            "X-Tosh-Agent": "off",
+            CHAT_SLOT_HEADER: CHAT_SLOT_HEADER_VALUE,
         }
 
 
@@ -2342,10 +2504,13 @@ class TestRawTemplateTransport:
 
 class TestPrewarm:
     """``LlmClient.prewarm()`` (#3078) — the chat pre-warm's own send path:
-    the raw-template transport, ``max_tokens=1``, and nothing logged."""
+    the raw-template transport, ``max_tokens=1``, no generation prompt
+    (#3164 — the warm's prompt must be an exact TOKEN prefix of the next
+    real turn's, which continues past it with a NEW turn, never with
+    ``<|turn>model``), and nothing logged."""
 
     @pytest.mark.asyncio
-    async def test_prewarm_sends_max_tokens_one_over_the_raw_path_and_logs_nothing(
+    async def test_prewarm_sends_max_tokens_one_with_no_generation_prompt_and_logs_nothing(
         self, monkeypatch, db: Database
     ) -> None:
         captured: dict = {}
@@ -2381,7 +2546,60 @@ class TestPrewarm:
 
         assert captured["max_tokens"] == 1
         assert timing.prompt_tokens == 4200
+        assert "<|turn>model" not in captured["prompt"]
+        assert captured["prompt"].rstrip("\n").endswith(raw_template.STOP_SEQUENCE)
 
         with db.get_session() as session:
             rows = session.exec(select(PromptLog)).all()
         assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_a_supported_endpoint_carries_the_preheat_header(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """#3164: the warm's own draw marks itself as the chat slot's next
+        write — the preheat header, never the slot-continuation header
+        :class:`TestChatSlot` covers (``chat()``'s own ``chat_slot``)."""
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi", usage={"prompt_tokens": 10, "completion_tokens": 1})
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+            chat_slot_supported=True,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.prewarm([LlmMessage(role="system", content="leading")], tools=None)
+        await client.close()
+
+        assert captured["extra_headers"][CHAT_SLOT_PREHEAT_HEADER] == CHAT_SLOT_PREHEAT_HEADER_VALUE
+        assert CHAT_SLOT_HEADER not in captured["extra_headers"]
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_endpoint_never_carries_the_preheat_header(
+        self, monkeypatch, db: Database
+    ) -> None:
+        captured: dict = {}
+
+        async def raw_create(**kwargs):
+            captured.update(kwargs)
+            return _text_completion("hi", usage={"prompt_tokens": 10, "completion_tokens": 1})
+
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model=_GEMMA_MODEL,
+            db=db,
+            max_retries=1,
+            retry_delay=0.0,
+        )
+        monkeypatch.setattr(client.client.completions, "create", raw_create)
+        await client.prewarm([LlmMessage(role="system", content="leading")], tools=None)
+        await client.close()
+
+        assert "extra_headers" not in captured

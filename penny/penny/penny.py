@@ -137,6 +137,12 @@ class Penny:
             # micro-context draws ask the model server not to cache their one-off
             # prompts; off, nothing new is ever sent.
             skip_cache_store_supported=self.config.llm_skip_cache_store_supported,
+            # Whether this endpoint honours oMLX's persistent chat slot (#3164) —
+            # an endpoint property, like the cache-store opt-out above. On, the
+            # chat pre-warm marks its preheat and the chat agent's own raw-template
+            # completions mark themselves as that slot's turn; off, neither header
+            # is ever sent.
+            chat_slot_supported=self.config.llm_chat_slot_supported,
         )
 
     def _init_llm_clients(self, config: Config) -> None:

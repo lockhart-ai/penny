@@ -68,6 +68,7 @@ class PreflightCheck(StrEnum):
     PRIMARY_CHANNEL = "primary-channel"
     RAW_TEMPLATE_TRANSPORT = "raw-template-transport"
     SKIP_CACHE_STORE = "skip-cache-store"
+    CHAT_SLOT = "chat-slot"
 
 
 _STATUS_ICON: dict[CheckStatus, str] = {
@@ -180,6 +181,7 @@ class Preflight:
             self._check_browser_addon(),
             self._check_primary_channel(),
             self._check_skip_cache_store(),
+            self._check_chat_slot(),
         ]
         return PreflightReport(results=[result for result in candidates if result is not None])
 
@@ -434,6 +436,26 @@ class Preflight:
             name,
             "LLM_SKIP_CACHE_STORE_SUPPORTED is off — micro-context prompts are stored "
             "in the model server's prefix cache as usual.",
+        )
+
+    def _check_chat_slot(self) -> CheckResult:
+        """Names the `chat_slot` setting's state (#3164) — a config-state
+        report, never a warn: off is the legitimate default (an endpoint that
+        has never heard of either header is never sent one), on means the
+        chat pre-warm marks its preheat and the chat agent's own raw-template
+        completions mark themselves as that slot's turn."""
+        name = PreflightCheck.CHAT_SLOT
+        if self.config.llm_chat_slot_supported:
+            return self._ok(
+                name,
+                "LLM_CHAT_SLOT_SUPPORTED is on — the chat pre-warm marks its preheat "
+                "and the chat agent's own completions mark themselves as oMLX's "
+                "persistent chat slot.",
+            )
+        return self._ok(
+            name,
+            "LLM_CHAT_SLOT_SUPPORTED is off — the chat pre-warm and the chat agent's "
+            "completions carry no chat-slot header.",
         )
 
     # ── Result builders ──────────────────────────────────────────────────

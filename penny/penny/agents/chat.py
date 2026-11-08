@@ -113,6 +113,11 @@ class ChatAgent(Agent):
     """
 
     name: str = "chat"
+    # Every raw-template completion this agent's loop makes marks itself as a
+    # continuation of oMLX's persistent chat slot (#3164) — the ONE agent shape
+    # this is true for; see ``Agent.chat_slot``'s own docstring for why this is
+    # the only override.
+    chat_slot: bool = True
     system_prompt = Prompt.CONVERSATION_PROMPT
     # The related earlier exchanges section (#3010) — rendered ONCE per turn in
     # ``_dispatch_turn`` (the live message embeds there, once) and read by
