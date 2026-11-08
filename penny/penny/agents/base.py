@@ -241,6 +241,17 @@ class Agent:
 
     name: str = "Agent"
 
+    # Whether this agent's own loop-step raw-template completions mark
+    # themselves as a continuation of oMLX's persistent chat slot (#3164) — a
+    # structural property of the AGENT SHAPE, read explicitly at the one call
+    # site that makes this agent's model draws (``_invoke_model`` below) and
+    # passed on as ``LlmClient.chat()``'s own ``chat_slot`` parameter, never
+    # read ambiently. ``ChatAgent`` overrides it ``True``; every other agent
+    # shape (``Collector``, a one-off command agent) leaves the default
+    # ``False``, so a header meant for the chat agent's own turn can never
+    # ride a call a different shape made.
+    chat_slot: bool = False
+
     # Static system prompt for this agent.  Subclasses with a fixed prompt
     # set this class attribute (e.g. a micro-context's own contract framing).
     # Agents that build their prompt dynamically (e.g. ChatAgent's
@@ -1354,7 +1365,10 @@ class Agent:
         agent makes carries ``token_budget_for(self.config.runtime, self.name)``, never
         just the ones the loop steps through.  ``thinking_enabled`` defaults True (the
         ordinary draw); the one caller that turns it off is the last draw answering a
-        budget-cut step (``_aborted_response`` / ``_narrate_or_account``).
+        budget-cut step (``_aborted_response`` / ``_narrate_or_account``).  Being the
+        ONE such call is also why this is where ``self.chat_slot`` (#3164) is read and
+        passed on — every raw-template completion this agent's loop makes marks itself
+        the same way, with no second call site to keep in sync.
         """
         try:
             return await self._model_client.chat(
@@ -1373,6 +1387,7 @@ class Agent:
                 run_target=self._memory_scope(),
                 token_budget=token_budget_for(self.config.runtime, self.name),
                 thinking_enabled=thinking_enabled,
+                chat_slot=self.chat_slot,
             )
         except LlmToolParseError:
             raise

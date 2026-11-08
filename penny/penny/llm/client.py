@@ -122,6 +122,22 @@ THINKING_OFF_BODY = {
 SKIP_CACHE_STORE_HEADER = "X-oMLX-Cache-Store"
 SKIP_CACHE_STORE_HEADER_OFF = "off"
 
+# oMLX's persistent chat slot (#3164): a GPU-resident KV the idle pre-warm writes
+# and a matching real turn starts from, with no cache lookup or restore. Two
+# headers, both gated the same way as the cache-store opt-out above — only ever
+# sent when the ENDPOINT knows them (``LLM_CHAT_SLOT_SUPPORTED`` /
+# ``_chat_slot_supported``, a constructor param like the provider pin):
+#   - ``CHAT_SLOT_PREHEAT_HEADER``: sent only by ``LlmClient.prewarm`` — this
+#     draw's rendered prefix IS the slot's own next write.
+#   - ``CHAT_SLOT_HEADER``: sent on every raw-template completion the CHAT agent
+#     makes (every step of a turn) — this draw continues the slot's turn.
+# Never both on the same request, and never on a chat-completions/image call —
+# the chat transport fallback has no raw-template prefix to share a slot with.
+CHAT_SLOT_HEADER = "X-Penny-Slot"
+CHAT_SLOT_HEADER_VALUE = "chat"
+CHAT_SLOT_PREHEAT_HEADER = "X-Penny-Slot-Preheat"
+CHAT_SLOT_PREHEAT_HEADER_VALUE = "chat"
+
 # The chat pre-warm's own token budget (#3078): one token is enough to make the
 # server process and cache the whole rendered prefix, and the draw is discarded
 # either way — a real answer is never wanted here.
@@ -366,15 +382,6 @@ class _ChatAttemptResult(NamedTuple):
     thinking_loop_cut: _ThinkingLoopCutLog | None = None
 
 
-class _SkipCacheStoreOptOut(NamedTuple):
-    """The skip-cache-store opt-out's one carrier (#3134, #3162): a header,
-    already merged with any configured ``LLM_EXTRA_HEADERS`` — never a bare
-    override — so a transport's per-call ``extra_headers`` never drops them.
-    Empty when the opt-out doesn't apply."""
-
-    headers: dict[str, str]
-
-
 class _AttemptFailedError(Exception):
     """Internal-only (#2875): pairs whatever exception ends one attempt — an SDK
     error (``openai.NotFoundError``/``APITimeoutError``/``APIConnectionError``/
@@ -448,6 +455,7 @@ class LlmClient:
         runtime: RuntimeParams | None = None,
         extra_headers: dict[str, str] | None = None,
         skip_cache_store_supported: bool = False,
+        chat_slot_supported: bool = False,
     ):
         self.api_url = api_url.rstrip("/")
         self.model = model
@@ -459,8 +467,12 @@ class LlmClient:
         # Whether THIS endpoint accepts oMLX's ``X-oMLX-Cache-Store`` header
         # (#3080, #3162) — an endpoint property, like the provider pin: the local
         # oMLX fork knows it, a random OpenRouter provider may reject it. Read by
-        # :meth:`_skip_cache_store_opt_out`, never by a caller directly.
+        # :meth:`_extra_call_headers`, never by a caller directly.
         self._skip_cache_store_supported = skip_cache_store_supported
+        # Whether THIS endpoint honours oMLX's persistent chat slot (#3164) — an
+        # endpoint property, the same shape as the cache-store switch above. Read
+        # by :meth:`_extra_call_headers`, never by a caller directly.
+        self._chat_slot_supported = chat_slot_supported
         # The deployment's ONE ``RuntimeParams`` (#2474) — not a fresh instance built
         # from ``db`` alone, which would carry the DB tier but never the env tier (the
         # env overrides are collected once, in ``Config.load()``, into this exact
@@ -483,8 +495,8 @@ class LlmClient:
         # so a reader can tell which headers a call carried without exposing them.
         self._extra_header_names: list[str] = sorted(extra_headers) if extra_headers else []
         # The actual configured VALUES (#3134) — unlike the names-only list above,
-        # kept so a per-call opt-out header (:meth:`_skip_cache_store_opt_out`) can
-        # be merged alongside them rather than silently overriding them on the SDK's
+        # kept so a per-call opt-in header (:meth:`_extra_call_headers`) can be
+        # merged alongside them rather than silently overriding them on the SDK's
         # per-call ``extra_headers`` option. Never logged itself — only ever read to
         # build another header dict, never written to a ``SentRequest``.
         self._configured_extra_headers: dict[str, str] = (
@@ -543,6 +555,7 @@ class LlmClient:
         token_budget: int | None = None,
         thinking_enabled: bool = True,
         skip_cache_store: bool = False,
+        chat_slot: bool = False,
     ) -> LlmResponse:
         """Generate a chat completion with optional tool calling.
 
@@ -600,8 +613,21 @@ class LlmClient:
         evicts the reusable chat/collector prefixes); every other caller leaves
         it ``False``. Intent alone is not enough: the field rides the wire only
         when this endpoint actually knows it
-        (``LLM_SKIP_CACHE_STORE_SUPPORTED`` / :meth:`_skip_cache_store_opt_out`),
+        (``LLM_SKIP_CACHE_STORE_SUPPORTED`` / :meth:`_extra_call_headers`),
         and the request still READS cached prefixes — it just never writes its own.
+
+        ``chat_slot`` (#3164) is the per-call intent to mark THIS draw as a
+        continuation of oMLX's persistent chat slot — ``ChatAgent``'s own loop
+        step states it (``Agent.chat_slot``, overridden ``True`` only there);
+        every other caller (a micro-context draw, the browse picker, a collector
+        cycle) leaves the default ``False``, so a header meant for the chat
+        agent's own turn can never ride a call it did not make. Like
+        ``skip_cache_store``, intent alone is not enough — it rides the wire
+        only when this endpoint knows it (``LLM_CHAT_SLOT_SUPPORTED`` /
+        :meth:`_extra_call_headers`) — AND only on the raw-template transport:
+        the chat-completions fallback (an image attachment, a degraded
+        raw-faithfulness mode) never carries it, since there is no raw-template
+        prefix there for a slot to continue.
 
         Reads top to bottom as the call's own table of contents: resolve this
         call's ids and announce it, run the retry loop, then log however it
@@ -628,6 +654,7 @@ class LlmClient:
                 token_budget,
                 thinking_enabled,
                 skip_cache_store,
+                chat_slot,
                 transport,
             )
         except asyncio.CancelledError:
@@ -743,12 +770,22 @@ class LlmClient:
 
         Renders through :meth:`_send_raw_template_request`'s own request
         building — the SAME render + transport code ``chat()``'s raw-template
-        branch calls below, never a second copy — so the bytes sent here are
-        byte-identical to what the real next turn's own prefix will be. Only
-        ``token_budget`` differs (forced to ``PREWARM_TOKEN_BUDGET``); thinking
-        stays ON (the real turn's own shape — ``chat()``'s always-on default)
-        and ``skip_cache_store`` stays ``False``, since the opposite ask would
-        tell the server NOT to store this prompt, defeating the point.
+        branch calls below, never a second copy — with ``add_generation_prompt``
+        forced ``False`` (#3164): the real next turn continues PAST this prefix
+        with its own new turn (the per-turn dynamic system message), never with
+        ``<|turn>model``, so the generation prompt's own tail would never be a
+        TOKEN prefix of what the real turn actually sends. Rendered this way, the
+        bytes sent here ARE an exact prefix of the real next turn's own prompt.
+        Only ``token_budget`` differs (forced to ``PREWARM_TOKEN_BUDGET``);
+        thinking stays ON (the real turn's own shape — ``chat()``'s always-on
+        default) and ``skip_cache_store`` stays ``False``, since the opposite ask
+        would tell the server NOT to store this prompt, defeating the point.
+
+        Sends ``X-Penny-Slot-Preheat: chat`` (#3164) when this endpoint is
+        configured to understand it (``LLM_CHAT_SLOT_SUPPORTED`` /
+        :meth:`_extra_call_headers`) — this draw IS the chat slot's own next
+        write, never its continuation (:meth:`chat`'s own ``chat_slot`` is for
+        that), so the two headers never ride the same request.
 
         Writes NO ``promptlog`` row and publishes NO call-started event —
         nothing about this call is recorded anywhere: it is cache plumbing,
@@ -768,6 +805,8 @@ class LlmClient:
             PREWARM_TOKEN_BUDGET,
             thinking_enabled=True,
             skip_cache_store=False,
+            chat_slot_preheat=True,
+            add_generation_prompt=False,
         )
         return usage_timing_from_response(draw.raw.model_dump())
 
@@ -776,7 +815,8 @@ class LlmClient:
         messages/tools (#3133) — the SAME translate-then-render steps
         :meth:`_send_raw_template_request` applies internally (factored into
         the shared :func:`_render_raw_template`, so this can never drift from
-        what actually gets sent).
+        what actually gets sent), including the generation prompt staying OFF
+        (#3164 — see :meth:`prewarm`'s own docstring for why).
 
         Exists so the chat pre-warm's own dedup key (``ChatPrewarmTask``) can
         hash exactly what the model server receives, rather than hashing the
@@ -794,7 +834,9 @@ class LlmClient:
         """
         messages_snapshot = [message.to_log_dict() for message in messages]
         translated_messages = self._translate_messages(messages_snapshot)
-        return self._render_raw_template(translated_messages, tools, thinking_enabled=True)
+        return self._render_raw_template(
+            translated_messages, tools, thinking_enabled=True, add_generation_prompt=False
+        )
 
     def _resolve_transport(
         self, messages: list[LlmMessage], format: dict | str | None
@@ -1098,6 +1140,7 @@ class LlmClient:
         token_budget: int | None,
         thinking_enabled: bool,
         skip_cache_store: bool,
+        chat_slot: bool,
         transport: PromptTransport,
     ) -> tuple[LlmResponse, _RawCompletion, _ThinkingLoopCutLog | None, SentRequest]:
         """The retry loop over individual network attempts.
@@ -1129,6 +1172,7 @@ class LlmClient:
                     token_budget,
                     thinking_enabled,
                     skip_cache_store,
+                    chat_slot,
                     attempt,
                     transport,
                 )
@@ -1184,6 +1228,7 @@ class LlmClient:
         token_budget: int | None,
         thinking_enabled: bool,
         skip_cache_store: bool,
+        chat_slot: bool,
         attempt: int,
         transport: PromptTransport,
     ) -> _ChatAttemptResult:
@@ -1207,7 +1252,12 @@ class LlmClient:
         thinking_loop_cut: _ThinkingLoopCutLog | None = None
         if transport is PromptTransport.RAW_TEMPLATE:
             draw = await self._send_raw_template_request(
-                translated_messages, tools, token_budget, thinking_enabled, skip_cache_store
+                translated_messages,
+                tools,
+                token_budget,
+                thinking_enabled,
+                skip_cache_store,
+                chat_slot=chat_slot,
             )
             raw = draw.raw
             thinking_loop_cut = draw.cut
@@ -1234,23 +1284,25 @@ class LlmClient:
             kwargs = self._build_chat_kwargs(
                 translated_messages, tools, format, token_budget, thinking_enabled
             )
-            # The opt-out's HEADERS (#3134) ride ``create()``'s own per-call
+            # The opt-in headers (#3134, #3164) ride ``create()``'s own per-call
             # ``extra_headers`` option, added separately from ``kwargs`` below —
             # never folded into ``kwargs`` itself — so their values never land in
             # the logged ``body`` (see ``_create_raw_completion``'s docstring for
-            # why, and ``_skip_cache_store_opt_out`` for why they still carry any
-            # configured ``LLM_EXTRA_HEADERS``).
-            opt_out_headers = self._skip_cache_store_opt_out(skip_cache_store).headers
+            # why, and ``_extra_call_headers`` for why they still carry any
+            # configured ``LLM_EXTRA_HEADERS``). ``chat_slot`` never rides this
+            # transport (never passed here) — there is no raw-template prefix on
+            # a chat-completions fallback call for a slot to continue.
+            extra_headers = self._extra_call_headers(skip_cache_store=skip_cache_store)
             sent_request = SentRequest(
                 transport=PromptTransport.CHAT,
                 endpoint=self.api_url,
                 model=self.model,
                 body=kwargs,
-                header_names=sorted({*self._extra_header_names, *opt_out_headers}),
+                header_names=sorted({*self._extra_header_names, *extra_headers}),
             )
             try:
                 raw = await self.client.chat.completions.create(
-                    **kwargs, **({"extra_headers": opt_out_headers} if opt_out_headers else {})
+                    **kwargs, **({"extra_headers": extra_headers} if extra_headers else {})
                 )
             except Exception as error:
                 raise _AttemptFailedError(sent_request, error) from error
@@ -1273,6 +1325,10 @@ class LlmClient:
         token_budget: int | None,
         thinking_enabled: bool,
         skip_cache_store: bool,
+        *,
+        chat_slot: bool = False,
+        chat_slot_preheat: bool = False,
+        add_generation_prompt: bool = True,
     ) -> _RawTemplateDraw:
         """Render the vendored template and STREAM the result as a raw
         completion (#2829, streamed since #2842): streaming lets a looping
@@ -1286,6 +1342,12 @@ class LlmClient:
         ``thinking_enabled`` is already baked into the rendered prompt's own
         bytes, so it is not sent as a separate field here.
 
+        ``chat_slot``/``chat_slot_preheat`` (#3164) are this call's own two
+        mutually-exclusive opt-in headers — see :meth:`_extra_call_headers`;
+        ``add_generation_prompt`` (same ticket) is forced ``False`` by
+        :meth:`prewarm`'s own caller alone, every other caller leaving the
+        default ``True``.
+
         The continuation is ITSELF guarded (#2843, ``RepeatStreamTracker`` —
         its whole output, content included, not just thinking): a cut
         landing mid-draft let a real prod continuation just resume an
@@ -1294,9 +1356,15 @@ class LlmClient:
         existing budget-cut path instead (:func:`_budget_cut_raw`), bounding
         a repeat to two cycles rather than the full budget.
         """
-        prompt = self._render_raw_template(messages, tools, thinking_enabled)
+        prompt = self._render_raw_template(
+            messages, tools, thinking_enabled, add_generation_prompt=add_generation_prompt
+        )
         stream, sent_request = await self._create_raw_completion(
-            prompt, token_budget, skip_cache_store
+            prompt,
+            token_budget,
+            skip_cache_store,
+            chat_slot=chat_slot,
+            chat_slot_preheat=chat_slot_preheat,
         )
         outcome = await self._stream_consumption(
             stream, tracker=thinking_loop.ThoughtStreamTracker(), sent_request=sent_request
@@ -1311,7 +1379,11 @@ class LlmClient:
             )
         continuation_prompt = prompt + outcome.cut.continuation_suffix()
         continuation_stream, continuation_sent_request = await self._create_raw_completion(
-            continuation_prompt, token_budget, skip_cache_store
+            continuation_prompt,
+            token_budget,
+            skip_cache_store,
+            chat_slot=chat_slot,
+            chat_slot_preheat=chat_slot_preheat,
         )
         continuation = await self._stream_consumption(
             continuation_stream,
@@ -1335,7 +1407,13 @@ class LlmClient:
         )
 
     async def _create_raw_completion(
-        self, prompt: str, token_budget: int | None, skip_cache_store: bool
+        self,
+        prompt: str,
+        token_budget: int | None,
+        skip_cache_store: bool,
+        *,
+        chat_slot: bool = False,
+        chat_slot_preheat: bool = False,
     ) -> tuple[openai.AsyncStream[openai.types.completion.Completion], SentRequest]:
         """One streaming raw-completions request (#2842) — the provider pin
         rides the same ``extra_body`` passthrough as the chat transport
@@ -1346,7 +1424,7 @@ class LlmClient:
         Returns this request's own ``SentRequest`` alongside the stream (#2875) —
         built from the SAME ``kwargs`` handed to ``create()``, so nothing here is
         re-derived from a wire shape a caller would otherwise have to rebuild. The
-        one exception is the skip-cache-store opt-out's HEADERS (#3134): those ride
+        one exception is the opt-in HEADERS (#3134, #3164): those ride
         ``create()``'s own per-call ``extra_headers`` option, added separately from
         ``kwargs``, so their values — which may carry whatever ``LLM_EXTRA_HEADERS``
         was configured to — never land in the logged ``body`` (only their NAMES do,
@@ -1355,7 +1433,11 @@ class LlmClient:
         request, constructed right here where both are in scope — the only place
         this request exists, since ``create()`` never got to return it.
         """
-        opt_out = self._skip_cache_store_opt_out(skip_cache_store)
+        extra_headers = self._extra_call_headers(
+            skip_cache_store=skip_cache_store,
+            chat_slot=chat_slot,
+            chat_slot_preheat=chat_slot_preheat,
+        )
         kwargs: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
@@ -1372,11 +1454,11 @@ class LlmClient:
             endpoint=self.api_url,
             model=self.model,
             body=kwargs,
-            header_names=sorted({*self._extra_header_names, *opt_out.headers}),
+            header_names=sorted({*self._extra_header_names, *extra_headers}),
         )
         try:
             stream = await self.client.completions.create(
-                **kwargs, **({"extra_headers": opt_out.headers} if opt_out.headers else {})
+                **kwargs, **({"extra_headers": extra_headers} if extra_headers else {})
             )
         except Exception as error:
             raise _AttemptFailedError(sent_request, error) from error
@@ -1495,24 +1577,36 @@ class LlmClient:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
         return extra_body
 
-    def _skip_cache_store_opt_out(self, skip_cache_store: bool) -> _SkipCacheStoreOptOut:
-        """The skip-cache-store request's own opt-out header (#3080, #3134,
-        #3162) — the ONE place that decides whether it rides, so the chat and
-        the raw-template transport can never drift apart on it. Empty unless
-        the caller stated the intent AND this endpoint supports the opt-out:
-        an endpoint that has never heard of the header is never sent it.
-        Merges in any configured ``LLM_EXTRA_HEADERS`` rather than replacing
-        them, since this dict rides a transport's per-call ``extra_headers``
-        option alongside — never instead of — the client's own default
-        headers. The request still READS cached prefixes; it just never
-        writes its own."""
-        if not (skip_cache_store and self._skip_cache_store_supported):
-            return _SkipCacheStoreOptOut(headers={})
-        headers = {
-            **self._configured_extra_headers,
-            SKIP_CACHE_STORE_HEADER: SKIP_CACHE_STORE_HEADER_OFF,
-        }
-        return _SkipCacheStoreOptOut(headers=headers)
+    def _extra_call_headers(
+        self,
+        *,
+        skip_cache_store: bool = False,
+        chat_slot: bool = False,
+        chat_slot_preheat: bool = False,
+    ) -> dict[str, str]:
+        """Every per-call opt-in header this request may carry (#3080/#3134/
+        #3162's skip-cache-store opt-out; #3164's chat-slot/preheat) — the ONE
+        place that decides which ride, so the chat and the raw-template
+        transport can never drift apart on any of them. Each applies only when
+        BOTH the caller stated the per-call intent AND this endpoint supports
+        it: an endpoint that has never heard of a header is never sent it.
+        Empty when none apply, so a call that asked for nothing new sends no
+        ``extra_headers`` at all.
+
+        Merges in any configured ``LLM_EXTRA_HEADERS`` alongside whichever
+        opt-in header(s) apply, rather than replacing them, since this dict
+        rides a transport's per-call ``extra_headers`` option alongside —
+        never instead of — the client's own default headers."""
+        opt_in: dict[str, str] = {}
+        if skip_cache_store and self._skip_cache_store_supported:
+            opt_in[SKIP_CACHE_STORE_HEADER] = SKIP_CACHE_STORE_HEADER_OFF
+        if chat_slot and self._chat_slot_supported:
+            opt_in[CHAT_SLOT_HEADER] = CHAT_SLOT_HEADER_VALUE
+        if chat_slot_preheat and self._chat_slot_supported:
+            opt_in[CHAT_SLOT_PREHEAT_HEADER] = CHAT_SLOT_PREHEAT_HEADER_VALUE
+        if not opt_in:
+            return {}
+        return {**self._configured_extra_headers, **opt_in}
 
     @staticmethod
     def _sampling_kwargs() -> dict[str, Any]:
@@ -1944,16 +2038,23 @@ class LlmClient:
 
     @staticmethod
     def _render_raw_template(
-        messages: list[dict], tools: list[dict] | None, thinking_enabled: bool
+        messages: list[dict],
+        tools: list[dict] | None,
+        thinking_enabled: bool,
+        add_generation_prompt: bool = True,
     ) -> str:
         """Translate ``tools`` and render the vendored template — the ONE
         place that combination happens, called by
         :meth:`_send_raw_template_request` (``messages`` already translated
         by its own caller) and by :meth:`render_prewarm_prompt` (#3133), so
         the chat pre-warm's dedup hash and the real send can never compute
-        this differently by hand."""
+        this differently by hand. ``add_generation_prompt`` (#3164) defaults
+        True; the pre-warm's own callers pass False — see
+        :func:`penny.llm.raw_template.render_prompt`'s own docstring."""
         translated_tools = LlmClient._translate_tools(tools) if tools else None
-        return raw_template.render_prompt(messages, translated_tools, thinking_enabled)
+        return raw_template.render_prompt(
+            messages, translated_tools, thinking_enabled, add_generation_prompt
+        )
 
     @staticmethod
     def _translate_format(format: dict | str) -> dict:

@@ -1,11 +1,18 @@
-"""Integration tests for the chat pre-warm (#3078).
+"""Integration tests for the chat pre-warm (#3078, #3164).
 
-Covers: the warm's rendered prefix is a true prefix of the next real turn's
-own request, both mid-session and once the session has actually rotated; the
-``ChatPrewarmTask`` gate (no warm while a collector cycle runs, never twice
-for the same prefix, a fresh warm once the newest model call moves, no
-``promptlog`` row ever written); and a foreground turn cancelling an
-in-flight warm leaves the chat agent's own shared state untouched.
+Covers: the warm's rendered prefix is a true TOKEN prefix of the next real
+turn's own request, both mid-session and once the session has actually
+rotated — which requires the warm's own render to carry NO generation prompt
+(#3164): the real turn continues past the warm's own messages with a NEW
+turn (the per-turn dynamic system message), never with ``<|turn>model``, so
+a warm rendered WITH the generation prompt can never be a byte prefix of the
+real request. Both prefix tests below first show that the OLD render (with
+the generation prompt) fails the prefix check, then that the fixed render
+(without it, ending on a gemma special token instead) passes it. Also
+covers: the ``ChatPrewarmTask`` gate (no warm while a collector cycle runs,
+never twice for the same prefix, a fresh warm once the newest model call
+moves, no ``promptlog`` row ever written); and a foreground turn cancelling
+an in-flight warm leaves the chat agent's own shared state untouched.
 """
 
 from __future__ import annotations
@@ -30,26 +37,38 @@ from penny.tests.conftest import TEST_SENDER, wait_until
 
 # gemma4's own fixed generation-prompt marker (confirmed by reading
 # ``llm/templates/gemma4_chat_template.jinja`` directly, not assumed) when
-# thinking is on and the prefix does not end in a tool call/response.
-# ``raw_template.render_prompt`` always sends ``add_generation_prompt=True``,
-# so this is the warm's own trailing text — stripped before the prefix check.
+# thinking is on and the prefix does not end in a tool call/response. A REAL
+# turn's own request always carries this (``add_generation_prompt`` defaults
+# True); the warm must NEVER carry it (#3164) — see the module docstring.
 _GENERATION_PROMPT_MARKER = "<|turn>model\n"
 
 
-def _rendered_dicts(dict_messages: list[dict], tools: list[dict] | None) -> str:
+def _rendered_dicts(
+    dict_messages: list[dict], tools: list[dict] | None, *, add_generation_prompt: bool = True
+) -> str:
     """The exact bytes ``raw_template.render_prompt`` would send for an
     already-dict-shaped message/tool list (the shape ``MockLlmClient``
     records a real request in) — through the SAME translation
     ``LlmClient.chat()``'s raw-template branch applies first, never a
-    second render path."""
+    second render path. ``add_generation_prompt`` defaults True (a real
+    turn's own request); the warm's own render passes False (#3164),
+    mirroring ``LlmClient.render_prewarm_prompt``."""
     translated_messages = LlmClient._translate_messages(dict_messages)
     translated_tools = LlmClient._translate_tools(tools) if tools else None
-    return raw_template.render_prompt(translated_messages, translated_tools, True)
+    return raw_template.render_prompt(
+        translated_messages, translated_tools, True, add_generation_prompt
+    )
 
 
-def _rendered(messages: list[LlmMessage], tools: list[dict] | None) -> str:
+def _rendered(
+    messages: list[LlmMessage], tools: list[dict] | None, *, add_generation_prompt: bool = True
+) -> str:
     """The warm's own ``list[LlmMessage]`` output, rendered the same way."""
-    return _rendered_dicts([message.to_log_dict() for message in messages], tools)
+    return _rendered_dicts(
+        [message.to_log_dict() for message in messages],
+        tools,
+        add_generation_prompt=add_generation_prompt,
+    )
 
 
 def _seed_closed_exchange(db, sender: str, ask: str, reply: str, at) -> None:
@@ -87,7 +106,7 @@ class _FakeModelClient:
         self.prewarm_requests: list[dict] = []
 
     def render_prewarm_prompt(self, messages: list[LlmMessage], tools: list[dict] | None) -> str:
-        return _rendered(messages, tools)
+        return _rendered(messages, tools, add_generation_prompt=False)
 
     async def prewarm(self, messages: list[LlmMessage], tools: list[dict] | None) -> UsageTiming:
         self.prewarm_requests.append({"messages": messages, "tools": tools})
@@ -116,9 +135,17 @@ async def test_mid_session_prefix_is_a_prefix_of_the_real_next_turns_request(
         )
 
         warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(TEST_SENDER)
-        warm_text = _rendered(warm_messages, warm_tools)
-        assert warm_text.endswith(_GENERATION_PROMPT_MARKER)
-        warm_prefix_text = warm_text[: -len(_GENERATION_PROMPT_MARKER)]
+        # The OLD render (with the generation prompt) — kept only to show it
+        # fails the prefix check: its own trailing marker is never what the
+        # real turn's own continuation actually sends at that position.
+        old_warm_text = _rendered(warm_messages, warm_tools, add_generation_prompt=True)
+        assert old_warm_text.endswith(_GENERATION_PROMPT_MARKER)
+
+        # The FIXED render (#3164) — no generation prompt, ending on whichever
+        # gemma special token already closes the prefix's own last message.
+        warm_text = _rendered(warm_messages, warm_tools, add_generation_prompt=False)
+        assert not warm_text.endswith(_GENERATION_PROMPT_MARKER)
+        assert warm_text.rstrip("\n").endswith(raw_template.STOP_SEQUENCE)
 
         mock_llm.set_response_handler(
             lambda request, count: mock_llm._make_text_response(request, "all set"),
@@ -130,7 +157,10 @@ async def test_mid_session_prefix_is_a_prefix_of_the_real_next_turns_request(
         real_request = mock_llm.requests[0]
         real_text = _rendered_dicts(real_request["messages"], real_request.get("tools"))
 
-        assert real_text.startswith(warm_prefix_text)
+        assert not real_text.startswith(old_warm_text), (
+            "the generation-prompt tail must never be a prefix of the real turn's prompt"
+        )
+        assert real_text.startswith(warm_text)
 
 
 class _FixedClock:
@@ -201,9 +231,15 @@ async def test_post_rotation_prefix_matches_once_the_session_actually_rotates(
         assert anchor.session_turns == 0
 
         warm_messages, warm_tools = await penny.chat_agent.build_prewarm_prefix(TEST_SENDER)
-        warm_text = _rendered(warm_messages, warm_tools)
-        assert warm_text.endswith(_GENERATION_PROMPT_MARKER)
-        warm_prefix_text = warm_text[: -len(_GENERATION_PROMPT_MARKER)]
+        # Same demonstration as the mid-session test above: the OLD render
+        # (with the generation prompt) fails the prefix check post-rotation
+        # too — the fix is not specific to one session shape.
+        old_warm_text = _rendered(warm_messages, warm_tools, add_generation_prompt=True)
+        assert old_warm_text.endswith(_GENERATION_PROMPT_MARKER)
+
+        warm_text = _rendered(warm_messages, warm_tools, add_generation_prompt=False)
+        assert not warm_text.endswith(_GENERATION_PROMPT_MARKER)
+        assert warm_text.rstrip("\n").endswith(raw_template.STOP_SEQUENCE)
 
         mock_llm.set_response_handler(
             lambda request, count: mock_llm._make_text_response(request, "all set"),
@@ -215,7 +251,10 @@ async def test_post_rotation_prefix_matches_once_the_session_actually_rotates(
         real_request = mock_llm.requests[0]
         real_text = _rendered_dicts(real_request["messages"], real_request.get("tools"))
 
-        assert real_text.startswith(warm_prefix_text)
+        assert not real_text.startswith(old_warm_text), (
+            "the generation-prompt tail must never be a prefix of the real turn's prompt"
+        )
+        assert real_text.startswith(warm_text)
         # The history actually cut to CHAT_HISTORY_TURNS (2): the two oldest
         # seeded exchanges aged out, the two newest survived.
         assert "old ask 0" not in real_text

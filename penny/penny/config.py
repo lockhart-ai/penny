@@ -196,6 +196,8 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_decision_api_url": os.getenv("LLM_DECISION_API_URL"),
         "llm_skip_cache_store_supported": os.getenv("LLM_SKIP_CACHE_STORE_SUPPORTED", "").lower()
         in ("1", "true", "yes"),
+        "llm_chat_slot_supported": os.getenv("LLM_CHAT_SLOT_SUPPORTED", "").lower()
+        in ("1", "true", "yes"),
         "image_api_url": os.getenv("LLM_IMAGE_API_URL", "http://host.docker.internal:8765"),
         "image_width": int(os.getenv("IMAGE_WIDTH", "768")),
         "image_height": int(os.getenv("IMAGE_HEIGHT", "768")),
@@ -296,6 +298,15 @@ class Config:
     # endpoint that doesn't know the header must never be sent it (eval runs on
     # OpenRouter leave it off — a provider there may reject an unknown header).
     llm_skip_cache_store_supported: bool = False
+    # Whether the chat endpoint honours oMLX's persistent chat slot
+    # (LLM_CHAT_SLOT_SUPPORTED, #3164) — oMLX's own ``X-Penny-Slot``/
+    # ``X-Penny-Slot-Preheat`` headers: the idle pre-warm marks the prefix it
+    # sends as the chat slot's own, and every raw-template completion the chat
+    # agent makes marks itself as that slot's continuation, so a matching turn
+    # starts from the slot's GPU-resident KV with no cache lookup or restore. Off
+    # by default, the same reasoning as the cache-store opt-out above: an
+    # endpoint that has never heard of either header must never be sent one.
+    llm_chat_slot_supported: bool = False
     # Which upstream to PIN when the chat endpoint is a routing gateway serving one model
     # from several providers. A hard pin, fallbacks off: every call goes to exactly this
     # provider, and which provider answered is still recorded per call.

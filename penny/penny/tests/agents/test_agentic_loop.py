@@ -1717,12 +1717,16 @@ class _RecordingLlmClient:
         run_target: str | None = None,
         token_budget: int | None = None,
         thinking_enabled: bool = True,
+        chat_slot: bool = False,
     ) -> LlmResponse:
         self.calls.append(
             {
                 "tools": tools,
                 "token_budget": token_budget,
                 "thinking_enabled": thinking_enabled,
+                # #3164: what ``Agent._invoke_model`` sent as the chat-slot
+                # intent — ``self.chat_slot`` read straight off the agent shape.
+                "chat_slot": chat_slot,
             }
         )
         return self._responses.pop(0)
@@ -1820,7 +1824,14 @@ class TestBudgetExceeded:
     async def test_chat_and_collector_calls_each_send_their_own_budget(self, test_db):
         """Every draw a chat-shaped agent makes — the cut one AND the thinking-off
         last draw — carries ``token_budget_for(self.config.runtime, self.name)``'s
-        own value; only the last draw turns thinking off and strips tools (#2474/#2475)."""
+        own value; only the last draw turns thinking off and strips tools (#2474/#2475).
+
+        Also covers #3164: every draw the chat-shaped agent makes states
+        ``chat_slot=True`` (``Agent.chat_slot``, the structural property
+        ``ChatAgent`` overrides — faked here the same way this test already
+        fakes the chat SHAPE, by setting the attribute directly rather than
+        constructing a full ``ChatAgent``), while the collector-shaped agent's
+        draws carry the base class's own ``False`` with no override at all."""
         db = Database(test_db)
         db.create_tables()
         config = Config(
@@ -1847,6 +1858,7 @@ class TestBudgetExceeded:
         )
         agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
         agent.name = PennyConstants.CHAT_AGENT_NAME
+        agent.chat_slot = ChatAgent.chat_slot
         agent._keep_tools_on_final_step = False
 
         response = await agent.run("hi", max_steps=3, call_link=CallLink.new_top(), inbox=NO_INBOX)
@@ -1856,9 +1868,11 @@ class TestBudgetExceeded:
         assert client.calls[0]["token_budget"] == chat_budget
         assert client.calls[0]["thinking_enabled"] is True
         assert client.calls[0]["tools"]  # the ordinary step offers its tools
+        assert client.calls[0]["chat_slot"] is True
         assert client.calls[1]["token_budget"] == chat_budget
         assert client.calls[1]["thinking_enabled"] is False
         assert client.calls[1]["tools"] is None  # the last draw is tools-off (#2370)
+        assert client.calls[1]["chat_slot"] is True
 
         await agent.close()
 
@@ -1882,8 +1896,10 @@ class TestBudgetExceeded:
         )
         assert collector_client.calls[0]["token_budget"] == collector_budget
         assert collector_client.calls[0]["thinking_enabled"] is True
+        assert collector_client.calls[0]["chat_slot"] is False
         assert collector_client.calls[1]["token_budget"] == collector_budget
         assert collector_client.calls[1]["thinking_enabled"] is False
+        assert collector_client.calls[1]["chat_slot"] is False
 
         await background_agent.close()
 

@@ -177,7 +177,12 @@ def _template() -> jinja2.Template:
 # ── Rendering ─────────────────────────────────────────────────────────────
 
 
-def render_prompt(messages: list[dict], tools: list[dict] | None, thinking_enabled: bool) -> str:
+def render_prompt(
+    messages: list[dict],
+    tools: list[dict] | None,
+    thinking_enabled: bool,
+    add_generation_prompt: bool = True,
+) -> str:
     """Render Penny's wire-shape messages (post ``LlmClient._translate_messages``,
     ``tools`` post ``_translate_tools``) through the vendored template — the
     exact bytes sent as the raw completions prompt.
@@ -187,13 +192,23 @@ def render_prompt(messages: list[dict], tools: list[dict] | None, thinking_enabl
     and otherwise appends an empty, already-closed thought channel to the
     generation prompt instead of leaving it open (gemma's own semantics for
     "thinking off" — a closed channel, not an absent one).
+
+    ``add_generation_prompt`` (#3164) defaults True — every ordinary draw wants
+    the trailing ``<|turn>model\\n`` that opens the model's own turn.  The chat
+    pre-warm is the one caller that passes False: its prompt must be an exact
+    TOKEN prefix of the next real turn's prompt, which continues past the warm's
+    own messages with a NEW turn of its own (the per-turn dynamic system message),
+    never with ``<|turn>model``.  Rendered False, this ends with whichever gemma
+    special token already closes the last message (``<turn|>\\n``) — the same
+    token the real continuation's render opens its own next turn after, so BPE
+    can never merge across the cut.
     """
     return _template().render(
         messages=[_with_parsed_tool_call_arguments(message) for message in messages],
         tools=tools,
         bos_token=BOS_TOKEN,
         enable_thinking=thinking_enabled,
-        add_generation_prompt=True,
+        add_generation_prompt=add_generation_prompt,
     )
 
 

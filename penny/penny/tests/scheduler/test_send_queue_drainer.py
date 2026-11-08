@@ -521,6 +521,7 @@ class _GatedLlm(LlmClient):
         token_budget: int | None = None,
         thinking_enabled: bool = True,
         skip_cache_store: bool = False,
+        chat_slot: bool = False,
     ) -> LlmResponse:
         await self.release.wait()
         return LlmResponse(

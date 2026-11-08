@@ -84,6 +84,39 @@ class TestRenderPin:
         assert prompt == _EXPECTED_RENDER
 
 
+class TestAddGenerationPrompt:
+    """``add_generation_prompt`` (#3164) defaults True (every ordinary draw);
+    the chat pre-warm is the one caller that passes False, so its prompt is
+    an exact TOKEN prefix of the next real turn's — see
+    ``LlmClient.prewarm``'s own docstring for why."""
+
+    _MESSAGES = [
+        LlmMessage(role="system", content="You are Penny.").to_log_dict(),
+        LlmMessage(role="user", content="Hi").to_log_dict(),
+    ]
+
+    def test_false_omits_the_models_own_turn_opener(self) -> None:
+        """Whole-render pin (as ``TestRenderPin`` above), not scattered
+        substrings: ``without_prompt`` is the exact bytes, confirmed against
+        the real vendored template, and ``with_prompt`` is exactly that text
+        plus the generation prompt's own fixed tail — the one thing the
+        pre-warm relies on (#3164): cutting there is a true PREFIX extension,
+        never a mid-render divergence, ending right after gemma's own
+        turn-close special token, the exact cut BPE can't merge across."""
+        with_prompt = render_prompt(self._MESSAGES, None, True)
+        without_prompt = render_prompt(self._MESSAGES, None, True, add_generation_prompt=False)
+
+        assert without_prompt == (
+            "<bos><|turn>system\n<|think|>\nYou are Penny.<turn|>\n<|turn>user\nHi<turn|>\n"
+        )
+        assert with_prompt == without_prompt + "<|turn>model\n"
+
+    def test_true_is_the_default(self) -> None:
+        assert render_prompt(self._MESSAGES, None, True) == render_prompt(
+            self._MESSAGES, None, True, add_generation_prompt=True
+        )
+
+
 # A second fixed fixture (#2837): the SAME assistant step carries both prose and a
 # tool call — the shape raw_template.py's own parser already keeps (a reply that
 # opens with a sentence before calling a tool stays content on that call's own
