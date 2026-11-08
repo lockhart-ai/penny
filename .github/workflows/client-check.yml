@@ -1,19 +1,24 @@
 name: client-check
 
 # merge_group does not support paths filters, so the merge-queue path detects
-# penny-client changes itself: a small detect job on ubuntu-latest diffs the
+# relevant changes itself: a small detect job on ubuntu-latest diffs the
 # merge group against its base, and the macOS build job runs only when
-# penny-client is touched. Detection runs on Linux BEFORE the macOS runner is
-# requested, so a scarce macOS runner is never held for a PR with no client
-# changes — a skipped required job counts as passed, so the queue proceeds.
-# The client-check-noop twin stays PR/push-only.
+# penny-client, this gate's own script (scripts/client-check.sh), or this
+# workflow file is touched — so a change to the gate itself is proven by the
+# gate, not waved through by the noop twin. Detection runs on Linux BEFORE the
+# macOS runner is requested, so a scarce macOS runner is never held for a PR
+# touching none of those — a skipped required job counts as passed, so the
+# queue proceeds. The push/pull_request paths filters above and the
+# client-check-noop twin's paths-ignore must name the same set of paths as
+# this detect step, or a change to one of them trips neither the real job nor
+# the noop.
 on:
   push:
     branches: [main]
-    paths: ["penny-client/**"]
+    paths: ["penny-client/**", "scripts/client-check.sh", ".github/workflows/client-check.yml"]
   pull_request:
     branches: [main]
-    paths: ["penny-client/**"]
+    paths: ["penny-client/**", "scripts/client-check.sh", ".github/workflows/client-check.yml"]
   merge_group:
 
 jobs:
@@ -35,7 +40,7 @@ jobs:
             exit 0
           fi
           git fetch --depth=1 origin "${{ github.event.merge_group.base_sha }}"
-          if git diff --name-only "${{ github.event.merge_group.base_sha }}" HEAD -- penny-client/ | grep -q .; then
+          if git diff --name-only "${{ github.event.merge_group.base_sha }}" HEAD -- penny-client/ scripts/client-check.sh .github/workflows/client-check.yml | grep -q .; then
             echo "client-changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "client-changed=false" >> "$GITHUB_OUTPUT"

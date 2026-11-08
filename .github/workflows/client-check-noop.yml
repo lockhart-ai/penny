@@ -2,17 +2,21 @@
 # "skipped but required checks"): a path-filtered workflow that doesn't run
 # leaves a required check stuck in "Expected", blocking the merge. This twin
 # runs on the inverse filter with the SAME job name and succeeds instantly,
-# so every PR reports a `client-check` check — real on penny-client changes,
-# no-op otherwise. On PRs touching both, both run; both must be green.
+# so every PR reports a `client-check` check — real on penny-client changes
+# (or a change to the gate itself: scripts/client-check.sh or this pair of
+# workflow files), no-op otherwise. On PRs touching both, both run; both must
+# be green. This paths-ignore list must name the same paths as
+# client-check.yml's push/pull_request paths filters, or a change to one of
+# them trips neither the real job nor the noop.
 name: client-check-noop
 
 on:
   push:
     branches: [main]
-    paths-ignore: ["penny-client/**"]
+    paths-ignore: ["penny-client/**", "scripts/client-check.sh", ".github/workflows/client-check.yml"]
   pull_request:
     branches: [main]
-    paths-ignore: ["penny-client/**"]
+    paths-ignore: ["penny-client/**", "scripts/client-check.sh", ".github/workflows/client-check.yml"]
 
 jobs:
   client-check:
