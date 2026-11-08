@@ -35,8 +35,13 @@ struct MessageView: View {
             // fields — the composer and the floating search capsule — read
             // badly, and the mock shows no composer during search at all,
             // even before anything is typed. Reappears the instant search
-            // closes.
-            .safeAreaInset(edge: .bottom) {
+            // closes. `spacing: 0` (#3131, matching the mock's `ChatCanvas`
+            // in `.claude/mockups/PennyMockups/Design/Components/
+            // ScreenChrome.swift`) — the default (nil) spacing adds its own
+            // gap on top of the scroll content's own bottom margin, which
+            // left the field further from the last message than messages
+            // sit from each other.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !viewModel.search.isSearching {
                     composer
                 }
@@ -134,7 +139,11 @@ struct MessageView: View {
                 }
                 .padding(.horizontal, MessageLayout.message.horizontalPadding)
                 .padding(.top, messageListTopPadding)
-                .padding(.bottom, Tokens.composerFadeBleed)
+                // No `.padding(.bottom, ...)` here (#3131): the VStack's own
+                // `spacing: 12` between the last flow item and `bottomSpacer`
+                // already gives the composer the same one-message-gap the
+                // mock's `ChatCanvas` relies on — stacking an explicit bottom
+                // padding on top of that doubled it.
             }
             .background {
                 GeometryReader { geometry in
@@ -779,22 +788,14 @@ struct MessageCardDetailSheet: View {
     }
 }
 
+/// The chat's empty state (#3131): the stock `ContentUnavailableView`, never
+/// a hand-built icon-and-text stack — the system supplies its sizing,
+/// Dynamic Type behaviour and VoiceOver grouping for free.
 private struct EmptyMessageFilterView: View {
     let filter: MessageView.MessageFilter
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: filter.systemImage)
-                .font(.title2)
-                .foregroundStyle(.secondary)
-
-            Text(emptyText)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 48)
-        .accessibilityElement(children: .combine)
+        ContentUnavailableView(emptyText, systemImage: filter.systemImage)
     }
 
     private var emptyText: String {

@@ -120,9 +120,12 @@ public enum Tokens {
     /// The composer's control height, shared by the `+` button and the
     /// message field's capsule so the row reads as one matched pair.
     public static let composerControlHeight: CGFloat = 47
-    /// The composer's own vertical padding around its content row (the
-    /// `+` button and the glass field), so the canvas can derive the dock's
-    /// float from the row's measured height.
+    /// The composer's own bottom padding below its content row (the `+`
+    /// button and the glass field) — bottom only, no top (#3131): the
+    /// composer's frame top coincides with its glass field's visual top, so
+    /// last-item-to-field reads as exactly one message gap, the same as
+    /// bubble-to-bubble, with nothing of the composer's own padding stacked
+    /// on top of it.
     public static let composerVerticalPadding: CGFloat = 8
     /// Measured: the composer view is ~74pt tall and its glass field starts
     /// ~18pt below the view's layout frame top — the composer's vertical

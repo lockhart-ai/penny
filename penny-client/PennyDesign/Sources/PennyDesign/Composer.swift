@@ -63,7 +63,13 @@ public struct Composer: View {
         // Measured between the paddings so this is the content row itself —
         // the taller of the `+` button and the glass field.
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { rowHeight = $0 })
-        .padding(.vertical, Tokens.composerVerticalPadding)
+        // Bottom only (#3131): no top padding, so the composer's own frame
+        // top coincides with its glass field's visual top — the mock's
+        // `ChatCanvas` relies on exactly this (its own comment: "the
+        // composer's top padding removed") so last-item-to-field equals one
+        // message gap, the same as bubble-to-bubble, with nothing of the
+        // composer's own padding added on top of that.
+        .padding(.bottom, Tokens.composerVerticalPadding)
         .preference(key: ComposerRowHeightKey.self, value: rowHeight)
         .photosPicker(isPresented: $isShowingPhotoPicker, selection: $photoPickerItem, matching: .images)
         .onChange(of: photoPickerItem) { _, item in
