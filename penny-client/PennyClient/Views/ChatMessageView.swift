@@ -64,6 +64,24 @@ struct ChatMessageView: View {
         return message.isOutgoing ? "You" : "Penny"
     }
 
+    /// The user bubble's cross-device caption (#3143): "via Signal" for a
+    /// message that arrived from a non-iOS channel, nil for one sent from
+    /// this app or with no channel information. Read off the typed
+    /// `ChannelType` (never a bare string literal) so a channel the client
+    /// doesn't know about yet falls back to the raw device label rather
+    /// than going unlabelled. Internal, not private: `ChatMessageViewTests`
+    /// asserts it directly rather than inspecting rendered bubble text.
+    var viaCaption: String? {
+        guard message.isOutgoing else { return nil }
+        if let channelType = message.channelType, let channel = ChannelType(rawValue: channelType) {
+            return channel == .ios ? nil : "via \(channel.title)"
+        }
+        if let deviceLabel = message.deviceLabel, !deviceLabel.isEmpty {
+            return "via \(deviceLabel)"
+        }
+        return nil
+    }
+
     private var firstAttachment: ImageAttachment? {
         message.imageAttachments.first
     }
@@ -115,9 +133,11 @@ struct ChatMessageView: View {
     /// carries one (`ChatReplyContentParser` reads it back out of the
     /// message's own text); Penny's bubbles never show a quote. A
     /// collector or notification message names its source as the metadata
-    /// line's first segment; chat replies carry no source. `isQueued`
-    /// (#3043) overrides the time with "🕒 Queued" and fades the whole
-    /// bubble — the message itself is unchanged, already sent.
+    /// line's first segment; a user message arriving from another device
+    /// (#3143) names its channel there instead (`viaCaption`); a plain chat
+    /// message carries no source. `isQueued` (#3043) overrides the time
+    /// with "🕒 Queued" and fades the whole bubble — the message itself is
+    /// unchanged, already sent.
     private var messageRow: some View {
         MessageBubble(
             role: message.isOutgoing ? .user : .penny,
@@ -126,7 +146,7 @@ struct ChatMessageView: View {
             quoteAuthor: replyContent?.author ?? "Penny",
             fillsWidth: hasTableBlock,
             time: isQueued ? "🕒 Queued" : message.displayTime,
-            source: message.isOutgoing ? nil : message.sourceHint,
+            source: message.isOutgoing ? viaCaption : message.sourceHint,
             tools: message.toolCalls,
             duration: Self.durationLabel(message.durationMs)
         ) {

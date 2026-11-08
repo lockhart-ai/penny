@@ -4,7 +4,7 @@ import PennyServices
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: SettingsViewModel
-    @State private var selectedHistoryChannels = Set(HistoryChannel.allCases.map(\.rawValue))
+    @State private var selectedChannelTypes = Set(ChannelType.allCases.map(\.rawValue))
     @State private var includeHistoryAttachments = true
     @State private var isShowingDeleteMessagesConfirmation = false
 
@@ -57,14 +57,14 @@ struct SettingsView: View {
             ImageAttachmentSettingsSection(viewModel: viewModel)
 
             Section("History") {
-                ForEach(HistoryChannel.allCases) { channel in
+                ForEach(ChannelType.allCases) { channel in
                     Toggle(channel.title, isOn: Binding(
-                        get: { selectedHistoryChannels.contains(channel.rawValue) },
+                        get: { selectedChannelTypes.contains(channel.rawValue) },
                         set: { isSelected in
                             if isSelected {
-                                selectedHistoryChannels.insert(channel.rawValue)
+                                selectedChannelTypes.insert(channel.rawValue)
                             } else {
-                                selectedHistoryChannels.remove(channel.rawValue)
+                                selectedChannelTypes.remove(channel.rawValue)
                             }
                         }
                     ))
@@ -79,7 +79,7 @@ struct SettingsView: View {
                 HStack {
                     Button {
                         viewModel.startHistorySync(
-                            channelTypes: Array(selectedHistoryChannels).sorted(),
+                            channelTypes: Array(selectedChannelTypes).sorted(),
                             includeAttachments: includeHistoryAttachments
                         )
                     } label: {
@@ -90,7 +90,7 @@ struct SettingsView: View {
                                 : "clock.arrow.circlepath"
                         )
                     }
-                    .disabled(selectedHistoryChannels.isEmpty || viewModel.client.historySyncing)
+                    .disabled(selectedChannelTypes.isEmpty || viewModel.client.historySyncing)
                     Spacer()
                     Text(viewModel.client.historyStatus)
                         .font(.caption)
@@ -291,7 +291,11 @@ private extension DomainPermission {
     }
 }
 
-private enum HistoryChannel: String, CaseIterable, Identifiable {
+/// A message's source channel, by its wire `channel_type` (#3143) — shared
+/// between the history-sync toggles below and `ChatMessageView`'s
+/// cross-device "via" caption, so both read the one typed mapping rather
+/// than each keeping its own channel-name string literals.
+enum ChannelType: String, CaseIterable, Identifiable {
     case ios
     case signal
     case discord

@@ -16,6 +16,8 @@ struct StoryRootView: View {
             AppShellView(chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.conversationMessages))
         case .chatBubbles:
             AppShellView(chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.bubbleMessages))
+        case .chatCrossDevice:
+            AppShellView(chatViewModel: StoryFixtures.crossDeviceViewModel())
         case .chatWorkingStart:
             AppShellView(chatViewModel: StoryFixtures.workingStartViewModel())
         case .chatWorking:

@@ -198,6 +198,112 @@ struct PennyWebSocketClientTests {
         #expect(database.loadMessages().filter { $0.serverID == 11 }.count == 1)
     }
 
+    /// A cross-device push (#3143): unlike `outbox`, a `live` frame has
+    /// nothing to ack and nothing in this device's own pending count to
+    /// clear — it publishes the message and stops there. A repeat of the
+    /// same `message_id` still dedupes, the same as every other mode.
+    @Test func liveFramePublishesWithoutAckingOrChangingPendingCountAndDedupesRepeats() async {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs(), webSocketClient: transport)
+        var liveMessages: [ChatMessage] = []
+        var hasNewMessages = false
+        client.bindLiveMessages(
+            Binding(get: { liveMessages }, set: { liveMessages = $0 }),
+            hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }),
+            filter: .all
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+        transport.clearSentPayloads()
+        let pendingCountBeforeLiveFrame = client.pendingCount
+
+        transport.emit("""
+        {
+          "type": "messages",
+          "mode": "live",
+          "messages": [
+            {
+              "id": 61,
+              "message_id": 61,
+              "created_at": "2026-07-05T00:00:00Z",
+              "content": "Add a bag of dark roast too?",
+              "direction": "incoming",
+              "channel_type": "signal",
+              "device_label": "Signal"
+            }
+          ]
+        }
+        """)
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(liveMessages.map(\.content) == ["Add a bag of dark roast too?"])
+        #expect(database.containsMessage(serverID: 61))
+        #expect(client.pendingCount == pendingCountBeforeLiveFrame)
+        #expect(transport.sentPayloads.isEmpty)
+
+        transport.emit("""
+        {
+          "type": "messages",
+          "mode": "live",
+          "messages": [
+            {
+              "id": 61,
+              "message_id": 61,
+              "created_at": "2026-07-05T00:00:00Z",
+              "content": "Add a bag of dark roast too? duplicate",
+              "direction": "incoming",
+              "channel_type": "signal",
+              "device_label": "Signal"
+            }
+          ]
+        }
+        """)
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(liveMessages.map(\.content) == ["Add a bag of dark roast too?"])
+        #expect(database.loadMessages().filter { $0.serverID == 61 }.count == 1)
+        #expect(transport.sentPayloads.isEmpty)
+    }
+
+    /// A `messages` frame mode the client has never heard of (#3143) is
+    /// logged and ignored — never applied, never crashes, never mistaken
+    /// for one of the known modes.
+    @Test func unknownMessagesFrameModeIsIgnored() async {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs(), webSocketClient: transport)
+        var liveMessages: [ChatMessage] = []
+        var hasNewMessages = false
+        client.bindLiveMessages(
+            Binding(get: { liveMessages }, set: { liveMessages = $0 }),
+            hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }),
+            filter: .all
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+        transport.clearSentPayloads()
+
+        transport.emit("""
+        {
+          "type": "messages",
+          "mode": "future_mode_nobody_wrote_yet",
+          "messages": [
+            {
+              "id": 71,
+              "created_at": "2026-07-05T00:00:00Z",
+              "content": "From a mode this build has never heard of"
+            }
+          ]
+        }
+        """)
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(liveMessages.isEmpty)
+        #expect(!database.containsMessage(serverID: 71))
+        #expect(transport.sentPayloads.isEmpty)
+    }
+
     @Test func duplicateMessagesInOnePayloadBecomeOnePersistedAndDisplayedMessage() async {
         let database = configuredDatabase()
         let transport = MessagePagingMockTransport()
