@@ -132,8 +132,8 @@ class Penny:
             # its token budget off this exact object, the same chain ``agents/base.py``
             # reads through ``self.config.runtime``.
             runtime=self.config.runtime,
-            # Whether this endpoint accepts the top-level `skip_cache_store` body
-            # field (#3080) — an endpoint property, like the provider pin. On, the
+            # Whether this endpoint accepts oMLX's `X-oMLX-Cache-Store` header
+            # (#3080, #3162) — an endpoint property, like the provider pin. On, the
             # micro-context draws ask the model server not to cache their one-off
             # prompts; off, nothing new is ever sent.
             skip_cache_store_supported=self.config.llm_skip_cache_store_supported,

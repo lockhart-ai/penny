@@ -325,11 +325,10 @@ class TestExplicitSamplingSettings:
 class TestSkipCacheStore:
     """A micro-context draw asks the model server not to store its one-off
     prompt in the prefix cache (#3080). The per-call intent rides as a
-    parameter, and it reaches the wire on BOTH transports, on BOTH its
-    carriers — the legacy ``skip_cache_store`` body field and oMLX v0.7.3's own
-    ``X-oMLX-Cache-Store: off`` header (#3134) — only when the endpoint
+    parameter, and it reaches the wire on BOTH transports as oMLX v0.7.3's own
+    ``X-oMLX-Cache-Store: off`` header (#3134, #3162) — only when the endpoint
     actually knows the opt-out (``LLM_SKIP_CACHE_STORE_SUPPORTED``); an
-    endpoint that has never heard of it is never sent either form."""
+    endpoint that has never heard of it is never sent the header."""
 
     @pytest.mark.asyncio
     async def test_a_supported_endpoint_chat_call_carries_it(self, monkeypatch) -> None:
@@ -354,8 +353,8 @@ class TestSkipCacheStore:
         )
         await client.close()
 
-        assert sent["extra_body"]["skip_cache_store"] is True
         assert sent["extra_headers"][SKIP_CACHE_STORE_HEADER] == SKIP_CACHE_STORE_HEADER_OFF
+        assert "skip_cache_store" not in sent["extra_body"]
 
     @pytest.mark.asyncio
     async def test_a_supported_endpoint_raw_template_call_carries_it(
@@ -383,14 +382,14 @@ class TestSkipCacheStore:
         )
         await client.close()
 
-        assert captured["extra_body"]["skip_cache_store"] is True
         assert captured["extra_headers"][SKIP_CACHE_STORE_HEADER] == SKIP_CACHE_STORE_HEADER_OFF
+        assert "skip_cache_store" not in captured["extra_body"]
 
     @pytest.mark.asyncio
-    async def test_an_unsupported_endpoint_is_never_sent_either_form(self, monkeypatch) -> None:
+    async def test_an_unsupported_endpoint_is_never_sent_the_header(self, monkeypatch) -> None:
         """The flag-off default (every eval run on OpenRouter) must never see
-        either carrier its providers may reject — even when a caller states
-        the intent."""
+        the header its providers may reject — even when a caller states the
+        intent."""
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -413,7 +412,7 @@ class TestSkipCacheStore:
 
     @pytest.mark.asyncio
     async def test_calls_that_do_not_ask_send_nothing_new(self, monkeypatch) -> None:
-        """Chat and collector calls never carry either carrier — even on a
+        """Chat and collector calls never carry the header — even on a
         client whose endpoint supports the opt-out (their prompts are the
         reusable prefixes the cache exists for)."""
         sent: dict = {}

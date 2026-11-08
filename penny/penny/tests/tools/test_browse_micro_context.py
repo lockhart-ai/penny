@@ -45,7 +45,7 @@ from penny.database import Database
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import PromptLog
 from penny.llm.call_link import CallLink
-from penny.llm.client import LlmClient
+from penny.llm.client import SKIP_CACHE_STORE_HEADER, SKIP_CACHE_STORE_HEADER_OFF, LlmClient
 from penny.llm.decision_client import DecisionAnswer, DecisionClient, DecisionError
 from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
 from penny.tests.mocks.llm_patches import MockLlmClient
@@ -503,10 +503,10 @@ def _chat_completion(content: str) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_extract_draw_asks_not_to_be_cached(tmp_path, monkeypatch):
-    """#3080: on an endpoint that supports the field (the flag on), the browse
-    extract draw's request carries ``skip_cache_store: true`` — a one-off page
-    prompt is never reused, so the model server is asked not to store it where
-    it would evict the reusable chat/collector prefixes."""
+    """#3080: on an endpoint that supports the header (the flag on), the browse
+    extract draw's request carries ``X-oMLX-Cache-Store: off`` (#3162) — a
+    one-off page prompt is never reused, so the model server is asked not to
+    store it where it would evict the reusable chat/collector prefixes."""
     db = _make_db(tmp_path)
     client = LlmClient(
         api_url="http://localhost:11434",
@@ -532,7 +532,7 @@ async def test_extract_draw_asks_not_to_be_cached(tmp_path, monkeypatch):
 
     assert result.success is True
     assert len(sent) == 1  # one draw, one request
-    assert sent[0]["extra_body"]["skip_cache_store"] is True
+    assert sent[0]["extra_headers"][SKIP_CACHE_STORE_HEADER] == SKIP_CACHE_STORE_HEADER_OFF
 
 
 @pytest.mark.asyncio
@@ -564,14 +564,14 @@ async def test_synthesize_draw_asks_not_to_be_cached(tmp_path, monkeypatch):
 
     assert result.outcome is MicroExtractOutcome.EXTRACTED
     assert len(sent) == 1  # one draw, one request
-    assert sent[0]["extra_body"]["skip_cache_store"] is True
+    assert sent[0]["extra_headers"][SKIP_CACHE_STORE_HEADER] == SKIP_CACHE_STORE_HEADER_OFF
 
 
 @pytest.mark.asyncio
 async def test_with_the_flag_off_the_draw_sends_nothing_new(tmp_path, monkeypatch):
     """#3080: with ``LLM_SKIP_CACHE_STORE_SUPPORTED`` off (the default — every
     eval run on OpenRouter), the draw's request is byte-identical to before:
-    an endpoint that has never heard of the field is never sent it."""
+    an endpoint that has never heard of the header is never sent it."""
     db = _make_db(tmp_path)
     client = LlmClient(
         api_url="http://localhost:11434",

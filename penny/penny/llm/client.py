@@ -109,24 +109,16 @@ THINKING_OFF_BODY = {
 }
 
 # Ask the model server not to STORE this call's prompt in its prefix cache (#3080).
-# A top-level body field on the local oMLX fork (``skip_cache_store: true``); the
-# request still READS cached prefixes, it just never writes its own — so a one-off
-# micro-context page prompt stops evicting the reusable chat/collector prefixes.
-# Only ever sent when the ENDPOINT knows the field: ``LlmClient`` carries the
-# endpoint-level switch (``LLM_SKIP_CACHE_STORE_SUPPORTED``, a constructor param
-# like the provider pin) and the caller states the per-call intent, so an endpoint
-# that has never heard of the field is never sent it. Rides the same
-# ``extra_body`` passthrough as the pin and ``top_k`` (:meth:`_provider_pin_extra_body`,
-# :meth:`_with_sampling_top_k`) — never a second, competing passthrough.
-SKIP_CACHE_STORE_FIELD = "skip_cache_store"
-
-# oMLX v0.7.3 ships its OWN per-request cache-store opt-out (#3134, upstream #4815) —
-# a HEADER, not a body field, so it rides the OpenAI SDK's own per-call
-# ``extra_headers`` option rather than ``extra_body``. Sent ALONGSIDE the legacy
-# ``SKIP_CACHE_STORE_FIELD`` body field during the switchover: the current local
-# fork ignores the header and v0.7.3 ignores the body field (both servers accept
-# extra fields/headers they don't recognise), so there is no gap whichever version
-# is live. A follow-up drops the body field once the server is cut over to v0.7.3.
+# oMLX v0.7.3's own per-request cache-store opt-out (#3134, upstream #4815; the
+# legacy ``skip_cache_store`` body field dropped in #3162 once the model server
+# was cut over) — a HEADER, so it rides the OpenAI SDK's own per-call
+# ``extra_headers`` option rather than ``extra_body``. The request still READS
+# cached prefixes, it just never writes its own — so a one-off micro-context page
+# prompt stops evicting the reusable chat/collector prefixes. Only ever sent when
+# the ENDPOINT knows the header: ``LlmClient`` carries the endpoint-level switch
+# (``LLM_SKIP_CACHE_STORE_SUPPORTED``, a constructor param like the provider pin)
+# and the caller states the per-call intent, so an endpoint that has never heard
+# of the header is never sent it.
 SKIP_CACHE_STORE_HEADER = "X-oMLX-Cache-Store"
 SKIP_CACHE_STORE_HEADER_OFF = "off"
 
@@ -375,15 +367,11 @@ class _ChatAttemptResult(NamedTuple):
 
 
 class _SkipCacheStoreOptOut(NamedTuple):
-    """Both carriers of the skip-cache-store opt-out (#3134), built together so
-    the chat and the raw-template transport can never drift on either one.
-    ``body`` is the legacy ``SKIP_CACHE_STORE_FIELD`` passthrough (rides
-    ``extra_body``); ``headers`` already carries any configured
-    ``LLM_EXTRA_HEADERS`` merged in alongside ``SKIP_CACHE_STORE_HEADER`` — never
-    a bare override — so a transport's per-call ``extra_headers`` never drops
-    them. Both empty when the opt-out doesn't apply."""
+    """The skip-cache-store opt-out's one carrier (#3134, #3162): a header,
+    already merged with any configured ``LLM_EXTRA_HEADERS`` — never a bare
+    override — so a transport's per-call ``extra_headers`` never drops them.
+    Empty when the opt-out doesn't apply."""
 
-    body: dict[str, Any]
     headers: dict[str, str]
 
 
@@ -468,8 +456,8 @@ class LlmClient:
         self.retry_delay = retry_delay
         self.api_key = api_key
         self.provider_pin = provider_pin
-        # Whether THIS endpoint accepts the top-level ``skip_cache_store`` body
-        # field (#3080) — an endpoint property, like the provider pin: the local
+        # Whether THIS endpoint accepts oMLX's ``X-oMLX-Cache-Store`` header
+        # (#3080, #3162) — an endpoint property, like the provider pin: the local
         # oMLX fork knows it, a random OpenRouter provider may reject it. Read by
         # :meth:`_skip_cache_store_opt_out`, never by a caller directly.
         self._skip_cache_store_supported = skip_cache_store_supported
@@ -1244,7 +1232,7 @@ class LlmClient:
                 raise _RawTemplateParseError(error, raw, sent_request) from error
         else:
             kwargs = self._build_chat_kwargs(
-                translated_messages, tools, format, token_budget, thinking_enabled, skip_cache_store
+                translated_messages, tools, format, token_budget, thinking_enabled
             )
             # The opt-out's HEADERS (#3134) ride ``create()``'s own per-call
             # ``extra_headers`` option, added separately from ``kwargs`` below —
@@ -1375,12 +1363,7 @@ class LlmClient:
             "stream_options": {"include_usage": True},
             "stop": list(raw_template.STOP_SEQUENCES),
             **self._sampling_kwargs(),
-            "extra_body": self._with_sampling_top_k(
-                {
-                    **self._provider_pin_extra_body(),
-                    **opt_out.body,
-                }
-            ),
+            "extra_body": self._with_sampling_top_k(self._provider_pin_extra_body()),
         }
         if token_budget is not None:
             kwargs["max_tokens"] = token_budget
@@ -1513,27 +1496,23 @@ class LlmClient:
         return extra_body
 
     def _skip_cache_store_opt_out(self, skip_cache_store: bool) -> _SkipCacheStoreOptOut:
-        """The skip-cache-store request's own opt-out, on both its carriers
-        (#3080, #3134) — the ONE place that decides whether either rides, so
-        the chat and the raw-template transport can never drift apart on it.
-        Both empty unless the caller stated the intent AND this endpoint
-        supports the opt-out: an endpoint that has never heard of either form
-        is never sent either. Sends BOTH the legacy ``SKIP_CACHE_STORE_FIELD``
-        body field and oMLX v0.7.3's ``SKIP_CACHE_STORE_HEADER`` header during
-        the switchover — harmless either way, since each server version
-        ignores whichever form it doesn't know; a follow-up drops the body
-        field once the server is cut over. ``headers`` merges in any
-        configured ``LLM_EXTRA_HEADERS`` rather than replacing them, since this
-        dict rides a transport's per-call ``extra_headers`` option alongside
-        — never instead of — the client's own default headers. The request
-        still READS cached prefixes; it just never writes its own."""
+        """The skip-cache-store request's own opt-out header (#3080, #3134,
+        #3162) — the ONE place that decides whether it rides, so the chat and
+        the raw-template transport can never drift apart on it. Empty unless
+        the caller stated the intent AND this endpoint supports the opt-out:
+        an endpoint that has never heard of the header is never sent it.
+        Merges in any configured ``LLM_EXTRA_HEADERS`` rather than replacing
+        them, since this dict rides a transport's per-call ``extra_headers``
+        option alongside — never instead of — the client's own default
+        headers. The request still READS cached prefixes; it just never
+        writes its own."""
         if not (skip_cache_store and self._skip_cache_store_supported):
-            return _SkipCacheStoreOptOut(body={}, headers={})
+            return _SkipCacheStoreOptOut(headers={})
         headers = {
             **self._configured_extra_headers,
             SKIP_CACHE_STORE_HEADER: SKIP_CACHE_STORE_HEADER_OFF,
         }
-        return _SkipCacheStoreOptOut(body={SKIP_CACHE_STORE_FIELD: True}, headers=headers)
+        return _SkipCacheStoreOptOut(headers=headers)
 
     @staticmethod
     def _sampling_kwargs() -> dict[str, Any]:
@@ -1880,7 +1859,6 @@ class LlmClient:
         format: dict | str | None,
         token_budget: int | None = None,
         thinking_enabled: bool = True,
-        skip_cache_store: bool = False,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
         # The provider pin rides the same passthrough, added only when one was
@@ -1902,7 +1880,6 @@ class LlmClient:
         )
         if self.provider_pin is not None:
             extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
-        extra_body.update(self._skip_cache_store_opt_out(skip_cache_store).body)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
