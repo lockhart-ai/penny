@@ -156,6 +156,71 @@ struct LiveDockViewModelTests {
         #expect(viewModel.resolvingMessageID == nil)
     }
 
+    /// Once the dock's exit genuinely finishes and reveals a matched reply,
+    /// nothing has reordered it — it was already the conversation's newest
+    /// message the whole time it sat excluded from the grid — but nothing
+    /// RE-ANCHORS THE SCROLL to it either, so without this it can land
+    /// wherever the dock happened to leave the viewport, partially or
+    /// fully off screen (#3130). While at the bottom (the common case —
+    /// the dock IS the bottom), revealing it gets the same "new content"
+    /// handling a live message already gets elsewhere
+    /// (`handleDisplayedMessagesChanged`): a scroll-to-bottom request.
+    @Test func dockExitFinishedScrollsToTheRevealedReplyWhenAtBottom() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        var run = AgentProgressRunItem(id: "run-6", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        let question = ChatMessage(
+            id: 400, serverID: 400, createdAt: Date().addingTimeInterval(-5), content: "Question.",
+            sourceHint: nil, imageAttachments: [], isOutgoing: true
+        )
+        let reply = ChatMessage(
+            id: 401, serverID: 401, createdAt: Date(), content: "Done.",
+            sourceHint: nil, runID: "run-6", imageAttachments: [], isOutgoing: false
+        )
+        viewModel.displayedMessages = [question, reply]
+        #expect(viewModel.isAtBottom)
+
+        let matched = viewModel.beginResolvingIfMatched(appendedMessages: [reply])
+        #expect(matched)
+        let scrollRequestBeforeReveal = viewModel.scrollToBottomRequest
+
+        viewModel.dockExitFinished()
+
+        #expect(viewModel.displayedMessages.last?.id == 401, "the reply is already the newest message — nothing reorders it")
+        #expect(viewModel.scrollToBottomRequest == scrollRequestBeforeReveal + 1, "revealing it scrolls to it, same as a live message arriving")
+    }
+
+    /// Scrolled up reading older messages when the reveal happens, the
+    /// reader's position must not be yanked out from under them — it gets
+    /// the same "show new messages" pill handling a live message arriving
+    /// while scrolled up already gets (#3130).
+    @Test func dockExitFinishedMarksHiddenNewMessagesWhenRevealingAReplyWhileScrolledUp() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        var run = AgentProgressRunItem(id: "run-7", agent: "chat", scope: .foreground)
+        run.steps.append(AgentProgressStepItem(number: 1, maxSteps: 20))
+        viewModel.client.agentProgressRuns[run.id] = run
+        viewModel.syncDock()
+
+        let reply = ChatMessage(
+            id: 402, serverID: 402, createdAt: Date(), content: "Done.",
+            sourceHint: nil, runID: "run-7", imageAttachments: [], isOutgoing: false
+        )
+        viewModel.displayedMessages = [reply]
+        viewModel.updateBottomVisibility(false)
+
+        let matched = viewModel.beginResolvingIfMatched(appendedMessages: [reply])
+        #expect(matched)
+        let scrollRequestBeforeReveal = viewModel.scrollToBottomRequest
+
+        viewModel.dockExitFinished()
+
+        #expect(viewModel.scrollToBottomRequest == scrollRequestBeforeReveal, "scrolled up — never yank the reader down")
+        #expect(viewModel.hasHiddenNewMessages)
+    }
+
     /// `run_finished` landing while a matched reply's exit is genuinely in
     /// flight must NOT cut that exit short (#3130): the reply and the
     /// run's end arrive close together, often reply first — `syncDock()`

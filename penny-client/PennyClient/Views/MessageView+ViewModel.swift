@@ -299,11 +299,29 @@ extension MessageView {
         /// fallback `finishLeftoverResolveOnAppear()` below. Unconditional:
         /// a caller that already knows the state changed (a direct test,
         /// the grace-window path) relies on this always resetting fully.
+        ///
+        /// A matched reply (`resolvingMessageID` was set) was excluded
+        /// from the grid the whole time the dock played its exit — it
+        /// becomes the conversation's new last item only on THIS call, so
+        /// this is also where that arrival gets the same "new content"
+        /// handling `handleDisplayedMessagesChanged` gives a live message:
+        /// scroll to it if already at the bottom, or mark it hidden for
+        /// the "show new messages" pill otherwise. Without this, nothing
+        /// ever re-anchors the scroll once the dock's space is replaced by
+        /// the reply, and it lands wherever the dock happened to leave the
+        /// viewport — partially or fully off screen (#3130).
         func dockExitFinished() {
+            let revealedAReply = resolvingMessageID != nil
             dockPhase = .hidden
             dockRun = nil
             resolvingMessageID = nil
             resolvedPermissionItem = nil
+            guard revealedAReply else { return }
+            if isAtBottom {
+                scrollToBottomRequest += 1
+            } else {
+                hasHiddenNewMessages = true
+            }
         }
 
         /// The stuck-`.resolving` safety net the chat view's own `.onAppear`
