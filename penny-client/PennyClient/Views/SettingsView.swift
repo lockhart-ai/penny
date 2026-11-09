@@ -53,6 +53,16 @@ struct SettingsView: View {
                     .disabled(!viewModel.canSendTestNotification)
                 }
             }
+            // The keyboard covers the interim bottom-bar Save (#3140) while any
+            // of these fields has focus, so Save becomes unreachable until the
+            // keyboard is dismissed first — the bug in #3166. Submitting from
+            // the keyboard (the return key) saves this section directly, the
+            // same "save as you type" shape the Settings redesign moves all of
+            // Settings to; the bottom Save still works once the keyboard is
+            // down, e.g. after a submit already saved it.
+            .onSubmit {
+                viewModel.saveConnection()
+            }
 
             ImageAttachmentSettingsSection(viewModel: viewModel)
 
