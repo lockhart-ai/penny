@@ -48,6 +48,7 @@ from penny.llm.call_link import CallLink
 from penny.llm.client import SKIP_CACHE_STORE_HEADER, SKIP_CACHE_STORE_HEADER_OFF, LlmClient
 from penny.llm.decision_client import DecisionAnswer, DecisionClient, DecisionError
 from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
+from penny.tests.conftest import wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools import ToolCall, ToolExecutor, ToolRegistry
@@ -935,6 +936,83 @@ async def test_extract_spans_parallel_batches_in_one_call(tmp_path, mock_llm):
             )
         ).all()
     assert len(rows) == 5
+
+
+@pytest.mark.asyncio
+async def test_items_run_through_a_rolling_pool_not_fixed_batches(tmp_path):
+    """#3170: with ``max_calls=3`` and 4 items, item 1's read blocks on a gate.
+    A fixed batch of 3 would hold item 4 behind item 1's whole batch, so it
+    could never even start reading until item 1 is released. A rolling pool
+    frees item 4's slot the moment one of items 2/3 finishes, so item 4 reads
+    and finishes while item 1 is STILL blocked — and the sections still come
+    back in item order once item 1 is finally released."""
+    page_4_url = "https://auctions.example/lot/15"
+    page_4_text = "Title: Lot 15\nLot 15 — Tin Astrolabe. Current bid: 44 zorkmids."
+    marker_4 = "Tin Astrolabe"
+    value_4 = "The current bid is 44 zorkmids."
+    pages = {
+        _PAGE_URL: _PAGE_TEXT,
+        _PAGE_URL_2: _PAGE_TEXT_2,
+        _PAGE_URL_3: _PAGE_TEXT_3,
+        page_4_url: page_4_text,
+    }
+
+    db = _make_db(tmp_path)
+    gate = asyncio.Event()
+    completed_reads: list[str] = []
+
+    async def request_fn(method: str, params: dict) -> tuple[str, str | None, PageReading]:
+        url = params["url"]
+        if url == _PAGE_URL:
+            await gate.wait()
+        completed_reads.append(url)
+        return (pages[url], None, PageReading.ARTICLE)
+
+    def provider():
+        return (request_fn, MagicMock(check_domain=AsyncMock()))
+
+    model = _responds_routed(
+        {
+            _MARKER_1: _EXTRACTED_VALUE,
+            _MARKER_2: _EXTRACTED_VALUE_2,
+            _MARKER_3: _EXTRACTED_VALUE_3,
+            marker_4: value_4,
+        }
+    )
+    # The per-call total ceiling defaults to ``max_calls`` (3) when unset — bump
+    # it so all 4 items are dispatched instead of the 4th being dropped past it.
+    tool = _multi_extract_tool(db, model, provider, max_queries_per_call=4)
+
+    urls = [_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3, page_4_url]
+    task = asyncio.create_task(
+        tool.execute(
+            CallLink.new_top(),
+            items=[BrowseItem(query=url, looking_for=_INSTRUCTION) for url in urls],
+        )
+    )
+
+    # Items 2 and 3 read fast and finish, freeing a slot for item 4 — which
+    # starts and finishes its own read too, all while item 1 is still parked
+    # on the gate (a fixed batch of 3 could never let item 4 start here).
+    await wait_until(lambda: page_4_url in completed_reads)
+    assert _PAGE_URL not in completed_reads
+
+    gate.set()
+    result = await task
+
+    # Item 1's read was the last to actually finish.
+    assert completed_reads[-1] == _PAGE_URL
+    # Sections still come back in ITEM order (1, 2, 3, 4) — never completion
+    # order — whatever order the pool let their reads finish in.
+    sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
+    assert len(sections) == 4
+    titles = ["Lot 42", "Lot 99", "Lot 7", "Lot 15"]
+    values = [_EXTRACTED_VALUE, _EXTRACTED_VALUE_2, _EXTRACTED_VALUE_3, value_4]
+    for slot, (title, value) in enumerate(zip(titles, values, strict=True)):
+        assert sections[slot].startswith(PennyConstants.BROWSE_PAGE_HEADER)
+        assert title in sections[slot]
+        assert value in sections[slot]
+    assert result.success is True
 
 
 @pytest.mark.asyncio
