@@ -58,6 +58,8 @@ make client-check
 
 This builds the client and runs `PennyClientTests` on a freshly booted simulator. Treat build errors, SwiftLint warnings, test failures, signing/configuration errors, and simulator failures separately in the report.
 
+`make client-check`, `make client-ui-tests`, and `make client-stories` each wait for Penny to go idle before touching the simulator (`scripts/wait-for-penny-idle.sh`, #3171) — Xcode and the simulator compete with her local model server for the GPU. This is built into the script, so a kitten just runs the make target as usual; it proceeds at once when there's no Penny database to check (CI, or a machine without one).
+
 When Xcode exposes a connected physical iOS device as a valid run target, prefer it over a simulator for manual verification and device-specific behavior. Use the physical device for push notifications, Keychain/device identity, networking, camera/media, performance, and other hardware-dependent checks. Confirm the target with Xcode's available destinations or `xcodebuild -showdestinations` before running. A physical-device failure caused by signing, provisioning, developer mode, trust, or device availability is an environment gate; report it separately from source/build failures and fall back to the simulator when appropriate.
 
 The preferred target order is:

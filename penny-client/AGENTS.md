@@ -70,6 +70,13 @@ launching PennyDev or PennyTestflight. Run `make client-check` for the complete
 service, app, and Testflight build gate; this repository-level script uses its
 own simulator workflow and supplements the preferred XcodeBuildMCP device checks.
 
+`make client-check`, `make client-ui-tests`, and `make client-stories` each wait for
+Penny to go idle before touching the simulator (`scripts/wait-for-penny-idle.sh`,
+#3171) — Xcode and the simulator compete with her local model server for the GPU.
+Nothing to do here: the wait is built into the script, so just run the make target
+as usual; it proceeds at once with no Penny database to check (CI, or a machine
+without one).
+
 ## Testing Guidelines
 Logic stays in unit tests: use the Swift Testing framework for unit and component tests — state derivation, side effects, validation, persistence, protocol encoding. Every interactive control (a tap, a push, a back, a search, a send) additionally gets a UI smoke test in `PennyClientUITests` (#3106) — the tab bar once shipped with a dead tap (#3105) that no unit test caught, because nothing drove the real control. A redesign ticket that adds or moves a control adds it to `PennyClientUITests` in the same PR, and runs `make client-ui-tests` locally before review (LOCAL ONLY — CI's `client-check.yml` never runs it, since macOS runners are scarce). `PennyClientUITests` launches against fixture data via a `-PennyStory <id>` launch argument (#2965) and asserts a state change (an accessibility identifier appearing, an element's label, a tab's root) — never a screenshot or a layout check, and never a fixed sleep (`waitForExistence(timeout:)` or an `NSPredicate` expectation instead).
 Keep service tests under `PennyServices/Tests/PennyServicesTests`, app/view-model tests under `PennyClientTests`, and UI smoke tests under `PennyClientUITests`, with shared helpers in the owning test target instead of large monolithic test sources.

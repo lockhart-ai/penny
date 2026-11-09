@@ -11,6 +11,11 @@
 # fails with FBSOpenApplicationServiceErrorDomain "failed preflight checks".
 set -euo pipefail
 
+# Wait for Penny to go idle before touching the simulator (#3171): Xcode and
+# the simulator compete with her local model server for the GPU. Before any
+# simulator lock or xcodebuild, so a waiting run holds nothing.
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wait-for-penny-idle.sh"
+
 # Picks the iPhone destination on the NEWEST installed iOS runtime, not
 # whichever one `-showdestinations` happens to list first (#3150): this box
 # carries several simulator runtimes side by side, and the first-listed one
