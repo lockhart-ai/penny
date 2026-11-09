@@ -166,6 +166,14 @@ docker-compose.yml              — signal-api + penny services
 docker-compose.override.yml     — Dev source volume overrides
 scripts/
   client-check.sh               — iOS client build + simulator test run (make client-check)
+  wait-for-penny-idle.sh        — called at the top of client-check.sh, client-ui-tests.sh and
+                                  client-stories.sh, before any simulator lock or xcodebuild
+                                  (#3171): polls penny-idle.sh against the PRIMARY checkout's
+                                  data/penny/penny.db (found from any worktree via `git
+                                  rev-parse --git-common-dir`, since a worktree has no data/ of
+                                  its own) so Xcode and the simulator never fight Penny's local
+                                  model server for the GPU; proceeds at once with no database
+                                  (CI), and CLIENT_IDLE_WAIT=0 skips it for an urgent run
   eval-provider-lock.sh         — sourced by `make eval-remote`: one run at a time per pinned provider
   runtime-paths                 — the one rule for what counts as Penny's runtime (#3063), one
                                   git pathspec per line (`:(exclude)` lines included): read by
@@ -235,12 +243,15 @@ make typecheck        # Type check with ty
 make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes
 make signal-avatar    # Set Penny's Signal profile picture from penny.png
-make client-check     # Build the iOS client + run PennyClientTests on a simulator (requires Xcode)
+make client-check     # Build the iOS client + run PennyClientTests on a simulator (requires Xcode);
+                      # waits for Penny to go idle first (scripts/wait-for-penny-idle.sh, #3171) —
+                      # Xcode and the simulator compete with her local model server for the GPU
 make client-ui-tests  # Run the PennyClientUITests XCUITest smoke suite on a simulator — LOCAL
                       # ONLY (#3106): drives the real shell (tabs, push/back, find-in-chat,
                       # composer) against fixture data via `-PennyStory`, never CI (scarce
                       # macOS runners); kept out of PennyClient.xctestplan and the PennyClient
-                      # scheme's TestAction so make client-check never runs it
+                      # scheme's TestAction so make client-check never runs it; also waits for
+                      # Penny to go idle first (scripts/wait-for-penny-idle.sh, #3171)
 ```
 
 ### iOS data browser

@@ -7,6 +7,11 @@
 # read below — never a second, hand-kept list in this script.
 set -euo pipefail
 
+# Wait for Penny to go idle before touching the simulator (#3171): Xcode and
+# the simulator compete with her local model server for the GPU. Before any
+# simulator lock or xcodebuild, so a waiting run holds nothing.
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wait-for-penny-idle.sh"
+
 SIMULATOR_NAME="iPhone 18 Pro"
 SIMULATOR_RUNTIME_PREFIX="com.apple.CoreSimulator.SimRuntime.iOS-27-2"
 BUNDLE_ID="com.blockoftext.pennyclient"
