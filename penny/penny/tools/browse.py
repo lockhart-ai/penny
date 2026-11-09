@@ -7,8 +7,8 @@ directly; a search runs the search, ranks the results behind the tool boundary
 (:mod:`penny.tools.browse_picker`), reads the top-ranked result, and falls
 through to the next one while the read finds nothing it was asked for — so the
 model always gets what the pages say and never a list of titles to choose from.
-Items run in batches of ``max_calls``, one batch after another, up to the
-per-call total ceiling.
+Items run through a rolling pool of at most ``max_calls`` in flight at once, up
+to the per-call total ceiling.
 """
 
 from __future__ import annotations
@@ -348,9 +348,10 @@ class BrowseTool(Tool):
     A URL is read directly; a search runs, the picker ranks the results behind
     the tool boundary, and the top-ranked result is read and extracted — falling
     through to the next ranked result while the read finds nothing it was asked
-    for.  Every item up to the per-call total ceiling runs in this call, in
-    parallel batches of ``max_calls`` — the browser-tab limit — one batch after
-    another.  Items past the total come back named in a dropped section.
+    for.  Every item up to the per-call total ceiling runs in this call,
+    through a rolling pool of at most ``max_calls`` — the browser-tab limit —
+    in flight at once.  Items past the total come back named in a dropped
+    section.
     """
 
     name = "browse"
@@ -386,10 +387,10 @@ class BrowseTool(Tool):
         self._handles = handles
         self._max_calls = max_calls
         # The per-call TOTAL ceiling (#2662): every requested item up to this runs
-        # in this call, in parallel batches of ``max_calls``.  Unwired constructions
-        # (older tests, tools built before the setting exists) fall back to the
-        # batch size itself, so a tool without a ceiling behaves exactly as the
-        # pre-batching tool did.
+        # in this call, through a rolling pool of at most ``max_calls`` in flight
+        # at once (#3170).  Unwired constructions (older tests, tools built before
+        # the setting exists) fall back to the pool size itself, so a tool without
+        # a ceiling behaves exactly as the pre-pool tool did.
         self._max_queries_per_call = (
             max_calls if max_queries_per_call is None else (max_queries_per_call)
         )
@@ -581,8 +582,8 @@ class BrowseTool(Tool):
         return " ".join(parts) if parts else _NARRATION_LOOKED_UP
 
     async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
-        """Run every requested lookup (up to the per-call total), in parallel
-        batches of ``max_calls``.
+        """Run every requested lookup (up to the per-call total), through a
+        rolling pool of at most ``max_calls`` in flight at once.
 
         Each item runs whole (#2718): a URL is read and extracted; a search is
         run, the picker ranks its results behind the tool boundary, and the
@@ -611,25 +612,8 @@ class BrowseTool(Tool):
         # refused honestly instead of searched for literally.
         resolved, dangling = self._resolve_items(requested)
 
-        outcomes: list[_ItemOutcome] = []
-        channel_outage = False
-        # Batching (#2662): the parallel cap bounds how many ITEMS are in flight,
-        # not how many the call runs — the requested items up to the TOTAL ceiling
-        # go through in batches of ``max_calls``, one batch after another, so a
-        # four-site job pays no extra model round trip.  Order is preserved: each
-        # item's sections keep their own order, and the batches run in order.
-        for start in range(0, len(resolved), self._max_calls):
-            batch = resolved[start : start + self._max_calls]
-            gathered = await asyncio.gather(
-                *[self._run_item(item, dispatch, call_link) for item, dispatch in batch],
-                return_exceptions=True,
-            )
-            for outcome in gathered:
-                if isinstance(outcome, BaseException):
-                    raise outcome
-            batch_outcomes = cast("list[_ItemOutcome]", gathered)
-            outcomes.extend(batch_outcomes)
-            channel_outage = channel_outage or any(outcome.outage for outcome in batch_outcomes)
+        outcomes = await self._run_pooled(resolved, call_link)
+        channel_outage = any(outcome.outage for outcome in outcomes)
 
         sections: list[str] = []
         opened: list[str] = []
@@ -662,6 +646,40 @@ class BrowseTool(Tool):
             source_urls=self._read_urls(sections),
             narration=self._narration(searches, opened, not all_failed),
         )
+
+    async def _run_pooled(
+        self, resolved: list[tuple[BrowseItem, str]], call_link: CallLink
+    ) -> list[_ItemOutcome]:
+        """Run every resolved item through a rolling pool of at most
+        ``self._max_calls`` in flight at once (#3170) — a slot frees the moment
+        its item finishes, so a slow item never holds up the ones behind it.
+        ``asyncio.gather`` returns results in the SAME order as the coroutines were
+        passed, regardless of completion order, so outcomes come back in item
+        order for free. Once any item reports a whole-channel outage, an item
+        that hasn't yet acquired a slot is skipped rather than starting a read
+        doomed the same way — the same observable result (one outage section,
+        the same failed items) without every remaining item paying its own
+        retry-and-fail."""
+        semaphore = asyncio.Semaphore(self._max_calls)
+        outage_seen = asyncio.Event()
+
+        async def guarded(item: BrowseItem, dispatch: str) -> _ItemOutcome:
+            async with semaphore:
+                if outage_seen.is_set():
+                    return _ItemOutcome(outage=True, failed=True)
+                outcome = await self._run_item(item, dispatch, call_link)
+                if outcome.outage:
+                    outage_seen.set()
+                return outcome
+
+        gathered = await asyncio.gather(
+            *[guarded(item, dispatch) for item, dispatch in resolved],
+            return_exceptions=True,
+        )
+        for outcome in gathered:
+            if isinstance(outcome, BaseException):
+                raise outcome
+        return cast("list[_ItemOutcome]", gathered)
 
     def _narration(self, searches: list[str], opened: list[str], success: bool) -> str:
         """The narration line for a result the tool itself built (#2661): the
