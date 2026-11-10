@@ -2,11 +2,11 @@ import SwiftUI
 import PennyServices
 
 struct SettingsView: View {
-    @Environment(\.dismiss) private var dismiss
     @State private var viewModel: SettingsViewModel
     @State private var selectedChannelTypes = Set(ChannelType.allCases.map(\.rawValue))
     @State private var includeHistoryAttachments = true
     @State private var isShowingDeleteMessagesConfirmation = false
+    @FocusState private var focusedConnectionField: ConnectionField?
 
     init(client: PennyWebSocketClient) {
         _viewModel = State(initialValue: SettingsViewModel(client: client, prefs: .shared))
@@ -34,16 +34,19 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
+                    .focused($focusedConnectionField, equals: .webSocketURL)
 
                 LabeledContent("APNs Host", value: viewModel.apnsHost)
 
                 TextField("Username", text: $viewModel.username)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .focused($focusedConnectionField, equals: .username)
 
                 SecureField("Password", text: $viewModel.password)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .focused($focusedConnectionField, equals: .password)
 
                 LabeledContent("Test Notification") {
                     Button("Send") {
@@ -53,15 +56,20 @@ struct SettingsView: View {
                     .disabled(!viewModel.canSendTestNotification)
                 }
             }
-            // The keyboard covers the interim bottom-bar Save (#3140) while any
-            // of these fields has focus, so Save becomes unreachable until the
-            // keyboard is dismissed first — the bug in #3166. Submitting from
-            // the keyboard (the return key) saves this section directly, the
-            // same "save as you type" shape the Settings redesign moves all of
-            // Settings to; the bottom Save still works once the keyboard is
-            // down, e.g. after a submit already saved it.
+            // No Save button (#3169) — this section saves as you go.
+            // Submitting from the keyboard (the return key) saves directly;
+            // `focusedConnectionField` catches the other case, a field
+            // losing focus with no Return (a tap elsewhere, or switching to
+            // another field). `saveConnection()` itself is the no-op guard
+            // against double-saving the same edit (it only reconnects when
+            // a value actually changed), so both triggers can fire safely.
             .onSubmit {
                 viewModel.saveConnection()
+            }
+            .onChange(of: focusedConnectionField) { previousField, _ in
+                if previousField != nil {
+                    viewModel.saveConnection()
+                }
             }
 
             ImageAttachmentSettingsSection(viewModel: viewModel)
@@ -194,23 +202,6 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        // The shared shell toolbar's leading/trailing slots are the
-        // page menu and search (#3111), so Cancel/Save move to a
-        // stock bottom bar rather than fighting over the top one —
-        // the one deviation from the old row this page keeps; the
-        // Settings redesign (save-as-you-change) retires both buttons.
-        .toolbar {
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button("Cancel") {
-                    dismiss()
-                }
-                Spacer()
-                Button("Save") {
-                    save()
-                }
-                .disabled(!viewModel.canSaveConnection)
-            }
-        }
         .task {
             viewModel.refresh()
         }
@@ -228,11 +219,14 @@ struct SettingsView: View {
         }
         #endif
     }
+}
 
-    private func save() {
-        viewModel.saveConnection()
-        dismiss()
-    }
+/// Which Connection field last held focus (#3169) — losing focus on any of
+/// them, with no Return pressed, is a save trigger alongside `.onSubmit`.
+private enum ConnectionField: Hashable {
+    case webSocketURL
+    case username
+    case password
 }
 
 struct AppBuildInfo {
@@ -258,6 +252,7 @@ struct AppBuildInfo {
 private struct RuntimeConfigRow: View {
     let param: RuntimeConfigParam
     let viewModel: SettingsViewModel
+    @FocusState private var isValueFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -266,17 +261,22 @@ private struct RuntimeConfigRow: View {
             Text(param.description)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            HStack {
-                TextField("Value", text: valueBinding)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button {
+            // No checkmark Save button (#3169) — submitting from the
+            // keyboard (the return key) saves directly, and losing focus
+            // with no Return (a tap elsewhere) saves the same way the
+            // Connection section's fields do.
+            TextField("Value", text: valueBinding)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .focused($isValueFocused)
+                .onSubmit {
                     viewModel.saveConfigValue(for: param)
-                } label: {
-                    Image(systemName: "checkmark.circle")
                 }
-                .accessibilityLabel("Save config value")
-            }
+                .onChange(of: isValueFocused) { wasFocused, isFocusedNow in
+                    if wasFocused, !isFocusedNow {
+                        viewModel.saveConfigValue(for: param)
+                    }
+                }
         }
         .padding(.vertical, 4)
     }

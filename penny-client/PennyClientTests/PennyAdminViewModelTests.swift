@@ -220,6 +220,40 @@ struct ImageAttachmentSettingsViewModelTests {
     }
 }
 
+@Suite(.serialized)
+@MainActor
+struct SettingsToggleAutosaveTests {
+    /// #3169: Settings has no Save button, so a toggle's change IS the
+    /// save — flipping it sends the update immediately, and the new value
+    /// persists into the server's own runtime config (not just a local
+    /// pending flag) once it acknowledges, with nothing else to call.
+    @Test func toggleChangePersistsWithoutASaveButton() async throws {
+        let prefs = configuredPrefs()
+        let (client, transport) = makeAdminClient(prefs: prefs)
+        let viewModel = SettingsViewModel(client: client, prefs: prefs)
+        await connectAndClearStartupFrames(client, transport)
+        transport.emit("""
+        {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
+        """)
+        _ = await sentPayloads(transport, count: 2)
+        transport.clearSentPayloads()
+        transport.emit(imageConfigJSON())
+        #expect(viewModel.imageSettingValue(.automatic))
+
+        viewModel.setImageSetting(.automatic, enabled: false)
+        let payloads = await sentPayloads(transport, count: 1)
+        guard case .string(let identifier)? = payloads.first?["request_id"] else {
+            Issue.record("Missing image update correlation")
+            return
+        }
+        transport.emit(imageConfigJSON(requestID: identifier, automatic: "0"))
+
+        #expect(!viewModel.imageSettingValue(.automatic))
+        #expect(client.runtimeConfigParams.first { $0.key == ImageAttachmentSetting.automatic.rawValue }?.value == "0")
+        client.disconnect()
+    }
+}
+
 private func imageConfigJSON(requestID: String? = nil, automatic: String = "1") -> String {
     let params = ImageAttachmentSetting.allCases.map { setting in
         """

@@ -23,6 +23,16 @@ import PennyServices
     }
     #endif
 
+    /// `SettingsConnectionUITests` (#3169) launches the real app — no
+    /// `-PennyStory` fixture, since the behavior under test is the live
+    /// Settings/Prefs path — so `AppDelegate` would otherwise show the
+    /// system notification-permission alert on a fresh simulator. A UI test
+    /// is unattended and has nothing to dismiss it with, so this launch
+    /// argument skips the request entirely.
+    static var isSkippingNotificationPromptForUITests: Bool {
+        ProcessInfo.processInfo.arguments.contains("-PennyUITestsSkipNotificationPrompt")
+    }
+
     var body: some Scene {
         WindowGroup {
             if Self.isRunningTests {
@@ -50,6 +60,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         guard !MyApp.isRunningTests else { return true }
+        guard !MyApp.isSkippingNotificationPromptForUITests else { return true }
         #if DEBUG
         guard MyApp.activeStoryID == nil else { return true }
         #endif

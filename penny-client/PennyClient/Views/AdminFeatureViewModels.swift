@@ -62,18 +62,33 @@ final class SettingsViewModel {
         editedConfigValues[param.key] = value
     }
 
+    /// Saves on `.onSubmit`/focus loss rather than a Save button (#3169), so
+    /// this fires on every field visit, not just an edit — skip the no-op
+    /// write (and its `config_update`) when the trimmed value already
+    /// matches the server's.
     func saveConfigValue(for param: RuntimeConfigParam) {
         let value = configValue(for: param).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
+        guard !value.isEmpty, value != param.value else { return }
         editedConfigValues[param.key] = value
         client.updateConfig(key: param.key, value: value)
     }
 
+    /// Saves on `.onSubmit`/focus loss rather than a Save button (#3169).
+    /// Reconnects once, only when a saved value actually changed — tabbing
+    /// through the Connection fields without editing them must not
+    /// reconnect at all, and editing one field must not reconnect twice
+    /// (once from `.onSubmit`, again when focus then leaves the field).
     func saveConnection() {
         guard canSaveConnection else { return }
-        prefs.webSocketURL = webSocketURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        prefs.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = webSocketURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let changed = trimmedURL != (prefs.webSocketURL ?? "")
+            || trimmedUsername != (prefs.username ?? "")
+            || password != (prefs.password ?? "")
+        prefs.webSocketURL = trimmedURL
+        prefs.username = trimmedUsername
         prefs.password = password
+        guard changed else { return }
         client.reconnect()
     }
 

@@ -9,10 +9,24 @@ public final class Prefs: @unchecked Sendable {
     private let decoder = JSONDecoder()
     private let bundledSecrets: SecretsPlist?
 
-    init(userDefaults: UserDefaults = .standard, keychain: KeychainStore = SystemKeychain(), bundle: Bundle = .main) {
+    init(userDefaults: UserDefaults = Prefs.defaultUserDefaults, keychain: KeychainStore = SystemKeychain(), bundle: Bundle = .main) {
         self.userDefaults = userDefaults
         self.keychain = keychain
         self.bundledSecrets = SecretsPlist.load(from: bundle)
+    }
+
+    /// `SettingsConnectionUITests` (#3169) launches the real app against
+    /// `Prefs.shared` — no story fixture, since the behavior under test is
+    /// the live Settings/Prefs path — and types a test WebSocket URL into
+    /// it. Under `-PennyUITestsIsolatedPrefs` that write lands in its own
+    /// `UserDefaults` suite instead of `.standard`, so it can never leak
+    /// into the simulator's real settings for a later manual run of the app.
+    private static var defaultUserDefaults: UserDefaults {
+        guard ProcessInfo.processInfo.arguments.contains("-PennyUITestsIsolatedPrefs"),
+              let isolated = UserDefaults(suiteName: "com.pennyclient.uiTestsIsolatedPrefs") else {
+            return .standard
+        }
+        return isolated
     }
 
     func string(forKey key: Key) -> String? {
