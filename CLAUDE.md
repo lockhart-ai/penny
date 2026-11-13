@@ -263,7 +263,7 @@ expandable run/prompt/turn cards with global Prompts. `DataBrowserClient` owns
 correlated reads and cancellation in PennyServices; presentation state belongs to
 `DataBrowserViewModel`. The iOS read endpoints echo optional `request_id` values and
 return `data_read_error` for correlated failures. Deploy server support before the
-updated client; no memory schema migration is involved. See `penny-client/README.md`.
+updated client; no memory schema migration is involved.
 
 ### Browser Extension Development
 
