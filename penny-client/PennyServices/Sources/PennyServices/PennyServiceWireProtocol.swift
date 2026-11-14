@@ -5,7 +5,7 @@ public typealias PennyWebSocketClient = PennyService
 
 enum ClientMessage: Encodable {
     case register(RegisterPayload)
-    case message(content: String, images: [String]?)
+    case message(content: String, images: [String]?, clientMessageID: UUID)
     case testNotification
     case pullMessages(limit: Int)
     case historyRequest(limit: Int, before: String?, channelTypes: [String]?, includeAttachments: Bool, countOnly: Bool)
@@ -64,10 +64,12 @@ enum ClientMessage: Encodable {
             try container.encodeIfPresent(payload.apnsToken, forKey: .apnsToken)
             try container.encode(payload.apnsEnvironment, forKey: .apnsEnvironment)
             try container.encode(payload.appVersion, forKey: .appVersion)
-        case .message(let content, let images):
+            try container.encode(true, forKey: .supportsMessageChunks)
+        case .message(let content, let images, let clientMessageID):
             try container.encode("message", forKey: .type)
             try container.encode(content, forKey: .content)
             try container.encodeIfPresent(images, forKey: .images)
+            try container.encode(clientMessageID, forKey: .clientMessageID)
         case .testNotification:
             try container.encode("test_notification", forKey: .type)
         case .pullMessages(let limit):
@@ -308,8 +310,10 @@ enum ClientMessage: Encodable {
         case apnsToken = "apns_token"
         case apnsEnvironment = "apns_environment"
         case appVersion = "app_version"
+        case supportsMessageChunks = "supports_message_chunks"
         case content
         case images
+        case clientMessageID = "client_message_id"
         case limit
         case before
         case channelTypes = "channel_types"
@@ -443,6 +447,7 @@ enum ServerEnvelope: Decodable {
     case registered(RegisteredPayload)
     case outboxChanged(OutboxChangedPayload)
     case messages(MessagesPayload)
+    case messagesChunk(MessagesChunkPayload)
     case messagesAcked(MessagesAckedPayload)
     case embeddingResponse(EmbeddingResponsePayload)
     case typing(TypingPayload)
@@ -474,6 +479,8 @@ enum ServerEnvelope: Decodable {
             self = .outboxChanged(try OutboxChangedPayload(from: decoder))
         case "messages":
             self = .messages(try MessagesPayload(from: decoder))
+        case "messages_chunk":
+            self = .messagesChunk(try MessagesChunkPayload(from: decoder))
         case "messages_acked":
             self = .messagesAcked(try MessagesAckedPayload(from: decoder))
         case "embedding_response":
@@ -523,6 +530,8 @@ enum ServerEnvelope: Decodable {
             return nil
         case .messages(let payload):
             return "messages:\(payload.rawMode)"
+        case .messagesChunk:
+            return nil
         case .messagesAcked:
             return "messages_acked"
         case .embeddingResponse(let payload):
@@ -570,6 +579,8 @@ enum ServerEnvelope: Decodable {
             return "outbox_changed"
         case .messages:
             return "messages"
+        case .messagesChunk:
+            return "messages_chunk"
         case .messagesAcked:
             return "messages_acked"
         case .embeddingResponse:
@@ -679,8 +690,20 @@ struct MessagesPayload: Decodable {
     }
 }
 
+struct MessagesChunkPayload: Decodable {
+    let index: Int
+    let final: Bool
+    let data: Data
+}
+
 struct MessagesAckedPayload: Decodable {
     let count: Int
+    let pendingCount: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case count
+        case pendingCount = "pending_count"
+    }
 }
 
 struct EmbeddingResponsePayload: Decodable {

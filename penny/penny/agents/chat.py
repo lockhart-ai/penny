@@ -620,7 +620,7 @@ class ChatAgent(Agent):
         # The session boundary (#3125) — a real turn rotates BEFORE its one
         # read, the same write rule the idle scheduler task uses
         # (``ChatSessionRotationTask``/``record_idle_rotation``): this
-        # turn's own row isn't stored yet, so "the newest stored message"
+        # turn's own row is still pending, so "the newest stored message"
         # is the previous exchange and the gap is measured to now — exactly
         # the rotation the idle task would already have made, so this is
         # normally a no-op; it's the only rotation when the idle task

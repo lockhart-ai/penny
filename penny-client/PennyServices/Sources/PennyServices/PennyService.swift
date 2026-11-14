@@ -56,6 +56,12 @@ public final class PennyService {
     /// (`reportImageDeliveryFailure`) instead of leaving the failure to
     /// `lastError` alone.
     @ObservationIgnored private var pendingImageMessageID: Int?
+    @ObservationIgnored private var outboxPullInFlight = false
+    @ObservationIgnored private var outboxAckInFlight = false
+    @ObservationIgnored private var outboxChangedDuringPull = false
+    @ObservationIgnored private var registeredDeviceID: String?
+    @ObservationIgnored private var messagePageData = Data()
+    @ObservationIgnored private var nextMessageChunkIndex = 0
 
     @ObservationIgnored public private(set) lazy var dataBrowser = DataBrowserClient { [weak self] data in
         guard let self, self.canSend else { throw DataBrowserError.disconnected }
@@ -192,7 +198,6 @@ extension PennyService {
 
         startBackgroundTasks()
         sendRegistration()
-        send(.pullMessages(limit: pendingMessagePullLimit))
     }
 
     public func reconnect() {
@@ -210,6 +215,11 @@ extension PennyService {
         hasLoadedRuntimeConfig = false
         runtimeConfigParams = []
         stopBackgroundTasks()
+        outboxPullInFlight = false
+        outboxAckInFlight = false
+        outboxChangedDuringPull = false
+        registeredDeviceID = nil
+        resetMessageChunks()
         historyResponseContinuation?.finish()
         historyResponseContinuation = nil
         historySyncTask?.cancel()
@@ -368,11 +378,15 @@ extension PennyService {
             logger.error("Dropped \(droppedCount) outgoing image(s) that failed to encode", privacy: .public)
         }
 
-        let message = ChatMessage.local(id: nextLocalMessageID(), content: content, imageDataURLs: imageDataURLs)
+        let clientMessageID = UUID()
+        let message = ChatMessage.local(
+            id: nextLocalMessageID(), content: content, imageDataURLs: imageDataURLs,
+            clientMessageID: clientMessageID
+        )
         messages.append(message)
         databaseService.save(message: MessageModel(message: message))
         publishLiveMessages([message])
-        send(.message(content: content, images: imageDataURLs.isEmpty ? nil : imageDataURLs))
+        send(.message(content: content, images: imageDataURLs.isEmpty ? nil : imageDataURLs, clientMessageID: clientMessageID))
         if !imageDataURLs.isEmpty {
             pendingImageMessageID = message.id
         }
@@ -594,7 +608,11 @@ extension PennyService {
         while !Task.isCancelled {
             do {
                 try await Task.sleep(for: .seconds(25))
-                send(.heartbeat)
+                if isRegistered {
+                    requestOutbox()
+                } else {
+                    send(.heartbeat)
+                }
             } catch {
                 return
             }
@@ -613,6 +631,10 @@ extension PennyService {
             let envelope = try decoder.decode(ServerEnvelope.self, from: data)
             apply(envelope)
         } catch {
+            if (try? decoder.decode(ServerMessageType.self, from: data))?.type == "messages_chunk" {
+                failMessageChunks()
+                return
+            }
             skipUndecodableMessage(data)
         }
     }
@@ -637,18 +659,27 @@ extension PennyService {
             isConnected = true
             isRegistered = true
             pendingCount = payload.pendingCount
+            registeredDeviceID = payload.deviceID
             requestConfig()
-            send(.pullMessages(limit: pendingMessagePullLimit))
+            requestOutbox()
             resumeHistorySyncIfNeeded()
         case .outboxChanged(let payload):
             pendingCount = payload.pendingCount
             if payload.pendingCount > 0 {
-                send(.pullMessages(limit: pendingMessagePullLimit))
+                if outboxPullInFlight || outboxAckInFlight {
+                    outboxChangedDuringPull = true
+                } else {
+                    requestOutbox()
+                }
             }
         case .messages(let payload):
             applyMessages(payload)
-        case .messagesAcked:
-            break
+        case .messagesChunk(let payload):
+            applyMessageChunk(payload)
+        case .messagesAcked(let payload):
+            outboxAckInFlight = false
+            pendingCount = payload.pendingCount ?? pendingCount
+            requestRemainingOutbox()
         case .embeddingResponse(let payload):
             guard let continuation = embeddingContinuations.removeValue(forKey: payload.requestID) else {
                 break
@@ -721,8 +752,15 @@ extension PennyService {
             historyResponseContinuation?.yield(.count(payload.totalCount ?? 0))
             return
         }
+        if mode == .outbox {
+            outboxPullInFlight = false
+        }
         let receiveResult = receive(payload, mode: mode)
         guard mode == .history else { return }
+        if !payload.messages.isEmpty && receiveResult.savedOrUpdatedCount == 0 {
+            historyResponseContinuation?.yield(.error(lastError ?? "Could not save synced messages"))
+            return
+        }
 
         if historyPageIsNewest {
             let visibleMessages = receiveResult.newMessages.filter { liveMessageFilter.includes($0) }
@@ -736,6 +774,37 @@ extension PennyService {
             payload: payload,
             savedOrUpdatedCount: receiveResult.savedOrUpdatedCount
         )))
+    }
+
+    private func applyMessageChunk(_ chunk: MessagesChunkPayload) {
+        guard chunk.index == nextMessageChunkIndex, !chunk.data.isEmpty else {
+            failMessageChunks()
+            return
+        }
+        messagePageData.append(chunk.data)
+        nextMessageChunkIndex += 1
+        guard chunk.final else { return }
+        do {
+            let payload = try decoder.decode(MessagesPayload.self, from: messagePageData)
+            resetMessageChunks()
+            apply(.messages(payload))
+        } catch {
+            failMessageChunks()
+        }
+    }
+
+    private func resetMessageChunks() {
+        messagePageData = Data()
+        nextMessageChunkIndex = 0
+    }
+
+    private func failMessageChunks() {
+        let reason = "Could not assemble synced messages"
+        lastError = reason
+        resetMessageChunks()
+        outboxPullInFlight = false
+        historyResponseContinuation?.yield(.error(reason))
+        logger.error(reason, privacy: .public)
     }
 
     private func mergePromptLogRuns(_ runs: [PromptLogRun]) {
@@ -806,10 +875,11 @@ extension PennyService {
         // Deduplicate repeated canonical IDs before updating persistence or UI.
         var seenMessageIDs = Set<Int>()
         let incomingMessages = payload.messages.filter { seenMessageIDs.insert($0.canonicalID).inserted }
-        let incomingIDs = incomingMessages.map(\.id)
+        let incomingIDs = payload.messages.map(\.id)
         if incomingIDs.isEmpty {
             if mode == .outbox {
                 pendingCount = 0
+                requestRemainingOutbox()
             }
             return ReceiveResult(newMessages: [], savedOrUpdatedCount: 0)
         }
@@ -824,33 +894,50 @@ extension PennyService {
         }
 
         let decodedMessages = incomingMessages.map(ChatMessage.remote)
+        var newMessages = decodedMessages.filter {
+            !databaseService.containsMessage(serverID: $0.id)
+        }
         for message in decodedMessages where message.isOutgoing {
+            if let deviceIdentifier = message.deviceIdentifier,
+               let registeredDeviceID, deviceIdentifier != registeredDeviceID {
+                continue
+            }
             guard let localID = databaseService.reconcileLocalMessage(
                 content: message.content,
                 createdAt: message.createdAt,
-                canonicalID: message.id
+                canonicalID: message.id,
+                clientMessageID: message.clientMessageID
             ) else { continue }
+            if pendingImageMessageID == localID {
+                pendingImageMessageID = nil
+            }
+            if messages.contains(where: { $0.id == localID }) {
+                newMessages.removeAll { $0.id == message.id }
+            }
             replaceOptimisticMessage(localID: localID, with: message)
-        }
-        let newMessages = decodedMessages.filter {
-            !databaseService.containsMessage(serverID: $0.id)
         }
 
         // Persist the canonical representation, including metadata corrections.
         let savedOrUpdatedCount = databaseService.saveMessages(
             decodedMessages.map(MessageModel.init(message:)),
-            preserveAttachments: mode == .history && !payload.attachmentsIncluded
+            preserveAttachments: !payload.attachmentsIncluded
         )
+        guard savedOrUpdatedCount == decodedMessages.count else {
+            lastError = "Could not save synced messages"
+            return ReceiveResult(newMessages: [], savedOrUpdatedCount: 0)
+        }
         updateRunLinks(decodedMessages)
 
         if !newMessages.isEmpty {
-            messages.append(contentsOf: newMessages)
-            messages.sort { $0.createdAt < $1.createdAt }
+            let visibleIDs = Set(messages.map(\.id))
+            messages.append(contentsOf: newMessages.filter { !visibleIDs.contains($0.id) })
+            messages.sort { $0.createdAt < $1.createdAt || ($0.createdAt == $1.createdAt && $0.id < $1.id) }
         }
 
         switch mode {
         case .outbox:
             publishLiveMessages(decodedMessages)
+            outboxAckInFlight = true
             send(.ackMessages(ids: incomingIDs))
             pendingCount = max(0, pendingCount - incomingIDs.count)
             clearAppBadge()
@@ -867,10 +954,21 @@ extension PennyService {
             break
         }
 
-        if pendingCount > 0 {
-            send(.pullMessages(limit: pendingMessagePullLimit))
-        }
         return ReceiveResult(newMessages: newMessages, savedOrUpdatedCount: savedOrUpdatedCount)
+    }
+
+    private func requestOutbox() {
+        guard !outboxPullInFlight, !outboxAckInFlight else { return }
+        outboxPullInFlight = true
+        send(.pullMessages(limit: pendingMessagePullLimit))
+    }
+
+    private func requestRemainingOutbox() {
+        let shouldPull = pendingCount > 0 || outboxChangedDuringPull
+        outboxChangedDuringPull = false
+        if shouldPull {
+            requestOutbox()
+        }
     }
 }
 
@@ -988,6 +1086,11 @@ extension PennyService {
             } catch {
                 await MainActor.run {
                     self.lastError = error.localizedDescription
+                    if case .pullMessages = outgoingMessage {
+                        self.outboxPullInFlight = false
+                    } else if case .ackMessages = outgoingMessage {
+                        self.outboxAckInFlight = false
+                    }
                     if case .configUpdate(_, _, let requestID) = outgoingMessage {
                         self.imageAttachmentSettings.fail(
                             requestID: requestID,

@@ -11,9 +11,43 @@ import pytest
 from penny.database.migrate import (
     _discover_migrations,
     _get_number_prefix,
+    _load_module,
     migrate,
     validate_migrations,
 )
+
+
+def test_ios_mirroring_backfills_missing_deliveries_and_preserves_existing_acks():
+    name, path = next(
+        (name, path) for name, path in _discover_migrations() if name.startswith("0146_")
+    )
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript("""
+            CREATE TABLE device (id INTEGER PRIMARY KEY, channel_type TEXT);
+            CREATE TABLE ios_device_registration (device_id INTEGER PRIMARY KEY);
+            CREATE TABLE messagelog (
+                id INTEGER PRIMARY KEY, device_id INTEGER, content TEXT,
+                timestamp TEXT, mechanism TEXT, is_reaction INTEGER
+            );
+            CREATE TABLE ios_outbox (
+                id INTEGER PRIMARY KEY, device_id INTEGER, message_log_id INTEGER,
+                created_at TEXT, content TEXT, source_name TEXT, attachments_json TEXT,
+                push_title TEXT, push_summary TEXT, push_sent_at TEXT, acked_at TEXT
+            );
+            INSERT INTO device VALUES (1, 'ios'), (2, 'ios');
+            INSERT INTO ios_device_registration VALUES (1), (2);
+            INSERT INTO messagelog VALUES (5, 1, 'hello', '2026-05-01', NULL, 0);
+            INSERT INTO ios_outbox (id, device_id, message_log_id, acked_at)
+                VALUES (9, 1, 5, '2026-05-02'), (10, 1, 5, NULL);
+            """)
+        migration = _load_module(name, path)
+        migration.up(conn)
+        migration.up(conn)
+        rows = conn.execute(
+            "SELECT device_id, message_log_id, legacy_id, acked_at "
+            "FROM ios_outbox WHERE message_log_id IS NOT NULL ORDER BY device_id"
+        ).fetchall()
+        assert rows == [(1, 5, 1, "2026-05-02"), (2, 5, 0, None)]
 
 
 class TestDiscovery:
@@ -82,7 +116,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 145
+        assert count == 146
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -124,7 +158,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 145
+        assert count1 == 146
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -162,8 +196,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 144 migrations
-        assert count == 144
+        # 0001 is skipped; the rest run = 145 migrations
+        assert count == 145
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -189,7 +223,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 145  # all migrations applied
+        assert count == 146  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")

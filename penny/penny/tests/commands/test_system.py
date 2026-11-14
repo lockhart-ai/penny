@@ -1,8 +1,10 @@
 """Integration tests for the general command system (routing, logging, threading)."""
 
 import pytest
+from sqlmodel import col, select
 
 from penny.constants import PennyConstants
+from penny.database.models import MessageLog
 from penny.tests.conftest import TEST_SENDER
 
 
@@ -71,25 +73,22 @@ async def test_command_logging(signal_server, test_config, mock_llm, running_pen
 async def test_command_response_logged_to_message_table(
     signal_server, test_config, mock_llm, running_penny
 ):
-    """Command responses go through the channel send chokepoint, so they ARE
-    logged as outgoing messages (visible in the penny-messages facade) in
-    addition to the CommandLog audit row."""
+    """The accepted command and its reply both appear in the conversation."""
     async with running_penny(test_config) as penny:
         # Send a command
         await signal_server.push_message(sender=TEST_SENDER, content="/commands")
         await signal_server.wait_for_message(timeout=5.0)
 
-        # The command's acknowledgment is logged as an outgoing message
-        from penny.database.models import MessageLog
-
         with penny.db.get_session() as session:
-            from sqlmodel import select
-
-            logs = list(session.exec(select(MessageLog)).all())
-            assert len(logs) == 1
-            assert logs[0].direction == PennyConstants.MessageDirection.OUTGOING
-            # Outgoing content is stored formatting-stripped (markdown removed)
-            assert "Available Commands" in logs[0].content
+            command, reply = session.exec(
+                select(MessageLog).order_by(col(MessageLog.timestamp), col(MessageLog.id))
+            ).all()
+            assert (command.direction, command.content) == (
+                PennyConstants.MessageDirection.INCOMING,
+                "/commands",
+            )
+            assert reply.direction == PennyConstants.MessageDirection.OUTGOING
+            assert "Available Commands" in reply.content
 
         # And surfaces through the penny-messages facade
         outgoing = penny.db.memory("penny-messages").read_all()

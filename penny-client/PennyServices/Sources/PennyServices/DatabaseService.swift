@@ -143,6 +143,13 @@ public final class DatabaseService: @unchecked Sendable {
             }
             databaseConnection.userVersion = 8
         }
+        if currentVersion < 9 {
+            let clientID = MessageModel.clientMessageIDExp
+            if try !MessageModel.columnExists(database: databaseConnection, name: "client_message_id") {
+                try databaseConnection.run(MessageModel.table().addColumn(clientID))
+            }
+            databaseConnection.userVersion = 9
+        }
     }
 }
 
@@ -275,7 +282,7 @@ extension DatabaseService {
 
     @MainActor
     @discardableResult
-    func reconcileLocalMessage(content: String, createdAt: Date, canonicalID: Int) -> Int? {
+    func reconcileLocalMessage(content: String, createdAt: Date, canonicalID: Int, clientMessageID: UUID? = nil) -> Int? {
         setup()
 
         do {
@@ -284,7 +291,8 @@ extension DatabaseService {
                     database: databaseConnection,
                     content: content,
                     createdAt: createdAt,
-                    canonicalID: canonicalID
+                    canonicalID: canonicalID,
+                    clientMessageID: clientMessageID
                 )
             }
         } catch {
@@ -387,6 +395,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
     init(message: ChatMessage) {
         id = message.id
         serverID = message.serverID
+        clientMessageID = message.clientMessageID?.uuidString
         createdAt = message.createdAt
         content = message.content
         sourceHint = message.sourceHint
@@ -417,10 +426,12 @@ struct MessageModel: Codable, Identifiable, Hashable {
         durationMs: Int? = nil,
         imageAttachmentDataURLs: [String],
         isOutgoing: Bool,
-        embedding: Data? = nil
+        embedding: Data? = nil,
+        clientMessageID: String? = nil
     ) {
         self.id = id
         self.serverID = serverID
+        self.clientMessageID = clientMessageID
         self.createdAt = createdAt
         self.content = content
         self.sourceHint = sourceHint
@@ -440,6 +451,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
     var id: Int
     @SqlProperty
     var serverID: Int?
+    var clientMessageID: String?
+    fileprivate static let clientMessageIDExp = Expression<String?>("client_message_id")
     @SqlProperty
     var createdAt: Date
     @SqlProperty
@@ -509,6 +522,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
             MessageModel.table().insert(or: .replace,
                 MessageModel.idExp <- id,
                 MessageModel.serverIDExp <- serverID,
+                MessageModel.clientMessageIDExp <- clientMessageID,
                 MessageModel.createdAtExp <- createdAt,
                 MessageModel.contentExp <- content,
                 MessageModel.sourceHintExp <- sourceHint,
@@ -634,11 +648,17 @@ struct MessageModel: Codable, Identifiable, Hashable {
         database: Connection,
         content: String,
         createdAt: Date,
-        canonicalID: Int
+        canonicalID: Int,
+        clientMessageID: UUID?
     ) throws -> Int? {
+        let localMessages = table().filter(serverIDExp == nil && idExp < 0 && isOutgoingExp)
+        let matchingMessages = if let clientMessageID {
+            localMessages.filter(clientMessageIDExp == clientMessageID.uuidString)
+        } else {
+            localMessages.filter(contentExp == content)
+        }
         let candidates = try database.prepare(
-            table()
-                .filter(serverIDExp == nil && idExp < 0 && isOutgoingExp && contentExp == content)
+            matchingMessages
         ).map(message(from:))
         guard let local = candidates.min(by: {
             abs($0.createdAt.timeIntervalSince(createdAt)) < abs($1.createdAt.timeIntervalSince(createdAt))
@@ -690,7 +710,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
             durationMs: entry[durationMsExp],
             imageAttachmentDataURLs: decodedImageAttachmentDataURLs(entry[imageAttachmentDataURLsExp]),
             isOutgoing: entry[isOutgoingExp],
-            embedding: entry[embeddingExp]
+            embedding: entry[embeddingExp],
+            clientMessageID: entry[clientMessageIDExp]
         )
     }
 

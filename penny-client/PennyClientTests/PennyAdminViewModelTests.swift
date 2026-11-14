@@ -151,7 +151,7 @@ private func connectAndClearStartupFrames(
     _ transport: AdminViewModelMockTransport
 ) async {
     await client.connect()
-    _ = await sentPayloads(transport, count: 2)
+    _ = await sentPayloads(transport, count: 1)
     transport.clearSentPayloads()
 }
 

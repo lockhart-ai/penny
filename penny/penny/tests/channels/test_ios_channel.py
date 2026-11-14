@@ -43,9 +43,11 @@ from penny.channels.ios.models import (
     IOS_RESP_TYPE_REGISTERED,
     IOS_RESP_TYPE_STATUS,
 )
+from penny.channels.manager import ChannelManager
 from penny.channels.turns import TurnRegistry
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
+from penny.responses import PennyResponse
 
 
 class FakeWs:
@@ -164,71 +166,203 @@ async def test_ios_broadcast_keeps_null_memory_name(db):
     assert live.sent == [{"type": "memory_changed", "name": None}]
 
 
+async def _register_device(channel, identifier, *, token=None, supports_message_chunks=False):
+    ws = FakeWs()
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": identifier,
+            "label": identifier,
+            "pairing_token": "pair-me",
+            "apns_token": token,
+            "supports_message_chunks": supports_message_chunks,
+        },
+    )
+    return ws
+
+
 @pytest.mark.asyncio
-async def test_incoming_message_from_another_channel_pushes_to_connected_ios_devices(db):
-    """#3137 rules 2/4: a Signal message is live-pushed to every connected
-    iOS device the moment it is logged — the cross-device catch-up the issue
-    exists for."""
+@pytest.mark.parametrize("supports_chunks", [True, False])
+async def test_oversized_message_delivers_then_outbox_and_history_continue(
+    db, monkeypatch, supports_chunks
+):
+    frame_limit = 4096
+    monkeypatch.setattr(PennyConstants, "IOS_SYNC_FRAME_BYTES", frame_limit)
     channel = _make_channel(db)
-    device_a = FakeWs()
-    device_b = FakeWs()
-    signal_device = db.devices.register(
-        ChannelType.SIGNAL, "+15551234567", "Signal", is_default=True
+    ws = await _register_device(channel, "iPad", supports_message_chunks=supports_chunks)
+    device = db.devices.get_by_identifier("iPad")
+    attachment = "data:image/png;base64," + base64.b64encode(b"x" * frame_limit).decode()
+    older = db.messages.log_message("outgoing", "Penny", "older", device_id=device.id)
+    newer = db.messages.log_message(
+        "outgoing", "Penny", "newer", device_id=device.id, attachments=[attachment]
     )
-    assert signal_device.id is not None
-    # iOS device ids distinct from the Signal device's own — the exclusion
-    # below is keyed on device id, so a collision would hide the real bug.
-    channel._connections["device-a"] = IosConnectionInfo(
-        ws=cast(Any, device_a), device_id=signal_device.id + 1, identifier="device-a"
+
+    def page():
+        frames = ws.sent[:]
+        ws.sent.clear()
+        assert all(len(json.dumps(frame).encode()) <= frame_limit for frame in frames)
+        if not supports_chunks or frames[0]["type"] == IOS_RESP_TYPE_MESSAGES:
+            (message_page,) = frames
+            return message_page
+        assert all(frame["type"] == "messages_chunk" for frame in frames)
+        assert [frame["index"] for frame in frames] == list(range(len(frames)))
+        assert [frame["final"] for frame in frames] == [False] * (len(frames) - 1) + [True]
+        return json.loads(b"".join(base64.b64decode(frame["data"]) for frame in frames))
+
+    ws.sent.clear()
+    outbox_request = {"type": IOS_MSG_TYPE_PULL, "limit": 2}
+    latest = db.messages.log_message("outgoing", "Penny", "latest", device_id=device.id)
+    for message_id in (older, newer, latest):
+        await channel._handle_pull(cast(Any, ws), outbox_request, "iPad")
+        (record,) = page()["messages"]
+        assert record["message_id"] == message_id
+        if message_id == newer:
+            assert record["attachments"] == ([attachment] if supports_chunks else [])
+        await channel._handle_ack(cast(Any, ws), {"ids": [record["id"]]}, "iPad")
+        ws.sent.clear()
+    assert db.ios.pending_count(device.id) == 0
+
+    history_request = {"type": IOS_MSG_TYPE_HISTORY, "limit": 2}
+    # The most recent small page leaves the oversized image at the next cursor.
+    await channel._handle_history(cast(Any, ws), history_request, "iPad")
+    latest_page = page()
+    assert [record["message_id"] for record in latest_page["messages"]] == [latest]
+    await channel._handle_history(
+        cast(Any, ws), {**history_request, "before": latest_page["next_cursor"]}, "iPad"
     )
-    channel._connections["device-b"] = IosConnectionInfo(
-        ws=cast(Any, device_b), device_id=signal_device.id + 2, identifier="device-b"
+    first = page()
+    (record,) = first["messages"]
+    assert record["message_id"] == newer
+    assert record["attachments"] == ([attachment] if supports_chunks else [])
+    assert first["attachments_included"] is supports_chunks
+    await channel._handle_history(
+        cast(Any, ws), {**history_request, "before": first["next_cursor"]}, "iPad"
     )
+    assert [record["message_id"] for record in page()["messages"]] == [older]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_ios_turn_gets_one_linked_notice_after_restart(db):
+    channel = _make_channel(db)
+    origin = await _register_device(channel, "iPad")
+    db.users.save_info("iPad", "User", "Seattle", "America/Los_Angeles", "1990-01-01")
+    started = asyncio.Event()
+
+    async def hold_turn(**kwargs):
+        started.set()
+        await asyncio.Future()
+
+    channel._message_agent.handle = AsyncMock(side_effect=hold_turn)
+    payload = json.dumps(
+        {
+            "type": IOS_MSG_TYPE_MESSAGE,
+            "content": "Make a change",
+            "client_message_id": "f097565c-04dd-4c20-bca4-bbee5448076c",
+        }
+    )
+    await channel._process_raw_message(cast(Any, origin), payload, "iPad")
+    await asyncio.wait_for(started.wait(), timeout=2)
+    await channel.close()
+    (interrupted,) = db.messages.pending_turns()
+    device = db.devices.get_by_identifier("iPad")
+    answered = db.messages.log_message(
+        "incoming", "iPad", "Earlier request", device_id=device.id, turn_pending=True
+    )
+    db.messages.log_message(
+        "outgoing", "Penny", "Already saved", device_id=device.id, parent_id=answered
+    )
+
+    restarted = _make_channel(db)
+    replayed_turn = AsyncMock()
+    restarted._message_agent.handle = replayed_turn
+    origin = await _register_device(restarted, "iPad")
+    for message in db.messages.pending_turns():
+        await restarted.recover_interrupted_turn(message)
+    await restarted.recover_interrupted_turn(interrupted)
+    await restarted._process_raw_message(cast(Any, origin), payload, "iPad")
+    await asyncio.gather(*restarted._chat_tasks)
+    await restarted._handle_pull(cast(Any, origin), {"type": IOS_MSG_TYPE_PULL}, "iPad")
+    messages = origin.sent[-1]["messages"]
+    assert [message["content"] for message in messages] == [
+        "Make a change",
+        "Earlier request",
+        "Already saved",
+        PennyResponse.TURN_INTERRUPTED,
+    ]
+    assert messages[-1]["parent_id"] == interrupted.id
+    replayed_turn.assert_not_called()
+    assert db.messages.pending_turns() == []
+
+
+@pytest.mark.asyncio
+async def test_signal_message_mirrors_to_connected_and_offline_ios_devices(db):
+    apns = FakeApns()
+    channel = _make_channel(db, apns=apns)
+    connected = await _register_device(channel, "iPhone", token="iphone-token")
+    await _register_device(channel, "iPad", token="ipad-token")
+    channel._connections.pop("iPad")
+    origin = db.devices.register(ChannelType.SIGNAL, "+15551234567", "Signal")
 
     before = asyncio.all_tasks()
     message_id = db.messages.log_message(
-        PennyConstants.MessageDirection.INCOMING,
-        "+15551234567",
-        "hello from signal",
-        device_id=signal_device.id,
+        "incoming", origin.identifier, "hello", device_id=origin.id
     )
     await _settle_broadcasts(before)
 
-    assert device_a.sent, "a connected iOS device gets the live push"
-    assert device_b.sent, "and so does a second connected iOS device"
-    record = device_a.sent[0]["messages"][0]
-    assert record["direction"] == PennyConstants.MessageDirection.INCOMING
+    assert connected.sent[-1] == {"type": "outbox_changed", "pending_count": 1}
+    offline = await _register_device(channel, "iPad", token="ipad-token")
+    await channel._handle_pull(cast(Any, offline), {"type": IOS_MSG_TYPE_PULL}, "iPad")
+    record = offline.sent[-1]["messages"][0]
+    assert record["direction"] == "incoming"
     assert record["channel_type"] == ChannelType.SIGNAL
     assert record["message_id"] == message_id
+    assert apns.sent == []
 
 
 @pytest.mark.asyncio
-async def test_incoming_message_excludes_the_device_it_arrived_on(db):
-    """The device a user message arrived ON never gets it echoed back —
-    only every OTHER connected device does."""
-    channel = _make_channel(db)
-    origin = FakeWs()
-    other = FakeWs()
-    origin_device = db.devices.register(ChannelType.IOS, "device-origin", "iPhone A")
-    assert origin_device.id is not None
-    channel._connections["device-origin"] = IosConnectionInfo(
-        ws=cast(Any, origin), device_id=origin_device.id, identifier="device-origin"
-    )
-    channel._connections["device-other"] = IosConnectionInfo(
-        ws=cast(Any, other), device_id=origin_device.id + 1, identifier="device-other"
-    )
+async def test_ios_chat_mirrors_before_turn_finishes_and_retries_are_idempotent(db):
+    channel = _make_channel(db, apns=FakeApns())
+    origin = await _register_device(channel, "iPad")
+    other = await _register_device(channel, "iPhone")
+    handling = asyncio.Event()
+    finish = asyncio.Event()
 
-    before = asyncio.all_tasks()
-    db.messages.log_message(
-        PennyConstants.MessageDirection.INCOMING,
-        "device-origin",
-        "typed on this very phone",
-        device_id=origin_device.id,
-    )
-    await _settle_broadcasts(before)
+    async def hold_turn(message):
+        handling.set()
+        await finish.wait()
+        await channel._complete_incoming(message)
 
-    assert origin.sent == [], "the originating device already knows what it sent"
-    assert other.sent, "a second connected device still gets the push"
+    channel._dispatch_to_agent = AsyncMock(side_effect=hold_turn)
+    payload = json.dumps(
+        {
+            "type": IOS_MSG_TYPE_MESSAGE,
+            "content": "",
+            "images": [_jpeg_data_uri()],
+            "client_message_id": "f097565c-04dd-4c20-bca4-bbee5448076c",
+        }
+    )
+    await channel._process_raw_message(cast(Any, origin), payload, "iPad")
+    await asyncio.wait_for(handling.wait(), timeout=2)
+    assert db.messages.get_messages_since("iPad", since=datetime.min, limit=10) == []
+    assert db.messages.count_user_turns("iPad") == 0
+    await channel._process_raw_message(cast(Any, origin), payload, "iPad")
+    await channel._handle_pull(cast(Any, origin), {"type": IOS_MSG_TYPE_PULL}, "iPad")
+    await channel._handle_pull(cast(Any, other), {"type": IOS_MSG_TYPE_PULL}, "iPhone")
+    (origin_record,) = origin.sent[-1]["messages"]
+    (other_record,) = other.sent[-1]["messages"]
+    assert origin_record["message_id"] == other_record["message_id"]
+    assert origin_record["id"] != other_record["id"]
+    assert origin_record["client_message_id"] == json.loads(payload)["client_message_id"]
+    assert origin_record["attachments"] == other_record["attachments"]
+    assert len(origin_record["attachments"]) == 1
+    assert other_record["device_identifier"] == "iPad"
+    await channel._handle_ack(cast(Any, origin), {"ids": [origin_record["id"]]}, "iPad")
+    assert db.ios.pending_count(channel._connections["iPhone"].device_id) == 1
+    finish.set()
+    await asyncio.gather(*channel._chat_tasks)
+    assert channel._dispatch_to_agent.await_count == 1
+    assert db.messages.count_user_turns("iPad") == 1
 
 
 def test_ios_broadcast_without_clients_needs_no_event_loop(db):
@@ -503,6 +637,31 @@ async def test_sidecar_registration_does_not_steal_default_device(db):
     assert registration.apns_token == "apns-token"
     assert ws.sent[-1]["type"] == IOS_RESP_TYPE_REGISTERED
     assert ws.sent[-1]["is_default"] is False
+
+
+@pytest.mark.asyncio
+async def test_mirrored_reply_alerts_only_the_sticky_primary_and_seeds_new_devices(db):
+    apns = FakeApns()
+    channel = _make_channel(db, apns=apns)
+    manager = ChannelManager(message_agent=MagicMock(), db=db, turn_registry=TurnRegistry())
+    manager.register_channel(ChannelType.IOS, channel)
+    await _register_device(channel, "iPhone", token="iphone-token")
+    await _register_device(channel, "iPad", token="ipad-token")
+    channel._connections.clear()
+
+    message_id = await channel.send_response("iPad", "Hello from Penny", None, "chat")
+    assert message_id is not None
+    assert db.devices.get_default_identifier() == "iPhone"
+    assert [push["device_token"] for push in apns.sent] == ["iphone-token"]
+    for identifier in ("iPhone", "iPad", "new-iPad"):
+        ws = await _register_device(channel, identifier)
+        await channel._handle_pull(cast(Any, ws), {"type": IOS_MSG_TYPE_PULL}, identifier)
+        (record,) = ws.sent[-1]["messages"]
+        assert record["message_id"] == message_id
+        assert record["direction"] == "outgoing"
+        assert record["source_hint"] == "Chat"
+    assert db.devices.get_default_identifier() == "iPhone"
+    assert len(apns.sent) == 1
 
 
 @pytest.mark.asyncio
@@ -857,7 +1016,7 @@ async def test_history_reconstructs_source_hint_from_ios_outbox(db):
     )
     assert record["source_hint"] == "Startup"
     assert record["source_name"] == "startup"
-    assert record["outbox_id"] is not None
+    assert record["message_id"] == message_id
     assert record["attachments"] == ["data:image/png;base64,aGVsbG8="]
 
 
@@ -1387,29 +1546,38 @@ async def test_ios_image_policy_only_changes_new_automatic_deliveries(db, test_c
             await channel.send_response("ios-keychain-id", content, parent_id=None, author="chat")
 
     await deliver()
-    first = db.ios.pending_for_device(device.id)[0]
+
+    def outgoing_deliveries():
+        return [row for row in db.ios.pending_for_device(device.id) if row.source_name is not None]
+
+    first = outgoing_deliveries()[0]
     expected = [f"data:image/png;base64,{base64.b64encode(b'page').decode()}"]
     assert json.loads(first.attachments_json) == expected
     await _ios_admin_request(
         channel, {"type": "config_update", "key": "IOS_AUTOMATIC_IMAGES", "value": "0"}
     )
     await deliver()
-    pending = db.ios.pending_for_device(device.id)
+    pending = outgoing_deliveries()
     assert len(pending) == 2
     assert pending[1].attachments_json is None
+    db.ios.mark_acked(device.id, [row.id for row in pending if row.id is not None])
     # Direct attachments and current-run generated IDs bypass the automatic policy.
     await channel.send_response("ios-keychain-id", "explicit", None, "chat", attachments=expected)
     await channel.send_response("ios-keychain-id", "generated", None, "chat", media_ids=[media_id])
     await channel.send_response("ios-keychain-id", content, None, "chat", media_ids=[999999])
-    pending = db.ios.pending_for_device(device.id)
-    assert [json.loads(row.attachments_json) for row in pending[2:4]] == [expected, expected]
-    assert pending[4].attachments_json is None  # missing generated ID obeys fallback policy
+    by_content = {row.content: row for row in db.ios.pending_for_device(device.id)}
+    assert [
+        json.loads(by_content[name].attachments_json) for name in ("explicit", "generated")
+    ] == [expected, expected]
+    assert by_content[content].attachments_json is None
     await channel._handle_pull(cast(Any, ws), {"type": IOS_MSG_TYPE_PULL}, "ios-keychain-id")
-    assert ws.sent[-1]["messages"][0]["attachments"] == expected
+    pulled = {row["content"]: row for row in ws.sent[-1]["messages"]}
+    assert pulled["explicit"]["attachments"] == expected
     await channel._handle_history(cast(Any, ws), {"type": IOS_MSG_TYPE_HISTORY}, "ios-keychain-id")
     history = ws.sent[-1]["messages"]
     assert (
-        next(row for row in history if row.get("outbox_id") == first.id)["attachments"] == expected
+        next(row for row in history if row["message_id"] == first.message_log_id)["attachments"]
+        == expected
     )
     await channel._handle_history(
         cast(Any, ws),
@@ -1666,15 +1834,10 @@ async def test_user_photo_message_history_record_carries_the_attachment(db):
         images=[image_uri],
     )
 
+    accepted = channel._accept_incoming(message)
+    assert accepted is not None
     await channel._finish_turn(
-        message,
-        "ios-keychain-id",
-        device.id,
-        ControllerResponse(answer="ok"),
-        "run-1",
-        None,
-        None,
-        datetime.now(UTC),
+        accepted, "ios-keychain-id", ControllerResponse(answer="ok"), "run-1", None, []
     )
 
     await channel._handle_history(

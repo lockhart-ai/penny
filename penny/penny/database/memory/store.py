@@ -602,7 +602,8 @@ class MemoryStore:
         with self._session() as session:
             entry_query = select(MemoryEntry.memory_name, _count(MemoryEntry.id))
             message_query = select(MessageLog.direction, _count(MessageLog.id)).where(
-                col(MessageLog.is_reaction).is_(False)
+                col(MessageLog.is_reaction).is_(False),
+                col(MessageLog.turn_pending).is_(False),
             )
             run_query = select(_count(PromptLog.id)).where(
                 col(PromptLog.run_outcome).isnot(None),
@@ -1302,7 +1303,7 @@ class MemoryStore:
             "SELECT m.id, m.direction, m.content, m.mechanism, m.timestamp "
             "FROM messagelog_fts f JOIN messagelog m ON m.id = f.rowid "
             "WHERE messagelog_fts MATCH :q AND m.is_reaction = 0 "
-            "AND m.direction IN (:incoming, :outgoing) "
+            "AND m.turn_pending = 0 AND m.direction IN (:incoming, :outgoing) "
             "ORDER BY bm25(messagelog_fts) LIMIT :pool"
         )
         extra = {

@@ -997,6 +997,7 @@ class MessageLogMemory(Log):
         return select(MessageLog).where(
             MessageLog.direction == self._direction,
             col(MessageLog.is_reaction).is_(False),
+            col(MessageLog.turn_pending).is_(False),
         )
 
     def _all_rows(self) -> list[MemoryEntry]:

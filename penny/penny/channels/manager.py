@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.channels.turns import TurnRegistry
 from penny.config import Config
-from penny.constants import PermissionResolution
+from penny.constants import ChannelType, PermissionResolution
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
@@ -152,6 +152,15 @@ class ChannelManager(MessageChannel):
         """Wait until the default outgoing channel can send."""
         await self._get_default_channel().wait_until_ready()
 
+    async def recover_interrupted_turn(self, message: MessageLog) -> None:
+        device = self._db.devices.get_by_id(message.device_id) if message.device_id else None
+        channel = self._channel_for_device(device)
+        if channel is None:
+            await super().recover_interrupted_turn(message)
+            return
+        await channel.wait_until_ready()
+        await channel.recover_interrupted_turn(message)
+
     async def _send_raw(
         self,
         recipient: str,
@@ -169,6 +178,9 @@ class ChannelManager(MessageChannel):
         exactly once, not double-logged by the concrete channel.
         """
         channel = self._resolve_channel(recipient)
+        default = self._db.devices.get_default()
+        if default is not None and default.channel_type == ChannelType.IOS:
+            recipient = default.identifier
         return await channel._send_raw(
             recipient, message, attachments, quote_message, source_name, message_log_id
         )

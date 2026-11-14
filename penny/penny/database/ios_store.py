@@ -7,10 +7,13 @@ import json
 import logging
 
 from sqlalchemy import func
+from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session, col, select
 
 from penny.clock import Clock
-from penny.database.models import Device, IosDeviceRegistration, IosOutboxItem
+from penny.constants import ChannelType
+from penny.database.ios_history import SEED_IOS_HISTORY
+from penny.database.models import Device, IosDeviceRegistration, IosOutboxItem, MessageLog
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,7 @@ class IosStore:
         now = self._clock.now()
         with self._session() as session:
             row = session.get(IosDeviceRegistration, device.id)
+            new_registration = row is None
             if row is None:
                 row = IosDeviceRegistration(device_id=device.id)
 
@@ -55,6 +59,9 @@ class IosStore:
                 row.device_secret_hash = _hash_secret(device_secret)
 
             session.add(row)
+            if new_registration:
+                session.flush()
+                session.connection().exec_driver_sql(SEED_IOS_HISTORY, {"device_id": device.id})
             session.commit()
             session.refresh(row)
             logger.info("Updated iOS registration for device_id=%s", device.id)
@@ -64,6 +71,24 @@ class IosStore:
         """Return iOS registration state for a device id."""
         with self._session() as session:
             return session.get(IosDeviceRegistration, device_id)
+
+    @staticmethod
+    def stage_deliveries(session: Session, message: MessageLog, source_name: str | None) -> None:
+        """Commit sync deliveries with the message and its shared attachments."""
+        device_ids = session.exec(select(Device.id).where(Device.channel_type == ChannelType.IOS))
+        for device_id in device_ids.all():
+            assert device_id is not None
+            session.add(
+                IosOutboxItem(
+                    device_id=device_id,
+                    message_log_id=message.id,
+                    created_at=message.timestamp,
+                    content=message.content,
+                    source_name=source_name,
+                    push_title="",
+                    push_summary="",
+                )
+            )
 
     def enqueue_outbox(
         self,
@@ -78,9 +103,9 @@ class IosStore:
         push_title: str,
         push_summary: str,
     ) -> IosOutboxItem:
-        """Append a message to the durable iOS outbox."""
+        """Prepare a staged delivery for notification, or insert a standalone send."""
         with self._session() as session:
-            row = IosOutboxItem(
+            statement = insert(IosOutboxItem).values(
                 message_log_id=message_log_id,
                 device_id=device_id,
                 content=content,
@@ -91,8 +116,24 @@ class IosStore:
                 push_title=push_title,
                 push_summary=push_summary,
                 created_at=self._clock.now(),
+                legacy_id=False,
             )
-            session.add(row)
+            statement = statement.on_conflict_do_update(
+                index_elements=["device_id", "message_log_id"],
+                set_={
+                    key: getattr(statement.excluded, key)
+                    for key in (
+                        "content",
+                        "attachments_json",
+                        "source_type",
+                        "source_name",
+                        "source_hint",
+                        "push_title",
+                        "push_summary",
+                    )
+                },
+            )
+            row = session.scalars(statement.returning(IosOutboxItem)).one()
             session.commit()
             session.refresh(row)
             logger.info("Queued iOS outbox item %s for device_id=%s", row.id, device_id)
@@ -108,7 +149,7 @@ class IosStore:
                         IosOutboxItem.device_id == device_id,
                         col(IosOutboxItem.acked_at).is_(None),
                     )
-                    .order_by(col(IosOutboxItem.created_at).asc())
+                    .order_by(col(IosOutboxItem.created_at).asc(), col(IosOutboxItem.id).asc())
                     .limit(limit)
                 ).all()
             )
@@ -122,6 +163,20 @@ class IosStore:
                 .where(
                     IosOutboxItem.device_id == device_id,
                     col(IosOutboxItem.acked_at).is_(None),
+                )
+            ).one()
+
+    def pending_alert_count(self, device_id: int, new_item_id: int) -> int:
+        """Count pending alerts, including the preview about to be sent."""
+        with self._session() as session:
+            return session.exec(
+                select(func.count())
+                .select_from(IosOutboxItem)
+                .where(
+                    IosOutboxItem.device_id == device_id,
+                    col(IosOutboxItem.acked_at).is_(None),
+                    (col(IosOutboxItem.push_sent_at).is_not(None))
+                    | (IosOutboxItem.id == new_item_id),
                 )
             ).one()
 

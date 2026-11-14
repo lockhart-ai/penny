@@ -87,7 +87,7 @@ struct PennyWebSocketClientTests {
             webSocketClient: transport
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.clearSentPayloads()
 
         client.sendTestNotification()
@@ -114,13 +114,13 @@ struct PennyWebSocketClientTests {
         )
 
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.emit("""
         {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
         """)
 
         let requestTask = Task { try await client.requestEmbedding("coffee") }
-        let payloads = await sentPayloads(transport, count: 5)
+        let payloads = await sentPayloads(transport, count: 4)
         guard case .string(let requestID)? = payloads.last?["request_id"] else {
             Issue.record("Embedding request did not include a request_id")
             return
@@ -147,7 +147,7 @@ struct PennyWebSocketClientTests {
             filter: .chat
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.clearSentPayloads()
 
         transport.emit("""
@@ -214,7 +214,7 @@ struct PennyWebSocketClientTests {
             filter: .all
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.clearSentPayloads()
         let pendingCountBeforeLiveFrame = client.pendingCount
 
@@ -281,7 +281,7 @@ struct PennyWebSocketClientTests {
             filter: .all
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.clearSentPayloads()
 
         transport.emit("""
@@ -393,6 +393,77 @@ extension PennyWebSocketClientTests {
         #expect(hasNewMessages == false)
     }
 
+    @Test func mirroredMessagesReconcileByClientIDAndAckDeliveryIDs() async throws {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs(), webSocketClient: transport)
+        await client.connect()
+        _ = await sentPayloads(transport, count: 1)
+        let first = client.sendMessage("Same text")
+        let second = client.sendMessage("Same text")
+        let clientID = try #require(client.messages.last?.clientMessageID)
+        _ = await sentPayloads(transport, count: 3)
+        transport.clearSentPayloads()
+
+        transport.emit("""
+        {"type":"messages","mode":"outbox","messages":[
+          {"id":70,"message_id":500,
+           "client_message_id":"\(clientID)","created_at":"2026-07-05T00:00:00Z",
+           "content":"Same text","direction":"incoming"},
+          {"id":71,"message_id":501,
+           "client_message_id":"\(UUID())","created_at":"2026-07-05T00:00:01Z",
+           "content":"Same text","direction":"incoming"}
+        ]}
+        """)
+        let payloads = await sentPayloads(transport, count: 1)
+        #expect(payloads == [["type": .string("ack_messages"), "ids": .array([.number(70), .number(71)])]])
+        #expect(Set(database.loadMessages().map(\.id)) == [first, 500, 501])
+        #expect(Set(client.messages.map(\.id)) == [first, 500, 501])
+        #expect(!client.messages.contains { $0.id == second })
+    }
+
+    @Test func chunkedOutboxPageIsSavedAndAckedAfterTheLastFragment() async throws {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs(), webSocketClient: transport)
+        await client.connect()
+        let registration = await sentPayloads(transport, count: 1)
+        #expect(registration.first?["supports_message_chunks"] == .bool(true))
+        transport.emit("""
+        {"type":"registered","device_id":"device","is_default":true,"pending_count":2}
+        """)
+        _ = await sentPayloads(transport, count: 3)
+        transport.clearSentPayloads()
+
+        let page = Data("""
+        {"type":"messages","mode":"outbox","messages":[
+          {"id":70,"message_id":500,"created_at":"2026-07-05T00:00:00Z",
+           "content":"café","attachments":["data:image/png;base64,AA=="]}
+        ]}
+        """.utf8)
+        let splitIndex = try #require(page.firstIndex(of: 0xc3)) + 1
+        let first = page.prefix(splitIndex).base64EncodedString()
+        let last = page.dropFirst(splitIndex).base64EncodedString()
+        transport.emit("""
+        {"type":"messages_chunk","index":0,"final":false,"data":"\(first)"}
+        """)
+        #expect(database.loadMessages().isEmpty)
+        #expect(transport.sentPayloads.isEmpty)
+        transport.emit("""
+        {"type":"messages_chunk","index":1,"final":true,"data":"\(last)"}
+        """)
+        let acknowledgement = await sentPayloads(transport, count: 1)
+        #expect(acknowledgement == [["type": .string("ack_messages"), "ids": .array([.number(70)])]])
+        #expect(database.loadMessages().first?.content == "café")
+        #expect(database.loadMessages().first?.imageAttachmentDataURLs == ["data:image/png;base64,AA=="])
+
+        transport.emit("""
+        {"type":"messages_acked","count":1,"pending_count":1}
+        """)
+        let requests = await sentPayloads(transport, count: 2)
+        #expect(requests.last?["type"] == .string("pull_messages"))
+    }
+
     @Test func outboxDeliveryPublishesMessageAlreadyPersistedByHistory() async {
         let database = configuredDatabase()
         database.save(message: MessageModel(
@@ -419,7 +490,7 @@ extension PennyWebSocketClientTests {
         )
 
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.emit("""
         {
           "type": "messages",
@@ -453,7 +524,7 @@ extension PennyWebSocketClientTests {
             hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }), filter: .all
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.clearSentPayloads()
         transport.emit("""
         {"type":"messages","mode":"outbox","messages":[{
@@ -510,7 +581,7 @@ extension PennyWebSocketClientTests {
             filter: .all
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
         transport.clearSentPayloads()
         client.isConnected = true
         client.isRegistered = true
@@ -577,7 +648,7 @@ extension PennyWebSocketClientTests {
             webSocketClient: transport
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
 
         transport.emit("""
         {"type":"agent_progress","event":"run_started","run_id":"run-1","agent":"chat","scope":"foreground","tools":[]}
@@ -617,7 +688,7 @@ extension PennyWebSocketClientTests {
             webSocketClient: transport
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
 
         transport.emit("""
         {"type":"agent_progress","event":"run_started","run_id":"bg-1","agent":"collector","scope":"background","tools":[]}
@@ -647,7 +718,7 @@ extension PennyWebSocketClientTests {
             webSocketClient: transport
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
 
         transport.emit("""
         {"type":"typing","active":true}
@@ -668,7 +739,7 @@ extension PennyWebSocketClientTests {
             webSocketClient: transport
         )
         await client.connect()
-        _ = await sentPayloads(transport, count: 2)
+        _ = await sentPayloads(transport, count: 1)
 
         for state in ConversationStateLabel.allCases {
             transport.emit("""

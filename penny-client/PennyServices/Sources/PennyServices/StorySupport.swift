@@ -13,10 +13,18 @@ private final class NullWebSocketTransport: WebSocketTransport {
     /// Reports "already connected" so `PennyService.connect()` finds nothing
     /// to do and never attempts a real socket, regardless of `Prefs` state.
     let isConnected = true
+    var onMessageSent: (() -> Void)?
 
     func connect(request: URLRequest, onReceive: @escaping ReceiveHandler, onFailure: @escaping FailureHandler) {}
     func disconnect() {}
-    func send(_ data: Data) async throws {}
+    func send(_ data: Data) async throws {
+        guard let onMessageSent,
+              let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              payload["type"] as? String == "message" else { return }
+        // The live run arrives after the chat's initial post-send scroll.
+        try await Task.sleep(for: .milliseconds(700))
+        onMessageSent()
+    }
 }
 
 /// One step of a story's in-progress agent run, named by the tool it used —
@@ -54,7 +62,8 @@ public extension PennyService {
         workingSteps: [StoryWorkingStep] = [],
         workingElapsedSeconds: Int = 0,
         backgroundRunCount: Int = 0,
-        pendingPermissionDomain: String? = nil
+        pendingPermissionDomain: String? = nil,
+        workingStepsOnSend: [StoryWorkingStep] = []
     ) -> PennyService {
         let databaseService = DatabaseService()
         databaseService.setupForTesting()
@@ -62,7 +71,14 @@ public extension PennyService {
             databaseService.save(message: MessageModel(message: message))
         }
 
-        let service = PennyService(databaseService: databaseService, prefs: .shared, webSocketClient: NullWebSocketTransport())
+        let transport = NullWebSocketTransport()
+        let service = PennyService(databaseService: databaseService, prefs: .shared, webSocketClient: transport)
+        if !workingStepsOnSend.isEmpty {
+            transport.onMessageSent = { [weak service] in
+                let run = makeWorkingRun(from: workingStepsOnSend, elapsedSeconds: 0)
+                service?.agentProgressRuns[run.id] = run
+            }
+        }
         service.isConnected = isConnected
         service.isRegistered = isConnected
         if !workingSteps.isEmpty {

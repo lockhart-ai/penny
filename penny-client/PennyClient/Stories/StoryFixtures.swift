@@ -37,6 +37,23 @@ enum StoryFixtures {
         return MessageView.ViewModel(client: client)
     }
 
+    static func scrollingViewModel() -> MessageView.ViewModel {
+        let now = Date()
+        let messages = (1...24).map { index in
+            ChatMessage(
+                id: index, serverID: index, createdAt: now.addingTimeInterval(Double(index - 25) * 60),
+                content: index == 24 ? "This is the latest message." : "Previous conversation message \(index).",
+                sourceHint: nil, imageAttachments: [], isOutgoing: true
+            )
+        }
+        let client = PennyService.storyInstance(
+            messages: messages,
+            isConnected: true,
+            workingStepsOnSend: [StoryWorkingStep(thinking: "Checking the latest request.")]
+        )
+        return MessageView.ViewModel(client: client)
+    }
+
     /// The live dock just started (#3042, `chat-working-start`): one step,
     /// its thinking already in but no tool call yet — the dock's very first
     /// visible frame.

@@ -188,6 +188,10 @@ class MessageLog(SQLModel, table=True):
         default=None, foreign_key="device.id", index=True
     )  # FK to device that sent/received this message
     embedding: bytes | None = None  # Serialized float32 embedding vector
+    client_message_id: str | None = None
+    # Accepted user messages are visible to device sync immediately. Agent
+    # history and recall include them once their turn has consumed them.
+    turn_pending: bool = Field(default=False, sa_column_kwargs={"server_default": text("0")})
     # Emission provenance (#1568): the mechanism (bound collection) whose
     # autonomous cycle produced this send.  NULL for a direct reply — a chat turn
     # with a live triggering user message names no mechanism.  Stamped by the
@@ -226,6 +230,7 @@ class MessageLog(SQLModel, table=True):
     exchange_embedding: bytes | None = None
 
     __table_args__ = (
+        Index("ux_messagelog_device_client_message", "device_id", "client_message_id", unique=True),
         Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),
         Index("ix_messagelog_sender_timestamp_id", "sender", "timestamp", "id"),
         Index("ix_messagelog_recipient_timestamp_id", "recipient", "timestamp", "id"),
@@ -641,6 +646,11 @@ class IosOutboxItem(SQLModel, table=True):
     push_sent_at: datetime | None = None
     push_error: str | None = None
     acked_at: datetime | None = Field(default=None, index=True)
+    legacy_id: bool = Field(default=False, sa_column_kwargs={"server_default": text("0")})
+
+    __table_args__ = (
+        Index("ux_ios_outbox_device_message", "device_id", "message_log_id", unique=True),
+    )
 
 
 class MessageAttachment(SQLModel, table=True):

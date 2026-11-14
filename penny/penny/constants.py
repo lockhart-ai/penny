@@ -771,6 +771,7 @@ class PennyConstants:
     # the frame with a 1009 "message too big" close, dropping the connection
     # mid-browse.  16 MiB leaves generous headroom for image-bearing responses.
     BROWSER_WS_MAX_FRAME_BYTES = 16 * 1024 * 1024
+    IOS_SYNC_FRAME_BYTES = 20 * 1024 * 1024
     # A tool connection counts as live only while the addon keeps sending its
     # app-level heartbeat (HEARTBEAT_INTERVAL_MS = 15s in the extension).  Past
     # this window with no heartbeat the socket is treated as dead even if TCP is

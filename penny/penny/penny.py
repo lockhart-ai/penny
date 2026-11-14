@@ -28,7 +28,7 @@ from penny.config import Config, setup_logging
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.migrate import migrate
-from penny.database.models import MemoryEntry
+from penny.database.models import MemoryEntry, MessageLog
 from penny.email.protocol import EmailClient
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
@@ -674,11 +674,12 @@ class Penny:
         await self._run_preflight()
         await self._run_startup_backfills()
         new_changelog_entries = self._record_changelog_entries()
+        interrupted_turns = self.db.messages.pending_turns()
 
         listen_task = asyncio.create_task(self.channel.listen(), name="channel.listen")
         scheduler_task = asyncio.create_task(self.scheduler.run(), name="scheduler.run")
         startup_task = asyncio.create_task(
-            self._run_startup_notifications(new_changelog_entries),
+            self._run_startup_notifications(new_changelog_entries, interrupted_turns),
             name="startup.notifications",
         )
         tasks = {listen_task, scheduler_task, startup_task}
@@ -753,7 +754,9 @@ class Penny:
             )
         return recorded
 
-    async def _run_startup_notifications(self, new_changelog_entries: list[ChangelogEntry]) -> None:
+    async def _run_startup_notifications(
+        self, new_changelog_entries: list[ChangelogEntry], interrupted_turns: list[MessageLog]
+    ) -> None:
         """Send startup notifications after the outgoing channel is ready.
 
         The startup notice announces only the new changes (#3003) — the
@@ -766,6 +769,11 @@ class Penny:
             logger.warning("Startup notifications skipped; channel never became ready: %s", e)
             return
 
+        for message in interrupted_turns:
+            try:
+                await self.channel.recover_interrupted_turn(message)
+            except Exception:
+                logger.exception("Could not recover interrupted chat message %s", message.id)
         await self._send_changelog_announcement(new_changelog_entries)
         await self._prompt_for_missing_profiles()
 
