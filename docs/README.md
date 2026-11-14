@@ -44,6 +44,11 @@ kind, with one line on when to read it. Start here before opening any one of the
 
 ## Process (how work is done)
 
+- [`ios-agent-workflow.md`](ios-agent-workflow.md) — iOS client implementation,
+  Sirius/simulator selection, local UI tests and screenshot evidence; start with
+  the [client overview](../penny-client/README.md) and [design rules](../penny-client/DESIGN.md).
+- [`ios-agent-review-guide.md`](ios-agent-review-guide.md) — concise review rules
+  for iOS client changes, device coverage and the local-only UI-test policy.
 - [`agent-task-workflow.md`](agent-task-workflow.md) — the kitten SOP: one GitHub issue
   from a brief to a reviewed, green draft PR; read before starting any kitten work.
 - [`agent-supervisor-runbook.md`](agent-supervisor-runbook.md) — the coordinator's runbook:
@@ -51,11 +56,6 @@ kind, with one line on when to read it. Start here before opening any one of the
   coordinating a Glade task.
 - [`pr-review-guide.md`](pr-review-guide.md) — the canonical, exhaustive PR review
   checklist for the main repo; read before reviewing or self-checking a PR.
-- [`penny-client-agent-task-workflow.md`](penny-client-agent-task-workflow.md) — the kitten
-  SOP for PennyClient (iOS) tasks specifically; read before taking a `penny-client/` issue.
-- [`penny-client-pr-review-guide.md`](penny-client-pr-review-guide.md) — the focused
-  checklist for reviewing Swift/iOS changes in `penny-client/`; read alongside the
-  repo-wide review guide when reviewing a client PR.
 - [`prompt-writing-guide.md`](prompt-writing-guide.md) — how to write the model-facing
   prompts that drive Penny (extraction prompts, system prompts, tool descriptions); read
   before authoring or revising a prompt.

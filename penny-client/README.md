@@ -1,60 +1,98 @@
-# penny-client
-iOS client for the penny personal assistant
+# Penny for iPhone and iPad
 
-Build and test from the repo root with `make client-check` (requires Xcode; runs
-the standalone service tests, app-hosted `PennyClientTests`, and the Testflight
-build verification on a freshly booted simulator). For service-only changes,
-`make client-services-check` runs `PennyServicesStandaloneTests` without
-building or launching an app target. CI runs the complete gate on pull requests
-touching `penny-client/`.
+PennyClient is the native app for talking to Penny, your personal AI assistant.
+It connects to your Penny server and brings chat, shared conversation history,
+images, live activity, memories and prompt inspection into one SwiftUI interface.
+The server runs the assistant; the app handles presentation, local history and
+communication.
 
-`make client-ui-tests` runs the `PennyClientUITests` XCUITest smoke suite (#3106) —
-reaching each page through the shell's menu, pushing and returning from a memory's
-detail, opening find-in-chat and highlighting a match, and sending from the
-composer — against fixture data (`-PennyStory`, #2965), never a server. It's LOCAL
-ONLY: CI's
-`client-check.yml` never builds or runs it (macOS runners are scarce), so run it
-yourself before review whenever a PR adds or moves an interactive control.
+## What is here
 
-While Penny works, a rainbow-edged glass live dock sits at the end of the
-conversation, above the message field: a header (`Working · Step n · t s`) over
-a chronological stream of her thinking and tool calls, growing with the run up
-to 40% of the screen before it scrolls internally. It fades into her reply
-bubble once the run ends.
+- **Chat:** messages, image attachments, search, queued messages, permission
+  requests and live agent activity.
+- **Memory:** browse memories and their details, configuration and activity.
+- **Prompts:** inspect runs and their prompt content.
+- **Settings:** server connection, credentials, image options, history and
+  notification controls.
 
-Settings → Image Attachments controls automatic images for the entire iOS channel:
-cited-page images, same-site images, and broader related images. All switches start
-enabled. Changes save immediately to the server with confirmation and error state;
-the connection settings' Save button is separate. Explicit attachments and images
-generated for the current request always remain deliverable. The controls affect
-new replies; existing messages and the History attachment option are unchanged.
-An older server that does not expose all four switches shows disabled controls.
+The shell uses a system navigation stack and a page menu for Chat, Memory,
+Prompts and Settings. Reusable UI lives in `PennyDesign`; WebSocket communication,
+SQLite persistence, synchronization, search and preferences live in
+`PennyServices`. `SQLPropertyMacros` supports the database layer.
 
+Linting uses `SwiftLintPlugins` 0.59.1, which supplies the same SwiftLint binary
+without constraining the macro package's SwiftSyntax dependency. The macro
+package pins SwiftSyntax 602.0.0. The live dock sizes itself from the chat viewport
+so its height adapts to window size and rotation.
 
-Navigation is one stock `NavigationStack` (#3111): a leading glass page menu
-switches between Chat, Memory, Prompts and Settings, Penny's avatar and name sit
-centred, and search is trailing; a push (a memory's detail) gets the system back
-button. The Memory and Prompts pages host the read-only data browser (previously a
- Memories/Prompts sheet off the chat's memories button). Memories are grouped into
-Collections, Logs, and Archived; each has Entries,
-Activity, and read-only Config panels. Prompts shows all agent runs with filters and
-expandable run → prompt → turn details. The previous Insights and Memory Management
-screens have been removed. Global settings live on the Settings page.
+App Intents metadata extraction is disabled because the project has no App
+Intents. Remove `LM_SKIP_METADATA_EXTRACTION` when adding App Intents or shortcuts.
 
-The browser reads the current memory contract, including `schedule` (RRULE) and
-notification status (`published` on the wire). Deploy the accompanying iOS server
-support before this client: memory list/detail/page and prompt-log reads use optional
-`request_id` values echoed on responses and `data_read_error` failures. Existing
-clients without IDs remain supported. Browser requests time out after 30 seconds;
-filter changes, dismissal, and reconnect discard obsolete results. No memory data is
-persisted on the client, and this browser provides no mutation controls.
+## Open and run
 
-Received messages retain their generating `run_id` through delivery, history, and
-local SQLite storage. Long-press a linked message and choose **View prompts** to
-open the existing prompt browser at that exact run, expanded, for chat replies or
-composed collection reports. Missing runs show an empty state; **Browse all prompts**
-returns to the regular browser. Unlinked messages keep Reply and Copy only.
-The server must expose `run_id` on iOS message records and support correlated
-`run_detail_request` / `run_detail_response` reads. Existing cached messages gain
-linkage when refreshed from server history, including already-visible message menus;
-no text or timestamp matching is used.
+1. Open `PennyClient.xcodeproj` in Xcode and let Swift packages resolve. The local
+   packages require Swift tools 6.1/6.2; use an Xcode version that supports them
+   and your destination OS. This checkout was inspected with Xcode 27.2.
+2. Select **PennyClient** to run the development app, **PennyDev**. The app targets
+   iOS/iPadOS 26.0 and enables both iPhone and iPad. Project-level settings say
+   27.0; target overrides and package minimums are not uniform.
+3. Select a compatible device or simulator. Physical devices need working local
+   signing, trust and Developer Mode. Prefer Sirius when available; see the
+   [device workflow](../docs/ios-agent-workflow.md#choose-a-destination).
+4. For live use, enter your Penny WebSocket URL and credentials in Settings.
+   Credentials are stored in Keychain; ordinary preferences use UserDefaults.
+   Do not commit credentials or put them in screenshots.
+
+To explore without a server, use a Debug build and add the launch arguments
+`-PennyStory chatConversation` in Xcode's scheme editor. Other states are listed
+in `PennyClient/Stories/StoryID.swift`. Story mode uses an in-memory message
+database and a no-op WebSocket transport, and skips push registration. Remove
+the arguments to return to normal use. Some settings still use shared preferences;
+story mode is not a complete sandbox for every settings action.
+
+## Checks and screenshots
+
+Run these from the **repository root**:
+
+| Command | Purpose |
+| --- | --- |
+| `make client-check` | CI-equivalent service/app unit tests and TestFlight build metadata check |
+| `make client-services-check` | Standalone service tests |
+| `make client-ui-tests` | Local-only UI interaction tests on a simulator |
+| `make client-stories` | Existing local story gallery in `penny-client/build/stories/` |
+
+The check scripts erase their selected simulator; `client-check` and
+`client-services-check` also shut down all simulators. Coordinate before using
+them on a shared machine. For an explicit destination, device testing and retained
+UI-test screenshots, follow the [workflow](../docs/ios-agent-workflow.md).
+UI tests and screenshot capture stay out of CI.
+
+## Assessment: November 13, 2026
+
+The source has useful separation between app, reusable UI and services, with
+unit coverage and fixture-driven UI tests for navigation, composer, search and
+connection settings. CI already keeps UI automation separate from unit tests.
+
+The remaining workflow and design gaps are:
+
+- `LiveDockLayoutUITests` retains named screenshots in portrait and landscape.
+  Other UI flows still need explicit capture points for visual review.
+- `client-ui-tests.sh` selects the newest available iPhone simulator, but does
+  not prefer a physical device or cover iPad automatically. `client-stories.sh`
+  pins iPhone 18 Pro / iOS 27.2 and uses a fixed delay before capture.
+- Universal device support is configured, but is not evidence of layout quality
+  at every size. Continue checking resized iPad windows and large text.
+- Project/target deployment settings differ, and GitHub workflows select Xcode
+  26 while this local installation is Xcode 27.2. Check compatibility when changing
+  build settings or adopting APIs.
+
+This is a source, configuration and tool-inventory assessment, not a fresh build
+or runtime certification. No app build, test suite or device installation was
+performed for this documentation change.
+
+## Working on the app
+
+- [Agent project guide](AGENTS.md)
+- [Design guidance](DESIGN.md)
+- [Agent workflow and screenshots](../docs/ios-agent-workflow.md)
+- [Concise review guide](../docs/ios-agent-review-guide.md)

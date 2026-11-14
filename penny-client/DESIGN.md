@@ -1,91 +1,75 @@
-# PennyClient Design
+# Penny client design guidance
 
-## The first rule: stock iOS
+Penny should feel at home on iPhone and iPad. Use Apple's Human Interface
+Guidelines and built-in controls as the starting point. Keep attention on the
+conversation and the user's task.
 
-The client uses SwiftUI's stock elements as Apple designed them, never a hand-built lookalike; our own elements are composed from Apple's components and materials, and every rendering and animation Apple provides (glass, blur, scroll-edge fades, menus, transitions) is Apple's, never faked. Any design rule below that a stock element contradicts loses. See the [client review guide's first section](../docs/penny-client-pr-review-guide.md#1-use-the-framework-as-designed).
+## Native components first
 
-Every redesigned screen is built from one place: the [`PennyDesign`](PennyDesign/Package.swift)
-Swift package (the tokens and shared components) and the rules below. The approved
-reference screens live in [`Design/screens/`](Design/screens/) — every screen in this
-document links to its PNG, and a redesigned page is measured against its shot, not
-against memory.
+- Prefer SwiftUI `NavigationStack`, `NavigationSplitView` where a list/detail
+  layout benefits from it, system toolbars, `List`, `Form`, `Menu`, `Picker`,
+  `.searchable`, sheets, alerts and confirmation dialogs.
+- Use the system photo/file pickers and camera presentation where applicable.
+  Preserve standard back navigation, dismissal, scrolling and keyboard behavior.
+- Reuse `PennyDesign` components and tokens. Create custom UI only for a
+  meaningful need that native components do not cover; avoid recreating system
+  navigation bars, pickers, buttons or gesture handling.
+- Let standard controls supply platform materials and Liquid Glass behavior.
+  Avoid decorative glass layers on reading content or effects that reduce
+  contrast. Use system typography, semantic colors and spacing consistently.
+- “Built-in widgets” means native interface components here; it does not require
+  a new WidgetKit extension.
 
-## The rules
+## Symbols and copy
 
-1. **Three layers.** A grey background (`systemGroupedBackground`); solid white or
-   blue content on it (cards, rows, bubbles); glass only for **floating controls** —
-   the nav row, the message field, the live dock. Glass never sits on glass, and
-   nothing inside a card is glass.
-2. **Navigation (#3111).** One stock `NavigationStack` with a visible system bar. A
-   leading glass `Menu`/`Picker` switches pages (Chat, Memory, Prompts, Settings) —
-   closed, its label is the current page's icon, iOS drawing its own glass circle;
-   open, each row carries its icon, name and a checkmark on the current one. Penny's
-   avatar and name sit centred (`.principal`) on every page; search is trailing
-   (`DefaultToolbarItem(kind: .search)`), each page supplying its own `.searchable`.
-   A page switch swaps the content under the same bar, with no back button. A
-   drill-down (today, a memory's detail) pushes onto the stack with the system back
-   button — nothing hidden, nothing floated over a system element.
-3. **Settings save as you change them.** No Save or Done button anywhere.
-4. **The rainbow edge is only on the live dock** (the chat dock while Penny works).
-   It means "Penny is active" and appears nowhere else — `pennyRainbow` is the only
-   colour accent outside the semantic palette.
+- Prefer familiar SF Symbols for recognizable actions: search, attach, send,
+  close, refresh and settings. Match symbol weight and scale to surrounding text,
+  and verify availability on the app's minimum OS. See Apple's
+  [SF Symbols guidance](https://developer.apple.com/design/human-interface-guidelines/sf-symbols).
+- Build controls with semantic labels, such as `Label("Search", systemImage:
+  "magnifyingglass")`; use an icon-only visual style when the meaning is clear.
+  Every icon-only control must retain a meaningful accessibility label.
+- Keep short text labels for ambiguous actions, menu choices and destructive
+  confirmations. A symbol must not make someone guess what an action will do.
+- Remove redundant headings, explanatory subtitles, welcome prose, repeated
+  status messages and instructions for obvious controls. Add text only when it
+  helps a person choose, understand a state or recover from an error.
+- Empty, loading, offline and error states should be brief and actionable.
+  Do not expose implementation details unless they help resolve the problem.
 
-## The type tables (one icon per type, with its colour)
+## iPhone and iPad
 
-| Run kind (`RunKind`) | Colour |
-|---|---|
-| Chat | purple |
-| Collector | blue |
-| History | orange |
+Adapt to the **available window**, including compact and regular widths,
+rotation, keyboard presentation and iPad multitasking. Respect safe areas and
+readable content widths. These follow Apple's
+[layout guidance](https://developer.apple.com/design/human-interface-guidelines/layout).
 
-| Memory kind (`MemoryKind`) | Colour |
-|---|---|
-| Collection | blue |
-| Log / Archived | gray |
-| Entry | teal |
+- Use container geometry and size classes rather than device-name branches or
+  `UIScreen.main.bounds` for layout. A narrow iPad window must remain usable.
+- Keep chat readable on wide windows; do not stretch bubbles or forms across
+  the full display unnecessarily. Allow useful list/detail layouts where they
+  improve browsing, while preserving navigation when the window becomes narrow.
+- Keep the composer and primary actions reachable with the keyboard visible.
+  Allow sheets and popovers to adapt to the presentation context.
+- Preserve selection, draft text and navigation state across resizing and
+  rotation. Support touch, hardware keyboard and pointer interaction where relevant.
 
-| Turn role (`TurnRole`) | Colour |
-|---|---|
-| SYSTEM | gray |
-| USER | blue |
-| THINKING | purple |
-| TOOL CALL / RESPONSE | green |
-| RESULT | teal |
+## Accessibility and visual acceptance
 
-| Status (`RunStatus`) | Colour |
-|---|---|
-| WORKED | green |
-| NOTHING NEW | gray |
-| FAILED | red |
-| FLAGGED | orange |
-| RUNNING | blue (live) |
+- Support Dynamic Type, including accessibility sizes, without clipping content
+  or hiding actions. Allow labels to wrap and layouts to stack when needed.
+- Provide comfortable touch targets (normally at least 44 × 44 points), logical
+  VoiceOver order, useful labels/values and sufficient contrast. Do not use color
+  alone to indicate connection, progress or errors.
+- Respect light/dark appearance, Reduce Motion and Reduce Transparency. Use
+  native behavior where possible. Apple's
+  [accessibility guidance](https://developer.apple.com/design/human-interface-guidelines/accessibility)
+  is the baseline.
+- Keep automation identifiers in `PennyDesign/AccessibilityIdentifiers.swift`.
+  Identifiers locate controls in tests; they do not replace accessible labels.
+- For UI changes, inspect local UI-test screenshots on an iPhone and an iPad,
+  including a narrow iPad window, large text and relevant keyboard/error states.
+  Passing assertions alone do not establish visual quality.
 
-## The spacing grid (`Tokens`)
-
-Screen margin 16; message gap 12; bubble corner 20. No magic numbers in views — a
-view that needs a constant adds it to `Tokens` first.
-
-## The components
-
-Memory, Prompts and Settings are redesigned from stock SwiftUI elements directly
-(`List`, `Section`, `Label`, `LabeledContent`) under the first rule, rather than a
-shared `PennyDesign` view — there is no non-chat kit component yet. Chat components
-— bubbles, the message field, the live dock, find-in-chat — come with their own
-redesign tickets (#3038–#3045) and land in the kit as they are built.
-
-## Reference screens
-
-Grouped as they appear in `Design/screens/`; the name is the state it shows.
-
-- **Chat:** `chat.png`, `chat-working.png`, `chat-working-start.png`,
-  `chat-working-long.png`, `chat-drawing.png`, `chat-drawing-done.png`,
-  `chat-pending.png`, `chat-queued.png`, `chat-queued-menu.png`,
-  `chat-permission.png`, `chat-attach.png`, `chat-menu.png`,
-  `chat-collectors.png`, `chat-resolving.png`, `chat-search.png`,
-  `chat-search-empty.png`
-- **Runs & turns:** `run.png`, `run-live.png`, `turn.png`
-- **Reading raw text:** `read-system.png`, `read-thinking.png`, `read-tool.png`
-- **Memory:** `memory.png`, `memory-collection.png`, `memory-entry.png`,
-  `memory-settings.png`
-- **Prompts:** `prompts.png`
-- **Settings:** `settings.png`, `settings-server.png`
+`Design/screens/` contains existing visual references. Use them for context;
+these rules and current Apple behavior guide new work when a reference conflicts.

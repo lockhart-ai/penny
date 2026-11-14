@@ -348,6 +348,10 @@ struct PennyWebSocketClientTests {
         #expect(hasNewMessages == false)
     }
 
+}
+
+// History reconciliation and connection lifecycle share the serialized suite.
+extension PennyWebSocketClientTests {
     @Test func historyReconcilesLocallyStoredOutgoingMessage() async {
         let database = configuredDatabase()
         let transport = MessagePagingMockTransport()

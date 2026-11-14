@@ -1,120 +1,77 @@
-# PennyClient Instructions
+# Penny iOS client: agent guide
 
-## Workflow And Review
+This guide applies to `penny-client/`. Start with [README.md](README.md) for the
+current project summary, [DESIGN.md](DESIGN.md) for UI decisions, and the
+[client workflow](../docs/ios-agent-workflow.md) and
+[review guide](../docs/ios-agent-review-guide.md) for implementation and review.
 
-For task execution, use [`../docs/penny-client-agent-task-workflow.md`](../docs/penny-client-agent-task-workflow.md). For reviewing Swift/iOS pull requests, use [`../docs/penny-client-pr-review-guide.md`](../docs/penny-client-pr-review-guide.md) together with this file.
+## Project overview
 
-Before opening a PR, review your own diff against the whole client review guide — including its "Hard-won patterns (Swift/iOS)" section — not just the parts that seem relevant. State in the PR body that you did this review, and list any item you could not meet and why (an empty list if none). If you find a new unhealthy pattern while working, add it to "Hard-won patterns (Swift/iOS)" in the same PR as the fix.
+PennyClient is the native SwiftUI iPhone and iPad front end for Penny, a personal
+assistant hosted by the backend elsewhere in this repository. It presents shared
+chat history, image attachments, live agent progress, permissions, memory and
+prompt browsing, and connection settings. The client connects over WebSocket;
+it does not run the language model itself.
 
-The first rule: use the framework as designed. Before building any UI, name the stock SwiftUI element for the job and use it with its stock placement and behaviour; never hide a system element to draw a lookalike over it (#3111). Composing our own element from Apple's components and materials is fine; faking what Apple renders or animates (glass, blur, fades, menus, transitions) is not.
+| Location | Responsibility |
+| --- | --- |
+| `PennyClient/AppDelegate.swift` | SwiftUI entry point, debug story routing, notification registration |
+| `PennyClient/Views/` | App shell, chat, memory/prompts, settings, observable feature models |
+| `PennyClient/Stories/` | Debug-only fixtures and named screen states |
+| `PennyDesign/` | Shared SwiftUI components, design tokens, accessibility identifiers (`AXID`) |
+| `PennyServices/` | WebSocket protocol, synchronization, SQLite storage, search, credentials and preferences |
+| `SQLPropertyMacros/` | Local Swift macro package used by persistence |
+| `PennyClientTests/` | App model, parsing and presentation unit tests |
+| `PennyServices/Tests/` | Service tests, also exposed through the standalone Xcode test target |
+| `PennyClientUITests/` | Local-only fixture-driven UI automation |
 
-## Project Context
-PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The app shell — one stock `NavigationStack` with a leading glass page menu (#3111) — lives in `PennyClient/PennyClient/Views/AppShellView.swift`; the chat UI lives in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
-Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode tools for reading, editing, diagnostics, and builds.
+## Working rules
 
-## Important Files
-- `PennyClient/PennyClient/Views/AppShellView.swift`: The app shell — one stock `NavigationStack`, the leading page menu, the centred Penny title, trailing search.
-- `PennyClient/PennyClient/Views/MessageView.swift`: Main chat screen, composer, message rows.
-- `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`: Message screen view model.
-- `PennyClient/PennyClient/Views/SettingsView.swift`: Editable connection settings.
-- `PennyClient/PennyServices/Package.swift`: Local Swift package boundary for the service layer.
-- `PennyClient/PennyServices/Sources/PennyServices/`: Websocket, persistence, preferences, wire models, logging, search, and shared client models.
-- `PennyClient/PennyServices/Tests/PennyServicesTests/`: Service-owned tests and isolated test fixtures.
-- `PennyClient/PennyClient/Views/`: SwiftUI views and view models that consume `PennyServices`.
-- `PennyClient/PennyClient/AppDelegate.swift`: Push notification registration and foreground notification handling.
-- `PennyClient/PennyClient/PennyDev.entitlements`: PennyDev push notification entitlements.
-- `PennyClient/PennyClient/PennyTestflight.entitlements`: PennyTestflight push notification entitlements.
+- Keep changes in the responsible layer. Reuse the existing service injection
+  seams and `@MainActor` / `@Observable` feature models; keep networking and
+  persistence out of view bodies. Cancel obsolete asynchronous work and prevent
+  stale responses from replacing newer state.
+- Use native Apple controls and SF Symbols, minimal useful copy, accessible
+  labels, and layouts that adapt to both iPhone and iPad. Follow `DESIGN.md`.
+  Check the workflow's [UI regression guidance](../docs/ios-agent-workflow.md#ui-regression-guidance)
+  when changing controls, navigation, text layout or stories.
+- The app targets iOS/iPadOS 26.0, although project-level settings currently say
+  27.0. Package minimums differ; check the affected target before choosing APIs.
+  Do not raise deployment targets or migrate Swift language modes incidentally.
+- Use `PennyClient` to build/run the `PennyDev` app; `PennyTestflight` is the
+  distribution scheme. Use `PennyServicesStandaloneTests` for service tests and
+  `PennyClientUITests` for local UI tests. Preserve their separation.
+- Run UI tests locally to exercise changed flows and retain screenshots. Never
+  add UI tests or screenshot generation to CI, `PennyClient.xctestplan`, or the
+  main scheme's test action. Keep unit/service tests in CI.
+- For Swift or build changes, run SwiftLint with the client and package configs
+  in strict mode and require zero violations and zero build/test warnings. Inspect
+  full diagnostics; do not suppress warnings to pass. See the workflow's gate.
+- Prefer the connected **Sirius** device, rediscovering its identifier each
+  session; otherwise use the latest available compatible simulator. Also verify
+  the other device family. Details and the observed UUID are in the workflow.
+- Use debug stories (`-PennyStory <id>`) for reproducible visual work. Keep story
+  hooks out of release builds. Do not use live messages or credentials as fixtures.
+- Preserve user edits, local data, signing configuration and secrets. Do not
+  erase a personal device or another session's simulator. Read script side
+  effects before invoking convenience commands.
+- Run checks appropriate to the change, inspect their results, and report what
+  actually ran. Documentation-only changes need link/content checks, not an app
+  build. Update these docs when architecture, commands or policies change.
 
-## Secrets And Preferences
-Connection settings are managed by `Prefs`.
-Lookup order:
-1. Saved `UserDefaults` values.
-2. Optional bundled `Secrets.plist`.
-3. `nil` when neither exists.
+## Logging conventions
 
-The real `PennyClient/PennyClient/Secrets.plist` is local-only and ignored by git. Keep `PennyClient/PennyClient/Secrets.plist.example` updated with the expected keys:
-- `webSocketURL`
-- `username`
-- `password`
-
-## Build And Test
-Use XcodeBuildMCP for project discovery, builds, launches, and device tests. Check
-`session_show_defaults` and `list_devices` before the first operation.
-
-- Project: `PennyClient.xcodeproj`
-- Primary scheme: `PennyClient`
-- App test target: `PennyClientTests` (via `PennyClient.xctestplan`)
-- UI smoke test target: `PennyClientUITests` (own `PennyClientUITests.xcscheme`, run locally with `make client-ui-tests`; deliberately outside `PennyClient.xctestplan` and the `PennyClient` scheme, so `make client-check`/CI never builds or runs it)
-- Preferred device: Sirius (`5771124D-00F3-5E80-8696-403B3FD55716`)
-- Device platform: `iOS`
-- Device DerivedData: `/private/tmp/PennyClientDerivedData-Sirius`
-
-Prefer Sirius when connected, then another suitable physical device. Use a
-simulator when the task requires simulator tooling or no suitable physical
-device is available. Use `build_device` for build verification,
-`build_run_device` to install and launch, and `test_device` for app tests. Do not
-invoke `xcodebuild` directly when XcodeBuildMCP is available. Keep physical-device
-DerivedData outside this Dropbox workspace because File Provider attributes can
-break code signing.
-
-Zero warnings are expected. Treat all warnings as issues to fix before finishing,
-including SwiftLint warnings; do not leave new or existing SwiftLint warnings
-unresolved. For final verification, prefer focused tests for touched behavior,
-then the full `PennyClientTests` plan and a successful device build. Missing local
-secrets, device support, signing/provisioning, developer-mode trust, or remote
-services are prerequisites rather than code regressions.
-
-Service-layer changes must also pass `make client-services-check`. This runs the
-`PennyServicesStandaloneTests` bundle against the package without building or
-launching PennyDev or PennyTestflight. Run `make client-check` for the complete
-service, app, and Testflight build gate; this repository-level script uses its
-own simulator workflow and supplements the preferred XcodeBuildMCP device checks.
-
-`make client-check`, `make client-ui-tests`, and `make client-stories` each wait for
-Penny to go idle before touching the simulator (`scripts/wait-for-penny-idle.sh`,
-#3171) — Xcode and the simulator compete with her local model server for the GPU.
-Nothing to do here: the wait is built into the script, so just run the make target
-as usual; it proceeds at once with no Penny database to check (CI, or a machine
-without one).
-
-## Testing Guidelines
-Logic stays in unit tests: use the Swift Testing framework for unit and component tests — state derivation, side effects, validation, persistence, protocol encoding. Every interactive control (a tap, a push, a back, a search, a send) additionally gets a UI smoke test in `PennyClientUITests` (#3106) — the tab bar once shipped with a dead tap (#3105) that no unit test caught, because nothing drove the real control. A redesign ticket that adds or moves a control adds it to `PennyClientUITests` in the same PR, and runs `make client-ui-tests` locally before review (LOCAL ONLY — CI's `client-check.yml` never runs it, since macOS runners are scarce). `PennyClientUITests` launches against fixture data via a `-PennyStory <id>` launch argument (#2965) and asserts a state change (an accessibility identifier appearing, an element's label, a tab's root) — never a screenshot or a layout check, and never a fixed sleep (`waitForExistence(timeout:)` or an `NSPredicate` expectation instead).
-Keep service tests under `PennyServices/Tests/PennyServicesTests`, app/view-model tests under `PennyClientTests`, and UI smoke tests under `PennyClientUITests`, with shared helpers in the owning test target instead of large monolithic test sources.
-
-All view models require test coverage. When adding or changing a view model, add or update focused tests for:
-- state derived from model/client data
-- user actions and side effects
-- validation and empty-input behavior
-- filtering, sorting, or presentation-specific computed values
-- async lifecycle behavior when relevant
-
-Prefer injecting test doubles or configured in-memory services over relying on live network, real user defaults, or persistent app data. For persistence tests, use `DatabaseService.setupForTesting()` or another isolated in-memory setup.
-
-The package is the owner of service behavior and service-owned models. Keep
-SwiftUI presentation and view-model behavior in the app target; import
-`PennyServices` from those files rather than duplicating service types.
-
-## UI Patterns
-Use SwiftUI and the Observation framework. Avoid Combine unless there is a concrete need.
-The chat UI uses:
-- the app shell (`AppShellView`, #3111): one stock `NavigationStack` with a visible system bar — a leading glass page `Menu`, Penny's avatar and name centred, search trailing; a push (e.g. a memory's detail) gets the system back button — no bottom tab bar
-- `NavigationStack`
-- a bottom overlay composer with keyboard-aware offset
-- split Markdown text blocks for incoming messages
-- attachment images inside incoming message bubbles
-
-## Logging
-Use `LogService`/`OSLogService` instead of `print`, `NSLog`, or direct `os_log` calls. Choose the level intentionally (`debug`, `info`, `notice`, `warning`, `error`, `fault`, `critical`) and keep dynamic values private by default unless the value is known non-sensitive operational metadata. `OSLogService` prefixes messages with a UTC ISO-8601 timestamp.
-
-Log concise, non-sensitive timing measurements for network and database work:
-- For websocket/network calls that expect a response, record elapsed time from send to matching receive and log it at debug level.
-- For local database reads and writes, measure elapsed time around the SQLite operation and log it at debug level.
-- Do not log message bodies, credentials, APNs tokens, device secrets, attachment contents, or raw SQL containing user content.
-
-## Websocket Notes
-`PennyWebSocketClient` reads connection configuration from `Prefs.shared` at connect time. Saving Settings should reconnect the client so URL/auth changes take effect.
-The websocket request uses HTTP Basic auth from the saved username/password. The websocket URL should usually be `wss://...`, not `https://...`.
-The client registers with a stable keychain-backed device id and device secret, sends APNs token updates, pulls pending messages, acknowledges received message ids, and clears badges after messages are received.
-
-## Persistence Notes
-Messages are stored through `DatabaseService` using SQLite.swift and SQLPropertyMacros. Attachments are persisted as JSON-encoded data URL strings on the message model.
+- Use the existing `LogService` / `OSLogService` abstraction for service logging;
+  avoid adding `print`, `NSLog`, direct `os_log` calls or a parallel logging system.
+  Keep logging in the owning layer and choose the category and severity deliberately.
+- Keep dynamic values private by default. Use public visibility only for known
+  non-sensitive operational metadata. `OSLogService` applies privacy to the whole
+  message, so every interpolated value must be safe before marking it public.
+- Never log message bodies, credentials, authorization headers, pairing/device
+  secrets, APNs tokens, attachment contents or raw SQL containing user data.
+  Private visibility is not permission to record these values. Check error
+  descriptions and URLs for sensitive content before logging them.
+- Record concise network and database timings at debug level: measure requests
+  from send to the matching response, and SQLite work around the actual operation.
+  Use a monotonic clock for elapsed time and safe operation names rather than
+  payloads. `OSLogService` already supplies UTC ISO-8601 timestamps.
