@@ -137,7 +137,7 @@ private struct LiveDockRow: View {
 /// "· n queued") over a chronological stream of thinking chunks and tool
 /// rows, oldest at the top, with an optional pending permission row (#3044)
 /// last — the newest thing in the stream. It grows to fit its content up to 40% of the
-/// screen height (`Tokens.dockScreenCapFraction`); past that the body
+/// chat viewport height (`Tokens.dockScreenCapFraction`); past that the body
 /// scrolls internally, pinned to the newest item, with a soft fade at the
 /// top edge. It sits in the conversation's flow on rainbow-edged glass —
 /// the last item, where Penny's reply will appear. When a turn ends
@@ -160,6 +160,7 @@ private struct LiveDockRow: View {
 /// the iOS protocol today, so showing a button with nothing to send would
 /// be a dead control — it lands once that wire message exists.
 public struct LiveDock<Avatar: View>: View {
+    public let viewportHeight: CGFloat
     public let items: [LiveDockItem]
     public let step: Int
     public let startedAt: Date
@@ -171,6 +172,7 @@ public struct LiveDock<Avatar: View>: View {
     @ViewBuilder public var avatar: () -> Avatar
 
     public init(
+        viewportHeight: CGFloat,
         items: [LiveDockItem],
         step: Int,
         startedAt: Date,
@@ -178,6 +180,7 @@ public struct LiveDock<Avatar: View>: View {
         permission: LiveDockPermission? = nil,
         @ViewBuilder avatar: @escaping () -> Avatar
     ) {
+        self.viewportHeight = viewportHeight
         self.items = items
         self.step = step
         self.startedAt = startedAt
@@ -193,8 +196,8 @@ public struct LiveDock<Avatar: View>: View {
     private let dockPadding: CGFloat = 16
     private let headerBodySpacing: CGFloat = 10
 
-    private var cap: CGFloat { UIScreen.main.bounds.height * Tokens.dockScreenCapFraction }
-    /// The stream's own ceiling: whatever the screen cap leaves after the
+    private var cap: CGFloat { viewportHeight * Tokens.dockScreenCapFraction }
+    /// The stream's own ceiling: whatever the viewport cap leaves after the
     /// header, the two paddings and the header→body spacing.
     private var bodyMax: CGFloat {
         max(cap - headerHeight - 2 * dockPadding - headerBodySpacing, 40)
@@ -235,6 +238,8 @@ public struct LiveDock<Avatar: View>: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(pennyRainbow, lineWidth: 2)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AXID.liveDock)
     }
 
     /// The elapsed seconds tick off a `TimelineView` rather than a value
@@ -317,10 +322,11 @@ private struct IconRow<Icon: View, Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
+        let iconCapHeight = capHeight(textStyle, weight)
         HStack(alignment: .firstTextBaseline, spacing: spacing) {
             icon()
                 .alignmentGuide(.firstTextBaseline) { dimensions in
-                    dimensions[.top] + capHeight(textStyle, weight)
+                    dimensions[.top] + iconCapHeight
                 }
             content()
         }

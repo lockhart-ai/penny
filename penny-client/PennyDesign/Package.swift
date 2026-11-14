@@ -9,17 +9,17 @@ let package = Package(
         .library(
             name: "PennyDesign",
             targets: ["PennyDesign"]
-        ),
+        )
     ],
     dependencies: [
-        .package(url: "https://github.com/realm/SwiftLint.git", from: "0.59.1"),
+        .package(url: "https://github.com/SimplyDanny/SwiftLintPlugins.git", exact: "0.59.1")
     ],
     targets: [
         .target(
             name: "PennyDesign",
             plugins: [
-                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
+                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
             ]
-        ),
+        )
     ]
 )

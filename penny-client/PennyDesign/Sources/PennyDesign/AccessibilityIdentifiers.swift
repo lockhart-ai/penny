@@ -50,6 +50,8 @@ public enum AXID {
     public static let composerTextField = "composer.textField"
     /// The composer's send arrow — only present while there's a draft.
     public static let composerSendButton = "composer.send"
+    /// The live working dock, for viewport layout checks.
+    public static let liveDock = "chat.liveDock"
 
     /// A memory's row in the Memory page's list, keyed by its name.
     public static func memoryRow(_ name: String) -> String { "memory.row.\(name)" }

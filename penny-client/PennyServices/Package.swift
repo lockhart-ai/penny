@@ -9,39 +9,39 @@ let package = Package(
         .library(
             name: "PennyServices",
             targets: ["PennyServices"]
-        ),
+        )
     ],
     dependencies: [
         .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.16.0"),
         .package(path: "../SQLPropertyMacros"),
-        .package(url: "https://github.com/realm/SwiftLint.git", from: "0.59.1"),
+        .package(url: "https://github.com/SimplyDanny/SwiftLintPlugins.git", exact: "0.59.1")
     ],
     targets: [
         .target(
             name: "PennyServices",
             dependencies: [
                 .product(name: "SQLite", package: "SQLite.swift"),
-                .product(name: "SQLPropertyMacros", package: "SQLPropertyMacros"),
+                .product(name: "SQLPropertyMacros", package: "SQLPropertyMacros")
             ],
             resources: [
-                .process("MessageSearch.metal"),
+                .process("MessageSearch.metal")
             ],
             swiftSettings: [
-                .unsafeFlags(["-strict-concurrency=minimal"]),
+                .unsafeFlags(["-strict-concurrency=minimal"])
             ],
             plugins: [
-                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
+                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
             ]
         ),
         .testTarget(
             name: "PennyServicesTests",
             dependencies: ["PennyServices"],
             swiftSettings: [
-                .unsafeFlags(["-strict-concurrency=minimal"]),
+                .unsafeFlags(["-strict-concurrency=minimal"])
             ],
             plugins: [
-                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
+                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
             ]
-        ),
+        )
     ]
 )

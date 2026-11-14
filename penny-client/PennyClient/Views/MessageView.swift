@@ -15,6 +15,7 @@ struct MessageView: View {
     @State private var pendingIncomingAutoScrollMessageID: Int?
     @State private var lastTopScrolledMessageID: Int?
     @State private var chatViewportFrame: CGRect = .zero
+    @State private var dockViewportHeight: CGFloat = 0
     @FocusState private var isComposerFocused: Bool
 
     /// `presentedCardMessage` only exists so story mode (#2965) can open the
@@ -155,6 +156,9 @@ struct MessageView: View {
                 }
             }
             .coordinateSpace(name: messageScrollCoordinateSpace)
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.containerSize.height }, action: { _, height in
+                dockViewportHeight = height
+            })
             .scrollDismissesKeyboard(.interactively)
             // The dissolve ramp: content scrolling out at the composer's
             // edge fades into the page background over the same gap the
@@ -233,6 +237,7 @@ struct MessageView: View {
     private var dockSlot: some View {
         if viewModel.dockPhase == .working, let dockRun = viewModel.dockRun {
             LiveDock(
+                viewportHeight: dockViewportHeight,
                 items: viewModel.dockStreamItems,
                 step: dockRun.steps.last?.number ?? 1,
                 startedAt: dockRun.startedAt,

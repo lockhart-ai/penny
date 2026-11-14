@@ -20,6 +20,14 @@ Prompts and Settings. Reusable UI lives in `PennyDesign`; WebSocket communicatio
 SQLite persistence, synchronization, search and preferences live in
 `PennyServices`. `SQLPropertyMacros` supports the database layer.
 
+Linting uses `SwiftLintPlugins` 0.59.1, which supplies the same SwiftLint binary
+without constraining the macro package's SwiftSyntax dependency. The macro
+package pins SwiftSyntax 602.0.0. The live dock sizes itself from the chat viewport
+so its height adapts to window size and rotation.
+
+App Intents metadata extraction is disabled because the project has no App
+Intents. Remove `LM_SKIP_METADATA_EXTRACTION` when adding App Intents or shortcuts.
+
 ## Open and run
 
 1. Open `PennyClient.xcodeproj` in Xcode and let Swift packages resolve. The local
@@ -67,14 +75,13 @@ connection settings. CI already keeps UI automation separate from unit tests.
 
 The remaining workflow and design gaps are:
 
-- UI tests currently have no explicit named screenshot attachments. The workflow
-  describes how to add and retain them for local visual review.
+- `LiveDockLayoutUITests` retains named screenshots in portrait and landscape.
+  Other UI flows still need explicit capture points for visual review.
 - `client-ui-tests.sh` selects the newest available iPhone simulator, but does
   not prefer a physical device or cover iPad automatically. `client-stories.sh`
   pins iPhone 18 Pro / iOS 27.2 and uses a fixed delay before capture.
 - Universal device support is configured, but is not evidence of layout quality
-  at every size. For example, `PennyDesign/LiveDock.swift` bases its height cap on
-  `UIScreen.main.bounds`, which needs review for resized iPad windows.
+  at every size. Continue checking resized iPad windows and large text.
 - Project/target deployment settings differ, and GitHub workflows select Xcode
   26 while this local installation is Xcode 27.2. Check compatibility when changing
   build settings or adopting APIs.

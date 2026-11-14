@@ -96,8 +96,10 @@ prove all three configurations were checked.
 
 For final build/test verification, use a fresh, task-owned `-derivedDataPath` so
 an incremental no-op build cannot hide compiler warnings. Add
-`SWIFT_TREAT_WARNINGS_AS_ERRORS=YES` and `GCC_TREAT_WARNINGS_AS_ERRORS=YES` to the
-`xcodebuild` invocation. Inspect the full build/test logs and result bundle for
+`SWIFT_TREAT_WARNINGS_AS_ERRORS=YES`, `GCC_TREAT_WARNINGS_AS_ERRORS=YES` and
+`SWIFT_SUPPRESS_WARNINGS=NO` to the `xcodebuild` invocation. The last setting
+prevents package defaults from combining suppression with warnings-as-errors.
+Inspect the full build/test logs and result bundle for
 remaining Xcode, linker, script, plugin and test warnings; compiler flags do not
 cover every diagnostic. If piping output to `tee`, enable `set -o pipefail` so
 logging does not mask a failing command.
@@ -133,6 +135,8 @@ xcodebuild -project penny-client/PennyClient.xcodeproj \
 For `xcodebuild -destination`, use the matching **iOS destination ID** from
 `-showdestinations`; a CoreDevice UUID and Xcode's hardware UDID can differ. Confirm
 the device name and OS rather than assuming any UUID-shaped value is interchangeable.
+Include the matching architecture when Xcode lists multiple matches for a device
+(for Sirius, `arch=arm64`) to avoid an ambiguous-destination warning.
 During this assessment, XcodeBuildMCP discovery succeeded, but the separate CLI
 `devicectl` query timed out initializing CoreDeviceService; no device test was run.
 
@@ -191,8 +195,8 @@ Existing UI tests use `XCUIApplication.launchStory(_:)`, typed element queries a
 - Keep fixtures, appearance, orientation and text size reproducible. Capture
   meaningful before/after states for a UI fix rather than every animation frame.
 
-The existing UI tests do **not** yet add named screenshot attachments. Add this
-pattern to the relevant local test after its expected state is reached (example
+`LiveDockLayoutUITests` retains named screenshots for the dock's rotation layout.
+Use the same pattern in other relevant local tests after the expected state is reached (example
 inside a test method, with `XCTest` and `PennyDesign` imported):
 
 ```swift
@@ -200,21 +204,22 @@ let app = XCUIApplication()
 app.launchStory("uiTestChat")
 XCTAssertTrue(app.button(AXID.pageMenu).waitForExistence(timeout: UITestWait.standard))
 
-let capture = XCTAttachment(screenshot: app.screenshot())
+let capture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
 capture.name = "chat-ready"
 capture.lifetime = .keepAlways
 add(capture)
 ```
 
 Use `.keepAlways` so successful tests retain their images. Group multi-step flows
-with `XCTContext.runActivity` when useful. See Apple's
+with `XCTContext.runActivity` when useful. Full-screen capture also avoids cropped
+app screenshots after rotation. See Apple's
 [attachment documentation](https://developer.apple.com/documentation/xctest/adding-attachments-to-tests-activities-and-issues).
 
 For an explicit local test run, first set a discovered destination. Replace the
 placeholder with the verified ID; choose one of these assignments:
 
 ```sh
-DESTINATION='platform=iOS,id=<Sirius destination ID>'
+DESTINATION='platform=iOS,id=<Sirius destination ID>,arch=arm64'
 # Simulator alternative:
 # DESTINATION='platform=iOS Simulator,id=<selected simulator UUID>'
 ```
@@ -279,8 +284,9 @@ bundles out of commits unless explicitly requested.
   device/runtime and waits four seconds before capture. It is supplemental;
   use state-driven UI tests for repeatable interaction and screenshot evidence.
 
-Run service changes through `PennyServicesStandaloneTests` and app/model changes
-through `PennyClient`. The full CI-equivalent command is `make client-check`;
+Run service changes through `PennyServicesStandaloneTests` on a simulator: this
+unhosted test target cannot run on a physical device. Run app/model changes through
+`PennyClient`, preferably on Sirius. The full CI-equivalent command is `make client-check`;
 use the explicit `xcodebuild test` pattern with those schemes when selecting a
 destination yourself. A docs-only change needs path/link and command verification,
 not a device run. Report failures and skipped checks with their actual reasons.
