@@ -10,12 +10,12 @@ struct MessageView: View {
     @State private var presentedCardMessage: ChatMessage?
     @State private var messageFrames: [Int: CGRect] = [:]
     @State private var messageScrollFrames: [Int: CGRect] = [:]
-    @State private var keyboardSettledScrollTask: Task<Void, Never>?
     @State private var arrivalAnimatedMessageIDs: Set<Int> = []
     @State private var pendingIncomingAutoScrollMessageID: Int?
     @State private var lastTopScrolledMessageID: Int?
     @State private var chatViewportFrame: CGRect = .zero
     @State private var dockViewportHeight: CGFloat = 0
+    @State private var scrollPosition = ScrollPosition()
     @FocusState private var isComposerFocused: Bool
 
     /// `presentedCardMessage` only exists so story mode (#2965) can open the
@@ -30,28 +30,15 @@ struct MessageView: View {
     }
 
     var body: some View {
-        chatScrollView
-            // Hidden while search is active (#3150, the approved mock
-            // `.claude/mockups/shots/chat-search.png`): two stacked text
-            // fields — the composer and the floating search capsule — read
-            // badly, and the mock shows no composer during search at all,
-            // even before anything is typed. Reappears the instant search
-            // closes. `spacing: 0` (#3131, matching the mock's `ChatCanvas`
-            // in `.claude/mockups/PennyMockups/Design/Components/
-            // ScreenChrome.swift`) — the default (nil) spacing adds its own
-            // gap on top of the scroll content's own bottom margin, which
-            // left the field further from the last message than messages
-            // sit from each other.
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !viewModel.search.isSearching {
-                    composer
-                }
+        VStack(spacing: 0) {
+            chatScrollView
+            // The native search field takes the composer's place during search.
+            // Laying out the composer beside the scroll view makes keyboard
+            // changes resize the viewport directly.
+            if !viewModel.search.isSearching {
+                composer
             }
-            // The page background, full-bleed: the scroll view's own
-            // background stops at its safe-area-adjusted bottom edge
-            // (the composer's inset plus the field glass's reservation),
-            // and without this the window shows through as a white band
-            // above the composer.
+        }
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
             // Find-in-chat's bridge from the system's own search-active
             // state to `viewModel.search` (#3045, #3129, #3150). A
@@ -70,6 +57,7 @@ struct MessageView: View {
             // its own `@Environment(\.isSearching)` read is the correct one.
             .background(SearchActivationBridge { active in
                 if active {
+                    scrollPosition = ScrollPosition()
                     viewModel.search.open()
                 } else {
                     viewModel.search.close()
@@ -110,9 +98,6 @@ struct MessageView: View {
                     isComposerFocused = false
                 }
                 viewModel.handleScenePhaseChange(newPhase)
-            }
-            .onDisappear {
-                keyboardSettledScrollTask?.cancel()
             }
     }
 
@@ -156,9 +141,16 @@ struct MessageView: View {
                 }
             }
             .coordinateSpace(name: messageScrollCoordinateSpace)
-            .onScrollGeometryChange(for: CGFloat.self, of: { $0.containerSize.height }, action: { _, height in
-                dockViewportHeight = height
-            })
+            .scrollPosition($scrollPosition)
+            .defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)
+            .onScrollGeometryChange(for: ChatScrollGeometry.self, of: ChatScrollGeometry.init) { previous, current in
+                if previous.viewportHeight != current.viewportHeight {
+                    dockViewportHeight = current.viewportHeight
+                }
+                if !viewModel.search.isSearching {
+                    viewModel.updateBottomVisibility(current.isAtBottom)
+                }
+            }
             .scrollDismissesKeyboard(.interactively)
             // The dissolve ramp: content scrolling out at the composer's
             // edge fades into the page background over the same gap the
@@ -187,6 +179,11 @@ struct MessageView: View {
             .onChange(of: viewModel.foregroundProgressVersion) { _, _ in
                 viewModel.syncDock()
             }
+            .onChange(of: isComposerFocused) { _, focused in
+                if focused {
+                    scrollToBottomEdge(animated: false)
+                }
+            }
             .onChange(of: viewModel.displayedMessages.map(\.id)) { previousIDs, currentIDs in
                 let previousPendingMessageID = pendingIncomingAutoScrollMessageID
                 prepareArrivalAnimations(previousIDs: previousIDs, currentIDs: currentIDs)
@@ -205,6 +202,11 @@ struct MessageView: View {
                 scrollToSearchMatch(matchID, with: proxy)
             }
         }
+    }
+
+    private var sizeChangeAnchor: UnitPoint? {
+        guard !viewModel.search.isSearching, pendingIncomingAutoScrollMessageID == nil else { return nil }
+        return scrollPosition.edge == .bottom || viewModel.isAtBottom ? .bottom : nil
     }
 
     /// Find-in-chat (#3045): pages further back if the match isn't loaded
@@ -313,11 +315,7 @@ struct MessageView: View {
         .accessibilityLabel("Show new messages")
     }
 
-    /// The composer as a bottom safe-area inset: the scroll content clamps
-    /// above it, the field's glass never has chat content behind it, and it
-    /// rides the keyboard. The page background behind it is opaque, so the
-    /// glass reads clean; the dissolve into it happens in the scroll view's
-    /// own bottom ramp.
+    /// The composer sits below the scroll viewport and above the keyboard.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let replyMessage = viewModel.replyMessage {
@@ -398,8 +396,6 @@ private struct SearchActivationBridge: View {
 }
 
 private extension MessageView {
-    var bottomAnchorID: String { "message-list-bottom" }
-
     var messageScrollCoordinateSpace: String { "message-scroll-coordinate-space" }
 
     var messageRootCoordinateSpace: String { "message-root-coordinate-space" }
@@ -407,13 +403,6 @@ private extension MessageView {
     var bottomSpacer: some View {
         Color.clear
             .frame(height: 1)
-            .id(bottomAnchorID)
-            .onAppear {
-                viewModel.updateBottomVisibility(true)
-            }
-            .onDisappear {
-                viewModel.updateBottomVisibility(false)
-            }
     }
 
     @ViewBuilder
@@ -564,6 +553,10 @@ private extension MessageView {
         animated: Bool = true,
         enableOlderPaging: Bool = true
     ) {
+        guard !viewModel.search.isSearching else {
+            finishBottomScrollIfNeeded(enableOlderPaging: enableOlderPaging)
+            return
+        }
         if let pendingIncomingAutoScrollMessageID {
             guard let destination = incomingMessageAutoScrollDestination(for: pendingIncomingAutoScrollMessageID) else {
                 finishBottomScrollIfNeeded(enableOlderPaging: enableOlderPaging)
@@ -574,7 +567,7 @@ private extension MessageView {
             case .messageTop(let target):
                 scrollToMessageTop(target, with: proxy, animated: animated)
             case .bottomAnchor:
-                scrollToBottomAnchor(with: proxy, animated: animated)
+                scrollToBottomEdge(animated: animated)
             }
 
             if enableOlderPaging {
@@ -584,17 +577,19 @@ private extension MessageView {
             return
         }
 
-        scrollToBottomAnchor(with: proxy, animated: animated)
+        scrollToBottomEdge(animated: animated)
         finishBottomScrollIfNeeded(enableOlderPaging: enableOlderPaging)
     }
 
-    func scrollToBottomAnchor(with proxy: ScrollViewProxy, animated: Bool) {
+    func scrollToBottomEdge(animated: Bool) {
+        // An edge position follows changes to the keyboard inset and later
+        // changes to the content, including the live dock appearing after send.
         if animated {
             withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                scrollPosition.scrollTo(edge: .bottom)
             }
         } else {
-            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+            scrollPosition.scrollTo(edge: .bottom)
         }
     }
 
@@ -610,6 +605,7 @@ private extension MessageView {
     }
 
     func scrollToMessageTop(_ target: OversizedIncomingMessageScrollTarget, with proxy: ScrollViewProxy, animated: Bool) {
+        scrollPosition = ScrollPosition()
         let anchor = messageTopScrollAnchor
 
         if animated {
@@ -749,6 +745,17 @@ private struct MessageGridRow: Identifiable {
 
     var id: Int {
         messages.first?.id ?? 0
+    }
+}
+
+private struct ChatScrollGeometry: Equatable {
+    let viewportHeight: CGFloat
+    let isAtBottom: Bool
+
+    nonisolated init(_ geometry: ScrollGeometry) {
+        viewportHeight = geometry.containerSize.height
+        let offsetFromContentStart = geometry.contentOffset.y + geometry.contentInsets.top
+        isAtBottom = offsetFromContentStart + viewportHeight >= geometry.contentSize.height - 1
     }
 }
 

@@ -1091,7 +1091,6 @@ async def test_handle_message_reports_failure_after_a_reply_exists(
     richer account ``_finish_turn``'s own failure handling can build, since the
     answer already exists by the time it runs."""
     from penny.agents.models import ControllerResponse, ToolCallRecord, account_of
-    from penny.constants import PennyConstants
     from penny.responses import PennyResponse
 
     db = Database(test_config.db_path)
@@ -1105,17 +1104,9 @@ async def test_handle_message_reports_failure_after_a_reply_exists(
             return_value=ControllerResponse(answer="here's what I found", tool_calls=tool_calls)
         ),
     )
-    # Fail only the INCOMING log write _finish_turn makes — the OUTGOING one the
-    # fallback account still needs to send must keep working, or this test can't
-    # tell "reported with an account" apart from "also silently broken".
-    original_log_message = db.messages.log_message
-
-    def flaky_log_message(direction, *args, **kwargs):
-        if direction == PennyConstants.MessageDirection.INCOMING:
-            raise RuntimeError("db down")
-        return original_log_message(direction, *args, **kwargs)
-
-    monkeypatch.setattr(db.messages, "log_message", Mock(side_effect=flaky_log_message))
+    monkeypatch.setattr(
+        db.memories, "link_source_message", Mock(side_effect=RuntimeError("db down"))
+    )
 
     await channel.handle_message(_text_envelope(test_config, TEST_SENDER, "hi"))
 

@@ -16,6 +16,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from penny.agents.models import HistoryTurn, MessageRole
 from penny.clock import Clock
 from penny.constants import PennyConstants, RunOutcome
+from penny.database.ios_store import IosStore
 from penny.database.memory.objects import classify_run, render_run_record, run_delivered_text
 from penny.database.models import (
     ChatSession,
@@ -388,13 +389,7 @@ class MessageStore:
         self._run_outcome_set_listeners.append(listener)
 
     def subscribe_incoming_logged(self, listener: Callable[[MessageLog], None]) -> None:
-        """Add a listener notified right after every INCOMING row is logged (#3137).
-
-        Fires at the moment the row is written — for the triggering message
-        that is only after its whole turn finishes (``_finish_turn`` logs it
-        last, #2371/#2837), so a live push through this hook lands close
-        together with the reply it answers, not the instant the user's
-        message arrives.  Accepted for this PR; see the PR body."""
+        """Add a listener notified after an incoming message and its mirrors commit."""
         self._incoming_logged_listeners.append(listener)
 
     def subscribe_call_started(self, listener: Callable[[CallStarted], None]) -> None:
@@ -548,6 +543,10 @@ class MessageStore:
         mechanism: str | None = None,
         run_id: str | None = None,
         timestamp: datetime | None = None,
+        attachments: list[str] | None = None,
+        source_name: str | None = None,
+        client_message_id: str | None = None,
+        turn_pending: bool = False,
     ) -> int | None:
         """Log a user message or agent response. Returns the message ID or None.
 
@@ -562,15 +561,8 @@ class MessageStore:
         framework on the chat reply path, so the history pairs a run with the
         message that answered for it by identity.  NULL for an autonomous send.
 
-        ``timestamp`` is the recency-ordering column every reader (conversation
-        history, the thread walk) sorts by — ``None`` (every caller but one) keeps
-        logging at WRITE time (``self._clock.now()``), as always.  The one caller
-        that passes it explicitly is the live-channel incoming-message log (#2837):
-        that row is written only once its whole turn finishes (so it never doubles
-        into the turn's own recall), but an interim message sent DURING the turn
-        can now log its own outgoing row first — stamping the incoming row with the
-        time the turn actually STARTED keeps it ordered ahead of anything the turn
-        sends, instead of a write-time stamp from after the turn.
+        ``timestamp`` records send order. An accepted incoming message can sync
+        immediately while ``turn_pending`` keeps it out of the active turn's recall.
 
         The record keeps an outgoing message's text as the model wrote it
         (#2722) — the channel conversion is a send-time concern, so no
@@ -591,8 +583,15 @@ class MessageStore:
                     mechanism=mechanism,
                     run_id=run_id,
                     timestamp=timestamp if timestamp is not None else self._clock.now(),
+                    client_message_id=client_message_id,
+                    turn_pending=turn_pending,
                 )
                 session.add(log)
+                session.flush()
+                assert log.id is not None
+                self._stage_attachments(session, log.id, attachments or [], log.timestamp)
+                if not is_reaction:
+                    IosStore.stage_deliveries(session, log, source_name)
                 session.commit()
                 session.refresh(log)
                 logger.debug("Logged %s message from %s (id=%d)", direction, sender, log.id)
@@ -616,15 +615,69 @@ class MessageStore:
             return
         try:
             with self._session() as session:
-                for position, data_uri in enumerate(data_uris):
-                    session.add(
-                        MessageAttachment(
-                            message_id=message_id, position=position, data_uri=data_uri
-                        )
-                    )
+                self._stage_attachments(session, message_id, data_uris, self._clock.now())
                 session.commit()
         except Exception as e:
             logger.error("Failed to log attachments for message %d: %s", message_id, e)
+
+    @staticmethod
+    def _stage_attachments(
+        session: Session, message_id: int, data_uris: list[str], created_at: datetime
+    ) -> None:
+        for position, data_uri in enumerate(data_uris):
+            session.add(
+                MessageAttachment(
+                    message_id=message_id,
+                    position=position,
+                    data_uri=data_uri,
+                    created_at=created_at,
+                )
+            )
+
+    def get_by_client_message_id(self, device_id: int, client_message_id: str) -> MessageLog | None:
+        with self._session() as session:
+            return session.exec(
+                select(MessageLog).where(
+                    MessageLog.device_id == device_id,
+                    MessageLog.client_message_id == client_message_id,
+                )
+            ).first()
+
+    def complete_incoming_turn(
+        self, message_id: int, *, embedding: bytes | None = None, run_id: str | None = None
+    ) -> None:
+        with self._session() as session:
+            row = session.get(MessageLog, message_id)
+            if row is not None and row.turn_pending:
+                row.turn_pending = False
+                row.embedding = embedding
+                row.run_id = run_id
+                session.commit()
+
+    def pending_turns(self) -> list[MessageLog]:
+        """Snapshot unfinished messages before the channels start accepting new ones."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(MessageLog)
+                    .where(col(MessageLog.turn_pending).is_(True))
+                    .order_by(col(MessageLog.timestamp), col(MessageLog.id))
+                ).all()
+            )
+
+    def has_turn_reply(self, message_id: int) -> bool:
+        with self._session() as session:
+            return (
+                session.exec(
+                    select(MessageLog.id)
+                    .where(
+                        MessageLog.parent_id == message_id,
+                        MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                    )
+                    .limit(1)
+                ).first()
+                is not None
+            )
 
     def attachments_for_message_ids(self, message_ids: Sequence[int]) -> dict[int, list[str]]:
         """The photo attachments of the named messages, keyed by message id in
@@ -913,6 +966,7 @@ class MessageStore:
                     .where(
                         col(MessageLog.embedding).is_(None),
                         col(MessageLog.is_reaction).is_(False),
+                        col(MessageLog.turn_pending).is_(False),
                     )
                     .limit(limit)
                 ).all()
@@ -1017,6 +1071,7 @@ class MessageStore:
                     MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     MessageLog.is_reaction == False,  # noqa: E712
                     col(MessageLog.run_id).is_(None),
+                    col(MessageLog.turn_pending).is_(False),
                 )
                 .order_by(*_NEWEST_MESSAGE_FIRST)
                 .offset(offset)
@@ -1240,6 +1295,7 @@ class MessageStore:
                     MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     MessageLog.is_reaction == False,  # noqa: E712
                     col(MessageLog.run_id).is_(None),
+                    col(MessageLog.turn_pending).is_(False),
                 )
             ).one()
 
@@ -1309,7 +1365,7 @@ class MessageStore:
 
         Idleness is measured off this STORED timestamp, never the
         scheduler's own process-local clock — so it survives a restart. A
-        real turn's own row isn't stored yet when it calls this, so "the
+        real turn's own row is excluded until the turn completes, so "the
         newest stored message" is the previous exchange and the gap is
         measured to the live clock: exactly the rotation the idle task
         would already have made, so calling it again here is normally a
@@ -1369,6 +1425,7 @@ class MessageStore:
                     MessageLog.sender == sender,
                     MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     MessageLog.is_reaction == False,  # noqa: E712
+                    col(MessageLog.turn_pending).is_(False),
                 )
                 .order_by(*_NEWEST_MESSAGE_FIRST)
                 .limit(1)
@@ -1400,6 +1457,7 @@ class MessageStore:
                     MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     MessageLog.is_reaction == False,  # noqa: E712
                     col(MessageLog.run_id).is_(None),
+                    col(MessageLog.turn_pending).is_(False),
                 )
                 .order_by(*_NEWEST_MESSAGE_FIRST)
                 .limit(1)
@@ -1432,6 +1490,7 @@ class MessageStore:
                 MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                 MessageLog.is_reaction == False,  # noqa: E712
                 col(MessageLog.run_id).is_(None),
+                col(MessageLog.turn_pending).is_(False),
             )
             if since is not None:
                 query = query.where(MessageLog.timestamp >= since)
@@ -1490,6 +1549,7 @@ class MessageStore:
                     MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     MessageLog.is_reaction == False,  # noqa: E712
                     MessageLog.timestamp >= since,
+                    col(MessageLog.turn_pending).is_(False),
                 )
                 .order_by(*_NEWEST_MESSAGE_FIRST)
                 .limit(limit)
@@ -1526,6 +1586,7 @@ class MessageStore:
                     MessageLog.is_reaction == False,  # noqa: E712
                     MessageLog.timestamp >= since,
                     MessageLog.timestamp < until,
+                    col(MessageLog.turn_pending).is_(False),
                     or_(
                         col(MessageLog.direction) == PennyConstants.MessageDirection.INCOMING,
                         and_(
@@ -1569,6 +1630,7 @@ class MessageStore:
                         MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                         MessageLog.is_reaction == False,  # noqa: E712
                         MessageLog.timestamp >= since,
+                        col(MessageLog.turn_pending).is_(False),
                     )
                     .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
@@ -1586,6 +1648,7 @@ class MessageStore:
         channel_types: list[str] | None,
         before: tuple[datetime, int] | None,
         limit: int,
+        ios_device_id: int | None = None,
     ) -> tuple[list[tuple[MessageLog, Device | None, IosOutboxItem | None]], bool]:
         """Return one newest-first boundary page of the shared conversation
         history — read by both the iOS history surface and the browser
@@ -1613,7 +1676,7 @@ class MessageStore:
             has_more = len(rows) > limit
             ordered = list(reversed(rows[:limit]))
             outbox_by_message_id, outbox_by_id = self._ios_outbox_maps(
-                session, outbox_columns, ordered
+                session, outbox_columns, ordered, ios_device_id
             )
             resolved = self._resolve_ios_rows(ordered, devices, outbox_by_message_id, outbox_by_id)
             return resolved, has_more
@@ -1680,6 +1743,7 @@ class MessageStore:
         session: Session,
         outbox_columns: Any,
         ordered: list[tuple[MessageLog, Device | None]],
+        ios_device_id: int | None,
     ) -> tuple[dict[int, IosOutboxItem], dict[int, IosOutboxItem]]:
         """Outbox rows matching the page's messages, keyed both by
         ``message_log_id`` and by ``id`` (for legacy rows whose ``external_id``
@@ -1692,11 +1756,15 @@ class MessageStore:
         ]
         outbox_rows = list(
             session.exec(
-                select(IosOutboxItem).where(
+                select(IosOutboxItem)
+                .where(
                     or_(
                         outbox_columns.message_log_id.in_(message_ids),
                         outbox_columns.id.in_(outbox_ids),
                     )
+                )
+                .order_by(
+                    (outbox_columns.device_id == ios_device_id).asc(), outbox_columns.id.desc()
                 )
             ).all()
         )
@@ -1769,6 +1837,7 @@ class MessageStore:
                         MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                         MessageLog.is_reaction == False,  # noqa: E712
                         MessageLog.processed == False,  # noqa: E712
+                        col(MessageLog.turn_pending).is_(False),
                     )
                     .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
@@ -2037,7 +2106,10 @@ class MessageStore:
             rows = list(
                 session.exec(
                     select(MessageLog)
-                    .where(MessageLog.is_reaction == False)  # noqa: E712
+                    .where(
+                        MessageLog.is_reaction == False,  # noqa: E712
+                        col(MessageLog.turn_pending).is_(False),
+                    )
                     .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
                 ).all()

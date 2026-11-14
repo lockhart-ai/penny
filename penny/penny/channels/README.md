@@ -133,7 +133,16 @@ delivery and background APNs notifications:
   registration's `pairing_token` must match.
 - Penny stores/updates the generic device row and the iOS APNs registration, then
   responds with `registered`.
-- Outgoing Penny messages always go into `ios_outbox`.
+- Each user message and Penny reply is committed with one `ios_outbox`
+  delivery per registered iOS device. New registrations also queue prior history.
+- A client can include a UUID `client_message_id` in its chat frame. It is
+  echoed on the canonical message and makes retries from that device idempotent.
+- On restart, an accepted turn with no saved reply receives a linked interruption
+  notice. Penny does not replay actions from an interrupted turn.
+- Register with `supports_message_chunks: true` to receive oversized sync pages as
+  ordered `messages_chunk` frames. Concatenate the base64-decoded `data` in
+  zero-based `index` order, then decode the messages response at `final: true`.
+  Older clients receive a bounded page with oversized attachments omitted.
 - History and outbox message records include an optional base64-encoded
   little-endian Float32 `embedding` when Penny has one.
 - Registered clients may send `embedding_request` with a `request_id` and
@@ -141,16 +150,15 @@ delivery and background APNs notifications:
   the base64 vector or an error.
 - If the target device has an active WebSocket connection, Penny sends
   `outbox_changed`; the client should then send `pull_messages`.
-- If the target device is disconnected, Penny sends an APNs alert preview with a
-  summarized body and source hint, then the client pulls the durable outbox on
-  next open.
+- For Penny's outgoing messages, the offline default device can receive an APNs
+  alert preview if it is an iOS device. Other devices catch up silently on reconnect.
 
 ### Client messages
 
 - `register`: `device_id`, `label`, optional `pairing_token`,
   optional `device_secret`, optional `apns_token`, `apns_environment`,
   optional `app_version`
-- `message`: `content`
+- `message`: `content`, optional `images` and `client_message_id`
 - `pull_messages`: optional `limit`
 - `history_request`: optional `limit`, `before`, `channel_types`, and
   `include_attachments` (defaults to `true`). Set `count_only` to `true` for

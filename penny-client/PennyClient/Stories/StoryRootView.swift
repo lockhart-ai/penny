@@ -107,6 +107,8 @@ struct StoryRootView: View {
                 chatViewModel: StoryFixtures.chatViewModel(messages: StoryFixtures.findInChatMessages),
                 browserModel: DataBrowserFixtures.model()
             )
+        case .uiTestChatScrolling:
+            AppShellView(chatViewModel: StoryFixtures.scrollingViewModel())
         }
     }
 }

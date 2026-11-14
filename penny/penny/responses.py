@@ -68,6 +68,11 @@ class PennyResponse:
     # ── Channel ──────────────────────────────────────────────────────────────
 
     DELIVERY_FAILURE = "Sorry, I had trouble delivering that message. Please try again."
+    TURN_INTERRUPTED = (
+        "Penny restarted before finishing this request. If it involved making a change, "
+        "check whether it went through before sending the request again."
+    )
+    IOS_MESSAGE_REQUIRES_UPDATE = "Update the Penny app to sync this message in full."
     THREADING_NOT_SUPPORTED_COMMANDS = "Commands can't be used in threads."
     UNKNOWN_COMMAND = "Unknown command: /{command_name}. Use /commands to see available commands."
     COMMAND_ERROR = "Failed to run command: {error}"

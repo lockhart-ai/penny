@@ -13,6 +13,7 @@ struct ServerChatMessage: Decodable {
     let pushSummary: String?
     let messageID: Int?
     let outboxID: Int?
+    let clientMessageID: UUID?
     let direction: String?
     let channelType: String?
     let deviceLabel: String?
@@ -37,6 +38,7 @@ struct ServerChatMessage: Decodable {
         case pushSummary = "push_summary"
         case messageID = "message_id"
         case outboxID = "outbox_id"
+        case clientMessageID = "client_message_id"
         case direction
         case channelType = "channel_type"
         case deviceLabel = "device_label"
@@ -60,6 +62,7 @@ struct ServerChatMessage: Decodable {
         pushSummary = try container.decodeIfPresent(String.self, forKey: .pushSummary)
         messageID = try container.decodeIfPresent(Int.self, forKey: .messageID)
         outboxID = try container.decodeIfPresent(Int.self, forKey: .outboxID)
+        clientMessageID = try container.decodeIfPresent(UUID.self, forKey: .clientMessageID)
         direction = try container.decodeIfPresent(String.self, forKey: .direction)
         channelType = try container.decodeIfPresent(String.self, forKey: .channelType)
         deviceLabel = try container.decodeIfPresent(String.self, forKey: .deviceLabel)
@@ -126,6 +129,7 @@ public struct ImageAttachment: Identifiable {
 public struct ChatMessage: Identifiable {
     public let id: Int
     public let serverID: Int?
+    let clientMessageID: UUID?
     public let createdAt: Date
     public let content: String
     public let sourceHint: String?
@@ -169,10 +173,12 @@ public struct ChatMessage: Identifiable {
         imageAttachmentDataURLs: [String] = [],
         imageAttachments: [ImageAttachment],
         isOutgoing: Bool,
-        embedding: Data? = nil
+        embedding: Data? = nil,
+        clientMessageID: UUID? = nil
     ) {
         self.id = id
         self.serverID = serverID
+        self.clientMessageID = clientMessageID
         self.createdAt = createdAt
         self.content = content
         self.sourceHint = sourceHint
@@ -192,6 +198,7 @@ public struct ChatMessage: Identifiable {
     init(model: MessageModel) {
         id = model.id
         serverID = model.serverID
+        clientMessageID = model.clientMessageID.flatMap(UUID.init(uuidString:))
         createdAt = model.createdAt
         content = model.content
         sourceHint = model.sourceHint
@@ -211,7 +218,9 @@ public struct ChatMessage: Identifiable {
         isOutgoing = model.isOutgoing
     }
 
-    public static func local(id: Int, content: String, imageDataURLs: [String] = []) -> ChatMessage {
+    public static func local(
+        id: Int, content: String, imageDataURLs: [String] = [], clientMessageID: UUID? = nil
+    ) -> ChatMessage {
         let images = imageDataURLs.compactMap { dataURL -> ImageAttachment? in
             guard let data = DataURLDecoder.decode(dataURL), let image = UIImage(data: data) else { return nil }
             return ImageAttachment(image: image)
@@ -225,7 +234,8 @@ public struct ChatMessage: Identifiable {
             imageAttachmentDataURLs: imageDataURLs,
             imageAttachments: images,
             isOutgoing: true,
-            embedding: nil
+            embedding: nil,
+            clientMessageID: clientMessageID
         )
     }
 
@@ -248,7 +258,8 @@ public struct ChatMessage: Identifiable {
             imageAttachmentDataURLs: imageAttachmentDataURLs,
             imageAttachments: imageAttachments,
             isOutgoing: message.direction == "incoming",
-            embedding: message.embedding
+            embedding: message.embedding,
+            clientMessageID: message.clientMessageID
         )
     }
 }

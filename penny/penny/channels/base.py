@@ -9,7 +9,6 @@ import re
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, Field
@@ -29,6 +28,8 @@ from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from penny.agents import ChatAgent
     from penny.agents.models import TurnInbox
     from penny.channels.turns import TurnRegistry
@@ -106,6 +107,9 @@ class IncomingMessage(BaseModel):
     reacted_to_external_id: str | None = None  # External ID of message being reacted to
     images: list[str] = Field(default_factory=list)  # Image attachments as data URIs
     page_context: PageContext | None = None  # Current page the user is viewing (browser only)
+    client_message_id: str | None = None
+    message_log_id: int | None = None
+    parent_message_id: int | None = None
 
 
 class QueuedTurnMessage(BaseModel):
@@ -113,12 +117,11 @@ class QueuedTurnMessage(BaseModel):
 
     Carries everything the joined turn needs to render it, log it, and — when
     the turn ends before it was drained — run it as its own follow-up turn:
-    the (attachment-fetched, image-normalized) incoming message, the resolved
-    device/sender identity, the quote parent row id, the arrival timestamp,
-    and the two content forms the message renders in — the model-facing one
+    the accepted incoming message, the resolved user sender, and the two
+    content forms the message renders in — the model-facing one
     (a deterministic quote frame prepended when a quoted parent resolved) and
     the record form (the image-history marker applied, the same shape
-    ``_finish_turn`` logs the triggering message in).
+    persisted on acceptance).
 
     ``clear_queued`` is the joining channel's own waiting-mark remover (Signal:
     the ⏳ reaction) — carried on the message, not on the inbox, because the
@@ -129,9 +132,6 @@ class QueuedTurnMessage(BaseModel):
 
     message: IncomingMessage
     user_sender: str
-    device_id: int | None
-    parent_row_id: int | None
-    received_at: datetime
     rendered_content: str
     logged_content: str
     clear_queued: Callable[[IncomingMessage], Awaitable[None]]
@@ -326,6 +326,29 @@ class MessageChannel(ABC):
         after construction/connectivity validation.
         """
         return
+
+    async def recover_interrupted_turn(self, message: MessageLog) -> None:
+        """Settle an accepted turn without rerunning tools that may have already acted."""
+        if message.id is None:
+            raise ValueError("Interrupted turn has no message ID")
+        stored = self._db.messages.get_by_id(message.id)
+        if stored is None or not stored.turn_pending:
+            return
+        if not self._db.messages.has_turn_reply(message.id):
+            device = self._db.devices.get_by_id(message.device_id) if message.device_id else None
+            recipient = device.identifier if device else message.sender
+            notice = PennyResponse.TURN_INTERRUPTED
+            reply_id, _ = await self._log_and_send(
+                recipient,
+                notice,
+                self.prepare_outgoing(notice),
+                None,
+                message,
+                parent_id=message.id,
+            )
+            if reply_id is None:
+                raise RuntimeError("Could not save the interrupted turn notice")
+        self._db.messages.complete_incoming_turn(message.id)
 
     def prepare_outgoing(self, text: str) -> str:
         """
@@ -579,6 +602,8 @@ class MessageChannel(ABC):
             embedding=serialize_embedding(embedding) if embedding is not None else None,
             mechanism=mechanism,
             run_id=run_id,
+            attachments=attachments,
+            source_name=source_name,
         )
         external_id = await self._send_raw(
             recipient,
@@ -734,10 +759,14 @@ class MessageChannel(ABC):
             if not await self._validate_message(message):
                 return
 
-            if await self._dispatch_command(message):
+            message = self._accept_incoming(message)
+            if message is None:
                 return
 
-            if await self._reject_unsupported_thread(message):
+            if await self._dispatch_command(message) or await self._reject_unsupported_thread(
+                message
+            ):
+                await self._complete_incoming(message)
                 return
 
             await self._dispatch_to_agent(message)
@@ -745,9 +774,57 @@ class MessageChannel(ABC):
         except Exception as e:
             logger.exception("Error handling message: %s", e)
             if message is not None:
+                self._release_incoming(message)
                 await self._report_turn_failure(
                     message.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, None
                 )
+
+    def _accept_incoming(self, message: IncomingMessage) -> IncomingMessage | None:
+        """Persist accepted chat before the model or a command starts work."""
+        device_id = self._resolve_device_id(message)
+        if device_id is not None and message.client_message_id is not None:
+            previous = self._db.messages.get_by_client_message_id(
+                device_id, message.client_message_id
+            )
+            if previous is not None:
+                return None
+
+        message.images = [normalize_data_uri(uri) for uri in message.images]
+        parent = self._resolve_quoted_parent_row(message)
+        received_at = self._db.clock.now()
+        message_id = self._db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            self._resolve_user_sender(message.sender),
+            _logged_incoming_content(message),
+            parent_id=parent.id if parent else None,
+            signal_timestamp=message.signal_timestamp,
+            device_id=device_id,
+            timestamp=received_at,
+            attachments=message.images,
+            client_message_id=message.client_message_id,
+            turn_pending=True,
+        )
+        if message_id is None:
+            raise RuntimeError("Could not persist the incoming message")
+        return message.model_copy(
+            update={
+                "message_log_id": message_id,
+                "parent_message_id": parent.id if parent else None,
+            }
+        )
+
+    async def _complete_incoming(self, message: IncomingMessage, run_id: str | None = None) -> None:
+        if message.message_log_id is not None:
+            embedding = await self._embed_message(_logged_incoming_content(message))
+            self._db.messages.complete_incoming_turn(
+                message.message_log_id,
+                embedding=serialize_embedding(embedding) if embedding is not None else None,
+                run_id=run_id,
+            )
+
+    def _release_incoming(self, message: IncomingMessage) -> None:
+        if message.message_log_id is not None:
+            self._db.messages.complete_incoming_turn(message.message_log_id)
 
     async def _report_turn_failure(
         self, recipient: str, facts: str, tool_calls: list[ToolCallRecord] | None
@@ -883,11 +960,8 @@ class MessageChannel(ABC):
         beside the turn's own final reply, #2837), delivered — before that
         step's calls run.
 
-        ``parent_id=None``: the turn's own incoming message isn't logged until
-        the whole turn finishes (``_finish_turn``, deliberately deferred so it
-        never doubles into the turn's own recall), so there is no id yet for an
-        interim send to link against — it threads the run instead
-        (``run_id``), which the turn's own eventual reply also carries."""
+        Interim messages share the run ID with the final reply. The final reply
+        is the one that links to the incoming message and closes the exchange."""
 
         async def send(text: str) -> None:
             await self.send_response(
@@ -920,23 +994,27 @@ class MessageChannel(ABC):
         turn's next tool step — never a second, concurrent turn.  The channel that
         claims the slot owns the whole series: its turn, then every turn the
         inbox's leftovers demand, and only then does the slot free up."""
-        device_id = self._resolve_device_id(message)
         user_sender = self._resolve_user_sender(message.sender)
 
         if self._needs_profile():
-            await self._handle_profile_required(message, user_sender, device_id)
+            await self._complete_incoming(message)
+            await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
             return
 
         inbox, joined = self._turn_registry.enter(message.sender)
         if joined:
-            await self._join_active_turn(message, user_sender, device_id, inbox)
+            await self._join_active_turn(message, user_sender, inbox)
             return
 
         typing_task = asyncio.create_task(self._typing_loop(message.sender))
+        interrupted = False
         try:
             if self._scheduler:
                 self._scheduler.notify_foreground_start()
-            await self._run_turn_series(message, user_sender, device_id, inbox)
+            await self._run_turn_series(message, user_sender, inbox)
+        except asyncio.CancelledError:
+            interrupted = True
+            raise
         finally:
             typing_task.cancel()
             await self.send_typing(message.sender, False)
@@ -945,12 +1023,13 @@ class MessageChannel(ABC):
             # The series is over — release the waiters, then account for anything
             # still queued.  Unreachable on the clean path (the series ends only
             # when the inbox is empty); the backstop for a series that died
-            # mid-turn: each queued message gets its own row in the record and
-            # its own honest failure notice, never silence.
+            # mid-turn: release each queued message into recall and report the failure.
             inbox.finish()
             for pending in self._turn_registry.abandon(inbox):
                 await inbox.release(pending)
-                await self._log_abandoned_message(pending)
+                if interrupted:
+                    continue
+                self._release_incoming(pending.message)
                 await self._report_turn_failure(
                     pending.message.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, None
                 )
@@ -959,7 +1038,6 @@ class MessageChannel(ABC):
         self,
         message: IncomingMessage,
         user_sender: str,
-        device_id: int | None,
         inbox: TurnInbox,
     ) -> None:
         """Run the claimed turn, then every turn the inbox's leftovers demand (#2985).
@@ -975,8 +1053,6 @@ class MessageChannel(ABC):
         carries on — no queued message is ever dropped."""
         current = message
         current_sender = user_sender
-        current_device_id = device_id
-        received_at = self._db.clock.now()
         while True:
             progress: ProgressTracker | None = None
             try:
@@ -984,16 +1060,15 @@ class MessageChannel(ABC):
                 await self._run_message_through_agent(
                     current,
                     current_sender,
-                    current_device_id,
                     progress,
                     inbox,
-                    received_at,
                 )
             except Exception:
                 logger.exception("Turn failed for %s", current.sender)
                 await self._report_turn_failure(
                     current.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, None
                 )
+                self._release_incoming(current)
             finally:
                 if progress is not None:
                     await progress.clear()
@@ -1003,14 +1078,11 @@ class MessageChannel(ABC):
             await inbox.release(next_queued)
             current = next_queued.message
             current_sender = next_queued.user_sender
-            current_device_id = next_queued.device_id
-            received_at = next_queued.received_at
 
     async def _join_active_turn(
         self,
         message: IncomingMessage,
         user_sender: str,
-        device_id: int | None,
         inbox: TurnInbox,
     ) -> None:
         """Queue the message onto the active turn's inbox (#2985) — no new turn: the
@@ -1018,7 +1090,7 @@ class MessageChannel(ABC):
         already spans it, and its loop drains the message after its next tool step
         (or its tail picks it up).  Returns at once; nothing here waits for the
         turn."""
-        queued = self._build_queued_message(message, user_sender, device_id)
+        queued = self._build_queued_message(message, user_sender)
         inbox.put(queued)
         await self.mark_queued(message)
         # A second device gets its own typing indicator while its message waits
@@ -1028,39 +1100,23 @@ class MessageChannel(ABC):
             asyncio.create_task(self._type_until_turn_ends(inbox, message.sender))
 
     def _build_queued_message(
-        self, message: IncomingMessage, user_sender: str, device_id: int | None
+        self, message: IncomingMessage, user_sender: str
     ) -> QueuedTurnMessage:
-        """Resolve, at join time, everything the joined turn needs about the message
-        (#2985): images normalized to the stored-image size rules (#2780), the quote
-        parent row, the arrival timestamp, the two content forms — model-facing
-        (a deterministic quote frame when a parent resolved; an ordinary quote-reply
-        turn gets its thread history built for it, which a mid-run join cannot
-        rebuild) and record (the image-history marker, the same shape
-        ``_finish_turn`` logs the triggering message in) — and the joining channel's
-        own waiting-mark remover, so the mark comes off through the hands that put
-        it on whatever channel owns the turn."""
-        normalized = (
-            message.model_copy(
-                update={"images": [normalize_data_uri(uri) for uri in message.images]}
-            )
-            if message.images
-            else message
+        """Render a queued message and keep its channel's waiting-mark remover."""
+        parent = (
+            self._db.messages.get_by_id(message.parent_message_id)
+            if message.parent_message_id is not None
+            else None
         )
-        parent = self._resolve_quoted_parent_row(normalized)
         return QueuedTurnMessage(
-            message=normalized,
+            message=message,
             user_sender=user_sender,
-            device_id=device_id,
-            parent_row_id=parent.id if parent else None,
-            received_at=self._db.clock.now(),
             rendered_content=(
-                Prompt.QUOTED_MESSAGE_FRAME.format(
-                    quoted=parent.content, content=normalized.content
-                )
+                Prompt.QUOTED_MESSAGE_FRAME.format(quoted=parent.content, content=message.content)
                 if parent
-                else normalized.content
+                else message.content
             ),
-            logged_content=_logged_incoming_content(normalized),
+            logged_content=_logged_incoming_content(message),
             clear_queued=self.clear_queued,
         )
 
@@ -1091,58 +1147,15 @@ class MessageChannel(ABC):
         clear is logged by the releaser, never fails the turn."""
         return
 
-    async def _log_joined_messages(self, joined: list[QueuedTurnMessage], run_id: str) -> None:
-        """Log each message the run JOINED mid-turn (#2985), stamped with the run id
-        that answered for it — at the message's own arrival time, so the record
-        keeps the true order: the triggering message ahead, the joined message
-        between the turn's start and its sends.  Deferred to after the run, exactly
-        like the triggering message's own row, so it never doubles into the turn's
-        own recall."""
-        for queued in joined:
-            embedding = await self._embed_message(queued.logged_content)
-            row_id = self._db.messages.log_message(
-                PennyConstants.MessageDirection.INCOMING,
-                queued.user_sender,
-                queued.logged_content,
-                parent_id=queued.parent_row_id,
-                device_id=queued.device_id,
-                embedding=serialize_embedding(embedding) if embedding is not None else None,
-                run_id=run_id,
-                timestamp=queued.received_at,
-            )
-            self._write_attachments(row_id, queued.message)
-
-    async def _log_abandoned_message(self, queued: QueuedTurnMessage) -> None:
-        """Log a queued message the dying series never reached a turn with (#2985) —
-        the record keeps every incoming message, whatever happened to it.  No run
-        stamp: nothing answered for it."""
-        embedding = await self._embed_message(queued.logged_content)
-        row_id = self._db.messages.log_message(
-            PennyConstants.MessageDirection.INCOMING,
-            queued.user_sender,
-            queued.logged_content,
-            parent_id=queued.parent_row_id,
-            device_id=queued.device_id,
-            embedding=serialize_embedding(embedding) if embedding is not None else None,
-            timestamp=queued.received_at,
-        )
-        self._write_attachments(row_id, queued.message)
-
-    async def _handle_profile_required(
-        self, message: IncomingMessage, user_sender: str, device_id: int | None
-    ) -> None:
-        """Log the message but redirect the user to profile setup."""
-        embedding = await self._embed_message(message.content)
-        row_id = self._db.messages.log_message(
-            PennyConstants.MessageDirection.INCOMING,
-            user_sender,
-            message.content,
-            signal_timestamp=message.signal_timestamp,
-            device_id=device_id,
-            embedding=serialize_embedding(embedding) if embedding is not None else None,
-        )
-        self._write_attachments(row_id, message)
-        await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
+    async def _complete_joined_messages(self, joined: list[QueuedTurnMessage], run_id: str) -> None:
+        """Make joined messages available to recall after their consuming turn."""
+        try:
+            for queued in joined:
+                await self._complete_incoming(queued.message, run_id)
+        except Exception:
+            for queued in joined:
+                self._release_incoming(queued.message)
+            raise
 
     def _resolve_quoted_parent_row(self, message: IncomingMessage) -> MessageLog | None:
         """The quoted parent ROW a quote-reply continues, most-authoritative first.
@@ -1172,48 +1185,13 @@ class MessageChannel(ABC):
         self,
         message: IncomingMessage,
         user_sender: str,
-        device_id: int | None,
         progress: ProgressTracker | None,
         inbox: TurnInbox,
-        received_at: datetime,
     ) -> None:
-        """Invoke the agent, log the incoming message, and deliver the response.
-
-        The egress write inside ``send_response`` is attributed to the
-        message agent's ``name`` (template-method override on the agent
-        subclass) — passed explicitly down the call chain rather than
-        threaded through ambient state.
-
-        The true top-level run starter for a chat turn (#2458): mints the top
-        ``CallLink`` before the turn's own loop even draws, passed explicitly down
-        the call chain with no ambient state anywhere.
-
-        ``inbox`` (#2985) is the turn's join queue — the loop drains it after each
-        tool step.  ``received_at`` is the triggering message's own arrival time,
-        captured by the caller (the series loop) and passed in, so a follow-up
-        turn over a queued message still stamps its row with when the user
-        actually sent it, not when its turn happened to start.
-        """
+        """Run the agent on an accepted message and deliver its response."""
         logger.info("Dispatching to message agent for %s", message.sender)
-        # Normalize every image attachment to the stored-image size rules (#2780)
-        # before it ever reaches the model request or the prompt log — the one
-        # shared chokepoint every channel's incoming message passes through here,
-        # so a channel that starts accepting image attachments later needs no
-        # change of its own.
-        if message.images:
-            message = message.model_copy(
-                update={"images": [normalize_data_uri(uri) for uri in message.images]}
-            )
-        # Mint the turn's run id here so the same id stamps every promptlog row of
-        # the run AND is recorded on any collection the run creates
-        # (``created_by_run_id``, #1566).  The incoming message is logged AFTER the
-        # run (below), so it never doubles into the turn's own recall — then it is
-        # linked structurally to the run by ``link_source_message``.
-        # ``user-messages`` is a read facade over ``messagelog`` — no separate append.
         run_id = uuid.uuid4().hex
         call_link = CallLink.top(run_id)
-        parent = self._resolve_quoted_parent_row(message)
-        parent_id = parent.id if parent else None
         try:
             response = await self._message_agent.handle(
                 content=message.content,
@@ -1222,77 +1200,44 @@ class MessageChannel(ABC):
                 inbox=inbox,
                 images=message.images or None,
                 page_context=message.page_context,
-                thread_parent_id=parent_id,
+                thread_parent_id=message.parent_message_id,
                 **self._make_handle_kwargs(message, progress, run_id),
             )
-        finally:
-            # Whatever the run's fate, the messages it JOINED mid-turn (#2985)
-            # get their rows now — stamped with this run id, at their own
-            # arrival times, deferred like the triggering message's row so
-            # they never double into the run's own recall.
-            await self._log_joined_messages(inbox.take_drained(), run_id)
+        except Exception:
+            await self._complete_joined_messages(inbox.take_drained(), run_id)
+            raise
+        joined = inbox.take_drained()
         try:
-            await self._finish_turn(
-                message, user_sender, device_id, response, run_id, parent_id, progress, received_at
-            )
+            await self._finish_turn(message, user_sender, response, run_id, progress, joined)
         except Exception:
             logger.exception("Failed to finish turn for %s", message.sender)
+            for queued in joined:
+                self._release_incoming(queued.message)
             await self._report_turn_failure(
                 message.sender, PennyResponse.FACTS_TURN_FAILED_AFTER_REPLY, response.tool_calls
             )
-
-    def _write_attachments(self, message_id: int | None, message: IncomingMessage) -> None:
-        """Write a just-logged incoming row's photo attachments (#3084) — the
-        record-side companion of ``_logged_incoming_content``'s marker: the
-        model's history keeps the marker, while these rows (keyed to the
-        message row, never a blob column on ``messagelog``) are what a
-        channel-serving history read (iOS) gets back, so the sending app
-        renders the user's photo in their own bubble after a sync.  A no-op
-        for a text-only message or a row that failed to log."""
-        if message_id is None or not message.images:
-            return
-        self._db.messages.log_attachments(message_id, message.images)
+            self._release_incoming(message)
 
     async def _finish_turn(
         self,
         message: IncomingMessage,
         user_sender: str,
-        device_id: int | None,
         response: ControllerResponse,
         run_id: str,
-        parent_id: int | None,
         progress: ProgressTracker | None,
-        received_at: datetime,
+        joined: list[QueuedTurnMessage],
     ) -> None:
-        """Log the incoming message, link it to anything the run created, and
-        deliver the reply — the part of the turn that has an answer in hand
-        already (#2371: split out so a failure here can be reported with the
-        run's own ``response.tool_calls``, which ``_run_message_through_agent``
-        doesn't have once control returns to it)."""
-        # The record form of the message's text (#2635) — the shared rule
-        # ``_logged_incoming_content`` also logs a joined message's row in.
-        logged_content = _logged_incoming_content(message)
-        incoming_embedding = await self._embed_message(logged_content)
-        incoming_id = self._db.messages.log_message(
-            PennyConstants.MessageDirection.INCOMING,
-            user_sender,
-            logged_content,
-            parent_id=parent_id,
-            signal_timestamp=message.signal_timestamp,
-            device_id=device_id,
-            embedding=serialize_embedding(incoming_embedding)
-            if incoming_embedding is not None
-            else None,
-            timestamp=received_at,
-        )
-        # Link the spawning message to any mechanism this run created, now that the
-        # message has an id (#1566) — matched by the unique per-turn run id.
-        if incoming_id is not None:
-            self._db.memories.link_source_message(run_id, incoming_id)
-        self._write_attachments(incoming_id, message)
-        await self._deliver_agent_response(
+        """Complete the accepted message, link the run's work, and send its reply."""
+        incoming_id = message.message_log_id
+        assert incoming_id is not None
+        self._db.memories.link_source_message(run_id, incoming_id)
+        reply_id = await self._deliver_agent_response(
             message, user_sender, response, incoming_id, progress, self._message_agent.name, run_id
         )
+        await self._complete_joined_messages(joined, run_id)
+        await self._complete_incoming(message)
+        if reply_id is not None:
+            await self._stamp_exchange_embedding(reply_id)
 
     async def _deliver_agent_response(
         self,
@@ -1303,7 +1248,7 @@ class MessageChannel(ABC):
         progress: ProgressTracker | None,
         author: str,
         run_id: str,
-    ) -> None:
+    ) -> int | None:
         """Send the agent's response and surface delivery failures."""
         # Everything upstream (Agent._narrate_or_account, #2370) already tries to have
         # the model say SOMETHING, so an empty answer reaching send time is the rare
@@ -1336,11 +1281,10 @@ class MessageChannel(ABC):
             media_ids=response.generated_media_ids,
             run_id=run_id,
         )
-        if sent is not None:
-            await self._stamp_exchange_embedding(sent)
         if sent is None:
             logger.error("Failed to deliver response to %s — notifying user", message.sender)
             await self.send_message(message.sender, PennyResponse.DELIVERY_FAILURE)
+        return sent
 
     async def _stamp_exchange_embedding(self, reply_id: int) -> None:
         """Stamp the exchange embedding on a just-delivered reply (#3010).

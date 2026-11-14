@@ -92,6 +92,7 @@ from penny.channels.ios.models import (
     IosIncomingMessage,
     IosMessages,
     IosMessagesAcked,
+    IosMessagesChunk,
     IosOutboxChanged,
     IosOutboxRecord,
     IosPullMessages,
@@ -114,8 +115,9 @@ from penny.database.memory import (
     MemoryTypeError,
 )
 from penny.database.message_store import RunSendStats
-from penny.datetime_utils import user_timezone_name
+from penny.datetime_utils import user_timezone_name, utc_isoformat
 from penny.llm.embeddings import serialize_embedding
+from penny.responses import PennyResponse
 from penny.tools.collection_instantiation import describe_schedule
 
 if TYPE_CHECKING:
@@ -154,14 +156,14 @@ class IosConnectionInfo:
     ws: ServerConnection
     device_id: int
     identifier: str
+    supports_message_chunks: bool = False
 
 
 class IosChannel(MessageChannel):
     """Primary iOS messaging channel.
 
-    Outbound delivery is durable: every send writes an ``ios_outbox`` row.  A
-    foreground websocket receives an ``outbox_changed`` hint and pulls rows; a
-    background/offline app gets an APNs preview notification, then pulls on open.
+    Each iOS device pulls its own durable deliveries. Connected clients receive
+    an outbox hint, and the default device can receive an APNs preview.
     """
 
     def __init__(
@@ -190,17 +192,13 @@ class IosChannel(MessageChannel):
         self._is_primary_channel = is_primary_channel
         self._server: Server | None = None
         self._connections: dict[str, IosConnectionInfo] = {}
+        self._chat_tasks: set[asyncio.Task[None]] = set()
         self._closed = asyncio.Event()
         self._permission_manager: PermissionManager | None = None
         self._collector: Collector | None = None
         db.messages.subscribe_prompt_logged(self._on_prompt_logged)
         db.messages.subscribe_run_outcome_set(self._on_run_outcome_set)
         db.memories.subscribe_memory_changed(self._on_memory_changed)
-        # Live-push a just-logged user message from ANY device to every OTHER
-        # connected iOS device (#3137, rules 2/3) — Signal and Discord never
-        # subscribe here (no live transport, no way to post as the user), so
-        # this is structurally the only way a user message ever reaches an
-        # app client other than the one it arrived on.
         db.messages.subscribe_incoming_logged(self._on_incoming_logged)
 
     @property
@@ -252,33 +250,31 @@ class IosChannel(MessageChannel):
         self._push(message, "memory_changed")
 
     def _on_incoming_logged(self, row: MessageLog) -> None:
-        """Live-push a just-logged user message to every OTHER connected iOS
-        device (#3137, rules 2/3) — the device it arrived on already knows
-        what it sent, so it is excluded.  Best-effort, live-only: an offline
-        device gets nothing and catches up through the ordinary cross-device
-        ``history_page`` read on reconnect, never a replay of this push.
-        """
-        device = self._db.devices.get_by_id(row.device_id) if row.device_id is not None else None
-        record = _history_record(
-            (row, device, None), include_attachments=False, run_stats={}, page_attachments={}
-        )
-        payload = IosMessages(messages=[record], mode="live").model_dump_json(exclude_none=True)
-        self._push(payload, "live_message", exclude_device_id=row.device_id)
+        """Wake connected devices after the user message commits to their outboxes."""
+        if row.is_reaction or not self._connections:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Sync still works on the next pull when a caller logs off-loop.
+            return
+        loop.create_task(self._notify_incoming_sync())
 
-    def _push(self, payload: str, update: str, *, exclude_device_id: int | None = None) -> None:
+    async def _notify_incoming_sync(self) -> None:
+        for conn in tuple(self._connections.values()):
+            try:
+                await self._send_outbox_changed(conn)
+            except Exception:
+                logger.exception("Sending iOS outbox update failed")
+
+    def _push(self, payload: str, update: str) -> None:
         """Schedule a database update whose detached task handles its own failures."""
         if self._connections:
-            asyncio.ensure_future(self._deliver_push(payload, update, exclude_device_id))
+            asyncio.ensure_future(self._deliver_push(payload, update))
 
-    async def _deliver_push(
-        self, payload: str, update: str, exclude_device_id: int | None = None
-    ) -> None:
-        """A disconnected device must not prevent other devices receiving an
-        update; ``exclude_device_id`` leaves out one device on purpose (#3137)
-        — the one that already knows what it just sent."""
-        targets = [
-            conn for conn in self._connections.values() if conn.device_id != exclude_device_id
-        ]
+    async def _deliver_push(self, payload: str, update: str) -> None:
+        """A disconnected device must not prevent other devices receiving an update."""
+        targets = tuple(self._connections.values())
         if not targets:
             return
         try:
@@ -348,9 +344,12 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return None
         if msg_type == IOS_MSG_TYPE_MESSAGE:
-            await self._handle_chat_message(ws, data, device_identifier)
+            # A chat turn can run while this socket pulls and acknowledges its own mirror.
+            task = asyncio.create_task(self._handle_chat_message(ws, data, device_identifier))
+            self._chat_tasks.add(task)
+            task.add_done_callback(self._chat_task_done)
         elif msg_type == IOS_MSG_TYPE_TEST_NOTIFICATION:
-            await self._handle_test_notification(data, device_identifier)
+            await self._handle_test_notification(ws, data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_EMBEDDING_REQUEST:
             await self._handle_embedding_request(ws, data)
         elif msg_type == IOS_MSG_TYPE_PULL:
@@ -435,11 +434,13 @@ class IosChannel(MessageChannel):
             channel_type=ChannelType.IOS,
             identifier=msg.device_id,
             label=msg.label,
-            is_default=self._is_primary_channel,
         )
         if device.id is None:
             return False, 0
-        if self._is_primary_channel:
+        default = self._db.devices.get_default()
+        if self._is_primary_channel and (
+            default is None or default.channel_type != ChannelType.IOS
+        ):
             self._db.devices.set_default(device.id)
         self._db.ios.upsert_registration(
             device=device,
@@ -449,7 +450,10 @@ class IosChannel(MessageChannel):
             device_secret=msg.device_secret,
         )
         self._connections[msg.device_id] = IosConnectionInfo(
-            ws=ws, device_id=device.id, identifier=msg.device_id
+            ws=ws,
+            device_id=device.id,
+            identifier=msg.device_id,
+            supports_message_chunks=msg.supports_message_chunks,
         )
         is_default = self._db.devices.get_default_identifier() == msg.device_id
         return is_default, self._db.ios.pending_count(device.id)
@@ -997,15 +1001,33 @@ class IosChannel(MessageChannel):
         }
         if msg.images:
             envelope["images"] = msg.images
+        if msg.client_message_id is not None:
+            envelope["client_message_id"] = str(msg.client_message_id)
         await self.handle_message(envelope)
 
-    async def _handle_test_notification(self, data: dict, device_identifier: str) -> None:
+    def _chat_task_done(self, task: asyncio.Task[None]) -> None:
+        self._chat_tasks.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.error("Processing an iOS chat message failed", exc_info=error)
+
+    async def _handle_test_notification(
+        self, ws: ServerConnection, data: dict, device_identifier: str
+    ) -> None:
         """Force a diagnostic APNs notification for the registered device."""
         try:
             IosTestNotification(**data)
         except ValidationError:
             return
-        await self._send_test_push(device_identifier)
+        if self._db.devices.get_default_identifier() != device_identifier:
+            await self._send_ws(
+                ws,
+                IosStatus(error="notification_requires_primary_device"),
+            )
+            return
+        if await self._send_test_push(device_identifier) is not None:
+            conn = self._connections.get(device_identifier)
+            if conn is not None:
+                await self._send_outbox_changed(conn)
 
     async def _handle_embedding_request(self, ws: ServerConnection, data: dict) -> None:
         """Return one query embedding for client-side semantic search."""
@@ -1073,15 +1095,26 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
         rows = self._db.ios.pending_for_device(conn.device_id, limit=msg.limit)
-        messages_by_id = self._db.messages.get_by_ids(
-            {row.message_log_id for row in rows if row.message_log_id is not None}
-        )
+        message_ids = {row.message_log_id for row in rows if row.message_log_id is not None}
+        messages_by_id = self._db.messages.get_by_ids(message_ids)
         run_stats = self._run_send_stats(messages_by_id.values())
+        attachments = self._page_attachments(messages_by_id.values())
+        devices = {device.id: device for device in self._db.devices.get_all()}
         records = []
         for row in rows:
             message = messages_by_id.get(row.message_log_id) if row.message_log_id else None
-            records.append(_outbox_record(row, message, run_stats=run_stats))
-        await self._send_ws(ws, IosMessages(messages=records, mode="outbox"))
+            record = _outbox_record(
+                row,
+                message,
+                device=devices.get(message.device_id) if message else None,
+                attachments=attachments.get(row.message_log_id, []) if row.message_log_id else [],
+                run_stats=run_stats,
+            )
+            records.append(record)
+        records = _fit_message_page(records)
+        await self._send_message_page(
+            ws, IosMessages(messages=records, mode="outbox"), conn.supports_message_chunks
+        )
 
     async def _handle_history(
         self, ws: ServerConnection, data: dict, device_identifier: str
@@ -1093,7 +1126,8 @@ class IosChannel(MessageChannel):
         except ValidationError, ValueError:
             await self._send_ws(ws, IosStatus(error="invalid_history_request"))
             return
-        if self._connections.get(device_identifier) is None:
+        conn = self._connections.get(device_identifier)
+        if conn is None:
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
 
@@ -1115,6 +1149,7 @@ class IosChannel(MessageChannel):
             channel_types=request.channel_types,
             before=cursor,
             limit=request.limit,
+            ios_device_id=conn.device_id,
         )
         run_stats = self._run_send_stats(message for message, _, _ in rows)
         page_attachments = (
@@ -1128,24 +1163,31 @@ class IosChannel(MessageChannel):
                 include_attachments=request.include_attachments,
                 run_stats=run_stats,
                 page_attachments=page_attachments,
+                ios_device_id=conn.device_id,
             )
             for row in rows
         ]
+        # History pages deliver their newest records first across page boundaries.
+        fitted = list(reversed(_fit_message_page(list(reversed(records)))))
+        if len(fitted) < len(records):
+            rows = rows[-len(fitted) :]
+            has_more = True
         next_cursor = None
         if has_more and rows:
             oldest = rows[0]
             next_cursor = _encode_history_cursor(
                 oldest[0].timestamp, _required_message_id(oldest[0]), request.channel_types
             )
-        await self._send_ws(
+        await self._send_message_page(
             ws,
             IosMessages(
-                messages=records,
+                messages=fitted,
                 mode="history",
                 next_cursor=next_cursor,
                 has_more=has_more,
                 attachments_included=request.include_attachments,
             ),
+            conn.supports_message_chunks,
         )
 
     async def _handle_ack(self, ws: ServerConnection, data: dict, device_identifier: str) -> None:
@@ -1160,7 +1202,10 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
         count = self._db.ios.mark_acked(conn.device_id, msg.ids)
-        await self._send_ws(ws, IosMessagesAcked(count=count))
+        await self._send_ws(
+            ws,
+            IosMessagesAcked(count=count, pending_count=self._db.ios.pending_count(conn.device_id)),
+        )
 
     def _cleanup_connection(self, ws: ServerConnection, device_identifier: str | None) -> None:
         if not device_identifier:
@@ -1186,6 +1231,7 @@ class IosChannel(MessageChannel):
             channel_type=ChannelType.IOS,
             device_identifier=sender,
             images=images,
+            client_message_id=raw_data.get("client_message_id"),
         )
 
     async def _send_raw(
@@ -1199,7 +1245,7 @@ class IosChannel(MessageChannel):
     ) -> int | None:
         """Persist message to the iOS outbox and notify the app."""
         device = self._db.devices.get_by_identifier(recipient)
-        if device is None or device.id is None:
+        if device is None or device.id is None or device.channel_type != ChannelType.IOS:
             logger.warning("No iOS device for recipient: %s", recipient)
             return None
 
@@ -1269,7 +1315,15 @@ class IosChannel(MessageChannel):
 
     async def _send_push_preview(self, device_id: int, item: IosOutboxItem) -> None:
         """Send APNs preview when possible; record errors but keep outbox durable."""
-        if self._apns_client is None or item.id is None:
+        if (
+            self._apns_client is None
+            or item.id is None
+            or item.push_sent_at is not None
+            or item.acked_at is not None
+        ):
+            return
+        default = self._db.devices.get_default()
+        if default is None or default.id != device_id or default.channel_type != ChannelType.IOS:
             return
         registration = self._db.ios.get_registration(device_id)
         if registration is None or not registration.push_enabled or not registration.apns_token:
@@ -1287,7 +1341,7 @@ class IosChannel(MessageChannel):
                 device_token=registration.apns_token,
                 title=item.push_title,
                 body=item.push_summary,
-                badge=self._db.ios.pending_count(device_id),
+                badge=self._db.ios.pending_alert_count(device_id, item.id),
                 outbox_id=item.id,
                 source_type=item.source_type,
                 source_name=item.source_name,
@@ -1437,6 +1491,9 @@ class IosChannel(MessageChannel):
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+        for task in self._chat_tasks:
+            task.cancel()
+        await asyncio.gather(*self._chat_tasks, return_exceptions=True)
         if self._apns_client:
             await self._apns_client.close()
         logger.info("iOS channel closed")
@@ -1445,6 +1502,47 @@ class IosChannel(MessageChannel):
     async def _send_ws(ws: ServerConnection, msg: BaseModel) -> None:
         """Send a protocol message, suppressing closed sockets."""
         await IosChannel._deliver_text(ws, msg.model_dump_json(exclude_none=True))
+
+    async def _send_message_page(
+        self, ws: ServerConnection, page: IosMessages, supports_message_chunks: bool
+    ) -> None:
+        payload = page.model_dump_json(exclude_none=True).encode()
+        if len(payload) <= PennyConstants.IOS_SYNC_FRAME_BYTES:
+            await self._deliver_text(ws, payload.decode())
+        elif supports_message_chunks:
+            await self._send_message_chunks(ws, payload)
+        else:
+            await self._send_legacy_large_page(ws, page)
+
+    async def _send_message_chunks(self, ws: ServerConnection, payload: bytes) -> None:
+        # Base64 grows each fragment, so leave room for its encoding and envelope.
+        chunk_bytes = PennyConstants.IOS_SYNC_FRAME_BYTES // 2
+        for index, offset in enumerate(range(0, len(payload), chunk_bytes)):
+            end = offset + chunk_bytes
+            fragment = IosMessagesChunk(
+                index=index,
+                final=end >= len(payload),
+                data=base64.b64encode(payload[offset:end]).decode(),
+            )
+            if not await self._deliver_text(ws, fragment.model_dump_json()):
+                return
+
+    async def _send_legacy_large_page(self, ws: ServerConnection, page: IosMessages) -> None:
+        """Keep old clients syncing when one record exceeds their frame limit."""
+        records = [record.model_copy(update={"attachments": []}) for record in page.messages]
+        page = page.model_copy(update={"messages": records, "attachments_included": False})
+        payload = page.model_dump_json(exclude_none=True)
+        if len(payload.encode()) > PennyConstants.IOS_SYNC_FRAME_BYTES:
+            records = [
+                record.model_copy(update={"content": PennyResponse.IOS_MESSAGE_REQUIRES_UPDATE})
+                for record in records
+            ]
+            page = page.model_copy(update={"messages": records})
+            payload = page.model_dump_json(exclude_none=True)
+        if len(payload.encode()) > PennyConstants.IOS_SYNC_FRAME_BYTES:
+            await self._send_ws(ws, IosStatus(error="history_page_too_large"))
+            return
+        await self._deliver_text(ws, payload)
 
     @staticmethod
     async def _deliver_text(ws: ServerConnection, payload: str) -> bool:
@@ -1464,26 +1562,51 @@ def _client_content(text: str) -> str:
     return strip_image_tokens(text)
 
 
+def _fit_message_page(records: list[IosOutboxRecord]) -> list[IosOutboxRecord]:
+    """Keep oversized records on their own page for chunking."""
+    remaining = PennyConstants.IOS_SYNC_FRAME_BYTES
+    for index, record in enumerate(records):
+        remaining -= len(record.model_dump_json(exclude_none=True).encode("utf-8")) + 1
+        if index and remaining < 0:
+            return records[:index]
+    return records
+
+
 def _outbox_record(
     row: IosOutboxItem,
     message: MessageLog | None = None,
     *,
+    device: Device | None,
+    attachments: list[str],
     run_stats: dict[str, RunSendStats],
 ) -> IosOutboxRecord:
     tool_calls, duration_ms = _run_stats_fields(message, run_stats)
+    source_type, default_hint = _source_metadata(row.source_name)
+    source_hint = row.source_hint or default_hint
+    if message is not None and (
+        message.direction == "incoming"
+        or (row.source_hint is None and row.source_name is None and message.parent_id is not None)
+    ):
+        source_hint = "Chat"
     return IosOutboxRecord(
         id=_required_outbox_id(row),
         message_id=row.message_log_id,
-        outbox_id=row.id,
-        created_at=row.created_at.isoformat(),
-        content=_client_content(row.content),
-        attachments=_decode_outbox_attachments(row),
-        source_type=row.source_type,
+        client_message_id=message.client_message_id if message else None,
+        outbox_id=row.id if row.legacy_id else None,
+        created_at=utc_isoformat(message.timestamp if message else row.created_at),
+        content=_client_content(message.content if message else row.content),
+        attachments=_decode_outbox_attachments(row) or attachments,
+        source_type=row.source_type or source_type,
         source_name=row.source_name,
-        source_hint=row.source_hint,
+        source_hint=source_hint,
         push_title=row.push_title,
         push_summary=row.push_summary,
         embedding=_encode_embedding(message.embedding if message else None),
+        direction=message.direction if message else None,
+        channel_type=device.channel_type if device else None,
+        device_label=device.label if device else None,
+        device_identifier=device.identifier if device else None,
+        parent_id=message.parent_id if message else None,
         run_id=message.run_id if message else None,
         tool_calls=tool_calls,
         duration_ms=duration_ms,
@@ -1496,14 +1619,19 @@ def _history_record(
     include_attachments: bool = True,
     run_stats: dict[str, RunSendStats],
     page_attachments: dict[int, list[str]],
+    ios_device_id: int | None = None,
 ) -> IosOutboxRecord:
     message, device, outbox = row
-    if outbox is not None and (outbox.source_hint or outbox.source_name):
-        source_type = outbox.source_type
+    if message.direction == "incoming":
+        source_hint = "Chat"
+        source_type = None
+        source_name = None
+    elif outbox is not None and (outbox.source_hint or outbox.source_name):
+        derived_type, derived_hint = _source_metadata(outbox.source_name)
+        source_type = outbox.source_type or derived_type
         source_name = outbox.source_name
-        _, derived_hint = _source_metadata(outbox.source_name)
         source_hint = outbox.source_hint or derived_hint
-    elif message.direction == "incoming" or message.parent_id is not None:
+    elif message.parent_id is not None:
         source_hint = "Chat"
         source_type = None
         source_name = None
@@ -1515,14 +1643,18 @@ def _history_record(
     return IosOutboxRecord(
         id=_required_message_id(message),
         message_id=message.id,
-        outbox_id=outbox.id if outbox is not None else None,
-        created_at=message.timestamp.isoformat(),
+        client_message_id=message.client_message_id,
+        outbox_id=(
+            outbox.id
+            if outbox is not None and outbox.legacy_id and outbox.device_id == ios_device_id
+            else None
+        ),
+        created_at=utc_isoformat(message.timestamp),
         content=_client_content(message.content),
         attachments=(
             (
-                _decode_outbox_attachments(outbox)
-                if outbox is not None
-                else page_attachments.get(_required_message_id(message), [])
+                (_decode_outbox_attachments(outbox) if outbox is not None else [])
+                or page_attachments.get(_required_message_id(message), [])
             )
             if include_attachments
             else []

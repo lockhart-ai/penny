@@ -399,7 +399,7 @@ private func connectAndClearStartupFrames(
     _ transport: MockWebSocketTransport
 ) async {
     await service.connect()
-    _ = await sentPayloads(transport, count: 2)
+    _ = await sentPayloads(transport, count: 1)
     transport.clearSentPayloads()
 }
 

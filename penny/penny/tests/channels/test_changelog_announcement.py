@@ -363,7 +363,7 @@ async def test_changelog_announcement_startup_sends_with_no_new_entries(make_con
     _seed_profile_and_history(penny)
     channel.ready.set()
 
-    await penny._run_startup_notifications([])
+    await penny._run_startup_notifications([], [])
 
     assert channel.sent == [(TEST_SENDER, _REPLY)]
     prompt = _find_request(mock_llm, "just restarted")

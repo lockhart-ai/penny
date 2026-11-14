@@ -29,9 +29,8 @@ enum StoryID: String, CaseIterable {
     case chatSearch
     case chatSearchEmpty
     case sheetCardDetail
-    /// `PennyClientUITests`' one fixture (#3106): a connected chat with
-    /// known, matchable content and a populated Memory tab — every UI
-    /// smoke test launches with this id, never the network.
+    /// A connected chat with known, matchable content and a populated Memory tab.
     case uiTestChat
+    case uiTestChatScrolling
 }
 #endif

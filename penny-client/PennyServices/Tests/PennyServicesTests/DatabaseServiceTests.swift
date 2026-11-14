@@ -20,7 +20,7 @@ struct DatabaseServiceTests {
             """)
         let database = DatabaseService()
         database.setupForTesting(connection: connection)
-        #expect(connection.userVersion == 8)
+        #expect(connection.userVersion == 9)
         #expect(database.loadMessages().first?.content == "Legacy message")
         #expect(database.loadMessages().first?.runID == nil)
         #expect(database.loadMessages().first?.toolCalls == nil)
@@ -36,7 +36,7 @@ struct DatabaseServiceTests {
         #expect(roundTripped.durationMs == 4300)
         connection.userVersion = 6 // An interrupted migration may have already added the column.
         database.setupForTesting(connection: connection)
-        #expect(connection.userVersion == 8)
+        #expect(connection.userVersion == 9)
         #expect(database.loadMessages().count == 2)
         #expect(database.loadMessages().last?.runID == "fixture-run")
         #expect(database.loadMessages().last?.toolCalls == 3)

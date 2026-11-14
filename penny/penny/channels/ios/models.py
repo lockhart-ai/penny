@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +20,7 @@ IOS_MSG_TYPE_TEST_NOTIFICATION = "test_notification"
 IOS_RESP_TYPE_ACKED = "messages_acked"
 IOS_RESP_TYPE_EMBEDDING = "embedding_response"
 IOS_RESP_TYPE_MESSAGES = "messages"
+IOS_RESP_TYPE_MESSAGES_CHUNK = "messages_chunk"
 IOS_RESP_TYPE_OUTBOX_CHANGED = "outbox_changed"
 IOS_RESP_TYPE_REGISTERED = "registered"
 IOS_RESP_TYPE_STATUS = "status"
@@ -52,6 +54,7 @@ class IosRegister(BaseModel):
     apns_token: str | None = None
     apns_environment: str = "sandbox"
     app_version: str | None = None
+    supports_message_chunks: bool = False
 
 
 class IosIncomingMessage(BaseModel):
@@ -59,6 +62,7 @@ class IosIncomingMessage(BaseModel):
 
     type: str = IOS_MSG_TYPE_MESSAGE
     content: str
+    client_message_id: UUID | None = None
     # Photo attachments as data URIs (#3084) — may carry the message alone, with
     # empty ``content``. Validated against the channel limits (above) before the
     # message is forwarded anywhere.
@@ -143,6 +147,7 @@ class IosOutboxRecord(BaseModel):
 
     id: int
     message_id: int | None = None
+    client_message_id: str | None = None
     run_id: str | None = None
     outbox_id: int | None = None
     created_at: str
@@ -195,11 +200,21 @@ class IosMessages(BaseModel):
     attachments_included: bool = True
 
 
+class IosMessagesChunk(BaseModel):
+    """One ordered fragment of a UTF-8 messages response."""
+
+    type: str = IOS_RESP_TYPE_MESSAGES_CHUNK
+    index: int
+    final: bool
+    data: str
+
+
 class IosMessagesAcked(BaseModel):
     """Ack response."""
 
     type: str = IOS_RESP_TYPE_ACKED
     count: int
+    pending_count: int
 
 
 class IosOutboxChanged(BaseModel):
