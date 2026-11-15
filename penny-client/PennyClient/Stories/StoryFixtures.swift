@@ -362,6 +362,23 @@ enum StoryFixtures {
         ]
     }
 
+    static var linkedDigestMessage: ChatMessage {
+        ChatMessage(
+            id: 104, serverID: 104, createdAt: Date(),
+            content: """
+            Here are a few new exhibits to explore:
+
+            * **Coastal landscapes** at **Harbour Gallery** — https://gallery.example.com/exhibits/coast gallery.example.com
+            * **Night skies** at **City Hall** — https://gallery.example.com/exhibits/sky gallery.example.com
+            * **Winter gardens** at **Botanical Centre** — https://www.city-botanical-gardens.example/exhibits/winter www.city-botanical-gardens.example
+            * **Historic maps** are on display {link 147} www.archive.example, with more on the way {link 148} museum.example.
+
+            Let me know which one catches your eye.
+            """,
+            sourceHint: "Collector: exhibits", imageAttachments: [], isOutgoing: false
+        )
+    }
+
     /// The bubble story's conversation (#3038), sized to fit one screen:
     /// every Penny bubble carries her image, every bubble has its metadata
     /// line (Penny's with tool count and seconds, the collector's with its

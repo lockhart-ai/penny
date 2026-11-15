@@ -50,7 +50,7 @@ struct ChatMessageView: View {
     }
 
     private var messageContentBlocks: [ChatMessageContentBlock] {
-        ChatMessageContentParser.parse(message.content)
+        ChatMessageContentParser.parse(message.content, isCollectorMessage: MessagePageFilter.collector.includes(message))
     }
 
     private var replyContent: ChatReplyContent? {
@@ -304,124 +304,8 @@ struct ChatAttributedText: View {
     let attributedText: AttributedString
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                ChatAttributedTextLine(attributedText: line)
-            }
-        }
-    }
-
-    private var lines: [AttributedString] {
-        // A newline inside one Text view cannot move its sibling link/title views.
-        // Give each explicit line its own flow and keep empty lines at text height.
-        attributedText.characters.split(separator: "\n", omittingEmptySubsequences: false).map { line in
-            line.isEmpty ? AttributedString(" ") : AttributedString(attributedText[line.startIndex..<line.endIndex])
-        }
-    }
-}
-
-private struct ChatAttributedTextLine: View {
-    let attributedText: AttributedString
-
-    var body: some View {
-        ChatInlineFlowLayout(horizontalSpacing: 0, verticalSpacing: 0) {
-            ForEach(fragments) { fragment in
-                switch fragment.kind {
-                case .text(let text):
-                    Text(text)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .compactLink(let title, let url):
-                    Link(destination: url) {
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text(title)
-                            Image(systemName: "link")
-                                .imageScale(.small)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.tint)
-                }
-            }
-        }
-    }
-
-    private var fragments: [Fragment] {
-        ChatMessageContentParser.inlineSegments(in: attributedText).enumerated().map(fragment(at:segment:))
-    }
-
-    private func fragment(at id: Int, segment: ChatMessageContentParser.InlineSegment) -> Fragment {
-        switch segment {
-        case .text(let text):
-            return Fragment(id: id, kind: .text(text))
-        case .link(let title, let url):
-            return Fragment(id: id, kind: .compactLink(title: title, url: url))
-        }
-    }
-
-    private struct Fragment: Identifiable {
-        let id: Int
-        let kind: Kind
-
-        enum Kind {
-            case text(AttributedString)
-            case compactLink(title: String, url: URL)
-        }
-    }
-}
-
-private struct ChatInlineFlowLayout: Layout {
-    let horizontalSpacing: CGFloat
-    let verticalSpacing: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let availableWidth = proposal.width ?? .greatestFiniteMagnitude
-        var currentX: CGFloat = 0
-        var currentY: CGFloat = 0
-        var lineHeight: CGFloat = 0
-        var measuredWidth: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(ProposedViewSize(width: availableWidth, height: proposal.height))
-
-            if currentX > 0, currentX + size.width > availableWidth {
-                measuredWidth = max(measuredWidth, currentX - horizontalSpacing)
-                currentX = 0
-                currentY += lineHeight + verticalSpacing
-                lineHeight = 0
-            }
-
-            currentX += min(size.width, availableWidth) + horizontalSpacing
-            lineHeight = max(lineHeight, size.height)
-        }
-
-        measuredWidth = max(measuredWidth, currentX > 0 ? currentX - horizontalSpacing : 0)
-        return CGSize(width: min(measuredWidth, availableWidth), height: currentY + lineHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let availableWidth = bounds.width
-        var currentX = bounds.minX
-        var currentY = bounds.minY
-        var lineHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(ProposedViewSize(width: availableWidth, height: proposal.height))
-
-            if currentX > bounds.minX, currentX + size.width > bounds.maxX {
-                currentX = bounds.minX
-                currentY += lineHeight + verticalSpacing
-                lineHeight = 0
-            }
-
-            subview.place(
-                at: CGPoint(x: currentX, y: currentY),
-                anchor: .topLeading,
-                proposal: ProposedViewSize(width: min(size.width, availableWidth), height: size.height)
-            )
-            currentX += min(size.width, availableWidth) + horizontalSpacing
-            lineHeight = max(lineHeight, size.height)
-        }
+        Text(attributedText)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -663,6 +547,9 @@ enum ChatReplyContentParser {
 }
 
 enum ChatMessageContentParser {
+    private static let rawLinkTrailingPunctuation = CharacterSet(charactersIn: ".,!?;:)")
+    private static let unresolvedCollectorCitation = #"[ \t]*\{link [0-9]+\}(?:[ \t]+(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?![\w/?#-]|\.[\w]|:[0-9]))?"#
+
     /// Find-in-chat (#3045): every occurrence of `query` in `text` gets a
     /// solid background — yellow with primary (dark) text, readable on
     /// both bubble colours; the current match's message uses a stronger
@@ -680,58 +567,8 @@ enum ChatMessageContentParser {
         return result
     }
 
-    /// One flowing run of `ChatAttributedTextLine`'s inline layout: text
-    /// (never split further — a highlighted or bold run embedded in plain
-    /// text stays merged with its neighbours into one segment, so a
-    /// multi-run `AttributedString` still wraps as a single paragraph),
-    /// or a compact link, which needs its own tappable `Link` view and so
-    /// can't be concatenated into the surrounding text.
-    enum InlineSegment: Equatable {
-        case text(AttributedString)
-        case link(title: String, url: URL)
-    }
-
-    /// Splits `text` into the segments `ChatAttributedTextLine` renders:
-    /// adjacent non-link runs merge into one `.text` segment. Before this,
-    /// every attribute run (every highlighted word, every bold span) became
-    /// its own `Text` subview in the custom flow layout — which places a
-    /// whole subview on the current line or bumps it whole to the next,
-    /// never splitting one subview's own text mid-word. That reads fine for
-    /// a single run, but a run boundary that happens to fall near where the
-    /// paragraph would naturally wrap forces a break right there and
-    /// narrows the bubble to the shorter of the two pieces (#3045 — the
-    /// same shape of break bold markdown text hit before this). Only an
-    /// actual link still becomes its own segment — a `Text` and a `Link`
-    /// can't merge into one view, so that boundary is real.
-    static func inlineSegments(in text: AttributedString) -> [InlineSegment] {
-        var segments: [InlineSegment] = []
-        var pendingText: AttributedString?
-
-        func flushPendingText() {
-            guard let pending = pendingText else { return }
-            segments.append(.text(pending))
-            pendingText = nil
-        }
-
-        for run in text.runs {
-            let runText = AttributedString(text[run.range])
-            let displayText = String(runText.characters)
-
-            if let url = run.link, url.host == displayText {
-                flushPendingText()
-                segments.append(.link(title: displayText, url: url))
-            } else if pendingText != nil {
-                pendingText?.append(runText)
-            } else {
-                pendingText = runText
-            }
-        }
-        flushPendingText()
-
-        return segments
-    }
-
-    static func parse(_ content: String) -> [ChatMessageContentBlock] {
+    static func parse(_ content: String, isCollectorMessage: Bool = false) -> [ChatMessageContentBlock] {
+        let content = isCollectorMessage ? collectorDisplayText(content) : content
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var blocks: [ChatMessageContentBlock] = []
         var pendingTextLines: [String] = []
@@ -763,6 +600,13 @@ enum ChatMessageContentParser {
         }
 
         return blocks
+    }
+
+    private static func collectorDisplayText(_ content: String) -> String {
+        // Older digests can carry a citation number and a domain, without a destination URL.
+        let cleaned = content.replacingOccurrences(of: unresolvedCollectorCitation, with: "", options: .regularExpression)
+        guard cleaned != content else { return content }
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\nSome source links were unavailable."
     }
 
     static func markdownText(from text: String) -> AttributedString {
@@ -862,20 +706,33 @@ enum ChatMessageContentParser {
             }
 
             var linkEndIndex = scanIndex
-            while linkEndIndex > linkStartIndex, let lastCharacter = lineText[lineText.index(before: linkEndIndex)].unicodeScalars.first, CharacterSet(charactersIn: ".,!?;:)").contains(lastCharacter) {
+            while linkEndIndex > linkStartIndex,
+                  lineText[lineText.index(before: linkEndIndex)].unicodeScalars.allSatisfy(rawLinkTrailingPunctuation.contains) {
                 linkEndIndex = lineText.index(before: linkEndIndex)
             }
 
             let rangeEndIndex = scanIndex < lineText.endIndex && lineText[scanIndex] == ">" && rangeStartIndex < linkStartIndex ? lineText.index(after: scanIndex) : linkEndIndex
+            index = scanIndex
             let rawValue = String(lineText[linkStartIndex..<linkEndIndex])
             if linkEndIndex > linkStartIndex, let url = normalizedURL(from: rawValue), let host = url.host {
-                links.append(RawLink(range: rangeStartIndex..<rangeEndIndex, url: url, displayText: host))
+                let displayEndIndex = endOfRepeatedHost(host, after: rangeEndIndex, in: lineText) ?? rangeEndIndex
+                links.append(RawLink(range: rangeStartIndex..<displayEndIndex, url: url, displayText: host))
+                index = max(index, displayEndIndex)
             }
-
-            index = scanIndex
         }
 
         return links
+    }
+
+    /// Some digests end each entry with a URL followed by its bare domain.
+    /// Skip the redundant domain and keep any trailing punctuation.
+    private static func endOfRepeatedHost(_ host: String, after index: String.Index, in text: String) -> String.Index? {
+        let suffix = text[index...].drop(while: \.isWhitespace)
+        guard suffix.startIndex > index,
+              let match = suffix.range(of: host, options: [.anchored, .caseInsensitive]) else { return nil }
+
+        let trailingText = suffix[match.upperBound...].trimmingCharacters(in: .whitespaces)
+        return trailingText.unicodeScalars.allSatisfy(rawLinkTrailingPunctuation.contains) ? match.upperBound : nil
     }
 
     private static func markdownLinkSyntaxRanges(in lineText: String) -> [Range<String.Index>] {

@@ -100,7 +100,7 @@ public enum MessagePageFilter: Equatable, Sendable {
         }
     }
 
-    func includes(_ message: ChatMessage) -> Bool {
+    public func includes(_ message: ChatMessage) -> Bool {
         switch self {
         case .all:
             return true
