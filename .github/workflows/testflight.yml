@@ -1,17 +1,16 @@
 name: testflight
 
-# Archives the PennyTestflight target (the "real" deploy build — bundle id
-# com.blockoftext.pennyclient.testflight) and uploads it to TestFlight. Runs
-# on demand only (Actions → testflight → Run workflow, or `gh workflow run testflight.yml`):
-# each run on a fresh runner mints a new signing certificate, and Apple caps them, so it
-# no longer runs on every merge (#3081). Signing is handled entirely by an App Store Connect API key
-# (repo secrets) via xcodebuild -allowProvisioningUpdates, so it needs no local
-# certificates, provisioning profiles, or Xcode Cloud.
+# Archives PennyTestflight and uploads it to TestFlight on demand. Each run imports
+# the same Apple Distribution signing identity and App Store Connect profile.
 #
-# Required repo secrets (Settings → Secrets and variables → Actions):
-#   APP_STORE_CONNECT_KEY_ID      — the API key's Key ID
-#   APP_STORE_CONNECT_ISSUER_ID   — the API key's Issuer ID
-#   APP_STORE_CONNECT_PRIVATE_KEY — the .p8 private key contents (whole file)
+# Repo secrets (Settings → Secrets and variables → Actions)
+#   TESTFLIGHT_CERTIFICATE_BASE64   — base64 of the .p12 containing the certificate and private key
+#   TESTFLIGHT_CERTIFICATE_PASSWORD — the .p12 password, if set
+#   TESTFLIGHT_PROFILE_BASE64       — base64 of the App Store Connect .mobileprovision for
+#                                     com.blockoftext.pennyclient.testflight using that certificate
+#   APP_STORE_CONNECT_KEY_ID        — the API key's Key ID
+#   APP_STORE_CONNECT_ISSUER_ID     — the API key's Issuer ID
+#   APP_STORE_CONNECT_PRIVATE_KEY   — the .p8 private key contents (whole file)
 on:
   workflow_dispatch:
 
@@ -40,18 +39,48 @@ jobs:
           fi
           xcodebuild -version
 
-      - name: Write App Store Connect API key
+      - name: Install TestFlight signing identity and profile
         env:
-          PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          CERTIFICATE_BASE64: ${{ secrets.TESTFLIGHT_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.TESTFLIGHT_CERTIFICATE_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.TESTFLIGHT_PROFILE_BASE64 }}
         run: |
-          mkdir -p "$RUNNER_TEMP/private_keys"
-          printf '%s\n' "$PRIVATE_KEY" > "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8"
+          if [[ -z "$CERTIFICATE_BASE64" || -z "$PROFILE_BASE64" ]]; then
+            echo '::error::Set TESTFLIGHT_CERTIFICATE_BASE64 and TESTFLIGHT_PROFILE_BASE64 in GitHub Actions secrets.'
+            exit 1
+          fi
+
+          umask 077
+          CERTIFICATE_PATH="$RUNNER_TEMP/testflight.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/testflight.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          PROFILE_PATH="$RUNNER_TEMP/testflight.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/testflight-profile.plist"
+
+          trap 'rm -f "$CERTIFICATE_PATH"' EXIT
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -f pkcs12 -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          printf '%s' "$PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+          security cms -D -i "$PROFILE_PATH" -o "$PROFILE_PLIST"
+          PROFILE_UUID="$(plutil -extract UUID raw -expect string "$PROFILE_PLIST")"
+          PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          cp "$PROFILE_PATH" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+          printf 'TESTFLIGHT_PROFILE_UUID=%s\n' "$PROFILE_UUID" >> "$GITHUB_ENV"
+
+          plutil -insert provisioningProfiles \
+            -json "{\"com.blockoftext.pennyclient.testflight\":\"$PROFILE_UUID\"}" \
+            -o "$RUNNER_TEMP/ExportOptions.plist" penny-client/ExportOptions.plist
 
       - name: Archive PennyTestflight
-        env:
-          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           BUILD_NUMBER="$(git rev-list --count HEAD)"
           FULL_COMMIT_HASH="${GITHUB_SHA:-$(git rev-parse HEAD)}"
@@ -66,10 +95,9 @@ jobs:
             -archivePath "$RUNNER_TEMP/PennyTestflight.xcarchive" \
             -skipMacroValidation \
             -skipPackagePluginValidation \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
-            -authenticationKeyID "$KEY_ID" \
-            -authenticationKeyIssuerID "$ISSUER_ID" \
+            PENNY_TESTFLIGHT_SIGNING_STYLE=Manual \
+            PENNY_TESTFLIGHT_SIGNING_IDENTITY='Apple Distribution' \
+            PENNY_TESTFLIGHT_PROVISIONING_PROFILE="$TESTFLIGHT_PROFILE_UUID" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             GIT_COMMIT="$BUILD_COMMIT_HASH"
           ACTUAL_COMMIT_HASH="$(/usr/libexec/PlistBuddy -c 'Print :PennyBuildCommitHash' "$RUNNER_TEMP/PennyTestflight.xcarchive/Products/Applications/PennyTestflight.app/Info.plist")"
@@ -77,14 +105,20 @@ jobs:
 
       - name: Export and upload to TestFlight
         env:
+          PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
           KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
+          umask 077
+          AUTH_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8"
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          trap 'rm -f "$AUTH_KEY_PATH"' EXIT
+          printf '%s\n' "$PRIVATE_KEY" > "$AUTH_KEY_PATH"
+
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/PennyTestflight.xcarchive" \
-            -exportOptionsPlist penny-client/ExportOptions.plist \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -exportPath "$RUNNER_TEMP/export" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
             -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER_ID"

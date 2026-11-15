@@ -10,9 +10,10 @@
 	<string>upload</string>
 	<key>teamID</key>
 	<string>P87URHZFZ4</string>
-	<!-- Automatic signing; xcodebuild fetches the distribution cert + profile
-	     via the App Store Connect API key passed with -allowProvisioningUpdates. -->
+	<!-- The TestFlight workflow adds the installed provisioning profile's UUID. -->
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
 </dict>
 </plist>
