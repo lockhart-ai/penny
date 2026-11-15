@@ -1084,7 +1084,7 @@ class Agent:
         if reason is not None:
             logger.info("Dropped interim message (%s): %.120s", reason, content)
             return
-        await on_interim_message(content)
+        await on_interim_message(ctx.handles.expand(content))
 
     async def after_tool_step(
         self,
@@ -1240,7 +1240,8 @@ class Agent:
         tools: list[dict],
         call_link: CallLink,
         prompt_type: str | None,
-        handles: HandleTable | None = None,
+        *,
+        handles: HandleTable,
     ) -> LlmResponse:
         """Call the model, driving the response-validation chain on each output.
 
@@ -1277,6 +1278,7 @@ class Agent:
                 is_final_step=False,
                 tools_available=effective_tools is not None,
                 source_text=self._get_source_text(messages),
+                handles=handles,
                 retried=retried,
             )
             match run_validators(self.response_validators, response, ctx):

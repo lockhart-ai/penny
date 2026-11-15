@@ -22,7 +22,7 @@ from penny.agents.models import (
 )
 from penny.config import Config
 from penny.config_params import RuntimeParams, token_budget_for
-from penny.constants import PageReading, PennyConstants
+from penny.constants import CycleTrigger, PageReading, PennyConstants
 from penny.database import Database
 from penny.database.memory.objects import run_facts_line
 from penny.database.models import PromptLog
@@ -39,13 +39,14 @@ from penny.llm.models import (
     LlmToolParseError,
 )
 from penny.llm.raw_template import parse_completion
+from penny.notification import JobReport, WrittenEntry
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
 # The eval harness's loop-health probe, asserted against a REAL re-roll here: its whole premise
 # is that a discarded draw leaves two promptlog rows on the same context, and a probe pinned
 # only against hand-seeded rows would keep passing if the loop stopped leaving them (#1841).
-from penny.tests.conftest import NULL_SANDBOX_RUNNER
+from penny.tests.conftest import NULL_SANDBOX_RUNNER, TEST_SENDER
 from penny.tests.eval.conftest import draw_rerolled
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.text_validity import (
@@ -2903,6 +2904,35 @@ class TestUrlValidationSourceContext:
 
         await agent.close()
 
+    @pytest.mark.asyncio
+    async def test_job_report_retries_and_removes_a_dangling_citation(self, test_db, mock_llm):
+        agent, _, _ = _make_agent(test_db, mock_llm, agent_cls=ChatAgent)
+        url = "https://science.example/articles/crystals"
+        report = JobReport(
+            collection="science-digest",
+            description="Summaries of new research",
+            trigger=CycleTrigger.CADENCE,
+            run_id="collector-run",
+            entries=(WrittenEntry(memory="science-digest", content=f"Crystal study: {url}"),),
+        )
+        draft = "Read the [crystal study] {link 101}. Another study {link 102} was mentioned."
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, draft)
+        )
+
+        try:
+            response = await agent.handle_job_report(
+                report, TEST_SENDER, call_link=CallLink.new_top()
+            )
+        finally:
+            await agent.close()
+
+        assert len(mock_llm.requests) == 2
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        assert f"[crystal study]({url})" in response.answer
+        assert "{link " not in response.answer
+        assert response.answer.endswith(PennyResponse.LINK_DROPPED_NOTICE)
+
 
 class TestMalformedUrlCleaning:
     """Test that truncated or malformed URLs are stripped from final responses."""
@@ -3323,6 +3353,10 @@ class TestInterimMessage:
     async def test_validated_prose_sent_before_the_calls_run(self, test_db, mock_llm):
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
+        handles = HandleTable()
+        url = "https://source.example/article"
+        handles.register(url)
+        interim = "I'll check the [article] {link 101} for you now."
 
         sent: list[str] = []
 
@@ -3332,21 +3366,22 @@ class TestInterimMessage:
         def handler(request, count):
             if count == 1:
                 return _tool_call_with_content_response(
-                    request, "I'll check that for you now.", "search", {"query": "test"}
+                    request, interim, "search", {"query": "test"}
                 )
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
 
         response = await agent.run(
-            "test",
+            "Please check the article at {link 101}.",
             max_steps=max_steps,
             on_interim_message=on_interim_message,
             call_link=CallLink.new_top(),
             inbox=NO_INBOX,
+            handles=handles,
         )
 
-        assert sent == ["I'll check that for you now."]
+        assert sent == [f"I'll check the [article]({url}) for you now."]
         assert response.answer == "done"
         # The call still ran — the interim send never blocked or replaced it.
         assert len(response.tool_calls) == 1
@@ -3357,7 +3392,7 @@ class TestInterimMessage:
         # the prose must still be there, beside the tool_calls, exactly as drawn.
         second_call_messages = json.loads(logs[1].messages)
         step_one_message = next(m for m in second_call_messages if m.get("tool_calls"))
-        assert step_one_message["content"] == "I'll check that for you now."
+        assert step_one_message["content"] == interim
 
         await agent.close()
 

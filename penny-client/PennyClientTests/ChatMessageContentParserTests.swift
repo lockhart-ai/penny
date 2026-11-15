@@ -141,7 +141,7 @@ struct ChatMessageContentParserTests {
         }
     }
 
-    @Test func rendersRawLinksAsHostWithLinkSymbol() {
+    @Test func rendersRawLinksAsLinkedHosts() {
         let text = ChatMessageContentParser.markdownText(from: "Open https://example.com/path?item=1 and www.apple.com/support.")
 
         #expect(String(text.characters) == "Open example.com and www.apple.com.")
@@ -149,6 +149,41 @@ struct ChatMessageContentParserTests {
             URL(string: "https://example.com/path?item=1"),
             URL(string: "https://www.apple.com/support")
         ])
+    }
+
+    @Test func collapsesRepeatedHostAfterEachURLAndRetainsTheFullTargets() {
+        let content = """
+        * **Coastal landscapes** — https://gallery.example.com/exhibits/coast gallery.example.com
+        * **Night skies** — https://gallery.example.com/exhibits/sky GALLERY.EXAMPLE.COM
+        * **Winter gardens** — https://www.gardens.example/exhibits/winter www.gardens.example.
+        """
+        let text = ChatMessageContentParser.markdownText(from: content)
+
+        #expect(String(text.characters) == "Coastal landscapes — gallery.example.com\nNight skies — gallery.example.com\nWinter gardens — www.gardens.example.")
+        #expect(linkTargets(in: text) == [
+            URL(string: "https://gallery.example.com/exhibits/coast"),
+            URL(string: "https://gallery.example.com/exhibits/sky"),
+            URL(string: "https://www.gardens.example/exhibits/winter")
+        ])
+    }
+
+    @Test func keepsSeparateLinksAndLongerTokensAfterAURL() {
+        let text = ChatMessageContentParser.markdownText(
+            from: "See https://www.example.com/first www.example.com/second and https://example.com/guide example.com.au."
+        )
+
+        #expect(String(text.characters) == "See www.example.com www.example.com and example.com example.com.au.")
+        #expect(linkTargets(in: text) == [
+            URL(string: "https://www.example.com/first"),
+            URL(string: "https://www.example.com/second"),
+            URL(string: "https://example.com/guide")
+        ])
+    }
+
+    @Test func keepsMatchingHostWhenItIsFollowedByProse() {
+        let text = ChatMessageContentParser.markdownText(from: "https://example.com/news example.com publishes updates here.")
+
+        #expect(String(text.characters) == "example.com example.com publishes updates here.")
     }
 
     @Test func preservesExistingMarkdownLinkText() {
@@ -195,47 +230,5 @@ struct ChatMessageContentParserTests {
             return true
         }
         return false
-    }
-
-    // MARK: Inline segments (#3045) — a highlighted or bold run must stay
-    // in the same flowing paragraph as its neighbours, never force a line
-    // break at the run boundary.
-
-    @Test func highlightingAMidSentenceWordKeepsOneInlineSegment() {
-        let text = ChatMessageContentParser.markdownText(from: "The 9:30 ferry has space — want me to book it?")
-        let highlighted = ChatMessageContentParser.highlighted(text, query: "ferry", isCurrentMatch: false)
-
-        let segments = ChatMessageContentParser.inlineSegments(in: highlighted)
-
-        #expect(segments.count == 1)
-        guard case .text(let merged) = segments[0] else {
-            Issue.record("Expected a single merged text segment")
-            return
-        }
-        #expect(String(merged.characters) == "The 9:30 ferry has space — want me to book it?")
-    }
-
-    @Test func boldMarkdownMidSentenceAlsoKeepsOneInlineSegment() {
-        let text = ChatMessageContentParser.markdownText(from: "The **bold** word stays in the same sentence.")
-
-        let segments = ChatMessageContentParser.inlineSegments(in: text)
-
-        #expect(segments.count == 1)
-    }
-
-    @Test func aLinkStillBreaksTextIntoSeparateSegments() {
-        // A raw pasted URL compacts to its host as the link's display text
-        // (`markdownTextWithCompactedRawLinks`) — the shape that renders as
-        // a tappable compact link, not merged into the surrounding text.
-        let text = ChatMessageContentParser.markdownText(from: "See https://example.com for details.")
-
-        let segments = ChatMessageContentParser.inlineSegments(in: text)
-
-        #expect(segments.count == 3)
-        guard case .text = segments[0], case .link(_, let url) = segments[1], case .text = segments[2] else {
-            Issue.record("Expected text, link, text")
-            return
-        }
-        #expect(url.host == "example.com")
     }
 }

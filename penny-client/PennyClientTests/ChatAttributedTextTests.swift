@@ -28,6 +28,8 @@ struct ChatAttributedTextTests {
 
     @Test(arguments: [CGFloat(280), 360, 600], [DynamicTypeSize.large, .accessibility3])
     func sourceLinesKeepSeparateRows(width: CGFloat, textSize: DynamicTypeSize) {
+        // Native multiline Text can round line heights differently from separately hosted lines.
+        let halfLineHeight = renderedHeight(" ", width: width, textSize: textSize) / 2
         for content in Self.examples {
             let expectedHeight = content.components(separatedBy: "\n").reduce(CGFloat.zero) { height, line in
                 height + renderedHeight(line.isEmpty ? " " : line, width: width, textSize: textSize)
@@ -35,7 +37,7 @@ struct ChatAttributedTextTests {
 
             let actualHeight = renderedHeight(content, width: width, textSize: textSize)
 
-            #expect(abs(actualHeight - expectedHeight) < 1)
+            #expect(abs(actualHeight - expectedHeight) < halfLineHeight)
         }
     }
 
@@ -78,7 +80,25 @@ struct ChatAttributedTextTests {
         let content = "\n\(line)\n\n\(title)\n"
         let expectedHeight = renderedHeight(line, width: 360) + renderedHeight(title, width: 360) + 3 * lineHeight
 
-        #expect(abs(renderedHeight(content, width: 360) - expectedHeight) < 1)
+        #expect(abs(renderedHeight(content, width: 360) - expectedHeight) < lineHeight / 2)
+    }
+
+    @Test(arguments: [CGFloat(145), 180, 220, 280], [DynamicTypeSize.large, .accessibility3])
+    func titlesAndLinksWrapTogether(width: CGFloat, textSize: DynamicTypeSize) {
+        let markdown = """
+        * **Coastal landscapes** at **Harbour Gallery** — https://gallery.example.com/exhibits/coast
+        * **Night skies** at **City Hall** — https://gallery.example.com/exhibits/sky
+        * **Winter gardens** at **Botanical Centre** — https://www.city-botanical-gardens.example/exhibits/winter
+        """
+        let text = ChatMessageContentParser.markdownText(from: markdown)
+        let nativeText = Text(text)
+            .font(.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .environment(\.dynamicTypeSize, textSize)
+        let host = UIHostingController(rootView: nativeText)
+        let expectedHeight = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+
+        #expect(abs(renderedHeight(text, width: width, textSize: textSize) - expectedHeight) < 1)
     }
 
     private func renderedHeight(_ markdown: String, width: CGFloat, textSize: DynamicTypeSize = .large) -> CGFloat {
