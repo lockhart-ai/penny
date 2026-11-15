@@ -67,6 +67,16 @@ them on a shared machine. For an explicit destination, device testing and retain
 UI-test screenshots, follow the [workflow](../docs/ios-agent-workflow.md).
 UI tests and screenshot capture stay out of CI.
 
+## TestFlight releases
+
+The [TestFlight workflow](../.github/workflows/testflight.yml) runs on demand and
+uses the same Apple Distribution identity for archive and export. Export the
+existing certificate and private key as a `.p12`, then download the App Store
+Connect provisioning profile for `com.blockoftext.pennyclient.testflight` that
+includes that certificate. Base64-encode the two files and add them in GitHub
+Actions using the secret names in the workflow. The App Store Connect API key
+authenticates the upload.
+
 ## Assessment: November 13, 2026
 
 The source has useful separation between app, reusable UI and services, with
